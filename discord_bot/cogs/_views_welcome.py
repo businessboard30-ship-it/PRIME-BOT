@@ -143,7 +143,10 @@ def render_status_lines(config: dict) -> list:
     ]
 
     if use_template:
-        lines.append(f"✅ **Step 4: Avatar shape** — {shape_label}")
+        look_label = {"wolf": "Wolf", "reaper": "Metallic Reaper", "shadow": "Shadow Monarch",
+                      "sorcerer": "Emerald Sorcerer"}.get(config.get("card_theme", "wolf"), "Wolf")
+        lines.append(f"✅ **Step 4: Card look** — {look_label}")
+        lines.append(f"✅ **Step 7: Avatar shape** — {shape_label}")
         lines.append("-# ~~Colors~~ ~~Style~~ ~~Sticker~~ — only in animated mode (switch below)")
     else:
         theme = _theme_name_for(config) or "custom"
@@ -271,6 +274,9 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> disc
     items = [text, discord.ui.Separator(), channel_row, delivery_row]
 
     if use_template:
+        look_row = discord.ui.ActionRow()
+        look_row.add_item(WelcomeCardLookSelect(guild_id, clone_id, invoker_id, config))
+        items.append(look_row)
         items.append(shape_row)
     else:
         theme_row = discord.ui.ActionRow()
@@ -454,6 +460,112 @@ class WelcomeThemeSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id
             self.guild_id, clone_id=self.clone_id, background_color=bg, accent_color=accent
         )
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("look")):
+    """Step to pick the designed card look (wolf/reaper/shadow/sorcerer —
+    modules.welcome_card.PREMIUM_THEMES), distinct from WelcomeThemeSelect
+    above (which is flat-card color palettes, only shown in the other
+    branch). Previously this whole concept was only reachable via the
+    standalone /welcome theme command — the wizard never surfaced it at
+    all, so someone who bought the pack through /welcome buypack had no
+    way to find or apply a premium look without already knowing that
+    command existed.
+
+    Selecting a locked premium look renders an ephemeral one-off preview
+    using that look, but does NOT write card_theme — the config is only
+    updated once the guild has actually bought the pack (or the free
+    'wolf' look is picked), mirroring /welcome theme's own gate exactly."""
+
+    _LOOKS = [
+        ("wolf", "Wolf (free, default)"),
+        ("reaper", "Metallic Reaper (premium)"),
+        ("shadow", "Shadow Monarch (premium)"),
+        ("sorcerer", "Emerald Sorcerer (premium)"),
+    ]
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        from modules.welcome_card import PREMIUM_THEMES
+        current = config.get("card_theme", "wolf")
+        unlocked = bool(config.get("card_pack_unlocked"))
+        options = []
+        for value, label in self._LOOKS:
+            locked = value in PREMIUM_THEMES and not unlocked
+            options.append(discord.SelectOption(
+                label=f"🔒 {label}" if locked else label,
+                value=value,
+                description=("Locked — preview only, /welcome buypack to use" if locked else None),
+                default=(value == current),
+            ))
+        super().__init__(discord.ui.Select(
+            placeholder="Step 4 — pick a card look", options=options,
+            custom_id=_encode("look", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id, {})
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        await interaction.response.defer()
+        chosen = self.item.values[0]
+        from modules.welcome_card import PREMIUM_THEMES
+        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        unlocked = bool(config.get("card_pack_unlocked"))
+
+        if chosen in PREMIUM_THEMES and not unlocked:
+            # Locked: show a preview-only render of this look, but leave
+            # the stored card_theme (and the wizard's own selection state)
+            # untouched — re-rendering the wizard here puts the select back
+            # on whatever look is actually applied, not the locked one just
+            # previewed, so nothing looks half-applied.
+            await self._send_locked_preview(interaction, chosen, config)
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+            return
+
+        await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, card_theme=chosen, use_template=True)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+    async def _send_locked_preview(self, interaction: discord.Interaction, theme: str, config: dict):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    str(interaction.user.display_avatar.replace(size=256).url),
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    avatar_bytes = await resp.read()
+                sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
+            card_bytes, image_format = await asyncio.to_thread(
+                render_welcome_card,
+                avatar_bytes, interaction.user.display_name, f"Member #{interaction.guild.member_count}",
+                background_color=config.get("background_color"), accent_color=config.get("accent_color"),
+                sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
+                guild_name=interaction.guild.name, use_template=True,
+                avatar_shape=config.get("avatar_shape", "circle"),
+                theme=theme,
+            )
+            ext = "gif" if image_format == "GIF" else "png"
+            file = discord.File(fp=io.BytesIO(card_bytes), filename=f"locked_preview.{ext}")
+            await interaction.followup.send(
+                content=(
+                    "🔒 **Locked preview** — this server hasn't bought the premium card pack yet. "
+                    "Run `/welcome buypack` to unlock this look for real."
+                ),
+                file=file,
+                ephemeral=True,
+            )
+        except Exception:
+            await interaction.followup.send(
+                "🔒 That look is part of the premium pack — run `/welcome buypack` to unlock it "
+                "(couldn't render a live preview right now).",
+                ephemeral=True,
+            )
 
 
 class WelcomeCardStyleSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("style")):
@@ -750,7 +862,7 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
 # _views_join_dm.py's DYNAMIC_ITEMS, so these keep working after a
 # restart regardless of which process originally sent the message.
 DYNAMIC_ITEMS = (
-    WelcomeChannelSelect, WelcomeDeliverySelect, WelcomeThemeSelect, WelcomeCardStyleSelect,
-    WelcomeAvatarShapeSelect, WelcomeStickerPresetSelect, WelcomeEditMessageButton,
-    WelcomeToggleButton, WelcomePreviewButton, WelcomeModeToggleButton,
+    WelcomeChannelSelect, WelcomeDeliverySelect, WelcomeThemeSelect, WelcomeCardLookSelect,
+    WelcomeCardStyleSelect, WelcomeAvatarShapeSelect, WelcomeStickerPresetSelect,
+    WelcomeEditMessageButton, WelcomeToggleButton, WelcomePreviewButton, WelcomeModeToggleButton,
 )
