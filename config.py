@@ -198,7 +198,11 @@ DISCORD_CLONE_FREE_EVERY_NTH = 3
 # /welcome buypack): one-time, whole-guild unlock for the extra template
 # themes in modules/welcome_card.py's PREMIUM_THEMES (any admin can pay,
 # unlocks it for every future join, not per-user).
-WELCOME_CARD_PACK_FEE_GHS = 40
+# USD is the base price — utils/currency.py converts to the payer's
+# currency (from /currency set, or a Discord-locale guess) live at
+# checkout time via convert_from_usd/usd_to_minor_units, same pattern as
+# config.DISCOVER_CAP_TIERS. No more hardcoded GHS here.
+WELCOME_CARD_PACK_FEE_USD = 5
 
 # Comma-separated Discord user IDs that bypass the /registerclone payment gate
 # entirely, same as ADMIN_ID does for the Telegram flow's owner bypass. The
