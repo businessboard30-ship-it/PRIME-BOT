@@ -23,8 +23,9 @@ import logging
 import discord
 
 from database import db
-from payments import resolve_gateway, gateway_charge_amount, charge_error_message
-from config import WELCOME_CARD_PACK_FEE_GHS
+from payments import resolve_gateway
+from config import WELCOME_CARD_PACK_FEE_USD
+import utils.currency as fx
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +36,20 @@ def _clone_id_of(interaction: discord.Interaction):
     return getattr(interaction.client, "clone_id", None)
 
 
+async def _resolve_currency(interaction: discord.Interaction) -> str:
+    """Same preference order as discover_players.py's helper: explicit
+    /currency set > best-effort Discord locale guess > USD. Only used for
+    the Paystack path — Stripe always charges in USD directly since the
+    base price already is USD, so there's nothing to convert."""
+    stored = await db.get_user_currency(interaction.user.id)
+    if stored:
+        return stored
+    guessed = fx.currency_from_locale(getattr(interaction, "locale", None))
+    return guessed or "USD"
+
+
 async def start_card_pack_payment(interaction: discord.Interaction):
-    """Kicks off a Paystack transaction for this guild's card pack.
+    """Kicks off a transaction for this guild's card pack.
     Call after interaction.response.defer(ephemeral=True, thinking=True)."""
     guild_id = interaction.guild_id
     user = interaction.user
@@ -58,26 +71,30 @@ async def start_card_pack_payment(interaction: discord.Interaction):
         )
         return
 
-    price = float(WELCOME_CARD_PACK_FEE_GHS)
+    price_usd = float(WELCOME_CARD_PACK_FEE_USD)
     clone_id = _clone_id_of(interaction) or 0
     gateway, api_key, provider = await resolve_gateway(clone_id, platform="discord")
     email = f"user_{user.id}@animebot.com"
 
-    charge = gateway_charge_amount(provider, price)
-    if charge.get("error"):
-        await interaction.followup.send(charge_error_message(charge), ephemeral=True)
-        return
+    if provider == "stripe":
+        # Base price is already USD — no conversion needed, unlike the old
+        # GHS-based flow which had to live-convert GHS->USD for Stripe.
+        amount_minor_units = round(price_usd * 100)
+        charge_currency = "usd"
+    else:
+        target_currency = await _resolve_currency(interaction)
+        amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, target_currency)
 
     payment_result = await asyncio.to_thread(
         gateway.initialize_payment,
         email,
-        charge["amount_minor_units"],
+        amount_minor_units,
         user.id,
         f"WelcomeCardPack_{user.id}_{guild_id}",
         payment_type=PAYMENT_TYPE,
         extra_metadata={"guild_id": guild_id, "provider": "discord"},
         api_key=api_key,
-        currency=charge["currency"],
+        currency=charge_currency,
     )
 
     if not payment_result or payment_result.get("status") != "success":
@@ -88,14 +105,14 @@ async def start_card_pack_payment(interaction: discord.Interaction):
     payment_link = payment_result["authorization_url"]
 
     await db.log_payment(
-        user.id, price, reference, status="pending",
+        user.id, price_usd, reference, status="pending",
         payment_type=PAYMENT_TYPE, chat_id=guild_id,
         provider=provider,
     )
 
     charged_amount_display = (
-        f"GHS {price:g}" if charge["currency"] == "GHS"
-        else f"{charge['amount_minor_units'] / 100:.2f} {charge['currency'].upper()} (converted from GHS {price:g})"
+        f"${price_usd:g} USD" if charge_currency.upper() == "USD"
+        else f"{amount_minor_units / fx.MINOR_UNIT_MULTIPLIER.get(charge_currency, 100):.2f} {charge_currency.upper()} (≈ ${price_usd:g} USD)"
     )
     embed = discord.Embed(
         title="🎨 Premium Welcome-Card Pack",
