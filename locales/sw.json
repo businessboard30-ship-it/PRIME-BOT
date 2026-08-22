@@ -1,0 +1,15 @@
+{
+  "lang_name": "Kiswahili",
+  "welcome_default": "👋 Habari {name}! Boti hii inafanya mambo 3: 🎬 kugundua anime, 🛡️ usimamizi wa kikundi, 🧰 zana muhimu.\n\nChagua sehemu hapa chini, au gusa ☰ kuona orodha kamili ya amri.",
+  "welcome_clone": "👋 Habari {name}! Karibu {clone_name}.{tagline}\n\nAnime, zana za kikundi, na zana muhimu — chagua sehemu hapa chini.",
+  "quick_access": "Vitufe vya ufikiaji wa haraka vimebandikwa hapa chini 👇",
+  "main_menu_title": "🏠 Menyu Kuu\n\nChagua sehemu:",
+  "choose_language": "🌐 Chagua lugha yako:",
+  "language_changed": "✅ Lugha imewekwa kuwa {lang_name}.",
+  "disclaimer_header": "⚠️ Tafadhali soma kabla ya kuendelea:",
+  "download_prompt": "Nitumie kiungo (YouTube, n.k.) nami nitakuletea sauti au video.",
+  "download_too_large": "Faili ni kubwa mno: ~{size}MB. Kiwango cha juu kinachoruhusiwa: 50MB.",
+  "download_error": "Sikuweza kuchakata kiungo hicho: {error}",
+  "error_generic": "Hitilafu imetokea. Tafadhali jaribu tena baada ya muda mfupi.",
+  "powered_by": "Inaendeshwa na"
+}

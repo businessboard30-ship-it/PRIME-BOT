@@ -1,0 +1,15 @@
+{
+  "lang_name": "日本語",
+  "welcome_default": "👋 {name}さん、こんにちは！このボットは3つのことができます：🎬 アニメ発見、🛡️ グループ管理、🧰 便利機能。\n\n下からエリアを選んでください。☰をタップすると全コマンド一覧が見られます。",
+  "welcome_clone": "👋 {name}さん、こんにちは！{clone_name}へようこそ。{tagline}\n\nアニメ、グループツール、便利機能 — 下からエリアを選んでください。",
+  "quick_access": "クイックアクセスボタンは下にピン留めされています 👇",
+  "main_menu_title": "🏠 メインメニュー\n\nエリアを選んでください：",
+  "choose_language": "🌐 言語を選んでください：",
+  "language_changed": "✅ 言語を{lang_name}に設定しました。",
+  "disclaimer_header": "⚠️ 続ける前にお読みください：",
+  "download_prompt": "リンク（YouTubeなど）を送ってください。音声または動画を取得します。",
+  "download_too_large": "ファイルが大きすぎます：約{size}MB。最大制限：50MB。",
+  "download_error": "このリンクを処理できませんでした：{error}",
+  "error_generic": "何か問題が発生しました。しばらくしてからもう一度お試しください。",
+  "powered_by": "提供:"
+}
