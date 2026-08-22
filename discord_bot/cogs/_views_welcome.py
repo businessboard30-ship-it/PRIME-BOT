@@ -844,6 +844,7 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
                 sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                 avatar_shape=config.get("avatar_shape", "circle"),
                 use_template=config.get("use_template", True),
+                theme=config.get("card_theme", "wolf"),
             )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
