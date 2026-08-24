@@ -21,12 +21,13 @@ database/migrations/003_roast_arena.sql):
      becomes that server's contestant (claim_roast_arena_accept is atomic, so
      the race resolves to exactly one).
 
-  3. accept → 'active': the battleground is resolved (a server's custom
-     channel set via /roastarena battleground, else a neutral owner/support
-     channel, else any sendable channel), a live vote panel is posted with two
-     persistent vote buttons, and battle_ends_at is stamped. Other opted-in
-     servers get an event-invite DM (buttons in _views_roast_arena_consent.py)
-     unless they've hit don't-ask-again / remind-me-later.
+  3. accept → 'active': the battleground is resolved (the single shared
+     battleground approved via /roastarena apply, else the owner/support
+     broadcast channel, else any sendable channel), a live vote panel is
+     posted with two persistent vote buttons, and battle_ends_at is stamped.
+     Other opted-in servers get an event-invite DM (buttons in
+     _views_roast_arena_consent.py) unless they've hit don't-ask-again /
+     remind-me-later.
 
   4. _poller (every POLL_INTERVAL_SECONDS) refreshes the countdown on every
      active panel and, once battle_ends_at passes, tallies the votes, marks
@@ -61,6 +62,11 @@ from discord_bot.cogs._views_roast_arena_consent import (
     build_consent_view,
     build_event_invite_embed,
     build_event_invite_view,
+)
+from discord_bot.cogs._views_roast_arena_host_wizard import (
+    build_apply_wizard_view,
+    build_review_embed,
+    build_review_view,
 )
 
 logger = logging.getLogger(__name__)
@@ -121,22 +127,29 @@ class RoastArenaCog(GuildOnlyCog):
     async def _resolve_battleground(
         self, challenge: dict, challenger_guild, challenged_guild
     ) -> "discord.TextChannel | None":
-        """Where the showdown is hosted: a server's custom battleground first,
-        then a neutral owner/support channel, then any sendable channel in
-        either server."""
-        clone_id = _clone_id_of(self.bot)
-        for gid in (challenge["challenged_guild_id"], challenge["challenger_guild_id"]):
-            cfg = await db.get_roast_arena_config(gid, clone_id)
-            ch_id = cfg.get("battleground_channel_id")
-            if ch_id:
-                ch = self.bot.get_channel(ch_id)
-                if isinstance(ch, discord.TextChannel) and ch.permissions_for(ch.guild.me).send_messages:
-                    return ch
+        """The arena has exactly ONE shared battleground at a time (see
+        discord_roast_arena_host / _views_roast_arena_host_wizard.py) — every
+        battle, regardless of which clone raised it, lands there. Falls back
+        to OWNER_BROADCAST_CHANNEL_ID if no host has been approved yet, then
+        to any sendable channel in either battling server as a last resort
+        so a battle never silently fails to post."""
+        host = await db.get_roast_arena_host()
+        host_channel_id = host.get("channel_id")
+        if host_channel_id:
+            ch = self.bot.get_channel(host_channel_id)
+            if isinstance(ch, discord.TextChannel) and ch.permissions_for(ch.guild.me).send_messages:
+                return ch
         if OWNER_BROADCAST_CHANNEL_ID:
             ch = self.bot.get_channel(OWNER_BROADCAST_CHANNEL_ID)
             if isinstance(ch, discord.TextChannel) and ch.permissions_for(ch.guild.me).send_messages:
                 return ch
         return self._sendable_channel(challenged_guild) or self._sendable_channel(challenger_guild)
+
+    async def get_arena_host(self) -> dict:
+        return await db.get_roast_arena_host()
+
+    async def get_pending_host_request(self, guild_id: int):
+        return await db.get_pending_roast_arena_host_request(guild_id)
 
     def _contestant_names(self, challenge: dict) -> "tuple[str, str]":
         challenger_guild = self.bot.get_guild(challenge["challenger_guild_id"])
@@ -250,10 +263,10 @@ class RoastArenaCog(GuildOnlyCog):
         await interaction.followup.send("✅ Roast battles are now **off** for this server.", ephemeral=True)
 
     @arena.command(
-        name="battleground",
-        description="Admin: use THIS channel as the neutral battleground for roast battles.",
+        name="apply",
+        description="Admin: apply for THIS channel to become the shared roast-arena battleground.",
     )
-    async def battleground(self, interaction: discord.Interaction):
+    async def apply(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         if not _is_admin_member(interaction.user):
             await interaction.followup.send("🚫 Admins only.", ephemeral=True)
@@ -261,16 +274,65 @@ class RoastArenaCog(GuildOnlyCog):
         if not isinstance(interaction.channel, discord.TextChannel):
             await interaction.followup.send("Run this in a normal text channel.", ephemeral=True)
             return
-        await db.upsert_roast_arena_config(
-            interaction.guild.id,
-            _clone_id_of(self.bot),
-            enabled=True,
-            consent_prompted=True,
-            battleground_channel_id=interaction.channel.id,
+        host = await self.get_arena_host()
+        pending = await self.get_pending_host_request(interaction.guild.id)
+        view = build_apply_wizard_view(
+            interaction.guild.id, interaction.user.id, interaction.channel.id, host, pending
         )
-        await interaction.followup.send(
-            f"✅ Roast battles hosted here will run in {interaction.channel.mention}.", ephemeral=True
+        await interaction.followup.send(view=view, ephemeral=True)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Apply-to-host wizard callbacks (see _views_roast_arena_host_wizard.py)
+    # ─────────────────────────────────────────────────────────────────────
+    async def on_host_apply(
+        self, interaction: discord.Interaction, guild_id: int, channel_id: int, applicant_id: int
+    ) -> None:
+        request = await db.create_roast_arena_host_request(guild_id, channel_id, applicant_id)
+        guild = self.bot.get_guild(guild_id)
+        guild_name = guild.name if guild else f"Guild {guild_id}"
+        channel_mention = f"<#{channel_id}>"
+        embed = build_review_embed(guild_name, channel_mention, interaction.user)
+        view = build_review_view(request["id"])
+        sent = 0
+        for owner_id in DISCORD_CLONE_ADMIN_IDS:
+            owner = self.bot.get_user(owner_id)
+            if owner is None:
+                continue
+            try:
+                await owner.send(embed=embed, view=view)
+                sent += 1
+            except discord.HTTPException:
+                logger.warning(f"[arena] host-apply DM failed owner={owner_id}")
+        logger.info(f"[arena] host application id={request['id']} guild={guild_id} notified={sent}")
+
+    async def on_host_review(self, interaction: discord.Interaction, request_id: int, *, approve: bool) -> None:
+        if interaction.user.id not in DISCORD_CLONE_ADMIN_IDS:
+            await interaction.response.send_message("🚫 Only the bot owner can review this.", ephemeral=True)
+            return
+        request = await db.get_roast_arena_host_request(request_id)
+        if not request or request["status"] != "pending":
+            await interaction.response.send_message("This application was already resolved.", ephemeral=True)
+            return
+        await db.resolve_roast_arena_host_request(
+            request_id, status="approved" if approve else "denied", reviewed_by_user_id=interaction.user.id
         )
+        if approve:
+            await db.set_roast_arena_host(request["guild_id"], request["channel_id"], interaction.user.id)
+        guild = self.bot.get_guild(request["guild_id"])
+        guild_name = guild.name if guild else f"Guild {request['guild_id']}"
+        verdict = "✅ Approved" if approve else "✋ Denied"
+        await interaction.response.edit_message(
+            content=f"{verdict} — **{guild_name}**'s application for <#{request['channel_id']}>.",
+            embed=None, view=None,
+        )
+        if approve and guild:
+            channel = self.bot.get_channel(request["channel_id"])
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    await channel.send("🏆 This channel is now the official roast arena battleground!")
+                except discord.HTTPException:
+                    pass
+        logger.info(f"[arena] host request={request_id} {'approved' if approve else 'denied'} by={interaction.user.id}")
 
     @arena.command(name="status", description="Show this server's roast-battle status.")
     async def status(self, interaction: discord.Interaction):
@@ -279,12 +341,13 @@ class RoastArenaCog(GuildOnlyCog):
         active = await db.get_active_roast_arena_challenge_for_guild(
             interaction.guild.id, _clone_id_of(self.bot)
         )
+        host = await self.get_arena_host()
         embed = discord.Embed(title="⚔️ Roast arena status", color=discord.Color.blurple())
         embed.add_field(name="Enabled", value="yes" if cfg.get("enabled") else "no", inline=True)
-        bg = cfg.get("battleground_channel_id")
+        bg = host.get("channel_id")
         embed.add_field(
-            name="Battleground",
-            value=(f"<#{bg}>" if bg else "neutral / support server"),
+            name="Shared battleground",
+            value=(f"<#{bg}>" if bg else "support server (default — no host approved yet)"),
             inline=True,
         )
         embed.add_field(
@@ -407,15 +470,18 @@ class RoastArenaCog(GuildOnlyCog):
 
         challenged_guild = self.bot.get_guild(challenge["challenged_guild_id"])
         challenger_guild = self.bot.get_guild(challenge["challenger_guild_id"])
-        cfg = await db.get_roast_arena_config(challenge["challenged_guild_id"], _clone_id_of(self.bot))
-        post_channel = self._sendable_channel(challenged_guild, cfg.get("battleground_channel_id"))
+        # Just needs any postable channel in the challenged server itself for
+        # the accept-button prompt — this is separate from the shared arena
+        # battleground (_resolve_battleground), which is where the actual
+        # battle panel ends up once someone accepts.
+        post_channel = self._sendable_channel(challenged_guild)
         if post_channel is None:
             await db.update_roast_arena_challenge(
                 challenge_id, status="expired", resolved_at=datetime.now(timezone.utc)
             )
             await interaction.edit_original_response(
                 content="Approved, but I couldn't find a channel here I can post in. "
-                "Set one with `/roastarena battleground` and try again.",
+                "Make sure I have permission to send messages in at least one text channel.",
                 embed=None, view=None,
             )
             return
@@ -494,8 +560,8 @@ class RoastArenaCog(GuildOnlyCog):
                 challenge_id, status="expired", resolved_at=datetime.now(timezone.utc)
             )
             await interaction.followup.send(
-                "You accepted, but I couldn't find a battleground channel. An admin should set one with "
-                "`/roastarena battleground`.",
+                "You accepted, but I couldn't find a battleground channel. The bot owner should approve a "
+                "battleground with `/roastarena apply`.",
                 ephemeral=True,
             )
             return
