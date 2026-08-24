@@ -3544,6 +3544,13 @@ class Database:
         if roast_arena_migration.exists():
             await conn.execute(roast_arena_migration.read_text())
 
+        # Roast arena — single shared battleground + apply-to-host flow,
+        # additive on top of 003 above (see
+        # discord_bot/cogs/_views_roast_arena_host_wizard.py).
+        roast_arena_host_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "004_roast_arena_host.sql"
+        if roast_arena_host_migration.exists():
+            await conn.execute(roast_arena_host_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -5751,6 +5758,98 @@ class Database:
                 challenged_guild_id, challenger_contestant_id, expires_at
             )
             return row["id"]
+
+    # --- Roast arena: single shared host + apply-to-host requests ----------
+    # See database/migrations/004_roast_arena_host.sql and
+    # discord_bot/cogs/_views_roast_arena_host_wizard.py.
+    async def get_roast_arena_host(self) -> Dict:
+        """Returns the singleton host row, or a dict with channel_id=None if
+        no host has been approved yet — callers can read .get("channel_id")
+        without a None check on the dict itself."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_roast_arena_host WHERE id = 1"
+            )
+        if row:
+            return dict(row)
+        return {"guild_id": None, "channel_id": None, "approved_by_user_id": None}
+
+    async def set_roast_arena_host(self, guild_id: int, channel_id: int, approved_by_user_id: int) -> None:
+        """Flips the singleton host to this guild/channel. Called only after
+        an owner/DISCORD_CLONE_ADMIN_IDS admin approves an application."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_roast_arena_host (id, guild_id, channel_id, approved_by_user_id, updated_at)
+                VALUES (1, $1, $2, $3, NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    guild_id = $1, channel_id = $2, approved_by_user_id = $3, updated_at = NOW()
+                """,
+                guild_id, channel_id, approved_by_user_id
+            )
+            # Only one host at a time: superseding every other still-pending
+            # application avoids a stale "pending" wizard card claiming an
+            # application is live once a different guild has already won.
+            await conn.execute(
+                """
+                UPDATE discord_roast_arena_host_requests
+                SET status = 'superseded', resolved_at = NOW()
+                WHERE status = 'pending' AND guild_id <> $1
+                """,
+                guild_id
+            )
+
+    async def create_roast_arena_host_request(self, guild_id: int, channel_id: int, applicant_user_id: int) -> Dict:
+        """Upserts a 'pending' application for this guild — re-applying (e.g.
+        clicking Apply again, or offering a different channel) refreshes the
+        existing pending row instead of stacking duplicates."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_roast_arena_host_requests
+                    (guild_id, channel_id, applicant_user_id, status)
+                VALUES ($1, $2, $3, 'pending')
+                ON CONFLICT (guild_id) WHERE status = 'pending' DO UPDATE SET
+                    channel_id = $2, applicant_user_id = $3, created_at = NOW()
+                RETURNING *
+                """,
+                guild_id, channel_id, applicant_user_id
+            )
+            return dict(row)
+
+    async def get_pending_roast_arena_host_request(self, guild_id: int) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_roast_arena_host_requests WHERE guild_id = $1 AND status = 'pending'",
+                guild_id
+            )
+            return dict(row) if row else None
+
+    async def get_roast_arena_host_request(self, request_id: int) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_roast_arena_host_requests WHERE id = $1", request_id
+            )
+            return dict(row) if row else None
+
+    async def resolve_roast_arena_host_request(
+        self, request_id: int, *, status: str, reviewed_by_user_id: int
+    ) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE discord_roast_arena_host_requests
+                SET status = $2, reviewed_by_user_id = $3, resolved_at = NOW()
+                WHERE id = $1
+                """,
+                request_id, status, reviewed_by_user_id
+            )
 
     async def get_roast_arena_challenge(self, challenge_id: int) -> Optional[Dict]:
         pool = await get_pool()
