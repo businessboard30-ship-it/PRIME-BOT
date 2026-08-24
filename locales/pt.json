@@ -1,0 +1,15 @@
+{
+  "lang_name": "Português",
+  "welcome_default": "👋 Oi {name}! Este bot faz 3 coisas: 🎬 descoberta de anime, 🛡️ gerenciamento de grupo, 🧰 utilitários.\n\nEscolha uma área abaixo, ou toque em ☰ para a lista completa de comandos.",
+  "welcome_clone": "👋 Oi {name}! Bem-vindo ao {clone_name}.{tagline}\n\nAnime, ferramentas de grupo e utilitários — escolha uma área abaixo.",
+  "quick_access": "Os botões de acesso rápido estão fixados abaixo 👇",
+  "main_menu_title": "🏠 Menu principal\n\nEscolha uma área:",
+  "choose_language": "🌐 Escolha seu idioma:",
+  "language_changed": "✅ Idioma definido para {lang_name}.",
+  "disclaimer_header": "⚠️ Leia antes de continuar:",
+  "download_prompt": "Envie um link (YouTube, etc.) e eu pego o áudio ou vídeo para você.",
+  "download_too_large": "Arquivo muito grande: ~{size}MB. Máximo permitido: 50MB.",
+  "download_error": "Não consegui processar esse link: {error}",
+  "error_generic": "Algo deu errado. Tente novamente em instantes.",
+  "powered_by": "Desenvolvido por"
+}
