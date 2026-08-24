@@ -40,6 +40,7 @@ callbacks route back here via get_cog("RoastArenaCog") to the on_* / handle_*
 methods below.
 """
 
+import json
 import logging
 import random
 from datetime import datetime, timedelta, timezone
@@ -401,10 +402,14 @@ class RoastArenaCog(GuildOnlyCog):
             )
             return
 
-        candidates = await db.list_optedin_roast_arena_guilds(clone_id, exclude_guild_id=guild.id)
-        # Only servers the bot can actually reach right now.
-        reachable = [c for c in candidates if self.bot.get_guild(c["guild_id"]) is not None]
-        if not reachable:
+        # Pooled across every clone + the main bot — the arena is one shared
+        # pool now, not siloed per-bot. Note this does NOT mean this process
+        # can reach every candidate directly (see the reachable/relay branch
+        # below): any_clone only widens which rows the query returns.
+        candidates = await db.list_optedin_roast_arena_guilds(
+            clone_id, exclude_guild_id=guild.id, any_clone=True
+        )
+        if not candidates:
             await interaction.followup.send(
                 "No other server is opted into roast battles yet. Invite a rival server and have them run "
                 "`/roastarena enable` — then challenge again!",
@@ -412,45 +417,69 @@ class RoastArenaCog(GuildOnlyCog):
             )
             return
 
-        target = random.choice(reachable)
-        challenged_guild = self.bot.get_guild(target["guild_id"])
+        target = random.choice(candidates)
+        target_guild_id = target["guild_id"]
+        challenged_guild = self.bot.get_guild(target_guild_id)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=APPROVAL_EXPIRY_MINUTES)
         challenge_id = await db.create_roast_arena_challenge(
             clone_id=clone_id,
             challenger_guild_id=guild.id,
             challenger_user_id=interaction.user.id,
-            challenged_guild_id=challenged_guild.id,
+            challenged_guild_id=target_guild_id,
             challenger_contestant_id=interaction.user.id,
             expires_at=expires_at,
         )
+        challenged_name = challenged_guild.name if challenged_guild else "the other server"
 
-        embed = discord.Embed(
-            title="⚔️ Your server has been challenged to a roast battle!",
-            description=(
-                f"**{guild.name}** wants to roast **{challenged_guild.name}**.\n\n"
-                f"Their roaster: **{interaction.user.display_name}**.\n\n"
-                "Approve to let your members pick a roaster and fight back — decline and nothing happens."
-            ),
-            color=discord.Color.red(),
-        )
-        embed.set_footer(text=f"Challenge #{challenge_id} · expires in {APPROVAL_EXPIRY_MINUTES} min if no admin responds")
-        sent = await self._dm_admins(
-            challenged_guild, embed=embed, view=build_approval_view(challenge_id)
-        )
-        if sent == 0:
-            await db.update_roast_arena_challenge(challenge_id, status="expired", resolved_at=datetime.now(timezone.utc))
-            await interaction.followup.send(
-                f"Couldn't reach any admin of **{challenged_guild.name}** (their DMs are closed). Try again later.",
-                ephemeral=True,
+        if challenged_guild is not None:
+            # Same-process match (same bot/clone on both sides) — DM the
+            # admins directly, exactly as before.
+            embed = discord.Embed(
+                title="⚔️ Your server has been challenged to a roast battle!",
+                description=(
+                    f"**{guild.name}** wants to roast **{challenged_guild.name}**.\n\n"
+                    f"Their roaster: **{interaction.user.display_name}**.\n\n"
+                    "Approve to let your members pick a roaster and fight back — decline and nothing happens."
+                ),
+                color=discord.Color.red(),
             )
-            return
+            embed.set_footer(text=f"Challenge #{challenge_id} · expires in {APPROVAL_EXPIRY_MINUTES} min if no admin responds")
+            sent = await self._dm_admins(
+                challenged_guild, embed=embed, view=build_approval_view(challenge_id)
+            )
+            if sent == 0:
+                await db.update_roast_arena_challenge(challenge_id, status="expired", resolved_at=datetime.now(timezone.utc))
+                await interaction.followup.send(
+                    f"Couldn't reach any admin of **{challenged_name}** (their DMs are closed). Try again later.",
+                    ephemeral=True,
+                )
+                return
+            logger.info(
+                f"[arena] challenge={challenge_id} {guild.id} -> {target_guild_id} "
+                f"by user={interaction.user.id}, DMed {sent} admins (same-process)"
+            )
+        else:
+            # Cross-clone match: this process has no gateway connection to
+            # target_guild_id, so it can't fetch its members to DM. Hand the
+            # job to whichever process DOES hold that guild via the outbox —
+            # every process's _poller drains it on its next tick.
+            await db.enqueue_roast_arena_action(
+                target_guild_id,
+                "dm_challenge_approval",
+                {
+                    "challenge_id": challenge_id,
+                    "challenger_guild_name": guild.name,
+                    "challenger_display_name": interaction.user.display_name,
+                    "approval_expiry_minutes": APPROVAL_EXPIRY_MINUTES,
+                },
+            )
+            logger.info(
+                f"[arena] challenge={challenge_id} {guild.id} -> {target_guild_id} "
+                f"by user={interaction.user.id}, relayed via outbox (cross-clone)"
+            )
 
-        logger.info(
-            f"[arena] challenge={challenge_id} {guild.id} -> {challenged_guild.id} "
-            f"by user={interaction.user.id}, DMed {sent} admins"
-        )
         await interaction.followup.send(
-            f"🔥 Challenge sent to **{challenged_guild.name}**! You're your server's roaster. "
+            f"🔥 Challenge sent to **{challenged_name}**! You're your server's roaster. "
             "You'll be notified here once an admin over there approves.",
             ephemeral=True,
         )
@@ -525,16 +554,25 @@ class RoastArenaCog(GuildOnlyCog):
         await interaction.edit_original_response(
             content="✋ Declined — nothing was posted in your server.", embed=None, view=None
         )
-        # Let the challenger's server know quietly.
+        # Let the challenger's server know quietly. If the challenger's guild
+        # is on a different clone/process than the one handling this decline
+        # (cross-clone match), relay it through the outbox instead.
         challenger_guild = self.bot.get_guild(challenge["challenger_guild_id"])
-        challenger = challenger_guild.get_member(challenge["challenger_user_id"]) if challenger_guild else None
-        if challenger:
-            try:
-                await challenger.send(
-                    "Your roast challenge was politely declined by the other server. Try challenging again later!"
-                )
-            except discord.HTTPException:
-                pass
+        if challenger_guild:
+            challenger = challenger_guild.get_member(challenge["challenger_user_id"])
+            if challenger:
+                try:
+                    await challenger.send(
+                        "Your roast challenge was politely declined by the other server. Try challenging again later!"
+                    )
+                except discord.HTTPException:
+                    pass
+        else:
+            await db.enqueue_roast_arena_action(
+                challenge["challenger_guild_id"],
+                "notify_decline",
+                {"challenger_user_id": challenge["challenger_user_id"]},
+            )
         logger.info(f"[arena] challenge={challenge_id} declined")
 
     async def on_member_accept(self, interaction: discord.Interaction, challenge_id: int):
@@ -626,7 +664,12 @@ class RoastArenaCog(GuildOnlyCog):
         challenger_guild = self.bot.get_guild(challenge["challenger_guild_id"])
         challenger_name = _side_name(challenger_guild, "A server")
         now = datetime.now(timezone.utc)
-        others = await db.list_optedin_roast_arena_guilds(clone_id, exclude_guild_id=None)
+        # Pooled across every clone + the main bot, same as the challenge
+        # picker — any opted-in server anywhere in the shared arena should
+        # hear about a live battle, not just ones on this bot instance.
+        others = await db.list_optedin_roast_arena_guilds(
+            clone_id, exclude_guild_id=None, any_clone=True
+        )
         battling = {challenge["challenger_guild_id"], challenge["challenged_guild_id"]}
         for cfg in others:
             gid = cfg["guild_id"]
@@ -636,13 +679,20 @@ class RoastArenaCog(GuildOnlyCog):
             if remind_after and remind_after > now:
                 continue
             guild = self.bot.get_guild(gid)
-            if guild is None:
-                continue
-            await self._dm_admins(
-                guild,
-                embed=build_event_invite_embed(challenger_name),
-                view=build_event_invite_view(challenge["id"], gid),
-            )
+            if guild is not None:
+                await self._dm_admins(
+                    guild,
+                    embed=build_event_invite_embed(challenger_name),
+                    view=build_event_invite_view(challenge["id"], gid),
+                )
+            else:
+                # This process doesn't hold gid's gateway connection — relay
+                # the invite through the outbox for whichever process does.
+                await db.enqueue_roast_arena_action(
+                    gid,
+                    "event_invite",
+                    {"challenge_id": challenge["id"], "challenger_name": challenger_name},
+                )
 
     # ─────────────────────────────────────────────────────────────────────
     # Poller — countdown refresh, resolution, and expiry
@@ -670,8 +720,98 @@ class RoastArenaCog(GuildOnlyCog):
                     await self._resolve_battle(challenge)
                 else:
                     await self._edit_panel(challenge)
+
+            # 3. Drain any cross-clone outbox actions targeting a guild this
+            # process actually has cached, and clean up orphaned rows.
+            await self._drain_arena_actions()
+            await db.expire_stale_roast_arena_actions()
         except Exception:
             logger.exception("[arena] poller tick failed")
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Cross-clone outbox relay
+    # ─────────────────────────────────────────────────────────────────────
+    async def _drain_arena_actions(self):
+        """Claims and executes any pending discord_roast_arena_outbox row
+        targeting a guild THIS process currently has in self.bot.guilds.
+        Every clone process (and the main bot) runs this same poller tick, so
+        whichever process actually holds the target guild's gateway
+        connection is the one that ends up executing a given row — see
+        database/migrations/005_roast_arena_outbox.sql."""
+        reachable_ids = [g.id for g in self.bot.guilds]
+        if not reachable_ids:
+            return
+        actions = await db.claim_roast_arena_actions(reachable_ids)
+        for action in actions:
+            try:
+                await self._execute_arena_action(action)
+            except Exception:
+                logger.exception(f"[arena] outbox action={action['id']} type={action['action_type']} failed")
+                await db.complete_roast_arena_action(action["id"], success=False, result={"error": "exception"})
+
+    async def _execute_arena_action(self, action: dict):
+        action_type = action["action_type"]
+        payload = action.get("payload") or {}
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        guild = self.bot.get_guild(action["target_guild_id"])
+        if guild is None:
+            # Lost the guild between claim and execute (e.g. kicked) — let it
+            # fail rather than silently dropping it.
+            await db.complete_roast_arena_action(action["id"], success=False, result={"error": "guild_unreachable"})
+            return
+
+        if action_type == "dm_challenge_approval":
+            challenge_id = payload["challenge_id"]
+            challenge = await db.get_roast_arena_challenge(challenge_id)
+            if not challenge or challenge["status"] != "pending_approval":
+                await db.complete_roast_arena_action(action["id"], success=False, result={"error": "challenge_gone"})
+                return
+            embed = discord.Embed(
+                title="⚔️ Your server has been challenged to a roast battle!",
+                description=(
+                    f"**{payload.get('challenger_guild_name', 'A server')}** wants to roast **{guild.name}**.\n\n"
+                    f"Their roaster: **{payload.get('challenger_display_name', 'someone')}**.\n\n"
+                    "Approve to let your members pick a roaster and fight back — decline and nothing happens."
+                ),
+                color=discord.Color.red(),
+            )
+            expiry = payload.get("approval_expiry_minutes", APPROVAL_EXPIRY_MINUTES)
+            embed.set_footer(text=f"Challenge #{challenge_id} · expires in {expiry} min if no admin responds")
+            sent = await self._dm_admins(guild, embed=embed, view=build_approval_view(challenge_id))
+            if sent == 0:
+                await db.update_roast_arena_challenge(
+                    challenge_id, status="expired", resolved_at=datetime.now(timezone.utc)
+                )
+            logger.info(f"[arena] challenge={challenge_id} relayed dm_challenge_approval DMed={sent}")
+            await db.complete_roast_arena_action(action["id"], success=True, result={"admins_dmed": sent})
+
+        elif action_type == "notify_decline":
+            member = guild.get_member(payload.get("challenger_user_id"))
+            sent = False
+            if member:
+                try:
+                    await member.send(
+                        "Your roast challenge was politely declined by the other server. Try challenging again later!"
+                    )
+                    sent = True
+                except discord.HTTPException:
+                    pass
+            await db.complete_roast_arena_action(action["id"], success=sent, result={"notified": sent})
+
+        elif action_type == "event_invite":
+            challenge_id = payload.get("challenge_id")
+            challenger_name = payload.get("challenger_name", "A server")
+            sent = await self._dm_admins(
+                guild,
+                embed=build_event_invite_embed(challenger_name),
+                view=build_event_invite_view(challenge_id, guild.id),
+            )
+            await db.complete_roast_arena_action(action["id"], success=sent > 0, result={"admins_dmed": sent})
+
+        else:
+            logger.warning(f"[arena] unknown outbox action_type={action_type} id={action['id']}")
+            await db.complete_roast_arena_action(action["id"], success=False, result={"error": "unknown_action_type"})
 
     async def _resolve_battle(self, challenge: dict):
         challenge_id = challenge["id"]
