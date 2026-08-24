@@ -3551,6 +3551,15 @@ class Database:
         if roast_arena_host_migration.exists():
             await conn.execute(roast_arena_host_migration.read_text())
 
+        # Roast arena — cross-clone outbox relay, additive on top of 003/004
+        # above (see discord_bot/cogs/roast_arena.py _drain_arena_actions).
+        # Lets a challenge/decline/event-invite action be executed by
+        # whichever clone process actually holds the target guild, instead of
+        # requiring the acting process to have that guild in its own cache.
+        roast_arena_outbox_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "005_roast_arena_outbox.sql"
+        if roast_arena_outbox_migration.exists():
+            await conn.execute(roast_arena_outbox_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -5723,20 +5732,131 @@ class Database:
             )
 
     async def list_optedin_roast_arena_guilds(
-        self, clone_id: Optional[int] = None, exclude_guild_id: Optional[int] = None
+        self, clone_id: Optional[int] = None, exclude_guild_id: Optional[int] = None,
+        any_clone: bool = False,
     ) -> List[Dict]:
-        """Every guild that has enabled=TRUE for this clone, optionally
-        excluding one (the challenger's own server). Used both by the random
-        target picker and by the event-invite broadcast."""
+        """Every guild that has enabled=TRUE, optionally excluding one (the
+        challenger's own server). Used both by the random target picker and
+        by the event-invite broadcast.
+
+        any_clone=True pools across every clone + the main bot (the shared
+        arena) instead of just this process's own clone_id. Matching a guild
+        this way doesn't mean this process can act on it directly — see
+        enqueue_roast_arena_action / _drain_arena_actions in
+        discord_bot/cogs/roast_arena.py for how a cross-clone match actually
+        gets executed by whichever process holds that guild's gateway
+        connection."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if any_clone:
+                rows = await conn.fetch(
+                    "SELECT * FROM discord_roast_arena_config "
+                    "WHERE enabled = TRUE "
+                    "AND ($1::BIGINT IS NULL OR guild_id <> $1)",
+                    exclude_guild_id
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT * FROM discord_roast_arena_config "
+                    "WHERE enabled = TRUE AND clone_id IS NOT DISTINCT FROM $1 "
+                    "AND ($2::BIGINT IS NULL OR guild_id <> $2)",
+                    clone_id, exclude_guild_id
+                )
+            return [dict(r) for r in rows]
+
+    # --- Roast arena: cross-clone outbox relay ------------------------------
+    # See database/migrations/005_roast_arena_outbox.sql and
+    # discord_bot/cogs/roast_arena.py _drain_arena_actions. Each clone (and
+    # the main bot) is its own Discord gateway process with its own in-memory
+    # guild cache, so self.bot.get_guild(...) only ever resolves a guild THIS
+    # process is connected to. When any_clone pooling above matches a
+    # challenger with a guild living on a different process, that other
+    # process is the only one that can actually DM its admins / post in it —
+    # these functions are the relay that hands the job off.
+    async def enqueue_roast_arena_action(
+        self, target_guild_id: int, action_type: str, payload: dict
+    ) -> int:
+        """Writes a pending job for whichever process has target_guild_id in
+        its own guild cache to pick up and execute. payload is a snapshot of
+        whatever that action needs (challenge id, display names, etc.) taken
+        at enqueue time, so the executing process never has to re-derive
+        state the enqueuing process already had in hand."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_roast_arena_outbox (target_guild_id, action_type, payload)
+                VALUES ($1, $2, $3::jsonb)
+                RETURNING id
+                """,
+                target_guild_id, action_type, json.dumps(payload)
+            )
+            return row["id"]
+
+    async def claim_roast_arena_actions(
+        self, reachable_guild_ids: List[int], limit: int = 25
+    ) -> List[Dict]:
+        """Atomically claims up to `limit` still-pending rows targeting any
+        guild in reachable_guild_ids (i.e. guilds THIS process currently has
+        cached), flipping them to 'claimed'. FOR UPDATE SKIP LOCKED means two
+        processes ticking their pollers at the same moment can never both
+        claim — and therefore never both execute — the same row."""
+        if not reachable_guild_ids:
+            return []
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM discord_roast_arena_config "
-                "WHERE enabled = TRUE AND clone_id IS NOT DISTINCT FROM $1 "
-                "AND ($2::BIGINT IS NULL OR guild_id <> $2)",
-                clone_id, exclude_guild_id
+                """
+                UPDATE discord_roast_arena_outbox
+                SET status = 'claimed'
+                WHERE id IN (
+                    SELECT id FROM discord_roast_arena_outbox
+                    WHERE status = 'pending' AND target_guild_id = ANY($1::bigint[])
+                      AND expires_at > NOW()
+                    ORDER BY id
+                    LIMIT $2
+                    FOR UPDATE SKIP LOCKED
+                )
+                RETURNING *
+                """,
+                reachable_guild_ids, limit
             )
             return [dict(r) for r in rows]
+
+    async def complete_roast_arena_action(
+        self, action_id: int, *, success: bool, result: Optional[dict] = None
+    ) -> None:
+        """Marks a claimed row as its final 'completed' or 'failed' state,
+        stamping whatever result info the caller wants preserved (e.g. how
+        many admins got DMed)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE discord_roast_arena_outbox
+                SET status = $2, result = $3::jsonb, completed_at = NOW()
+                WHERE id = $1
+                """,
+                action_id, "completed" if success else "failed", json.dumps(result or {})
+            )
+
+    async def expire_stale_roast_arena_actions(self) -> int:
+        """Marks any still-'pending' row past its expiry as 'failed' — an
+        orphaned job (the bot got kicked from target_guild_id, or that clone
+        was deactivated, so no process will EVER have it cached) would
+        otherwise sit pending and get re-checked by every poller tick
+        forever. Returns how many rows were expired, for logging."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                UPDATE discord_roast_arena_outbox
+                SET status = 'failed', completed_at = NOW()
+                WHERE status = 'pending' AND expires_at <= NOW()
+                RETURNING id
+                """
+            )
+            return len(rows)
 
     async def create_roast_arena_challenge(
         self, *, clone_id: Optional[int], challenger_guild_id: int,
