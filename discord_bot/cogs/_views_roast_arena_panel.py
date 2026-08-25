@@ -1,3 +1,5 @@
+# FULL PATH: PRIME-BOT-main/discord_bot/cogs/_views_roast_arena_panel.py
+
 # path: discord_bot/cogs/_views_roast_arena_panel.py
 
 """
@@ -95,6 +97,7 @@ class RoastArenaPanelView(discord.ui.LayoutView):
         challenger_guild: "discord.Guild | None" = None,
         challenged_guild: "discord.Guild | None" = None,
         ended: bool = False,
+        battleground_url: "str | None" = None,
     ):
         super().__init__(timeout=None)
 
@@ -143,6 +146,18 @@ class RoastArenaPanelView(discord.ui.LayoutView):
                 DynamicArenaVoteChallengedButton(challenge_id, challenged_name),
             ))
 
+        # Mirrored copies (see roast_arena.py on_member_accept) carry a link
+        # back to the main shared battleground so anyone who *can* see it
+        # (staff, the hosting community) can jump straight there. Voting
+        # itself works fine from any copy — the buttons above are keyed by
+        # challenge_id, not by which message/channel they're posted in — this
+        # is purely a convenience link, so it's fine if the clicking user
+        # doesn't actually have access to that guild.
+        if battleground_url:
+            container.add_item(discord.ui.ActionRow(
+                discord.ui.Button(label="🔗 View main battlefield", url=battleground_url, style=discord.ButtonStyle.link)
+            ))
+
         self.add_item(container)
 
 
@@ -157,6 +172,7 @@ def build_battle_panel(
     challenger_guild: "discord.Guild | None" = None,
     challenged_guild: "discord.Guild | None" = None,
     ended: bool = False,
+    battleground_url: "str | None" = None,
 ) -> RoastArenaPanelView:
     return RoastArenaPanelView(
         challenge,
@@ -168,4 +184,5 @@ def build_battle_panel(
         challenger_guild=challenger_guild,
         challenged_guild=challenged_guild,
         ended=ended,
+        battleground_url=battleground_url,
     )
