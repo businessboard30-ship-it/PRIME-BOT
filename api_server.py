@@ -1,3 +1,5 @@
+# FULL PATH: PRIME-BOT-main/api_server.py
+
 """
 Standalone dashboard/webhook/cron server for Railway.
 
@@ -18,12 +20,61 @@ Railway sets $PORT automatically; do not hardcode a port.
 import os
 import importlib
 import logging
+import threading
+import asyncio
 import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("api_server")
+
+# ── Shared event loop (fixes the EMAXCONN connection-pool leak) ────────────
+# Every api/*.py handler was written as a standalone Vercel-style serverless
+# function that calls `asyncio.run(...)` once per invocation. That's fine on
+# Vercel (one process per invocation, torn down entirely afterward) but this
+# script serves requests with a ThreadingHTTPServer instead — a persistent
+# process handling MANY requests over its lifetime. asyncio.run() creates a
+# brand-new event loop and destroys it at the end of every single request.
+#
+# database.get_pool() caches its asyncpg connection pool as a module-level
+# singleton keyed to "the currently running loop" (see its docstring) —
+# reusing a pool from a closed loop is unsafe, since asyncpg's connections
+# are physically bound to the loop they were opened on. So on every request
+# whose loop differs from the pool's loop, get_pool() drops the old pool
+# reference and opens a fresh one. But asyncio.run() has already destroyed
+# that old loop by the time the NEXT request notices it's stale, so there's
+# no safe way to gracefully close those old connections at that point — they
+# were simply abandoned. Under a ThreadingHTTPServer taking one request after
+# another (cron hits, webhooks, dashboard calls), this leaked a few
+# server-side Postgres connections per request until the database's
+# connection cap was hit, at which point EVERY route started 500ing with
+# "(EMAXCONN) max client connections reached" — exactly what took down
+# /api/cron_discord_owner_broadcast and /api/cron_discord_announcements.
+#
+# The real fix: give this whole process ONE persistent event loop, exactly
+# like the always-on bot process (discord_bot/bot.py) already has, so
+# get_pool()'s singleton is actually reused across requests instead of
+# recreated (and leaked) every time. We do this by monkeypatching
+# asyncio.run at import time — every api/*.py handler's internal
+# `asyncio.run(...)` call transparently becomes "run this coroutine on our
+# one shared loop and block until it's done" instead of "spin up and tear
+# down a whole new loop". No changes needed to any individual handler file.
+_shared_loop = asyncio.new_event_loop()
+_shared_loop_thread = threading.Thread(
+    target=_shared_loop.run_forever, name="api-server-loop", daemon=True
+)
+_shared_loop_thread.start()
+
+
+def _run_on_shared_loop(coro, *, debug=None):
+    """Drop-in replacement for asyncio.run(), submitting to the one
+    persistent loop above instead of creating/destroying a new one."""
+    future = asyncio.run_coroutine_threadsafe(coro, _shared_loop)
+    return future.result()
+
+
+asyncio.run = _run_on_shared_loop
 
 # URL path -> module under api/ that defines `class handler` (Vercel
 # serverless convention). Use "module:ClassName" instead of a bare module
