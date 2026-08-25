@@ -1,4 +1,4 @@
-# FULL PATH: PRIME-BOT-main/database/migrations/005_roast_arena_outbox.sql
+-- FULL PATH: PRIME-BOT-main/database/migrations/005_roast_arena_outbox.sql
 
 -- path: database/migrations/005_roast_arena_outbox.sql
 --
