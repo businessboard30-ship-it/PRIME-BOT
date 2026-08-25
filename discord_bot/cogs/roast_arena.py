@@ -1,3 +1,5 @@
+# FULL PATH: PRIME-BOT-main/discord_bot/cogs/roast_arena.py
+
 # path: discord_bot/cogs/roast_arena.py
 
 """
@@ -114,16 +116,38 @@ class RoastArenaCog(GuildOnlyCog):
     def _sendable_channel(
         self, guild: "discord.Guild | None", prefer_channel_id: "int | None" = None
     ) -> "discord.TextChannel | None":
+        """Picks a channel to post in. If prefer_channel_id is given (the
+        guild's own configured battleground_channel_id — see
+        discord_roast_arena_config — or a challenge's already-resolved
+        location) and the bot can still post there, use it outright, even if
+        @everyone can't see it — an admin explicitly chose that channel.
+
+        Otherwise, pick the first channel that's actually visible to regular
+        members (@everyone has view_channel + send_messages), not just the
+        first one the bot happens to have send permission in — a staff-only
+        mod-log channel is often the alphabetically-first channel the bot can
+        post in, which is exactly the "posted where members aren't allowed"
+        bug. Falls back to any bot-postable channel only if literally nothing
+        is member-visible, so a battle never silently fails to post."""
         if guild is None:
             return None
         if prefer_channel_id:
             ch = guild.get_channel(prefer_channel_id)
             if isinstance(ch, discord.TextChannel) and ch.permissions_for(guild.me).send_messages:
                 return ch
+        everyone = guild.default_role
+        bot_postable = []
         for c in guild.text_channels:
-            if c.permissions_for(guild.me).send_messages:
+            if not c.permissions_for(guild.me).send_messages:
+                continue
+            bot_postable.append(c)
+            # overwrites_for the @everyone role catches explicit denies
+            # (private/staff-only channels); anything not explicitly denied
+            # is treated as member-visible.
+            everyone_overwrite = c.overwrites_for(everyone)
+            if everyone_overwrite.view_channel is not False and everyone_overwrite.send_messages is not False:
                 return c
-        return None
+        return bot_postable[0] if bot_postable else None
 
     async def _resolve_battleground(
         self, challenge: dict, challenger_guild, challenged_guild
@@ -160,7 +184,7 @@ class RoastArenaCog(GuildOnlyCog):
             _side_name(challenged_guild, "Challenged"),
         )
 
-    def _build_panel(self, challenge: dict, counts: dict, *, ended: bool = False):
+    def _build_panel(self, challenge: dict, counts: dict, *, ended: bool = False, battleground_url: "str | None" = None):
         """Builds the Components V2 vs-card + vote/timer panel (see
         _views_roast_arena_panel.py). Resolves both contestants' Member
         objects here (for their avatars) — either can be None (contestant
@@ -190,30 +214,112 @@ class RoastArenaCog(GuildOnlyCog):
             challenger_guild=challenger_guild,
             challenged_guild=challenged_guild,
             ended=ended,
+            battleground_url=battleground_url,
         )
 
+    def _everyone_prefix(self, channel: "discord.TextChannel | None") -> str:
+        """Returns '@everyone ' if the bot actually has permission to ping
+        everyone in this channel (Mention Everyone permission, respected by
+        Discord regardless of what's in AllowedMentions), else ''. Callers
+        pass discord.AllowedMentions(everyone=True) alongside this so the
+        ping isn't silently swallowed by the bot's default mention settings."""
+        if channel is None:
+            return ""
+        try:
+            if channel.permissions_for(channel.guild.me).mention_everyone:
+                return "@everyone "
+        except AttributeError:
+            pass
+        return ""
+
+    async def _post_mirror_panel(
+        self, challenge: dict, side: str, guild: "discord.Guild | None",
+        counts: dict, battleground_url: "str | None",
+    ) -> "tuple[int, int] | None":
+        """Posts a copy of the live panel into `guild` (the challenger's or
+        challenged side's own server) so members there don't need access to
+        the shared battleground guild to watch the countdown or vote — the
+        vote buttons are keyed by challenge_id, so a vote cast here counts
+        the same as one cast on the battleground copy. Returns
+        (channel_id, message_id) on success, or None if there's nowhere to
+        post or the guild isn't cached in this process (e.g. cross-clone —
+        the outbox pattern used for challenge delivery isn't needed here
+        since a missing mirror just means fewer places to vote from, not a
+        broken flow)."""
+        if guild is None:
+            return None
+        cfg = await db.get_roast_arena_config(guild.id, challenge.get("clone_id"))
+        channel = self._sendable_channel(guild, prefer_channel_id=(cfg or {}).get("battleground_channel_id"))
+        if channel is None:
+            return None
+        # Don't double-post if this side's own channel IS the battleground.
+        if channel.id == challenge.get("battleground_channel_id"):
+            return None
+        panel_view = self._build_panel(challenge, counts, battleground_url=battleground_url)
+        ping = self._everyone_prefix(channel)
+        if ping:
+            # Components V2 (LayoutView) messages can't carry `content`
+            # alongside their components, so the ping has to be its own
+            # message right before the panel rather than a prefix on it.
+            try:
+                await channel.send(ping, allowed_mentions=discord.AllowedMentions(everyone=True))
+            except discord.HTTPException:
+                pass
+        try:
+            message = await channel.send(view=panel_view)
+        except discord.HTTPException:
+            logger.warning(f"[arena] failed to post {side} mirror panel challenge={challenge['id']} guild={guild.id}")
+            return None
+        return channel.id, message.id
+
     async def _edit_panel(self, challenge: dict, *, ended: bool = False):
+        """Edits every live copy of the panel — the shared battleground AND
+        both mirrored copies in the contesting guilds (see
+        _post_mirror_panel) — so the countdown/vote counts stay in sync
+        everywhere the panel was posted, not just the battleground."""
+        counts = await db.count_roast_arena_votes(challenge["id"])
+        locations = [
+            (challenge.get("battleground_channel_id"), challenge.get("panel_message_id"), None),
+            (
+                challenge.get("challenger_panel_channel_id"), challenge.get("challenger_panel_message_id"),
+                self._battleground_url(challenge),
+            ),
+            (
+                challenge.get("challenged_panel_channel_id"), challenge.get("challenged_panel_message_id"),
+                self._battleground_url(challenge),
+            ),
+        ]
+        any_edited = False
+        for channel_id, message_id, battleground_url in locations:
+            if not channel_id or not message_id:
+                continue
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                continue
+            try:
+                message = await channel.fetch_message(message_id)
+            except discord.HTTPException:
+                continue
+            panel = self._build_panel(challenge, counts, ended=ended, battleground_url=battleground_url)
+            # Components V2 messages can't carry an embed alongside their
+            # components — pass embed=None explicitly, and rebuild the whole
+            # LayoutView every tick since there's no in-place field edit like
+            # the old embed.set_field_at path had.
+            try:
+                await message.edit(embed=None, view=panel)
+                any_edited = True
+            except discord.HTTPException:
+                logger.warning(f"[arena] failed to edit panel challenge={challenge['id']} channel={channel_id}")
+        if not any_edited:
+            logger.warning(f"[arena] no panel copies reachable to edit for challenge={challenge['id']}")
+
+    def _battleground_url(self, challenge: dict) -> "str | None":
         channel_id = challenge.get("battleground_channel_id")
         message_id = challenge.get("panel_message_id")
-        if not channel_id or not message_id:
-            return
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            return
-        try:
-            message = await channel.fetch_message(message_id)
-        except discord.HTTPException:
-            return
-        counts = await db.count_roast_arena_votes(challenge["id"])
-        panel = self._build_panel(challenge, counts, ended=ended)
-        # Components V2 messages can't carry an embed alongside their
-        # components — pass embed=None explicitly, and rebuild the whole
-        # LayoutView every tick since there's no in-place field edit like
-        # the old embed.set_field_at path had.
-        try:
-            await message.edit(embed=None, view=panel)
-        except discord.HTTPException:
-            logger.warning(f"[arena] failed to edit panel challenge={challenge['id']}")
+        guild_id = challenge.get("battleground_guild_id")
+        if not (channel_id and message_id and guild_id):
+            return None
+        return f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
 
     async def _dm_admins(self, guild: discord.Guild, *, embed: discord.Embed, view: discord.ui.View) -> int:
         admins = [m for m in guild.members if not m.bot and _is_admin_member(m)]
@@ -502,8 +608,12 @@ class RoastArenaCog(GuildOnlyCog):
         # Just needs any postable channel in the challenged server itself for
         # the accept-button prompt — this is separate from the shared arena
         # battleground (_resolve_battleground), which is where the actual
-        # battle panel ends up once someone accepts.
-        post_channel = self._sendable_channel(challenged_guild)
+        # battle panel ends up once someone accepts. Honor the server's own
+        # configured battleground channel if it set one via /roastarena apply.
+        challenged_cfg = await db.get_roast_arena_config(challenge["challenged_guild_id"], challenge.get("clone_id"))
+        post_channel = self._sendable_channel(
+            challenged_guild, prefer_channel_id=(challenged_cfg or {}).get("battleground_channel_id")
+        )
         if post_channel is None:
             await db.update_roast_arena_challenge(
                 challenge_id, status="expired", resolved_at=datetime.now(timezone.utc)
@@ -526,7 +636,11 @@ class RoastArenaCog(GuildOnlyCog):
             color=discord.Color.red(),
         )
         try:
-            await post_channel.send(embed=embed, view=build_accept_view(challenge_id))
+            await post_channel.send(
+                self._everyone_prefix(post_channel) or None,
+                embed=embed, view=build_accept_view(challenge_id),
+                allowed_mentions=discord.AllowedMentions(everyone=True),
+            )
         except discord.HTTPException:
             await interaction.edit_original_response(
                 content="Approved, but posting the accept button failed — check my permissions in that channel.",
@@ -609,6 +723,12 @@ class RoastArenaCog(GuildOnlyCog):
         # Stamp battleground so the panel's countdown renders before we persist.
         challenge["battle_ends_at"] = battle_ends_at
         panel_view = self._build_panel(challenge, counts)
+        ping = self._everyone_prefix(battleground)
+        if ping:
+            try:
+                await battleground.send(ping, allowed_mentions=discord.AllowedMentions(everyone=True))
+            except discord.HTTPException:
+                pass
         try:
             panel = await battleground.send(view=panel_view)
         except discord.HTTPException:
@@ -618,14 +738,40 @@ class RoastArenaCog(GuildOnlyCog):
             await interaction.followup.send("Couldn't post the battle panel — check my channel permissions.", ephemeral=True)
             return
 
-        await db.update_roast_arena_challenge(
-            challenge_id,
+        challenge["battleground_guild_id"] = battleground.guild.id
+        challenge["battleground_channel_id"] = battleground.id
+        challenge["panel_message_id"] = panel.id
+        battleground_url = self._battleground_url(challenge)
+
+        # Mirror the same live panel into BOTH contesting guilds — the
+        # shared battleground alone is only visible to whichever guild hosts
+        # it, so without this, members of the other server have no way to
+        # watch the countdown or vote at all. Voting from a mirror counts
+        # identically to voting on the battleground copy (same challenge_id).
+        challenger_mirror = await self._post_mirror_panel(
+            challenge, "challenger", challenger_guild, counts, battleground_url
+        )
+        challenged_mirror = await self._post_mirror_panel(
+            challenge, "challenged", challenged_guild, counts, battleground_url
+        )
+
+        update_fields = dict(
             battleground_guild_id=battleground.guild.id,
             battleground_channel_id=battleground.id,
             panel_message_id=panel.id,
         )
+        if challenger_mirror:
+            update_fields["challenger_panel_channel_id"], update_fields["challenger_panel_message_id"] = challenger_mirror
+        if challenged_mirror:
+            update_fields["challenged_panel_channel_id"], update_fields["challenged_panel_message_id"] = challenged_mirror
+        await db.update_roast_arena_challenge(challenge_id, **update_fields)
+
+        mirror_note = ""
+        if not challenger_mirror and not challenged_mirror:
+            mirror_note = " (couldn't find a member-visible channel to also post it in either server — check my channel permissions)"
         await interaction.followup.send(
-            f"🔥 You're **{challenged_name}**'s roaster! The battle is live in {battleground.mention}.",
+            f"🔥 You're **{challenged_name}**'s roaster! The battle is live in {battleground.mention}"
+            f"{mirror_note}.",
             ephemeral=True,
         )
         logger.info(
@@ -841,12 +987,6 @@ class RoastArenaCog(GuildOnlyCog):
             self._resolving.discard(challenge_id)
 
     async def _announce_winner(self, challenge: dict, counts: dict):
-        channel_id = challenge.get("battleground_channel_id")
-        if not channel_id:
-            return
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            return
         challenger_name, challenged_name = self._contestant_names(challenge)
         side = challenge.get("winner_side")
         if side == "challenger":
@@ -855,10 +995,27 @@ class RoastArenaCog(GuildOnlyCog):
             line = f"🏆 **{challenged_name}** wins the roast battle! ({counts['challenged']}–{counts['challenger']})"
         else:
             line = f"🤝 It's a **draw** — {counts['challenger']}–{counts['challenged']}. Rematch?"
-        try:
-            await channel.send(line)
-        except discord.HTTPException:
-            pass
+        # Announce in every channel the panel was posted to — battleground
+        # plus both mirrors — not just the battleground.
+        seen_channel_ids = set()
+        for channel_id in (
+            challenge.get("battleground_channel_id"),
+            challenge.get("challenger_panel_channel_id"),
+            challenge.get("challenged_panel_channel_id"),
+        ):
+            if not channel_id or channel_id in seen_channel_ids:
+                continue
+            seen_channel_ids.add(channel_id)
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                continue
+            try:
+                await channel.send(
+                    self._everyone_prefix(channel) + line,
+                    allowed_mentions=discord.AllowedMentions(everyone=True),
+                )
+            except discord.HTTPException:
+                pass
 
     @_poller.before_loop
     async def _before_poller(self):
