@@ -1,4 +1,4 @@
-# FULL PATH: PRIME-BOT-main/database/migrations/006_roast_arena_mirror_panels.sql
+-- FULL PATH: PRIME-BOT-main/database/migrations/006_roast_arena_mirror_panels.sql
 
 -- path: database/migrations/006_roast_arena_mirror_panels.sql
 --
