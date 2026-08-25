@@ -1,3 +1,5 @@
+# FULL PATH: PRIME-BOT-main/database.py
+
 # path: database.py
 
 # path: database.py
@@ -3560,6 +3562,13 @@ class Database:
         if roast_arena_outbox_migration.exists():
             await conn.execute(roast_arena_outbox_migration.read_text())
 
+        # Roast arena — mirrored panel columns so the live vote panel can be
+        # posted in BOTH contesting guilds, not just the single shared
+        # battleground (see discord_bot/cogs/roast_arena.py on_member_accept).
+        roast_arena_mirror_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "006_roast_arena_mirror_panels.sql"
+        if roast_arena_mirror_migration.exists():
+            await conn.execute(roast_arena_mirror_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -6013,6 +6022,8 @@ class Database:
             "challenged_contestant_id", "battleground_guild_id",
             "battleground_channel_id", "panel_message_id", "battle_ends_at",
             "expires_at", "resolved_at",
+            "challenger_panel_channel_id", "challenger_panel_message_id",
+            "challenged_panel_channel_id", "challenged_panel_message_id",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
