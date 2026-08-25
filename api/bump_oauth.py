@@ -1,3 +1,5 @@
+# FULL PATH: PRIME-BOT-main/api/bump_oauth.py
+
 """
 /bump bot ownership-verification OAuth callback.
 
@@ -19,7 +21,7 @@ import secrets
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse, urlencode
 
-import requests
+import aiohttp
 
 from config import DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET, BUMP_OAUTH_REDIRECT_URI, BOT_TOKEN, DISCORD_CLONE_ADMIN_IDS
 from database import db
@@ -34,23 +36,25 @@ _initialized = False
 
 
 def _notify_admins_of_pending(listing: dict, icon_url: str | None) -> None:
-    """Best-effort DM to bot owners so a pending submission doesn't just
-    sit invisible in the database — this runs in api_server.py's process,
-    which has no live gateway session, so it hits Discord's REST API
-    directly with the bot token rather than going through discord.py.
+    """Schedules a best-effort DM to bot owners so a pending submission
+    doesn't just sit invisible in the database — this runs in
+    api_server.py's process, which has no live gateway session, so it hits
+    Discord's REST API directly with the bot token rather than going
+    through discord.py.
 
-    This whole function runs synchronously INSIDE the OAuth callback,
-    before the browser gets its HTTP response — that callback is a
-    serverless function (see vercel.json) with a short platform timeout,
-    so every extra blocking REST call here directly eats into that
-    budget. Deliberately kept to the minimum: no live guild-name lookup
-    (an earlier version added one and pushed the callback past the
-    timeout — Vercel then kills the function mid-request and the edge
-    returns 502, not our own error page, since we never got to respond
-    at all), and a short 4s timeout per call so one slow/hanging admin
-    DM can't stall the rest.
+    Fire-and-forget via asyncio.create_task rather than `await`ed inline:
+    api_server.py now runs every request's coroutine on ONE shared event
+    loop (see its module docstring), so a blocking call here would freeze
+    every other in-flight request on the server, not just this one — this
+    used to be `requests` (synchronous) for exactly that reason it never
+    mattered before each request got its own throwaway loop/thread. Now it
+    matters a lot, hence aiohttp + create_task instead of blocking the
+    caller on possibly-slow DMs to every admin."""
+    asyncio.create_task(_notify_admins_of_pending_async(listing, icon_url))
 
-    Sent as a full card (bot info) with Approve/Reject buttons rather
+
+async def _notify_admins_of_pending_async(listing: dict, icon_url: str | None) -> None:
+    """Sent as a full card (bot info) with Approve/Reject buttons rather
     than a plain-text nudge, so an admin can act right from the DM
     without first running /bumpadmin review. The buttons use static
     custom_ids (bump:approve:<id> / bump:reject:<id>) matched by
@@ -58,7 +62,11 @@ def _notify_admins_of_pending(listing: dict, icon_url: str | None) -> None:
     discord_bot/cogs/bump.py — since this message is built and sent
     entirely over raw REST with no live discord.py View object, only a
     statically-registered DynamicItem in the gateway process (bot.py)
-    can ever handle a click on it, restart or not."""
+    can ever handle a click on it, restart or not.
+
+    Runs as a background task (see _notify_admins_of_pending above), each
+    admin's DM capped at a short 4s timeout so one slow/hanging admin
+    can't hold this up indefinitely."""
     if not BOT_TOKEN or BOT_TOKEN == "your_token_here":
         return
     headers = {"Authorization": f"Bot {BOT_TOKEN}", "Content-Type": "application/json"}
@@ -85,19 +93,23 @@ def _notify_admins_of_pending(listing: dict, icon_url: str | None) -> None:
         ],
     }]
 
-    for admin_id in DISCORD_CLONE_ADMIN_IDS:
-        try:
-            dm = requests.post(f"{DISCORD_API_BASE}/users/@me/channels", headers=headers,
-                                json={"recipient_id": admin_id}, timeout=4)
-            dm.raise_for_status()
-            channel_id = dm.json()["id"]
-            requests.post(
-                f"{DISCORD_API_BASE}/channels/{channel_id}/messages", headers=headers,
-                json={"embeds": [embed], "components": components},
-                timeout=4,
-            )
-        except requests.RequestException:
-            logger.warning("Failed to DM admin %s about pending bump listing %s", admin_id, listing["id"])
+    timeout = aiohttp.ClientTimeout(total=4)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for admin_id in DISCORD_CLONE_ADMIN_IDS:
+            try:
+                async with session.post(
+                    f"{DISCORD_API_BASE}/users/@me/channels", headers=headers,
+                    json={"recipient_id": admin_id},
+                ) as dm:
+                    dm.raise_for_status()
+                    channel_id = (await dm.json())["id"]
+                async with session.post(
+                    f"{DISCORD_API_BASE}/channels/{channel_id}/messages", headers=headers,
+                    json={"embeds": [embed], "components": components},
+                ) as resp:
+                    resp.raise_for_status()
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                logger.warning("Failed to DM admin %s about pending bump listing %s", admin_id, listing["id"])
 
 
 def _page(body: str) -> bytes:
@@ -218,29 +230,29 @@ async def _handle(query: dict) -> tuple[int, str]:
         ], ("pill-error", "EXPIRED"))
 
     try:
-        token_resp = requests.post(
-            DISCORD_TOKEN_URL,
-            data={
-                "client_id": DISCORD_OAUTH_CLIENT_ID,
-                "client_secret": DISCORD_OAUTH_CLIENT_SECRET,
-                "grant_type": "authorization_code",
-                "code": code_param,
-                "redirect_uri": BUMP_OAUTH_REDIRECT_URI,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=10,
-        )
-        token_resp.raise_for_status()
-        access_token = token_resp.json()["access_token"]
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                DISCORD_TOKEN_URL,
+                data={
+                    "client_id": DISCORD_OAUTH_CLIENT_ID,
+                    "client_secret": DISCORD_OAUTH_CLIENT_SECRET,
+                    "grant_type": "authorization_code",
+                    "code": code_param,
+                    "redirect_uri": BUMP_OAUTH_REDIRECT_URI,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            ) as token_resp:
+                token_resp.raise_for_status()
+                access_token = (await token_resp.json())["access_token"]
 
-        identity_resp = requests.get(
-            f"{DISCORD_API_BASE}/users/@me",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
-        )
-        identity_resp.raise_for_status()
-        verified_user_id = int(identity_resp.json()["id"])
-    except (requests.RequestException, KeyError, ValueError):
+            async with session.get(
+                f"{DISCORD_API_BASE}/users/@me",
+                headers={"Authorization": f"Bearer {access_token}"},
+            ) as identity_resp:
+                identity_resp.raise_for_status()
+                verified_user_id = int((await identity_resp.json())["id"])
+    except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError):
         logger.exception("bump_oauth exchange failed for application %s", pending["application_id"])
         return 500, _card(pending.get("bot_icon_url"), "Sign-in failed", [
             "Something went wrong signing you in.",
