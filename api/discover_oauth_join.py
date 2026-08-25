@@ -1,3 +1,5 @@
+# FULL PATH: PRIME-BOT-main/api/discover_oauth_join.py
+
 """
 Discover Players — OAuth2 "click-to-join" invite landing page.
 
@@ -23,7 +25,7 @@ import secrets
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, urlencode
 
-import requests
+import aiohttp
 
 from config import DISCORD_OAUTH_CLIENT_ID, DISCORD_OAUTH_CLIENT_SECRET, DISCORD_OAUTH_REDIRECT_URI
 from database import db
@@ -107,30 +109,30 @@ async def _handle(query: dict) -> tuple[int, str]:
         return 404, "<h2>This category no longer exists.</h2>"
 
     try:
-        token_resp = requests.post(
-            DISCORD_TOKEN_URL,
-            data={
-                "client_id": DISCORD_OAUTH_CLIENT_ID,
-                "client_secret": DISCORD_OAUTH_CLIENT_SECRET,
-                "grant_type": "authorization_code",
-                "code": code_param,
-                "redirect_uri": DISCORD_OAUTH_REDIRECT_URI,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=10,
-        )
-        token_resp.raise_for_status()
-        access_token = token_resp.json()["access_token"]
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                DISCORD_TOKEN_URL,
+                data={
+                    "client_id": DISCORD_OAUTH_CLIENT_ID,
+                    "client_secret": DISCORD_OAUTH_CLIENT_SECRET,
+                    "grant_type": "authorization_code",
+                    "code": code_param,
+                    "redirect_uri": DISCORD_OAUTH_REDIRECT_URI,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            ) as token_resp:
+                token_resp.raise_for_status()
+                access_token = (await token_resp.json())["access_token"]
 
-        identity_resp = requests.get(
-            f"{DISCORD_API_BASE}/users/@me",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
-        )
-        identity_resp.raise_for_status()
-        discord_user = identity_resp.json()
-        user_id = int(discord_user["id"])
-    except (requests.RequestException, KeyError, ValueError):
+            async with session.get(
+                f"{DISCORD_API_BASE}/users/@me",
+                headers={"Authorization": f"Bearer {access_token}"},
+            ) as identity_resp:
+                identity_resp.raise_for_status()
+                discord_user = await identity_resp.json()
+                user_id = int(discord_user["id"])
+    except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError):
         logger.exception("Discord OAuth exchange failed for discover category %s", category_id)
         return 500, _fallback_html(cat["invite_code"], "Something went wrong signing you in.")
 
