@@ -308,6 +308,10 @@ class RoastTargetPickerView(discord.ui.View):
                 channel=self.chosen_channel,
                 proposed_by_admin_id=interaction.user.id,
             )
+            await self.cog._resolve_proposal_round(
+                self.guild.id, self,
+                f"🔥 {interaction.user.display_name} already sent a challenge for this round.",
+            )
         except Exception:
             logger.exception(f"[roast] start_challenge failed guild={self.guild.id}")
             if not interaction.response.is_done():
@@ -342,6 +346,10 @@ class RoastTargetPickerView(discord.ui.View):
                 """,
                 self.guild.id, clone_id,
             )
+            await self.cog._resolve_proposal_round(
+                self.guild.id, self,
+                f"⏰ {interaction.user.display_name} already snoozed this round — I'll check back later.",
+            )
             logger.info(f"[roast] admin={interaction.user.id} snoozed guild={self.guild.id}")
         except Exception:
             logger.exception(f"[roast] remind_later failed guild={self.guild.id}")
@@ -370,6 +378,10 @@ class RoastTargetPickerView(discord.ui.View):
                 DO UPDATE SET enabled = FALSE
                 """,
                 self.guild.id, clone_id, current["inactivity_minutes"], current["random_chance_percent"],
+            )
+            await self.cog._resolve_proposal_round(
+                self.guild.id, self,
+                f"🔕 {interaction.user.display_name} already turned off auto-roasts for this server.",
             )
             logger.info(f"[roast] admin={interaction.user.id} disabled auto-roast guild={self.guild.id}")
         except Exception:
@@ -786,6 +798,29 @@ class RoastCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._active_by_channel: dict[int, int] = {}  # channel_id -> battle_id
+        # guild_id -> list of (discord.Message, RoastTargetPickerView) for every
+        # admin DM sent by the current auto-proposal round. Lets any one admin's
+        # terminal action (Send Challenge / Remind Me Later / Don't Ask Again)
+        # resolve every other admin's copy of the same prompt too, instead of
+        # leaving them live and clickable after the round is already decided.
+        self._proposal_rounds: dict[int, list[tuple[discord.Message, "RoastTargetPickerView"]]] = {}
+
+    async def _resolve_proposal_round(self, guild_id: int, acting_view: "RoastTargetPickerView", note: str):
+        """Disable and relabel every other admin's still-open prompt for this
+        guild's current proposal round once one admin has acted on theirs."""
+        siblings = self._proposal_rounds.pop(guild_id, [])
+        for message, view in siblings:
+            if view is acting_view:
+                continue
+            try:
+                for child in view.children:
+                    child.disabled = True
+                view.stop()
+                await message.edit(content=note, embed=None, view=view)
+            except discord.HTTPException:
+                logger.info(f"[roast] couldn't resolve sibling proposal msg={message.id} guild={guild_id}")
+            except Exception:
+                logger.exception(f"[roast] failed resolving sibling proposal guild={guild_id}")
 
     async def cog_load(self):
         rows = await db.fetch("SELECT id FROM discord_roast_battles WHERE status = 'active'")
@@ -1168,10 +1203,12 @@ class RoastCog(GuildOnlyCog):
             logger.warning(f"[roast] trigger fired but no admins found guild={guild.id}")
             return
         sent = 0
+        round_messages: list[tuple[discord.Message, RoastTargetPickerView]] = []
         for admin in admins:
             try:
                 view = RoastTargetPickerView(self, guild, admin.id)
-                await admin.send(embed=view._status_embed(), view=view)
+                msg = await admin.send(embed=view._status_embed(), view=view)
+                round_messages.append((msg, view))
                 sent += 1
             except discord.Forbidden:
                 logger.info(f"[roast] couldn't DM admin={admin.id} guild={guild.id} (DMs closed)")
@@ -1179,6 +1216,8 @@ class RoastCog(GuildOnlyCog):
             except Exception:
                 logger.exception(f"[roast] failed to DM admin={admin.id} guild={guild.id}")
                 continue
+        if round_messages:
+            self._proposal_rounds[guild.id] = round_messages
         logger.info(f"[roast] proposal sent to {sent}/{len(admins)} admins guild={guild.id}")
 
     # ---------- member-requested roast (needs admin approval) ----------
