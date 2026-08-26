@@ -69,6 +69,9 @@ ROAST_MODEL = "llama-3.1-70b-versatile"
 POLL_INTERVAL_SECONDS = 60
 # Minimum time between admin roast-suggestion DMs, regardless of trigger.
 PROPOSAL_COOLDOWN_MINUTES = 60 * 24 * 2  # 2 days
+# "Remind me later" snooze — shorter than the normal cooldown so the admin
+# actually gets asked again soon instead of waiting out the full 2 days.
+SNOOZE_MINUTES = 60 * 6  # 6 hours
 CHALLENGE_EXPIRY_MINUTES = 30
 DEFAULT_INACTIVITY_MINUTES = 60
 DEFAULT_RANDOM_CHECK_MINUTES = 30
@@ -220,6 +223,14 @@ class RoastTargetPickerView(discord.ui.View):
         self.confirm_btn.callback = self._on_confirm
         self.add_item(self.confirm_btn)
 
+        self.remind_later_btn = discord.ui.Button(label="Remind Me Later", style=discord.ButtonStyle.secondary, row=3)
+        self.remind_later_btn.callback = self._on_remind_later
+        self.add_item(self.remind_later_btn)
+
+        self.dont_ask_btn = discord.ui.Button(label="Don't Ask Again", style=discord.ButtonStyle.secondary, row=3)
+        self.dont_ask_btn.callback = self._on_dont_ask_again
+        self.add_item(self.dont_ask_btn)
+
     def _status_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title=f"🔥 Roast Opportunity — {self.guild.name}",
@@ -306,6 +317,65 @@ class RoastTargetPickerView(discord.ui.View):
                     await interaction.followup.send("⚠️ Failed to send the challenge — check Railway logs.", ephemeral=True)
                 except discord.HTTPException:
                     pass
+        finally:
+            self.stop()
+
+    async def _on_remind_later(self, interaction: discord.Interaction):
+        try:
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(
+                content=f"⏰ Okay, I'll check back in about {SNOOZE_MINUTES // 60}h.",
+                embed=None,
+                view=self,
+            )
+            clone_id = _clone_id_of(self.cog.bot)
+            # Push last_proposed_at back so the cooldown check in
+            # _check_triggers clears again after SNOOZE_MINUTES instead of
+            # the full PROPOSAL_COOLDOWN_MINUTES.
+            await db.execute(
+                f"""
+                INSERT INTO discord_roast_activity (guild_id, clone_id, last_roast_proposed_at)
+                VALUES ($1, $2, NOW() - INTERVAL '{PROPOSAL_COOLDOWN_MINUTES - SNOOZE_MINUTES} minutes')
+                ON CONFLICT (guild_id, COALESCE(clone_id, -1))
+                DO UPDATE SET last_roast_proposed_at = NOW() - INTERVAL '{PROPOSAL_COOLDOWN_MINUTES - SNOOZE_MINUTES} minutes'
+                """,
+                self.guild.id, clone_id,
+            )
+            logger.info(f"[roast] admin={interaction.user.id} snoozed guild={self.guild.id}")
+        except Exception:
+            logger.exception(f"[roast] remind_later failed guild={self.guild.id}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
+        finally:
+            self.stop()
+
+    async def _on_dont_ask_again(self, interaction: discord.Interaction):
+        try:
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(
+                content="🔕 Got it, I won't suggest auto-roasts for this server anymore. "
+                        "Re-enable anytime with `/roast configure enabled:True`.",
+                embed=None,
+                view=self,
+            )
+            clone_id = _clone_id_of(self.cog.bot)
+            current = await self.cog.get_config(self.guild.id, clone_id)
+            await db.execute(
+                """
+                INSERT INTO discord_roast_config (guild_id, clone_id, inactivity_minutes, random_chance_percent, enabled)
+                VALUES ($1, $2, $3, $4, FALSE)
+                ON CONFLICT (guild_id, COALESCE(clone_id, -1))
+                DO UPDATE SET enabled = FALSE
+                """,
+                self.guild.id, clone_id, current["inactivity_minutes"], current["random_chance_percent"],
+            )
+            logger.info(f"[roast] admin={interaction.user.id} disabled auto-roast guild={self.guild.id}")
+        except Exception:
+            logger.exception(f"[roast] dont_ask_again failed guild={self.guild.id}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
         finally:
             self.stop()
 
