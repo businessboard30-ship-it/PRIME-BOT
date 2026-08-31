@@ -24,6 +24,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord_bot.cogs._dm_support import GuildOnlyCog
 
+import config as bot_config
 from database import db
 from modules.welcome_card import render_welcome_card
 from discord_bot.cogs._views_shared import refresh_button
@@ -146,16 +147,102 @@ async def _fetch_custom_bg_bytes(
         return None, "couldn't fetch that URL — make sure it's a direct link to the image file"
 
 
+async def _get_image_host_channel(bot: commands.Bot) -> discord.TextChannel | None:
+    """Resolves the channel /welcome custombg's `image` upload re-posts
+    to, so that channel doubles as free image hosting. DB setting (set via
+    the owner-only /hostingchannel command) takes priority over the
+    IMAGE_HOST_CHANNEL_ID env var, which is just a bootstrap default."""
+    channel_id_str = await db.get_global_setting("image_host_channel_id")
+    channel_id = int(channel_id_str) if channel_id_str and channel_id_str.isdigit() else bot_config.IMAGE_HOST_CHANNEL_ID
+    if not channel_id:
+        return None
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except discord.HTTPException:
+            return None
+    return channel if isinstance(channel, discord.TextChannel) else None
+
+
+async def _upload_custom_bg(
+    bot: commands.Bot, attachment: discord.Attachment, guild: discord.Guild
+) -> tuple[int | None, int | None, str | None, str | None]:
+    """Validates an uploaded background and re-posts it to the bot's
+    image-hosting channel. Returns (channel_id, message_id, cdn_url,
+    reason) — cdn_url is just an initial cache; channel_id/message_id are
+    what actually get stored, since attachment CDN links are signed and
+    expire (~24h) while the message itself (and a freshly re-fetched
+    attachment URL from it) does not. On failure, everything but reason is
+    None, same contract as _fetch_custom_bg_bytes."""
+    content_type = (attachment.content_type or "").split(";")[0].strip().lower()
+    if content_type not in CUSTOM_BG_ALLOWED_CONTENT_TYPES:
+        return None, None, None, f"that file isn't a png/jpeg (got `{content_type or 'unknown type'}`)"
+    if attachment.size > CUSTOM_BG_MAX_BYTES:
+        return None, None, None, f"that image is over the {CUSTOM_BG_MAX_BYTES // (1024 * 1024)}MB limit"
+
+    host_channel = await _get_image_host_channel(bot)
+    if host_channel is None:
+        return None, None, None, (
+            "image uploads aren't set up yet — the bot owner needs to run `/hostingchannel` "
+            "in a channel first (or you can paste a direct image URL instead)"
+        )
+
+    try:
+        image_bytes = await attachment.read()
+        file = discord.File(io.BytesIO(image_bytes), filename=attachment.filename)
+        posted = await host_channel.send(
+            content=f"Custom welcome background — guild `{guild.id}` ({guild.name})",
+            file=file,
+        )
+    except discord.HTTPException as e:
+        logger.warning(f"[v0] Couldn't upload custom background to hosting channel: {e}")
+        return None, None, None, "couldn't upload that image right now — try again in a moment"
+
+    cdn_url = posted.attachments[0].url if posted.attachments else None
+    return host_channel.id, posted.id, cdn_url, None
+
+
+async def _refresh_custom_bg_url(bot: commands.Bot, config_row: dict) -> str | None:
+    """Re-fetches the hosting message to get a live (non-expired)
+    attachment URL. Returns None if the message/channel is gone."""
+    channel_id = config_row.get("custom_bg_channel_id")
+    message_id = config_row.get("custom_bg_message_id")
+    if not channel_id or not message_id:
+        return None
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except discord.HTTPException:
+            return None
+    try:
+        message = await channel.fetch_message(int(message_id))
+    except (discord.HTTPException, discord.NotFound):
+        return None
+    return message.attachments[0].url if message.attachments else None
+
+
 async def _custom_bg_bytes_for_render(
-    session: aiohttp.ClientSession, config: dict
+    session: aiohttp.ClientSession, config_row: dict, bot: commands.Bot | None = None
 ) -> bytes | None:
     """Render-time counterpart to the strict fetch above: best-effort,
     silent-fallback (same shape as _fetch_sticker_bytes) so a since-removed
     or now-unreachable custom background never fails a join event — it
-    just renders with the stock theme background instead for that join."""
-    if not config.get("ultra_pack_unlocked"):
+    just renders with the stock theme background instead for that join.
+    Prefers re-fetching a live URL from the hosting message (uploaded
+    backgrounds) since the cached custom_background_url for those can be a
+    since-expired signed CDN link; falls back to the stored URL either way
+    (covers pasted-URL backgrounds, and uploaded ones if the hosting
+    message/channel has since been deleted but the last-known link still
+    happens to work)."""
+    if not config_row.get("ultra_pack_unlocked"):
         return None
-    url = (config.get("custom_background_url") or "").strip()
+    url = None
+    if bot is not None:
+        url = await _refresh_custom_bg_url(bot, config_row)
+    if not url:
+        url = (config_row.get("custom_background_url") or "").strip()
     if not url:
         return None
     data, _reason = await _fetch_custom_bg_bytes(session, url)
@@ -512,7 +599,7 @@ class WelcomeCog(GuildOnlyCog):
                                             timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         avatar_bytes = await resp.read()
                     sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
-                    custom_bg_bytes = await _custom_bg_bytes_for_render(session, config)
+                    custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, self.bot)
                 card_bytes, image_format = await asyncio.to_thread(
                     render_welcome_card,
                     avatar_bytes, owner.display_name, f"Member #{guild.member_count}",
@@ -674,7 +761,7 @@ class WelcomeCog(GuildOnlyCog):
                                         timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
-                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config)
+                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, self.bot)
         except Exception:
             pass
 
@@ -732,7 +819,7 @@ class WelcomeCog(GuildOnlyCog):
                 async with session.get(str(member.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
-                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config)
+                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, self.bot)
             card_bytes, image_format = await asyncio.to_thread(
                 render_welcome_card,
                 avatar_bytes, member.display_name, f"Member #{member.guild.member_count}",
@@ -881,9 +968,12 @@ class WelcomeCog(GuildOnlyCog):
         from discord_bot.views_card_pack import start_ultra_pack_payment
         await start_ultra_pack_payment(interaction)
 
-    @group.command(name="custombg", description="[Ultra pack] Set the welcome card's background to your own png/jpeg URL")
-    @app_commands.describe(url="Direct link to a .png or .jpg image (not a page URL) — leave blank to clear it")
-    async def custombg(self, interaction: discord.Interaction, url: str = ""):
+    @group.command(name="custombg", description="[Ultra pack] Set the welcome card's background to your own png/jpeg")
+    @app_commands.describe(
+        url="Direct link to a .png or .jpg image (not a page URL) — leave blank to clear it",
+        image=f"Upload a .png or .jpg instead of a URL (max {CUSTOM_BG_MAX_BYTES // (1024 * 1024)}MB)",
+    )
+    async def custombg(self, interaction: discord.Interaction, url: str = "", image: discord.Attachment = None):
         await interaction.response.defer(ephemeral=True, thinking=True)
         if not _require_perm(interaction, "manage_guild"):
             await _deny(interaction, "Manage Server")
@@ -899,13 +989,38 @@ class WelcomeCog(GuildOnlyCog):
             return
 
         url = url.strip()
-        if not url:
-            await db.set_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction), custom_background_url=None)
+        if image is not None and url:
+            await interaction.followup.send("⚠️ Use either `url` or `image`, not both.", ephemeral=True)
+            return
+
+        if not url and image is None:
+            await db.set_welcome_config(
+                interaction.guild_id, clone_id=_clone_id_of(interaction),
+                custom_background_url=None, custom_bg_channel_id=None, custom_bg_message_id=None,
+            )
             await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
             await interaction.followup.send(
                 f"✅ Custom background cleared — back to the **{config.get('card_theme', 'wolf')}** theme.",
                 ephemeral=True,
             )
+            return
+
+        if image is not None:
+            host_channel_id, host_message_id, cdn_url, reason = await _upload_custom_bg(
+                self.bot, image, interaction.guild
+            )
+            if reason:
+                await interaction.followup.send(f"⚠️ Couldn't use that image — {reason}.", ephemeral=True)
+                return
+            # Selecting a custom background implies the template card, same
+            # reasoning set_welcome_config already applies for colors/theme.
+            await db.set_welcome_config(
+                interaction.guild_id, clone_id=_clone_id_of(interaction),
+                custom_background_url=cdn_url,
+                custom_bg_channel_id=host_channel_id, custom_bg_message_id=host_message_id,
+            )
+            await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
+            await interaction.followup.send("✅ Welcome card background set to your uploaded image.", ephemeral=True)
             return
 
         async with aiohttp.ClientSession() as session:
@@ -914,13 +1029,35 @@ class WelcomeCog(GuildOnlyCog):
             await interaction.followup.send(f"⚠️ Couldn't use that image — {reason}.", ephemeral=True)
             return
 
-        # Selecting a custom background implies the template card, same
-        # reasoning set_welcome_config already applies for colors/theme —
-        # set_welcome_config handles that switch itself when
-        # custom_background_url is set without an explicit use_template.
-        await db.set_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction), custom_background_url=url)
+        await db.set_welcome_config(
+            interaction.guild_id, clone_id=_clone_id_of(interaction),
+            custom_background_url=url, custom_bg_channel_id=None, custom_bg_message_id=None,
+        )
         await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
         await interaction.followup.send(f"✅ Welcome card background set to your image: {url}", ephemeral=True)
+
+    @app_commands.command(name="hostingchannel", description="[Bot owner] Use THIS channel to host images uploaded via /welcome custombg")
+    async def hostingchannel(self, interaction: discord.Interaction):
+        if interaction.user.id not in bot_config.DISCORD_OWNER_BROADCAST_IDS:
+            await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
+            return
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("Run this in a text channel — that's the one that'll store uploads.", ephemeral=True)
+            return
+        perms = interaction.channel.permissions_for(interaction.guild.me)
+        if not (perms.send_messages and perms.attach_files and perms.read_message_history):
+            await interaction.response.send_message(
+                "I need Send Messages, Attach Files, and Read Message History in this channel to use it for hosting.",
+                ephemeral=True,
+            )
+            return
+        await db.set_global_setting("image_host_channel_id", str(interaction.channel.id))
+        await interaction.response.send_message(
+            f"✅ Uploaded custom backgrounds (`/welcome custombg`'s `image` option) will now be stored in "
+            f"#{interaction.channel.name}. Keep this channel private and don't delete old messages in it — "
+            f"each guild's background lives in one message here.",
+            ephemeral=True,
+        )
 
     @group.command(name="theme", description="Pick which welcome-card look this server uses")
     @app_commands.choices(look=[
@@ -996,7 +1133,7 @@ class WelcomeCog(GuildOnlyCog):
                 async with session.get(str(interaction.user.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
-                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config)
+                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, self.bot)
             card_bytes, image_format = await asyncio.to_thread(
                 render_welcome_card,
                 avatar_bytes, interaction.user.display_name, f"Member #{interaction.guild.member_count}",
