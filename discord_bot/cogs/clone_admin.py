@@ -520,13 +520,28 @@ class CloneAdminCog(commands.Cog):
         # Main bot's own users (clone_id=None), plus every currently-active
         # clone's users. An inactive/removed clone is skipped since there's
         # no live token to DM through even if we queued its users.
+        #
+        # IMPORTANT: get_discord_bot_user_ids only dedupes WITHIN one
+        # clone_id — it does nothing about the same real Discord user
+        # showing up under several clone_ids (e.g. someone who's used the
+        # main bot AND a support-server clone). Without a global dedupe
+        # here, that user gets one recipient row — and therefore one DM —
+        # per bot/clone they've touched. seen_user_ids fixes that: each
+        # user_id is only ever queued once for this broadcast, via
+        # whichever bot we saw them on first (main bot wins ties since
+        # it's resolved before the clone loop).
+        seen_user_ids = set()
+
         main_user_ids = await db.get_discord_bot_user_ids(None)
+        seen_user_ids.update(main_user_ids)
         await db.add_owner_broadcast_recipients(broadcast_id, None, main_user_ids)
 
         clones = await db.list_active_discord_clones()
         for clone in clones:
             clone_user_ids = await db.get_discord_bot_user_ids(clone["clone_id"])
-            await db.add_owner_broadcast_recipients(broadcast_id, clone["clone_id"], clone_user_ids)
+            new_user_ids = [uid for uid in clone_user_ids if uid not in seen_user_ids]
+            seen_user_ids.update(new_user_ids)
+            await db.add_owner_broadcast_recipients(broadcast_id, clone["clone_id"], new_user_ids)
 
         broadcast_row = await db.get_owner_broadcast(broadcast_id)
         total = broadcast_row["total_recipients"] if broadcast_row else None
