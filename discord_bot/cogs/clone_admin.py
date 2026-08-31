@@ -297,6 +297,35 @@ class CloneAdminCog(commands.Cog):
         if await self._owned_clone_or_deny(interaction, clone_id) is None:
             return
 
+        from config import PAYMENT_MODE
+        if PAYMENT_MODE == "manual":
+            from payments_manual import _reference_for, _prefilled_selar_link, BuyerConfirmView
+            reference = _reference_for("discord_clone_monetization", interaction.user.id)
+            await db.start_discord_monetization_payment(clone_id, interaction.user.id, reference)
+            await db.log_payment(
+                interaction.user.id, 0.0, reference, status="pending",
+                payment_type="discord_clone_monetization", provider="selar",
+            )
+            link = _prefilled_selar_link("discord_clone_monetization", interaction.user.id)
+            if not link:
+                await interaction.followup.send(
+                    "❌ Manual payments aren't set up for monetization yet — please try again later.",
+                    ephemeral=True,
+                )
+                return
+
+            confirm_view = BuyerConfirmView(
+                reference, "discord_clone_monetization", interaction.user.id, None, None,
+                f"GHS {CLONE_MONETIZATION_FEE_GHS}",
+            )
+            confirm_view.add_item(discord.ui.Button(label="💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
+            await interaction.followup.send(
+                f"**Activate Monetization — GHS {CLONE_MONETIZATION_FEE_GHS}/month** for clone `#{clone_id}`.\n\n"
+                f"Tap **Pay on Selar**, complete checkout, then tap **I've Paid** below so it gets reviewed.",
+                view=confirm_view, ephemeral=True,
+            )
+            return
+
         email = f"discorduser_{interaction.user.id}@animebot.com"
         payment_result = await asyncio.to_thread(
             paystack.initialize_payment,
