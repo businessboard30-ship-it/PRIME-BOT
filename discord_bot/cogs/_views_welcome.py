@@ -166,6 +166,13 @@ def render_status_lines(config: dict) -> list:
 
     card_label = card_look_name if use_template else "animated card"
     lines.append(f"-# Card: {card_label} · Status: {'enabled' if enabled else 'disabled'}")
+
+    ultra_unlocked = bool(config.get("ultra_pack_unlocked"))
+    ultra_status = "✅ Unlocked" if ultra_unlocked else "🔒 Locked"
+    lines.append(
+        f"-# Ultra Pack ({ultra_status}) — use your own png/jpg as the welcome-card "
+        f"background instead of a preset look, one-time purchase for the whole server"
+    )
     return lines
 
 
@@ -268,6 +275,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> disc
     button_row.add_item(WelcomeEditMessageButton(guild_id, clone_id, invoker_id, config))
     button_row.add_item(WelcomeToggleButton(guild_id, clone_id, invoker_id, config))
     button_row.add_item(WelcomePreviewButton(guild_id, clone_id, invoker_id))
+    button_row.add_item(WelcomeUltraPackButton(guild_id, clone_id, invoker_id, config))
 
     mode_row = discord.ui.ActionRow()
     mode_row.add_item(WelcomeModeToggleButton(guild_id, clone_id, invoker_id, config))
@@ -877,6 +885,59 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
             await interaction.followup.send(f"Couldn't render a preview: {e}", ephemeral=True)
 
 
+class WelcomeUltraPackButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("ultra")):
+    """Surfaces the ultra pack (own png/jpg welcome-card background, see
+    discord_bot/views_card_pack.py) inside the wizard itself — previously
+    this was only reachable via the standalone `/welcome buyultra` slash
+    command, with nothing in the wizard even mentioning it existed.
+
+    Locked: kicks off the same payment flow `/welcome buyultra` does
+    (start_ultra_pack_payment, including its own free bot-owner bypass),
+    then re-renders the wizard in place so the button flips to unlocked
+    as soon as payment is verified — no need to close and reopen /welcome
+    setup. Unlocked: just points the admin at `/welcome custombg`, since
+    setting the actual background is its own upload/URL step, not
+    something a wizard button can collect input for."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        unlocked = bool(config.get("ultra_pack_unlocked"))
+        label = "🖼️ Ultra Pack ✅" if unlocked else "🖼️ Buy Ultra Pack"
+        style = discord.ButtonStyle.secondary if unlocked else discord.ButtonStyle.success
+        super().__init__(discord.ui.Button(
+            label=label, style=style,
+            custom_id=_encode("ultra", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id, {})
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        if config.get("ultra_pack_unlocked"):
+            await interaction.response.send_message(
+                "This server already owns the ultra pack — set your background with `/welcome custombg`.",
+                ephemeral=True,
+            )
+            return
+        # ephemeral+thinking here (not the plain defer() every other button
+        # in this wizard uses) because start_ultra_pack_payment posts its
+        # own separate ephemeral embed via followup.send — it does not
+        # edit the wizard message itself, so there's nothing to
+        # _rerender() until the purchase is actually verified. That
+        # refresh happens over in views_card_pack.py's verify callback via
+        # refresh_posted_wizard, same as every other out-of-band write.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        from discord_bot.views_card_pack import start_ultra_pack_payment
+        await start_ultra_pack_payment(interaction)
+
+
 # Registered once in discord_bot/bot.py's setup_hook via
 # bot.add_dynamic_items(*DYNAMIC_ITEMS) — same mechanism as
 # _views_join_dm.py's DYNAMIC_ITEMS, so these keep working after a
@@ -885,4 +946,5 @@ DYNAMIC_ITEMS = (
     WelcomeChannelSelect, WelcomeDeliverySelect, WelcomeThemeSelect, WelcomeCardLookSelect,
     WelcomeCardStyleSelect, WelcomeAvatarShapeSelect, WelcomeStickerPresetSelect,
     WelcomeEditMessageButton, WelcomeToggleButton, WelcomePreviewButton, WelcomeModeToggleButton,
+    WelcomeUltraPackButton,
 )
