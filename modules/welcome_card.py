@@ -362,13 +362,101 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     return bg
 
 
+def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
+                          background_bytes: bytes,
+                          guild_name: Optional[str] = None,
+                          avatar_shape: str = DEFAULT_AVATAR_SHAPE) -> Optional[Image.Image]:
+    """Renders the template-card layout over an ADMIN-SUPPLIED background
+    (the ultra-pack /welcome custombg feature) instead of one of the fixed
+    THEME_BACKGROUNDS artworks. Returns None if background_bytes doesn't
+    decode as an image, so the caller can fall back to a stock theme.
+
+    Unlike _draw_template_card, there's no hand-designed "member card" box
+    baked into this artwork — we don't know where it's safe to put text.
+    So this draws a generic, always-safe layout instead: the image is
+    cover-cropped to fill the card, the avatar sits left-of-center, and a
+    semi-transparent dark banner runs along the bottom holding the member
+    number/username (and server name, if given) — legible over any
+    background rather than assuming specific empty space exists.
+    """
+    try:
+        bg = Image.open(io.BytesIO(background_bytes)).convert("RGBA")
+    except Exception as e:
+        logger.warning(f"[v0] Couldn't decode custom welcome background, falling back to a stock theme: {e}")
+        return None
+
+    src_w, src_h = bg.size
+    if src_w <= 0 or src_h <= 0:
+        logger.warning("[v0] Custom welcome background decoded with a zero dimension, falling back to a stock theme")
+        return None
+
+    # Cover-crop to TEMPLATE_WIDTH x TEMPLATE_HEIGHT so an arbitrary
+    # aspect-ratio upload never letterboxes or stretches oddly.
+    target_ratio = TEMPLATE_WIDTH / TEMPLATE_HEIGHT
+    src_ratio = src_w / src_h
+    if src_ratio > target_ratio:
+        new_w = int(src_h * target_ratio)
+        left = (src_w - new_w) // 2
+        bg = bg.crop((left, 0, left + new_w, src_h))
+    elif src_ratio < target_ratio:
+        new_h = int(src_w / target_ratio)
+        top = (src_h - new_h) // 2
+        bg = bg.crop((0, top, src_w, top + new_h))
+    bg = bg.resize((TEMPLATE_WIDTH, TEMPLATE_HEIGHT))
+
+    # Darken slightly overall so white text stays legible on bright
+    # uploads, then lay a stronger gradient-free banner across the bottom
+    # third for the text itself.
+    overlay = Image.new("RGBA", bg.size, (0, 0, 0, 40))
+    bg = Image.alpha_composite(bg, overlay)
+    draw = ImageDraw.Draw(bg)
+
+    banner_top = int(TEMPLATE_HEIGHT * 0.72)
+    draw.rectangle((0, banner_top, TEMPLATE_WIDTH, TEMPLATE_HEIGHT), fill=(0, 0, 0, 165))
+
+    # Avatar, cropped to the configured shape, centered vertically in the
+    # banner near the left edge.
+    try:
+        avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
+    except Exception as e:
+        logger.warning(f"[v0] Couldn't decode avatar image, using a blank frame instead: {e}")
+        avatar = Image.new("RGBA", (200, 200), (88, 101, 242, 255))
+
+    avatar_dim = TEMPLATE_HEIGHT - banner_top - 40
+    avatar = avatar.resize((avatar_dim, avatar_dim))
+    mask = Image.new("L", (avatar_dim, avatar_dim), 0)
+    shape_fn = AVATAR_SHAPES.get(avatar_shape, _mask_circle)
+    shape_fn(ImageDraw.Draw(mask), (0, 0, avatar_dim, avatar_dim), 255)
+    avatar_x, avatar_y = 60, banner_top + 20
+    bg.paste(avatar, (avatar_x, avatar_y), mask)
+
+    text_x = avatar_x + avatar_dim + 40
+    text_box_width = TEMPLATE_WIDTH - text_x - 60
+
+    draw.text((text_x, banner_top + 24), _extract_member_number(subtitle),
+               font=_load_font(26), fill=(190, 190, 190))
+    username_font, username_text = _fit_text_to_box(
+        draw, username, text_box_width, max_font_size=52, min_font_size=22
+    )
+    draw.text((text_x, banner_top + 62), username_text, font=username_font, fill=(255, 255, 255))
+
+    if guild_name:
+        guild_font, guild_text = _fit_text_to_box(
+            draw, f"Welcome to {guild_name}!", text_box_width, max_font_size=28, min_font_size=14
+        )
+        draw.text((text_x, TEMPLATE_HEIGHT - 50), guild_text, font=guild_font, fill=(200, 200, 200))
+
+    return bg
+
+
 def render_welcome_card(avatar_bytes: bytes, username: str, subtitle: str,
                          background_color: str = "#2b2d31", accent_color: str = "#5865F2",
                          sticker_bytes: Optional[bytes] = None, animate: bool = False,
                          avatar_shape: str = DEFAULT_AVATAR_SHAPE,
                          guild_name: Optional[str] = None,
                          use_template: bool = True,
-                         theme: str = "wolf") -> tuple[bytes, str]:
+                         theme: str = "wolf",
+                         custom_background_bytes: Optional[bytes] = None) -> tuple[bytes, str]:
     """Returns (image_bytes, image_format) where image_format is 'GIF' or
     'PNG'. subtitle is typically 'Member #N' or similar.
 
@@ -403,11 +491,26 @@ def render_welcome_card(avatar_bytes: bytes, username: str, subtitle: str,
     PREMIUM_THEMES). Callers must have already checked the guild is allowed
     to use a premium theme (discord_bot/cogs/welcome.py's `theme` command
     does this at set-time); this function just renders whatever it's given.
+
+    custom_background_bytes: raw bytes of an ultra-pack admin-supplied
+    png/jpeg (see discord_bot/cogs/welcome.py's `custombg` command and
+    discord_welcome_config.custom_background_url). When given and
+    use_template is True, this takes precedence over theme — a guild that
+    bought the ultra pack sees THEIR image, not a stock artwork. Falls
+    back to the theme-based template card if the bytes fail to decode.
+    Callers must have already checked ultra_pack_unlocked before passing
+    this; this function just renders whatever it's given, same as theme.
     """
     if use_template:
-        templated = _draw_template_card(username, subtitle, avatar_bytes,
-                                         guild_name=guild_name, avatar_shape=avatar_shape,
-                                         theme=theme)
+        templated = None
+        if custom_background_bytes:
+            templated = _draw_custom_bg_card(username, subtitle, avatar_bytes,
+                                              custom_background_bytes,
+                                              guild_name=guild_name, avatar_shape=avatar_shape)
+        if templated is None:
+            templated = _draw_template_card(username, subtitle, avatar_bytes,
+                                             guild_name=guild_name, avatar_shape=avatar_shape,
+                                             theme=theme)
         if templated is not None:
             out = io.BytesIO()
             templated.convert("RGB").save(out, format="PNG")
