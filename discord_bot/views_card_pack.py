@@ -250,6 +250,12 @@ class VerifyUltraPackPaymentView(discord.ui.View):
         if result and result.get("status") == "success":
             await db.mark_payment_paid(reference)
             await db.unlock_ultra_pack(guild_id, clone_id=_clone_id_of(interaction))
+            # Best-effort: flips an already-open /welcome setup wizard's
+            # "Buy Ultra Pack" button over to "Ultra Pack ✅" right away,
+            # instead of leaving it stuck showing locked until someone
+            # happens to touch another component and trigger a rerender.
+            from discord_bot.cogs._views_welcome import refresh_posted_wizard
+            await refresh_posted_wizard(interaction.client, guild_id, clone_id=_clone_id_of(interaction))
             await interaction.followup.send(
                 "✅ Payment confirmed — ultra pack unlocked! Set your background with `/welcome custombg`.",
                 ephemeral=True,
