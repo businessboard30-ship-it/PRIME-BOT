@@ -72,6 +72,14 @@ async def start_card_pack_payment(interaction: discord.Interaction):
         )
         return
 
+    from config import PAYMENT_MODE
+    if PAYMENT_MODE == "manual":
+        from payments_manual import start_manual_payment
+        await start_manual_payment(
+            interaction, "welcome_card_pack", f"${WELCOME_CARD_PACK_FEE_USD:g} USD", guild_id=guild_id
+        )
+        return
+
     price_usd = float(WELCOME_CARD_PACK_FEE_USD)
     clone_id = _clone_id_of(interaction) or 0
     gateway, api_key, provider = await resolve_gateway(clone_id, platform="discord")
@@ -153,6 +161,14 @@ async def start_ultra_pack_payment(interaction: discord.Interaction):
         await interaction.followup.send(
             "You're the bot owner — ultra pack unlocked without payment. Set your background with `/welcome custombg`.",
             ephemeral=True,
+        )
+        return
+
+    from config import PAYMENT_MODE
+    if PAYMENT_MODE == "manual":
+        from payments_manual import start_manual_payment
+        await start_manual_payment(
+            interaction, "ultra_welcome_pack", f"${ULTRA_PACK_FEE_USD:g} USD", guild_id=guild_id
         )
         return
 
