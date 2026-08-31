@@ -233,6 +233,29 @@ DISCORD_CLONE_ADMIN_IDS = {
     int(uid) for uid in os.getenv("DISCORD_CLONE_ADMIN_IDS", "").split(",") if uid.strip().isdigit()
 }
 
+# ─────────────────────────────────────────────────────────────────────
+# Manual payments (Selar + DM approval)
+# ─────────────────────────────────────────────────────────────────────
+# Global kill switch for Paystack/Stripe. "auto" (default) = unchanged
+# behavior, resolve_gateway() as before. "manual" = every checkout flow
+# skips Paystack/Stripe entirely, shows only a Selar link, and payments
+# are confirmed by an admin tapping Approve on a DM instead of a gateway
+# webhook/verify call. Intentionally a single global env var, not
+# per-clone — see payments_manual.py for the approval flow itself.
+PAYMENT_MODE = os.getenv("PAYMENT_MODE", "auto").strip().lower()
+
+# One Selar product checkout URL per payment_type this covers. Each is a
+# real product created on Selar at the matching price (Selar products are
+# fixed-price, so a payment_type with variable amounts, e.g.
+# ai_store_topup, can't be routed through this dict as-is). Selar
+# supports prefilling checkout via query params (add_to_cart=1 +
+# email=...) — payments_manual.py appends those, it does not belong here.
+SELAR_PRODUCT_LINKS = {
+    "welcome_card_pack": "https://selar.com/t3417c1292",
+    "ultra_welcome_pack": "https://selar.com/147d44d7fw",
+    "discord_clone_monetization": "https://selar.com/3ic91865s1",
+}
+
 # Who's allowed to run /ownerbroadcast (DM every user across the main bot
 # and every Discord clone). Deliberately separate from DISCORD_CLONE_ADMIN_IDS
 # even though it'll usually be the same person(s) — that set is about who
