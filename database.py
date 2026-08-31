@@ -2478,6 +2478,22 @@ class Database:
         await conn.execute("""
             ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS card_pack_unlocked BOOLEAN NOT NULL DEFAULT FALSE
         """)
+        # ultra_pack_unlocked / custom_background_url: a SEPARATE one-time
+        # unlock from card_pack_unlocked above — instead of picking one of
+        # the fixed artist themes, an ultra-pack guild points the template
+        # card at their OWN png/jpeg via /welcome custombg (see the
+        # `ultra_welcome_pack` payment_type in discord_bot/views_card_pack.py
+        # and modules/welcome_card.py's _draw_custom_bg_card). Kept as its
+        # own flag rather than folding into card_pack_unlocked so a guild
+        # can own either, both, or neither independently — and so an admin
+        # clearing custom_background_url doesn't need to touch the artist
+        # themes' unlock at all.
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS ultra_pack_unlocked BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS custom_background_url TEXT
+        """)
 
         # --- /setup channels (channel-suggestion wizard) -------------------
         # One row per guild (+clone) tracking state for the setup-channels
@@ -6904,6 +6920,7 @@ class Database:
                 "delivery_mode": "channel",
                 "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
                 "card_theme": "wolf", "card_pack_unlocked": False,
+                "ultra_pack_unlocked": False, "custom_background_url": None,
             }
 
     async def set_welcome_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
@@ -6939,23 +6956,34 @@ class Database:
         )
         if customizing and "use_template" not in fields:
             fields = {**fields, "use_template": False}
+        # Setting a custom background is the opposite signal from
+        # background_color/accent_color above: it's a template-mode
+        # feature (see modules/welcome_card.py's _draw_custom_bg_card), so
+        # an explicit /welcome custombg call should switch a flat-card
+        # guild INTO template mode, not leave it stuck on the flat card
+        # with no visible effect. Clearing it back to None (custombg
+        # clear) does NOT force a mode change either way — it just drops
+        # back to whatever theme/card_theme was already set.
+        if "custom_background_url" in fields and fields["custom_background_url"] and "use_template" not in fields:
+            fields = {**fields, "use_template": True}
         merged = {**current, **fields}
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO discord_welcome_config
-                    (guild_id, clone_id, enabled, channel_id, message_template, background_color, accent_color, sticker_url, card_style, avatar_shape, use_template, delivery_mode, card_theme, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+                    (guild_id, clone_id, enabled, channel_id, message_template, background_color, accent_color, sticker_url, card_style, avatar_shape, use_template, delivery_mode, card_theme, custom_background_url, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
                     enabled = $3, channel_id = $4, message_template = $5,
                     background_color = $6, accent_color = $7, sticker_url = $8, card_style = $9,
-                    avatar_shape = $10, use_template = $11, delivery_mode = $12, card_theme = $13, updated_at = NOW()
+                    avatar_shape = $10, use_template = $11, delivery_mode = $12, card_theme = $13,
+                    custom_background_url = $14, updated_at = NOW()
                 """,
                 guild_id, clone_id, merged["enabled"], merged["channel_id"], merged["message_template"],
                 merged["background_color"], merged["accent_color"], merged["sticker_url"], merged["card_style"],
                 merged["avatar_shape"], merged["use_template"], merged.get("delivery_mode", "channel"),
-                merged.get("card_theme", "wolf"),
+                merged.get("card_theme", "wolf"), merged.get("custom_background_url"),
             )
 
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
@@ -6968,6 +6996,21 @@ class Database:
         async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE discord_welcome_config SET card_pack_unlocked = TRUE, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+
+    async def unlock_ultra_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        """Marks the ultra welcome pack (custom background via /welcome
+        custombg) as purchased for this guild — same whole-guild, one-time
+        shape as unlock_welcome_card_pack, just its own independent flag.
+        Upserts a row first so this works even if /welcome was never
+        configured yet."""
+        await self.set_welcome_config(guild_id, clone_id)  # ensure a row exists
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_welcome_config SET ultra_pack_unlocked = TRUE, updated_at = NOW() "
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id,
             )
