@@ -204,6 +204,15 @@ DISCORD_CLONE_FREE_EVERY_NTH = 3
 # config.DISCOVER_CAP_TIERS. No more hardcoded GHS here.
 WELCOME_CARD_PACK_FEE_USD = 5
 
+# Ultra pack: on top of the premium card pack's fixed artist themes above,
+# this unlocks /welcome custombg — a guild can point the welcome card's
+# background at their OWN png/jpeg (hosted anywhere with a direct image
+# URL). Same one-time, whole-guild unlock pattern as the card pack, just a
+# separate flag/price so a guild can own one without the other. Priced
+# above the card pack since it's arbitrary custom branding, not a fixed
+# preset look.
+ULTRA_PACK_FEE_USD = 12
+
 # Comma-separated Discord user IDs that bypass the /registerclone payment gate
 # entirely, same as ADMIN_ID does for the Telegram flow's owner bypass. The
 # main bot's ADMIN_ID is NOT automatically included here — Telegram and
