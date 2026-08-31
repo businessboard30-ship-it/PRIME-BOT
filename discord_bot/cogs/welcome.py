@@ -108,6 +108,60 @@ async def _fetch_sticker_bytes(session: aiohttp.ClientSession, sticker_url: str 
         return None
 
 
+# Ultra-pack custom backgrounds: a much stricter fetch than
+# _fetch_sticker_bytes above, since this one is a SET-time admin action
+# (must give a clear pass/fail reason) rather than a best-effort render-time
+# lookup. Only real image files, capped well under Discord's own upload
+# limits so a render never has to decode something huge on every join.
+CUSTOM_BG_ALLOWED_CONTENT_TYPES = ("image/png", "image/jpeg", "image/jpg")
+CUSTOM_BG_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
+
+
+async def _fetch_custom_bg_bytes(
+    session: aiohttp.ClientSession, url: str
+) -> tuple[bytes | None, str | None]:
+    """Downloads and validates a candidate ultra-pack background. Returns
+    (bytes, None) on success or (None, reason) on failure — the reason is
+    meant to be shown straight to the admin who ran /welcome custombg, so
+    it stays specific ('not a png/jpeg', 'too large', ...) rather than a
+    generic failure like the render-time sticker fetch."""
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status != 200:
+                return None, f"couldn't fetch that URL (HTTP {resp.status})"
+            content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if content_type not in CUSTOM_BG_ALLOWED_CONTENT_TYPES:
+                return None, f"that URL isn't a png/jpeg (got `{content_type or 'unknown type'}`)"
+            content_length = resp.headers.get("Content-Length")
+            if content_length and int(content_length) > CUSTOM_BG_MAX_BYTES:
+                return None, f"that image is over the {CUSTOM_BG_MAX_BYTES // (1024 * 1024)}MB limit"
+            data = bytearray()
+            async for chunk in resp.content.iter_chunked(65536):
+                data.extend(chunk)
+                if len(data) > CUSTOM_BG_MAX_BYTES:
+                    return None, f"that image is over the {CUSTOM_BG_MAX_BYTES // (1024 * 1024)}MB limit"
+            return bytes(data), None
+    except Exception as e:
+        logger.warning(f"[v0] Couldn't fetch custom background from {url}: {e}")
+        return None, "couldn't fetch that URL — make sure it's a direct link to the image file"
+
+
+async def _custom_bg_bytes_for_render(
+    session: aiohttp.ClientSession, config: dict
+) -> bytes | None:
+    """Render-time counterpart to the strict fetch above: best-effort,
+    silent-fallback (same shape as _fetch_sticker_bytes) so a since-removed
+    or now-unreachable custom background never fails a join event — it
+    just renders with the stock theme background instead for that join."""
+    if not config.get("ultra_pack_unlocked"):
+        return None
+    url = (config.get("custom_background_url") or "").strip()
+    if not url:
+        return None
+    data, _reason = await _fetch_custom_bg_bytes(session, url)
+    return data
+
+
 def _suggested_channel(guild: discord.Guild) -> discord.TextChannel | None:
     """Best-effort guess for where to post welcome cards, so the nudge DM
     can propose a concrete channel instead of asking the owner to pick one
@@ -458,13 +512,14 @@ class WelcomeCog(GuildOnlyCog):
                                             timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         avatar_bytes = await resp.read()
                     sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
+                    custom_bg_bytes = await _custom_bg_bytes_for_render(session, config)
                 card_bytes, image_format = await asyncio.to_thread(
                     render_welcome_card,
                     avatar_bytes, owner.display_name, f"Member #{guild.member_count}",
                     background_color=config["background_color"], accent_color=config["accent_color"],
                     sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                     guild_name=guild.name, use_template=config.get("use_template", True),
-                    theme=config.get("card_theme", "wolf"),
+                    theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
                 )
                 ext = "gif" if image_format == "GIF" else "png"
                 file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
@@ -611,6 +666,7 @@ class WelcomeCog(GuildOnlyCog):
         owner's DMs are closed, True otherwise."""
         avatar_bytes = None
         sticker_bytes = None
+        custom_bg_bytes = None
         config = await db.get_welcome_config(guild.id, clone_id=clone_id)
         try:
             async with aiohttp.ClientSession() as session:
@@ -618,6 +674,7 @@ class WelcomeCog(GuildOnlyCog):
                                         timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
+                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config)
         except Exception:
             pass
 
@@ -641,7 +698,7 @@ class WelcomeCog(GuildOnlyCog):
                     background_color=config["background_color"], accent_color=config["accent_color"],
                     sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                     guild_name=guild.name, use_template=config.get("use_template", True),
-                    theme=config.get("card_theme", "wolf"),
+                    theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
                 )
                 ext = "gif" if image_format == "GIF" else "png"
                 file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
@@ -675,13 +732,14 @@ class WelcomeCog(GuildOnlyCog):
                 async with session.get(str(member.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
+                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config)
             card_bytes, image_format = await asyncio.to_thread(
                 render_welcome_card,
                 avatar_bytes, member.display_name, f"Member #{member.guild.member_count}",
                 background_color=config["background_color"], accent_color=config["accent_color"],
                 sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                 guild_name=member.guild.name, use_template=config.get("use_template", True),
-                theme=config.get("card_theme", "wolf"),
+                theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
             )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=__import__("io").BytesIO(card_bytes), filename=f"welcome.{ext}")
@@ -814,6 +872,56 @@ class WelcomeCog(GuildOnlyCog):
         from discord_bot.views_card_pack import start_card_pack_payment
         await start_card_pack_payment(interaction)
 
+    @group.command(name="buyultra", description="Buy the ultra pack (use your own png/jpeg as the welcome card background, one-time, whole server)")
+    async def buyultra(self, interaction: discord.Interaction):
+        if not _require_perm(interaction, "manage_guild"):
+            await _deny(interaction, "Manage Server")
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        from discord_bot.views_card_pack import start_ultra_pack_payment
+        await start_ultra_pack_payment(interaction)
+
+    @group.command(name="custombg", description="[Ultra pack] Set the welcome card's background to your own png/jpeg URL")
+    @app_commands.describe(url="Direct link to a .png or .jpg image (not a page URL) — leave blank to clear it")
+    async def custombg(self, interaction: discord.Interaction, url: str = ""):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not _require_perm(interaction, "manage_guild"):
+            await _deny(interaction, "Manage Server")
+            return
+
+        config = await db.get_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction))
+        if not config.get("ultra_pack_unlocked"):
+            await interaction.followup.send(
+                "Custom backgrounds are part of the ultra pack — this server hasn't bought it yet. "
+                "Run `/welcome buyultra` to unlock it for good.",
+                ephemeral=True,
+            )
+            return
+
+        url = url.strip()
+        if not url:
+            await db.set_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction), custom_background_url=None)
+            await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
+            await interaction.followup.send(
+                f"✅ Custom background cleared — back to the **{config.get('card_theme', 'wolf')}** theme.",
+                ephemeral=True,
+            )
+            return
+
+        async with aiohttp.ClientSession() as session:
+            image_bytes, reason = await _fetch_custom_bg_bytes(session, url)
+        if image_bytes is None:
+            await interaction.followup.send(f"⚠️ Couldn't use that image — {reason}.", ephemeral=True)
+            return
+
+        # Selecting a custom background implies the template card, same
+        # reasoning set_welcome_config already applies for colors/theme —
+        # set_welcome_config handles that switch itself when
+        # custom_background_url is set without an explicit use_template.
+        await db.set_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction), custom_background_url=url)
+        await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
+        await interaction.followup.send(f"✅ Welcome card background set to your image: {url}", ephemeral=True)
+
     @group.command(name="theme", description="Pick which welcome-card look this server uses")
     @app_commands.choices(look=[
         app_commands.Choice(name="Wolf (free, default)", value="wolf"),
@@ -888,13 +996,14 @@ class WelcomeCog(GuildOnlyCog):
                 async with session.get(str(interaction.user.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
+                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config)
             card_bytes, image_format = await asyncio.to_thread(
                 render_welcome_card,
                 avatar_bytes, interaction.user.display_name, f"Member #{interaction.guild.member_count}",
                 background_color=config["background_color"], accent_color=config["accent_color"],
                 sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                 guild_name=interaction.guild.name, use_template=config.get("use_template", True),
-                theme=config.get("card_theme", "wolf"),
+                theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
             )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=__import__("io").BytesIO(card_bytes), filename=f"preview.{ext}")
