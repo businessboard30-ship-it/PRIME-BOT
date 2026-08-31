@@ -211,7 +211,7 @@ WELCOME_CARD_PACK_FEE_USD = 5
 # separate flag/price so a guild can own one without the other. Priced
 # above the card pack since it's arbitrary custom branding, not a fixed
 # preset look.
-ULTRA_PACK_FEE_USD = 7
+ULTRA_PACK_FEE_USD = 2.99
 
 # Fallback image-hosting channel ID for the ultra pack's upload option
 # (/welcome custombg's `image` attachment param) — an admin can upload a
