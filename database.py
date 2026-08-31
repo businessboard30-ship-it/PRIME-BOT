@@ -2494,6 +2494,37 @@ class Database:
         await conn.execute("""
             ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS custom_background_url TEXT
         """)
+        # custom_bg_channel_id / custom_bg_message_id: populated only when
+        # the background came from an UPLOADED attachment (/welcome
+        # custombg's `image` param) rather than a pasted URL. Discord's
+        # attachment CDN links are signed and expire (~24h), so a raw URL
+        # captured at upload time goes stale. Instead we remember WHERE the
+        # image lives — a message in the bot's image-hosting channel (see
+        # bot_global_settings' "image_host_channel_id" below) — and
+        # re-fetch that message at render time to get a fresh, valid URL.
+        # custom_background_url stays populated too (best-effort cache /
+        # legacy fallback if the hosting message or channel ever vanishes).
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS custom_bg_channel_id BIGINT
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS custom_bg_message_id BIGINT
+        """)
+
+        # --- bot_global_settings (simple key/value store, bot-wide) --------
+        # Currently used for "image_host_channel_id": the channel (in the
+        # owner's support server) that /welcome custombg re-uploads images
+        # to when an admin uploads a file instead of pasting a URL, so that
+        # channel doubles as free, permanent-ish image hosting. Set via the
+        # owner-only /hostingchannel command (discord_bot/cogs/welcome.py),
+        # run directly in the channel that should be used.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_global_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
 
         # --- /setup channels (channel-suggestion wizard) -------------------
         # One row per guild (+clone) tracking state for the setup-channels
@@ -6893,6 +6924,24 @@ class Database:
     # Discord: welcome cards
     # ────────────────────��────────────────────────────────────────────────
 
+    async def get_global_setting(self, key: str) -> Optional[str]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT value FROM bot_global_settings WHERE key = $1", key)
+            return row["value"] if row else None
+
+    async def set_global_setting(self, key: str, value: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO bot_global_settings (key, value, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
+                """,
+                key, value,
+            )
+
     async def get_welcome_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -6921,6 +6970,7 @@ class Database:
                 "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
                 "card_theme": "wolf", "card_pack_unlocked": False,
                 "ultra_pack_unlocked": False, "custom_background_url": None,
+                "custom_bg_channel_id": None, "custom_bg_message_id": None,
             }
 
     async def set_welcome_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
@@ -6972,18 +7022,20 @@ class Database:
             await conn.execute(
                 """
                 INSERT INTO discord_welcome_config
-                    (guild_id, clone_id, enabled, channel_id, message_template, background_color, accent_color, sticker_url, card_style, avatar_shape, use_template, delivery_mode, card_theme, custom_background_url, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+                    (guild_id, clone_id, enabled, channel_id, message_template, background_color, accent_color, sticker_url, card_style, avatar_shape, use_template, delivery_mode, card_theme, custom_background_url, custom_bg_channel_id, custom_bg_message_id, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
                     enabled = $3, channel_id = $4, message_template = $5,
                     background_color = $6, accent_color = $7, sticker_url = $8, card_style = $9,
                     avatar_shape = $10, use_template = $11, delivery_mode = $12, card_theme = $13,
-                    custom_background_url = $14, updated_at = NOW()
+                    custom_background_url = $14, custom_bg_channel_id = $15, custom_bg_message_id = $16,
+                    updated_at = NOW()
                 """,
                 guild_id, clone_id, merged["enabled"], merged["channel_id"], merged["message_template"],
                 merged["background_color"], merged["accent_color"], merged["sticker_url"], merged["card_style"],
                 merged["avatar_shape"], merged["use_template"], merged.get("delivery_mode", "channel"),
                 merged.get("card_theme", "wolf"), merged.get("custom_background_url"),
+                merged.get("custom_bg_channel_id"), merged.get("custom_bg_message_id"),
             )
 
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
