@@ -211,7 +211,18 @@ WELCOME_CARD_PACK_FEE_USD = 5
 # separate flag/price so a guild can own one without the other. Priced
 # above the card pack since it's arbitrary custom branding, not a fixed
 # preset look.
-ULTRA_PACK_FEE_USD = 12
+ULTRA_PACK_FEE_USD = 7
+
+# Fallback image-hosting channel ID for the ultra pack's upload option
+# (/welcome custombg's `image` attachment param) — an admin can upload a
+# png/jpeg directly instead of pasting a URL, and the bot re-posts it to
+# this channel (in the owner's own support server) so the message's
+# attachment doubles as free image hosting for the welcome card. Normally
+# set at runtime via the owner-only /hostingchannel command (persisted in
+# the bot_global_settings DB table), which takes priority over this env
+# var — this is just a bootstrap default so the feature works before that
+# command has ever been run. Leave blank/0 to require /hostingchannel.
+IMAGE_HOST_CHANNEL_ID = int(os.getenv("IMAGE_HOST_CHANNEL_ID", "0") or "0")
 
 # Comma-separated Discord user IDs that bypass the /registerclone payment gate
 # entirely, same as ADMIN_ID does for the Telegram flow's owner bypass. The
