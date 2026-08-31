@@ -817,13 +817,43 @@ class RoastArenaCog(GuildOnlyCog):
             clone_id, exclude_guild_id=None, any_clone=True
         )
         battling = {challenge["challenger_guild_id"], challenge["challenged_guild_id"]}
+
+        # A guild opted in on more than one clone (e.g. the main bot AND a
+        # clone both added to the same Discord server) comes back from
+        # list_optedin_roast_arena_guilds as ONE ROW PER CLONE, all sharing
+        # the same guild_id. Without deduping here, the loop below hits
+        # self.bot.get_guild(gid) — the SAME guild object — once per row,
+        # sending one duplicate DM per clone, all through this one process's
+        # token, all with the identical arenainvite:*:{gid} custom_id. That's
+        # the visible "don't ask again seems to fail" symptom: clicking it
+        # on ONE duplicate only flips dont_ask_again on the ONE clone_id row
+        # tied to whoever delivered that click, so the sibling clone's row(s)
+        # stay live and the same guild gets invited (and DMed again) next
+        # time — it looks like the button didn't take, or like the flow
+        # hangs/times out under the pile-up of duplicate sends.
+        #
+        # Fix: collapse to one row per guild_id, and only skip the guild
+        # entirely once EVERY one of its rows is suppressed (all dont_ask_again,
+        # or all still within their remind_after window) — one clone opting
+        # back in shouldn't get silently overridden by a sibling clone's
+        # earlier opt-out.
+        by_guild: dict[int, list[dict]] = {}
         for cfg in others:
-            gid = cfg["guild_id"]
-            if gid in battling or cfg.get("dont_ask_again"):
+            by_guild.setdefault(cfg["guild_id"], []).append(cfg)
+
+        for gid, rows in by_guild.items():
+            if gid in battling:
                 continue
-            remind_after = cfg.get("remind_after")
-            if remind_after and remind_after > now:
+
+            def _suppressed(row: dict) -> bool:
+                if row.get("dont_ask_again"):
+                    return True
+                remind_after = row.get("remind_after")
+                return bool(remind_after and remind_after > now)
+
+            if all(_suppressed(row) for row in rows):
                 continue
+
             guild = self.bot.get_guild(gid)
             if guild is not None:
                 await self._dm_admins(
