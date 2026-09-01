@@ -126,6 +126,7 @@ class HostApplyButton(
         return cls(guild_id, invoker_id, channel_id)
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         if not await check_wizard_access(interaction, self.invoker_id, "roastarena apply", "manage_guild", "Manage Server"):
             return
         cog = _cog(interaction)
