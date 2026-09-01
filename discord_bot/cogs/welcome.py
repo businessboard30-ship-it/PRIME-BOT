@@ -339,6 +339,10 @@ class WelcomeNudgeView(discord.ui.View):
             label="Edit message", style=discord.ButtonStyle.secondary, emoji="📝",
             custom_id=f"welcome_nudge_edit:{guild_id}",
         ))
+        self.add_item(discord.ui.Button(
+            label="Ultra Pack", style=discord.ButtonStyle.primary, emoji="✨",
+            custom_id=f"welcome_nudge_ultra:{guild_id}",
+        ))
 
 
 class WelcomeNudgeEditModal(discord.ui.Modal, title="Edit welcome message"):
@@ -478,6 +482,17 @@ class WelcomeCog(GuildOnlyCog):
             await interaction.edit_original_response(
                 content="Got it — won't ask again. Turn it on anytime with `/welcome setup`.",
                 view=None, attachments=[],
+            )
+        elif custom_id.startswith("welcome_nudge_ultra:"):
+            guild_id = int(custom_id.split(":", 1)[1])
+            await interaction.response.send_message(
+                f"✨ **Ultra Pack — ${bot_config.ULTRA_PACK_FEE_USD:g} one-time, unlocks for the whole server**\n\n"
+                f"Instead of picking from the preset card themes, upload your own PNG or JPEG (a "
+                f"banner, logo, or photo) and every new member's welcome card gets rendered on top of "
+                f"it — same name/avatar/member-count layout, your background.\n\n"
+                f"Run `/welcome buyultra` in **{interaction.client.get_guild(guild_id).name if interaction.client.get_guild(guild_id) else 'the server'}** "
+                f"to purchase, then `/welcome custombg` to upload your image once it's unlocked.",
+                ephemeral=True,
             )
         elif custom_id.startswith("sticker_announce_ack:"):
             guild_id = int(custom_id.split(":", 1)[1])
@@ -772,6 +787,12 @@ class WelcomeCog(GuildOnlyCog):
                 f"join quietly with no greeting.\n\nHere's what one would look like for the next "
                 f"person who joins:"
             )
+            ultra_blurb = (
+                f"\n\n✨ **Ultra Pack (${bot_config.ULTRA_PACK_FEE_USD:g} one-time, whole server):** "
+                f"use your own PNG/JPEG as the welcome card background instead of a preset theme — "
+                f"upload a photo, banner, or logo and every new member's card is rendered on it. "
+                f"Tap **Ultra Pack** below to learn more, or run `/welcome buyultra` anytime."
+            )
             view = WelcomeNudgeView(guild.id, channel.id if channel else None, template)
             if avatar_bytes:
                 # Preview with the sticker/style the guild would actually
@@ -791,9 +812,9 @@ class WelcomeCog(GuildOnlyCog):
                 file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
                 preview_text = _apply_template(template, owner)
                 channel_note = f"\nWould post in {channel.mention}." if channel else "\nI'd need you to pick a channel — no postable channel found."
-                await dm.send(content=f"{intro}\n\n{preview_text}{channel_note}", file=file, view=view)
+                await dm.send(content=f"{intro}\n\n{preview_text}{channel_note}{ultra_blurb}", file=file, view=view)
             else:
-                await dm.send(content=intro, view=view)
+                await dm.send(content=f"{intro}{ultra_blurb}", view=view)
             return True
         except discord.Forbidden:
             return False
