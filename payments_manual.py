@@ -75,12 +75,13 @@ async def _send_approval_dms(bot: discord.Client, reference: str, payment_type: 
     checkout starts — we only want you notified once someone claims they
     actually paid, not on every buyer who clicks the Selar link."""
     approver_ids = await _resolve_approvers(bot, guild_id)
+    location_line = f"Guild: `{guild_id}`" if guild_id is not None else f"Clone: `#{clone_id}`"
     msg = (
         f"💰 **Manual payment — buyer says they've paid**\n"
         f"Buyer: <@{buyer_id}> (`{buyer_id}`)\n"
         f"Type: `{payment_type}` — {amount_display}\n"
         f"Reference: `{reference}`\n"
-        f"Guild: `{guild_id}`\n\n"
+        f"{location_line}\n\n"
         f"Check Selar for a matching sale (buyer email `user_{buyer_id}@animebot.com`), "
         f"then Approve or Reject below."
     )
