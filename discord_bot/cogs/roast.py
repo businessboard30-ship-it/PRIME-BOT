@@ -186,157 +186,223 @@ def _is_admin_member(member: discord.Member) -> bool:
     return member.guild_permissions.administrator or member.id in DISCORD_CLONE_ADMIN_IDS
 
 
-class RoastTargetPickerView(discord.ui.View):
-    """Sent in the admin's DM. First admin to pick target+channel locks
-    the challenge in; a lock check right before insert prevents two admins
-    racing to both create a battle for the same inactivity/random tick."""
+def _target_options(guild: discord.Guild) -> list[discord.SelectOption]:
+    members = [m for m in guild.members if not m.bot][:25]
+    return [discord.SelectOption(label=m.display_name, value=str(m.id)) for m in members] or \
+        [discord.SelectOption(label="No eligible members", value="none")]
 
-    def __init__(self, cog: "RoastCog", guild: discord.Guild, proposing_admin_id: int):
-        super().__init__(timeout=600)
-        self.cog = cog
-        self.guild = guild
-        self.proposing_admin_id = proposing_admin_id
-        self.chosen_target: discord.Member | None = None
-        self.chosen_channel: discord.TextChannel | None = None
 
-        members = [m for m in guild.members if not m.bot][:25]
-        self.target_select = discord.ui.Select(
-            placeholder=f"Pick a target in {guild.name}...",
-            options=[discord.SelectOption(label=m.display_name, value=str(m.id)) for m in members] or
-                    [discord.SelectOption(label="No eligible members", value="none")],
-            row=0,
-        )
-        self.target_select.callback = self._on_target
-        self.add_item(self.target_select)
+def _channel_options(guild: discord.Guild) -> list[discord.SelectOption]:
+    channels = [c for c in guild.text_channels if c.permissions_for(guild.me).send_messages][:25]
+    return [discord.SelectOption(label=f"#{c.name}"[:100], value=str(c.id)) for c in channels] or \
+        [discord.SelectOption(label="No eligible channels", value="none")]
 
-        channels = [c for c in guild.text_channels if c.permissions_for(guild.me).send_messages][:25]
-        self.channel_select = discord.ui.Select(
-            placeholder=f"Pick a channel in {guild.name}...",
-            options=[discord.SelectOption(label=f"#{c.name}"[:100], value=str(c.id)) for c in channels] or
-                    [discord.SelectOption(label="No eligible channels", value="none")],
-            row=1,
-        )
-        self.channel_select.callback = self._on_channel
-        self.add_item(self.channel_select)
 
-        self.confirm_btn = discord.ui.Button(label="Send Challenge 🔥", style=discord.ButtonStyle.danger, row=2, disabled=True)
-        self.confirm_btn.callback = self._on_confirm
-        self.add_item(self.confirm_btn)
+def _picker_status_embed(guild: discord.Guild, target: discord.Member | None, channel: discord.TextChannel | None) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"🔥 Roast Opportunity — {guild.name}",
+        description="This server looks quiet. Want to start a roast? Pick a target and channel below.",
+        color=discord.Color.gold(),
+    )
+    embed.set_footer(text=f"Server ID: {guild.id}")
+    embed.add_field(name="Target", value=target.mention if target else "*not picked yet*", inline=True)
+    embed.add_field(name="Channel", value=f"#{channel.name}" if channel else "*not picked yet*", inline=True)
+    return embed
 
-        self.remind_later_btn = discord.ui.Button(label="Remind Me Later", style=discord.ButtonStyle.secondary, row=3)
-        self.remind_later_btn.callback = self._on_remind_later
-        self.add_item(self.remind_later_btn)
 
-        self.dont_ask_btn = discord.ui.Button(label="Don't Ask Again", style=discord.ButtonStyle.secondary, row=3)
-        self.dont_ask_btn.callback = self._on_dont_ask_again
-        self.add_item(self.dont_ask_btn)
+def build_target_picker_view(guild: discord.Guild, admin_id: int, target_id: int = 0, channel_id: int = 0) -> discord.ui.View:
+    """Restart-safe replacement for the old RoastTargetPickerView: every
+    child is a DynamicItem (see ROAST_DYNAMIC_ITEMS below) whose custom_id
+    carries guild_id/admin_id and the picks made SO FAR, so a fresh view
+    can be reconstructed by from_custom_id() even if the bot restarted
+    since this message was sent — no more dead "didn't respond in time"
+    buttons on old DMs. Trade-off: a restart between picking the target
+    and picking the channel loses that in-progress pick (the rebuilt
+    picker starts fresh for whichever half wasn't in the custom_id yet)
+    since nothing is persisted to the DB — acceptable given how rare a
+    mid-pick restart is, versus a permanently dead button before this fix.
+    """
+    view = discord.ui.View(timeout=None)
+    view.add_item(_RoastPickTargetSelect(guild.id, admin_id, channel_id, _target_options(guild)))
+    view.add_item(_RoastPickChannelSelect(guild.id, admin_id, target_id, _channel_options(guild)))
+    view.add_item(_RoastPickConfirmButton(guild.id, admin_id, target_id, channel_id))
+    view.add_item(_RoastPickRemindButton(guild.id, admin_id))
+    view.add_item(_RoastPickDontAskButton(guild.id, admin_id))
+    return view
 
-    def _status_embed(self) -> discord.Embed:
-        embed = discord.Embed(
-            title=f"🔥 Roast Opportunity — {self.guild.name}",
-            description="This server looks quiet. Want to start a roast? Pick a target and channel below.",
-            color=discord.Color.gold(),
-        )
-        embed.set_footer(text=f"Server ID: {self.guild.id}")
-        embed.add_field(
-            name="Target",
-            value=self.chosen_target.mention if self.chosen_target else "*not picked yet*",
-            inline=True,
-        )
-        embed.add_field(
-            name="Channel",
-            value=f"#{self.chosen_channel.name}" if self.chosen_channel else "*not picked yet*",
-            inline=True,
-        )
-        return embed
 
-    async def _on_target(self, interaction: discord.Interaction):
+def _disabled_picker_view(guild: discord.Guild, admin_id: int, target_id: int, channel_id: int) -> discord.ui.View:
+    view = build_target_picker_view(guild, admin_id, target_id, channel_id)
+    for child in view.children:
+        child.disabled = True
+    return view
+
+
+class _RoastPickTargetSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"^roastpick_target:(\d+):(\d+):(\d+)$"):
+    def __init__(self, guild_id: int, admin_id: int, channel_id: int, options: list[discord.SelectOption]):
+        self.guild_id = guild_id
+        self.admin_id = admin_id
+        self.channel_id = channel_id
+        super().__init__(discord.ui.Select(
+            options=options,
+            custom_id=f"roastpick_target:{guild_id}:{admin_id}:{channel_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match[str]"):
+        guild_id, admin_id, channel_id = int(match[1]), int(match[2]), int(match[3])
+        guild = interaction.client.get_guild(guild_id)
+        options = _target_options(guild) if guild else [discord.SelectOption(label="Server unavailable", value="none")]
+        return cls(guild_id, admin_id, channel_id, options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.admin_id:
+            await interaction.response.send_message("This picker isn't yours.", ephemeral=True)
+            return
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.response.send_message("Can't reach that server anymore.", ephemeral=True)
+            return
+        val = self.item.values[0]
+        if val == "none":
+            await interaction.response.send_message("No eligible members.", ephemeral=True)
+            return
+        target = guild.get_member(int(val))
+        if target is None:
+            await interaction.response.send_message("Couldn't find that member — try again.", ephemeral=True)
+            return
+        channel = guild.get_channel(self.channel_id) if self.channel_id else None
+        view = build_target_picker_view(guild, self.admin_id, target.id, self.channel_id)
+        await interaction.response.edit_message(embed=_picker_status_embed(guild, target, channel), view=view)
+
+
+class _RoastPickChannelSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"^roastpick_channel:(\d+):(\d+):(\d+)$"):
+    def __init__(self, guild_id: int, admin_id: int, target_id: int, options: list[discord.SelectOption]):
+        self.guild_id = guild_id
+        self.admin_id = admin_id
+        self.target_id = target_id
+        super().__init__(discord.ui.Select(
+            options=options,
+            custom_id=f"roastpick_channel:{guild_id}:{admin_id}:{target_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match[str]"):
+        guild_id, admin_id, target_id = int(match[1]), int(match[2]), int(match[3])
+        guild = interaction.client.get_guild(guild_id)
+        options = _channel_options(guild) if guild else [discord.SelectOption(label="Server unavailable", value="none")]
+        return cls(guild_id, admin_id, target_id, options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.admin_id:
+            await interaction.response.send_message("This picker isn't yours.", ephemeral=True)
+            return
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.response.send_message("Can't reach that server anymore.", ephemeral=True)
+            return
+        val = self.item.values[0]
+        if val == "none":
+            await interaction.response.send_message("No eligible channels.", ephemeral=True)
+            return
+        channel = guild.get_channel(int(val))
+        if channel is None:
+            await interaction.response.send_message("Couldn't find that channel — try again.", ephemeral=True)
+            return
+        target = guild.get_member(self.target_id) if self.target_id else None
+        view = build_target_picker_view(guild, self.admin_id, self.target_id, channel.id)
+        await interaction.response.edit_message(embed=_picker_status_embed(guild, target, channel), view=view)
+
+
+class _RoastPickConfirmButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^roastpick_confirm:(\d+):(\d+):(\d+):(\d+)$"):
+    def __init__(self, guild_id: int, admin_id: int, target_id: int, channel_id: int):
+        self.guild_id = guild_id
+        self.admin_id = admin_id
+        self.target_id = target_id
+        self.channel_id = channel_id
+        super().__init__(discord.ui.Button(
+            label="Send Challenge 🔥", style=discord.ButtonStyle.danger,
+            disabled=not (target_id and channel_id),
+            custom_id=f"roastpick_confirm:{guild_id}:{admin_id}:{target_id}:{channel_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match[str]"):
+        return cls(int(match[1]), int(match[2]), int(match[3]), int(match[4]))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.admin_id:
+            await interaction.response.send_message("This picker isn't yours.", ephemeral=True)
+            return
+        if not self.target_id or not self.channel_id:
+            await interaction.response.send_message("Pick both a target and a channel first.", ephemeral=True)
+            return
+        cog = interaction.client.get_cog("RoastCog")
+        guild = interaction.client.get_guild(self.guild_id)
+        if cog is None or guild is None:
+            await interaction.response.send_message("Roast arena is offline right now, try again shortly.", ephemeral=True)
+            return
+        target = guild.get_member(self.target_id)
+        channel = guild.get_channel(self.channel_id)
+        if not target or not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "That target or channel isn't available anymore — pick again.", ephemeral=True
+            )
+            return
         try:
-            val = self.target_select.values[0]
-            if val == "none":
-                await interaction.response.send_message("No eligible members.", ephemeral=True)
-                return
-            self.chosen_target = self.guild.get_member(int(val))
-            if self.chosen_target is None:
-                logger.warning(f"[roast] target_select resolved to no member for id={val} guild={self.guild.id}")
-                await interaction.response.send_message("Couldn't find that member — try again.", ephemeral=True)
-                return
-            self.confirm_btn.disabled = not (self.chosen_target and self.chosen_channel)
-            await interaction.response.edit_message(embed=self._status_embed(), view=self)
-        except Exception:
-            logger.exception(f"[roast] target picker failed guild={self.guild.id}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("⚠️ Something went wrong picking the target — check Railway logs.", ephemeral=True)
-
-    async def _on_channel(self, interaction: discord.Interaction):
-        try:
-            val = self.channel_select.values[0]
-            if val == "none":
-                await interaction.response.send_message("No eligible channels.", ephemeral=True)
-                return
-            self.chosen_channel = self.guild.get_channel(int(val))
-            if self.chosen_channel is None:
-                logger.warning(f"[roast] channel_select resolved to no channel for id={val} guild={self.guild.id}")
-                await interaction.response.send_message("Couldn't find that channel — try again.", ephemeral=True)
-                return
-            self.confirm_btn.disabled = not (self.chosen_target and self.chosen_channel)
-            await interaction.response.edit_message(embed=self._status_embed(), view=self)
-        except Exception:
-            logger.exception(f"[roast] channel picker failed guild={self.guild.id}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("⚠️ Something went wrong picking the channel — check Railway logs.", ephemeral=True)
-
-    async def _on_confirm(self, interaction: discord.Interaction):
-        try:
-            if not self.chosen_target or not self.chosen_channel:
-                await interaction.response.send_message("Pick both a target and a channel first.", ephemeral=True)
-                return
-            for child in self.children:
-                child.disabled = True
             await interaction.response.edit_message(
-                content=f"✅ Challenge sent to {self.chosen_target.mention} in #{self.chosen_channel.name}.",
+                content=f"✅ Challenge sent to {target.mention} in #{channel.name}.",
                 embed=None,
-                view=self,
+                view=_disabled_picker_view(guild, self.admin_id, self.target_id, self.channel_id),
             )
             logger.info(
-                f"[roast] challenge queued guild={self.guild.id} target={self.chosen_target.id} "
-                f"channel={self.chosen_channel.id} by_admin={interaction.user.id}"
+                f"[roast] challenge queued guild={guild.id} target={target.id} "
+                f"channel={channel.id} by_admin={interaction.user.id}"
             )
-            await self.cog.start_challenge(
-                guild=self.guild,
-                target=self.chosen_target,
-                channel=self.chosen_channel,
-                proposed_by_admin_id=interaction.user.id,
+            await cog.start_challenge(
+                guild=guild, target=target, channel=channel, proposed_by_admin_id=interaction.user.id,
             )
-            await self.cog._resolve_proposal_round(
-                self.guild.id, self,
+            await cog._resolve_proposal_round(
+                guild.id, interaction.message.id,
                 f"🔥 {interaction.user.display_name} already sent a challenge for this round.",
             )
         except Exception:
-            logger.exception(f"[roast] start_challenge failed guild={self.guild.id}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("⚠️ Failed to send the challenge — check Railway logs.", ephemeral=True)
-            else:
-                try:
-                    await interaction.followup.send("⚠️ Failed to send the challenge — check Railway logs.", ephemeral=True)
-                except discord.HTTPException:
-                    pass
-        finally:
-            self.stop()
+            logger.exception(f"[roast] start_challenge failed guild={guild.id}")
+            try:
+                await interaction.followup.send("⚠️ Failed to send the challenge — check Railway logs.", ephemeral=True)
+            except discord.HTTPException:
+                pass
 
-    async def _on_remind_later(self, interaction: discord.Interaction):
+
+class _RoastPickRemindButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^roastpick_remind:(\d+):(\d+)$"):
+    def __init__(self, guild_id: int, admin_id: int):
+        self.guild_id = guild_id
+        self.admin_id = admin_id
+        super().__init__(discord.ui.Button(
+            label="Remind Me Later", style=discord.ButtonStyle.secondary,
+            custom_id=f"roastpick_remind:{guild_id}:{admin_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match[str]"):
+        return cls(int(match[1]), int(match[2]))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.admin_id:
+            await interaction.response.send_message("This picker isn't yours.", ephemeral=True)
+            return
+        cog = interaction.client.get_cog("RoastCog")
+        guild = interaction.client.get_guild(self.guild_id)
+        if cog is None or guild is None:
+            await interaction.response.send_message("Roast arena is offline right now, try again shortly.", ephemeral=True)
+            return
         try:
-            for child in self.children:
-                child.disabled = True
             await interaction.response.edit_message(
                 content=f"⏰ Okay, I'll check back in about {SNOOZE_MINUTES // 60}h.",
                 embed=None,
-                view=self,
+                view=_disabled_picker_view(guild, self.admin_id, 0, 0),
             )
-            clone_id = _clone_id_of(self.cog.bot)
-            # Push last_proposed_at back so the cooldown check in
-            # _check_triggers clears again after SNOOZE_MINUTES instead of
-            # the full PROPOSAL_COOLDOWN_MINUTES.
+            clone_id = _clone_id_of(cog.bot)
             await db.execute(
                 f"""
                 INSERT INTO discord_roast_activity (guild_id, clone_id, last_roast_proposed_at)
@@ -344,32 +410,52 @@ class RoastTargetPickerView(discord.ui.View):
                 ON CONFLICT (guild_id, COALESCE(clone_id, -1))
                 DO UPDATE SET last_roast_proposed_at = NOW() - INTERVAL '{PROPOSAL_COOLDOWN_MINUTES - SNOOZE_MINUTES} minutes'
                 """,
-                self.guild.id, clone_id,
+                guild.id, clone_id,
             )
-            await self.cog._resolve_proposal_round(
-                self.guild.id, self,
+            await cog._resolve_proposal_round(
+                guild.id, interaction.message.id,
                 f"⏰ {interaction.user.display_name} already snoozed this round — I'll check back later.",
             )
-            logger.info(f"[roast] admin={interaction.user.id} snoozed guild={self.guild.id}")
+            logger.info(f"[roast] admin={interaction.user.id} snoozed guild={guild.id}")
         except Exception:
-            logger.exception(f"[roast] remind_later failed guild={self.guild.id}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
-        finally:
-            self.stop()
+            logger.exception(f"[roast] remind_later failed guild={self.guild_id}")
+            try:
+                await interaction.followup.send("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
+            except discord.HTTPException:
+                pass
 
-    async def _on_dont_ask_again(self, interaction: discord.Interaction):
+
+class _RoastPickDontAskButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^roastpick_dontask:(\d+):(\d+)$"):
+    def __init__(self, guild_id: int, admin_id: int):
+        self.guild_id = guild_id
+        self.admin_id = admin_id
+        super().__init__(discord.ui.Button(
+            label="Don't Ask Again", style=discord.ButtonStyle.secondary,
+            custom_id=f"roastpick_dontask:{guild_id}:{admin_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match[str]"):
+        return cls(int(match[1]), int(match[2]))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.admin_id:
+            await interaction.response.send_message("This picker isn't yours.", ephemeral=True)
+            return
+        cog = interaction.client.get_cog("RoastCog")
+        guild = interaction.client.get_guild(self.guild_id)
+        if cog is None or guild is None:
+            await interaction.response.send_message("Roast arena is offline right now, try again shortly.", ephemeral=True)
+            return
         try:
-            for child in self.children:
-                child.disabled = True
             await interaction.response.edit_message(
                 content="🔕 Got it, I won't suggest auto-roasts for this server anymore. "
                         "Re-enable anytime with `/roast configure enabled:True`.",
                 embed=None,
-                view=self,
+                view=_disabled_picker_view(guild, self.admin_id, 0, 0),
             )
-            clone_id = _clone_id_of(self.cog.bot)
-            current = await self.cog.get_config(self.guild.id, clone_id)
+            clone_id = _clone_id_of(cog.bot)
+            current = await cog.get_config(guild.id, clone_id)
             await db.execute(
                 """
                 INSERT INTO discord_roast_config (guild_id, clone_id, inactivity_minutes, random_chance_percent, enabled)
@@ -377,19 +463,20 @@ class RoastTargetPickerView(discord.ui.View):
                 ON CONFLICT (guild_id, COALESCE(clone_id, -1))
                 DO UPDATE SET enabled = FALSE
                 """,
-                self.guild.id, clone_id, current["inactivity_minutes"], current["random_chance_percent"],
+                guild.id, clone_id, current["inactivity_minutes"], current["random_chance_percent"],
             )
-            await self.cog._resolve_proposal_round(
-                self.guild.id, self,
+            await cog._resolve_proposal_round(
+                guild.id, interaction.message.id,
                 f"🔕 {interaction.user.display_name} already turned off auto-roasts for this server.",
             )
-            logger.info(f"[roast] admin={interaction.user.id} disabled auto-roast guild={self.guild.id}")
+            logger.info(f"[roast] admin={interaction.user.id} disabled auto-roast guild={guild.id}")
         except Exception:
-            logger.exception(f"[roast] dont_ask_again failed guild={self.guild.id}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
-        finally:
-            self.stop()
+            logger.exception(f"[roast] dont_ask_again failed guild={self.guild_id}")
+            try:
+                await interaction.followup.send("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
+            except discord.HTTPException:
+                pass
+
 
 
 class RoastMemberRequestView(discord.ui.View):
@@ -737,7 +824,11 @@ class RoastCancelPendingView(discord.ui.View):
         await interaction.followup.send("🛑 Cancelled — you can start a new roast now.", ephemeral=True)
 
 
-ROAST_DYNAMIC_ITEMS = (_RoastApproveButton, _RoastDenyButton, _RoastAcceptButton, _RoastDeclineButton)
+ROAST_DYNAMIC_ITEMS = (
+    _RoastApproveButton, _RoastDenyButton, _RoastAcceptButton, _RoastDeclineButton,
+    _RoastPickTargetSelect, _RoastPickChannelSelect, _RoastPickConfirmButton,
+    _RoastPickRemindButton, _RoastPickDontAskButton,
+)
 
 
 class RoastBattleView(discord.ui.View):
@@ -798,25 +889,28 @@ class RoastCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._active_by_channel: dict[int, int] = {}  # channel_id -> battle_id
-        # guild_id -> list of (discord.Message, RoastTargetPickerView) for every
-        # admin DM sent by the current auto-proposal round. Lets any one admin's
+        # guild_id -> list of (message_id, discord.Message) for every admin
+        # DM sent by the current auto-proposal round. Lets any one admin's
         # terminal action (Send Challenge / Remind Me Later / Don't Ask Again)
         # resolve every other admin's copy of the same prompt too, instead of
         # leaving them live and clickable after the round is already decided.
-        self._proposal_rounds: dict[int, list[tuple[discord.Message, "RoastTargetPickerView"]]] = {}
+        # Keyed/compared by message_id (not view identity) since the picker
+        # items are now DynamicItems rebuilt fresh per-dispatch — see
+        # build_target_picker_view's docstring. Same in-memory-only
+        # limitation as before: doesn't survive a restart, but the picker
+        # itself no longer breaks when that happens (only this cosmetic
+        # "disable my siblings too" step silently no-ops on a stale round).
+        self._proposal_rounds: dict[int, list[discord.Message]] = {}
 
-    async def _resolve_proposal_round(self, guild_id: int, acting_view: "RoastTargetPickerView", note: str):
+    async def _resolve_proposal_round(self, guild_id: int, acting_message_id: int, note: str):
         """Disable and relabel every other admin's still-open prompt for this
         guild's current proposal round once one admin has acted on theirs."""
         siblings = self._proposal_rounds.pop(guild_id, [])
-        for message, view in siblings:
-            if view is acting_view:
+        for message in siblings:
+            if message.id == acting_message_id:
                 continue
             try:
-                for child in view.children:
-                    child.disabled = True
-                view.stop()
-                await message.edit(content=note, embed=None, view=view)
+                await message.edit(content=note, embed=None, view=None)
             except discord.HTTPException:
                 logger.info(f"[roast] couldn't resolve sibling proposal msg={message.id} guild={guild_id}")
             except Exception:
@@ -1203,12 +1297,12 @@ class RoastCog(GuildOnlyCog):
             logger.warning(f"[roast] trigger fired but no admins found guild={guild.id}")
             return
         sent = 0
-        round_messages: list[tuple[discord.Message, RoastTargetPickerView]] = []
+        round_messages: list[discord.Message] = []
         for admin in admins:
             try:
-                view = RoastTargetPickerView(self, guild, admin.id)
-                msg = await admin.send(embed=view._status_embed(), view=view)
-                round_messages.append((msg, view))
+                view = build_target_picker_view(guild, admin.id)
+                msg = await admin.send(embed=_picker_status_embed(guild, None, None), view=view)
+                round_messages.append(msg)
                 sent += 1
             except discord.Forbidden:
                 logger.info(f"[roast] couldn't DM admin={admin.id} guild={guild.id} (DMs closed)")
@@ -1369,7 +1463,7 @@ class RoastCog(GuildOnlyCog):
     async def manual_trigger(self, interaction: discord.Interaction):
         """Lets an admin skip the inactivity/random wait and pop the
         target+channel picker immediately, right in the server instead of
-        via DM. Same RoastTargetPickerView as the automatic flow, and
+        via DM. Same picker view builder as the automatic flow, and
         still respects the one-battle-per-guild guard in start_challenge's
         caller — but since this is manual, we don't need the trigger-level
         existing-battle check from _check_triggers (an admin explicitly
@@ -1389,8 +1483,8 @@ class RoastCog(GuildOnlyCog):
                 ephemeral=True,
             )
             return
-        view = RoastTargetPickerView(self, interaction.guild, interaction.user.id)
-        await interaction.followup.send(embed=view._status_embed(), view=view, ephemeral=True)
+        view = build_target_picker_view(interaction.guild, interaction.user.id)
+        await interaction.followup.send(embed=_picker_status_embed(interaction.guild, None, None), view=view, ephemeral=True)
         logger.info(f"[roast] manual trigger opened by admin={interaction.user.id} guild={interaction.guild.id}")
 
     # ---------- admin config ----------
