@@ -126,6 +126,21 @@ class _DirectPaidButton(discord.ui.DynamicItem[discord.ui.Button], template=_DIR
         amount_display = _AMOUNT_DISPLAY.get(self.payment_type, self.payment_type.replace("_", " ").title())
         buyer_id = interaction.user.id
         clone_id = getattr(interaction.client, "clone_id", None)
+
+        # discord_clone_monetization isn't a guild unlock — it activates a
+        # subscription on a clone the BUYER owns, keyed by owner_id in
+        # discord_cloned_bots (see get_discord_clones_by_owner), not by
+        # Manage Server permission in some guild. The guild-matching path
+        # below is for welcome_card_pack/ultra_welcome_pack, which really
+        # are guild unlocks. Branching here also matters for the unlock
+        # itself: _unlock_discord_clone_monetization only activates a row
+        # that was pre-stashed via db.start_discord_monetization_payment —
+        # skipping that step (as the guild-matching path would) leaves the
+        # reference unmatched, so Approve silently does nothing.
+        if self.payment_type == "discord_clone_monetization":
+            await self._handle_clone_monetization_claim(interaction, buyer_id, amount_display)
+            return
+
         matches = await _guilds_with_manage_permission(interaction.client, buyer_id)
 
         if len(matches) == 1:
@@ -164,20 +179,71 @@ class _DirectPaidButton(discord.ui.DynamicItem[discord.ui.Button], template=_DIR
             "so a human will confirm which one this is for before unlocking it.", ephemeral=True,
         )
 
+    async def _handle_clone_monetization_claim(self, interaction: discord.Interaction, buyer_id: int, amount_display: str) -> None:
+        owned_clones = await db.get_discord_clones_by_owner(buyer_id)
+        active_owned = [c for c in owned_clones if c.get("status") == "active"]
+
+        if len(active_owned) == 1:
+            clone = active_owned[0]
+            reference = _reference_for(self.payment_type, buyer_id)
+            # Stash the reference BEFORE logging/approving so the same
+            # activate_discord_monetization_subscription_by_reference the
+            # /clonemonetize activate webhook backstop uses can find this
+            # row — without this the Approve button would mark the payment
+            # paid but the unlock handler would silently match nothing.
+            await db.start_discord_monetization_payment(clone["clone_id"], buyer_id, reference)
+            await db.log_payment(
+                buyer_id, 0.0, reference, status="pending",
+                payment_type=self.payment_type, chat_id=None, provider="selar",
+            )
+            await _send_approval_dms(
+                interaction.client, reference, self.payment_type, buyer_id,
+                None, clone["clone_id"], amount_display,
+            )
+            await interaction.followup.send(
+                f"Thanks — flagged for review against your clone **{clone['bot_username']}**. "
+                f"You'll get a DM as soon as it's confirmed.", ephemeral=True,
+            )
+            return
+
+        if len(active_owned) == 0:
+            await _notify_approvers_unresolved(interaction.client, buyer_id, self.payment_type, None, reason="no_owned_clone")
+            await interaction.followup.send(
+                "Thanks — flagged for review, but I don't see an active clone registered under your account. "
+                "DM your clone's bot username along with your payment confirmation and it'll get sorted.", ephemeral=True,
+            )
+            return
+
+        # 2+ active clones owned — don't guess which one this payment is for.
+        await _notify_approvers_unresolved(
+            interaction.client, buyer_id, self.payment_type, None,
+            reason="multiple_owned_clones", candidate_clones=active_owned,
+        )
+        await interaction.followup.send(
+            "Thanks — flagged for review. You have more than one active clone registered, "
+            "so a human will confirm which one this is for before activating it.", ephemeral=True,
+        )
+
 
 async def _notify_approvers_unresolved(client: discord.Client, buyer_id: int, payment_type: str,
-                                        clone_id, reason: str, candidate_guilds=None) -> None:
+                                        clone_id, reason: str, candidate_guilds=None, candidate_clones=None) -> None:
     """Same approver set _send_approval_dms uses, but for a claim that
-    couldn't be auto-resolved to exactly one guild — no Approve/Reject
-    view (there's nothing to unlock yet without a guild_id), just the
-    info a human needs to resolve it manually."""
+    couldn't be auto-resolved to exactly one guild (or, for
+    discord_clone_monetization, exactly one owned clone) — no
+    Approve/Reject view (there's nothing to unlock yet without a
+    guild_id/clone_id), just the info a human needs to resolve it manually."""
     from payments_manual import _resolve_approvers
 
     if reason == "no_matching_guild":
         detail = "I couldn't find any server I'm in where they currently have Manage Server permission."
-    else:
+    elif reason == "multiple_matching_guilds":
         names = ", ".join(f"**{g.name}** (`{g.id}`)" for g in candidate_guilds)
         detail = f"They have Manage Server permission in {len(candidate_guilds)} servers I'm in: {names}."
+    elif reason == "no_owned_clone":
+        detail = "I don't see any active clone registered under their account."
+    else:  # multiple_owned_clones
+        names = ", ".join(f"**{c['bot_username']}** (`#{c['clone_id']}`)" for c in candidate_clones)
+        detail = f"They have {len(candidate_clones)} active clones registered: {names}."
 
     msg = (
         f"💰 **Manual payment — direct DM claim needs manual guild resolution**\n"
@@ -185,7 +251,7 @@ async def _notify_approvers_unresolved(client: discord.Client, buyer_id: int, pa
         f"Type: `{payment_type}`\n\n"
         f"{detail}\n\n"
         f"Check Selar for a matching sale (buyer email `user_{buyer_id}@animebot.com`), then approve manually "
-        f"once you know the right guild_id (no button for this yet — this case needs a human to pick)."
+        f"once you know the right guild_id or clone_id (no button for this yet — this case needs a human to pick)."
     )
     approver_ids = await _resolve_approvers(client, guild_id=None)
     for admin_id in approver_ids:
