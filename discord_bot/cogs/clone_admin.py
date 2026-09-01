@@ -510,16 +510,23 @@ class CloneAdminCog(commands.Cog):
     # same split as the Telegram broadcast_jobs flow and Discord's own
     # scheduled-announcements cron — a live interaction response has to
     # return in seconds, but DMing every user across every clone can't.
-    @app_commands.command(name="ownerbroadcast", description="[Owner] DM an announcement to every user of this bot and all its clones")
+    @app_commands.command(name="ownerbroadcast", description="[Owner] DM an announcement to bot users or clone admins")
     @app_commands.describe(
         message="The announcement text — sent as-is, signed with your configured brand name",
+        target="Who receives this DM — regular bot users (default), or clone admins/operators only",
         image="Optional image to attach — drag & drop or upload it here, sent alongside the text",
         payment_button="Optional — attach an 'I've Paid' button for this product (lets buyers claim straight from this DM)",
     )
     @app_commands.choices(payment_button=[
         app_commands.Choice(name=key.replace("_", " ").title(), value=key) for key in SELAR_PRODUCT_LINKS
     ])
-    async def ownerbroadcast(self, interaction: discord.Interaction, message: str, image: Optional[discord.Attachment] = None,
+    @app_commands.choices(target=[
+        app_commands.Choice(name="Users — everyone across the main bot + clones", value="users"),
+        app_commands.Choice(name="Admins — clone owners/operators only", value="admins"),
+    ])
+    async def ownerbroadcast(self, interaction: discord.Interaction, message: str,
+                              target: Optional[app_commands.Choice[str]] = None,
+                              image: Optional[discord.Attachment] = None,
                               payment_button: Optional[app_commands.Choice[str]] = None):
         if interaction.user.id not in DISCORD_OWNER_BROADCAST_IDS:
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
@@ -549,44 +556,62 @@ class CloneAdminCog(commands.Cog):
         # /broadcaststatus's "stuck" diagnosis below) with an image attached.
         image_url = image.url if image is not None else None
 
+        target_value = target.value if target else "users"
+
         broadcast_id = await db.create_owner_broadcast(
             interaction.user.id, message, image_url,
             payment_button_type=payment_button.value if payment_button else None,
         )
 
-        # Main bot's own users (clone_id=None), plus every currently-active
-        # clone's users. An inactive/removed clone is skipped since there's
-        # no live token to DM through even if we queued its users.
-        #
-        # IMPORTANT: get_discord_bot_user_ids only dedupes WITHIN one
-        # clone_id — it does nothing about the same real Discord user
-        # showing up under several clone_ids (e.g. someone who's used the
-        # main bot AND a support-server clone). Without a global dedupe
-        # here, that user gets one recipient row — and therefore one DM —
-        # per bot/clone they've touched. seen_user_ids fixes that: each
-        # user_id is only ever queued once for this broadcast, via
-        # whichever bot we saw them on first (main bot wins ties since
-        # it's resolved before the clone loop).
-        seen_user_ids = set()
+        if target_value == "admins":
+            # Clone owners/operators only — every distinct owner_id of a
+            # currently-active clone, plus the fixed DISCORD_CLONE_ADMIN_IDS
+            # allowlist. All of these people are known to the MAIN bot
+            # (they DM'd it to run /registerclone, or are hardcoded admins),
+            # so this always sends via clone_id=None regardless of which
+            # clone(s) a given admin owns — no per-clone token juggling
+            # needed like the "users" path below.
+            admin_ids = set(await db.get_discord_clone_owner_ids())
+            admin_ids.update(DISCORD_CLONE_ADMIN_IDS)
+            admin_ids.discard(interaction.user.id)  # don't DM the sender themselves
+            await db.add_owner_broadcast_recipients(broadcast_id, None, list(admin_ids))
+            recipient_note = f"**{len(admin_ids)}** clone admin(s)"
+        else:
+            # Main bot's own users (clone_id=None), plus every currently-active
+            # clone's users. An inactive/removed clone is skipped since there's
+            # no live token to DM through even if we queued its users.
+            #
+            # IMPORTANT: get_discord_bot_user_ids only dedupes WITHIN one
+            # clone_id — it does nothing about the same real Discord user
+            # showing up under several clone_ids (e.g. someone who's used the
+            # main bot AND a support-server clone). Without a global dedupe
+            # here, that user gets one recipient row — and therefore one DM —
+            # per bot/clone they've touched. seen_user_ids fixes that: each
+            # user_id is only ever queued once for this broadcast, via
+            # whichever bot we saw them on first (main bot wins ties since
+            # it's resolved before the clone loop).
+            seen_user_ids = set()
 
-        main_user_ids = await db.get_discord_bot_user_ids(None)
-        seen_user_ids.update(main_user_ids)
-        await db.add_owner_broadcast_recipients(broadcast_id, None, main_user_ids)
+            main_user_ids = await db.get_discord_bot_user_ids(None)
+            seen_user_ids.update(main_user_ids)
+            await db.add_owner_broadcast_recipients(broadcast_id, None, main_user_ids)
 
-        clones = await db.list_active_discord_clones()
-        for clone in clones:
-            clone_user_ids = await db.get_discord_bot_user_ids(clone["clone_id"])
-            new_user_ids = [uid for uid in clone_user_ids if uid not in seen_user_ids]
-            seen_user_ids.update(new_user_ids)
-            await db.add_owner_broadcast_recipients(broadcast_id, clone["clone_id"], new_user_ids)
+            clones = await db.list_active_discord_clones()
+            for clone in clones:
+                clone_user_ids = await db.get_discord_bot_user_ids(clone["clone_id"])
+                new_user_ids = [uid for uid in clone_user_ids if uid not in seen_user_ids]
+                seen_user_ids.update(new_user_ids)
+                await db.add_owner_broadcast_recipients(broadcast_id, clone["clone_id"], new_user_ids)
+
+            recipient_note = f"**{len(seen_user_ids)}** recipient(s) across the main bot and {len(clones)} clone(s)"
 
         broadcast_row = await db.get_owner_broadcast(broadcast_id)
         total = broadcast_row["total_recipients"] if broadcast_row else None
 
         button_note = f" with an I've Paid button for `{payment_button.value}`" if payment_button else ""
         await interaction.followup.send(
-            f"📢 Broadcast `#{broadcast_id}` queued for **{total if total is not None else '?'}** recipient(s) "
-            f"across the main bot and {len(clones)} clone(s)"
+            f"📢 Broadcast `#{broadcast_id}` queued for {recipient_note}"
+            f"{' (' + str(total) + ' total)' if total is not None else ''}"
             f"{' with an image attached' if image_url else ''}"
             f"{button_note}.\n"
             f"It'll go out shortly via the broadcast sender — DMs trickle out gradually to stay well under "
