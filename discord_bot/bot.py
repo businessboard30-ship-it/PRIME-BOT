@@ -387,7 +387,7 @@ class AnimeBotDiscord(commands.Bot):
         if welcome_cog:
             await welcome_cog.post_setup_wizard_on_join(guild)
 
-    async def _send_combined_owner_join_dm(self, guild: discord.Guild):
+    async def _send_combined_owner_join_dm(self, guild: discord.Guild, *, is_initial_send: bool = True):
         """Single consolidated DM to the server owner covering everything
         that used to be several separate on-join DMs (quickstart tips,
         automod's log-channel/word-filter notices, ship's onboarding
@@ -492,6 +492,37 @@ class AnimeBotDiscord(commands.Bot):
         except Exception:
             logger.exception(f"[join-dm] Unexpected failure sending combined join DM for guild {guild.id}")
 
+        # Backup copy posted in-server too — the DM above is the primary
+        # copy, but a closed-DMs owner (the exact case caught above) would
+        # otherwise never see any of this. Best-effort and independent of
+        # whether the DM succeeded: even when the DM lands fine, an owner
+        # who reads the server before their DMs still gets it, and every
+        # feature button below already re-checks Manage Server permission
+        # per-click, so it's safe for any staff member to see and use, not
+        # just the owner.
+        #
+        # Gated on is_initial_send so this only ever posts once, on the
+        # actual join — join_dm_reminder_loop calls this same function
+        # again (with is_initial_send=False) for owners who haven't
+        # dismissed the DM, and without this gate every hourly reminder
+        # resend would also dump a fresh backup copy into the server,
+        # which is redundant once the first one is already sitting there.
+        if is_initial_send:
+            try:
+                from discord_bot.cogs._views_join_dm import _default_text_channel, _enabled_feature_keys
+                channel = _default_text_channel(guild)
+                if channel is not None:
+                    enabled = await _enabled_feature_keys(guild.id, clone_id)
+                    backup_view = build_join_dm_view(
+                        guild.id, clone_id=clone_id, feature_keys=feature_keys,
+                        intro=intro, title=title, notices=notices, enabled_keys=enabled,
+                    )
+                    await channel.send(view=backup_view)
+            except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+                logger.info(f"[join-dm] Could not post backup join notice in guild {guild.id}")
+            except Exception:
+                logger.exception(f"[join-dm] Unexpected failure posting backup join notice for guild {guild.id}")
+
         # No automatic second message here anymore. Channel-creation used
         # to always get its own follow-up DM, sent unconditionally right
         # after this one — meaning the owner was offered channel setup
@@ -519,7 +550,7 @@ class AnimeBotDiscord(commands.Bot):
             guild = self.get_guild(guild_id)
             try:
                 if guild is not None:
-                    await self._send_combined_owner_join_dm(guild)
+                    await self._send_combined_owner_join_dm(guild, is_initial_send=False)
             except Exception:
                 logger.exception(f"[join-dm] reminder loop: resend failed for guild {guild_id}")
             finally:
