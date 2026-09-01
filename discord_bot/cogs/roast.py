@@ -46,6 +46,7 @@ supplied) and doubles as the offline fallback pool if GROQ_API_KEY is
 unset or the API call fails.
 """
 
+import asyncio
 import logging
 import os
 import random
@@ -76,7 +77,7 @@ CHALLENGE_EXPIRY_MINUTES = 30
 DEFAULT_INACTIVITY_MINUTES = 60
 DEFAULT_RANDOM_CHECK_MINUTES = 30
 DEFAULT_RANDOM_CHANCE_PERCENT = 10
-BOT_CONCEDE_CHANCE_PERCENT = 30  # odds the bot "takes the L" instead of roasting back
+BOT_CONCEDE_CHANCE_PERCENT = 5  # odds the bot "takes the L" instead of roasting back
 
 PUNCHLINE_BANK = [
     "You move through life like autocorrect — confident and always wrong.",
@@ -110,6 +111,346 @@ PUNCHLINE_BANK = [
     "Whoever told you to be yourself gave you really bad advice.",
     "You have your entire life to be a jerk. Why not take today off?",
     "I would say you're dumb as a rock, but at least a rock can hold the door open.",
+
+    # --- added from roast_lines.zip (harder pack) ---
+    "I'd roast you, but my mom said I'm not allowed to burn trash.",
+    "You're not stupid — you just have bad luck thinking.",
+    "I'd agree with you, but then we'd both be wrong.",
+    "You're like a cloud — when you disappear, it's a beautiful day.",
+    "I've met some sour people, but you're basically a lemon with Wi-Fi.",
+    "Don't worry, I'm sure your personality will improve. Eventually. Maybe.",
+    "You're proof that even evolution takes a day off.",
+    "I'd call you a joke, but jokes actually have a point.",
+    "You have the energy of a low-battery notification.",
+    "Talking to you is like reading terms and conditions — pointless, confusing, and nobody wants to.",
+    "You're my best friend, which is why I feel comfortable telling you — you're a disaster.",
+    "We've been friends so long, I feel responsible for your terrible decisions.",
+    "I love you like a brother, which is why I roast you like one.",
+    "You're the kind of friend people warn you about in fairy tales.",
+    "Being your friend is basically community service.",
+    "You're not a bad person — you're just a great example of what not to do.",
+    "I'd take a bullet for you. Mostly to end the conversation.",
+    "You've grown so much… in the wrong direction.",
+    "Your hairline is so far back, it's still loading.",
+    "Your fashion sense called — it wants an apology.",
+    "You're not ugly, you're just… aesthetically challenged.",
+    "You have the charisma of a parking ticket.",
+    "I've seen better comebacks in a boomerang video.",
+    "You're the human equivalent of a Monday morning.",
+    "Not even Google could find a reason to like you.",
+    "Your confidence is impressive for someone so consistently wrong.",
+    "Oh, I'm sorry — did my eye-roll break your fragile feelings?",
+    "I'd explain it to you, but I left my crayons at home.",
+    "Interesting opinion. I'll file that under \"Things No One Asked.\"",
+    "You should come with a mute button.",
+    "Keep talking — I need the white noise.",
+    "That's a bold statement from someone still figuring out basic WiFi.",
+    "Oh, were you still speaking? My brain auto-corrected to silence.",
+    "Bold of you to assume I care. Spoiler: I don't.",
+    "You're a solid 10… on the pH scale. Acidic.",
+    "Be yourself. Just… less.",
+    "I'd roast you more, but you're already burned enough by life.",
+    "Yikes. And I mean that wholeheartedly.",
+    "You're not the dumbest person alive, but you better hope they don't die.",
+    "Personality: not found. Please restart.",
+    "You radiate \"unfinished homework\" energy.",
+    "Life called. It wants a refund.",
+    "Irrelevant.",
+    "Lowercase.",
+    "Buffering…",
+    "Participation. (As in, participation trophy energy.)",
+    "Autocorrect.",
+    "Draft.",
+    "Unread.",
+    "Ctrl+Z. (As in, someone needs to undo you.)",
+    "I'd argue with you, but I'm not fluent in nonsense.",
+    "You raise a fair point — if we were living in a fantasy.",
+    "Ah yes, the confidence of someone who Googled for 5 minutes.",
+    "You're entitled to your wrong opinion.",
+    "I don't have the time or the crayons to explain this to you.",
+    "That's a great point. For a kindergartener.",
+    "Shall we try logic, or are you still warming up?",
+    "Keep talking. It gives me time to think of something smarter.",
+    "You're the reason they add instructions on shampoo bottles.",
+    "I'd love a battle of wits, but you appear unarmed.",
+    "Every time you speak, I understand why some animals eat their young.",
+    "Your argument is like your WiFi signal — weak and unreliable.",
+    "I'm not saying you're wrong, but I am saying that quietly to myself.",
+    "Please, continue. I always yawn when I'm fascinated.",
+    "You should've just left it at \"no comment.\"",
+    "A debate with you is just arguing with a magic 8-ball.",
+    "Big talk from someone who peaked in 2014.",
+    "Excuse me while I pretend to care.",
+    "Sir, this is a Wendy's.",
+    "Your vibe is \"checkout line at 4:59 PM on a Friday.\"",
+    "I'm not ignoring you. I'm just prioritizing everything else.",
+    "Must be exhausting being that confidently incorrect.",
+    "You had one job.",
+    "Noted. And immediately discarded.",
+    "I'd say stay in your lane, but you don't even have one.",
+    "Your hate motivates me. So thanks for that.",
+    "I'm not here for your validation — or your opinion.",
+    "You're a great reminder that some people just shouldn't talk.",
+    "I've blocked people for less, but you're almost entertaining.",
+    "Hating me is a full-time job. Hope the benefits are good.",
+    "I live rent-free in your head, apparently. You're welcome.",
+    "The hate in your eyes is giving \"secretly obsessed.\"",
+    "I'd say it was nice talking to you, but I value honesty.",
+    "That's actually impressive — being that wrong takes effort.",
+    "Thanks for sharing. No one will ever repeat that.",
+    "And with that, my time spent caring is officially over.",
+    "You really came all the way here to be this wrong?",
+    "Well. That happened. Moving on.",
+    "I'm not even going to dignify that with a clap.",
+    "*drops mic* *picks it back up* — it's too expensive to leave near you.",
+    "You're the kind of friend who shows up late and eats first.",
+    "I keep you around because no one else would tolerate me either.",
+    "You're always there when you need something.",
+    "We've been friends so long, I've run out of new ways to be disappointed.",
+    "You're my person — my cautionary tale, but still my person.",
+    "You've seen me at my worst and somehow stayed. That says more about you than me.",
+    "True friendship is roasting someone and still picking up when they call.",
+    "I'd take a bullet for you. From a water gun. Maybe.",
+    "You're the reason our parents set rules.",
+    "I was the favorite. Then you came along and lowered the bar.",
+    "Growing up with you was free exposure therapy.",
+    "You're proof that Mom's second attempt wasn't an upgrade.",
+    "I'd say you're like a brother to me, but you actually are — which is the problem.",
+    "You're not adopted. Unfortunately, you're just like this.",
+    "Siblings are just people you get to roast for life without consequences.",
+    "You're my favorite sibling. (There's only one of you, so the bar is low.)",
+    "Family reunions are just roast sessions we call \"catching up.\"",
+    "You're the cousin who makes my parents say \"at least you're not like that.\"",
+    "We share DNA, which is honestly terrifying.",
+    "You're proof that genetics is a lottery — and some of us got the scratch card.",
+    "Cousins: close enough to mock, far enough to not feel guilty.",
+    "I roast you with love. Mostly.",
+    "You're like a sibling but with a 50-mile safety radius.",
+    "I see you once a year and somehow you've always gotten worse.",
+    "I'd insult you, but nature already did the heavy lifting.",
+    "You're not annoying — you're just consistently extra.",
+    "You're the \"new phone who dis\" of my life.",
+    "I appreciate you, mostly as a reminder of who not to be.",
+    "You're the kind of person WiFi disconnects from on purpose.",
+    "Good friends roast each other. Great friends never stop.",
+    "You bring so much joy when you leave the room.",
+    "I say this with love: please reconsider.",
+    "You have the energy of someone who unironically says \"per my last email.\"",
+    "I'm not saying you're boring, but even your hobbies need a nap.",
+    "You're so wholesome, even your burns come with a warranty.",
+    "You're one in a million — which means there are 8,000 of you.",
+    "You speak your mind. I wish you had more of it to share.",
+    "Your potential is untapped. So is your common sense.",
+    "I respect you. That was a tough sentence to finish.",
+    "You're built different. Not better — just different.",
+    "I have tremendous respect for you. Tragically, that's where it ends.",
+    "Your confidence is a masterpiece of self-deception.",
+    "You dress well for someone whose opinions are this under-seasoned.",
+    "I say this with grace: you are a lot.",
+    "A classy roast doesn't need volume — just precision.",
+    "You're the kind of person who brings sparkling water to a roast battle.",
+    "Sophistication suits you. Too bad it's just the outfit.",
+    "Well-spoken. Deeply wrong. Impeccably dressed about it.",
+    "You're very… unique. (Pause.) In the clinical sense.",
+    "I mean this kindly — you talk a lot for someone with so little to say.",
+    "You're not wrong. You're just not exactly right, either.",
+    "I admire your courage to speak without preparation.",
+    "What a bold take from a predictable person.",
+    "You're doing wonderfully — relative to my lowered expectations.",
+    "Your energy is… noted.",
+    "Bless your heart. Truly.",
+    "You're so silly, even your jokes need a tutorial.",
+    "You've got the patience of a phone on 1% battery.",
+    "You're not bad at this. You're just training. Still training.",
+    "You're the reason \"try again\" exists.",
+    "Your brain is in airplane mode — but we believe in you.",
+    "You're growing up so fast — mostly in height, which is where it's stopping for now.",
+    "You have big ideas for someone with such tiny pockets.",
+    "Keep trying! Rome wasn't roasted in a day.",
+    "I'd invite you to come outside, but your energy kills plants.",
+    "Your vibe is the last 5% of a dying phone — technically functional, mostly annoying.",
+    "You're not the villain. You're the character everyone forgets halfway through.",
+    "You bring so much to the table — mostly awkward silences.",
+    "You have the kind of face that radio was invented for.",
+    "I'd say you're a ray of sunshine, but that would be libel.",
+    "You're what happens when someone gives up but keeps going anyway.",
+    "Your personality is a jumpscare in slow motion.",
+    "You think you're cool, but you're room-temperature at best.",
+    "Your selfies have more filters than your personality has layers.",
+    "You reply to your own tweets. That's all I need to know.",
+    "Your TikTok dances are a public health concern.",
+    "You text in paragraphs when a \"k\" would do.",
+    "You unironically say \"it is what it is\" — and that says everything.",
+    "Your humor belongs in a 2010 group chat.",
+    "You're giving off main character energy with background character results.",
+    "Congrats on sucking the fun out of another room.",
+    "You're the reason people develop trust issues.",
+    "Your presence is the conversational equivalent of buffering.",
+    "You walked in and somehow made it quieter and louder at the same time.",
+    "Fun fact: no one was thinking about you until you brought it up.",
+    "You're the plot twist no one asked for.",
+    "You're like a speed bump — slowing everyone else down for no reason.",
+    "Your vibe is \"unexpected charges on a bill.\"",
+    "The audacity, truly, of someone with your track record.",
+    "You speak as if you have never been wrong before. Incredible.",
+    "Your ego has a much better CV than your actual life.",
+    "You really woke up today and chose delusion. Respect the commitment.",
+    "Confidence is admirable. This, however, is performance art.",
+    "You've overestimated yourself so consistently, it's almost a skill.",
+    "A little humility wouldn't kill you. I think. Hard to know with you.",
+    "You're giving \"I peaked in my imagination.\"",
+    "Serving looks. Withholding personality.",
+    "Not all that glitters is gold. Some of it is just your ring light.",
+    "Posted this before thinking. Classic.",
+    "Filters: 47. Self-awareness: 0.",
+    "Living my best life — it's still loading, though.",
+    "Caption says \"no cap\" — the cap is enormous.",
+    "Bought the outfit. Couldn't afford the attitude.",
+    "The pose said \"model.\" The caption said \"mid.\"",
+    "Went viral for the wrong reasons. We've all been there. (Only you, actually.)",
+    "POV: you thought this would be a good idea.",
+    "Stitched this and lost faith in myself.",
+    "Your FYP said \"yes.\" Your comment section said \"no.\"",
+    "Living for the views. The views are not returning the favor.",
+    "Duet-ed this and felt secondhand confusion.",
+    "This is the content? This is the content.",
+    "200K views on a mistake — iconic, actually.",
+    "\"In a meeting\" — actually just avoiding you specifically.",
+    "My status is \"busy\" but I still saw your message. I chose this.",
+    "Last seen: before your essay of a text arrived.",
+    "Online. Definitely not going to reply to that.",
+    "Typing… (gave up) … typing… (gave up again)",
+    "Read receipts off because of people exactly like you.",
+    "Status: invisible. From you especially.",
+    "If my status says \"available,\" it's lying for everyone except you.",
+    "The reel said \"glow up.\" The comments said \"undo.\"",
+    "Spent 3 hours on this. It shows in a bad way.",
+    "Trending audio. Non-trending content.",
+    "This reel asked for a chance and the algorithm said \"no.\"",
+    "Cinematic quality. Reality show drama.",
+    "I appreciate the effort. The execution, less so.",
+    "Someone said \"post it\" — fire that person.",
+    "The transitions are smooth. Everything else is chaos.",
+    "You went first, which means you're also going home first.",
+    "I'm not saying you lost the battle — but history will.",
+    "Bold move opening with that. Bolder move thinking it worked.",
+    "I've been roasted by better. Your mom, for example.",
+    "You brought a water pistol to a bonfire. Respect the effort.",
+    "That was a roast? I've felt warmer from a broken radiator.",
+    "My comeback is just silence because that was beneath response.",
+    "Round 1: you tried. Round 2: I showed up.",
+    "Nobody said you couldn't leave the chat. Just saying.",
+    "You type like you speak — too much, too long, too often.",
+    "We all saw it. Nobody's going to acknowledge it. Moving on.",
+    "Muted but still getting the screenshots. That's your legacy.",
+    "You're the admin who shouldn't be the admin.",
+    "Group chat rule: if it's longer than 3 lines, use email.",
+    "You screenshot your own messages. We know.",
+    "Your \"good morning\" messages hit different — differently bad.",
+    "I didn't come to play. You did. And you still lost.",
+    "This was a battle. It became a one-sided documentary.",
+    "I gave you chances. You gave me content.",
+    "You peaked at \"hello\" and it was downhill from there.",
+    "My words were measured. Yours were panicked.",
+    "The crowd saw it. The crowd will remember it.",
+    "You wanted smoke. You got a wildfire.",
+    "The battle is over. The roast continues indefinitely.",
+    "Go ahead. Roast me. I've heard worse from my own thoughts.",
+    "Do your worst — I set the bar low so you'd feel included.",
+    "I'm offering myself up because watching you try will be hilarious.",
+    "Come on then. I've got snacks.",
+    "I am my own biggest critic, so honestly, get in line.",
+    "Hit me. Metaphorically. (And even then, aim better than usual.)",
+    "You can't roast someone who's already self-aware at this level.",
+    "Roast accepted. Damage: minimal. Confidence: unchanged.",
+    "You're the human version of Comic Sans — trying too hard and still wrong.",
+    "You're like an expired coupon — technically existed, but no one's using you.",
+    "Your logic has the shelf life of warm sushi.",
+    "You're a limited edition of bad decisions.",
+    "You're an unpaid internship in human form.",
+    "Your vibe is a software update nobody asked for.",
+    "You speak fluent nonsense with zero accent.",
+    "You're the rough draft before the good idea.",
+    "I'd fact-check your statements, but fiction has no sources.",
+    "You're confidently incorrect — which is almost impressive.",
+    "You don't think outside the box. You don't know what a box is.",
+    "Your opinion arrived unrequested and will leave the same way.",
+    "I heard your argument and raised you: absolutely nothing.",
+    "You've mastered the art of saying a lot while saying nothing.",
+    "You're not a bad person — you're just a great lesson.",
+    "Everything you say comes with an invisible asterisk. \\*This is wrong.",
+    "Wow, you're so brave for wearing that.",
+    "You really commit to your… choices. Respect.",
+    "That's such a unique perspective. Truly unlike anything anyone has said correctly.",
+    "I love that you don't care what people think. Must be freeing.",
+    "You're so real. Unfiltered. Perhaps too unfiltered.",
+    "Your energy is one of a kind. Thankfully.",
+    "It's so great that you try. Every time. Despite everything.",
+    "You have a very distinctive presence. Very. Distinctive.",
+    "You must be a keyboard — because you're not my type.",
+    "Are you a bank loan? Because you have my interest… in leaving.",
+    "You're like a broken pencil — absolutely pointless.",
+    "You must be a light switch — everyone ignores you until they need something.",
+    "Are you a parking ticket? Because you have \"fine\" written all over you. (The irony.)",
+    "You're like WiFi in the countryside — weak and always dropping.",
+    "You're the CAPS LOCK of personalities — loud and accidentally on.",
+    "You must be a calculator — full of problems.",
+    "I'd roast you harder, but I don't want to start a controlled burn.",
+    "Your superpower is making everyone around you look better.",
+    "You're the reason I believe in silent mode.",
+    "You're not wrong — you're just not welcome.",
+    "Somewhere, someone is missing you. We're all confused.",
+    "I tried to think of something nice to say. I'll get back to you.",
+    "You're proof that nice guys finish last — you're not nice, and you still do.",
+    "You didn't just miss the point. You missed the entire target.",
+    "Living life on expert mode (still losing).",
+    "Outstanding in ways nobody wanted.",
+    "The audacity without the credentials.",
+    "Running on pure delusion and a strong WiFi signal.",
+    "Showing up and somehow still being absent.",
+    "Bold fashion. Timid existence.",
+    "Thriving in the comments. Struggling everywhere else.",
+    "The character. The chaos. The caption.",
+    "You're why people go on silent mode.",
+    "You could've just not said that.",
+    "Your self-awareness is in airplane mode.",
+    "Bold move. Wrong move.",
+    "You're a lot to deal with in a text.",
+    "I'd argue but I'm conserving energy.",
+    "You showed up. We'll give you that.",
+    "Yikes doesn't cover it, but it's a start.",
+    "\"You're giving what you thought was main character, but the audience voted you off.\"",
+    "\"In a world full of plot twists, you're the one nobody saw coming — or wanted.\"",
+    "\"Your vibe is a buffering screen in the middle of the most important moment.\"",
+    "\"You walked into 2026 with 2012 energy. It's giving fossil fuel.\"",
+    "\"Serving expired confidence with a side of unsolicited opinions.\"",
+    "\"The algorithm would skip you. That's the honest review.\"",
+    "\"You're not the villain, you're not the hero — you're the unskippable ad.\"",
+    "\"Boldly mediocre in a world that expected at least average.\"",
+    "POV: you thought the comment section was your friend.",
+    "Nobody asked but they said it anyway — a 2026 tradition.",
+    "The ratio doesn't lie. Your tweet does.",
+    "You became a meme without even trying — which makes it worse.",
+    "Posting in your flop era and calling it a rebrand.",
+    "The internet remembered. The internet always remembers.",
+    "Went viral for a reason. The reason is bad.",
+    "Your comment aged like milk left in a hot car.",
+    "You: *confident.* Everyone watching:",
+    "That wasn't it, chief. That really, genuinely, was not it.",
+    "*achievement unlocked:* Being Wrong With Confidence.",
+    "You're an NPC and the game is literally rigged for you.",
+    "The audacity loading screen is at 100% and still going.",
+    "POV: you just said that in public.",
+    "Error 404: self-awareness not found.",
+    "Big \"hold my beer\" energy. Tinier results.",
+    "The caption said everything. The likes said nothing.",
+    "You're chronically online and somehow still out of the loop.",
+    "You post a lot for someone with so little to say.",
+    "Your presence in comment sections is a jumpscare.",
+    "The algorithm timed you out. Honestly, relatable.",
+    "You're giving \"main character\" with \"supporting role\" reach.",
+    "The glow-up is still processing. Please wait.",
+    "You didn't log off — you just gave everyone else a reason to.",
 ]
 
 CONCEDE_LINES = [
@@ -136,18 +477,24 @@ ROAST_SYSTEM_PROMPT = (
 )
 
 
-async def _generate_roast(display_name: str, context: str = "") -> str:
+async def _generate_roast(display_name: str, context: str = "", pick_fresh=None) -> str:
     # Plan-conscious: the user's supplied punchlines are the primary
     # source now (zero API cost), not just an offline fallback. Groq only
     # gets called for the "context" case (target/joiner said something
     # specific worth roasting back at) where a canned line can't react to
     # what was actually said — and even then, if the call fails or the key
     # is missing, it falls back to the bank like before.
+    # `pick_fresh`, when given, selects from PUNCHLINE_BANK without
+    # repeating a line already used this battle (see RoastCog._pick_fresh_line)
+    # instead of a plain random.choice that can hit the same handful
+    # repeatedly while others in the bank never come up.
+    fallback = (lambda: pick_fresh(PUNCHLINE_BANK)) if pick_fresh else (lambda: random.choice(PUNCHLINE_BANK))
+
     if not context:
-        return random.choice(PUNCHLINE_BANK)
+        return fallback()
 
     if not GROQ_API_KEY:
-        return random.choice(PUNCHLINE_BANK)
+        return fallback()
     try:
         async with aiohttp.ClientSession() as session:
             headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -170,12 +517,12 @@ async def _generate_roast(display_name: str, context: str = "") -> str:
                 if resp.status == 200:
                     data = await resp.json()
                     text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                    return text.strip() or random.choice(PUNCHLINE_BANK)
+                    return text.strip() or fallback()
                 logger.warning(f"[v0] roast generation failed: HTTP {resp.status}")
-                return random.choice(PUNCHLINE_BANK)
+                return fallback()
     except Exception as e:
         logger.warning(f"[v0] roast generation error: {e}")
-        return random.choice(PUNCHLINE_BANK)
+        return fallback()
 
 
 def _clone_id_of(bot: commands.Bot):
@@ -901,6 +1248,26 @@ class RoastCog(GuildOnlyCog):
         # itself no longer breaks when that happens (only this cosmetic
         # "disable my siblings too" step silently no-ops on a stale round).
         self._proposal_rounds: dict[int, list[discord.Message]] = {}
+        # battle_id -> set of PUNCHLINE_BANK / CONCEDE_LINES lines already
+        # used in that battle, so /roast cycles through the whole bank
+        # before any line repeats instead of random.choice picking the
+        # same handful over and over by chance. Reset once a battle ends
+        # (see end_battle) — in-memory only, doesn't survive a restart,
+        # but a repeat right after a restart is a minor cosmetic issue
+        # compared to a battle-long "fresh each pick" cycle.
+        self._used_punchlines: dict[int, set[str]] = {}
+        self._used_concedes: dict[int, set[str]] = {}
+
+    def _pick_fresh_line(self, battle_id: int, bank: list[str], used_map: dict[int, set[str]]) -> str:
+        used = used_map.setdefault(battle_id, set())
+        available = [line for line in bank if line not in used]
+        if not available:
+            # Exhausted the whole bank — start a new cycle.
+            used.clear()
+            available = bank
+        choice = random.choice(available)
+        used.add(choice)
+        return choice
 
     async def _resolve_proposal_round(self, guild_id: int, acting_message_id: int, note: str):
         """Disable and relabel every other admin's still-open prompt for this
@@ -1049,7 +1416,10 @@ class RoastCog(GuildOnlyCog):
             return True
         try:
             self._active_by_channel[channel.id] = battle_id
-            roast_text = await _generate_roast(target.display_name)
+            roast_text = await _generate_roast(
+                target.display_name,
+                pick_fresh=lambda bank: self._pick_fresh_line(battle_id, bank, self._used_punchlines),
+            )
             embed = discord.Embed(
                 title="🔥 Roast Battle — LIVE",
                 description=roast_text,
@@ -1095,6 +1465,8 @@ class RoastCog(GuildOnlyCog):
         battle = await self.get_battle(battle_id)
         if battle and self._active_by_channel.get(battle["channel_id"]) == battle_id:
             del self._active_by_channel[battle["channel_id"]]
+        self._used_punchlines.pop(battle_id, None)
+        self._used_concedes.pop(battle_id, None)
 
     def _blocking_battle_view(self, existing) -> discord.ui.View:
         """Picks the right "end it" control for whatever's blocking a new
@@ -1177,11 +1549,19 @@ class RoastCog(GuildOnlyCog):
             # real back-and-forth instead of the bot being unbeatable.
             # Skips the Groq call entirely in this branch — no point
             # generating a roast just to throw it away.
-            roast_text = random.choice(CONCEDE_LINES)
+            roast_text = self._pick_fresh_line(battle_id, CONCEDE_LINES, self._used_concedes)
         else:
-            roast_text = await _generate_roast(message.author.display_name, context=message.content)
+            roast_text = await _generate_roast(
+                message.author.display_name,
+                context=message.content,
+                pick_fresh=lambda bank: self._pick_fresh_line(battle_id, bank, self._used_punchlines),
+            )
         embed = discord.Embed(description=roast_text, color=discord.Color.red())
         try:
+            # A human roast-battle comeback doesn't land in 0ms — show
+            # typing and hold for a beat so it doesn't feel instant/robotic.
+            async with message.channel.typing():
+                await asyncio.sleep(random.uniform(1.5, 3.5))
             await message.reply(embed=embed, view=RoastBattleView(self, battle_id))
         except discord.HTTPException:
             await message.channel.send(embed=embed, view=RoastBattleView(self, battle_id))
