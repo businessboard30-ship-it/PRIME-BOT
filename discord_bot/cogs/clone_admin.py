@@ -24,7 +24,7 @@ from payments import paystack
 from config import (
     DISCORD_CLONE_FEE_GHS, DISCORD_CLONE_FREE_EVERY_NTH, DISCORD_CLONE_ADMIN_IDS,
     CLONE_MONETIZATION_FEE_GHS, CLONE_MONETIZATION_DAYS, PRICE_REGISTRY,
-    DISCORD_OWNER_BROADCAST_IDS,
+    DISCORD_OWNER_BROADCAST_IDS, SELAR_PRODUCT_LINKS,
 )
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 
@@ -514,8 +514,13 @@ class CloneAdminCog(commands.Cog):
     @app_commands.describe(
         message="The announcement text — sent as-is, signed with your configured brand name",
         image="Optional image to attach — drag & drop or upload it here, sent alongside the text",
+        payment_button="Optional — attach an 'I've Paid' button for this product (lets buyers claim straight from this DM)",
     )
-    async def ownerbroadcast(self, interaction: discord.Interaction, message: str, image: Optional[discord.Attachment] = None):
+    @app_commands.choices(payment_button=[
+        app_commands.Choice(name=key.replace("_", " ").title(), value=key) for key in SELAR_PRODUCT_LINKS
+    ])
+    async def ownerbroadcast(self, interaction: discord.Interaction, message: str, image: Optional[discord.Attachment] = None,
+                              payment_button: Optional[app_commands.Choice[str]] = None):
         if interaction.user.id not in DISCORD_OWNER_BROADCAST_IDS:
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
             return
@@ -544,7 +549,10 @@ class CloneAdminCog(commands.Cog):
         # /broadcaststatus's "stuck" diagnosis below) with an image attached.
         image_url = image.url if image is not None else None
 
-        broadcast_id = await db.create_owner_broadcast(interaction.user.id, message, image_url)
+        broadcast_id = await db.create_owner_broadcast(
+            interaction.user.id, message, image_url,
+            payment_button_type=payment_button.value if payment_button else None,
+        )
 
         # Main bot's own users (clone_id=None), plus every currently-active
         # clone's users. An inactive/removed clone is skipped since there's
@@ -575,10 +583,12 @@ class CloneAdminCog(commands.Cog):
         broadcast_row = await db.get_owner_broadcast(broadcast_id)
         total = broadcast_row["total_recipients"] if broadcast_row else None
 
+        button_note = f" with an I've Paid button for `{payment_button.value}`" if payment_button else ""
         await interaction.followup.send(
             f"📢 Broadcast `#{broadcast_id}` queued for **{total if total is not None else '?'}** recipient(s) "
             f"across the main bot and {len(clones)} clone(s)"
-            f"{' with an image attached' if image_url else ''}.\n"
+            f"{' with an image attached' if image_url else ''}"
+            f"{button_note}.\n"
             f"It'll go out shortly via the broadcast sender — DMs trickle out gradually to stay well under "
             f"Discord's rate limits, so a large broadcast can take a while to fully land.\n"
             f"Check progress any time with `/broadcaststatus id:{broadcast_id}`.",
