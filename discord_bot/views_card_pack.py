@@ -79,6 +79,10 @@ async def start_card_pack_payment(interaction: discord.Interaction):
             interaction, "welcome_card_pack", f"${WELCOME_CARD_PACK_FEE_USD:g} USD", guild_id=guild_id
         )
         return
+    logger.warning(
+        f"[card-pack] PAYMENT_MODE={PAYMENT_MODE!r} (not 'manual') — "
+        f"routing user {user.id} guild {guild_id} through the auto gateway instead of Selar."
+    )
 
     price_usd = float(WELCOME_CARD_PACK_FEE_USD)
     clone_id = _clone_id_of(interaction) or 0
@@ -107,6 +111,10 @@ async def start_card_pack_payment(interaction: discord.Interaction):
     )
 
     if not payment_result or payment_result.get("status") != "success":
+        logger.error(
+            f"[card-pack] gateway.initialize_payment failed for user {user.id} guild {guild_id} "
+            f"provider={provider!r} api_key_set={bool(api_key)} result={payment_result!r}"
+        )
         await interaction.followup.send("Couldn't start a payment right now — please try again shortly.", ephemeral=True)
         return
 
@@ -171,6 +179,10 @@ async def start_ultra_pack_payment(interaction: discord.Interaction):
             interaction, "ultra_welcome_pack", f"${ULTRA_PACK_FEE_USD:g} USD", guild_id=guild_id
         )
         return
+    logger.warning(
+        f"[ultra-pack] PAYMENT_MODE={PAYMENT_MODE!r} (not 'manual') — "
+        f"routing user {user.id} guild {guild_id} through the auto gateway instead of Selar."
+    )
 
     price_usd = float(ULTRA_PACK_FEE_USD)
     clone_id = _clone_id_of(interaction) or 0
@@ -197,6 +209,10 @@ async def start_ultra_pack_payment(interaction: discord.Interaction):
     )
 
     if not payment_result or payment_result.get("status") != "success":
+        logger.error(
+            f"[ultra-pack] gateway.initialize_payment failed for user {user.id} guild {guild_id} "
+            f"provider={provider!r} api_key_set={bool(api_key)} result={payment_result!r}"
+        )
         await interaction.followup.send("Couldn't start a payment right now — please try again shortly.", ephemeral=True)
         return
 
