@@ -38,7 +38,7 @@ import logging
 import discord
 
 from database import db
-from config import SELAR_PRODUCT_LINKS, WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, CLONE_MONETIZATION_FEE_GHS
+from config import WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, CLONE_MONETIZATION_FEE_GHS
 
 logger = logging.getLogger(__name__)
 
@@ -139,9 +139,16 @@ class _PayNowButton(discord.ui.DynamicItem[discord.ui.Button], template=_PAY_NOW
         return cls(match.group(1))
 
     async def callback(self, interaction: discord.Interaction):
+        from payments_manual import _prefilled_selar_link  # avoid import cycle, same as _DirectPaidButton below
+
         await interaction.response.defer(ephemeral=True)
 
-        link = SELAR_PRODUCT_LINKS.get(self.payment_type)
+        # Prefilled (add_to_cart=1 + synthetic user_<id>@animebot.com email)
+        # rather than the bare SELAR_PRODUCT_LINKS URL — same trick used
+        # everywhere else a Selar/Paystack link is handed out, so whoever
+        # approves this claim manually can search Selar's buyer-email
+        # column for this Discord id instead of eyeballing timing/amount.
+        link = _prefilled_selar_link(self.payment_type, interaction.user.id)
         if not link:
             await interaction.followup.send(
                 "This payment type isn't set up anymore — please contact support directly.", ephemeral=True,
