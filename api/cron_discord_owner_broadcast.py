@@ -33,6 +33,18 @@ from config import CRON_SECRET, DISCORD_BOT_TOKEN, DISCORD_OWNER_BRAND_NAME
 from database import db
 from utils.crypto import secret_manager
 
+# Deliberately NOT importing discord_bot.cogs._views_direct_paid here — this
+# serverless function talks to Discord over raw REST (see module docstring)
+# and every other api/ handler avoids pulling in the discord.py package for
+# that reason. Duplicating just the custom_id string shape instead; it MUST
+# stay identical to direct_paid_custom_id() in _views_direct_paid.py, which
+# is what the gateway process's persistent DynamicItem actually matches
+# against on click.
+
+
+def _direct_paid_custom_id(payment_type: str) -> str:
+    return f"direct_pay:{payment_type}"
+
 logger = logging.getLogger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
@@ -60,7 +72,8 @@ async def _token_for(clone_id):
     return secret_manager.decrypt(clone["bot_token_encrypted"])
 
 
-async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, content: str, image_url: Optional[str] = None) -> Optional[str]:
+async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, content: str,
+                    image_url: Optional[str] = None, payment_button_type: Optional[str] = None) -> Optional[str]:
     """Returns None on success, or an error string on failure. A closed-DMs
     user (403) or a user who's left every mutual server (404 on channel
     open) are both expected, non-noisy failures — logged at debug, not
@@ -85,6 +98,18 @@ async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, con
             # attachment — see the caveat on that URL's lifetime in
             # clone_admin.py's ownerbroadcast command.
             payload["embeds"] = [{"image": {"url": image_url}}]
+        if payment_button_type:
+            # type 1 = action row, type 2 = button, style 3 = success (green).
+            # Caught by the gateway process's persistent _DirectPaidButton
+            # DynamicItem (discord_bot/cogs/_views_direct_paid.py) — this
+            # raw REST send never needs its own interaction handling.
+            payload["components"] = [{
+                "type": 1,
+                "components": [{
+                    "type": 2, "style": 3, "label": "✅ I've Paid",
+                    "custom_id": _direct_paid_custom_id(payment_button_type),
+                }],
+            }]
 
         async with session.post(
             f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
@@ -131,7 +156,10 @@ async def run_pending_owner_broadcasts() -> dict:
                 unattempted_ids.extend(r["id"] for r in leftover)
 
                 for r in to_send:
-                    error = await _dm_user(session, token, r["user_id"], content, broadcast.get("image_url"))
+                    error = await _dm_user(
+                        session, token, r["user_id"], content,
+                        broadcast.get("image_url"), broadcast.get("payment_button_type"),
+                    )
                     await db.mark_owner_broadcast_recipient_sent(r["id"], error=error)
                     totals["sent" if error is None else "failed"] += 1
                     await asyncio.sleep(DM_SEND_DELAY_SECONDS)
