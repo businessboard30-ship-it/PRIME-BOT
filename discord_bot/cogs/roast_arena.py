@@ -413,12 +413,13 @@ class RoastArenaCog(GuildOnlyCog):
         logger.info(f"[arena] host application id={request['id']} guild={guild_id} notified={sent}")
 
     async def on_host_review(self, interaction: discord.Interaction, request_id: int, *, approve: bool) -> None:
+        await interaction.response.defer()
         if interaction.user.id not in DISCORD_CLONE_ADMIN_IDS:
-            await interaction.response.send_message("🚫 Only the bot owner can review this.", ephemeral=True)
+            await interaction.followup.send("🚫 Only the bot owner can review this.", ephemeral=True)
             return
         request = await db.get_roast_arena_host_request(request_id)
         if not request or request["status"] != "pending":
-            await interaction.response.send_message("This application was already resolved.", ephemeral=True)
+            await interaction.followup.send("This application was already resolved.", ephemeral=True)
             return
         await db.resolve_roast_arena_host_request(
             request_id, status="approved" if approve else "denied", reviewed_by_user_id=interaction.user.id
@@ -428,7 +429,7 @@ class RoastArenaCog(GuildOnlyCog):
         guild = self.bot.get_guild(request["guild_id"])
         guild_name = guild.name if guild else f"Guild {request['guild_id']}"
         verdict = "✅ Approved" if approve else "✋ Denied"
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"{verdict} — **{guild_name}**'s application for <#{request['channel_id']}>.",
             embed=None, view=None,
         )
