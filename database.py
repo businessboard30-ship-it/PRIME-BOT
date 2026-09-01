@@ -2804,6 +2804,15 @@ class Database:
         await conn.execute("""
             ALTER TABLE discord_owner_broadcasts ADD COLUMN IF NOT EXISTS image_url TEXT
         """)
+        # payment_button_type: optional SELAR_PRODUCT_LINKS key. When set,
+        # the cron sender (api/cron_discord_owner_broadcast.py) attaches a
+        # "I've Paid" button (_views_direct_paid.py) to every DM in this
+        # broadcast, letting a buyer who pays straight off this DM (no
+        # /welcome buyultra involved) claim it without typing a server ID —
+        # see that module's docstring for how the guild gets resolved.
+        await conn.execute("""
+            ALTER TABLE discord_owner_broadcasts ADD COLUMN IF NOT EXISTS payment_button_type TEXT
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS discord_owner_broadcast_recipients (
                 id SERIAL PRIMARY KEY,
@@ -7828,12 +7837,14 @@ class Database:
             )
             return [r["user_id"] for r in rows]
 
-    async def create_owner_broadcast(self, created_by: int, message: str, image_url: Optional[str] = None) -> int:
+    async def create_owner_broadcast(self, created_by: int, message: str, image_url: Optional[str] = None,
+                                      payment_button_type: Optional[str] = None) -> int:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO discord_owner_broadcasts (created_by, message, image_url) VALUES ($1, $2, $3) RETURNING id",
-                created_by, message, image_url
+                "INSERT INTO discord_owner_broadcasts (created_by, message, image_url, payment_button_type) "
+                "VALUES ($1, $2, $3, $4) RETURNING id",
+                created_by, message, image_url, payment_button_type
             )
             return row["id"]
 
