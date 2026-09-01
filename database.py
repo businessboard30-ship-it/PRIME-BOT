@@ -5237,6 +5237,19 @@ class Database:
             rows = await conn.fetch("SELECT * FROM discord_cloned_bots WHERE status = 'active' ORDER BY clone_id ASC")
             return [dict(r) for r in rows]
 
+    async def get_discord_clone_owner_ids(self) -> List[int]:
+        """Distinct owner_id of every currently-active clone — the "admins"
+        pool for /ownerbroadcast's target option (clone operators, not
+        regular bot members). All of these users are known to the MAIN bot
+        (they DM'd it to run /registerclone), so callers can always send
+        via clone_id=None regardless of which clone(s) they own."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT owner_id FROM discord_cloned_bots WHERE status = 'active'"
+            )
+            return [r["owner_id"] for r in rows]
+
     async def count_discord_clones_by_owner(self, owner_id: int) -> int:
         """Total clones this owner has ever registered (any status) — used to
         work out /registerclone's every-Nth-clone-free perk. Deliberately
