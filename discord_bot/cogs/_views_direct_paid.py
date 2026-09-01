@@ -45,6 +45,9 @@ logger = logging.getLogger(__name__)
 # custom_id shape: direct_pay:<payment_type>
 _DIRECT_PAID_RE = re.compile(r"^direct_pay:([a-z_]+)$")
 
+# custom_id shape: pay_now:<payment_type>
+_PAY_NOW_RE = re.compile(r"^pay_now:([a-z_]+)$")
+
 # Mirrors the exact amount_display strings views_card_pack.py's
 # start_manual_payment() callers pass in (f"${FEE:g} USD" etc.) — reused
 # here so the approver DM shows a real price instead of just the
@@ -63,6 +66,14 @@ def direct_paid_custom_id(payment_type: str) -> str:
     to build the button it attaches — kept here so the encoding has one
     source of truth shared with from_custom_id below."""
     return f"direct_pay:{payment_type}"
+
+
+def pay_now_custom_id(payment_type: str) -> str:
+    """Same idea as direct_paid_custom_id, for the companion 'Pay Now'
+    button — kept as its own helper (not a link-style button) specifically
+    so a click is an interaction the bot sees, which is what lets it flip
+    the neighboring 'I've Paid' button from disabled to enabled below."""
+    return f"pay_now:{payment_type}"
 
 
 async def _guilds_with_manage_permission(client: discord.Client, user_id: int) -> list[discord.Guild]:
@@ -93,6 +104,72 @@ async def _guilds_with_manage_permission(client: discord.Client, user_id: int) -
         if member.id == guild.owner_id or member.guild_permissions.manage_guild:
             matches.append(guild)
     return matches
+
+
+def _button_row(payment_type: str, *, paid_disabled: bool) -> list[dict]:
+    """The two-button row shape shared by the initial broadcast send (raw
+    REST, in api/cron_discord_owner_broadcast.py) and the edit this file
+    makes after 'Pay Now' is clicked — kept here as one source of truth so
+    the two never drift out of sync on button order/style."""
+    return [
+        {"type": 2, "style": 1, "label": "💳 Pay Now", "custom_id": pay_now_custom_id(payment_type)},
+        {"type": 2, "style": 3, "label": "✅ I've Paid", "custom_id": direct_paid_custom_id(payment_type),
+         "disabled": paid_disabled},
+    ]
+
+
+class _PayNowButton(discord.ui.DynamicItem[discord.ui.Button], template=_PAY_NOW_RE.pattern):
+    """Deliberately NOT a link-style button. A link button never generates
+    an interaction — Discord just opens the URL client-side and the bot
+    never hears about it — which means there'd be no event to react to for
+    unlocking 'I've Paid'. Making this a normal button instead means the
+    click is an interaction we can see: we hand the buyer the payment link
+    ourselves (ephemeral) and then edit the DM in place to enable the
+    'I've Paid' button that was sent disabled."""
+
+    def __init__(self, payment_type: str):
+        self.payment_type = payment_type
+        super().__init__(discord.ui.Button(
+            label="💳 Pay Now", style=discord.ButtonStyle.primary,
+            custom_id=pay_now_custom_id(payment_type),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match"):
+        return cls(match.group(1))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        link = SELAR_PRODUCT_LINKS.get(self.payment_type)
+        if not link:
+            await interaction.followup.send(
+                "This payment type isn't set up anymore — please contact support directly.", ephemeral=True,
+            )
+            logger.error(f"[pay-now] unknown payment_type={self.payment_type} from custom_id click")
+            return
+
+        await interaction.followup.send(
+            f"💳 Complete your payment here: {link}\n\n"
+            f"Once you're done, come back to this DM and tap **I've Paid**.", ephemeral=True,
+        )
+
+        # Enable the neighboring "I've Paid" button now that this buyer has
+        # opened the payment link. Rebuilt from scratch (rather than
+        # mutating interaction.message.components in place) since those
+        # come back as plain discord.Component objects, not discord.ui
+        # items — reconstructing via the shared _button_row shape is
+        # simpler than patching that structure disabled-flag by disabled-flag.
+        new_view = discord.ui.View(timeout=None)
+        new_view.add_item(self)
+        new_view.add_item(discord.ui.Button(
+            label="✅ I've Paid", style=discord.ButtonStyle.success,
+            custom_id=direct_paid_custom_id(self.payment_type), disabled=False,
+        ))
+        try:
+            await interaction.message.edit(view=new_view)
+        except discord.HTTPException:
+            logger.warning(f"[pay-now] couldn't enable I've Paid button for {interaction.user.id}")
 
 
 class _DirectPaidButton(discord.ui.DynamicItem[discord.ui.Button], template=_DIRECT_PAID_RE.pattern):
@@ -262,4 +339,4 @@ async def _notify_approvers_unresolved(client: discord.Client, buyer_id: int, pa
             logger.warning(f"[direct-paid] couldn't DM approver {admin_id} about unresolved buyer {buyer_id}")
 
 
-DYNAMIC_ITEMS = (_DirectPaidButton,)
+DYNAMIC_ITEMS = (_DirectPaidButton, _PayNowButton)
