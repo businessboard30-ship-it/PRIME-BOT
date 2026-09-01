@@ -58,6 +58,17 @@ BATCH_SIZE_PER_CLONE = 25
 MAX_CLONES_PER_TICK = 8
 CLAIM_LIMIT = BATCH_SIZE_PER_CLONE * MAX_CLONES_PER_TICK
 DM_SEND_DELAY_SECONDS = 0.4  # stays comfortably under Discord's DM rate limit
+# Hard wall-clock budget for one invocation. CLAIM_LIMIT alone (200) times
+# DM_SEND_DELAY_SECONDS (0.4s) is already 80+ seconds of guaranteed sleep,
+# before any actual REST latency — comfortably past most external cron
+# schedulers' request timeout (cron-job.org's default is 30s), which is
+# what was producing the repeated "Failed (timeout)" ticks. This caps a
+# single call well under that so it always returns in time, and anything
+# claimed-but-not-yet-sent is released back to the pool (same mechanism
+# already used below for recipients claimed but never attempted) so the
+# next tick just picks up where this one left off — a large broadcast
+# still fully lands, just over more ticks.
+WALL_CLOCK_BUDGET_SECONDS = 20
 
 
 async def _token_for(clone_id):
@@ -131,9 +142,17 @@ def _format_message(raw_message: str) -> str:
 async def run_pending_owner_broadcasts() -> dict:
     broadcasts = await db.get_pending_owner_broadcasts()
     totals = {"broadcasts": len(broadcasts), "sent": 0, "failed": 0}
+    deadline = asyncio.get_event_loop().time() + WALL_CLOCK_BUDGET_SECONDS
 
     async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
         for broadcast in broadcasts:
+            if asyncio.get_event_loop().time() >= deadline:
+                # Budget already used up by an earlier broadcast in this
+                # same tick — leave the rest of the pending broadcasts
+                # alone entirely (nothing claimed yet for them) and let
+                # the next tick pick them up.
+                break
+
             content = _format_message(broadcast["message"])
             recipients = await db.get_owner_broadcast_recipient_batch(broadcast["id"], limit=CLAIM_LIMIT)
 
@@ -144,7 +163,12 @@ async def run_pending_owner_broadcasts() -> dict:
                 by_clone.setdefault(r["clone_id"], []).append(r)
 
             unattempted_ids = []
+            budget_exhausted = False
             for clone_id, clone_recipients in by_clone.items():
+                if budget_exhausted:
+                    unattempted_ids.extend(r["id"] for r in clone_recipients)
+                    continue
+
                 token = await _token_for(clone_id)
                 if not token:
                     for r in clone_recipients:
@@ -155,7 +179,16 @@ async def run_pending_owner_broadcasts() -> dict:
                 to_send, leftover = clone_recipients[:BATCH_SIZE_PER_CLONE], clone_recipients[BATCH_SIZE_PER_CLONE:]
                 unattempted_ids.extend(r["id"] for r in leftover)
 
-                for r in to_send:
+                for i, r in enumerate(to_send):
+                    if asyncio.get_event_loop().time() >= deadline:
+                        # Stop mid-clone rather than blow past the wall-clock
+                        # budget — whatever's left in this clone (and every
+                        # clone after it) goes back into the pool below,
+                        # same as the "spanned more clones than we send"
+                        # leftover path already did.
+                        unattempted_ids.extend(r2["id"] for r2 in to_send[i:])
+                        budget_exhausted = True
+                        break
                     error = await _dm_user(
                         session, token, r["user_id"], content,
                         broadcast.get("image_url"), broadcast.get("payment_button_type"),
@@ -165,9 +198,10 @@ async def run_pending_owner_broadcasts() -> dict:
                     await asyncio.sleep(DM_SEND_DELAY_SECONDS)
 
             # Anything claimed this tick but not actually attempted (this
-            # broadcast spanned more clones than we send per tick) goes
-            # back into the pool immediately rather than sitting claimed
-            # for up to 2 minutes — see release_owner_broadcast_recipient_claims.
+            # broadcast spanned more clones than we send per tick, or we
+            # hit the wall-clock budget mid-batch) goes back into the pool
+            # immediately rather than sitting claimed for up to 2 minutes —
+            # see release_owner_broadcast_recipient_claims.
             await db.release_owner_broadcast_recipient_claims(unattempted_ids)
 
             await db.finalize_owner_broadcast_if_done(broadcast["id"])
