@@ -214,6 +214,26 @@ class CloneAdminCog(commands.Cog):
         description="[Admin] List every server across the main bot and all clones, with owners/managers",
     )
     @app_commands.describe(include_left="Include servers the bot/clone has since left (default: no)")
+    async def _resolve_username(self, user_id: Optional[int], cache: dict) -> str:
+        """Best-effort display name for a user_id: bot's member/user cache
+        first (free), then a fetch_user API call (cached in `cache` so the
+        same owner/manager appearing on multiple rows costs one call, not
+        one per row). Falls back to the raw id if Discord won't give us a
+        name (unknown user, DM-blocked lookup, etc.)."""
+        if not user_id:
+            return "unknown"
+        if user_id in cache:
+            return cache[user_id]
+        user = self.bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(user_id)
+            except discord.HTTPException:
+                user = None
+        name = f"{user.name} ({user_id})" if user else f"unknown ({user_id})"
+        cache[user_id] = name
+        return name
+
     async def allservers(self, interaction: discord.Interaction, include_left: bool = False):
         if not _is_clone_admin(interaction.user.id):
             await interaction.response.send_message("You're not authorized to use this.", ephemeral=True)
@@ -231,23 +251,28 @@ class CloneAdminCog(commands.Cog):
             name = r["bot_username"] or "unknown"
             return f"Clone #{r['clone_id']} ({name})"
 
-        def manager_label(r: dict) -> str:
-            if r["clone_id"] is None:
-                return "—"
-            return str(r["manager_id"]) if r["manager_id"] else "unknown"
+        # Resolve real usernames for server owners and clone managers,
+        # caching per user_id since the same owner/manager often shows up
+        # across several servers.
+        name_cache: dict = {}
+        for r in rows:
+            r["_server_owner_name"] = await self._resolve_username(r["server_owner_id"], name_cache)
+            r["_manager_name"] = "—" if r["clone_id"] is None else await self._resolve_username(r["manager_id"], name_cache)
 
         # Column widths sized off the actual data (with sane caps) so the
         # monospace table stays aligned without wasting space on short rows.
-        col_server = min(max((len(r["guild_name"] or "Unknown") for r in rows), default=6), 28)
-        col_bot = min(max((len(bot_label(r)) for r in rows), default=8), 24)
+        col_server = min(max((len(r["guild_name"] or "Unknown") for r in rows), default=6), 26)
+        col_bot = min(max((len(bot_label(r)) for r in rows), default=8), 22)
+        col_owner = min(max((len(r["_server_owner_name"]) for r in rows), default=12), 26)
+        col_manager = min(max((len(r["_manager_name"]) for r in rows), default=12), 26)
 
         def fmt_row(vals: list) -> str:
             server, bot, server_owner, manager, members = vals
             return (
                 f"{server[:col_server]:<{col_server}} | "
                 f"{bot[:col_bot]:<{col_bot}} | "
-                f"{server_owner:<20} | "
-                f"{manager:<20} | "
+                f"{server_owner[:col_owner]:<{col_owner}} | "
+                f"{manager[:col_manager]:<{col_manager}} | "
                 f"{members}"
             )
 
@@ -258,8 +283,8 @@ class CloneAdminCog(commands.Cog):
             table_lines.append(fmt_row([
                 r["guild_name"] or "Unknown",
                 bot_label(r),
-                str(r["server_owner_id"]) if r["server_owner_id"] else "unknown",
-                manager_label(r),
+                r["_server_owner_name"],
+                r["_manager_name"],
                 str(r["member_count"] or "?"),
             ]))
 
@@ -285,8 +310,8 @@ class CloneAdminCog(commands.Cog):
         # preview cut off or for pulling into a spreadsheet.
         buf = io.StringIO()
         writer = csv.DictWriter(buf, fieldnames=[
-            "guild_id", "guild_name", "member_count", "server_owner_id",
-            "clone_id", "bot_username", "manager_id", "clone_status", "joined_at", "left_at",
+            "guild_id", "guild_name", "member_count", "server_owner_id", "_server_owner_name",
+            "clone_id", "bot_username", "manager_id", "_manager_name", "clone_status", "joined_at", "left_at",
         ], extrasaction="ignore")
         writer.writeheader()
         for r in rows:
