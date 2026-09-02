@@ -1686,6 +1686,13 @@ class Database:
         await conn.execute("""
             ALTER TABLE discord_guilds ADD COLUMN IF NOT EXISTS invite_url TEXT
         """)
+        # Migration: owner_id added so /ownerbroadcast can target server
+        # owners directly — nullable since existing rows (and any guild
+        # upserted before the bot backfills it, e.g. a stale cached Guild
+        # object with no owner_id populated yet) won't have it.
+        await conn.execute("""
+            ALTER TABLE discord_guilds ADD COLUMN IF NOT EXISTS owner_id BIGINT
+        """)
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS discord_guilds_guild_clone_key
             ON discord_guilds (guild_id, COALESCE(clone_id, -1))
@@ -5412,35 +5419,42 @@ class Database:
     # ─────────────────────────────────────────────────────────────────────
 
     async def upsert_discord_guild(self, guild_id: int, guild_name: str, member_count: int,
-                                    clone_id: Optional[int] = None, invite_url: Optional[str] = None) -> None:
+                                    clone_id: Optional[int] = None, invite_url: Optional[str] = None,
+                                    owner_id: Optional[int] = None) -> None:
         """Called from on_guild_join (and on_ready, to catch up any guilds
         the bot joined while offline). Clears left_at so a re-join shows
         current membership again rather than looking permanently departed.
         invite_url is best-effort (the caller may not have permission to
         create one) — only overwritten when a fresh one is actually passed,
         so a later permission-less call doesn't blank out one we already
-        have stored."""
+        have stored. owner_id follows the same "only overwrite when given"
+        rule via COALESCE, since a transfer of server ownership should
+        still update it eventually but a caller that couldn't resolve it
+        this time (e.g. an uncached member) shouldn't blank out one we
+        already have."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             if invite_url:
                 await conn.execute("""
-                    INSERT INTO discord_guilds (guild_id, clone_id, guild_name, member_count, invite_url, joined_at, left_at)
-                    VALUES ($1, $2, $3, $4, $5, NOW(), NULL)
+                    INSERT INTO discord_guilds (guild_id, clone_id, guild_name, member_count, invite_url, owner_id, joined_at, left_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, NOW(), NULL)
                     ON CONFLICT (guild_id, COALESCE(clone_id, -1)) DO UPDATE
                     SET guild_name = EXCLUDED.guild_name,
                         member_count = EXCLUDED.member_count,
                         invite_url = EXCLUDED.invite_url,
+                        owner_id = COALESCE(EXCLUDED.owner_id, discord_guilds.owner_id),
                         left_at = NULL
-                """, guild_id, clone_id, guild_name, member_count, invite_url)
+                """, guild_id, clone_id, guild_name, member_count, invite_url, owner_id)
             else:
                 await conn.execute("""
-                    INSERT INTO discord_guilds (guild_id, clone_id, guild_name, member_count, joined_at, left_at)
-                    VALUES ($1, $2, $3, $4, NOW(), NULL)
+                    INSERT INTO discord_guilds (guild_id, clone_id, guild_name, member_count, owner_id, joined_at, left_at)
+                    VALUES ($1, $2, $3, $4, $5, NOW(), NULL)
                     ON CONFLICT (guild_id, COALESCE(clone_id, -1)) DO UPDATE
                     SET guild_name = EXCLUDED.guild_name,
                         member_count = EXCLUDED.member_count,
+                        owner_id = COALESCE(EXCLUDED.owner_id, discord_guilds.owner_id),
                         left_at = NULL
-                """, guild_id, clone_id, guild_name, member_count)
+                """, guild_id, clone_id, guild_name, member_count, owner_id)
 
     async def mark_discord_guild_left(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Called from on_guild_remove. Keeps the row (left_at set) rather
@@ -8100,6 +8114,21 @@ class Database:
                 clone_id
             )
             return [r["user_id"] for r in rows]
+
+    async def get_discord_guild_owner_ids(self, clone_id: Optional[int]) -> List[int]:
+        """Distinct owner_id of every currently-joined guild (left_at IS
+        NULL) under this bot/clone (clone_id=None means the main bot).
+        A guild whose owner_id we never resolved (NULL) is excluded rather
+        than surfaced as a phantom recipient. One real person owning
+        several of this bot's guilds still only appears once, same as
+        get_discord_bot_user_ids's per-clone dedupe."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT owner_id FROM discord_guilds
+                WHERE clone_id IS NOT DISTINCT FROM $1 AND left_at IS NULL AND owner_id IS NOT NULL
+            """, clone_id)
+            return [r["owner_id"] for r in rows]
 
     async def create_owner_broadcast(self, created_by: int, message: str, image_url: Optional[str] = None,
                                       payment_button_type: Optional[str] = None) -> int:
