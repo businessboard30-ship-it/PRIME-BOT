@@ -169,15 +169,13 @@ class InvitesCog(GuildOnlyCog):
         try:
             clone_id = _clone_id_of(self.bot)
             config = await db.get_invite_tracker_config(guild.id, clone_id=clone_id)
-            view = build_wizard_view(guild.id, clone_id, None, config)
-            message = await channel.send(
-                content=(
-                    f"🔗 Want to know who's inviting people to **{guild.name}**? Set up the invite "
-                    f"tracker below — anyone with **Manage Server** can use it, no commands needed. "
-                    f"(You can also bring this back later with `/invites setup`.)"
-                ),
-                view=view,
+            intro = (
+                f"Want to know who's inviting people to **{guild.name}**? Set up the invite "
+                f"tracker below — anyone with **Manage Server** can use it, no commands needed. "
+                f"(You can also bring this back later with `/invites setup`.)"
             )
+            view = build_wizard_view(guild.id, clone_id, None, config, intro=intro)
+            message = await channel.send(view=view)
             await remember_wizard_message(guild.id, clone_id, None, message.channel.id, message.id)
         except (discord.HTTPException, discord.Forbidden) as e:
             logger.info(f"[invites] Auto-posted setup wizard skipped for guild {guild.id}: {e}")
