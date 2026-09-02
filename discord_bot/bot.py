@@ -366,7 +366,8 @@ class AnimeBotDiscord(commands.Bot):
         existing_ids = {g["guild_id"] for g in existing_rows}
         for guild in self.guilds:
             if guild.id in existing_ids:
-                await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id)
+                await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id,
+                                               owner_id=guild.owner_id)
             else:
                 await self._handle_new_guild(guild)
 
@@ -380,7 +381,8 @@ class AnimeBotDiscord(commands.Bot):
         by the live on_guild_join event and on_ready's catch-up pass for
         joins that happened while this process wasn't connected yet."""
         invite_url = await self._best_effort_invite(guild)
-        await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id, invite_url)
+        await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id, invite_url,
+                                       owner_id=guild.owner_id)
         if invite_url is None:
             from discord_bot.cogs._views_registry_invite_consent import offer_registry_invite_consent
             await offer_registry_invite_consent(self, guild)
