@@ -73,18 +73,28 @@ def render_status_lines(config: dict) -> list:
     return lines
 
 
-def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> discord.ui.LayoutView:
+def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, intro: str = None) -> discord.ui.LayoutView:
     """Builds a fresh wizard message from an already-fetched config dict.
     Every dynamic item re-fetches its own current config on interaction —
-    this is only ever used to render, never to hold state between clicks."""
+    this is only ever used to render, never to hold state between clicks.
+
+    `intro`, if given, is prepended above the header — this view is
+    Components V2 (LayoutView), so a message using it can't also carry a
+    top-level `content=`; any intro copy has to live inside the view
+    itself instead."""
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
 
-    text = discord.ui.TextDisplay("\n".join([
+    lines = []
+    if intro:
+        lines.append(intro)
+        lines.append("")
+    lines.extend([
         "### 🔗 Invite Tracker",
         "See who invited each new member, right in this server.",
         *render_status_lines(config),
-    ]))
+    ])
+    text = discord.ui.TextDisplay("\n".join(lines))
     container.add_item(text)
     container.add_item(discord.ui.Separator())
 
