@@ -30,6 +30,7 @@ from discord_bot.cogs.ai_store import VerifyCreditsView, VerifyBoostView, AIStor
 from discord_bot.cogs._dm_support import GUILD_ONLY_MESSAGE
 from discord_bot.cogs._views_join_dm import build_join_dm_view, DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
+from discord_bot.cogs._views_invites import DYNAMIC_ITEMS as INVITES_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_wizard import DYNAMIC_ITEMS as AUTOMOD_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_reminders import DYNAMIC_ITEMS as AUTOMOD_REMINDER_DYNAMIC_ITEMS
 from discord_bot.cogs._views_ticket_wizard import DYNAMIC_ITEMS as TICKET_WIZARD_DYNAMIC_ITEMS
@@ -122,6 +123,7 @@ class AnimeBotDiscord(commands.Bot):
         # covers every guild's buttons, past and future.
         self.add_dynamic_items(*DYNAMIC_ITEMS)
         self.add_dynamic_items(*WELCOME_WIZARD_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*INVITES_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_REMINDER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*TICKET_WIZARD_DYNAMIC_ITEMS)
@@ -157,6 +159,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.giveaways")
         await self.load_extension("discord_bot.cogs.schedule")
         await self.load_extension("discord_bot.cogs.welcome")
+        await self.load_extension("discord_bot.cogs.invites")
         await self.load_extension("discord_bot.cogs.quickstart")
         await self.load_extension("discord_bot.cogs.setup_channels")
         await self.load_extension("discord_bot.cogs.analytics")
@@ -468,6 +471,15 @@ class AnimeBotDiscord(commands.Bot):
                     notices.append((field[0], field[1]))
             except Exception:
                 logger.exception(f"[join-dm] ship section failed for guild {guild.id}")
+
+        welcome_cog = self.get_cog("WelcomeCog")
+        if welcome_cog:
+            try:
+                field = await welcome_cog.build_join_notice_field(guild, clone_id=clone_id)
+                if field:
+                    notices.append((field[0], field[1]))
+            except Exception:
+                logger.exception(f"[join-dm] ultra pack section failed for guild {guild.id}")
 
         try:
             from discord_bot.cogs._views_join_dm import _enabled_feature_keys
