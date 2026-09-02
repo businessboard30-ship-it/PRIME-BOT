@@ -214,26 +214,6 @@ class CloneAdminCog(commands.Cog):
         description="[Admin] List every server across the main bot and all clones, with owners/managers",
     )
     @app_commands.describe(include_left="Include servers the bot/clone has since left (default: no)")
-    async def _resolve_username(self, user_id: Optional[int], cache: dict) -> str:
-        """Best-effort display name for a user_id: bot's member/user cache
-        first (free), then a fetch_user API call (cached in `cache` so the
-        same owner/manager appearing on multiple rows costs one call, not
-        one per row). Falls back to the raw id if Discord won't give us a
-        name (unknown user, DM-blocked lookup, etc.)."""
-        if not user_id:
-            return "unknown"
-        if user_id in cache:
-            return cache[user_id]
-        user = self.bot.get_user(user_id)
-        if user is None:
-            try:
-                user = await self.bot.fetch_user(user_id)
-            except discord.HTTPException:
-                user = None
-        name = f"{user.name} ({user_id})" if user else f"unknown ({user_id})"
-        cache[user_id] = name
-        return name
-
     async def allservers(self, interaction: discord.Interaction, include_left: bool = False):
         if not _is_clone_admin(interaction.user.id):
             await interaction.response.send_message("You're not authorized to use this.", ephemeral=True)
@@ -321,6 +301,26 @@ class CloneAdminCog(commands.Cog):
             file=discord.File(data, filename="all_servers.csv"),
             ephemeral=True,
         )
+
+    async def _resolve_username(self, user_id: Optional[int], cache: dict) -> str:
+        """Best-effort display name for a user_id: bot's member/user cache
+        first (free), then a fetch_user API call (cached in `cache` so the
+        same owner/manager appearing on multiple rows costs one call, not
+        one per row). Falls back to the raw id if Discord won't give us a
+        name (unknown user, DM-blocked lookup, etc.)."""
+        if not user_id:
+            return "unknown"
+        if user_id in cache:
+            return cache[user_id]
+        user = self.bot.get_user(user_id)
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(user_id)
+            except discord.HTTPException:
+                user = None
+        name = f"{user.name} ({user_id})" if user else f"unknown ({user_id})"
+        cache[user_id] = name
+        return name
 
     # ── /clonemonetize — Discord equivalent of handlers/clone_bot.py's ────
     # monetization menu (show_monetization_menu / handle_monetization_
