@@ -18,12 +18,21 @@ cannot touch guild B's config.
 """
 import json
 import logging
+from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 from database import db
 
 logger = logging.getLogger(__name__)
+
+
+def _json_default(obj):
+    """Fallback serializer for json.dumps — handles types returned by the
+    DB driver (e.g. datetime/date columns) that aren't JSON-native."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 # Keys the dashboard is allowed to write. Mirrors _AUTOMOD_DEFAULTS in
 # database.py — kept as an explicit allowlist here (rather than accepting
@@ -63,7 +72,7 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self._cors()
         self.end_headers()
-        self.wfile.write(json.dumps(payload).encode())
+        self.wfile.write(json.dumps(payload, default=_json_default).encode())
 
     def do_OPTIONS(self):
         self.send_response(204)
