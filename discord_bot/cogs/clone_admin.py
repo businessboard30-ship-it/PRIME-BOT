@@ -513,7 +513,7 @@ class CloneAdminCog(commands.Cog):
     @app_commands.command(name="ownerbroadcast", description="[Owner] DM an announcement to bot users or clone admins")
     @app_commands.describe(
         message="The announcement text — sent as-is, signed with your configured brand name",
-        target="Who receives this DM — regular bot users (default), or clone admins/operators only",
+        target="Who receives this DM — regular bot users (default), clone admins/operators, or server owners",
         image="Optional image to attach — drag & drop or upload it here, sent alongside the text",
         payment_button="Optional — attach an 'I've Paid' button for this product (lets buyers claim straight from this DM)",
     )
@@ -523,6 +523,7 @@ class CloneAdminCog(commands.Cog):
     @app_commands.choices(target=[
         app_commands.Choice(name="Users — everyone across the main bot + clones", value="users"),
         app_commands.Choice(name="Admins — clone owners/operators only", value="admins"),
+        app_commands.Choice(name="Server owners — owner of every server the bot/clones are in", value="servers"),
     ])
     async def ownerbroadcast(self, interaction: discord.Interaction, message: str,
                               target: Optional[app_commands.Choice[str]] = None,
@@ -576,6 +577,30 @@ class CloneAdminCog(commands.Cog):
             admin_ids.discard(interaction.user.id)  # don't DM the sender themselves
             await db.add_owner_broadcast_recipients(broadcast_id, None, list(admin_ids))
             recipient_note = f"**{len(admin_ids)}** clone admin(s)"
+        elif target_value == "servers":
+            # Owner (guild.owner_id) of every currently-joined guild across
+            # the main bot and every active clone — distinct from "admins"
+            # above, since a server owner may never have DM'd the main bot
+            # or run /registerclone at all (they may only have invited a
+            # clone to their own server). That means, unlike the "admins"
+            # path, we can't assume everyone is reachable through the main
+            # bot's token — same per-clone token requirement as "users"
+            # below, so this mirrors that loop rather than the "admins" one.
+            seen_owner_ids = set()
+
+            main_owner_ids = await db.get_discord_guild_owner_ids(None)
+            main_owner_ids = [uid for uid in main_owner_ids if uid != interaction.user.id]
+            seen_owner_ids.update(main_owner_ids)
+            await db.add_owner_broadcast_recipients(broadcast_id, None, main_owner_ids)
+
+            clones = await db.list_active_discord_clones()
+            for clone in clones:
+                clone_owner_ids = await db.get_discord_guild_owner_ids(clone["clone_id"])
+                new_owner_ids = [uid for uid in clone_owner_ids if uid not in seen_owner_ids and uid != interaction.user.id]
+                seen_owner_ids.update(new_owner_ids)
+                await db.add_owner_broadcast_recipients(broadcast_id, clone["clone_id"], new_owner_ids)
+
+            recipient_note = f"**{len(seen_owner_ids)}** server owner(s) across the main bot and {len(clones)} clone(s)"
         else:
             # Main bot's own users (clone_id=None), plus every currently-active
             # clone's users. An inactive/removed clone is skipped since there's
