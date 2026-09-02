@@ -5492,6 +5492,31 @@ class Database:
                 """, clone_id)
             return [dict(r) for r in rows]
 
+    async def get_all_guilds_with_managers(self, include_left: bool = False) -> list:
+        """Every server the main bot AND every clone are currently in (or
+        have been in, if include_left), one row each, joined against
+        discord_cloned_bots so /allservers (clone_admin.py) can show who
+        manages each bot alongside who owns each server. clone_id IS NULL
+        rows are the main bot itself — LEFT JOIN so those still come back
+        with bot_username/manager_id as NULL rather than being dropped.
+        """
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            where_left = "" if include_left else "AND g.left_at IS NULL"
+            rows = await conn.fetch(f"""
+                SELECT
+                    g.guild_id, g.guild_name, g.member_count,
+                    g.owner_id AS server_owner_id,
+                    g.joined_at, g.left_at,
+                    g.clone_id,
+                    c.bot_username, c.owner_id AS manager_id, c.status AS clone_status
+                FROM discord_guilds g
+                LEFT JOIN discord_cloned_bots c ON c.clone_id = g.clone_id
+                WHERE 1=1 {where_left}
+                ORDER BY g.clone_id NULLS FIRST, g.guild_name NULLS LAST
+            """)
+            return [dict(r) for r in rows]
+
     # ─────────────────────────────────────────────────────────────────────
     # Discord: reaction roles (button-based)
     # ─────────────────────────────────────────────────────────────────────
