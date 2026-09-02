@@ -10,6 +10,8 @@ defeats the point.
 """
 
 import asyncio
+import csv
+import io
 import logging
 from typing import Optional
 
@@ -198,6 +200,100 @@ class CloneAdminCog(commands.Cog):
         await db.set_discord_clone_status(clone_id, "inactive")
         await interaction.followup.send(
             f"Clone `#{clone_id}` deactivated — the supervisor will shut its process down within about a minute.",
+            ephemeral=True,
+        )
+
+    # ── /allservers ───────────────────────────────────────────────────────
+    # Admin-only cross-bot roster: every server the main bot AND every
+    # clone are currently in, with the server's own owner and (for clones)
+    # who manages that clone — one row per server. Rendered as a monospace
+    # table since Discord has no native table component; also attached as
+    # CSV since the table gets truncated once the roster is large.
+    @app_commands.command(
+        name="allservers",
+        description="[Admin] List every server across the main bot and all clones, with owners/managers",
+    )
+    @app_commands.describe(include_left="Include servers the bot/clone has since left (default: no)")
+    async def allservers(self, interaction: discord.Interaction, include_left: bool = False):
+        if not _is_clone_admin(interaction.user.id):
+            await interaction.response.send_message("You're not authorized to use this.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        rows = await db.get_all_guilds_with_managers(include_left=include_left)
+        if not rows:
+            await interaction.followup.send("No servers on record yet.", ephemeral=True)
+            return
+
+        def bot_label(r: dict) -> str:
+            if r["clone_id"] is None:
+                return "Main bot"
+            name = r["bot_username"] or "unknown"
+            return f"Clone #{r['clone_id']} ({name})"
+
+        def manager_label(r: dict) -> str:
+            if r["clone_id"] is None:
+                return "—"
+            return str(r["manager_id"]) if r["manager_id"] else "unknown"
+
+        # Column widths sized off the actual data (with sane caps) so the
+        # monospace table stays aligned without wasting space on short rows.
+        col_server = min(max((len(r["guild_name"] or "Unknown") for r in rows), default=6), 28)
+        col_bot = min(max((len(bot_label(r)) for r in rows), default=8), 24)
+
+        def fmt_row(vals: list) -> str:
+            server, bot, server_owner, manager, members = vals
+            return (
+                f"{server[:col_server]:<{col_server}} | "
+                f"{bot[:col_bot]:<{col_bot}} | "
+                f"{server_owner:<20} | "
+                f"{manager:<20} | "
+                f"{members}"
+            )
+
+        header = fmt_row(["Server", "Bot", "Server Owner", "Managed By", "Members"])
+        separator = "-" * len(header)
+        table_lines = [header, separator]
+        for r in rows:
+            table_lines.append(fmt_row([
+                r["guild_name"] or "Unknown",
+                bot_label(r),
+                str(r["server_owner_id"]) if r["server_owner_id"] else "unknown",
+                manager_label(r),
+                str(r["member_count"] or "?"),
+            ]))
+
+        # Chunk into <=1900-char code blocks (2000-char message cap minus
+        # the ``` fences) so a large roster spans multiple messages instead
+        # of getting silently truncated.
+        chunks, current = [], ""
+        for line in table_lines:
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) > 1900:
+                chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+
+        for i, chunk in enumerate(chunks):
+            content = f"🗂️ **All servers ({len(rows)})** — part {i + 1}/{len(chunks)}\n```\n{chunk}\n```"
+            await interaction.followup.send(content, ephemeral=True)
+
+        # Full CSV export alongside the table, for anything the chunked
+        # preview cut off or for pulling into a spreadsheet.
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=[
+            "guild_id", "guild_name", "member_count", "server_owner_id",
+            "clone_id", "bot_username", "manager_id", "clone_status", "joined_at", "left_at",
+        ], extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+        data = io.BytesIO(buf.getvalue().encode("utf-8"))
+        await interaction.followup.send(
+            file=discord.File(data, filename="all_servers.csv"),
             ephemeral=True,
         )
 
