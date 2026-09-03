@@ -1625,6 +1625,27 @@ class Database:
             "ALTER TABLE discord_automod_config ADD COLUMN IF NOT EXISTS wizard_invoker_id BIGINT"
         )
 
+        # discord_media_storage_config: one row per (guild, clone) pointing
+        # at the single owner-designated channel that all downloaded/
+        # uploaded media gets archived to. storage_channel_id is NULL until
+        # the owner runs /set-storage-channel — see media_storage.py.
+        # set_by_user_id/updated_at are just an audit trail (who pointed it
+        # where, and when), same spirit as discord_automod_config's
+        # updated_at.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_media_storage_config (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                storage_channel_id BIGINT,
+                set_by_user_id BIGINT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_media_storage_config_guild_clone_key
+            ON discord_media_storage_config (guild_id, COALESCE(clone_id, -1))
+        """)
+
         # discord_automod_reminder_batches: one row per COMBINED owner DM
         # sent by AutomodCog._reminder_loop. Previously each guild/type
         # (log-channel notice, word-filter notice) fired its own standalone
@@ -5697,6 +5718,36 @@ class Database:
                 merged["log_channel_notice_count"], merged["log_channel_last_notice_at"],
                 merged["wordfilter_notice_count"], merged["wordfilter_last_notice_at"],
                 merged["wizard_channel_id"], merged["wizard_message_id"], merged["wizard_invoker_id"],
+            )
+
+    async def get_media_storage_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_media_storage_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+            if row:
+                return dict(row)
+            return {"guild_id": guild_id, "clone_id": clone_id, "storage_channel_id": None,
+                     "set_by_user_id": None}
+
+    async def set_media_storage_channel(self, guild_id: int, channel_id: int, set_by_user_id: int,
+                                         clone_id: Optional[int] = None) -> None:
+        """Upserts the single owner-designated storage channel for this
+        guild/clone. Called only from /set-storage-channel (owner-only —
+        see media_storage.py)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_media_storage_config
+                    (guild_id, clone_id, storage_channel_id, set_by_user_id, updated_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
+                    storage_channel_id = $3, set_by_user_id = $4, updated_at = NOW()
+                """,
+                guild_id, clone_id, channel_id, set_by_user_id,
             )
 
     async def add_automod_banned_word(self, guild_id: int, word: str, clone_id: Optional[int] = None) -> bool:
