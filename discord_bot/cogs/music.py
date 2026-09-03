@@ -255,6 +255,47 @@ class MusicCog(GuildOnlyCog):
         await self._post_or_refresh_panel(guild.id, clone_id, post_channel)
         return None
 
+    async def queue_direct_url_for_playback(
+        self, guild: discord.Guild, member: discord.Member, stream_url: str, title: str, clone_id, post_channel,
+    ) -> str | None:
+        """Like queue_track_for_submission, but for a URL that's already a
+        playable media file — a raw Discord CDN attachment link (phone/PC
+        upload) or a library replay — so it skips resolve_track/yt-dlp
+        entirely and queues the URL as-is. Same never-raises contract:
+        returns None on success, or a short reason string on failure."""
+        if member.voice is None or member.voice.channel is None:
+            return "you're not in a voice channel"
+        voice_channel = member.voice.channel
+
+        track = {
+            "stream_url": stream_url,
+            "title": title,
+            "uploader": member.display_name,
+            "duration_seconds": 0,
+            "thumbnail": None,
+            "queued_by": member.id,
+            "voice_channel_id": voice_channel.id,
+            "source_url": stream_url,
+        }
+        state = self._state(guild.id)
+        state.queue.append(track)
+
+        voice_client = guild.voice_client
+        if voice_client is None:
+            try:
+                voice_client = await voice_channel.connect()
+            except discord.ClientException as e:
+                state.queue.remove(track)
+                return f"couldn't join your voice channel ({e})"
+        elif voice_client.channel.id != voice_channel.id and not voice_client.is_playing():
+            await voice_client.move_to(voice_channel)
+
+        if not voice_client.is_playing() and not voice_client.is_paused():
+            await self._play_next(guild.id)
+
+        await self._post_or_refresh_panel(guild.id, clone_id, post_channel)
+        return None
+
     async def _post_or_refresh_panel(self, guild_id: int, clone_id, fallback_channel):
         """The panel is ONE persistent message per guild — if it already
         exists (tracked in discord_music_panel) this edits it in place,
