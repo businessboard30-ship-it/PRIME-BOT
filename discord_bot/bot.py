@@ -183,6 +183,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.bot_manager")
         await self.load_extension("discord_bot.cogs.submissions")
         await self.load_extension("discord_bot.cogs.media_connect")
+        await self.load_extension("discord_bot.cogs.media_storage")
         await self.load_extension("discord_bot.cogs.image_search")
         await self.load_extension("discord_bot.cogs.link_buttons")
         await self.load_extension("discord_bot.cogs.autopost")
