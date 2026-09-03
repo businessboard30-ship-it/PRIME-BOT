@@ -112,6 +112,65 @@ def _panel_decode(match: "re.Match"):
     return guild_id, clone_id, media_type
 
 
+# --- Play/Queue choice view for media submissions ----------------------
+
+class PlayQueueChoiceView(discord.ui.View):
+    """Ephemeral view shown when a user submits media — lets them pick
+    between playing immediately or queueing to the end."""
+
+    def __init__(self, guild_id: int, clone_id, url: str, media_title: str):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.url = url
+        self.media_title = media_title
+        self.result = None  # Will be set to "play_now" or "queue" after callback
+
+    @discord.ui.button(label="▶️ Play Now", style=discord.ButtonStyle.success)
+    async def play_now_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        self.result = "play_now"
+        await self._execute_choice(interaction)
+
+    @discord.ui.button(label="➕ Queue", style=discord.ButtonStyle.primary)
+    async def queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        self.result = "queue"
+        await self._execute_choice(interaction)
+
+    async def _execute_choice(self, interaction: discord.Interaction):
+        """Execute the chosen action and report back."""
+        music_cog = interaction.client.get_cog("MusicCog")
+        if music_cog is None:
+            await interaction.followup.send("🎵 Playback isn't available right now — the music module isn't loaded.", ephemeral=True)
+            return
+
+        try:
+            # queue_track_for_submission handles checking if user is in VC,
+            # joining/creating channels as needed, and all playback logic
+            reason = await music_cog.queue_track_for_submission(
+                interaction.guild,
+                interaction.user,
+                self.url,
+                self.clone_id,
+                interaction.channel,  # Post channel for the Now Playing panel
+                play_immediately=(self.result == "play_now"),
+            )
+        except Exception:
+            logger.error(f"[v0] queue_track_for_submission raised unexpectedly for {self.url}", exc_info=True)
+            await interaction.followup.send(f"🎵 Failed to queue **{self.media_title}** — an unexpected error occurred (logged).", ephemeral=True)
+            return
+
+        if reason:
+            await interaction.followup.send(f"🎵 Couldn't queue **{self.media_title}**: {reason}.", ephemeral=True)
+            return
+
+        if self.result == "play_now":
+            await interaction.followup.send(f"🎵 Playing **{self.media_title}** now — see the Now Playing panel.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"✅ Queued **{self.media_title}** — see the Now Playing panel.", ephemeral=True)
+
+
 # --- Admin setup wizard ------------------------------------------------
 
 def render_status_lines(config: dict) -> list:
@@ -438,8 +497,13 @@ class DownloadLinkModal(discord.ui.Modal):
             finally:
                 if os.path.exists(filepath):
                     os.remove(filepath)
-            note = await self._maybe_queue_to_voice(interaction, url, channel)
-            await interaction.followup.send(f"✅ Saved to {target.mention}.{note}", ephemeral=True)
+            
+            # Show the save confirmation first
+            media_title = result.get('title', 'Media')
+            await interaction.followup.send(f"✅ Saved to {target.mention}.", ephemeral=True)
+            
+            # Then check if they're in a VC and show the play/queue choice
+            await _show_play_queue_choice(interaction, url, self.guild_id, self.clone_id, media_title)
             return
 
         # yt-dlp had no extractor for this link (or it genuinely failed).
@@ -542,32 +606,12 @@ class DownloadLinkModal(discord.ui.Modal):
             await interaction.followup.send("Discord rejected the upload — the file may still be too large or an unsupported type.", ephemeral=True)
             return
 
-        note = await self._maybe_queue_to_voice(interaction, url, channel)
-        await interaction.followup.send(f"✅ Saved to {target.mention}.{note}", ephemeral=True)
+        # Show the save confirmation first
+        await interaction.followup.send(f"✅ Saved to {target.mention}.", ephemeral=True)
+        
+        # Then check if they're in a VC and show the play/queue choice
+        await _show_play_queue_choice(interaction, url, self.guild_id, self.clone_id, filename)
 
-    async def _maybe_queue_to_voice(self, interaction: discord.Interaction, url: str, channel) -> str:
-        """For both 🎵 Music and 🎬 Video submissions — Discord voice only
-        ever transmits audio regardless of source, so a video submission
-        queues the same way: yt-dlp resolves the best available audio
-        stream from the link and it plays into the voice channel. Never
-        raises and never blocks the "file posted" confirmation on a voice
-        failure; returns a short note to append to that confirmation
-        either way (empty string on success, since the panel message
-        itself is the visible confirmation at that point)."""
-        music_cog = interaction.client.get_cog("MusicCog")
-        if music_cog is None:
-            logger.warning("[v0] _maybe_queue_to_voice: MusicCog not loaded, skipping voice queue.")
-            return ""
-        try:
-            reason = await music_cog.queue_track_for_submission(
-                interaction.guild, interaction.user, url, self.clone_id, channel
-            )
-        except Exception:
-            logger.error(f"[v0] queue_track_for_submission raised unexpectedly for {url}", exc_info=True)
-            return "\n🎵 Not queued to voice: an unexpected error occurred (logged)."
-        if reason:
-            return f"\n🎵 Not queued to voice: {reason}."
-        return "\n🎵 Queued to voice — see the Now Playing panel."
 
 
 def _guess_media_type(attachment: discord.Attachment) -> str:
@@ -580,6 +624,36 @@ def _guess_media_type(attachment: discord.Attachment) -> str:
     if ext in {"mp3", "wav", "ogg", "flac", "m4a", "aac"}:
         return "music"
     return "video"  # default guess; mp4/mov/webm and anything unrecognized
+
+
+async def _show_play_queue_choice(
+    interaction: discord.Interaction,
+    url: str,
+    guild_id: int,
+    clone_id,
+    title: str = "Media",
+) -> None:
+    """Helper function to show the Play Now | Queue choice dialog.
+    Only shows if the user is in a voice channel."""
+    
+    # Check if user is in a VC at all — only show the choice if they are
+    user_voice = interaction.user.voice
+    if not user_voice or not user_voice.channel:
+        # Not in a VC — skip the playback prompt entirely
+        return
+
+    music_cog = interaction.client.get_cog("MusicCog")
+    if music_cog is None:
+        logger.warning("[v0] _show_play_queue_choice: MusicCog not loaded, skipping voice queue.")
+        return
+
+    # Show the Play Now | Queue choice view
+    view = PlayQueueChoiceView(guild_id, clone_id, url, title)
+    await interaction.followup.send(
+        f"🎵 **{title}** is ready — how do you want to play it?",
+        view=view,
+        ephemeral=True,
+    )
 
 
 class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_simple_panel_id_pattern("upload")):
@@ -663,9 +737,16 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         except (discord.Forbidden, discord.HTTPException):
             pass  # not critical if we can't clean up their original message
 
+        # Show the save confirmation first
         await interaction.followup.send(
-            f"✅ Uploaded to {target.mention} and saved to the library — anyone can play it with **▶️ Browse & Play**.",
+            f"✅ Uploaded to {target.mention} and saved to the library.",
             ephemeral=True,
+        )
+        
+        # Then check if they're in a VC and show the play/queue choice
+        # Use the Discord CDN URL (stream_url) for playback
+        await _show_play_queue_choice(
+            interaction, stream_url, self.guild_id, self.clone_id, title
         )
 
 
