@@ -76,6 +76,23 @@ def _decode(match: "re.Match"):
     return guild_id, clone_id, invoker_id
 
 
+def _simple_panel_id_pattern(field: str) -> str:
+    # Like _panel_id_pattern but with no media_type segment — used by the
+    # upload/browse buttons, which aren't type-specific at press time.
+    return rf"^dlpanel_{field}:(\d+):(-|\d+)$"
+
+
+def _simple_panel_encode(field: str, guild_id: int, clone_id) -> str:
+    clone_part = "-" if clone_id is None else str(clone_id)
+    return f"dlpanel_{field}:{guild_id}:{clone_part}"
+
+
+def _simple_panel_decode(match: "re.Match"):
+    guild_id = int(match.group(1))
+    clone_id = None if match.group(2) == "-" else int(match.group(2))
+    return guild_id, clone_id
+
+
 def _panel_id_pattern(field: str) -> str:
     # Panel buttons carry no invoker_id (anyone can press them) but DO
     # carry media type, since that's baked in at build time, not typed.
@@ -192,15 +209,23 @@ def build_submit_panel_view(guild_id: int, clone_id) -> discord.ui.LayoutView:
         "## 📥 Submit a Download\n"
         "Got a YouTube link (or any link yt-dlp supports), or a direct link to a "
         "song/video? Drop it here and I'll fetch it and post it right in this "
-        "channel for everyone — music and video links also start playing in voice "
-        "if you're in a voice channel.\n"
-        "Pick the type below to open the link box."
+        "channel for everyone.\n"
+        "**🔊 You need to be in a voice channel for music/video links to start "
+        "playing — join a VC first, then submit.**\n"
+        "Have a file on your phone or PC instead? Use **📤 Upload a File** — it "
+        "gets saved to the library below so anyone can play it later with "
+        "**▶️ Browse & Play** (no VC required just to upload).\n"
+        "Pick an option below."
     ))
     container.add_item(discord.ui.Separator())
     row = discord.ui.ActionRow()
     row.add_item(DownloadSubmitButton(guild_id, clone_id, "music"))
     row.add_item(DownloadSubmitButton(guild_id, clone_id, "video"))
     container.add_item(row)
+    row2 = discord.ui.ActionRow()
+    row2.add_item(DownloadUploadButton(guild_id, clone_id))
+    row2.add_item(LibraryBrowseButton(guild_id, clone_id))
+    container.add_item(row2)
     view.add_item(container)
     return view
 
@@ -524,6 +549,194 @@ class DownloadLinkModal(discord.ui.Modal):
         return "\n🎵 Queued to voice — see the Now Playing panel."
 
 
+def _guess_media_type(attachment: discord.Attachment) -> str:
+    content_type = (attachment.content_type or "").lower()
+    if content_type.startswith("audio/"):
+        return "music"
+    if content_type.startswith("video/"):
+        return "video"
+    ext = attachment.filename.rsplit(".", 1)[-1].lower() if "." in attachment.filename else ""
+    if ext in {"mp3", "wav", "ogg", "flac", "m4a", "aac"}:
+        return "music"
+    return "video"  # default guess; mp4/mov/webm and anything unrecognized
+
+
+class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_simple_panel_id_pattern("upload")):
+    """No modal here on purpose — Discord modals can't carry a file input,
+    so this button instead asks the user to send the file as their next
+    message right in this channel, then the bot picks up that message's
+    attachment, forwards it to the configured downloads channel, and logs
+    it to the media library. No VC requirement to upload — per the panel
+    copy, uploads just get saved for later playback via the library."""
+
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="📤 Upload a File", style=discord.ButtonStyle.secondary,
+            custom_id=_simple_panel_encode("upload", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _simple_panel_decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "📤 Send the music or video file as your **next message in this channel** — you have 2 minutes. "
+            "(Discord's own file-size limit for this server still applies.)",
+            ephemeral=True,
+        )
+
+        def check(m: discord.Message) -> bool:
+            return (
+                m.author.id == interaction.user.id
+                and m.channel.id == interaction.channel.id
+                and len(m.attachments) > 0
+            )
+
+        try:
+            message = await interaction.client.wait_for("message", check=check, timeout=120)
+        except TimeoutError:
+            await interaction.followup.send("⌛ No file received in time — press **📤 Upload a File** again when you're ready.", ephemeral=True)
+            return
+
+        config = await db.get_download_config(self.guild_id, clone_id=self.clone_id)
+        channel_id = config.get("channel_id")
+        channel = interaction.guild.get_channel(int(channel_id)) if channel_id else None
+        if channel is None:
+            await interaction.followup.send("The downloads channel isn't set up (or was deleted) — ask an admin to run `/setup downloadhub` again.", ephemeral=True)
+            return
+
+        attachment = message.attachments[0]
+        media_type = _guess_media_type(attachment)
+        meta = MEDIA_TYPES[media_type]
+        title = attachment.filename.rsplit(".", 1)[0] if "." in attachment.filename else attachment.filename
+
+        try:
+            file = await attachment.to_file()
+            caption = f"{meta['label']} uploaded by {interaction.user.mention} — **{title}**"
+            sent = await channel.send(content=caption, file=file)
+        except discord.Forbidden:
+            await interaction.followup.send("I don't have permission to post in the downloads channel.", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            logger.warning(f"[v0] Upload forward failed: {e}")
+            await interaction.followup.send("Discord rejected that upload — it may be too large for this server.", ephemeral=True)
+            return
+
+        # Log to the library using the RE-UPLOADED message's own attachment
+        # URL (not the original message's), since that's the copy that will
+        # actually still exist/be reachable long-term in the downloads channel.
+        stream_url = sent.attachments[0].url if sent.attachments else attachment.url
+        await db.add_library_entry(
+            self.guild_id, self.clone_id, interaction.user.id, media_type, title, stream_url,
+            channel_id=channel.id, message_id=sent.id,
+        )
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.HTTPException):
+            pass  # not critical if we can't clean up their original message
+
+        await interaction.followup.send(
+            f"✅ Uploaded to <#{channel.id}> and saved to the library — anyone can play it with **▶️ Browse & Play**.",
+            ephemeral=True,
+        )
+
+
+class LibraryBrowseButton(discord.ui.DynamicItem[discord.ui.Button], template=_simple_panel_id_pattern("browse")):
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="▶️ Browse & Play", style=discord.ButtonStyle.success,
+            custom_id=_simple_panel_encode("browse", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _simple_panel_decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        entries = await db.list_library_entries(self.guild_id, clone_id=self.clone_id, limit=25)
+        if not entries:
+            await interaction.response.send_message("The library's empty — upload something first with **📤 Upload a File**.", ephemeral=True)
+            return
+        view = discord.ui.View(timeout=120)
+        view.add_item(LibraryPlaySelect(self.guild_id, self.clone_id, entries))
+        await interaction.response.send_message("Pick something to play in your voice channel:", view=view, ephemeral=True)
+
+
+class LibraryPlaySelect(discord.ui.Select):
+    """A plain (non-persistent) Select, since it's attached to a fresh
+    ephemeral reply each time the browse button is pressed — no need for
+    a DynamicItem custom_id that survives a bot restart here."""
+
+    def __init__(self, guild_id: int, clone_id, entries: list):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        options = [
+            discord.SelectOption(
+                label=(e["title"] or "Untitled")[:100],
+                description=f"{MEDIA_TYPES.get(e['media_type'], {}).get('label', e['media_type'])} • uploaded by <@{e['uploader_id']}>"[:100],
+                value=str(e["id"]),
+            )
+            for e in entries
+        ]
+        super().__init__(placeholder="Choose an upload to play...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        entry = await db.get_library_entry(int(self.values[0]))
+        if entry is None:
+            await interaction.followup.send("That upload's no longer available.", ephemeral=True)
+            return
+
+        music_cog = interaction.client.get_cog("MusicCog")
+        if music_cog is None:
+            await interaction.followup.send("Playback isn't available right now — the music module isn't loaded.", ephemeral=True)
+            return
+
+        # Discord CDN attachment URLs are signed and expire (~24h) — the
+        # stream_url saved at upload time may be stale by now even though
+        # the file itself still exists. Re-fetching the original message
+        # hands back a freshly re-signed URL for the same attachment, so
+        # do that instead of trusting the stored URL for anything but a
+        # brand-new upload. Falls back to the stored URL only if the
+        # message/channel/attachment can no longer be found at all.
+        stream_url = entry["stream_url"]
+        if entry.get("channel_id") and entry.get("message_id"):
+            src_channel = interaction.guild.get_channel(int(entry["channel_id"]))
+            if src_channel is not None:
+                try:
+                    msg = await src_channel.fetch_message(int(entry["message_id"]))
+                    if msg.attachments:
+                        stream_url = msg.attachments[0].url
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    pass  # message/channel gone — fall back to the (possibly stale) stored URL
+
+        config = await db.get_download_config(self.guild_id, clone_id=self.clone_id)
+        channel_id = config.get("channel_id")
+        post_channel = interaction.guild.get_channel(int(channel_id)) if channel_id else interaction.channel
+
+        try:
+            reason = await music_cog.queue_direct_url_for_playback(
+                interaction.guild, interaction.user, stream_url, entry["title"], self.clone_id, post_channel,
+            )
+        except Exception:
+            logger.error("[v0] queue_direct_url_for_playback raised unexpectedly", exc_info=True)
+            await interaction.followup.send("❌ Something went wrong queueing that (logged).", ephemeral=True)
+            return
+
+        if reason:
+            await interaction.followup.send(f"🎵 Not queued: {reason}.", ephemeral=True)
+            return
+        await interaction.followup.send(f"✅ Queued **{entry['title']}** — see the Now Playing panel.", ephemeral=True)
+
+
 DYNAMIC_ITEMS = (
     DownloadCreateChannelButton, DownloadChannelSelect, DownloadSubmitButton,
+    DownloadUploadButton, LibraryBrowseButton,
 )
