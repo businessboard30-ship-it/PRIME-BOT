@@ -24,10 +24,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from database import db
 from modules.external_apis import fetch_news, convert_currency, get_stock_chart, download_media, get_crypto_price
 from discord_bot.cogs._views_shared import NavCardView, refresh_button
-from discord_bot.cogs.media_storage import _clone_id_of
 
 logger = logging.getLogger(__name__)
 
@@ -168,34 +166,13 @@ class ExternalToolsCog(commands.Cog):
         try:
             size_bytes = os.path.getsize(filepath) if filepath else 0
             caption = f"**{result.get('title', 'Media')}** — {result.get('uploader', 'Unknown')} ({result.get('size_mb', 0)}MB)"
-
-            # Route to the guild's configured media storage channel instead
-            # of posting the file in the invoking channel — see
-            # media_storage.py. Falls back to the old in-channel post if no
-            # storage channel has been set up yet (owner hasn't run
-            # /set-storage-channel), so downloads never silently vanish.
-            storage_channel = None
-            if interaction.guild is not None:
-                config = await db.get_media_storage_config(interaction.guild.id, _clone_id_of(self.bot))
-                storage_channel_id = config.get("storage_channel_id")
-                if storage_channel_id:
-                    storage_channel = interaction.guild.get_channel(storage_channel_id)
-
-            if not filepath or size_bytes > _DISCORD_SAFE_UPLOAD_BYTES:
+            if filepath and size_bytes <= _DISCORD_SAFE_UPLOAD_BYTES:
+                await interaction.followup.send(content=caption, file=discord.File(filepath, filename=result["filename"]))
+            else:
                 await interaction.followup.send(
                     f"{caption}\n\n⚠️ File is too large to upload directly to Discord "
                     f"(over {_DISCORD_SAFE_UPLOAD_BYTES // (1024*1024)}MB on this server's boost tier)."
                 )
-                return
-
-            if storage_channel is not None:
-                await storage_channel.send(
-                    content=f"{caption}\n-# Requested by {interaction.user.mention} in {interaction.channel.mention}",
-                    file=discord.File(filepath, filename=result["filename"]),
-                )
-                await interaction.followup.send(f"✅ Saved to {storage_channel.mention}.")
-            else:
-                await interaction.followup.send(content=caption, file=discord.File(filepath, filename=result["filename"]))
         finally:
             if filepath and os.path.exists(filepath):
                 os.remove(filepath)
