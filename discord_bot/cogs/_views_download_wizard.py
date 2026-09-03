@@ -33,6 +33,7 @@ import discord
 
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
+from discord_bot.cogs.media_storage import _clone_id_of
 from discord_bot.cogs.external_tools import DRM_BLOCKED_DOMAINS
 from modules.external_apis import download_media
 
@@ -208,13 +209,13 @@ def build_submit_panel_view(guild_id: int, clone_id) -> discord.ui.LayoutView:
     container.add_item(discord.ui.TextDisplay(
         "## 📥 Submit a Download\n"
         "Got a YouTube link (or any link yt-dlp supports), or a direct link to a "
-        "song/video? Drop it here and I'll fetch it and post it right in this "
-        "channel for everyone.\n"
+        "song/video? Drop it here and I'll fetch it and save it to this server's "
+        "media storage channel.\n"
         "**🔊 You need to be in a voice channel for music/video links to start "
         "playing — join a VC first, then submit.**\n"
         "Have a file on your phone or PC instead? Use **📤 Upload a File** — it "
-        "gets saved to the library below so anyone can play it later with "
-        "**▶️ Browse & Play** (no VC required just to upload).\n"
+        "gets saved to storage and the library below so anyone can play it later "
+        "with **▶️ Browse & Play** (no VC required just to upload).\n"
         "Pick an option below."
     ))
     container.add_item(discord.ui.Separator())
@@ -321,6 +322,24 @@ class DownloadSubmitButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         await interaction.response.send_modal(DownloadLinkModal(self.guild_id, self.clone_id, self.media_type))
 
 
+async def _resolve_storage_target(interaction: discord.Interaction, fallback_channel):
+    """Every media post from this wizard (link submission or file upload)
+    goes to the owner-configured media storage channel (see
+    media_storage.py / /set-storage-channel) instead of the downloads
+    channel, once one's been set. Falls back to the old downloads-channel
+    behavior if the owner hasn't configured a storage channel yet, so
+    nothing silently breaks for servers that haven't set it up."""
+    if interaction.guild is not None:
+        clone_id = _clone_id_of(interaction.client)
+        config = await db.get_media_storage_config(interaction.guild.id, clone_id)
+        storage_channel_id = config.get("storage_channel_id")
+        if storage_channel_id:
+            storage_channel = interaction.guild.get_channel(storage_channel_id)
+            if storage_channel is not None:
+                return storage_channel
+    return fallback_channel
+
+
 class DownloadLinkModal(discord.ui.Modal):
     def __init__(self, guild_id: int, clone_id, media_type: str):
         meta = MEDIA_TYPES[media_type]
@@ -406,10 +425,11 @@ class DownloadLinkModal(discord.ui.Modal):
                     f"📥 {meta['label']} submitted by {interaction.user.mention} — "
                     f"**{result.get('title', 'Media')}** ({result.get('uploader', 'Unknown')})"
                 )
+                target = await _resolve_storage_target(interaction, channel)
                 try:
-                    await channel.send(content=caption, file=discord.File(filepath, filename=result.get("filename", meta["filename"])))
+                    await target.send(content=caption, file=discord.File(filepath, filename=result.get("filename", meta["filename"])))
                 except discord.Forbidden:
-                    await interaction.followup.send("I fetched the file, but I don't have permission to post in the downloads channel.", ephemeral=True)
+                    await interaction.followup.send(f"I fetched the file, but I don't have permission to post in {target.mention}.", ephemeral=True)
                     return
                 except discord.HTTPException as e:
                     logger.warning(f"[v0] Upload failed for {url}: {e}")
@@ -419,7 +439,7 @@ class DownloadLinkModal(discord.ui.Modal):
                 if os.path.exists(filepath):
                     os.remove(filepath)
             note = await self._maybe_queue_to_voice(interaction, url, channel)
-            await interaction.followup.send(f"✅ Posted in <#{channel.id}>.{note}", ephemeral=True)
+            await interaction.followup.send(f"✅ Saved to {target.mention}.{note}", ephemeral=True)
             return
 
         # yt-dlp had no extractor for this link (or it genuinely failed).
@@ -509,12 +529,13 @@ class DownloadLinkModal(discord.ui.Modal):
         if "." not in filename:
             filename = meta["filename"]
 
+        target = await _resolve_storage_target(interaction, channel)
         try:
             file = discord.File(fp=io.BytesIO(data), filename=filename)
             note = f"\n⚠️ Heads up: this looked like `{content_type or 'unknown'}`, not {self.media_type} — posting anyway." if type_looks_off else ""
-            await channel.send(content=f"📥 {meta['label']} submitted by {interaction.user.mention}{note}", file=file)
+            await target.send(content=f"📥 {meta['label']} submitted by {interaction.user.mention}{note}", file=file)
         except discord.Forbidden:
-            await interaction.followup.send("I fetched the file, but I don't have permission to post in the downloads channel.", ephemeral=True)
+            await interaction.followup.send(f"I fetched the file, but I don't have permission to post in {target.mention}.", ephemeral=True)
             return
         except discord.HTTPException as e:
             logger.warning(f"[v0] Upload failed for {url}: {e}")
@@ -522,7 +543,7 @@ class DownloadLinkModal(discord.ui.Modal):
             return
 
         note = await self._maybe_queue_to_voice(interaction, url, channel)
-        await interaction.followup.send(f"✅ Posted in <#{channel.id}>.{note}", ephemeral=True)
+        await interaction.followup.send(f"✅ Saved to {target.mention}.{note}", ephemeral=True)
 
     async def _maybe_queue_to_voice(self, interaction: discord.Interaction, url: str, channel) -> str:
         """For both 🎵 Music and 🎬 Video submissions — Discord voice only
@@ -565,9 +586,11 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
     """No modal here on purpose — Discord modals can't carry a file input,
     so this button instead asks the user to send the file as their next
     message right in this channel, then the bot picks up that message's
-    attachment, forwards it to the configured downloads channel, and logs
-    it to the media library. No VC requirement to upload — per the panel
-    copy, uploads just get saved for later playback via the library."""
+    attachment, forwards it to the media storage channel (falling back to
+    the downloads channel if no storage channel is configured — see
+    _resolve_storage_target), and logs it to the media library. No VC
+    requirement to upload — per the panel copy, uploads just get saved for
+    later playback via the library."""
 
     def __init__(self, guild_id: int, clone_id):
         self.guild_id = guild_id
@@ -614,12 +637,13 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         meta = MEDIA_TYPES[media_type]
         title = attachment.filename.rsplit(".", 1)[0] if "." in attachment.filename else attachment.filename
 
+        target = await _resolve_storage_target(interaction, channel)
         try:
             file = await attachment.to_file()
             caption = f"{meta['label']} uploaded by {interaction.user.mention} — **{title}**"
-            sent = await channel.send(content=caption, file=file)
+            sent = await target.send(content=caption, file=file)
         except discord.Forbidden:
-            await interaction.followup.send("I don't have permission to post in the downloads channel.", ephemeral=True)
+            await interaction.followup.send(f"I don't have permission to post in {target.mention}.", ephemeral=True)
             return
         except discord.HTTPException as e:
             logger.warning(f"[v0] Upload forward failed: {e}")
@@ -628,11 +652,11 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
 
         # Log to the library using the RE-UPLOADED message's own attachment
         # URL (not the original message's), since that's the copy that will
-        # actually still exist/be reachable long-term in the downloads channel.
+        # actually still exist/be reachable long-term in wherever it landed.
         stream_url = sent.attachments[0].url if sent.attachments else attachment.url
         await db.add_library_entry(
             self.guild_id, self.clone_id, interaction.user.id, media_type, title, stream_url,
-            channel_id=channel.id, message_id=sent.id,
+            channel_id=target.id, message_id=sent.id,
         )
         try:
             await message.delete()
@@ -640,7 +664,7 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
             pass  # not critical if we can't clean up their original message
 
         await interaction.followup.send(
-            f"✅ Uploaded to <#{channel.id}> and saved to the library — anyone can play it with **▶️ Browse & Play**.",
+            f"✅ Uploaded to {target.mention} and saved to the library — anyone can play it with **▶️ Browse & Play**.",
             ephemeral=True,
         )
 
