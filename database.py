@@ -2011,6 +2011,31 @@ class Database:
             ON discord_download_config (guild_id, COALESCE(clone_id, -1))
         """)
 
+        # --- Discord port: media upload library ----------------------------
+        # Every file that lands in the downloads channel (link submission OR
+        # a raw phone/PC upload forwarded through the wizard) gets logged
+        # here so it can be browsed and replayed later via the "▶️ Browse &
+        # Play" picker, instead of only living in-memory in the voice queue
+        # for the moment it was submitted.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_media_library (
+                id BIGSERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                uploader_id BIGINT NOT NULL,
+                media_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stream_url TEXT NOT NULL,
+                channel_id BIGINT,
+                message_id BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS discord_media_library_guild_idx
+            ON discord_media_library (guild_id, COALESCE(clone_id, -1), created_at DESC)
+        """)
+
         # --- Discord port: invite tracker (feature expansion) -------------------
         # Tracks which invite (and which inviter) is responsible for each new
         # member — Discord equivalent of ProBot/MEE6's invite tracker. config
@@ -7394,6 +7419,52 @@ class Database:
                 merged["panel_channel_id"], merged["panel_message_id"],
                 merged["wizard_channel_id"], merged["wizard_message_id"], merged["wizard_invoker_id"],
             )
+
+    async def add_library_entry(
+        self, guild_id: int, clone_id: Optional[int], uploader_id: int, media_type: str,
+        title: str, stream_url: str, channel_id: Optional[int] = None, message_id: Optional[int] = None,
+    ) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_media_library
+                    (guild_id, clone_id, uploader_id, media_type, title, stream_url, channel_id, message_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                guild_id, clone_id, uploader_id, media_type, title, stream_url, channel_id, message_id,
+            )
+
+    async def list_library_entries(
+        self, guild_id: int, clone_id: Optional[int] = None, media_type: Optional[str] = None, limit: int = 25,
+    ) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if media_type:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM discord_media_library
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND media_type = $3
+                    ORDER BY created_at DESC LIMIT $4
+                    """,
+                    guild_id, clone_id, media_type, limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM discord_media_library
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                    ORDER BY created_at DESC LIMIT $3
+                    """,
+                    guild_id, clone_id, limit,
+                )
+            return [dict(r) for r in rows]
+
+    async def get_library_entry(self, entry_id: int) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM discord_media_library WHERE id = $1", entry_id)
+            return dict(row) if row else None
 
     # --- Invite tracker (discord_bot/cogs/invites.py, _views_invites.py) ----
 
