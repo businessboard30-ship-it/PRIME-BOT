@@ -314,6 +314,7 @@ class MusicCog(GuildOnlyCog):
             try:
                 voice_client = await _connect_voice_clean(guild, voice_channel)
             except (discord.ClientException, asyncio.TimeoutError) as e:
+                logger.error(f"[v0] Voice connect failed in guild {guild.id} (queue_track_for_submission, channel={voice_channel.id}): {e!r}", exc_info=True)
                 state.queue.remove(track)
                 return _voice_connect_failure_reason(e)
         elif voice_client.channel.id != voice_channel.id and not voice_client.is_playing():
@@ -359,6 +360,7 @@ class MusicCog(GuildOnlyCog):
             try:
                 voice_client = await _connect_voice_clean(guild, voice_channel)
             except (discord.ClientException, asyncio.TimeoutError) as e:
+                logger.error(f"[v0] Voice connect failed in guild {guild.id} (queue_direct_url_for_playback, channel={voice_channel.id}): {e!r}", exc_info=True)
                 state.queue.remove(track)
                 return _voice_connect_failure_reason(e)
         elif voice_client.channel.id != voice_channel.id and not voice_client.is_playing():
