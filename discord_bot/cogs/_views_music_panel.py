@@ -89,10 +89,12 @@ def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> disco
 
     progress = _progress_bar(current.get("position_seconds", 0), current.get("duration_seconds", 0))
     time_line = f"`{progress}` {_fmt_time(current.get('position_seconds', 0))} / {_fmt_time(current.get('duration_seconds', 0))}"
+    volume_line = f"🔊 volume: {state.get('volume', 100)}%"
     header = (
         f"### {current.get('title', 'Unknown track')}\n"
         f"-# {current.get('uploader', 'Unknown artist')} · queued by <@{current['queued_by']}>\n"
-        f"{time_line}"
+        f"{time_line}\n"
+        f"-# {volume_line}"
     )
     items.append(discord.ui.TextDisplay(header))
 
@@ -105,13 +107,20 @@ def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> disco
     controls_row = discord.ui.ActionRow()
     controls_row.add_item(MusicPauseResumeButton(guild_id, clone_id, paused=state.get("paused", False)))
     controls_row.add_item(MusicSkipButton(guild_id, clone_id))
+    controls_row.add_item(MusicReplayButton(guild_id, clone_id))
     controls_row.add_item(MusicStopButton(guild_id, clone_id))
     items.append(controls_row)
 
     secondary_row = discord.ui.ActionRow()
+    secondary_row.add_item(MusicShuffleButton(guild_id, clone_id))
     secondary_row.add_item(MusicQueueButton(guild_id, clone_id))
     secondary_row.add_item(MusicLoopButton(guild_id, clone_id, mode=state.get("loop_mode", "off")))
     items.append(secondary_row)
+
+    volume_row = discord.ui.ActionRow()
+    volume_row.add_item(MusicVolumeButton(guild_id, clone_id, delta=-10))
+    volume_row.add_item(MusicVolumeButton(guild_id, clone_id, delta=10))
+    items.append(volume_row)
 
     for item in items:
         container.add_item(item)
@@ -234,6 +243,85 @@ class MusicQueueButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_p
         await interaction.response.send_message("**Up next:**\n" + "\n".join(lines), ephemeral=True)
 
 
+class MusicReplayButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("replay")):
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="replay", emoji="🔂", style=discord.ButtonStyle.secondary,
+            custom_id=_encode("replay", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        music_cog = interaction.client.get_cog("MusicCog")
+        if music_cog is None:
+            await interaction.response.send_message("Music module isn't loaded.", ephemeral=True)
+            return
+        await music_cog.replay(self.guild_id)
+        await _rerender(interaction, self.guild_id, self.clone_id)
+
+
+class MusicShuffleButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("shuffle")):
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="shuffle", emoji="🔀", style=discord.ButtonStyle.secondary,
+            custom_id=_encode("shuffle", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        music_cog = interaction.client.get_cog("MusicCog")
+        if music_cog is None:
+            await interaction.response.send_message("Music module isn't loaded.", ephemeral=True)
+            return
+        await music_cog.shuffle(self.guild_id)
+        await _rerender(interaction, self.guild_id, self.clone_id)
+
+
+def _volume_id_pattern() -> str:
+    return r"^musicpanel_volume:(\d+):(-|\d+):(-?\d+)$"
+
+
+class MusicVolumeButton(discord.ui.DynamicItem[discord.ui.Button], template=_volume_id_pattern()):
+    def __init__(self, guild_id: int, clone_id, delta: int):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.delta = delta
+        clone_part = "-" if clone_id is None else str(clone_id)
+        label = f"vol {'+' if delta > 0 else ''}{delta}"
+        super().__init__(discord.ui.Button(
+            label=label, emoji="🔊" if delta > 0 else "🔉", style=discord.ButtonStyle.secondary,
+            custom_id=f"musicpanel_volume:{guild_id}:{clone_part}:{delta}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id = int(match.group(1))
+        clone_part = match.group(2)
+        clone_id = None if clone_part == "-" else int(clone_part)
+        delta = int(match.group(3))
+        return cls(guild_id, clone_id, delta)
+
+    async def callback(self, interaction: discord.Interaction):
+        music_cog = interaction.client.get_cog("MusicCog")
+        if music_cog is None:
+            await interaction.response.send_message("Music module isn't loaded.", ephemeral=True)
+            return
+        await music_cog.adjust_volume(self.guild_id, self.delta)
+        await _rerender(interaction, self.guild_id, self.clone_id)
+
+
 class MusicLoopButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("loop")):
     def __init__(self, guild_id: int, clone_id, mode: str = "off"):
         self.guild_id = guild_id
@@ -292,5 +380,6 @@ async def refresh_posted_panel(bot, guild_id: int, clone_id=None) -> None:
 
 DYNAMIC_ITEMS = (
     MusicPauseResumeButton, MusicSkipButton, MusicStopButton,
-    MusicQueueButton, MusicLoopButton,
+    MusicQueueButton, MusicLoopButton, MusicReplayButton,
+    MusicShuffleButton, MusicVolumeButton,
 )
