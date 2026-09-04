@@ -129,7 +129,7 @@ async def _connect_voice_clean(guild: discord.Guild, voice_channel) -> "discord.
     meant to prevent, on totally normal first-time joins. Clean-up is a
     fallback, not the default path."""
     try:
-        return await voice_channel.connect()
+        return await voice_channel.connect(timeout=60.0, self_deaf=True, reconnect=True)
     except asyncio.TimeoutError:
         logger.warning(f"[v0] Voice connect timed out in guild {guild.id}, clearing stale session and retrying once")
         try:
@@ -137,7 +137,7 @@ async def _connect_voice_clean(guild: discord.Guild, voice_channel) -> "discord.
         except discord.HTTPException:
             pass
         await asyncio.sleep(1)  # give Discord's gateway a beat to register the clear
-        return await voice_channel.connect()
+        return await voice_channel.connect(timeout=60.0, self_deaf=True, reconnect=True)
 
 
 def _voice_connect_failure_reason(e: Exception) -> str:
@@ -315,6 +315,7 @@ class MusicCog(GuildOnlyCog):
                 voice_client = await _connect_voice_clean(guild, voice_channel)
             except (discord.ClientException, asyncio.TimeoutError) as e:
                 logger.error(f"[v0] Voice connect failed in guild {guild.id} (queue_track_for_submission, channel={voice_channel.id}): {e!r}", exc_info=True)
+                print(f"[v0][VOICE_CONNECT_ERROR] guild={guild.id} channel={voice_channel.id}: {e!r}", flush=True)
                 state.queue.remove(track)
                 return _voice_connect_failure_reason(e)
         elif voice_client.channel.id != voice_channel.id and not voice_client.is_playing():
@@ -361,6 +362,7 @@ class MusicCog(GuildOnlyCog):
                 voice_client = await _connect_voice_clean(guild, voice_channel)
             except (discord.ClientException, asyncio.TimeoutError) as e:
                 logger.error(f"[v0] Voice connect failed in guild {guild.id} (queue_direct_url_for_playback, channel={voice_channel.id}): {e!r}", exc_info=True)
+                print(f"[v0][VOICE_CONNECT_ERROR] guild={guild.id} channel={voice_channel.id}: {e!r}", flush=True)
                 state.queue.remove(track)
                 return _voice_connect_failure_reason(e)
         elif voice_client.channel.id != voice_channel.id and not voice_client.is_playing():
