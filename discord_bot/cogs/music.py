@@ -627,6 +627,26 @@ class MusicCog(GuildOnlyCog):
             return
         state = self._state(guild.id)
 
+        # Mention + panel refresh whenever someone joins the SAME channel
+        # the bot is already sitting in — this is deliberately scoped to
+        # "joined the bot's active channel", not every VC join in the
+        # guild, so it only fires where there's actually a music session
+        # to greet them into (and never spams unrelated voice channels).
+        # before.channel != after.channel also covers muting/deafening
+        # toggles, which fire this event too without changing channel —
+        # excluded here since nobody "joined" in that case.
+        if (
+            after.channel is not None
+            and after.channel.id == voice_client.channel.id
+            and (before.channel is None or before.channel.id != after.channel.id)
+        ):
+            clone_id = _clone_id_of(self.bot)
+            try:
+                await after.channel.send(f"👋 {member.mention} joined the vc!")
+            except (discord.Forbidden, discord.HTTPException) as e:
+                logger.info(f"[v0] Couldn't post VC-join mention in guild {guild.id}: {e}")
+            await self._post_or_refresh_voice_panel(guild.id, clone_id, after.channel)
+
         # Follow only the current track's owner, and only when they moved
         # to a real channel (not disconnecting entirely).
         if (
