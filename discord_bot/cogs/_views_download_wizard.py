@@ -695,16 +695,30 @@ class DownloadLinkModal(discord.ui.Modal):
 
 
 
-def _guess_media_type(attachment: discord.Attachment) -> str:
+_VIDEO_EXTS = {"mp4", "mov", "webm", "mkv", "avi", "m4v"}
+_AUDIO_EXTS = {"mp3", "wav", "ogg", "flac", "m4a", "aac"}
+
+
+def _guess_media_type(attachment: discord.Attachment) -> str | None:
+    """Returns "music", "video", or None if the attachment isn't
+    recognizable as either — e.g. images, PDFs, zips. Previously this
+    defaulted anything unrecognized to "video", which meant a meme
+    dropped into the upload flow got mislabeled and saved to the
+    library as a "video" entry, then silently failed to play (ffmpeg
+    can't extract audio from a still image) with no message to the
+    uploader explaining why. Returning None lets the caller reject it
+    outright instead."""
     content_type = (attachment.content_type or "").lower()
     if content_type.startswith("audio/"):
         return "music"
     if content_type.startswith("video/"):
         return "video"
     ext = attachment.filename.rsplit(".", 1)[-1].lower() if "." in attachment.filename else ""
-    if ext in {"mp3", "wav", "ogg", "flac", "m4a", "aac"}:
+    if ext in _AUDIO_EXTS:
         return "music"
-    return "video"  # default guess; mp4/mov/webm and anything unrecognized
+    if ext in _VIDEO_EXTS:
+        return "video"
+    return None  # image, doc, archive, or anything else we can't play
 
 
 async def _show_play_queue_choice(
@@ -821,6 +835,13 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
 
         attachment = message.attachments[0]
         media_type = _guess_media_type(attachment)
+        if media_type is None:
+            await interaction.followup.send(
+                f"❌ `{attachment.filename}` doesn't look like a music or video file — "
+                "I can only save/play audio and video here. Try again with an audio or video file.",
+                ephemeral=True,
+            )
+            return
         meta = MEDIA_TYPES[media_type]
         title = attachment.filename.rsplit(".", 1)[0] if "." in attachment.filename else attachment.filename
 
