@@ -52,10 +52,6 @@ FETCH_TIMEOUT = aiohttp.ClientTimeout(total=30)
 _HTML_SNIFF = re.compile(rb"^\s*<!doctype html|^\s*<html", re.IGNORECASE)
 
 
-def _clone_id_of(interaction: discord.Interaction):
-    return getattr(interaction.client, "clone_id", None)
-
-
 async def _check_access(interaction: discord.Interaction, invoker_id) -> bool:
     return await check_wizard_access(interaction, invoker_id, "downloadhub", "manage_channels", "Manage Channels")
 
@@ -699,6 +695,27 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
             await interaction.followup.send("⌛ No file received in time — press **📤 Upload a File** again when you're ready.", ephemeral=True)
             return
 
+        # Everything below is wrapped in one catch-all, same pattern as
+        # DownloadLinkModal.on_submit — without this, any unexpected
+        # exception (DB hiccup, unexpected None, etc.) would propagate to
+        # discord.py's generic DynamicItem error handler, which just logs
+        # a traceback to stderr and sends NOTHING back to the user. That's
+        # exactly the silent-failure mode that makes "I uploaded a file
+        # but Browse says nothing's there" so hard to diagnose — this
+        # guarantees both a [v0]-tagged log AND a reply, every time.
+        try:
+            await self._handle_upload(interaction, message)
+        except Exception:
+            logger.error(f"[v0] Unhandled error in DownloadUploadButton.callback (user={interaction.user.id})", exc_info=True)
+            try:
+                await interaction.followup.send(
+                    "❌ Something went wrong saving that upload — the error's been logged. Try again, or ask an admin to check the bot's logs.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                pass
+
+    async def _handle_upload(self, interaction: discord.Interaction, message: discord.Message):
         config = await db.get_download_config(self.guild_id, clone_id=self.clone_id)
         channel_id = config.get("channel_id")
         channel = interaction.guild.get_channel(int(channel_id)) if channel_id else None
@@ -727,11 +744,29 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         # Log to the library using the RE-UPLOADED message's own attachment
         # URL (not the original message's), since that's the copy that will
         # actually still exist/be reachable long-term in wherever it landed.
+        # NOTE: this is the step that was previously unguarded — if the DB
+        # write failed here, the whole callback died silently and the file
+        # ended up posted in the channel but NEVER logged to the library,
+        # which is exactly the "uploaded but Browse says empty" symptom.
         stream_url = sent.attachments[0].url if sent.attachments else attachment.url
-        await db.add_library_entry(
-            self.guild_id, self.clone_id, interaction.user.id, media_type, title, stream_url,
-            channel_id=target.id, message_id=sent.id,
-        )
+        try:
+            await db.add_library_entry(
+                self.guild_id, self.clone_id, interaction.user.id, media_type, title, stream_url,
+                channel_id=target.id, message_id=sent.id,
+            )
+        except Exception:
+            logger.error(
+                f"[v0] add_library_entry failed for guild={self.guild_id} clone={self.clone_id} "
+                f"title={title!r} — file WAS posted to {target.id} but NOT added to the library.",
+                exc_info=True,
+            )
+            await interaction.followup.send(
+                f"⚠️ The file posted to {target.mention}, but I couldn't save it to the library "
+                f"(database error, logged) — **Browse & Play** won't show it. Try again in a moment.",
+                ephemeral=True,
+            )
+            return
+
         try:
             await message.delete()
         except (discord.Forbidden, discord.HTTPException):
@@ -742,7 +777,7 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
             f"✅ Uploaded to {target.mention} and saved to the library.",
             ephemeral=True,
         )
-        
+
         # Then check if they're in a VC and show the play/queue choice
         # Use the Discord CDN URL (stream_url) for playback
         await _show_play_queue_choice(
