@@ -115,20 +115,29 @@ def _clone_id_of(bot: commands.Bot):
 
 
 async def _connect_voice_clean(guild: discord.Guild, voice_channel) -> "discord.VoiceClient":
-    """Connects to voice, clearing out any leftover/stale voice session
-    first — after a deploy, Discord's gateway can still think the bot is
-    sitting in a VC from before the restart even though the freshly
-    started process has no VoiceClient cached (guild.voice_client is
-    None). Connecting straight into that state hangs and times out with
-    asyncio.TimeoutError rather than a clean discord.ClientException, so
-    callers were seeing that surface as a generic "something went wrong"
-    with the real reason only in server logs. Force-clearing the voice
-    state first (a no-op if there's nothing stale) avoids the hang."""
+    """Connects to voice — the fast/normal path first, exactly like a
+    plain voice_channel.connect() always worked. Only falls back to
+    force-clearing the voice state if that first attempt times out,
+    which is the actual "stale session left over from a restart"
+    scenario this exists for.
+
+    IMPORTANT: this must NOT unconditionally clear voice state before
+    every connect — an earlier version did that, and sending a
+    "disconnect" state update immediately before every fresh join added
+    an extra round-trip through Discord's voice gateway that could
+    itself race with the reconnect and cause the very timeout this was
+    meant to prevent, on totally normal first-time joins. Clean-up is a
+    fallback, not the default path."""
     try:
-        await guild.change_voice_state(channel=None)
-    except discord.HTTPException:
-        pass
-    return await voice_channel.connect()
+        return await voice_channel.connect()
+    except asyncio.TimeoutError:
+        logger.warning(f"[v0] Voice connect timed out in guild {guild.id}, clearing stale session and retrying once")
+        try:
+            await guild.change_voice_state(channel=None)
+        except discord.HTTPException:
+            pass
+        await asyncio.sleep(1)  # give Discord's gateway a beat to register the clear
+        return await voice_channel.connect()
 
 
 def _voice_connect_failure_reason(e: Exception) -> str:
