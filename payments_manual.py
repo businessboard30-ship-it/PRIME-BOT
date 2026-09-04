@@ -136,10 +136,13 @@ class BuyerConfirmView(discord.ui.View):
         button.label = "⏳ Reported — awaiting confirmation"
         try:
             await interaction.message.edit(view=self)
-        except discord.NotFound:
-            # Original message/DM channel gone (e.g. buyer deleted the DM) —
-            # harmless, the approval DM already went out above; just skip
-            # the visual update instead of crashing the interaction.
+        except (discord.NotFound, discord.Forbidden):
+            # Original message/DM channel gone (e.g. buyer deleted the DM,
+            # or Discord returns 403 Missing Access once the DM channel is
+            # no longer reachable — same "harmless" case as NotFound, just
+            # a different error code) — the approval DM already went out
+            # above; just skip the visual update instead of crashing the
+            # interaction.
             pass
         await interaction.followup.send(
             "Thanks — flagged for review. You'll get a DM as soon as it's confirmed.", ephemeral=True
