@@ -2722,6 +2722,14 @@ class Database:
         await conn.execute("""
             ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS custom_bg_message_id BIGINT
         """)
+        # onboarding_dm_sent: same one-time-ever pattern as
+        # discord_ship_config.onboarding_dm_sent — guards WelcomeCog's
+        # build_join_notice_field (the "ultra pack" blurb in the combined
+        # on-join DM, see bot.py's _send_combined_owner_join_dm) so it's
+        # only ever included once per guild, surviving restarts.
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS onboarding_dm_sent BOOLEAN NOT NULL DEFAULT FALSE
+        """)
 
         # --- bot_global_settings (simple key/value store, bot-wide) --------
         # Currently used for "image_host_channel_id": the channel (in the
@@ -7426,6 +7434,7 @@ class Database:
                 "card_theme": "wolf", "card_pack_unlocked": False,
                 "ultra_pack_unlocked": False, "custom_background_url": None,
                 "custom_bg_channel_id": None, "custom_bg_message_id": None,
+                "onboarding_dm_sent": False,
             }
 
     async def set_welcome_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
