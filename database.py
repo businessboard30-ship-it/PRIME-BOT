@@ -2982,6 +2982,16 @@ class Database:
         await conn.execute("""
             ALTER TABLE discord_owner_broadcasts ADD COLUMN IF NOT EXISTS image_url TEXT
         """)
+        # attachment_filename: original filename of the image_url attachment
+        # (e.g. "flyer.pdf"). Needed because the cron sender re-uploads the
+        # file as a real Discord attachment (not an embed image, which only
+        # renders for actual images) and Discord's multipart upload requires
+        # a filename per attachment. NULL for old rows sent before this
+        # column existed — those still went out fine as embed images at the
+        # time, this only affects new broadcasts going forward.
+        await conn.execute("""
+            ALTER TABLE discord_owner_broadcasts ADD COLUMN IF NOT EXISTS attachment_filename TEXT
+        """)
         # payment_button_type: optional SELAR_PRODUCT_LINKS key. When set,
         # the cron sender (api/cron_discord_owner_broadcast.py) attaches a
         # "I've Paid" button (_views_direct_paid.py) to every DM in this
@@ -8416,13 +8426,14 @@ class Database:
             return [r["owner_id"] for r in rows]
 
     async def create_owner_broadcast(self, created_by: int, message: str, image_url: Optional[str] = None,
-                                      payment_button_type: Optional[str] = None) -> int:
+                                      payment_button_type: Optional[str] = None,
+                                      attachment_filename: Optional[str] = None) -> int:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO discord_owner_broadcasts (created_by, message, image_url, payment_button_type) "
-                "VALUES ($1, $2, $3, $4) RETURNING id",
-                created_by, message, image_url, payment_button_type
+                "INSERT INTO discord_owner_broadcasts (created_by, message, image_url, payment_button_type, attachment_filename) "
+                "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                created_by, message, image_url, payment_button_type, attachment_filename
             )
             return row["id"]
 
