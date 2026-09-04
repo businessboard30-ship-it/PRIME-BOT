@@ -237,13 +237,23 @@ class CancelButton(discord.ui.Button):
 
 
 class RoleSetupWizard(discord.ui.View):
-    def __init__(self, invoker_id: int):
+    def __init__(self, invoker_id: int, guild: Optional[discord.Guild] = None):
         super().__init__(timeout=600)
         self.invoker_id = invoker_id
         self.selected: set = set()
         self.created: dict = {}  # preset_key -> role_id
         self.channel_id: Optional[int] = None
         self._busy = False
+
+        # Detect presets that already exist in the guild (e.g. from a run
+        # before a restart) so the wizard opens showing accurate state
+        # instead of everything unchecked.
+        if guild is not None:
+            by_name = {r.name.casefold(): r for r in guild.roles}
+            for key, label, _emoji, _color in PRESET_ROLES:
+                existing = by_name.get(label.casefold())
+                if existing is not None:
+                    self.created[key] = existing.id
 
         self.add_item(PresetSelect(self))
         self.add_item(CreateSelectedButton(self))
@@ -289,12 +299,25 @@ class RoleSetupWizard(discord.ui.View):
                     opt.default = opt.value in self.selected
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
+    def _set_buttons_disabled(self, disabled: bool):
+        for item in self.children:
+            if isinstance(item, (discord.ui.Button, discord.ui.Select)):
+                item.disabled = disabled
+
     async def create_roles(self, interaction: discord.Interaction, keys):
         if self._busy:
             await interaction.response.send_message("Already creating roles — one sec.", ephemeral=True)
             return
         self._busy = True
-        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # Dim every control immediately so a second tap has nothing live to
+        # hit, and edit the message right away so the user sees it's working
+        # rather than appearing to hang.
+        self._set_buttons_disabled(True)
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        progress = await interaction.followup.send(
+            f"⏳ Creating {len(keys)} role(s)... this can take a few seconds.", ephemeral=True
+        )
 
         guild = interaction.guild
         created_now = []
@@ -333,17 +356,20 @@ class RoleSetupWizard(discord.ui.View):
 
         self._busy = False
         self.selected = set()
-        await self.refresh(interaction)
+        self._set_buttons_disabled(False)
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
 
-        parts = []
-        if created_now:
-            parts.append(f"✅ Created: {', '.join(created_now)}")
-        if reused:
-            parts.append(f"♻️ Reused existing role(s): {', '.join(reused)}")
-        if failed:
-            parts.append(f"⚠️ Couldn't create (check my **Manage Roles** permission/hierarchy): {', '.join(failed)}")
-        if parts:
-            await interaction.followup.send("\n".join(parts), ephemeral=True)
+        if created_now or reused or failed:
+            parts = ["✅ Done."]
+            if created_now:
+                parts.append(f"✅ Created: {', '.join(created_now)}")
+            if reused:
+                parts.append(f"♻️ Already existed, reused (no duplicates): {', '.join(reused)}")
+            if failed:
+                parts.append(f"⚠️ Couldn't create (check my **Manage Roles** permission/hierarchy): {', '.join(failed)}")
+        else:
+            parts = ["Nothing to do — all selected roles were already created in this session."]
+        await progress.edit(content="\n".join(parts))
 
 
 class RoleSetupCog(GuildOnlyCog):
@@ -364,7 +390,7 @@ class RoleSetupCog(GuildOnlyCog):
                 ephemeral=True,
             )
             return
-        wizard = RoleSetupWizard(interaction.user.id)
+        wizard = RoleSetupWizard(interaction.user.id, guild=interaction.guild)
         await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
 
 
