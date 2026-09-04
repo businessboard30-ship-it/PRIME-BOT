@@ -917,6 +917,19 @@ class LibraryPlaySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await self._handle_pick(interaction)
+        except Exception:
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"[v0] LibraryPlaySelect.callback raised unexpectedly (guild={self.guild_id}, entry_id={self.values[0]}):\n{tb}")
+            print(f"[v0][BROWSE_PLAY_ERROR] guild={self.guild_id} entry_id={self.values[0]}\n{tb}", flush=True)
+            try:
+                await interaction.followup.send("❌ Something went wrong queueing that (logged).", ephemeral=True)
+            except discord.HTTPException:
+                pass
+
+    async def _handle_pick(self, interaction: discord.Interaction):
         entry = await db.get_library_entry(int(self.values[0]))
         if entry is None:
             await interaction.followup.send("That upload's no longer available.", ephemeral=True)
@@ -949,14 +962,9 @@ class LibraryPlaySelect(discord.ui.Select):
         channel_id = config.get("channel_id")
         post_channel = interaction.guild.get_channel(int(channel_id)) if channel_id else interaction.channel
 
-        try:
-            reason = await music_cog.queue_direct_url_for_playback(
-                interaction.guild, interaction.user, stream_url, entry["title"], self.clone_id, post_channel,
-            )
-        except Exception:
-            logger.error("[v0] queue_direct_url_for_playback raised unexpectedly", exc_info=True)
-            await interaction.followup.send("❌ Something went wrong queueing that (logged).", ephemeral=True)
-            return
+        reason = await music_cog.queue_direct_url_for_playback(
+            interaction.guild, interaction.user, stream_url, entry["title"], self.clone_id, post_channel,
+        )
 
         if reason:
             if "voice channel" in reason.lower() or "voice connection" in reason.lower():
