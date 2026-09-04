@@ -240,7 +240,7 @@ touched this wizard message since, so build_wizard_view never ran in
 this process) — see _get_config_for_modal."""
 
 
-def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> discord.ui.LayoutView:
+def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, greeting: str = None) -> discord.ui.LayoutView:
     """Builds a fresh wizard message from a config dict already fetched
     by the caller. Every dynamic item inside re-fetches its own current
     config on interaction rather than trusting this snapshot, so this
@@ -257,7 +257,14 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> disc
     live-editing channel/delivery/message/avatar-shape, so template mode
     shows just those rows plus a button to switch to the animated card.
     Flat/animated mode shows the full original row set (colors, style,
-    sticker, avatar shape) plus a button to switch back to the wolf card."""
+    sticker, avatar shape) plus a button to switch back to the wolf card.
+
+    greeting: optional extra line rendered above the usual header — used
+    by welcome.py's post_setup_wizard_on_join for its "thanks for adding
+    me" text. This view is a LayoutView (Components V2), and Discord
+    rejects any message that combines Components V2 with a plain
+    content= string, so intro text has to live inside the view itself
+    rather than being passed as content on the send() call."""
     _message_cache[(guild_id, clone_id)] = config.get("message_template")
     use_template = config.get("use_template", True)
 
@@ -280,7 +287,10 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> disc
     mode_row = discord.ui.ActionRow()
     mode_row.add_item(WelcomeModeToggleButton(guild_id, clone_id, invoker_id, config))
 
-    text = discord.ui.TextDisplay("\n".join(["### 🚩 Set up welcome cards", *render_status_lines(config)]))
+    header_lines = ["### 🚩 Set up welcome cards", *render_status_lines(config)]
+    if greeting:
+        header_lines = [greeting, "", *header_lines]
+    text = discord.ui.TextDisplay("\n".join(header_lines))
 
     items = [text, discord.ui.Separator(), channel_row, delivery_row]
 
