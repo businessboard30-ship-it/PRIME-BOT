@@ -2347,6 +2347,40 @@ class Database:
         await conn.execute(
             "ALTER TABLE discord_ticket_config ADD COLUMN IF NOT EXISTS wizard_invoker_id BIGINT"
         )
+
+        # --- Discord port: join verification / anti-raid gate ------------------
+        # discord_verification_config: one row per guild (+clone). mode is
+        # 'button' (low-friction click-to-verify) or 'captcha' (posts a math
+        # question in a modal before granting access). unverified_role_id is
+        # applied on_member_join and is what every locked-down channel's
+        # permission overwrite denies View Channel to; verified_role_id is
+        # optional — if unset, verification just removes the unverified role
+        # and lets @everyone's normal permissions apply. wizard_* mirrors the
+        # same pointer convention as discord_ticket_config/discord_automod_config
+        # so the setup wizard message can be refreshed in place instead of
+        # reposted on every step.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_verification_config (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                mode TEXT NOT NULL DEFAULT 'button',
+                channel_id BIGINT,
+                unverified_role_id BIGINT,
+                verified_role_id BIGINT,
+                timeout_seconds INTEGER NOT NULL DEFAULT 300,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                message_id BIGINT,
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                wizard_channel_id BIGINT,
+                wizard_message_id BIGINT,
+                wizard_invoker_id BIGINT
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_verification_config_guild_clone_key
+            ON discord_verification_config (guild_id, COALESCE(clone_id, -1))
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS discord_tickets (
                 id SERIAL PRIMARY KEY,
@@ -6877,6 +6911,62 @@ class Database:
                 """,
                 guild_id, clone_id, support_role_id, category_id, panel_channel_id, panel_message_id,
                 welcome_message, wizard_channel_id, wizard_message_id, wizard_invoker_id
+            )
+            return dict(row)
+
+    async def get_verification_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_verification_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+            if row:
+                return dict(row)
+            return {
+                "guild_id": guild_id, "clone_id": clone_id, "mode": "button",
+                "channel_id": None, "unverified_role_id": None, "verified_role_id": None,
+                "timeout_seconds": 300, "max_attempts": 3, "message_id": None,
+                "enabled": False,
+                "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
+            }
+
+    async def set_verification_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        """fields may include mode, channel_id, unverified_role_id,
+        verified_role_id, timeout_seconds, max_attempts, message_id,
+        enabled, wizard_channel_id, wizard_message_id, wizard_invoker_id —
+        any key omitted keeps its current value (upsert-merge), same
+        convention as set_ticket_config."""
+        current = await self.get_verification_config(guild_id, clone_id=clone_id)
+        mode = fields.get("mode", current["mode"])
+        channel_id = fields.get("channel_id", current["channel_id"])
+        unverified_role_id = fields.get("unverified_role_id", current["unverified_role_id"])
+        verified_role_id = fields.get("verified_role_id", current["verified_role_id"])
+        timeout_seconds = fields.get("timeout_seconds", current["timeout_seconds"])
+        max_attempts = fields.get("max_attempts", current["max_attempts"])
+        message_id = fields.get("message_id", current["message_id"])
+        enabled = fields.get("enabled", current["enabled"])
+        wizard_channel_id = fields.get("wizard_channel_id", current.get("wizard_channel_id"))
+        wizard_message_id = fields.get("wizard_message_id", current.get("wizard_message_id"))
+        wizard_invoker_id = fields.get("wizard_invoker_id", current.get("wizard_invoker_id"))
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_verification_config
+                    (guild_id, clone_id, mode, channel_id, unverified_role_id, verified_role_id,
+                     timeout_seconds, max_attempts, message_id, enabled,
+                     wizard_channel_id, wizard_message_id, wizard_invoker_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET mode = $3, channel_id = $4, unverified_role_id = $5, verified_role_id = $6,
+                        timeout_seconds = $7, max_attempts = $8, message_id = $9, enabled = $10,
+                        wizard_channel_id = $11, wizard_message_id = $12, wizard_invoker_id = $13
+                RETURNING *
+                """,
+                guild_id, clone_id, mode, channel_id, unverified_role_id, verified_role_id,
+                timeout_seconds, max_attempts, message_id, enabled,
+                wizard_channel_id, wizard_message_id, wizard_invoker_id
             )
             return dict(row)
 
