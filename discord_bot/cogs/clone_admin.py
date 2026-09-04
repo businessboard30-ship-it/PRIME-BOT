@@ -635,7 +635,7 @@ class CloneAdminCog(commands.Cog):
     @app_commands.describe(
         message="The announcement text — sent as-is, signed with your configured brand name",
         target="Who receives this DM — regular bot users (default), clone admins/operators, or server owners",
-        image="Optional image to attach — drag & drop or upload it here, sent alongside the text",
+        attachment="Optional file to attach — image, PDF, or any file type — sent alongside the text",
         payment_button="Optional — attach an 'I've Paid' button for this product (lets buyers claim straight from this DM)",
     )
     @app_commands.choices(payment_button=[
@@ -648,7 +648,7 @@ class CloneAdminCog(commands.Cog):
     ])
     async def ownerbroadcast(self, interaction: discord.Interaction, message: str,
                               target: Optional[app_commands.Choice[str]] = None,
-                              image: Optional[discord.Attachment] = None,
+                              attachment: Optional[discord.Attachment] = None,
                               payment_button: Optional[app_commands.Choice[str]] = None):
         if interaction.user.id not in DISCORD_OWNER_BROADCAST_IDS:
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
@@ -660,14 +660,10 @@ class CloneAdminCog(commands.Cog):
             )
             return
 
-        if image is not None and not (image.content_type or "").startswith("image/"):
-            await interaction.response.send_message(
-                f"`{image.filename}` doesn't look like an image (got `{image.content_type or 'unknown type'}`). "
-                f"Attach a PNG/JPG/GIF/WebP, or drop the image and leave it off to send text-only.",
-                ephemeral=True,
-            )
-            return
-
+        # No content-type gate here on purpose — any file type (image, PDF,
+        # etc.) is accepted. The cron sender re-uploads it as a real Discord
+        # attachment (see api/cron_discord_owner_broadcast.py) rather than an
+        # embed image, so it isn't limited to image/* the way an embed would be.
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         # We store Discord's own CDN URL for the attachment rather than
@@ -675,14 +671,16 @@ class CloneAdminCog(commands.Cog):
         # expires (currently ~24h). Broadcasts normally send within
         # minutes via the cron sender, so this is fine in practice; it
         # only bites if a broadcast sits queued for a long time (see
-        # /broadcaststatus's "stuck" diagnosis below) with an image attached.
-        image_url = image.url if image is not None else None
+        # /broadcaststatus's "stuck" diagnosis below) with a file attached.
+        image_url = attachment.url if attachment is not None else None
+        attachment_filename = attachment.filename if attachment is not None else None
 
         target_value = target.value if target else "users"
 
         broadcast_id = await db.create_owner_broadcast(
             interaction.user.id, message, image_url,
             payment_button_type=payment_button.value if payment_button else None,
+            attachment_filename=attachment_filename,
         )
 
         if target_value == "admins":
