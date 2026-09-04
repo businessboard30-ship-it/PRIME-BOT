@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 import aiohttp
 import discord
 
+import config as app_config
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from discord_bot.cogs.media_storage import _clone_id_of
@@ -475,6 +476,17 @@ class DownloadLinkModal(discord.ui.Modal):
             await interaction.followup.send("The downloads channel isn't set up (or was deleted) — ask an admin to run `/setup downloadhub` again.", ephemeral=True)
             return
 
+        allowed, count = await db.check_and_use_music_quota(
+            self.guild_id, interaction.user.id, "downloads", app_config.MUSIC_FREE_DAILY_DOWNLOADS, clone_id=self.clone_id,
+        )
+        if not allowed:
+            await interaction.followup.send(
+                f"❌ You've hit today's free download limit ({app_config.MUSIC_FREE_DAILY_DOWNLOADS}/day). "
+                f"Ask an admin to run `/activate-pro` ({app_config.MUSIC_PRO_PRICE_LABEL}) for unlimited.",
+                ephemeral=True,
+            )
+            return
+
         limit = interaction.guild.filesize_limit  # boost-tier-aware, read live rather than hardcoded
         meta = MEDIA_TYPES[self.media_type]
 
@@ -794,6 +806,17 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         channel = interaction.guild.get_channel(int(channel_id)) if channel_id else None
         if channel is None:
             await interaction.followup.send("The downloads channel isn't set up (or was deleted) — ask an admin to run `/setup downloadhub` again.", ephemeral=True)
+            return
+
+        allowed, count = await db.check_and_use_music_quota(
+            self.guild_id, interaction.user.id, "uploads", app_config.MUSIC_FREE_DAILY_UPLOADS, clone_id=self.clone_id,
+        )
+        if not allowed:
+            await interaction.followup.send(
+                f"❌ You've hit today's free upload limit ({app_config.MUSIC_FREE_DAILY_UPLOADS}/day). "
+                f"Ask an admin to run `/activate-pro` ({app_config.MUSIC_PRO_PRICE_LABEL}) for unlimited.",
+                ephemeral=True,
+            )
             return
 
         attachment = message.attachments[0]
