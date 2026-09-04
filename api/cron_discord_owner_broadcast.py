@@ -88,12 +88,33 @@ async def _token_for(clone_id):
 
 
 async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, content: str,
-                    image_url: Optional[str] = None, payment_button_type: Optional[str] = None) -> Optional[str]:
+                    image_url: Optional[str] = None, payment_button_type: Optional[str] = None,
+                    attachment_filename: Optional[str] = None) -> Optional[str]:
     """Returns None on success, or an error string on failure. A closed-DMs
     user (403) or a user who's left every mutual server (404 on channel
     open) are both expected, non-noisy failures — logged at debug, not
     warning, so a broadcast to thousands of users doesn't flood logs."""
     headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+
+    # Re-download the attachment once per DM rather than once per broadcast:
+    # Discord's send-message endpoint needs the actual bytes in a multipart
+    # body (there's no "attach by URL" for a non-embed file the way there is
+    # for an embed image), and we only kept the original CDN URL, not the
+    # bytes themselves — see the caveat on that URL's lifetime in
+    # clone_admin.py's ownerbroadcast command. Re-fetching per-DM is wasteful
+    # for a big broadcast but keeps this function simple and stateless; if
+    # this becomes a bottleneck, fetch once per batch in the caller instead.
+    file_bytes = None
+    if image_url and attachment_filename:
+        try:
+            async with session.get(image_url) as resp:
+                if resp.status == 200:
+                    file_bytes = await resp.read()
+                else:
+                    logger.debug(f"[cron_discord_owner_broadcast] Couldn't fetch attachment for {user_id}: HTTP {resp.status}")
+        except (aiohttp.ClientError, TimeoutError) as e:
+            logger.debug(f"[cron_discord_owner_broadcast] Attachment fetch error for {user_id}: {e}")
+
     try:
         async with session.post(
             f"{DISCORD_API_BASE}/users/@me/channels",
@@ -107,11 +128,13 @@ async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, con
             channel_id = channel["id"]
 
         payload = {"content": content}
-        if image_url:
-            # An embed image (rather than re-uploading the file ourselves)
-            # since we only kept Discord's CDN URL from the original
-            # attachment — see the caveat on that URL's lifetime in
-            # clone_admin.py's ownerbroadcast command.
+        if image_url and not file_bytes:
+            # Backward-compat fallback: either this is an old broadcast row
+            # from before attachment_filename existed (no filename recorded,
+            # so we can't build a proper multipart attachment), or the
+            # re-fetch above failed. Embed-image is strictly worse (renders
+            # for images only, and silently shows nothing for a PDF/other
+            # file), but it's the best we can do without a filename or bytes.
             payload["embeds"] = [{"image": {"url": image_url}}]
         if payment_button_type:
             # type 1 = action row, type 2 = button. style 1 = blurple
@@ -135,6 +158,31 @@ async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, con
                     },
                 ],
             }]
+
+        if file_bytes:
+            # Real file attachment: multipart body with the file bytes plus
+            # a "payload_json" part carrying everything else, per Discord's
+            # multipart message-create format. Content-Type must NOT be
+            # application/json for this request (aiohttp sets the correct
+            # multipart boundary itself), so build a fresh headers dict
+            # rather than reusing `headers` from the channel-open call above.
+            form = aiohttp.FormData()
+            form.add_field("payload_json", json.dumps({
+                **payload,
+                "attachments": [{"id": 0, "filename": attachment_filename}],
+            }), content_type="application/json")
+            form.add_field("files[0]", file_bytes, filename=attachment_filename,
+                            content_type="application/octet-stream")
+            send_headers = {"Authorization": f"Bot {token}"}
+            async with session.post(
+                f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
+                headers=send_headers, data=form
+            ) as resp:
+                if resp.status in (200, 201):
+                    return None
+                body = await resp.text()
+                logger.debug(f"[cron_discord_owner_broadcast] Couldn't DM {user_id} (attachment): HTTP {resp.status} {body}")
+                return f"send_failed:{resp.status}"
 
         async with session.post(
             f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
@@ -206,6 +254,7 @@ async def run_pending_owner_broadcasts() -> dict:
                     error = await _dm_user(
                         session, token, r["user_id"], content,
                         broadcast.get("image_url"), broadcast.get("payment_button_type"),
+                        broadcast.get("attachment_filename"),
                     )
                     await db.mark_owner_broadcast_recipient_sent(r["id"], error=error)
                     totals["sent" if error is None else "failed"] += 1
