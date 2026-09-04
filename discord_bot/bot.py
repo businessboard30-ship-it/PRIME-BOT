@@ -443,23 +443,20 @@ class AnimeBotDiscord(commands.Bot):
         quickstart_cog = self.get_cog("QuickstartCog")
         record_quickstart_sent = False
         if quickstart_cog:
-            # Feature Sections are built from FEATURE_TOGGLES itself
-            # (single source of truth — see _views_join_dm.py). Previously
-            # a separate embed-fields loop pulled from
-            # QuickstartCog.QUICKSTART_ITEMS — a different 7-item list
-            # (including /download, which has no toggle at all) — while
-            # the buttons were built from a different 10-item
-            # feature_keys list. Two lists, two orderings, two lengths:
-            # that's what let a field and its "Turn on" button end up
-            # unrelated once pagination split them apart. Now there's
-            # only ever this one list, and build_join_dm_view builds both
-            # the text and the button for each key together.
-            feature_keys = [
-                "rolesetup", "channels", "downloadhub",
-                "welcome", "automod", "verification",
-                "reactionroles", "leveling", "analytics",
-                "bump", "tickets", "starboard", "suggestions",
-            ]
+            # Was a hardcoded list here that duplicated FEATURE_TOGGLES'
+            # own key order — despite this comment previously (wrongly)
+            # claiming it was the only such list. It wasn't: _PageNavButton
+            # in _views_join_dm.py rebuilds each page from
+            # list(FEATURE_TOGGLES.keys()) (dict insertion order), which
+            # could silently differ from whatever order was hand-typed
+            # here — exactly the two-lists-drift-apart bug this comment
+            # already warned about once (see the QUICKSTART_ITEMS history
+            # above). Reading FEATURE_TOGGLES.keys() directly here removes
+            # the second list entirely: initial send and every page-nav
+            # rebuild now always agree, because there's only one order to
+            # agree with.
+            from discord_bot.cogs._views_join_dm import FEATURE_TOGGLES
+            feature_keys = list(FEATURE_TOGGLES.keys())
             record_quickstart_sent = True
 
         notices = []
