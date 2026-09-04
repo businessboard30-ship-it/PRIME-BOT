@@ -276,6 +276,30 @@ DISCORD_OWNER_BRAND_NAME = os.getenv("DISCORD_OWNER_BRAND_NAME", "the bot owner"
 # means the button is simply omitted rather than sent broken.
 DISCORD_SUPPORT_SERVER_INVITE = os.getenv("DISCORD_SUPPORT_SERVER_INVITE", "https://discord.gg/DYfajXrP9B")
 
+# Music Pro upgrade — $4.99 one-time, per-SERVER (not per-member), via
+# Selar. No webhook wired up yet, so paying doesn't auto-activate — an
+# admin runs /activate-pro after confirming the payment.
+MUSIC_PRO_PRICE_LABEL = os.getenv("MUSIC_PRO_PRICE_LABEL", "$4.99")
+MUSIC_PRO_PAYMENT_URL = os.getenv("MUSIC_PRO_PAYMENT_URL", "https://selar.com/m2o23h84z8")
+MUSIC_FREE_DAILY_LISTENS = int(os.getenv("MUSIC_FREE_DAILY_LISTENS", "10"))
+MUSIC_FREE_DAILY_UPLOADS = int(os.getenv("MUSIC_FREE_DAILY_UPLOADS", "3"))
+MUSIC_FREE_DAILY_DOWNLOADS = int(os.getenv("MUSIC_FREE_DAILY_DOWNLOADS", "3"))
+
+
+def music_pro_payment_url_for_guild(guild_id: int) -> str:
+    """Selar has no generic "reference"/"metadata" checkout field — the
+    only prefillable fields it documents are email/fullname/mobile/
+    address (https://selar.co/... ?email=...&fullname=...). So we stuff
+    the guild ID into `fullname` as a lookup key: when a payment comes in
+    on the Selar dashboard, the buyer's "full name" will read
+    "Server-<guild_id>", telling you exactly which server to run
+    /activate-pro in — without that, every payment would look identical
+    and you'd have no way to match one to a server. The buyer can still
+    overtype it in the checkout form before paying if they want to, this
+    is just a prefill/default."""
+    sep = "&" if "?" in MUSIC_PRO_PAYMENT_URL else "?"
+    return f"{MUSIC_PRO_PAYMENT_URL}{sep}fullname=Server-{guild_id}"
+
 
 # --- Owner-server autopost (feature broadcast) auto-enable -------------------
 # Optional: your OWN server's guild + channel IDs. If both are set, the main
