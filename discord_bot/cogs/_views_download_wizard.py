@@ -1028,14 +1028,16 @@ class LibraryPlaySelect(discord.ui.Select):
                 await interaction.followup.send(f"🎵 Not queued: {reason}.", ephemeral=True)
             return
 
-        # Self-heal: if the stored downloadhub channel_id didn't resolve
-        # (or was never set) and we fell back to post_channel above, point
-        # the config at wherever it actually landed so the next person's
-        # request doesn't hit the same stale-channel fallback again. Only
-        # updates when it's actually different — avoids a pointless write
-        # on the common case where config was already correct.
-        if int(channel_id or 0) != post_channel.id:
-            await db.set_download_config(self.guild_id, clone_id=self.clone_id, channel_id=post_channel.id)
+        # NOTE: this used to silently persist post_channel back into
+        # discord_download_config.channel_id whenever the configured
+        # channel didn't resolve — i.e. it would permanently repoint the
+        # owner's downloadhub channel to wherever a request HAPPENED to be
+        # submitted from (e.g. #chatroom), with no confirmation. That's
+        # how the config can drift to an unintended channel over time and
+        # then quietly re-scope media_storage.py's auto-archiving to it.
+        # Removed: fall back to post_channel for THIS interaction only,
+        # but never overwrite the owner's stored config without an
+        # explicit /setup downloadhub run.
 
         await interaction.followup.send(f"✅ Queued **{entry['title']}** — see the Now Playing panel.", ephemeral=True)
 
