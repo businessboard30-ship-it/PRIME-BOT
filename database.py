@@ -1646,6 +1646,51 @@ class Database:
             ON discord_media_storage_config (guild_id, COALESCE(clone_id, -1))
         """)
 
+        # discord_pro_guilds: one row per (guild, clone) that's paid for
+        # the Pro upgrade — $4.99 one-time via Selar, per SERVER (not per
+        # member — anyone in the server can pay and it unlocks unlimited
+        # listen/upload/download for EVERYONE in that server). There's no
+        # webhook wiring this automatically yet (Selar just gives us a
+        # payment link), so this only gets set via the /activate-pro
+        # admin command after manually confirming the payment.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_pro_guilds (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                is_pro BOOLEAN NOT NULL DEFAULT TRUE,
+                activated_by BIGINT,
+                activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_pro_guilds_guild_clone_key
+            ON discord_pro_guilds (guild_id, COALESCE(clone_id, -1))
+        """)
+
+        # discord_music_usage: per-(guild, clone, member, day) counters for
+        # the free-tier daily caps — 10 listens/day, 3 uploads/day,
+        # 3 downloads/day. Resets naturally because usage_date is part of
+        # the key — a new day means a new row starting at 0, nothing to
+        # clean up. Pro guilds (discord_pro_guilds) skip all of this
+        # entirely; rows may still exist from before a guild went Pro but
+        # are simply never read.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_music_usage (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                user_id BIGINT NOT NULL,
+                usage_date DATE NOT NULL,
+                listens INTEGER NOT NULL DEFAULT 0,
+                uploads INTEGER NOT NULL DEFAULT 0,
+                downloads INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_music_usage_key
+            ON discord_music_usage (guild_id, COALESCE(clone_id, -1), user_id, usage_date)
+        """)
+
+
         # discord_automod_reminder_batches: one row per COMBINED owner DM
         # sent by AutomodCog._reminder_loop. Previously each guild/type
         # (log-channel notice, word-filter notice) fired its own standalone
@@ -5749,6 +5794,99 @@ class Database:
                 """,
                 guild_id, clone_id, channel_id, set_by_user_id,
             )
+
+    # --- Pro upgrade ($4.99/server, one-time, via Selar) -------------------
+
+    async def is_guild_pro(self, guild_id: int, clone_id: Optional[int] = None) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT is_pro FROM discord_pro_guilds WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+            return bool(row and row["is_pro"])
+
+    async def set_guild_pro(self, guild_id: int, is_pro: bool, activated_by: int,
+                             clone_id: Optional[int] = None) -> None:
+        """Upserts Pro status for this guild/clone. Called only from the
+        /activate-pro admin command — see clone_admin.py (or wherever it
+        lands) — there's no automatic Selar webhook yet, so this is a
+        manual confirm-then-flip step."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_pro_guilds (guild_id, clone_id, is_pro, activated_by, activated_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
+                    is_pro = $3, activated_by = $4, activated_at = NOW()
+                """,
+                guild_id, clone_id, is_pro, activated_by,
+            )
+
+    # --- Free-tier daily usage caps -----------------------------------------
+    # 10 listens/day, 3 uploads/day, 3 downloads/day — see discord_music_usage
+    # above. Pro guilds should check is_guild_pro() FIRST and skip these
+    # entirely; these helpers don't know about Pro status themselves.
+
+    async def get_music_usage_today(self, guild_id: int, user_id: int,
+                                     clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT listens, uploads, downloads FROM discord_music_usage
+                WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                  AND user_id = $3 AND usage_date = CURRENT_DATE
+                """,
+                guild_id, clone_id, user_id,
+            )
+            if row:
+                return dict(row)
+            return {"listens": 0, "uploads": 0, "downloads": 0}
+
+    async def increment_music_usage(self, guild_id: int, user_id: int, field: str,
+                                     clone_id: Optional[int] = None) -> int:
+        """Increments one of listens/uploads/downloads for today and
+        returns the NEW count. field must be one of those three literal
+        names — validated here since it's interpolated into the query
+        (can't parameterize a column name)."""
+        if field not in ("listens", "uploads", "downloads"):
+            raise ValueError(f"invalid usage field: {field!r}")
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                INSERT INTO discord_music_usage (guild_id, clone_id, user_id, usage_date, {field})
+                VALUES ($1, $2, $3, CURRENT_DATE, 1)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id, usage_date) DO UPDATE SET
+                    {field} = discord_music_usage.{field} + 1
+                RETURNING {field}
+                """,
+                guild_id, clone_id, user_id,
+            )
+            return row[field]
+
+    async def check_and_use_music_quota(self, guild_id: int, user_id: int, field: str, daily_limit: int,
+                                          clone_id: Optional[int] = None) -> tuple[bool, int]:
+        """Combines is_guild_pro + the day's current count + the increment
+        into one call for callers (music.py, _views_download_wizard.py) —
+        Pro guilds always pass with an unbounded (-1) count; free guilds
+        get blocked once today's count for `field` is already at the
+        limit, otherwise get incremented and let through. Returns
+        (allowed, count_after) — count_after is -1 for Pro so callers
+        don't show a fake number in "X/Y used today" messaging.
+        Check-then-increment isn't perfectly atomic under heavy concurrent
+        use from the same member, but at this scale (a handful of
+        requests/day per member) that's an acceptable tradeoff for not
+        needing a DB-level lock here."""
+        if await self.is_guild_pro(guild_id, clone_id=clone_id):
+            return True, -1
+        usage = await self.get_music_usage_today(guild_id, user_id, clone_id=clone_id)
+        if usage[field] >= daily_limit:
+            return False, usage[field]
+        new_count = await self.increment_music_usage(guild_id, user_id, field, clone_id=clone_id)
+        return True, new_count
 
     async def add_automod_banned_word(self, guild_id: int, word: str, clone_id: Optional[int] = None) -> bool:
         config = await self.get_automod_config(guild_id, clone_id)
