@@ -51,6 +51,9 @@ import time
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+import config
+from database import db
+from config import DISCORD_CLONE_ADMIN_IDS
 from discord_bot.cogs._dm_support import GuildOnlyCog
 from discord_bot.cogs._views_music_panel import (
     build_panel_view,
@@ -266,6 +269,27 @@ class MusicCog(GuildOnlyCog):
             self.states[guild_id] = GuildMusicState(guild_id)
         return self.states[guild_id]
 
+    @app_commands.command(name="activate-pro", description="[Owner] Activate the Music Pro upgrade for this server after confirming payment")
+    async def activate_pro(self, interaction: discord.Interaction):
+        """No Selar webhook is wired up — the Upgrade to Pro button's URL
+        has the guild ID baked into it (fullname=Server-<id>, see
+        music_pro_payment_url_for_guild in config.py) specifically so
+        whoever checks the Selar dashboard can match an incoming payment
+        back to a server, then come run this command to flip it. Same
+        owner-or-clone-admin gate as /set-storage-channel."""
+        if interaction.guild is None:
+            await interaction.response.send_message("This only works in a server.", ephemeral=True)
+            return
+        if interaction.user.id not in DISCORD_CLONE_ADMIN_IDS and interaction.user.id != interaction.guild.owner_id:
+            await interaction.response.send_message("Only the server owner can activate Pro.", ephemeral=True)
+            return
+        clone_id = _clone_id_of(self.bot)
+        await db.set_guild_pro(interaction.guild.id, True, interaction.user.id, clone_id=clone_id)
+        await interaction.response.send_message(
+            "✅ **Pro activated** for this server — every member now gets unlimited listens, uploads, and downloads.",
+            ephemeral=True,
+        )
+
     def panel_snapshot(self, guild_id: int) -> dict:
         """Read-only accessor used by _views_music_panel.py — the panel
         file never touches self.states directly, only through this."""
@@ -292,6 +316,15 @@ class MusicCog(GuildOnlyCog):
         if member.voice is None or member.voice.channel is None:
             return "you're not in a voice channel"
         voice_channel = member.voice.channel
+
+        allowed, count = await db.check_and_use_music_quota(
+            guild.id, member.id, "listens", config.MUSIC_FREE_DAILY_LISTENS, clone_id=clone_id,
+        )
+        if not allowed:
+            return (
+                f"you've hit today's free listen limit ({config.MUSIC_FREE_DAILY_LISTENS}/day) — "
+                f"ask an admin to run /activate-pro ({config.MUSIC_PRO_PRICE_LABEL}) for unlimited listens"
+            )
 
         try:
             track = await resolve_track(url, member.id, voice_channel.id)
@@ -342,6 +375,15 @@ class MusicCog(GuildOnlyCog):
         if member.voice is None or member.voice.channel is None:
             return "you're not in a voice channel"
         voice_channel = member.voice.channel
+
+        allowed, count = await db.check_and_use_music_quota(
+            guild.id, member.id, "listens", config.MUSIC_FREE_DAILY_LISTENS, clone_id=clone_id,
+        )
+        if not allowed:
+            return (
+                f"you've hit today's free listen limit ({config.MUSIC_FREE_DAILY_LISTENS}/day) — "
+                f"ask an admin to run /activate-pro ({config.MUSIC_PRO_PRICE_LABEL}) for unlimited listens"
+            )
 
         track = {
             "stream_url": stream_url,
