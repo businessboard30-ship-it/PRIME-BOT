@@ -103,6 +103,21 @@ class MediaStorageCog(GuildOnlyCog):
             # Already posted directly in the storage channel — nothing to move.
             return
 
+        # Cross-clone dedupe: if multiple clone bots are members of this
+        # SAME guild, every one of them independently receives this exact
+        # on_message event (each clone is its own bot process — see
+        # clone_manager.py). Without this claim, every clone would
+        # re-archive the same attachment, producing one duplicate post per
+        # clone in the server. Only the clone that successfully "claims"
+        # this message_id proceeds; everyone else skips it here.
+        try:
+            claimed = await db.claim_media_message_for_archiving(message.id, message.guild.id, clone_id)
+        except Exception:
+            logger.error("[media_storage] dedupe claim failed for message %s — archiving anyway to avoid losing the upload", message.id, exc_info=True)
+            claimed = True  # fail open: better an occasional duplicate than a lost upload
+        if not claimed:
+            return
+
         storage_channel = message.guild.get_channel(storage_channel_id)
         if storage_channel is None:
             logger.warning("[media_storage] configured storage channel %s missing in guild %s", storage_channel_id, message.guild.id)
