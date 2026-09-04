@@ -219,7 +219,21 @@ class FinishButton(discord.ui.Button):
 
         panel_embed = build_verify_panel_embed(guild.name, wizard.mode)
         panel_view = build_verify_panel_view(guild.id)
-        panel_message = await channel.send(embed=panel_embed, view=panel_view)
+        try:
+            panel_message = await channel.send(embed=panel_embed, view=panel_view)
+        except discord.Forbidden:
+            # I'm missing Send Messages/Embed Links/View Channel in the
+            # chosen verify channel — without this, the exception used to
+            # propagate out of the callback and just get swallowed by
+            # discord.py's view error handler, leaving the deferred
+            # interaction hanging with no feedback at all.
+            await interaction.followup.send(
+                f"⚠️ Channels were locked down, but I don't have permission to post in "
+                f"{channel.mention}. Give me **View Channel**, **Send Messages** and "
+                f"**Embed Links** there, then run `/setupverification` again to post the panel.",
+                ephemeral=True,
+            )
+            return
 
         clone_id = _clone_id_of(interaction)
         await db.set_verification_config(
