@@ -45,6 +45,7 @@ disconnects after 60s of solo instead of sitting there indefinitely.
 
 import asyncio
 import logging
+import random
 import time
 
 import discord
@@ -111,6 +112,29 @@ FFMPEG_OPTIONS = "-vn -af aresample=async=1:min_hard_comp=0.100000:first_pts=0"
 
 def _clone_id_of(bot: commands.Bot):
     return getattr(bot, "clone_id", None)
+
+
+async def _connect_voice_clean(guild: discord.Guild, voice_channel) -> "discord.VoiceClient":
+    """Connects to voice, clearing out any leftover/stale voice session
+    first — after a deploy, Discord's gateway can still think the bot is
+    sitting in a VC from before the restart even though the freshly
+    started process has no VoiceClient cached (guild.voice_client is
+    None). Connecting straight into that state hangs and times out with
+    asyncio.TimeoutError rather than a clean discord.ClientException, so
+    callers were seeing that surface as a generic "something went wrong"
+    with the real reason only in server logs. Force-clearing the voice
+    state first (a no-op if there's nothing stale) avoids the hang."""
+    try:
+        await guild.change_voice_state(channel=None)
+    except discord.HTTPException:
+        pass
+    return await voice_channel.connect()
+
+
+def _voice_connect_failure_reason(e: Exception) -> str:
+    if isinstance(e, asyncio.TimeoutError):
+        return "voice connection timed out (likely a leftover session from a recent restart) — try again in a few seconds"
+    return f"couldn't join your voice channel ({e})"
 
 
 def _extract_stream_info(url: str) -> dict:
@@ -186,6 +210,13 @@ class GuildMusicState:
         self.paused_elapsed: float = 0.0
         self.loop_mode: str = "off"  # off | track | queue
         self.solo_since: float | None = None
+        self.volume: int = 100  # percent, 0-200 — applied via PCMVolumeTransformer
+        # Mirror of the Now Playing panel posted directly into the queuer's
+        # voice-channel text chat (in addition to the downloads channel),
+        # so the panel is visible without leaving the call — same idea as
+        # the reference bot's in-call panel. In-memory only, same
+        # restart-limitation note as the rest of this state.
+        self.voice_panel_message: "discord.Message | None" = None
 
     def position_seconds(self) -> float:
         if self.current_started_at is None:
@@ -206,6 +237,7 @@ class GuildMusicState:
             "queue": list(self.queue),
             "paused": self.paused_at is not None,
             "loop_mode": self.loop_mode,
+            "volume": self.volume,
         }
 
 
@@ -271,10 +303,10 @@ class MusicCog(GuildOnlyCog):
         voice_client = guild.voice_client
         if voice_client is None:
             try:
-                voice_client = await voice_channel.connect()
-            except discord.ClientException as e:
+                voice_client = await _connect_voice_clean(guild, voice_channel)
+            except (discord.ClientException, asyncio.TimeoutError) as e:
                 state.queue.remove(track)
-                return f"couldn't join your voice channel ({e})"
+                return _voice_connect_failure_reason(e)
         elif voice_client.channel.id != voice_channel.id and not voice_client.is_playing():
             await voice_client.move_to(voice_channel)
 
@@ -285,6 +317,7 @@ class MusicCog(GuildOnlyCog):
             await self.skip(guild.id)
 
         await self._post_or_refresh_panel(guild.id, clone_id, post_channel)
+        await self._post_or_refresh_voice_panel(guild.id, clone_id, voice_channel)
         return None
 
     async def queue_direct_url_for_playback(
@@ -315,10 +348,10 @@ class MusicCog(GuildOnlyCog):
         voice_client = guild.voice_client
         if voice_client is None:
             try:
-                voice_client = await voice_channel.connect()
-            except discord.ClientException as e:
+                voice_client = await _connect_voice_clean(guild, voice_channel)
+            except (discord.ClientException, asyncio.TimeoutError) as e:
                 state.queue.remove(track)
-                return f"couldn't join your voice channel ({e})"
+                return _voice_connect_failure_reason(e)
         elif voice_client.channel.id != voice_channel.id and not voice_client.is_playing():
             await voice_client.move_to(voice_channel)
 
@@ -326,6 +359,7 @@ class MusicCog(GuildOnlyCog):
             await self._play_next(guild.id)
 
         await self._post_or_refresh_panel(guild.id, clone_id, post_channel)
+        await self._post_or_refresh_voice_panel(guild.id, clone_id, voice_channel)
         return None
 
     async def _post_or_refresh_panel(self, guild_id: int, clone_id, fallback_channel):
@@ -350,6 +384,46 @@ class MusicCog(GuildOnlyCog):
                     pass  # panel message gone — fall through and post a fresh one
         sent = await fallback_channel.send(view=view)
         await remember_panel_message(guild_id, clone_id, sent.channel.id, sent.id)
+
+    async def _post_or_refresh_voice_panel(self, guild_id: int, clone_id, voice_channel):
+        """Mirrors the Now Playing panel directly into the voice channel's
+        own text chat, so it's visible in-call the same way the reference
+        panel is — separate from the downloads-channel copy handled by
+        _post_or_refresh_panel above. Best-effort only: this is NOT
+        persisted to the DB (voice_panel_message lives on GuildMusicState,
+        in-memory), so it won't survive a restart, same known limitation
+        as the rest of this module."""
+        if voice_channel is None:
+            return
+        state = self._state(guild_id)
+        view = build_panel_view(guild_id, clone_id, state.panel_snapshot())
+        if state.voice_panel_message is not None:
+            try:
+                await state.voice_panel_message.edit(view=view)
+                return
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                state.voice_panel_message = None  # gone — fall through and repost
+        try:
+            state.voice_panel_message = await voice_channel.send(view=view)
+        except (discord.Forbidden, discord.HTTPException, AttributeError):
+            # AttributeError guards voice channel types without a linked
+            # text chat / send() in older discord.py — never fatal, the
+            # downloads-channel panel already succeeded by this point.
+            state.voice_panel_message = None
+
+    async def _refresh_voice_panel_if_any(self, guild_id: int, clone_id):
+        """Called alongside refresh_posted_panel() wherever the panel needs
+        to re-render outside a fresh queue (track advance, button press,
+        solo-disconnect) — no-ops if this guild never got a voice-mirrored
+        panel."""
+        state = self._state(guild_id)
+        if state.voice_panel_message is None:
+            return
+        view = build_panel_view(guild_id, clone_id, state.panel_snapshot())
+        try:
+            await state.voice_panel_message.edit(view=view)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            state.voice_panel_message = None
 
     # --- queue engine ------------------------------------------------------
 
@@ -380,6 +454,9 @@ class MusicCog(GuildOnlyCog):
             before_options=FFMPEG_BEFORE_OPTIONS,
             options=FFMPEG_OPTIONS,
         )
+        # Wrapped so the Vol -10/+10 buttons can adjust playback live via
+        # source.volume, instead of needing to restart the stream.
+        source = discord.PCMVolumeTransformer(source, volume=state.volume / 100)
 
         def _after_play(error: Exception | None):
             if error:
@@ -397,7 +474,9 @@ class MusicCog(GuildOnlyCog):
 
     async def _on_track_finished(self, guild_id: int):
         await self._play_next(guild_id)
-        await refresh_posted_panel(self.bot, guild_id, clone_id=_clone_id_of(self.bot))
+        clone_id = _clone_id_of(self.bot)
+        await refresh_posted_panel(self.bot, guild_id, clone_id=clone_id)
+        await self._refresh_voice_panel_if_any(guild_id, clone_id)
 
     # --- button-driven actions (called from _views_music_panel.py) ---------
 
@@ -443,6 +522,43 @@ class MusicCog(GuildOnlyCog):
         state = self._state(guild_id)
         idx = LOOP_ORDER.index(state.loop_mode) if state.loop_mode in LOOP_ORDER else 0
         state.loop_mode = LOOP_ORDER[(idx + 1) % len(LOOP_ORDER)]
+
+    async def replay(self, guild_id: int):
+        """Restarts the CURRENT track from the top — distinct from Skip
+        (moves on) and from loop-track (auto-repeats forever). Re-inserts
+        the current track at the front of the queue (unless loop-track is
+        already doing that job) then stops playback so the existing
+        after-hook naturally picks it back up as the "next" track."""
+        state = self._state(guild_id)
+        if state.current is None:
+            return
+        guild = self.bot.get_guild(guild_id)
+        if guild is None or guild.voice_client is None:
+            return
+        if state.loop_mode != "track":
+            state.queue.insert(0, state.current)
+        voice_client = guild.voice_client
+        if voice_client.is_playing() or voice_client.is_paused():
+            voice_client.stop()  # triggers _after_play -> _on_track_finished -> _play_next
+        else:
+            await self._play_next(guild_id)
+
+    async def shuffle(self, guild_id: int):
+        state = self._state(guild_id)
+        random.shuffle(state.queue)
+
+    async def adjust_volume(self, guild_id: int, delta: int):
+        """delta is +10/-10 from the panel buttons. Clamped 0-200%.
+        Applies live via PCMVolumeTransformer if something's currently
+        playing/paused, and always persists on state so the NEXT track
+        picks it up too."""
+        state = self._state(guild_id)
+        state.volume = max(0, min(200, state.volume + delta))
+        guild = self.bot.get_guild(guild_id)
+        if guild is not None and guild.voice_client is not None:
+            source = guild.voice_client.source
+            if isinstance(source, discord.PCMVolumeTransformer):
+                source.volume = state.volume / 100
 
     # --- voice-channel following ------------------------------------------
 
@@ -493,7 +609,9 @@ class MusicCog(GuildOnlyCog):
                     await voice_client.disconnect(force=False)
                 except discord.HTTPException:
                     pass
-                await refresh_posted_panel(self.bot, guild.id, clone_id=_clone_id_of(self.bot))
+                clone_id = _clone_id_of(self.bot)
+                await refresh_posted_panel(self.bot, guild.id, clone_id=clone_id)
+                await self._refresh_voice_panel_if_any(guild.id, clone_id)
 
     @voice_solo_watcher.before_loop
     async def _before_solo_watcher(self):
