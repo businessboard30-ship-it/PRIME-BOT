@@ -44,11 +44,32 @@ _VERIFY_BTN_RE = re.compile(r"^verify_btn:(\d+)$")
 _CAPTCHA_MODAL_RE = re.compile(r"^verify_captcha:(\d+):(\d+):(\d+)$")
 
 
-async def do_verify(member: discord.Member, config: dict) -> bool:
+def _diagnose_role_failure(guild: discord.Guild, role: discord.Role | None) -> str:
+    """Best-effort guess at *why* the bot couldn't touch `role`, phrased so
+    a server admin can act on it immediately without digging through logs."""
+    me = guild.me
+    if role is None:
+        return "the configured role no longer exists — a staff member needs to re-run verification setup and pick the role again"
+    if role.is_default():
+        return "that role can't be managed by any bot (it's the @everyone role) — a staff member needs to fix the verification setup"
+    if role.managed:
+        return f"the **{role.name}** role is managed by another bot/integration, so I'm not allowed to touch it — staff should pick a different role in verification setup"
+    if not me.guild_permissions.manage_roles:
+        return "I'm missing the **Manage Roles** permission in this server — a staff member needs to grant it to my role"
+    if role >= me.top_role:
+        return (
+            f"my highest role sits **below {role.name}** in Server Settings → Roles — a staff member needs to drag "
+            f"my role above {role.name} (Discord bots can only manage roles ranked below their own)"
+        )
+    return "something unexpected went wrong on Discord's end — a staff member should check the bot's audit log or try again shortly"
+
+
+async def do_verify(member: discord.Member, config: dict) -> tuple[bool, str | None]:
     """Swaps Unverified -> Verified (or just drops Unverified if no
-    verified_role_id is configured). Returns True on success. Best-effort:
+    verified_role_id is configured). Returns (success, reason). Best-effort:
     a missing role / stale role id / missing bot permission just logs and
-    reports failure rather than raising into the interaction handler."""
+    reports failure (with a human-readable reason) rather than raising into
+    the interaction handler."""
     guild = member.guild
     unverified_role = guild.get_role(config.get("unverified_role_id")) if config.get("unverified_role_id") else None
     verified_role = guild.get_role(config.get("verified_role_id")) if config.get("verified_role_id") else None
@@ -57,13 +78,23 @@ async def do_verify(member: discord.Member, config: dict) -> bool:
             await member.remove_roles(unverified_role, reason="Passed join verification")
         if verified_role:
             await member.add_roles(verified_role, reason="Passed join verification")
-        return True
+        return True, None
     except discord.Forbidden:
-        logger.warning("verification: missing permission to swap roles for %s in guild %s", member.id, guild.id)
-        return False
+        # Figure out which of the two roles was actually the problem so the
+        # staff-facing message points at the right one.
+        culprit = verified_role
+        if unverified_role and unverified_role in member.roles:
+            me = guild.me
+            if unverified_role.managed or unverified_role >= me.top_role or not me.guild_permissions.manage_roles:
+                culprit = unverified_role
+        reason = _diagnose_role_failure(guild, culprit)
+        logger.warning(
+            "verification: missing permission to swap roles for %s in guild %s — %s", member.id, guild.id, reason
+        )
+        return False, reason
     except discord.HTTPException as e:
         logger.warning("verification: role swap failed for %s in guild %s: %s", member.id, guild.id, e)
-        return False
+        return False, "Discord rejected the role update — a staff member should check the bot's permissions and try again"
 
 
 class CaptchaModal(discord.ui.Modal, title="Verify you're human"):
@@ -91,12 +122,12 @@ class CaptchaModal(discord.ui.Modal, title="Verify you're human"):
             return
         clone_id = getattr(interaction.client, "clone_id", None)
         config = await db.get_verification_config(self.guild_id, clone_id=clone_id)
-        ok = await do_verify(interaction.user, config)
+        ok, reason = await do_verify(interaction.user, config)
         if ok:
             await interaction.response.send_message("✅ You're verified — welcome in!", ephemeral=True)
         else:
             await interaction.response.send_message(
-                "⚠️ Verified, but I couldn't update your roles — please ping a staff member.", ephemeral=True
+                f"⚠️ Verified, but I couldn't update your roles: {reason}.", ephemeral=True
             )
 
 
@@ -129,12 +160,12 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
             a, b = random.randint(1, 9), random.randint(1, 9)
             await interaction.response.send_modal(CaptchaModal(self.guild_id, a, b))
             return
-        ok = await do_verify(interaction.user, config)
+        ok, reason = await do_verify(interaction.user, config)
         if ok:
             await interaction.response.send_message("✅ You're verified — welcome in!", ephemeral=True)
         else:
             await interaction.response.send_message(
-                "⚠️ I couldn't update your roles — please ping a staff member.", ephemeral=True
+                f"⚠️ I couldn't update your roles: {reason}.", ephemeral=True
             )
 
 
