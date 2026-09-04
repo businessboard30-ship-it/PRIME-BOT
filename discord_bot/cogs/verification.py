@@ -77,6 +77,54 @@ class UnverifiedRoleSelect(discord.ui.RoleSelect):
         await self.wizard.refresh(interaction)
 
 
+class AutoCreateUnverifiedButton(discord.ui.Button):
+    def __init__(self, wizard: "WizardView"):
+        self.wizard = wizard
+        super().__init__(
+            label="✨ Auto-create Unverified role",
+            style=discord.ButtonStyle.primary,
+            row=4,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        wizard = self.wizard
+        guild = interaction.guild
+        bot_member = guild.me
+
+        try:
+            role = await guild.create_role(
+                name="Unverified",
+                permissions=discord.Permissions.none(),
+                reason=f"Verification setup by {interaction.user} (auto-created)",
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I don't have permission to create roles here — grant me **Manage Roles**, "
+                "or pick an existing role from the dropdown instead.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"Couldn't create the role: {e}", ephemeral=True)
+            return
+
+        # Slot it directly below the bot's top role so the bot can always
+        # assign/remove it later, regardless of where else it ends up.
+        try:
+            target_position = max(1, bot_member.top_role.position - 1)
+            await role.edit(position=target_position)
+        except discord.HTTPException:
+            # Non-fatal — the role still works, it just may need manual
+            # repositioning if it ended up above the bot's top role.
+            logger.warning(
+                "verification: auto-created Unverified role %s in guild %s but failed to reposition it",
+                role.id, guild.id,
+            )
+
+        wizard.unverified_role_id = role.id
+        await wizard.refresh(interaction)
+
+
 class VerifiedRoleSelect(discord.ui.RoleSelect):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
@@ -106,6 +154,15 @@ class FinishButton(discord.ui.Button):
         channel = guild.get_channel(wizard.channel_id)
         if unverified_role is None or channel is None:
             await interaction.followup.send("That role or channel no longer exists — please pick again.", ephemeral=True)
+            return
+
+        if unverified_role.position >= guild.me.top_role.position:
+            await interaction.followup.send(
+                f"⚠️ {unverified_role.mention} is positioned at or above my highest role, so I won't be able to "
+                "assign/remove it on join/verify. Move it below my role in Server Settings → Roles, then run "
+                "/setupverification again.",
+                ephemeral=True,
+            )
             return
 
         touched = await lockdown_guild_channels(guild, unverified_role, wizard.channel_id)
@@ -155,6 +212,7 @@ class WizardView(discord.ui.View):
         self.add_item(ChannelSelect(self))
         self.add_item(UnverifiedRoleSelect(self))
         self.add_item(VerifiedRoleSelect(self))
+        self.add_item(AutoCreateUnverifiedButton(self))
         self.add_item(FinishButton(self))
         self.add_item(CancelButton(self))
 
