@@ -94,7 +94,7 @@ def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> disco
     items = []
 
     if not state.get("current"):
-        items.append(discord.ui.TextDisplay("### 🎵 Now playing\nNothing queued right now. Use **/setup music** to queue a link."))
+        items.append(discord.ui.TextDisplay("### 🎵 Now playing\nNothing queued right now. Submit a link or upload a file in your downloads channel to queue something."))
         container.add_item(items[0])
         browse_row = discord.ui.ActionRow()
         browse_row.add_item(_browse_button(guild_id, clone_id))
