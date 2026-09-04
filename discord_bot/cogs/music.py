@@ -437,7 +437,18 @@ class MusicCog(GuildOnlyCog):
                     return
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                     pass  # panel message gone — fall through and post a fresh one
-        sent = await fallback_channel.send(view=view)
+        if fallback_channel is None:
+            # Nowhere to post — configured channel is gone and no caller
+            # supplied a live fallback. Log and no-op rather than crashing;
+            # queueing/playback itself already succeeded by this point, so
+            # this must never bubble up and look like the queue failed.
+            logger.warning(f"[v0] _post_or_refresh_panel: no valid channel to post panel in guild {guild_id}")
+            return
+        try:
+            sent = await fallback_channel.send(view=view)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.warning(f"[v0] _post_or_refresh_panel: failed to post panel in guild {guild_id}: {e!r}")
+            return
         await remember_panel_message(guild_id, clone_id, sent.channel.id, sent.id)
 
     async def _post_or_refresh_voice_panel(self, guild_id: int, clone_id, voice_channel):
