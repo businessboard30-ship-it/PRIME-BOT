@@ -42,6 +42,7 @@ QUICKSTART_ITEMS = [
     ("🎭", "Reaction roles", "/reactionrole create", "Let members self-assign roles by reacting to a message."),
     ("📈", "Leveling / XP", "/leveling setup", "Reward active members with levels and roles over time."),
     ("⬇️", "Media downloads", "/download", "Works right away, no setup — grab audio/video from a link."),
+    ("📥", "Downloadhub", "/setup downloadhub", "Auto-creates a channel where members submit/upload music & video and play it in voice."),
     ("📊", "Server analytics", "/serveranalytics", "See member/activity stats and where to find more members."),
     ("📣", "Bump network", "/bumpsetup", "List your server for growth — I can even create the channel for you."),
 ]
@@ -178,6 +179,12 @@ class QuickstartCog(commands.Cog):
         try:
             ticket = await db.get_ticket_config(guild_id, clone_id)
             if ticket.get("panel_channel_id"):
+                return True
+        except Exception:
+            pass
+        try:
+            downloadhub = await db.get_download_config(guild_id, clone_id)
+            if downloadhub.get("channel_id"):
                 return True
         except Exception:
             pass
