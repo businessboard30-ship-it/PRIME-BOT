@@ -761,9 +761,27 @@ async def _enable_channels(interaction: discord.Interaction, guild: discord.Guil
 
 
 async def _enable_tickets(interaction: discord.Interaction, guild: discord.Guild, clone_id):
-    channel = _default_text_channel(guild)
-    if channel is None:
-        return False, "I couldn't find a channel I'm able to post in — create one and try `/ticket setup`."
+    """Auto-creates a dedicated #tickets channel for the support panel,
+    same pattern as _enable_downloadhub's #downloads — NOT
+    _default_text_channel (an arbitrary existing channel, usually
+    #general or the system channel), which is what this used to post the
+    panel into. A panel sitting in a random already-busy channel isn't
+    what an owner expects from "set up tickets", and it's inconsistent
+    with every other channel-creating one-tap button in this file. If a
+    panel channel is already configured and still exists, reuses it
+    rather than creating a second one, same as downloadhub's existing-
+    config check."""
+    existing = await db.get_ticket_config(guild.id, clone_id=clone_id)
+    existing_channel_id = existing.get("panel_channel_id")
+    existing_channel = guild.get_channel(existing_channel_id) if existing_channel_id else None
+    if existing_channel is not None:
+        return True, f"Ticket panel is already set up in {existing_channel.mention}. Set a support role anytime with `/ticket setup`."
+
+    try:
+        channel = await guild.create_text_channel("tickets", reason="Ticket panel set up via the join-DM button")
+    except discord.Forbidden:
+        return False, "I don't have permission to create channels here — create one and try `/ticket setup`."
+
     from discord_bot.cogs.ticket import TicketPanelView
     cog = interaction.client.get_cog("TicketCog")
     embed = discord.Embed(
