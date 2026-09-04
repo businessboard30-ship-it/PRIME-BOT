@@ -455,9 +455,10 @@ class AnimeBotDiscord(commands.Bot):
             # only ever this one list, and build_join_dm_view builds both
             # the text and the button for each key together.
             feature_keys = [
-                "welcome", "automod", "reactionroles", "leveling",
-                "analytics", "bump", "channels", "tickets",
-                "starboard", "suggestions", "downloadhub",
+                "rolesetup", "channels", "downloadhub",
+                "welcome", "automod", "verification",
+                "reactionroles", "leveling", "analytics",
+                "bump", "tickets", "starboard", "suggestions",
             ]
             record_quickstart_sent = True
 
