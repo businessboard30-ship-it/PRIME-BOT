@@ -112,6 +112,23 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
             # through and create a fresh one.
             wizard.auto_created_role_id = None
 
+        # Cross-session guard: this also catches re-running /setupverification
+        # (a brand new WizardView with no memory of the earlier click) and
+        # protects against Discord occasionally re-delivering a component
+        # interaction. Source of truth is the guild itself, not this view.
+        existing_by_name = discord.utils.find(
+            lambda r: r.name.casefold() == "unverified", interaction.guild.roles
+        )
+        if existing_by_name is not None:
+            wizard.unverified_role_id = existing_by_name.id
+            wizard.auto_created_role_id = existing_by_name.id
+            await interaction.response.send_message(
+                f"A role called {existing_by_name.mention} already exists in this server — "
+                "reusing it instead of creating a duplicate.",
+                ephemeral=True,
+            )
+            return
+
         wizard._creating_role = True
         guild = interaction.guild
         bot_member = guild.me
