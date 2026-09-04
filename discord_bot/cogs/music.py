@@ -213,7 +213,8 @@ class MusicCog(GuildOnlyCog):
     # --- entry point: called by the downloadhub submission flow ----------
 
     async def queue_track_for_submission(
-        self, guild: discord.Guild, member: discord.Member, url: str, clone_id, post_channel
+        self, guild: discord.Guild, member: discord.Member, url: str, clone_id, post_channel,
+        play_immediately: bool = False,
     ) -> str | None:
         """Called from _views_download_wizard.py right after a 🎵 Music
         submission successfully posts its file — queues the SAME link into
@@ -223,6 +224,9 @@ class MusicCog(GuildOnlyCog):
         reason string to surface to the submitter if queueing didn't
         happen (never raises — a voice failure must never affect whether
         the file itself got posted, that already succeeded by this point).
+        
+        If play_immediately=True, the track is inserted at the front of the
+        queue and will play next (skipping any currently playing track).
         """
         if member.voice is None or member.voice.channel is None:
             return "you're not in a voice channel"
@@ -237,7 +241,12 @@ class MusicCog(GuildOnlyCog):
             return "no playable audio stream found for that link"
 
         state = self._state(guild.id)
-        state.queue.append(track)
+        
+        # Insert at beginning for immediate play, or at end for queueing
+        if play_immediately:
+            state.queue.insert(0, track)
+        else:
+            state.queue.append(track)
 
         voice_client = guild.voice_client
         if voice_client is None:
@@ -251,6 +260,9 @@ class MusicCog(GuildOnlyCog):
 
         if not voice_client.is_playing() and not voice_client.is_paused():
             await self._play_next(guild.id)
+        elif play_immediately and voice_client.is_playing():
+            # Skip to the newly inserted track at the front
+            await self.skip(guild.id)
 
         await self._post_or_refresh_panel(guild.id, clone_id, post_channel)
         return None
