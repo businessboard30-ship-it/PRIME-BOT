@@ -24,11 +24,14 @@ plain persistent View can't do.
 
 import re
 import asyncio
+import logging
 
 import discord
 
 from database import db
 from config import DISCORD_SUPPORT_SERVER_INVITE
+
+logger = logging.getLogger(__name__)
 
 # custom_id shape: join_dm_feat:<feature_key>:<guild_id>:<clone_id or "-">
 _FEATURE_ID_RE = re.compile(r"^join_dm_feat:([a-z_]+):(\d+):(-|\d+)$")
@@ -745,7 +748,15 @@ async def _enable_channels(interaction: discord.Interaction, guild: discord.Guil
     from discord_bot.cogs.setup_channels import scan_missing_channels, build_suggestions_layout_view
     missing = await scan_missing_channels(guild, clone_id)
     layout = build_suggestions_layout_view(guild, missing)
-    await interaction.response.edit_message(view=layout)
+    # NOT interaction.response.edit_message(...): the caller
+    # (_FeatureToggleButton.callback) already called
+    # interaction.response.defer(...) before reaching this handler, so the
+    # response slot is used up — a second interaction.response.* call here
+    # raises discord.InteractionResponded. edit_original_response is the
+    # correct way to edit the message after a defer (see how the "welcome"
+    # sub-screen swap and the generic rebuilt-button path both do this a
+    # few lines below in that same callback).
+    await interaction.edit_original_response(view=layout)
     return None, None
 
 
@@ -845,6 +856,48 @@ async def _enable_suggestions(interaction: discord.Interaction, guild: discord.G
     return True, f"Suggestions are on — `/suggest` works anywhere, and approved ones now log to {channel.mention}."
 
 
+async def _enable_verification(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """Opens the real /setupverification wizard (verification.WizardView)
+    as an ephemeral follow-up — same wizard an admin gets running the
+    slash command by hand (mode/channel/unverified-role/verified-role
+    pickers + Lock down & enable), reused directly rather than copied, so
+    any future change to that flow is picked up here automatically.
+    Doesn't touch the join-DM message itself — the verification wizard is
+    self-contained in its own ephemeral message — so this returns
+    None/None rather than True: nothing is actually enabled yet until the
+    admin finishes the wizard and hits Lock down & enable, so the "Turn
+    on" button shouldn't flip to a misleading "On: ..." state here."""
+    from discord_bot.cogs.verification import WizardView
+    current = await db.get_verification_config(guild.id, clone_id=clone_id)
+    wizard = WizardView(interaction.user.id, current)
+    await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+    return None, None
+
+
+async def _enable_role_setup_wizard(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """Own personal button (not combined with channels/downloadhub — see
+    "channels" and "downloadhub" below for those). Opens the real
+    /role setup wizard (RoleSetupWizard from role_setup.py) as an
+    ephemeral follow-up — the full preset-role picker + Create
+    selected/Create all + panel-channel picker + Post role panel flow,
+    not the bare empty-panel shortcut the standalone "reactionroles"
+    button posts. Reused directly rather than copied, so any future
+    change to the wizard is picked up here automatically. Doesn't touch
+    the join-DM message itself — the wizard is self-contained in its own
+    ephemeral message — so this returns None/None rather than True:
+    nothing is actually created yet until the admin uses the wizard, so
+    the "Turn on" button shouldn't flip to a misleading "On: ..." state
+    here."""
+    if not guild.me.guild_permissions.manage_roles:
+        return False, ("I need the **Manage Roles** permission before I can set up self-roles here — "
+                        "grant that, then try `/role setup`.")
+
+    from discord_bot.cogs.role_setup import RoleSetupWizard
+    wizard = RoleSetupWizard(interaction.user.id, guild=guild)
+    await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+    return None, None
+
+
 # key -> (label, emoji, handler, options_view_builder | None, blurb). Handler
 # returns (success: bool | None, message: str | None); None/None means it
 # already responded itself. options_view_builder(guild_id, clone_id) -> View
@@ -865,6 +918,7 @@ FEATURE_TOGGLES = {
     "leveling": ("Leveling / XP", "📈", _enable_leveling, _LevelingOptionsView,
                  "Reward active members with levels and roles over time."),
     "analytics": ("Server analytics", "📊", _enable_analytics, None,
+
                   "See member/activity stats and where to find more members."),
     "bump": ("Bump network", "📣", _enable_bump, None,
              "List your server for growth — I can even create the channel for you."),
@@ -878,6 +932,10 @@ FEATURE_TOGGLES = {
                      "Let members submit ideas for staff and members to vote on."),
     "downloadhub": ("Downloadhub", "📥", _enable_downloadhub, None,
                      "Auto-creates a #downloads channel where members submit music/video links or upload files, with playback right in voice."),
+    "verification": ("Join verification", "🔐", _enable_verification, None,
+                      "Anti-raid gate — new members get an Unverified role until they pass a captcha or button click."),
+    "rolesetup": ("Role setup", "🧩", _enable_role_setup_wizard, None,
+                  "Open the full self-role wizard — bulk-create preset roles and post a member panel."),
 }
 
 # How many feature buttons show per page. Each feature now takes its own
@@ -945,7 +1003,27 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         # this button is clicked from a DM, and Interaction.guild has no
         # setter, so it can't be patched onto the interaction).
         label, _, handler, options_view_cls, _ = FEATURE_TOGGLES[self.feature_key]
-        success, message = await handler(interaction, guild, self.clone_id)
+        try:
+            success, message = await handler(interaction, guild, self.clone_id)
+        except Exception:
+            # Nothing here logged errors at all before this — a handler
+            # exception (DB hiccup, unexpected guild state, a Discord API
+            # error the try/excepts inside the handler itself didn't
+            # anticipate) used to just vanish into discord.py's default
+            # stderr traceback with no guild/feature context, and the
+            # owner's tap would silently do nothing. Log it with enough
+            # context to actually find the guild/feature involved, and
+            # tell the owner it failed instead of leaving the click
+            # looking like it did nothing.
+            logger.exception(
+                "join_dm feature toggle '%s' failed for guild %s (clone_id=%s)",
+                self.feature_key, self.guild_id, self.clone_id,
+            )
+            await interaction.followup.send(
+                "Something went wrong turning that on — try again in a moment, "
+                "or use the matching slash command directly.", ephemeral=True,
+            )
+            return
         if success is None:
             return  # handler already responded itself (e.g. opened a modal)
 
