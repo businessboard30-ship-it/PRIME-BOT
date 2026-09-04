@@ -800,6 +800,21 @@ class LibraryBrowseButton(discord.ui.DynamicItem[discord.ui.Button], template=_s
         return cls(guild_id, clone_id)
 
     async def callback(self, interaction: discord.Interaction):
+        # Check VC membership BEFORE showing the picker at all — without
+        # this, a user not in a VC gets handed a dropdown that's a dead
+        # end: they pick a track, get "not in a voice channel", then have
+        # to press Browse & Play again from scratch even after joining a
+        # VC (the old dropdown doesn't get retried automatically). Failing
+        # fast here means they only ever see a picker that can actually
+        # play something.
+        user_voice = interaction.user.voice
+        if not user_voice or not user_voice.channel:
+            await interaction.response.send_message(
+                "🔊 Join a voice channel first, then press **▶️ Browse & Play** again to pick something to play.",
+                ephemeral=True,
+            )
+            return
+
         entries = await db.list_library_entries(self.guild_id, clone_id=self.clone_id, limit=25)
         if not entries:
             await interaction.response.send_message("The library's empty — upload something first with **📤 Upload a File**.", ephemeral=True)
@@ -871,7 +886,14 @@ class LibraryPlaySelect(discord.ui.Select):
             return
 
         if reason:
-            await interaction.followup.send(f"🎵 Not queued: {reason}.", ephemeral=True)
+            if "voice channel" in reason.lower():
+                # Same dropdown, same selected entry — this select isn't a
+                # one-shot ephemeral, it stays interactive for the message's
+                # 120s lifetime, so re-picking the SAME item after joining a
+                # VC works without needing to press Browse & Play again.
+                await interaction.followup.send(f"🔊 Not queued: {reason} — join one, then pick it from the dropdown above again.", ephemeral=True)
+            else:
+                await interaction.followup.send(f"🎵 Not queued: {reason}.", ephemeral=True)
             return
         await interaction.followup.send(f"✅ Queued **{entry['title']}** — see the Now Playing panel.", ephemeral=True)
 
