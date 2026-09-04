@@ -7,14 +7,19 @@ archived to.
 
 /set-storage-channel is guild-owner-only (DISCORD_CLONE_ADMIN_IDS bypass,
 same convention as media_connect.py's _require_subscription). Once set:
-  - Attachments matching MEDIA_EXTENSIONS posted anywhere in the guild are
-    re-uploaded into the storage channel by the on_message listener below.
+  - Attachments matching MEDIA_EXTENSIONS posted in the downloadhub request
+    channel (discord_download_config.channel_id) are re-uploaded into the
+    storage channel by the on_message listener below. Attachments posted
+    anywhere else (e.g. a casual image in #chatroom) are left alone — this
+    channel is a music/media archive, not a guild-wide attachment dragnet.
   - external_tools.py's /download command sends its result straight to the
     storage channel instead of the invoking channel (see that file).
 
 If no storage channel is configured yet, both paths fall back to the old
 behavior (post/stay in the original channel) — see _get_channel below —
 so nothing silently breaks for guilds that haven't run the setup command.
+If no downloadhub channel is configured either, auto-archiving falls back
+to guild-wide (old behavior) rather than never triggering.
 """
 
 import logging
@@ -101,6 +106,18 @@ class MediaStorageCog(GuildOnlyCog):
             return
         if message.channel.id == storage_channel_id:
             # Already posted directly in the storage channel — nothing to move.
+            return
+
+        # Scope auto-archiving to the designated downloadhub request
+        # channel only — otherwise ANY image/media attachment posted
+        # anywhere in the guild (a casual photo in #chatroom, a meme, etc.)
+        # gets swept into the storage channel, which is surprising and not
+        # what "media storage" is meant to do. If no downloadhub channel is
+        # configured yet, fall back to the old guild-wide behavior so
+        # nothing silently breaks for servers that haven't set one up.
+        download_config = await db.get_download_config(message.guild.id, clone_id=clone_id)
+        downloadhub_channel_id = download_config.get("channel_id")
+        if downloadhub_channel_id and message.channel.id != downloadhub_channel_id:
             return
 
         # Cross-clone dedupe: if multiple clone bots are members of this
