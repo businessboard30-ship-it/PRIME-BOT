@@ -71,6 +71,7 @@ async def _enabled_feature_keys(guild_id: int, clone_id) -> set:
         ("tickets", lambda: db.get_ticket_config(guild_id, clone_id=clone_id), "panel_channel_id"),
         ("starboard", lambda: db.get_starboard_config(guild_id, clone_id=clone_id), "channel_id"),
         ("suggestions", lambda: db.get_suggestion_config(guild_id, clone_id=clone_id), "approved_log_channel_id"),
+        ("downloadhub", lambda: db.get_download_config(guild_id, clone_id=clone_id), "channel_id"),
     )
     for key, fetch, field in checks:
         try:
@@ -702,6 +703,31 @@ async def _welcome_preview_container(guild: discord.Guild, config: dict, owner: 
     return container, file
 
 
+async def _enable_downloadhub(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """Same auto-create-#downloads path as DownloadCreateChannelButton in
+    _views_download_wizard.py (that file's the source of truth for the
+    actual channel-creation + panel-posting logic — reused here rather
+    than duplicated so the two never drift apart). Only difference: if a
+    downloads channel/config already exists for this guild, this doesn't
+    touch it or create a second one — just points the owner at the
+    existing one, since re-running channel creation from a DM button
+    (unlike the explicit /setup downloadhub wizard) isn't something an
+    owner would expect to duplicate."""
+    existing = await db.get_download_config(guild.id, clone_id=clone_id)
+    existing_channel_id = existing.get("channel_id")
+    if existing_channel_id and guild.get_channel(existing_channel_id) is not None:
+        return True, f"Downloadhub is already set up in <#{existing_channel_id}>."
+
+    from discord_bot.cogs._views_download_wizard import _post_submit_panel
+    try:
+        channel = await guild.create_text_channel("downloads", reason="Set up via the join-DM Downloadhub button")
+    except discord.Forbidden:
+        return False, "I don't have permission to create channels here — create one and try `/setup downloadhub`."
+    await db.set_download_config(guild.id, clone_id=clone_id, channel_id=channel.id, channel_auto_created=True)
+    await _post_submit_panel(interaction, guild.id, clone_id, channel)
+    return True, f"Downloadhub is set up in {channel.mention} — members can submit music/video links or upload files there."
+
+
 async def _enable_channels(interaction: discord.Interaction, guild: discord.Guild, clone_id):
     """Unlike every other FEATURE_TOGGLES handler, this doesn't toggle
     anything itself — it responds directly (editing this same message into
@@ -850,6 +876,8 @@ FEATURE_TOGGLES = {
                   "Pin standout messages to a channel once they hit a star threshold."),
     "suggestions": ("Suggestions", "💡", _enable_suggestions, None,
                      "Let members submit ideas for staff and members to vote on."),
+    "downloadhub": ("Downloadhub", "📥", _enable_downloadhub, None,
+                     "Auto-creates a #downloads channel where members submit music/video links or upload files, with playback right in voice."),
 }
 
 # How many feature buttons show per page. Each feature now takes its own
