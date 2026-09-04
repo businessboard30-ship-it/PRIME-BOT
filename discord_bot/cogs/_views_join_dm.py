@@ -909,33 +909,32 @@ async def _enable_role_setup_wizard(interaction: discord.Interaction, guild: dis
 # can never drift out of sync or out of order the way two separately
 # maintained lists (embed fields vs. button keys) used to.
 FEATURE_TOGGLES = {
+    "rolesetup": ("Role setup", "🧩", _enable_role_setup_wizard, None,
+                  "Open the full self-role wizard — bulk-create preset roles and post a member panel."),
+    "channels": ("Create suggested channels", "📁", _enable_channels, None,
+                 "Create commonly-useful channels for this server in one tap."),
+    "downloadhub": ("Downloadhub", "📥", _enable_downloadhub, None,
+                     "Auto-creates a #downloads channel where members submit music/video links or upload files, with playback right in voice."),
     "welcome": ("Welcome messages", "👋", _enable_welcome, None,
                 "Greet new members automatically in a channel of your choice."),
     "automod": ("Auto-moderation", "🛡️", _enable_automod, _AutomodOptionsView,
                 "Filter spam, invite links, and mass-mention raids."),
+    "verification": ("Join verification", "🔐", _enable_verification, None,
+                      "Anti-raid gate — new members get an Unverified role until they pass a captcha or button click."),
     "reactionroles": ("Reaction roles", "🎭", _enable_reaction_roles, None,
                        "Let members self-assign roles by reacting to a message."),
     "leveling": ("Leveling / XP", "📈", _enable_leveling, _LevelingOptionsView,
                  "Reward active members with levels and roles over time."),
     "analytics": ("Server analytics", "📊", _enable_analytics, None,
-
                   "See member/activity stats and where to find more members."),
     "bump": ("Bump network", "📣", _enable_bump, None,
              "List your server for growth — I can even create the channel for you."),
-    "channels": ("Create suggested channels", "📁", _enable_channels, None,
-                 "Create commonly-useful channels for this server in one tap."),
     "tickets": ("Support tickets", "🎫", _enable_tickets, None,
                 "Let members open a private ticket channel with staff."),
     "starboard": ("Starboard", "⭐", _enable_starboard, None,
                   "Pin standout messages to a channel once they hit a star threshold."),
     "suggestions": ("Suggestions", "💡", _enable_suggestions, None,
                      "Let members submit ideas for staff and members to vote on."),
-    "downloadhub": ("Downloadhub", "📥", _enable_downloadhub, None,
-                     "Auto-creates a #downloads channel where members submit music/video links or upload files, with playback right in voice."),
-    "verification": ("Join verification", "🔐", _enable_verification, None,
-                      "Anti-raid gate — new members get an Unverified role until they pass a captcha or button click."),
-    "rolesetup": ("Role setup", "🧩", _enable_role_setup_wizard, None,
-                  "Open the full self-role wizard — bulk-create preset roles and post a member panel."),
 }
 
 # How many feature buttons show per page. Each feature now takes its own
