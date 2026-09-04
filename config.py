@@ -280,7 +280,7 @@ DISCORD_SUPPORT_SERVER_INVITE = os.getenv("DISCORD_SUPPORT_SERVER_INVITE", "http
 # Selar. No webhook wired up yet, so paying doesn't auto-activate — an
 # admin runs /activate-pro after confirming the payment.
 MUSIC_PRO_PRICE_LABEL = os.getenv("MUSIC_PRO_PRICE_LABEL", "$4.99")
-MUSIC_PRO_PAYMENT_URL = os.getenv("MUSIC_PRO_PAYMENT_URL", "https://selar.com/m2o23h84z8")
+MUSIC_PRO_PAYMENT_URL = os.getenv("MUSIC_PRO_PAYMENT_URL", "https://selar.com/61l8115885")
 MUSIC_FREE_DAILY_LISTENS = int(os.getenv("MUSIC_FREE_DAILY_LISTENS", "10"))
 MUSIC_FREE_DAILY_UPLOADS = int(os.getenv("MUSIC_FREE_DAILY_UPLOADS", "3"))
 MUSIC_FREE_DAILY_DOWNLOADS = int(os.getenv("MUSIC_FREE_DAILY_DOWNLOADS", "3"))
