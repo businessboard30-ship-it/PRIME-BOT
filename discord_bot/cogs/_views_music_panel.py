@@ -38,6 +38,23 @@ LOOP_LABELS = {"off": "loop off", "track": "loop track", "queue": "loop queue"}
 LOOP_ORDER = ["off", "track", "queue"]
 
 
+def _browse_button(guild_id: int, clone_id):
+    """Reuses LibraryBrowseButton as-is from _views_download_wizard.py
+    (same DynamicItem, same custom_id shape, already registered globally
+    in setup_hook) rather than a second copy — so tapping it here works
+    identically to tapping it on the main Submit-a-Download panel,
+    without duplicating its VC-membership check / library picker logic.
+    This is the actual ask: put Browse & Play directly on the Now
+    Playing panel (which already gets mirrored into VC chat AND the
+    downloads channel — see music.py's _post_or_refresh_voice_panel) so
+    picking another track doesn't mean leaving this panel to go find the
+    original submit panel again. Local import avoids a module-load-order
+    dependency between these two files for what's otherwise a one-line
+    button lookup."""
+    from discord_bot.cogs._views_download_wizard import LibraryBrowseButton
+    return LibraryBrowseButton(guild_id, clone_id)
+
+
 def _id_pattern(field: str) -> str:
     return rf"^musicpanel_{field}:(\d+):(-|\d+)$"
 
@@ -79,6 +96,9 @@ def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> disco
     if not state.get("current"):
         items.append(discord.ui.TextDisplay("### 🎵 Now playing\nNothing queued right now. Use **/setup music** to queue a link."))
         container.add_item(items[0])
+        browse_row = discord.ui.ActionRow()
+        browse_row.add_item(_browse_button(guild_id, clone_id))
+        container.add_item(browse_row)
         pro_row = discord.ui.ActionRow()
         pro_row.add_item(discord.ui.Button(
             label=f"Upgrade to Pro — {app_config.MUSIC_PRO_PRICE_LABEL}", emoji="⭐",
@@ -123,6 +143,7 @@ def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> disco
     secondary_row.add_item(MusicShuffleButton(guild_id, clone_id))
     secondary_row.add_item(MusicQueueButton(guild_id, clone_id))
     secondary_row.add_item(MusicLoopButton(guild_id, clone_id, mode=state.get("loop_mode", "off")))
+    secondary_row.add_item(_browse_button(guild_id, clone_id))
     items.append(secondary_row)
 
     volume_row = discord.ui.ActionRow()
