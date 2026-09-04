@@ -561,7 +561,20 @@ class SetupChannelsCog(GuildOnlyCog):
                 return
             await interaction.response.defer()
             clone_id = _clone_id_of(interaction.client)
-            channel = await self._create_one(guild, clone_id, key)
+            try:
+                channel = await self._create_one(guild, clone_id, key)
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "I don't have permission to create channels here — grant me **Manage Channels** and try again.",
+                    ephemeral=True,
+                )
+                return
+            except discord.HTTPException:
+                logger.exception("setup_channels create failed for guild %s key %s", guild_id, key)
+                await interaction.followup.send(
+                    "Something went wrong creating that channel — try again in a moment.", ephemeral=True,
+                )
+                return
             missing = await scan_missing_channels(guild, clone_id)
             note = f"\n\n✅ Created {channel.mention}." if channel else "\n\nThat one was already handled."
             if is_v2_message(interaction):
@@ -588,8 +601,21 @@ class SetupChannelsCog(GuildOnlyCog):
             # own re-verify contract rather than assuming the list is
             # still accurate after the first change.
             missing = await scan_missing_channels(guild, clone_id)
+            forbidden = False
             for entry in missing:
-                channel = await self._create_one(guild, clone_id, entry["key"])
+                try:
+                    channel = await self._create_one(guild, clone_id, entry["key"])
+                except discord.Forbidden:
+                    # Stop here rather than raising past the loop: whatever
+                    # got created before the permission ran out (or was
+                    # revoked mid-loop) stays created, and the note below
+                    # still reports it instead of losing that progress to
+                    # an unhandled exception.
+                    forbidden = True
+                    break
+                except discord.HTTPException:
+                    logger.exception("setup_channels create-all failed for guild %s key %s", guild_id, entry["key"])
+                    continue
                 if channel:
                     created.append(channel)
             remaining = await scan_missing_channels(guild, clone_id)
@@ -597,6 +623,9 @@ class SetupChannelsCog(GuildOnlyCog):
             if created:
                 mentions = ", ".join(c.mention for c in created)
                 note = f"\n\n✅ Created: {mentions}"
+            if forbidden:
+                note += ("\n\n⚠️ Stopped early — I don't have permission to create channels here. "
+                         "Grant me **Manage Channels** and run this again for the rest.")
             # Create All just wiped out everything on every page, so page 0
             # is the only page guaranteed to still make sense — clamping to
             # the tapped page here could easily land past the new (much
