@@ -1005,13 +1005,19 @@ class LibraryPlaySelect(discord.ui.Select):
         config = await db.get_download_config(self.guild_id, clone_id=self.clone_id)
         channel_id = config.get("channel_id")
         post_channel = interaction.guild.get_channel(int(channel_id)) if channel_id else None
-        if post_channel is None:
+        fell_back = post_channel is None
+        if fell_back:
             # Configured channel_id is stale (deleted/recreated/no longer
             # visible) or was never set — fall back to wherever this
             # interaction is actually happening rather than crashing on a
-            # None fallback_channel downstream. Self-heals the stored
-            # config below so this doesn't keep happening every time.
+            # None fallback_channel downstream. Does NOT persist this back
+            # to config (see note near the old self-heal below) — an admin
+            # needs to run /setup downloadhub to fix it on purpose.
             post_channel = interaction.channel
+            logger.warning(
+                f"[v0] downloadhub channel not configured/resolvable for guild {self.guild_id} "
+                f"(stored channel_id={channel_id!r}) — falling back to #{post_channel} for this request only."
+            )
 
         reason = await music_cog.queue_direct_url_for_playback(
             interaction.guild, interaction.user, stream_url, entry["title"], self.clone_id, post_channel,
@@ -1039,7 +1045,17 @@ class LibraryPlaySelect(discord.ui.Select):
         # but never overwrite the owner's stored config without an
         # explicit /setup downloadhub run.
 
-        await interaction.followup.send(f"✅ Queued **{entry['title']}** — see the Now Playing panel.", ephemeral=True)
+        confirmation = f"✅ Queued **{entry['title']}** — see the Now Playing panel."
+        if fell_back and (
+            interaction.user.id in app_config.DISCORD_CLONE_ADMIN_IDS
+            or interaction.user.guild_permissions.manage_channels
+        ):
+            confirmation += (
+                "\n\n⚠️ Heads up: this server's downloadhub channel isn't set (or the "
+                "configured one no longer exists), so this posted in the channel you "
+                "used instead. Run `/setup downloadhub` to pick one on purpose."
+            )
+        await interaction.followup.send(confirmation, ephemeral=True)
 
 
 DYNAMIC_ITEMS = (
