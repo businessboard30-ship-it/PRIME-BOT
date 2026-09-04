@@ -85,8 +85,28 @@ YDL_BASE_OPTS = {
 # Each candidate is progressively looser.
 FORMAT_CANDIDATES = ["bestaudio[ext=m4a]/bestaudio/best", "bestaudio*/best*", "best"]
 
-FFMPEG_BEFORE_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-FFMPEG_OPTIONS = "-vn"
+# -reconnect*: survive brief network blips on the input side without
+# killing the whole stream.
+#
+# -nostdin: ffmpeg otherwise tries to read stdin for interactive prompts,
+# which can hang the subprocess in some deploy environments — harmless to
+# always set.
+FFMPEG_BEFORE_OPTIONS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
+# -vn: drop any video stream (some "audio" links are actually video
+# containers with an audio track — we only want the audio).
+#
+# -af aresample=async=1:min_hard_comp=0.100000:first_pts=0: this is the
+# actual fix for "playback sounds sped up/slowed down/edited" — a live or
+# re-muxed stream's audio timestamps can drift slightly out of sync with
+# real time (adaptive bitrate switches, minor network jitter, etc.).
+# Without correction ffmpeg just plays samples back-to-back regardless of
+# drift, which is exactly what produces that warbly pitch-bent "chipmunk"
+# effect as it silently speeds up to catch up or slows down to wait.
+# aresample's async mode actively stretches/compresses silence to keep
+# the output locked to real wall-clock time instead of drifting, which is
+# the standard fix documented for discord.py music bots hitting this
+# exact symptom.
+FFMPEG_OPTIONS = "-vn -af aresample=async=1:min_hard_comp=0.100000:first_pts=0"
 
 
 def _clone_id_of(bot: commands.Bot):
