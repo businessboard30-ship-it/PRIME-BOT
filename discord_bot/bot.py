@@ -152,6 +152,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.moderation")
         await self.load_extension("discord_bot.cogs.automod")
         await self.load_extension("discord_bot.cogs.reaction_roles")
+        await self.load_extension("discord_bot.cogs.role_setup")
         await self.load_extension("discord_bot.cogs.leveling")
         await self.load_extension("discord_bot.cogs.music")
         await self.load_extension("discord_bot.cogs.voice_xp")
