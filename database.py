@@ -1646,6 +1646,23 @@ class Database:
             ON discord_media_storage_config (guild_id, COALESCE(clone_id, -1))
         """)
 
+        # discord_media_archive_claims: cross-clone dedupe for media_storage.py.
+        # When several clone bots share a guild, each one independently
+        # receives the same on_message event for an uploaded attachment.
+        # Whichever clone's INSERT wins this unique constraint on message_id
+        # "claims" the archive job; the rest see the conflict and skip it.
+        # guild_id is stored alongside for easy cleanup/inspection but isn't
+        # part of the uniqueness — message IDs are already globally unique
+        # snowflakes, so message_id alone is enough to dedupe on.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_media_archive_claims (
+                message_id BIGINT PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
         # discord_pro_guilds: one row per (guild, clone) that's paid for
         # the Pro upgrade — $4.99 one-time via Selar, per SERVER (not per
         # member — anyone in the server can pay and it unlocks unlimited
@@ -5846,6 +5863,26 @@ class Database:
                 """,
                 guild_id, clone_id, channel_id, set_by_user_id,
             )
+
+    async def claim_media_message_for_archiving(self, message_id: int, guild_id: int,
+                                                  clone_id: Optional[int] = None) -> bool:
+        """Cross-clone dedupe claim for media_storage.py's on_message archiver.
+        Every clone bot in a shared guild sees the same message event; only
+        the clone whose INSERT wins this race actually archives it. Returns
+        True if this call claimed the message (caller should proceed),
+        False if another clone already claimed it (caller should skip)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_media_archive_claims (message_id, guild_id, clone_id)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (message_id) DO NOTHING
+                RETURNING message_id
+                """,
+                message_id, guild_id, clone_id,
+            )
+            return row is not None
 
     # --- Pro upgrade ($4.99/server, one-time, via Selar) -------------------
 
