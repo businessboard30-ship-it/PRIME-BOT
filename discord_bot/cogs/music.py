@@ -46,6 +46,7 @@ disconnects after 60s of solo instead of sitting there indefinitely.
 import asyncio
 import logging
 import random
+import subprocess
 import time
 
 import discord
@@ -207,6 +208,33 @@ async def resolve_track(url: str, queued_by_id: int, voice_channel_id: int) -> d
     raw["voice_channel_id"] = voice_channel_id
     raw["source_url"] = url
     return raw
+
+
+def _probe_duration_seconds(url: str) -> float:
+    """Blocking — must be run via asyncio.to_thread, same reasoning as
+    _extract_stream_info above. Used for direct-upload URLs (Discord CDN
+    attachment links), which — unlike yt-dlp-resolved tracks — never come
+    with duration metadata attached, so the Now Playing panel always
+    showed 0:00 total for anything queued via Upload a File / Browse &
+    Play. ffprobe can read duration straight off a remote URL without
+    downloading the whole file first. Returns 0.0 on any failure (missing
+    ffprobe, network hiccup, unreadable file) — same "never block playback
+    over a cosmetic detail" spirit as the rest of this module; the track
+    still queues and plays, it just won't show a total time."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                url,
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        return max(0.0, float(result.stdout.strip()))
+    except (subprocess.TimeoutExpired, ValueError, OSError) as e:
+        logger.warning(f"[v0] ffprobe duration lookup failed for upload URL: {e!r}")
+        return 0.0
 
 
 class GuildMusicState:
@@ -389,7 +417,7 @@ class MusicCog(GuildOnlyCog):
             "stream_url": stream_url,
             "title": title,
             "uploader": member.display_name,
-            "duration_seconds": 0,
+            "duration_seconds": await asyncio.to_thread(_probe_duration_seconds, stream_url),
             "thumbnail": None,
             "queued_by": member.id,
             "voice_channel_id": voice_channel.id,
