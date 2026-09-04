@@ -380,19 +380,48 @@ class DownloadSubmitButton(discord.ui.DynamicItem[discord.ui.Button], template=_
 async def _resolve_storage_target(interaction: discord.Interaction, fallback_channel):
     """Every media post from this wizard (link submission or file upload)
     goes to the owner-configured media storage channel (see
-    media_storage.py / /set-storage-channel) instead of the downloads
-    channel, once one's been set. Falls back to the old downloads-channel
-    behavior if the owner hasn't configured a storage channel yet, so
-    nothing silently breaks for servers that haven't set it up."""
-    if interaction.guild is not None:
-        clone_id = _clone_id_of(interaction.client)
-        config = await db.get_media_storage_config(interaction.guild.id, clone_id)
-        storage_channel_id = config.get("storage_channel_id")
-        if storage_channel_id:
-            storage_channel = interaction.guild.get_channel(storage_channel_id)
-            if storage_channel is not None:
-                return storage_channel
-    return fallback_channel
+    media_storage.py / /set-storage-channel), auto-creating one if the
+    owner hasn't set it up yet.
+
+    This used to fall back to fallback_channel (the downloads/request
+    channel itself) when no storage channel was configured — which meant
+    the raw file + a permanent "X uploaded by Y" post sat forever in the
+    same visible channel people submit from. Per the owner's explicit
+    instruction ("make sure delete whatever u send for music and more"),
+    that visible channel should never be the permanent home for a file:
+    auto-creating a dedicated (hidden-by-default) storage channel the
+    first time it's needed means the real archive always lives somewhere
+    separate, and nothing durable ever needs to be deleted out of the
+    request channel to keep it clean."""
+    if interaction.guild is None:
+        return fallback_channel
+    clone_id = _clone_id_of(interaction.client)
+    config = await db.get_media_storage_config(interaction.guild.id, clone_id)
+    storage_channel_id = config.get("storage_channel_id")
+    if storage_channel_id:
+        storage_channel = interaction.guild.get_channel(storage_channel_id)
+        if storage_channel is not None:
+            return storage_channel
+        # Configured channel was deleted — fall through and auto-create
+        # a fresh one rather than silently dumping files back into the
+        # visible request channel.
+
+    try:
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
+        }
+        storage_channel = await interaction.guild.create_text_channel(
+            "media-storage", overwrites=overwrites, reason="Auto-created media storage archive (no /set-storage-channel run yet)",
+        )
+        await db.set_media_storage_channel(interaction.guild.id, storage_channel.id, interaction.client.user.id, clone_id=clone_id)
+        return storage_channel
+    except discord.Forbidden:
+        logger.warning(f"[v0] Couldn't auto-create media-storage channel in guild {interaction.guild.id} — missing Manage Channels. Falling back to {fallback_channel.id}.")
+        return fallback_channel
+    except discord.HTTPException as e:
+        logger.warning(f"[v0] Failed to auto-create media-storage channel in guild {interaction.guild.id}: {e}")
+        return fallback_channel
 
 
 class DownloadLinkModal(discord.ui.Modal):
@@ -482,7 +511,7 @@ class DownloadLinkModal(discord.ui.Modal):
                 )
                 target = await _resolve_storage_target(interaction, channel)
                 try:
-                    await target.send(content=caption, file=discord.File(filepath, filename=result.get("filename", meta["filename"])))
+                    sent = await target.send(content=caption, file=discord.File(filepath, filename=result.get("filename", meta["filename"])))
                 except discord.Forbidden:
                     await interaction.followup.send(f"I fetched the file, but I don't have permission to post in {target.mention}.", ephemeral=True)
                     return
@@ -491,11 +520,35 @@ class DownloadLinkModal(discord.ui.Modal):
                     await interaction.followup.send("Discord rejected the upload — the file may still be too large.", ephemeral=True)
                     return
             finally:
+                # Local temp copy is never kept around — the storage
+                # channel post above (target.send) is the one durable
+                # copy, same "auto-delete the working file, keep the
+                # storage-channel post" contract as the upload flow.
                 if os.path.exists(filepath):
                     os.remove(filepath)
-            
+
             # Show the save confirmation first
             media_title = result.get('title', 'Media')
+
+            # Log to the library using the RE-UPLOADED message's own
+            # attachment URL — same pattern as DownloadUploadButton's
+            # _handle_upload. Without this, link submissions were posted
+            # to the storage channel fine but never showed up in
+            # Browse & Play, since only file uploads were being logged.
+            stream_url = sent.attachments[0].url if sent.attachments else None
+            if stream_url:
+                try:
+                    await db.add_library_entry(
+                        self.guild_id, self.clone_id, interaction.user.id, self.media_type, media_title, stream_url,
+                        channel_id=target.id, message_id=sent.id,
+                    )
+                except Exception:
+                    logger.error(
+                        f"[v0] add_library_entry failed for guild={self.guild_id} clone={self.clone_id} "
+                        f"title={media_title!r} — file WAS posted to {target.id} but NOT added to the library.",
+                        exc_info=True,
+                    )
+
             await interaction.followup.send(f"✅ Saved to {target.mention}.", ephemeral=True)
             
             # Then check if they're in a VC and show the play/queue choice
@@ -593,7 +646,7 @@ class DownloadLinkModal(discord.ui.Modal):
         try:
             file = discord.File(fp=io.BytesIO(data), filename=filename)
             note = f"\n⚠️ Heads up: this looked like `{content_type or 'unknown'}`, not {self.media_type} — posting anyway." if type_looks_off else ""
-            await target.send(content=f"📥 {meta['label']} submitted by {interaction.user.mention}{note}", file=file)
+            sent = await target.send(content=f"📥 {meta['label']} submitted by {interaction.user.mention}{note}", file=file)
         except discord.Forbidden:
             await interaction.followup.send(f"I fetched the file, but I don't have permission to post in {target.mention}.", ephemeral=True)
             return
@@ -601,6 +654,26 @@ class DownloadLinkModal(discord.ui.Modal):
             logger.warning(f"[v0] Upload failed for {url}: {e}")
             await interaction.followup.send("Discord rejected the upload — the file may still be too large or an unsupported type.", ephemeral=True)
             return
+
+        # Same library-logging step as the yt-dlp path above and as
+        # DownloadUploadButton — the raw bytes fetched above are never
+        # written to disk in the first place (in-memory BytesIO only), so
+        # there's nothing local left to clean up; target.send is the one
+        # durable copy, and this is what makes it show up in Browse & Play.
+        title = filename.rsplit(".", 1)[0] if "." in filename else filename
+        stream_url = sent.attachments[0].url if sent.attachments else None
+        if stream_url:
+            try:
+                await db.add_library_entry(
+                    self.guild_id, self.clone_id, interaction.user.id, self.media_type, title, stream_url,
+                    channel_id=target.id, message_id=sent.id,
+                )
+            except Exception:
+                logger.error(
+                    f"[v0] add_library_entry failed for guild={self.guild_id} clone={self.clone_id} "
+                    f"title={title!r} — file WAS posted to {target.id} but NOT added to the library.",
+                    exc_info=True,
+                )
 
         # Show the save confirmation first
         await interaction.followup.send(f"✅ Saved to {target.mention}.", ephemeral=True)
@@ -886,7 +959,7 @@ class LibraryPlaySelect(discord.ui.Select):
             return
 
         if reason:
-            if "voice channel" in reason.lower():
+            if "voice channel" in reason.lower() or "voice connection" in reason.lower():
                 # Same dropdown, same selected entry — this select isn't a
                 # one-shot ephemeral, it stays interactive for the message's
                 # 120s lifetime, so re-picking the SAME item after joining a
