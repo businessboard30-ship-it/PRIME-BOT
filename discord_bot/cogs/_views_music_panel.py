@@ -32,6 +32,8 @@ import re
 
 import discord
 
+import config as app_config
+
 LOOP_LABELS = {"off": "loop off", "track": "loop track", "queue": "loop queue"}
 LOOP_ORDER = ["off", "track", "queue"]
 
@@ -77,6 +79,12 @@ def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> disco
     if not state.get("current"):
         items.append(discord.ui.TextDisplay("### 🎵 Now playing\nNothing queued right now. Use **/setup music** to queue a link."))
         container.add_item(items[0])
+        pro_row = discord.ui.ActionRow()
+        pro_row.add_item(discord.ui.Button(
+            label=f"Upgrade to Pro — {app_config.MUSIC_PRO_PRICE_LABEL}", emoji="⭐",
+            style=discord.ButtonStyle.link, url=app_config.music_pro_payment_url_for_guild(guild_id),
+        ))
+        container.add_item(pro_row)
         view.add_item(container)
         return view
 
@@ -121,6 +129,21 @@ def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> disco
     volume_row.add_item(MusicVolumeButton(guild_id, clone_id, delta=-10))
     volume_row.add_item(MusicVolumeButton(guild_id, clone_id, delta=10))
     items.append(volume_row)
+
+    # Link button — no custom_id/callback needed, Discord opens the URL
+    # directly. Shown unconditionally (not hidden once a guild is already
+    # Pro) since build_panel_view is a plain sync function and threading
+    # an async DB lookup for is_guild_pro through every one of its many
+    # call sites wasn't worth it just to hide this for servers already on
+    # Pro. The guild ID is baked into the URL (fullname=Server-<id>) so
+    # payments can be matched back to a server — see
+    # music_pro_payment_url_for_guild in config.py.
+    pro_row = discord.ui.ActionRow()
+    pro_row.add_item(discord.ui.Button(
+        label=f"Upgrade to Pro — {app_config.MUSIC_PRO_PRICE_LABEL}", emoji="⭐",
+        style=discord.ButtonStyle.link, url=app_config.music_pro_payment_url_for_guild(guild_id),
+    ))
+    items.append(pro_row)
 
     for item in items:
         container.add_item(item)
