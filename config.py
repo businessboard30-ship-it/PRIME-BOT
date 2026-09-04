@@ -289,16 +289,18 @@ MUSIC_FREE_DAILY_DOWNLOADS = int(os.getenv("MUSIC_FREE_DAILY_DOWNLOADS", "3"))
 def music_pro_payment_url_for_guild(guild_id: int) -> str:
     """Selar has no generic "reference"/"metadata" checkout field — the
     only prefillable fields it documents are email/fullname/mobile/
-    address (https://selar.co/... ?email=...&fullname=...). So we stuff
-    the guild ID into `fullname` as a lookup key: when a payment comes in
-    on the Selar dashboard, the buyer's "full name" will read
-    "Server-<guild_id>", telling you exactly which server to run
-    /activate-pro in — without that, every payment would look identical
-    and you'd have no way to match one to a server. The buyer can still
-    overtype it in the checkout form before paying if they want to, this
-    is just a prefill/default."""
-    sep = "&" if "?" in MUSIC_PRO_PAYMENT_URL else "?"
-    return f"{MUSIC_PRO_PAYMENT_URL}{sep}fullname=Server-{guild_id}"
+    address (https://selar.co/... ?email=...&fullname=...). This
+    previously stuffed the guild ID into `fullname` as a lookup key
+    ("Server-<guild_id>") so a payment on the Selar dashboard could be
+    matched back to a server. Selar's checkout validates fullname as a
+    real first+last name and REJECTS that synthetic value outright,
+    blocking checkout entirely — worse than not prefilling anything, so
+    this no longer prefills fullname. The guild ID is instead appended
+    as a visible URL fragment the buyer can see and copy into the name
+    field themselves if they want to help you match the payment; it
+    isn't submitted as form data so Selar can't reject it."""
+    return f"{MUSIC_PRO_PAYMENT_URL}#server-{guild_id}"
+
 
 
 # --- Owner-server autopost (feature broadcast) auto-enable -------------------
