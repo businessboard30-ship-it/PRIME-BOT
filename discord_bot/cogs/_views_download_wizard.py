@@ -983,7 +983,14 @@ class LibraryPlaySelect(discord.ui.Select):
 
         config = await db.get_download_config(self.guild_id, clone_id=self.clone_id)
         channel_id = config.get("channel_id")
-        post_channel = interaction.guild.get_channel(int(channel_id)) if channel_id else interaction.channel
+        post_channel = interaction.guild.get_channel(int(channel_id)) if channel_id else None
+        if post_channel is None:
+            # Configured channel_id is stale (deleted/recreated/no longer
+            # visible) or was never set — fall back to wherever this
+            # interaction is actually happening rather than crashing on a
+            # None fallback_channel downstream. Self-heals the stored
+            # config below so this doesn't keep happening every time.
+            post_channel = interaction.channel
 
         reason = await music_cog.queue_direct_url_for_playback(
             interaction.guild, interaction.user, stream_url, entry["title"], self.clone_id, post_channel,
@@ -999,6 +1006,16 @@ class LibraryPlaySelect(discord.ui.Select):
             else:
                 await interaction.followup.send(f"🎵 Not queued: {reason}.", ephemeral=True)
             return
+
+        # Self-heal: if the stored downloadhub channel_id didn't resolve
+        # (or was never set) and we fell back to post_channel above, point
+        # the config at wherever it actually landed so the next person's
+        # request doesn't hit the same stale-channel fallback again. Only
+        # updates when it's actually different — avoids a pointless write
+        # on the common case where config was already correct.
+        if int(channel_id or 0) != post_channel.id:
+            await db.set_download_config(self.guild_id, clone_id=self.clone_id, channel_id=post_channel.id)
+
         await interaction.followup.send(f"✅ Queued **{entry['title']}** — see the Now Playing panel.", ephemeral=True)
 
 
