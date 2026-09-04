@@ -875,20 +875,22 @@ async def _enable_suggestions(interaction: discord.Interaction, guild: discord.G
 
 
 async def _enable_verification(interaction: discord.Interaction, guild: discord.Guild, clone_id):
-    """Opens the real /setupverification wizard (verification.WizardView)
-    as an ephemeral follow-up — same wizard an admin gets running the
-    slash command by hand (mode/channel/unverified-role/verified-role
-    pickers + Lock down & enable), reused directly rather than copied, so
-    any future change to that flow is picked up here automatically.
-    Doesn't touch the join-DM message itself — the verification wizard is
-    self-contained in its own ephemeral message — so this returns
-    None/None rather than True: nothing is actually enabled yet until the
-    admin finishes the wizard and hits Lock down & enable, so the "Turn
-    on" button shouldn't flip to a misleading "On: ..." state here."""
-    from discord_bot.cogs.verification import WizardView
-    current = await db.get_verification_config(guild.id, clone_id=clone_id)
-    wizard = WizardView(interaction.user.id, current)
-    await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+    """Unlike rolesetup/leveling's wizards, this one can't just open as an
+    ephemeral follow-up here: WizardView's channel/unverified-role/
+    verified-role pickers are native discord.ui.ChannelSelect/RoleSelect
+    components, which only resolve options against a guild — and this
+    button (see _FeatureToggleButton.callback) is only ever clicked from
+    a DM, where interaction.guild is None. Posting the wizard here would
+    render those pickers with nothing to choose from. So instead of
+    opening it in place like rolesetup does, point the admin at running
+    /setupverification in the server itself, where the pickers actually
+    have guild data to draw from. Returns None/None: nothing is enabled
+    yet, so the "Turn on" button shouldn't flip state."""
+    await interaction.followup.send(
+        "Join verification needs channel and role pickers that only work inside the server "
+        f"— head to **{guild.name}** and run `/setupverification` there to set it up.",
+        ephemeral=True,
+    )
     return None, None
 
 
@@ -927,16 +929,12 @@ async def _enable_role_setup_wizard(interaction: discord.Interaction, guild: dis
 # can never drift out of sync or out of order the way two separately
 # maintained lists (embed fields vs. button keys) used to.
 FEATURE_TOGGLES = {
-    "rolesetup": ("Role setup", "🧩", _enable_role_setup_wizard, None,
-                  "Open the full self-role wizard — bulk-create preset roles and post a member panel."),
+    "welcome": ("Welcome messages", "👋", _enable_welcome, None,
+                "Greet new members automatically in a channel of your choice."),
     "channels": ("Create suggested channels", "📁", _enable_channels, None,
                  "Create commonly-useful channels for this server in one tap."),
     "downloadhub": ("Downloadhub", "📥", _enable_downloadhub, None,
                      "Auto-creates a #downloads channel where members submit music/video links or upload files, with playback right in voice."),
-    "welcome": ("Welcome messages", "👋", _enable_welcome, None,
-                "Greet new members automatically in a channel of your choice."),
-    "automod": ("Auto-moderation", "🛡️", _enable_automod, _AutomodOptionsView,
-                "Filter spam, invite links, and mass-mention raids."),
     "verification": ("Join verification", "🔐", _enable_verification, None,
                       "Anti-raid gate — new members get an Unverified role until they pass a captcha or button click."),
     "reactionroles": ("Reaction roles", "🎭", _enable_reaction_roles, None,
@@ -951,8 +949,12 @@ FEATURE_TOGGLES = {
                 "Let members open a private ticket channel with staff."),
     "starboard": ("Starboard", "⭐", _enable_starboard, None,
                   "Pin standout messages to a channel once they hit a star threshold."),
+    "rolesetup": ("Role setup", "🧩", _enable_role_setup_wizard, None,
+                  "Open the full self-role wizard — bulk-create preset roles and post a member panel."),
     "suggestions": ("Suggestions", "💡", _enable_suggestions, None,
                      "Let members submit ideas for staff and members to vote on."),
+    "automod": ("Auto-moderation", "🛡️", _enable_automod, _AutomodOptionsView,
+                "Filter spam, invite links, and mass-mention raids."),
 }
 
 # How many feature buttons show per page. Each feature now takes its own
