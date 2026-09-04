@@ -453,7 +453,7 @@ class AnimeBotDiscord(commands.Bot):
             feature_keys = [
                 "welcome", "automod", "reactionroles", "leveling",
                 "analytics", "bump", "channels", "tickets",
-                "starboard", "suggestions",
+                "starboard", "suggestions", "downloadhub",
             ]
             record_quickstart_sent = True
 
