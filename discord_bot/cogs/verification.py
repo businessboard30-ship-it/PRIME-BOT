@@ -88,6 +88,31 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         wizard = self.wizard
+
+        # Guard against double-taps: a rapid second click can land before the
+        # first one has finished creating the role and re-rendered the view.
+        if wizard._creating_role:
+            await interaction.response.send_message(
+                "Already creating the role — one sec, don't tap again.", ephemeral=True
+            )
+            return
+
+        # If we already auto-created a role earlier in this session, reuse it
+        # instead of spawning a duplicate "Unverified" role.
+        if wizard.auto_created_role_id:
+            existing = interaction.guild.get_role(wizard.auto_created_role_id)
+            if existing is not None:
+                wizard.unverified_role_id = existing.id
+                await interaction.response.send_message(
+                    f"Already created {existing.mention} earlier — reusing it instead of making a duplicate.",
+                    ephemeral=True,
+                )
+                return
+            # The previously created role was deleted out-of-band; fall
+            # through and create a fresh one.
+            wizard.auto_created_role_id = None
+
+        wizard._creating_role = True
         guild = interaction.guild
         bot_member = guild.me
 
@@ -98,6 +123,7 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
                 reason=f"Verification setup by {interaction.user} (auto-created)",
             )
         except discord.Forbidden:
+            wizard._creating_role = False
             await interaction.response.send_message(
                 "I don't have permission to create roles here — grant me **Manage Roles**, "
                 "or pick an existing role from the dropdown instead.",
@@ -105,6 +131,7 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
             )
             return
         except discord.HTTPException as e:
+            wizard._creating_role = False
             await interaction.response.send_message(f"Couldn't create the role: {e}", ephemeral=True)
             return
 
@@ -122,7 +149,13 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
             )
 
         wizard.unverified_role_id = role.id
+        wizard.auto_created_role_id = role.id
+        wizard._creating_role = False
         await wizard.refresh(interaction)
+        await interaction.followup.send(
+            f"✅ Created {role.mention} and selected it as your Unverified role.",
+            ephemeral=True,
+        )
 
 
 class VerifiedRoleSelect(discord.ui.RoleSelect):
@@ -208,6 +241,8 @@ class WizardView(discord.ui.View):
         self.channel_id = current.get("channel_id")
         self.unverified_role_id = current.get("unverified_role_id")
         self.verified_role_id = current.get("verified_role_id")
+        self.auto_created_role_id = None
+        self._creating_role = False
         self.add_item(ModeSelect(self))
         self.add_item(ChannelSelect(self))
         self.add_item(UnverifiedRoleSelect(self))
