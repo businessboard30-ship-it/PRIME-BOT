@@ -412,19 +412,40 @@ class WelcomeCog(GuildOnlyCog):
         try:
             clone_id = getattr(self.bot, "clone_id", None)
             config = await db.get_welcome_config(guild.id, clone_id=clone_id)
-            view = build_wizard_view(guild.id, clone_id, None, config)
-            message = await channel.send(
-                content=(
-                    f"👋 Thanks for adding me to **{guild.name}**! Let's start with this first — "
-                    f"set up your welcome cards below (anyone with **Manage Server** can use this):"
-                ),
-                view=view,
+            greeting = (
+                f"👋 Thanks for adding me to **{guild.name}**! Let's start with this first — "
+                f"set up your welcome cards below (anyone with **Manage Server** can use this):"
             )
+            view = build_wizard_view(guild.id, clone_id, None, config, greeting=greeting)
+            # NOTE: LayoutView (Components V2) rejects content= alongside
+            # view= — the greeting text above is rendered inside the view
+            # itself instead. See build_wizard_view's greeting param.
+            message = await channel.send(view=view)
             await db.set_welcome_wizard_pointer(guild.id, message.channel.id, message.id, None, clone_id=clone_id)
         except (discord.HTTPException, discord.Forbidden) as e:
             logger.info(f"[v0] Auto-posted setup wizard skipped for guild {guild.id}: {e}")
         except Exception as e:
             logger.error(f"[v0] Auto-posted setup wizard failed for guild {guild.id}: {e}")
+
+    async def build_join_notice_field(self, guild: discord.Guild, *, clone_id=None):
+        """Returns (title, body) for the combined on-join DM (see bot.py's
+        _send_combined_owner_join_dm), or None if this notice has already
+        been sent for this guild. One-time-ever, guarded by
+        onboarding_dm_sent in the DB (not memory), same pattern as
+        ShipCog.build_join_notice_field."""
+        config = await db.get_welcome_config(guild.id, clone_id=clone_id)
+        if config.get("onboarding_dm_sent"):
+            return None
+
+        await db.set_welcome_config(guild.id, clone_id=clone_id, onboarding_dm_sent=True)
+
+        return (
+            "🖼️ Welcome cards + Ultra Pack",
+            "I already dropped a setup wizard in the server for welcome-card images. "
+            "Want the card background to be your own png/jpg instead of the built-in themes? "
+            f"That's the Ultra Pack (${bot_config.ULTRA_PACK_FEE_USD:g} one-time, whole server) — "
+            "run `/welcome buyultra` anytime.",
+        )
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
