@@ -39,7 +39,7 @@ QUICKSTART_FOLLOWUP_DAYS = 3
 QUICKSTART_ITEMS = [
     ("👋", "Welcome messages", "/welcome setup", "Greet new members automatically in a channel of your choice."),
     ("🛡️", "Auto-moderation", "/automod setup", "Filter spam, invite links, and mass-mention raids."),
-    ("🎭", "Reaction roles", "/reactionrole create", "Let members self-assign roles by reacting to a message."),
+    ("🎭", "Self-roles", "/role setup", "Bulk-create popular roles (Announcements, Giveaways, etc.) and post a self-assign panel in one wizard."),
     ("📈", "Leveling / XP", "/leveling setup", "Reward active members with levels and roles over time."),
     ("⬇️", "Media downloads", "/download", "Works right away, no setup — grab audio/video from a link."),
     ("📥", "Downloadhub", "/setup downloadhub", "Auto-creates a channel where members submit/upload music & video and play it in voice."),
