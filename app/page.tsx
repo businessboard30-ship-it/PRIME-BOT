@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 
 const DISCORD_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || ''
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
@@ -50,6 +51,9 @@ export default function Page() {
   return (
     <main className="pb-page">
       <div className="mx-auto max-w-3xl px-6">
+        <Suspense fallback={null}>
+          <ListingBanner />
+        </Suspense>
         <section className="pt-24 pb-16 sm:pt-32 sm:pb-20">
           <div className="grid gap-10 sm:grid-cols-[1.1fr_0.9fr] sm:items-center">
             <div>
@@ -110,6 +114,37 @@ export default function Page() {
         </section>
       </div>
     </main>
+  )
+}
+
+// Shown when /setup servers sent someone here with listing params attached
+// (see discord_bot/cogs/server_listing.py) — lets them see the landing page
+// first, then continue on to the actual submit form at /servers/submit
+// rather than dropping them straight into a form with no context for what
+// PRIME-BOT even is.
+function ListingBanner() {
+  const params = useSearchParams()
+  const guildId = params.get('guild_id')
+  const token = params.get('token')
+  if (!guildId || !token) return null
+
+  const submitUrl = `/servers/submit?${params.toString()}`
+
+  return (
+    <div
+      className="mt-6 flex flex-wrap items-center justify-between gap-4 rounded-lg border p-4"
+      style={{ borderColor: 'var(--pb-accent)', background: 'var(--pb-surface)' }}
+    >
+      <div>
+        <p className="text-sm font-medium">Your server's ready to list.</p>
+        <p className="mt-1 text-xs" style={{ color: 'var(--pb-text-faint)' }}>
+          This link is private to your server — continue to finish your listing.
+        </p>
+      </div>
+      <a href={submitUrl} className="pb-btn-primary shrink-0">
+        Continue to your listing
+      </a>
+    </div>
   )
 }
 
