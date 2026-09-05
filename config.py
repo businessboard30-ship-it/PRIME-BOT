@@ -138,7 +138,7 @@ DISCORD_DEV_GUILD_ID = int(os.getenv("DISCORD_DEV_GUILD_ID", "0") or "0")
 # Base URL of the Next.js site (app/ dir) this repo also deploys — used to
 # build the /automod dashboard link. Defaults to the marketing site's own
 # domain convention; override if the dashboard is deployed separately.
-DASHBOARD_BASE_URL = os.getenv("DASHBOARD_BASE_URL", "https://yourbot.example.com")
+DASHBOARD_BASE_URL = "https://dash-production-c237.up.railway.app"
 
 # --- Discover Players: category cap upgrade tiers -----------------------
 # (member_cap_from, member_cap_to, price_usd) — checked in order, so the
