@@ -186,6 +186,16 @@ SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI = os.getenv(
     f"{os.getenv('PUBLIC_BASE_URL', '').rstrip('/')}/api/server_listing_vote_oauth"
 )
 
+# Redirect URI for "Sign in with Discord" on the landing page (see
+# api/discord_login_oauth.py). Same Developer Portal application/client id/
+# secret as the three above, plus this scope needs "identify guilds" (not
+# just "identify") — add both to the redirect URI's scope list in the
+# Developer Portal if Discord complains about an invalid scope.
+DISCORD_LOGIN_OAUTH_REDIRECT_URI = os.getenv(
+    "DISCORD_LOGIN_OAUTH_REDIRECT_URI",
+    f"{os.getenv('PUBLIC_BASE_URL', '').rstrip('/')}/api/discord_login_oauth"
+)
+
 
 # --- Discord clone registration fee ------------------------------------------
 # /registerclone (discord_bot/cogs/clone_admin.py) charges this fee before a
