@@ -131,7 +131,12 @@ class ServerListingCog(GuildOnlyCog):
         token = await db.get_or_create_listing_token(
             guild.id, guild.name, icon_url, guild.member_count or 0, clone_id=clone_id,
         )
-        url = f"{DASHBOARD_BASE_URL}/servers/submit?guild_id={guild.id}&token={token}"
+        # Points at the landing page (with these params attached) rather than
+        # straight at /servers/submit, so first-time users land on "/" and see
+        # what PRIME-BOT is before being dropped into the listing form — the
+        # landing page reads these same params and shows a "continue to your
+        # listing" banner with a link on to /servers/submit (see app/page.tsx).
+        url = f"{DASHBOARD_BASE_URL}/?guild_id={guild.id}&token={token}"
         if clone_id is not None:
             url += f"&clone_id={clone_id}"
 
