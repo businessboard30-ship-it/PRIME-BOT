@@ -178,6 +178,14 @@ BUMP_OAUTH_REDIRECT_URI = os.getenv(
     f"{os.getenv('PUBLIC_BASE_URL', '').rstrip('/')}/api/bump_oauth"
 )
 
+# Separate Redirect URI for the /servers directory's vote sign-in (see
+# api/server_listing_vote_oauth.py). Same Developer Portal application/
+# client id/secret as the two above — just another registered redirect URI.
+SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI = os.getenv(
+    "SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI",
+    f"{os.getenv('PUBLIC_BASE_URL', '').rstrip('/')}/api/server_listing_vote_oauth"
+)
+
 
 # --- Discord clone registration fee ------------------------------------------
 # /registerclone (discord_bot/cogs/clone_admin.py) charges this fee before a
