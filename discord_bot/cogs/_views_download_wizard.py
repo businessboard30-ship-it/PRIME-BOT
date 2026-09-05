@@ -932,13 +932,17 @@ class LibraryBrowseButton(discord.ui.DynamicItem[discord.ui.Button], template=_s
             )
             return
 
+        # Defer before the DB call — list_library_entries can outlast
+        # Discord's 3s interaction window under load, which previously
+        # caused a 10062 Unknown interaction on send_message below.
+        await interaction.response.defer(ephemeral=True)
         entries = await db.list_library_entries(self.guild_id, clone_id=self.clone_id, limit=25)
         if not entries:
-            await interaction.response.send_message("The library's empty — upload something first with **📤 Upload a File**.", ephemeral=True)
+            await interaction.followup.send("The library's empty — upload something first with **📤 Upload a File**.", ephemeral=True)
             return
         view = discord.ui.View(timeout=120)
         view.add_item(LibraryPlaySelect(self.guild_id, self.clone_id, entries))
-        await interaction.response.send_message("Pick something to play in your voice channel:", view=view, ephemeral=True)
+        await interaction.followup.send("Pick something to play in your voice channel:", view=view, ephemeral=True)
 
 
 class LibraryPlaySelect(discord.ui.Select):
