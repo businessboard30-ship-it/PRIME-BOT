@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # time has passed (checked every SCHEDULER_INTERVAL, not on a per-guild
 # timer, so it also naturally covers guilds that were pending across a
 # bot restart).
-WIZARD_POST_DELAY = timedelta(hours=1)
+WIZARD_POST_DELAY = timedelta(days=3)
 SCHEDULER_INTERVAL_MINUTES = 5
 
 # Same order welcome.py's _suggested_channel uses for its own on-join
