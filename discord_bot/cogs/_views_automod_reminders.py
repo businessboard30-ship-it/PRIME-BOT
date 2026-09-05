@@ -117,7 +117,14 @@ class _ReminderLaterButton(discord.ui.DynamicItem[discord.ui.Button], template=_
 
     async def callback(self, interaction: discord.Interaction):
         await _apply_to_batch(self.batch_id, later=True)
-        await interaction.response.edit_message(view=_disabled_view(interaction))
+        # Guard against a duplicate INTERACTION_CREATE dispatch — see
+        # _ReminderDismissButton below for why this can fire twice.
+        if interaction.response.is_done():
+            return
+        try:
+            await interaction.response.edit_message(view=_disabled_view(interaction))
+        except discord.HTTPException:
+            return
         await interaction.followup.send("Got it — I'll check back in a couple days.", ephemeral=True)
 
 
@@ -135,7 +142,18 @@ class _ReminderDismissButton(discord.ui.DynamicItem[discord.ui.Button], template
 
     async def callback(self, interaction: discord.Interaction):
         await _apply_to_batch(self.batch_id, later=False)
-        await interaction.response.edit_message(view=_disabled_view(interaction))
+        # Guard against a duplicate INTERACTION_CREATE dispatch — Discord
+        # occasionally redelivers the same interaction during a gateway
+        # resume (observed in production logs alongside "WebSocket ...
+        # ratelimited" / repeated reconnects), which previously crashed
+        # this callback with "Interaction has already been acknowledged"
+        # on edit_message().
+        if interaction.response.is_done():
+            return
+        try:
+            await interaction.response.edit_message(view=_disabled_view(interaction))
+        except discord.HTTPException:
+            return
         await interaction.followup.send("Understood — I won't message you about these again.", ephemeral=True)
 
 
