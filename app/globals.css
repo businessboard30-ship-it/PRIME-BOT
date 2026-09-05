@@ -320,21 +320,41 @@
   transform: translateX(16px);
 }
 
-/* Hero tire-smoke effect (app/page.tsx TireSmoke/SmokePlume) — each plume is
-   a blurred circle whose color is swapped via JS every 3s (background-color
-   transition handles the crossfade) and whose position/size pulses here to
-   read as rising smoke rather than a static glow. */
-@keyframes pb-smoke-rise {
+/* Hero tire effect (app/page.tsx TireSmoke/SmokePlume). Two parts:
+   - pb-wheel-spin: fast rotation on a blurred conic-gradient ring placed
+     over the tire, reading as a spinning motion-blurred rim.
+   - pb-smoke-streak-a/b: streaks launch from the wheel and travel out and
+     back (like they're being flung off a spinning tire), growing and
+     fading as they go, rather than just pulsing in place. -a and -b use
+     different angles/distances so four overlapping streaks read as
+     turbulent smoke instead of identical copies. */
+@keyframes pb-wheel-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes pb-smoke-streak-a {
   0% {
-    transform: translate(0, 0) scale(1);
-    opacity: 0.35;
+    transform: translate(0, 0) scale(0.6) rotate(0deg);
+    opacity: 0;
   }
-  50% {
-    transform: translate(-6px, -22px) scale(1.25);
-    opacity: 0.7;
+  15% {
+    opacity: 0.6;
   }
   100% {
-    transform: translate(4px, -40px) scale(0.9);
+    transform: translate(-70px, -30px) scale(1.8) rotate(-12deg);
+    opacity: 0;
+  }
+}
+@keyframes pb-smoke-streak-b {
+  0% {
+    transform: translate(0, 0) scale(0.6) rotate(0deg);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.55;
+  }
+  100% {
+    transform: translate(-95px, 18px) scale(2.1) rotate(9deg);
     opacity: 0;
   }
 }
