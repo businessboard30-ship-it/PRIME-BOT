@@ -26,6 +26,7 @@ import io
 import logging
 import os
 import re
+import asyncio
 from urllib.parse import urlparse
 
 import aiohttp
@@ -144,15 +145,26 @@ class PlayQueueChoiceView(discord.ui.View):
 
         try:
             # queue_track_for_submission handles checking if user is in VC,
-            # joining/creating channels as needed, and all playback logic
-            reason = await music_cog.queue_track_for_submission(
-                interaction.guild,
-                interaction.user,
-                self.url,
-                self.clone_id,
-                interaction.channel,  # Post channel for the Now Playing panel
-                play_immediately=(self.result == "play_now"),
+            # joining/creating channels as needed, and all playback logic.
+            # Wrapped in an overall timeout: resolve_track's yt-dlp call has
+            # only a per-socket timeout (30s), not a total-call bound, so a
+            # stalled/retrying extraction previously left this interaction
+            # stuck on "Bot is thinking..." indefinitely.
+            reason = await asyncio.wait_for(
+                music_cog.queue_track_for_submission(
+                    interaction.guild,
+                    interaction.user,
+                    self.url,
+                    self.clone_id,
+                    interaction.channel,  # Post channel for the Now Playing panel
+                    play_immediately=(self.result == "play_now"),
+                ),
+                timeout=60,
             )
+        except asyncio.TimeoutError:
+            logger.error(f"[v0] queue_track_for_submission timed out for {self.url}")
+            await interaction.followup.send(f"🎵 Queueing **{self.media_title}** took too long — try again in a moment.", ephemeral=True)
+            return
         except Exception:
             logger.error(f"[v0] queue_track_for_submission raised unexpectedly for {self.url}", exc_info=True)
             await interaction.followup.send(f"🎵 Failed to queue **{self.media_title}** — an unexpected error occurred (logged).", ephemeral=True)
@@ -966,7 +978,19 @@ class LibraryPlaySelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            await self._handle_pick(interaction)
+            # Hard ceiling on the whole pick-and-queue flow. Without this,
+            # a slow/stuck step downstream (voice connect retry, ffprobe,
+            # a DB call waiting on a saturated connection pool, etc.) left
+            # the interaction stuck on "Bot is thinking..." indefinitely —
+            # this guarantees a followup within 45s no matter what stalls.
+            await asyncio.wait_for(self._handle_pick(interaction), timeout=45)
+        except asyncio.TimeoutError:
+            logger.error(f"[v0] LibraryPlaySelect._handle_pick timed out (guild={self.guild_id}, entry_id={self.values[0]})")
+            print(f"[v0][BROWSE_PLAY_TIMEOUT] guild={self.guild_id} entry_id={self.values[0]}", flush=True)
+            try:
+                await interaction.followup.send("❌ That took too long to queue — try again in a moment.", ephemeral=True)
+            except discord.HTTPException:
+                pass
         except Exception:
             import traceback
             tb = traceback.format_exc()
