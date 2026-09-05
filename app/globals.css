@@ -161,3 +161,161 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ---------------------------------------------------------------------- */
+/* PRIME-BOT public-site tokens                                            */
+/* Used by app/page.tsx, app/servers/*, app/dashboard/*. These pages run   */
+/* dark-only (Discord's own UI is dark-only for the same reason: it's a    */
+/* chat/moderation tool, not a marketing site people browse in daylight).  */
+/* ---------------------------------------------------------------------- */
+:root {
+  --pb-bg: #0b0c0f;
+  --pb-surface: #141519;
+  --pb-surface-raised: #1c1e24;
+  --pb-line: #26282e;
+  --pb-text: #eef0f3;
+  --pb-text-muted: #8b909a;
+  --pb-text-faint: #5b5f68;
+  --pb-accent: #3b82f6;
+  --pb-accent-strong: #2563eb;
+  --pb-positive: #34d399;
+  --pb-danger: #f87171;
+  --font-display: var(--font-space-grotesk), 'Space Grotesk', sans-serif;
+  --font-body: var(--font-inter), 'Inter', sans-serif;
+}
+
+.pb-page {
+  background: var(--pb-bg);
+  color: var(--pb-text);
+  font-family: var(--font-body);
+  min-height: 100vh;
+}
+
+.pb-heading {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.pb-input,
+.pb-select {
+  background: var(--pb-surface);
+  border: 1px solid var(--pb-line);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--pb-text);
+  font-family: var(--font-body);
+}
+.pb-input::placeholder {
+  color: var(--pb-text-faint);
+}
+.pb-input:focus,
+.pb-select:focus {
+  outline: none;
+  border-color: var(--pb-accent);
+}
+
+.pb-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--pb-accent);
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  color: white;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  font-family: var(--font-body);
+  transition: background-color 0.15s ease;
+}
+.pb-btn-primary:hover {
+  background: var(--pb-accent-strong);
+}
+.pb-btn-primary:disabled {
+  background: var(--pb-surface-raised);
+  color: var(--pb-text-faint);
+  cursor: not-allowed;
+}
+
+.pb-btn-secondary {
+  background: var(--pb-surface-raised);
+  border: 1px solid var(--pb-line);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 14px;
+  color: var(--pb-text);
+  cursor: pointer;
+  font-family: var(--font-body);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.pb-btn-secondary:hover {
+  background: var(--pb-surface);
+  border-color: var(--pb-text-faint);
+}
+
+.pb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--pb-surface-raised);
+  border: 1px solid var(--pb-line);
+  border-radius: 999px;
+  padding: 3px 5px 3px 12px;
+  font-size: 13px;
+  color: var(--pb-text-muted);
+}
+.pb-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--pb-text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.pb-chip-remove:hover {
+  color: var(--pb-text);
+}
+
+.pb-code {
+  background: var(--pb-surface-raised);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 12px;
+  font-family: ui-monospace, 'SF Mono', monospace;
+}
+
+.pb-toggle {
+  width: 40px;
+  height: 24px;
+  border-radius: 999px;
+  position: relative;
+  transition: background-color 0.15s ease;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.pb-toggle[aria-checked='true'] {
+  background: var(--pb-accent);
+}
+.pb-toggle[aria-checked='false'] {
+  background: var(--pb-surface-raised);
+  border: 1px solid var(--pb-line);
+}
+.pb-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: white;
+  transition: transform 0.15s ease;
+}
+.pb-toggle[aria-checked='true'] .pb-toggle-knob {
+  transform: translateX(16px);
+}
