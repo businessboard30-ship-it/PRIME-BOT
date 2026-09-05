@@ -136,7 +136,23 @@ class AIToolsCog(commands.Cog):
             await interaction.response.send_message(f"❌ {warning}", ephemeral=True)
             return
 
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException as e:
+            # error code 40060 = "Interaction has already been acknowledged".
+            # Seen in prod when two bot processes briefly overlap (a
+            # redeploy where the old container hadn't fully exited) and
+            # Discord dispatches the same interaction to both — one
+            # process's defer() wins, the other's throws this instead of
+            # a normal exception the user could recover from. There's no
+            # valid interaction left for THIS process to respond on if
+            # that's what happened, so just stop instead of letting an
+            # unhandled CommandInvokeError surface as "the app didn't
+            # respond" with no explanation in the logs.
+            if getattr(e, "code", None) == 40060:
+                logger.warning(f"[aichat] interaction already acknowledged (likely duplicate dispatch), user={user_id}")
+                return
+            raise
 
         # interaction.permissions (not interaction.user.guild_permissions) —
         # same reasoning as moderation.py's _require_perm: stays correct
