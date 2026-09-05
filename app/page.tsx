@@ -184,46 +184,63 @@ function TireSmoke() {
   )
 }
 
+// A wheel effect made of two layers:
+// - WheelBlur: a fast-spinning conic-gradient ring right over the tire, so
+//   the rim itself reads as spinning (a real photo can't rotate, but a
+//   blurred spinning ring sitting on top of it sells the motion the same
+//   way a motion-blur photo does).
+// - Several SmokeStreak particles that launch from the tire and travel
+//   backward/outward with rotation and fade, instead of one soft pulsing
+//   blob — this is what actually reads as "smoking out" rather than a
+//   glow. Direction is mirrored per wheel (front tire kicks smoke back
+//   toward the rear, rear tire kicks it further back and out).
 function SmokePlume({
   left, top, scale, color, reduced, delay,
 }: {
   left: string; top: string; scale: number; color: string; reduced: boolean; delay: number
 }) {
-  const base = 130 * scale
+  const wheelSize = 90 * scale
+  const streaks = [0, 1, 2, 3]
+
   return (
     <div className="absolute" style={{ left, top, width: 0, height: 0 }} aria-hidden="true">
       <div
         style={{
           position: 'absolute',
-          left: -base / 2,
-          top: -base / 2,
-          width: base,
-          height: base,
+          left: -wheelSize / 2,
+          top: -wheelSize / 2,
+          width: wheelSize,
+          height: wheelSize,
           borderRadius: '9999px',
-          backgroundColor: color,
-          filter: `blur(${28 * scale}px)`,
-          opacity: 0.55,
+          background: `conic-gradient(from 0deg, transparent 0deg, ${color} 60deg, transparent 140deg, transparent 220deg, ${color} 280deg, transparent 360deg)`,
+          filter: `blur(${5 * scale}px)`,
+          opacity: 0.65,
           mixBlendMode: 'screen',
-          transition: 'background-color 1.4s ease',
-          animation: reduced ? 'none' : `pb-smoke-rise 5.5s ease-in-out ${delay}s infinite`,
+          transition: 'background 1.4s ease',
+          animation: reduced ? 'none' : 'pb-wheel-spin 0.5s linear infinite',
         }}
       />
-      <div
-        style={{
-          position: 'absolute',
-          left: -base * 0.32,
-          top: -base * 0.72,
-          width: base * 0.6,
-          height: base * 0.6,
-          borderRadius: '9999px',
-          backgroundColor: color,
-          filter: `blur(${20 * scale}px)`,
-          opacity: 0.4,
-          mixBlendMode: 'screen',
-          transition: 'background-color 1.4s ease',
-          animation: reduced ? 'none' : `pb-smoke-rise 4s ease-in-out ${delay + 0.6}s infinite`,
-        }}
-      />
+      {streaks.map((i) => (
+        <div
+          key={i}
+          style={{
+            position: 'absolute',
+            left: -30 * scale,
+            top: -18 * scale,
+            width: (70 + i * 22) * scale,
+            height: (34 + i * 10) * scale,
+            borderRadius: '9999px',
+            backgroundColor: color,
+            filter: `blur(${(14 + i * 4) * scale}px)`,
+            opacity: 0.5,
+            mixBlendMode: 'screen',
+            transition: 'background-color 1.4s ease',
+            animation: reduced
+              ? 'none'
+              : `pb-smoke-streak-${i % 2 === 0 ? 'a' : 'b'} ${3.2 + i * 0.6}s ease-out ${delay + i * 0.5}s infinite`,
+          }}
+        />
+      ))}
     </div>
   )
 }
