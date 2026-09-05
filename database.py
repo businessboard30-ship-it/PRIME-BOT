@@ -250,13 +250,24 @@ class Database:
         those tables (automod/ship/invites/etc.) long enough to blow past
         command_timeout=10 and fail with TimeoutError — a self-inflicted
         outage across the whole fleet, not just the migrating process.
-        Session-scoped lock + no surrounding transaction keeps the race fix
-        without introducing that stall: each statement still commits (and
-        releases its own lock) immediately, exactly as it did originally.
+
+        Acquiring the lock itself must not use the plain blocking
+        pg_advisory_lock() call either: that call sits inside Postgres
+        until the lock is granted, but the *client-side* wait for that
+        query to return is still bound by asyncpg's command_timeout=10 on
+        this pool. With 8+ clones queued behind whichever one is running
+        the full migration, any waiter blocked more than 10s gets a
+        TimeoutError and crashes before ever reaching _create_tables — the
+        exact failure in the last set of logs. Polling with the
+        non-blocking pg_try_advisory_lock() instead means every single
+        query returns immediately (true/false), so command_timeout is
+        never in play; a clone that doesn't get the lock just sleeps
+        briefly and tries again.
         """
         pool = await get_pool()
         async with pool.acquire() as conn:
-            await conn.execute("SELECT pg_advisory_lock(727271001)")
+            while not await conn.fetchval("SELECT pg_try_advisory_lock(727271001)"):
+                await asyncio.sleep(0.5)
             try:
                 await self._create_tables(conn)
             finally:
