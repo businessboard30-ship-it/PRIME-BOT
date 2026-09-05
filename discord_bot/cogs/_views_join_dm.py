@@ -29,7 +29,7 @@ import logging
 import discord
 
 from database import db
-from config import DISCORD_SUPPORT_SERVER_INVITE
+from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE
 
 logger = logging.getLogger(__name__)
 
@@ -180,24 +180,26 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             container.add_item(discord.ui.ActionRow(*nav_children))
 
         bottom_children = [_RemindLaterButton(guild_id, clone_id), _DontAskAgainButton(guild_id, clone_id)]
-        # Support-server link — shown on every page (not just the last)
-        # so it isn't hidden behind pagination the owner may never click
-        # through. Plain link button — no custom_id, so it needs no
-        # DynamicItem registration and is unaffected by timeouts or
-        # restarts on its own.
-        # Shown twice — once at the front of the row and once at the
-        # back — so it's visible no matter which end of the row the
-        # owner's eye lands on first.
+        # Support-server link and manual link — shown on every page (not
+        # just the last) so neither is hidden behind pagination the owner
+        # may never click through. Plain link buttons — no custom_id, so
+        # they need no DynamicItem registration and are unaffected by
+        # timeouts or restarts on their own.
+        # One at the front of the row and one at the back, so at least
+        # one is visible no matter which end of the row the owner's eye
+        # lands on first. (Previously this was the support-server link
+        # shown twice; the manual link now takes the second slot instead
+        # of a duplicate.)
         if DISCORD_SUPPORT_SERVER_INVITE:
-            support_button_front = discord.ui.Button(
+            support_button = discord.ui.Button(
                 label="Join our support server", style=discord.ButtonStyle.link,
                 emoji="🆘", url=DISCORD_SUPPORT_SERVER_INVITE,
             )
-            support_button_back = discord.ui.Button(
-                label="Join our support server", style=discord.ButtonStyle.link,
-                emoji="🆘", url=DISCORD_SUPPORT_SERVER_INVITE,
+            manual_button = discord.ui.Button(
+                label="Read bot manual", style=discord.ButtonStyle.link,
+                emoji="📖", url=f"{DASHBOARD_BASE_URL}/manual",
             )
-            bottom_children = [support_button_front, *bottom_children, support_button_back]
+            bottom_children = [manual_button, *bottom_children, support_button]
         container.add_item(discord.ui.ActionRow(*bottom_children))
 
         self.add_item(container)
