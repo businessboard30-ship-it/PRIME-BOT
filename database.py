@@ -1441,16 +1441,32 @@ class Database:
             DELETE FROM bot_group_membership a USING bot_group_membership b
             WHERE a.group_id = b.group_id AND a.id < b.id
         """)
-        await conn.execute("""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_constraint WHERE conname = 'bot_group_membership_group_id_key'
-                ) THEN
-                    ALTER TABLE bot_group_membership ADD CONSTRAINT bot_group_membership_group_id_key UNIQUE (group_id);
-                END IF;
-            END $$;
-        """)
+        try:
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'bot_group_membership_group_id_key'
+                    ) THEN
+                        ALTER TABLE bot_group_membership ADD CONSTRAINT bot_group_membership_group_id_key UNIQUE (group_id);
+                    END IF;
+                END $$;
+            """)
+        except asyncpg.exceptions.DuplicateTableError:
+            # Race, not a real failure: this whole _create_tables() pass
+            # runs once per process, and with 9+ clone processes all
+            # booting at the same time, more than one can pass the
+            # IF-NOT-EXISTS check above (constraint didn't exist YET for
+            # any of them) before any of them finishes creating it — the
+            # first to commit wins, every other one hits Postgres's own
+            # "relation already exists" (a unique constraint is backed by
+            # an index, hence DuplicateTableError rather than
+            # DuplicateObjectError) on the exact same DDL. The end state
+            # (constraint exists) is identical either way, so this is
+            # safe to swallow instead of letting it crash the whole
+            # process and bring the clone down.
+            logger.info("[db init] bot_group_membership_group_id_key already created by a concurrent process — continuing")
+
 
         # --- Migration: chat metadata for the admin panel's remote
         # group/channel picker (handlers/admin_remote.py) — previously this
@@ -1475,16 +1491,21 @@ class Database:
         await conn.execute("""
             ALTER TABLE bot_group_membership DROP CONSTRAINT IF EXISTS bot_group_membership_group_id_key;
         """)
-        await conn.execute("""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_constraint WHERE conname = 'bot_group_membership_group_clone_key'
-                ) THEN
-                    ALTER TABLE bot_group_membership ADD CONSTRAINT bot_group_membership_group_clone_key UNIQUE (group_id, clone_id);
-                END IF;
-            END $$;
-        """)
+        try:
+            await conn.execute("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint WHERE conname = 'bot_group_membership_group_clone_key'
+                    ) THEN
+                        ALTER TABLE bot_group_membership ADD CONSTRAINT bot_group_membership_group_clone_key UNIQUE (group_id, clone_id);
+                    END IF;
+                END $$;
+            """)
+        except asyncpg.exceptions.DuplicateTableError:
+            # Same concurrent-clones race as bot_group_membership_group_id_key
+            # above — safe to swallow, see that comment for why.
+            logger.info("[db init] bot_group_membership_group_clone_key already created by a concurrent process — continuing")
 
         # --- Migration: anti-flood tracking (Postgres-backed, not in-memory —
         # this bot is a stateless webhook, an in-process dict would reset
