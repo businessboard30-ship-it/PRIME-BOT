@@ -3915,6 +3915,14 @@ class Database:
         if roast_arena_mirror_migration.exists():
             await conn.execute(roast_arena_mirror_migration.read_text())
 
+        # New-guild join claim table — makes "have I already handled this
+        # guild join" atomic across processes (fixes the owner join-DM
+        # arriving twice when two bot processes briefly overlap during a
+        # redeploy). See PrimeBot._handle_new_guild / db.claim_new_guild_handling.
+        new_guild_claims_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "007_new_guild_join_claims.sql"
+        if new_guild_claims_migration.exists():
+            await conn.execute(new_guild_claims_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -5659,6 +5667,60 @@ class Database:
                         left_at = NULL
                 """, guild_id, clone_id, guild_name, member_count, owner_id)
 
+    async def claim_new_guild_handling(self, guild_id: int, clone_id: Optional[int] = None,
+                                        window_seconds: int = 120) -> bool:
+        """Atomically claims 'this process is the one that handles this
+        guild join' across every process sharing the database — replaces
+        the old in-memory-only PrimeBot._new_guild_seen set, which only
+        guarded against a same-process race (on_guild_join firing again
+        before on_ready's catch-up scan finished, or vice versa), not two
+        genuinely separate bot processes both connected on the same token
+        (e.g. a Railway redeploy where the old container hasn't fully
+        exited before the new one starts). Returns True only for whichever
+        process's claim actually lands; every other caller — including a
+        second real on_guild_join/on_ready race in the same process —
+        gets False and must not re-send the join DM or re-run new-guild
+        setup.
+
+        window_seconds bounds how long a claim blocks a retry: the ON
+        CONFLICT branch only refuses to re-claim (and thus returns False)
+        while the existing claim is younger than this window. A permanent,
+        never-expiring claim would be wrong — if the process that won the
+        original claim then crashed before actually finishing the send
+        (DB/HTTP calls in between), a later restart re-running catch-up
+        would see the claim already taken and skip sending forever, even
+        though the DM never actually went out. Bounding it to a couple of
+        minutes covers the redeploy-overlap case this is meant to prevent
+        (both processes alive within seconds of each other) while still
+        letting a genuine later restart — after a real crash, or the bot
+        being offline for a while — retry and actually send it."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_new_guild_claims (guild_id, clone_id, claimed_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET claimed_at = NOW()
+                    WHERE discord_new_guild_claims.claimed_at <= NOW() - ($3 * INTERVAL '1 second')
+                RETURNING guild_id
+                """,
+                guild_id, clone_id, window_seconds,
+            )
+            return row is not None
+
+    async def clear_new_guild_claim(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        """Removes the claim row from claim_new_guild_handling so a genuine
+        future re-join (after the bot was kicked/left) is treated as new
+        again and gets its join DM, instead of being silently swallowed
+        forever by a claim row from the previous membership."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM discord_new_guild_claims WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+
     async def mark_discord_guild_left(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Called from on_guild_remove. Keeps the row (left_at set) rather
         than deleting it, so history/analytics survive a kick or leave."""
@@ -6152,7 +6214,7 @@ class Database:
     # ─────────────────────────────────────────────────────────────────────
 
     async def add_xp(self, guild_id: int, user_id: int, amount: int, new_level: int,
-                      clone_id: Optional[int] = None) -> Dict:
+                      clone_id: Optional[int] = None, cooldown_seconds: int = 0) -> Optional[Dict]:
         """Adds amount to this member's total_xp and recomputes level from the
         POST-increment total_xp inside the same row-locked transaction, so level
         can never trail total_xp under concurrent awards (previously `level`
@@ -6164,7 +6226,24 @@ class Database:
         on the row's true post-update total_xp.
         clone_id disambiguates the same (guild_id, user_id) so a clone and
         the main bot running XP in the same guild keep separate totals —
-        see discord_xp_guild_clone_user_key."""
+        see discord_xp_guild_clone_user_key.
+
+        cooldown_seconds, when > 0, makes the per-message XP cooldown atomic
+        in Postgres instead of the caller tracking it in an in-memory dict
+        (leveling.py's old self._last_award). An in-memory dict only guards
+        one process; if two bot processes are briefly connected on the same
+        token at once (e.g. a Railway redeploy where the old container
+        hasn't fully exited), each has its own dict, each thinks the
+        cooldown has elapsed, and each awards XP and posts its own
+        level-up card for the same message — the reported "level-up
+        message comes twice" bug. The ON CONFLICT ... DO UPDATE ... WHERE
+        below only applies the update (and therefore returns a row) if
+        last_xp_at is far enough in the past; Postgres evaluates and
+        applies that per conflicting row atomically, so whichever process
+        gets there first wins the row lock and the second process's WHERE
+        fails, its DO UPDATE doesn't fire, and RETURNING yields no row —
+        the caller sees None and must not send a level-up message. This
+        works across any number of processes, not just within one."""
         from modules.leveling import compute_level
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -6175,16 +6254,35 @@ class Database:
                 # of this transaction, so no other add_xp call for this
                 # (guild_id, clone_id, user_id) can interleave before we
                 # write the level derived from that exact total_xp.
-                row = await conn.fetchrow(
-                    """
-                    INSERT INTO discord_xp (guild_id, clone_id, user_id, total_xp, level, last_xp_at)
-                    VALUES ($1, $2, $3, $4, $5, NOW())
-                    ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO UPDATE
-                        SET total_xp = discord_xp.total_xp + $4, last_xp_at = NOW()
-                    RETURNING *
-                    """,
-                    guild_id, clone_id, user_id, amount, new_level
-                )
+                if cooldown_seconds > 0:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO discord_xp (guild_id, clone_id, user_id, total_xp, level, last_xp_at)
+                        VALUES ($1, $2, $3, $4, $5, NOW())
+                        ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO UPDATE
+                            SET total_xp = discord_xp.total_xp + $4, last_xp_at = NOW()
+                            WHERE discord_xp.last_xp_at IS NULL
+                               OR discord_xp.last_xp_at <= NOW() - ($6 * INTERVAL '1 second')
+                        RETURNING *
+                        """,
+                        guild_id, clone_id, user_id, amount, new_level, cooldown_seconds
+                    )
+                    if row is None:
+                        # Either genuinely on cooldown, or a duplicate
+                        # process's call for the same message lost the
+                        # race — either way, no award, no level-up message.
+                        return None
+                else:
+                    row = await conn.fetchrow(
+                        """
+                        INSERT INTO discord_xp (guild_id, clone_id, user_id, total_xp, level, last_xp_at)
+                        VALUES ($1, $2, $3, $4, $5, NOW())
+                        ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO UPDATE
+                            SET total_xp = discord_xp.total_xp + $4, last_xp_at = NOW()
+                        RETURNING *
+                        """,
+                        guild_id, clone_id, user_id, amount, new_level
+                    )
                 true_level = compute_level(row["total_xp"])
                 if true_level != row["level"]:
                     row = await conn.fetchrow(
