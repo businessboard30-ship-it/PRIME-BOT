@@ -1,16 +1,17 @@
-   {
-     "$schema": "https://schema.railpack.com",
-     "provider": "node",
-     "steps": {
-       "install": {
-         "commands": ["pnpm install"]
-       },
-       "build": {
-         "inputs": [{ "step": "install" }],
-         "commands": ["pnpm run build"]
-       }
-     },
-     "deploy": {
-       "startCommand": "pnpm start"
-     }
-   }
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "node",
+  "steps": {
+    "install": {
+      "inputs": [{ "local": true, "include": ["."] }],
+      "commands": ["pnpm install"]
+    },
+    "build": {
+      "inputs": [{ "step": "install" }],
+      "commands": ["pnpm run build"]
+    }
+  },
+  "deploy": {
+    "startCommand": "pnpm start"
+  }
+}
