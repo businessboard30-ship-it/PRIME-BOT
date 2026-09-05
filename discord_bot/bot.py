@@ -97,11 +97,6 @@ class AnimeBotDiscord(commands.Bot):
         # running in the same guild as the main bot must never see or sell
         # into the main bot's premium groups, and vice versa.
         self.clone_id = clone_id
-        # Guards against _handle_new_guild running twice for the same
-        # join — see _handle_new_guild's docstring for why that happens
-        # and why an in-memory, per-process set (not a DB flag) is the
-        # right fix here.
-        self._new_guild_seen: set[int] = set()
 
     async def setup_hook(self):
         # Database pool: database.py's get_pool() lazily creates the pool on
@@ -403,14 +398,22 @@ class AnimeBotDiscord(commands.Bot):
         first call's upsert_discord_guild hasn't committed yet, the guild
         still looks brand new to the second call too. Net effect: this
         method runs twice for one join, and the owner gets the combined
-        join DM twice. _new_guild_seen closes that window: the guard is
-        added synchronously before any `await` below, so a same-tick
-        re-entry from on_ready can never slip past it the way a
-        DB-backed check could."""
-        if guild.id in self._new_guild_seen:
-            logger.info(f"[join] duplicate _handle_new_guild suppressed for guild {guild.id}")
+        join DM twice.
+
+        The guard used to be self._new_guild_seen, an in-memory Python
+        set — that only protects against the same-process race described
+        above. It does nothing when TWO SEPARATE PROCESSES are briefly
+        connected on the same bot token at once (e.g. a Railway redeploy
+        where the old container hasn't fully exited before the new one
+        starts): each process has its own independent set, so each one
+        thinks it's first and each sends its own join DM — exactly the
+        "I got DMed twice" bug reported in prod. db.claim_new_guild_handling
+        makes the claim atomic in Postgres instead, so whichever process's
+        INSERT actually lands is the only one that proceeds, no matter how
+        many processes are momentarily alive."""
+        if not await db.claim_new_guild_handling(guild.id, self.clone_id):
+            logger.info(f"[join] duplicate _handle_new_guild suppressed for guild {guild.id} (DB claim lost)")
             return
-        self._new_guild_seen.add(guild.id)
         invite_url = await self._best_effort_invite(guild)
         await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id, invite_url,
                                        owner_id=guild.owner_id)
@@ -656,10 +659,10 @@ class AnimeBotDiscord(commands.Bot):
     async def on_guild_remove(self, guild: discord.Guild):
         logger.info(f"Left guild: {guild.name} ({guild.id})")
         await db.mark_discord_guild_left(guild.id, self.clone_id)
-        # So a genuine future re-join (same process lifetime) isn't
-        # mistaken for the duplicate-fire case _new_guild_seen guards
-        # against and gets its join DM as normal.
-        self._new_guild_seen.discard(guild.id)
+        # So a genuine future re-join is treated as new again and gets its
+        # join DM, instead of being permanently blocked by the claim row
+        # from this membership (see db.claim_new_guild_handling).
+        await db.clear_new_guild_claim(guild.id, self.clone_id)
 
     @tasks.loop(minutes=5)
     async def _heartbeat_loop(self):
