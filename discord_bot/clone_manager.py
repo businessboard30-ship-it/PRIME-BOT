@@ -145,7 +145,7 @@ def _iter_processes():
             continue  # process exited between listdir() and open(), or we can't read it
         if not raw:
             continue
-        cmdline = " ".join(part for part in raw.split(b"\x00") if part).decode("utf-8", "replace")
+        cmdline = " ".join(part.decode("utf-8", "replace") for part in raw.split(b"\x00") if part)
         yield pid, cmdline
 
 
