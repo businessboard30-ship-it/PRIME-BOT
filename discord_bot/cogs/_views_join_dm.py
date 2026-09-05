@@ -65,7 +65,6 @@ async def _enabled_feature_keys(guild_id: int, clone_id) -> set:
     one-tap actions, not toggles) so they're never reported as "on" here.
     Best-effort: a lookup failure just means that one feature falls back
     to showing as not-yet-enabled rather than blocking the rebuild."""
-    enabled = set()
     checks = (
         ("welcome", lambda: db.get_welcome_config(guild_id, clone_id=clone_id), "enabled"),
         ("automod", lambda: db.get_automod_config(guild_id, clone_id=clone_id), "word_filter_enabled"),
@@ -76,14 +75,23 @@ async def _enabled_feature_keys(guild_id: int, clone_id) -> set:
         ("suggestions", lambda: db.get_suggestion_config(guild_id, clone_id=clone_id), "approved_log_channel_id"),
         ("downloadhub", lambda: db.get_download_config(guild_id, clone_id=clone_id), "channel_id"),
     )
-    for key, fetch, field in checks:
+
+    async def _check_one(fetch, field):
+        # Best-effort: any single lookup failing must not sink the others,
+        # since asyncio.gather would otherwise propagate the first
+        # exception and cancel every other in-flight lookup.
         try:
             config = await fetch()
-            if config and config.get(field):
-                enabled.add(key)
+            return bool(config and config.get(field))
         except Exception:
-            pass
-    return enabled
+            return False
+
+    # Independent per-feature lookups used to run one-by-one, so total
+    # latency was the sum of all 8 round trips (~2s+). None of these
+    # depend on each other's results, so fire them all concurrently and
+    # only wait as long as the slowest single lookup takes.
+    results = await asyncio.gather(*(_check_one(fetch, field) for _, fetch, field in checks))
+    return {key for (key, _, _), ok in zip(checks, results) if ok}
 
 
 def _apply_enabled_state(view, enabled_keys: set) -> None:
