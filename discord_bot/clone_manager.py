@@ -75,6 +75,62 @@ class ManagedClone:
         self.process = None
 
 
+def _kill_orphaned_clone_processes():
+    """Finds and kills any `discord_bot.bot --clone-id ...` processes still
+    alive from a PREVIOUS run of this supervisor.
+
+    `managed` (in _reconcile) only tracks subprocesses THIS process object
+    has spawned, in memory. If the supervisor itself gets restarted — host
+    redeploy, crash, systemd/Railway auto-restart, anything that doesn't
+    go through main()'s graceful `finally: m.stop()` — those child
+    processes are never terminated; they just keep running as orphans. The
+    next supervisor start then has an empty `managed` dict, sees every
+    active clone as "not yet started", and spawns a brand new subprocess
+    for each one on top of the orphans that are still there.
+
+    Net effect: two live gateway connections for the same clone token,
+    both with every cog (including automod's on_message_delete/
+    on_member_join listeners) loaded — so every event gets handled twice
+    and posted to the log/welcome channel twice. Since this runs before
+    `managed` has anything in it, ANY matching process found here is
+    necessarily a leftover from before this boot, so it's always safe to
+    kill.
+    """
+    try:
+        result = subprocess.run(
+            ["pgrep", "-af", "discord_bot.bot"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        logger.warning(f"Couldn't scan for orphaned clone processes ({e}) — skipping cleanup")
+        return
+
+    if result.returncode not in (0, 1):  # 1 = pgrep found nothing, not an error
+        logger.warning(f"pgrep exited {result.returncode} scanning for orphaned clones — skipping cleanup")
+        return
+
+    my_pid = str(subprocess.os.getpid())
+    killed = 0
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        pid_str, _, cmdline = line.partition(" ")
+        if "--clone-id" not in cmdline or pid_str == my_pid:
+            continue
+        try:
+            pid = int(pid_str)
+            subprocess.os.kill(pid, 15)  # SIGTERM
+            logger.warning(f"Killed orphaned clone process from a previous supervisor run: pid={pid} ({cmdline.strip()})")
+            killed += 1
+        except (ValueError, ProcessLookupError, PermissionError) as e:
+            logger.warning(f"Couldn't kill orphaned process pid={pid_str}: {e}")
+
+    if killed:
+        # Give them a moment to actually exit their gateway connections
+        # before _reconcile spawns the real, freshly-managed replacements.
+        time.sleep(2)
+
+
 async def _reconcile(managed: Dict[int, ManagedClone]):
     try:
         active = await db.get_active_discord_clones()
@@ -116,6 +172,7 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
 
 async def main():
     logger.info("Starting Discord clone supervisor loop")
+    _kill_orphaned_clone_processes()
     managed: Dict[int, ManagedClone] = {}
     try:
         while True:
