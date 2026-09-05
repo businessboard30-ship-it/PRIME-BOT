@@ -17,6 +17,8 @@ this flag is mainly useful for local testing of a single clone.
 import argparse
 import asyncio
 import logging
+import os
+import secrets
 from typing import Optional
 
 import discord
@@ -345,7 +347,14 @@ class AnimeBotDiscord(commands.Bot):
 
     async def on_ready(self):
         label = "main bot" if self.clone_id is None else f"clone #{self.clone_id}"
-        logger.info(f"Logged in as {self.user} (id={self.user.id}) — {label}")
+        # Random per-process id + OS pid, logged once per connection. If
+        # you ever see two DIFFERENT instance_ids/pids for the SAME
+        # clone/main label in your logs around the same time, that's two
+        # live processes both connected with the same token — the cause
+        # of doubled welcome messages / log entries — and one needs to be
+        # killed. A single instance will only ever show one id per label.
+        instance_id = secrets.token_hex(4)
+        logger.info(f"Logged in as {self.user} (id={self.user.id}) — {label} — instance={instance_id} pid={os.getpid()}")
         logger.info(f"In {len(self.guilds)} guild(s)")
         if self.clone_id is not None:
             await db.touch_discord_clone_heartbeat(self.clone_id)
