@@ -77,24 +77,24 @@ export default function DashboardPage() {
   }
 
   if (loading) {
-    return <Shell><p className="text-sm text-neutral-400">Loading…</p></Shell>
+    return <Shell><p className="text-sm" style={{ color: 'var(--pb-text-muted)' }}>Loading…</p></Shell>
   }
   if (error && !config) {
-    return <Shell><p className="text-sm text-red-400">{error}</p></Shell>
+    return <Shell><p className="text-sm" style={{ color: 'var(--pb-danger)' }}>{error}</p></Shell>
   }
   if (!config) return null
 
   return (
     <Shell>
       <div className="flex items-baseline justify-between mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Auto-moderation</h1>
+        <h1 className="pb-heading text-2xl font-semibold">Auto-moderation</h1>
         <SaveStatus saving={saving} savedAt={savedAt} error={error} />
       </div>
 
       <Section title="What happens on a violation">
         <Row label="Action">
           <select
-            className="select"
+            className="pb-select"
             value={config.action}
             onChange={(e) => save({ action: e.target.value })}
           >
@@ -121,13 +121,13 @@ export default function DashboardPage() {
           <div className="ml-4 mb-4">
             <div className="flex flex-wrap gap-2 mb-2">
               {config.banned_words.length === 0 && (
-                <span className="text-sm text-neutral-500">No words blocked yet.</span>
+                <span className="text-sm" style={{ color: 'var(--pb-text-faint)' }}>No words blocked yet.</span>
               )}
               {config.banned_words.map((w) => (
-                <span key={w} className="chip">
+                <span key={w} className="pb-chip">
                   {w}
                   <button
-                    className="chip-remove"
+                    className="pb-chip-remove"
                     onClick={() => save({ banned_words: config.banned_words.filter((x) => x !== w) })}
                     aria-label={`Remove ${w}`}
                   >
@@ -147,12 +147,12 @@ export default function DashboardPage() {
               className="flex gap-2"
             >
               <input
-                className="input"
+                className="pb-input flex-1"
                 placeholder="Add a blocked word or phrase"
                 value={newWord}
                 onChange={(e) => setNewWord(e.target.value)}
               />
-              <button type="submit" className="btn-secondary">Add</button>
+              <button type="submit" className="pb-btn-secondary">Add</button>
             </form>
           </div>
         )}
@@ -197,7 +197,7 @@ export default function DashboardPage() {
         </Row>
       </Section>
 
-      <p className="text-xs text-neutral-500 mt-10">
+      <p className="text-xs mt-10" style={{ color: 'var(--pb-text-faint)' }}>
         Changes save automatically. This link grants full access to this server's auto-mod config —
         don't share it outside your admin team.
       </p>
@@ -207,38 +207,18 @@ export default function DashboardPage() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100 px-6 py-12">
+    <main className="pb-page px-6 py-12">
       <div className="max-w-xl mx-auto">{children}</div>
-      <style jsx global>{`
-        .select, .input {
-          background: #171717; border: 1px solid #333; border-radius: 6px;
-          padding: 6px 10px; font-size: 14px; color: inherit;
-        }
-        .input { flex: 1; }
-        .btn-secondary {
-          background: #262626; border: 1px solid #404040; border-radius: 6px;
-          padding: 6px 14px; font-size: 14px; cursor: pointer;
-        }
-        .btn-secondary:hover { background: #333; }
-        .chip {
-          display: inline-flex; align-items: center; gap: 6px;
-          background: #262626; border: 1px solid #404040; border-radius: 999px;
-          padding: 2px 4px 2px 10px; font-size: 13px;
-        }
-        .chip-remove {
-          background: transparent; border: none; color: #a3a3a3; cursor: pointer;
-          font-size: 15px; line-height: 1; padding: 2px 6px;
-        }
-        .chip-remove:hover { color: #fff; }
-      `}</style>
     </main>
   )
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mb-8 pb-8 border-b border-neutral-800 last:border-0">
-      <h2 className="text-sm font-medium text-neutral-400 uppercase tracking-wide mb-4">{title}</h2>
+    <section className="mb-8 pb-8 border-b last:border-0" style={{ borderColor: 'var(--pb-line)' }}>
+      <h2 className="pb-heading text-sm font-medium mb-4" style={{ color: 'var(--pb-text-muted)' }}>
+        {title}
+      </h2>
       {children}
     </section>
   )
@@ -257,15 +237,8 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
   return (
     <div className="flex items-center justify-between py-2">
       <span className="text-sm">{label}</span>
-      <button
-        role="switch"
-        aria-checked={checked}
-        onClick={() => onChange(!checked)}
-        className={`w-10 h-6 rounded-full transition-colors relative ${checked ? 'bg-emerald-600' : 'bg-neutral-700'}`}
-      >
-        <span
-          className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${checked ? 'translate-x-4' : ''}`}
-        />
+      <button role="switch" aria-checked={checked} onClick={() => onChange(!checked)} className="pb-toggle">
+        <span className="pb-toggle-knob" />
       </button>
     </div>
   )
@@ -276,7 +249,7 @@ function NumberInput({ value, onCommit, min }: { value: number; onCommit: (v: nu
   useEffect(() => setLocal(String(value)), [value])
   return (
     <input
-      className="select w-20 text-right"
+      className="pb-select w-20 text-right"
       type="number"
       min={min}
       value={local}
@@ -290,8 +263,8 @@ function NumberInput({ value, onCommit, min }: { value: number; onCommit: (v: nu
 }
 
 function SaveStatus({ saving, savedAt, error }: { saving: boolean; savedAt: number | null; error: string | null }) {
-  if (error) return <span className="text-xs text-red-400">{error}</span>
-  if (saving) return <span className="text-xs text-neutral-500">Saving…</span>
-  if (savedAt) return <span className="text-xs text-emerald-500">Saved</span>
+  if (error) return <span className="text-xs" style={{ color: 'var(--pb-danger)' }}>{error}</span>
+  if (saving) return <span className="text-xs" style={{ color: 'var(--pb-text-faint)' }}>Saving…</span>
+  if (savedAt) return <span className="text-xs" style={{ color: 'var(--pb-positive)' }}>Saved</span>
   return null
 }
