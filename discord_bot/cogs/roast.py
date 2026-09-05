@@ -713,10 +713,10 @@ class _RoastPickConfirmButton(discord.ui.DynamicItem[discord.ui.Button], templat
                 guild.id, interaction.message.id,
                 f"🔥 {interaction.user.display_name} already sent a challenge for this round.",
             )
-        except Exception:
-            logger.exception(f"[roast] start_challenge failed guild={guild.id}")
+        except Exception as e:
+            logger.exception(f"[roast] start_challenge failed guild={guild.id}: {e!r}")
             try:
-                await interaction.followup.send("⚠️ Failed to send the challenge — check Railway logs.", ephemeral=True)
+                await interaction.followup.send(f"⚠️ Failed to send the challenge — check Railway logs. ({e!r})", ephemeral=True)
             except discord.HTTPException:
                 pass
 
@@ -764,10 +764,19 @@ class _RoastPickRemindButton(discord.ui.DynamicItem[discord.ui.Button], template
                 f"⏰ {interaction.user.display_name} already snoozed this round — I'll check back later.",
             )
             logger.info(f"[roast] admin={interaction.user.id} snoozed guild={guild.id}")
-        except Exception:
-            logger.exception(f"[roast] remind_later failed guild={self.guild_id}")
+        except Exception as e:
+            # logger.exception() attaches the full traceback via exc_info,
+            # but the one-line message itself used to say nothing about
+            # *what* failed — if a log viewer truncates or collapses the
+            # multi-line traceback (or it scrolls past), there's nothing
+            # left to grep for. Putting repr(e) directly in the message
+            # guarantees the actual exception type/args survive in the
+            # single searchable line, even with the traceback gone.
+            logger.exception(f"[roast] remind_later failed guild={self.guild_id}: {e!r}")
             try:
-                await interaction.followup.send("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
+                await interaction.followup.send(
+                    f"⚠️ Something went wrong — check Railway logs. ({e!r})", ephemeral=True
+                )
             except discord.HTTPException:
                 pass
 
@@ -817,10 +826,10 @@ class _RoastPickDontAskButton(discord.ui.DynamicItem[discord.ui.Button], templat
                 f"🔕 {interaction.user.display_name} already turned off auto-roasts for this server.",
             )
             logger.info(f"[roast] admin={interaction.user.id} disabled auto-roast guild={guild.id}")
-        except Exception:
-            logger.exception(f"[roast] dont_ask_again failed guild={self.guild_id}")
+        except Exception as e:
+            logger.exception(f"[roast] dont_ask_again failed guild={self.guild_id}: {e!r}")
             try:
-                await interaction.followup.send("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
+                await interaction.followup.send(f"⚠️ Something went wrong — check Railway logs. ({e!r})", ephemeral=True)
             except discord.HTTPException:
                 pass
 
@@ -885,10 +894,10 @@ class RoastMemberRequestView(discord.ui.View):
             self.chosen_target = self.guild.get_member(int(val))
             self.confirm_btn.disabled = not (self.chosen_target and self.chosen_channel)
             await interaction.response.edit_message(embed=self._status_embed(), view=self)
-        except Exception:
-            logger.exception(f"[roast] member request target picker failed guild={self.guild.id}")
+        except Exception as e:
+            logger.exception(f"[roast] member request target picker failed guild={self.guild.id}: {e!r}")
             if not interaction.response.is_done():
-                await interaction.response.send_message("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
+                await interaction.response.send_message(f"⚠️ Something went wrong — check Railway logs. ({e!r})", ephemeral=True)
 
     async def _on_channel(self, interaction: discord.Interaction):
         try:
@@ -899,10 +908,10 @@ class RoastMemberRequestView(discord.ui.View):
             self.chosen_channel = self.guild.get_channel(int(val))
             self.confirm_btn.disabled = not (self.chosen_target and self.chosen_channel)
             await interaction.response.edit_message(embed=self._status_embed(), view=self)
-        except Exception:
-            logger.exception(f"[roast] member request channel picker failed guild={self.guild.id}")
+        except Exception as e:
+            logger.exception(f"[roast] member request channel picker failed guild={self.guild.id}: {e!r}")
             if not interaction.response.is_done():
-                await interaction.response.send_message("⚠️ Something went wrong — check Railway logs.", ephemeral=True)
+                await interaction.response.send_message(f"⚠️ Something went wrong — check Railway logs. ({e!r})", ephemeral=True)
 
     async def _on_confirm(self, interaction: discord.Interaction):
         try:
@@ -920,10 +929,10 @@ class RoastMemberRequestView(discord.ui.View):
                 channel=self.chosen_channel,
                 requester_id=interaction.user.id,
             )
-        except Exception:
-            logger.exception(f"[roast] member roast request failed guild={self.guild.id}")
+        except Exception as e:
+            logger.exception(f"[roast] member roast request failed guild={self.guild.id}: {e!r}")
             if not interaction.response.is_done():
-                await interaction.response.send_message("⚠️ Failed to send the request — check Railway logs.", ephemeral=True)
+                await interaction.response.send_message(f"⚠️ Failed to send the request — check Railway logs. ({e!r})", ephemeral=True)
         finally:
             self.stop()
 
@@ -969,10 +978,10 @@ class _RoastApproveButton(discord.ui.DynamicItem[discord.ui.Button], template=r"
                 content=f"✅ Approved — {target_name} has been challenged.",
                 view=_disabled_roast_approval_view(self.battle_id),
             )
-        except Exception:
-            logger.exception(f"[roast] approval failed battle_id={self.battle_id}")
+        except Exception as e:
+            logger.exception(f"[roast] approval failed battle_id={self.battle_id}: {e!r}")
             try:
-                await interaction.edit_original_response(content="⚠️ Something went wrong — check Railway logs.")
+                await interaction.edit_original_response(content=f"⚠️ Something went wrong — check Railway logs. ({e!r})")
             except Exception:
                 pass
 
@@ -1010,10 +1019,10 @@ class _RoastDenyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^ro
                 content=f"❌ Denied {requester_name}'s roast request.",
                 view=_disabled_roast_approval_view(self.battle_id),
             )
-        except Exception:
-            logger.exception(f"[roast] denial failed battle_id={self.battle_id}")
+        except Exception as e:
+            logger.exception(f"[roast] denial failed battle_id={self.battle_id}: {e!r}")
             try:
-                await interaction.edit_original_response(content="⚠️ Something went wrong — check Railway logs.")
+                await interaction.edit_original_response(content=f"⚠️ Something went wrong — check Railway logs. ({e!r})")
             except Exception:
                 pass
 
@@ -1075,10 +1084,10 @@ class _RoastAcceptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
                 await interaction.edit_original_response(content="⏰ This challenge already expired.", view=_disabled_roast_accept_view(self.battle_id))
                 return
             await interaction.edit_original_response(content="✅ Accepted! Head to the server, it's on.", view=_disabled_roast_accept_view(self.battle_id))
-        except Exception:
-            logger.exception(f"[roast] accept button failed battle_id={self.battle_id}")
+        except Exception as e:
+            logger.exception(f"[roast] accept button failed battle_id={self.battle_id}: {e!r}")
             try:
-                await interaction.followup.send("⚠️ Something went wrong accepting — check Railway logs.", ephemeral=True)
+                await interaction.followup.send(f"⚠️ Something went wrong accepting — check Railway logs. ({e!r})", ephemeral=True)
             except Exception:
                 pass
 
@@ -1108,10 +1117,10 @@ class _RoastDeclineButton(discord.ui.DynamicItem[discord.ui.Button], template=r"
         try:
             await cog.decline_battle(self.battle_id)
             await interaction.edit_original_response(content="😌 Declined. No roast today.", view=_disabled_roast_accept_view(self.battle_id))
-        except Exception:
-            logger.exception(f"[roast] decline button failed battle_id={self.battle_id}")
+        except Exception as e:
+            logger.exception(f"[roast] decline button failed battle_id={self.battle_id}: {e!r}")
             try:
-                await interaction.followup.send("⚠️ Something went wrong declining — check Railway logs.", ephemeral=True)
+                await interaction.followup.send(f"⚠️ Something went wrong declining — check Railway logs. ({e!r})", ephemeral=True)
             except Exception:
                 pass
 
@@ -1224,10 +1233,10 @@ class RoastBattleView(discord.ui.View):
                 child.disabled = True
             await interaction.edit_original_response(view=self)
             await interaction.channel.send(f"🏳️ Roast battle ended by {member.mention}.")
-        except Exception:
-            logger.exception(f"[roast] quit button failed battle_id={self.battle_id} user={interaction.user.id}")
+        except Exception as e:
+            logger.exception(f"[roast] quit button failed battle_id={self.battle_id} user={interaction.user.id}: {e!r}")
             try:
-                await interaction.followup.send("⚠️ Couldn't end the roast — check Railway logs.", ephemeral=True)
+                await interaction.followup.send(f"⚠️ Couldn't end the roast — check Railway logs. ({e!r})", ephemeral=True)
             except Exception:
                 pass
 
