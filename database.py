@@ -222,10 +222,28 @@ class Database:
         self.dsn = DATABASE_URL
 
     async def init(self):
-        """Create tables if they don't exist yet (safe to run on every cold start)."""
+        """Create tables if they don't exist yet (safe to run on every cold start).
+
+        The main bot and every clone each call this on their own cold start,
+        all against the same shared database — the logs show over a dozen
+        of these firing within the same second. _create_tables has several
+        "IF NOT EXISTS"/"IF EXISTS" migration steps that check pg_catalog
+        and then run a separate ALTER TABLE based on that check (e.g. the
+        bot_group_membership constraint swap). That check-then-act is only
+        safe for a single writer: with many processes racing, one process's
+        DROP CONSTRAINT can complete in between another process's IF EXISTS
+        check and its own DROP CONSTRAINT, which then fails with
+        asyncpg.exceptions.UndefinedObjectError because the constraint is
+        already gone. A Postgres advisory lock here serializes the whole
+        migration pass across every process sharing this database, so only
+        one of them is ever inside _create_tables at a time and these
+        check-then-act migrations can no longer race each other.
+        """
         pool = await get_pool()
         async with pool.acquire() as conn:
-            await self._create_tables(conn)
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock(727271001)")
+                await self._create_tables(conn)
             # NOTE: _migrate_stale_stripe_provider is no longer called here.
             # Stripe is now a fully supported clone payment provider (see
             # payments.StripePayment / payments.gateway_charge_amount and
@@ -1422,15 +1440,12 @@ class Database:
         # another clone entirely) was actually a member of. clone_id = 0 means
         # "the main bot"; a real clone_id means that specific clone.
         await conn.execute("ALTER TABLE bot_group_membership ADD COLUMN IF NOT EXISTS clone_id BIGINT NOT NULL DEFAULT 0")
+        # Native IF EXISTS instead of a separate pg_constraint check-then-act —
+        # belt-and-suspenders alongside the advisory lock in init() above, so
+        # this single statement can't itself race another process the way
+        # the old check-then-DROP DO block could.
         await conn.execute("""
-            DO $$
-            BEGIN
-                IF EXISTS (
-                    SELECT 1 FROM pg_constraint WHERE conname = 'bot_group_membership_group_id_key'
-                ) THEN
-                    ALTER TABLE bot_group_membership DROP CONSTRAINT bot_group_membership_group_id_key;
-                END IF;
-            END $$;
+            ALTER TABLE bot_group_membership DROP CONSTRAINT IF EXISTS bot_group_membership_group_id_key;
         """)
         await conn.execute("""
             DO $$
