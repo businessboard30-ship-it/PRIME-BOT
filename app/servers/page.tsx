@@ -84,65 +84,84 @@ export default function ServersPage() {
   })
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100 px-6 py-12">
-      <div className="max-w-3xl mx-auto">
+    <main className="pb-page px-6 py-12">
+      <div className="max-w-2xl mx-auto">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Server directory</h1>
-            <p className="text-sm text-neutral-400 mt-2 max-w-lg">
+            <h1 className="pb-heading text-2xl font-semibold">Server directory</h1>
+            <p className="text-sm mt-2 max-w-lg" style={{ color: 'var(--pb-text-muted)' }}>
               Public servers running PRIME-BOT. Listings go live instantly — see{' '}
-              <span className="text-neutral-300">List your server</span> below.
+              <span style={{ color: 'var(--pb-text)' }}>List your server</span> below.
             </p>
           </div>
-          <a href="#list-your-server" className="btn-primary shrink-0">
+          <a href="#list-your-server" className="pb-btn-primary shrink-0">
             + List your server
           </a>
         </div>
 
         {voteBanner && (
-          <p className={`text-sm mt-6 ${voteBanner.ok ? 'text-emerald-400' : 'text-red-400'}`}>
+          <p
+            className="text-sm mt-6"
+            style={{ color: voteBanner.ok ? 'var(--pb-positive)' : 'var(--pb-danger)' }}
+          >
             {voteBanner.msg}
           </p>
         )}
 
         <input
-          className="input mt-8 w-full max-w-sm"
+          className="pb-input mt-8 w-full max-w-sm"
           placeholder="Search servers, tags…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
 
-        <div className="mt-8 grid gap-4 sm:grid-cols-2">
+        <div className="mt-8 rounded-lg border" style={{ borderColor: 'var(--pb-line)' }}>
           {listings === null && !error && (
-            <p className="text-sm text-neutral-500 col-span-full">Loading…</p>
+            <p className="text-sm p-6" style={{ color: 'var(--pb-text-faint)' }}>
+              Loading…
+            </p>
           )}
-          {error && <p className="text-sm text-red-400 col-span-full">{error}</p>}
+          {error && (
+            <p className="text-sm p-6" style={{ color: 'var(--pb-danger)' }}>
+              {error}
+            </p>
+          )}
           {listings !== null && filtered.length === 0 && (
-            <p className="text-sm text-neutral-500 col-span-full">
+            <p className="text-sm p-6" style={{ color: 'var(--pb-text-faint)' }}>
               {query ? `No servers match "${query}".` : 'No servers listed yet — be the first!'}
             </p>
           )}
-          {filtered.map((l) => (
-            <ServerCard key={l.guild_id} listing={l} voteHref={voteHref(l)} />
+          {filtered.map((l, i) => (
+            <ServerRow
+              key={l.guild_id}
+              listing={l}
+              voteHref={voteHref(l)}
+              isLast={i === filtered.length - 1}
+            />
           ))}
         </div>
 
-        <section id="list-your-server" className="mt-16 pt-8 border-t border-neutral-800">
-          <h2 className="text-lg font-semibold">List your server</h2>
-          <p className="text-sm text-neutral-400 mt-2 max-w-lg">
+        <section id="list-your-server" className="mt-16 pt-8 border-t" style={{ borderColor: 'var(--pb-line)' }}>
+          <h2 className="pb-heading text-lg font-medium">List your server</h2>
+          <p className="text-sm mt-2 max-w-lg" style={{ color: 'var(--pb-text-muted)' }}>
             There's no open submission form here on purpose — a listing can only be created by
             an admin of a server the bot is already in, so every listing is automatically
             verified with no waiting on approval.
           </p>
 
-          <div className="mt-4 p-4 rounded-lg border border-neutral-800 bg-neutral-900/40 max-w-lg">
-            <p className="text-sm text-neutral-300">Don't have PRIME-BOT in your server yet?</p>
+          <div
+            className="mt-4 p-4 rounded-lg border max-w-lg"
+            style={{ borderColor: 'var(--pb-line)', background: 'var(--pb-surface)' }}
+          >
+            <p className="text-sm" style={{ color: 'var(--pb-text)' }}>
+              Don't have PRIME-BOT in your server yet?
+            </p>
             {BOT_INVITE_URL ? (
-              <a href={BOT_INVITE_URL} target="_blank" rel="noopener noreferrer" className="btn-primary inline-block mt-2">
+              <a href={BOT_INVITE_URL} target="_blank" rel="noopener noreferrer" className="pb-btn-primary inline-flex mt-2">
                 + Add PRIME-BOT to your server
               </a>
             ) : (
-              <p className="text-xs text-neutral-500 mt-1">
+              <p className="text-xs mt-1" style={{ color: 'var(--pb-text-faint)' }}>
                 Ask in the{' '}
                 <a href={SUPPORT_SERVER_INVITE} target="_blank" rel="noopener noreferrer" className="underline">
                   support server
@@ -150,61 +169,30 @@ export default function ServersPage() {
                 for an invite link.
               </p>
             )}
-            <p className="text-xs text-neutral-500 mt-2">
+            <p className="text-xs mt-2" style={{ color: 'var(--pb-text-faint)' }}>
               Already added? Continue with the steps below.
             </p>
           </div>
 
-          <ol className="mt-4 space-y-2 text-sm text-neutral-300 list-decimal list-inside">
+          <ol className="mt-4 space-y-2 text-sm list-decimal list-inside" style={{ color: 'var(--pb-text-muted)' }}>
             <li>
-              In your Discord server, run <code className="code">/setup servers</code> (you'll need the{' '}
-              <span className="text-neutral-100">Manage Server</span> permission).
+              In your Discord server, run <code className="pb-code">/setup servers</code> (you'll need the{' '}
+              <span style={{ color: 'var(--pb-text)' }}>Manage Server</span> permission).
             </li>
             <li>The bot replies with a private link — open it.</li>
             <li>Add your invite link, a short description, and up to 5 tags, then submit.</li>
           </ol>
-          <p className="text-xs text-neutral-500 mt-4">
-            Already listed? Rerunning <code className="code">/setup servers</code> gives you the same
+          <p className="text-xs mt-4" style={{ color: 'var(--pb-text-faint)' }}>
+            Already listed? Rerunning <code className="pb-code">/setup servers</code> gives you the same
             link back, so you can edit your listing any time.
           </p>
         </section>
       </div>
-
-      <style jsx global>{`
-        .input {
-          background: #171717;
-          border: 1px solid #333;
-          border-radius: 6px;
-          padding: 8px 12px;
-          font-size: 14px;
-          color: inherit;
-        }
-        .code {
-          background: #171717;
-          border-radius: 4px;
-          padding: 1px 6px;
-          font-size: 12px;
-        }
-        .btn-primary {
-          display: inline-flex;
-          align-items: center;
-          background: #2563eb;
-          border-radius: 8px;
-          padding: 8px 16px;
-          font-size: 14px;
-          font-weight: 500;
-          color: white;
-          text-decoration: none;
-        }
-        .btn-primary:hover {
-          background: #1d4ed8;
-        }
-      `}</style>
     </main>
   )
 }
 
-function ServerCard({ listing, voteHref }: { listing: Listing; voteHref: string }) {
+function ServerRow({ listing, voteHref, isLast }: { listing: Listing; voteHref: string; isLast: boolean }) {
   const [copied, setCopied] = useState(false)
   const boosted = listing.confirmed_conversions > 0
 
@@ -218,59 +206,75 @@ function ServerCard({ listing, voteHref }: { listing: Listing; voteHref: string 
   }
 
   return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4 hover:border-neutral-700 transition-colors">
-      <div className="flex items-center gap-3">
-        {listing.guild_icon_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={listing.guild_icon_url} alt="" className="w-10 h-10 rounded-full" />
-        ) : (
-          <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-sm text-neutral-500">
-            {listing.guild_name.slice(0, 1).toUpperCase()}
-          </div>
-        )}
-        <div className="min-w-0 flex-1">
-          <p className="font-medium truncate">{listing.guild_name}</p>
-          <p className="text-xs text-neutral-500">{listing.member_count.toLocaleString()} members</p>
-        </div>
-        {boosted && (
-          <span className="text-[11px] shrink-0 bg-emerald-900/40 text-emerald-400 rounded px-2 py-0.5">
-            Boosted
-          </span>
-        )}
-      </div>
-      {listing.description && (
-        <p className="text-sm text-neutral-400 mt-3 line-clamp-2">{listing.description}</p>
-      )}
-      {listing.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mt-3">
-          {listing.tags.map((t) => (
-            <span key={t} className="text-xs bg-neutral-800 rounded-full px-2 py-0.5 text-neutral-400">
-              #{t}
-            </span>
-          ))}
+    <div
+      className="flex items-center gap-4 px-4 py-4 transition-colors"
+      style={{
+        borderBottom: isLast ? 'none' : '1px solid var(--pb-line)',
+        borderLeft: boosted ? '2px solid var(--pb-positive)' : '2px solid transparent',
+      }}
+    >
+      {listing.guild_icon_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={listing.guild_icon_url} alt="" className="w-10 h-10 rounded-full shrink-0" />
+      ) : (
+        <div
+          className="w-10 h-10 rounded-full flex items-center justify-center text-sm shrink-0"
+          style={{ background: 'var(--pb-surface-raised)', color: 'var(--pb-text-faint)' }}
+        >
+          {listing.guild_name.slice(0, 1).toUpperCase()}
         </div>
       )}
 
-      <div className="flex items-center gap-2 mt-4 pt-3 border-t border-neutral-800">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="font-medium truncate">{listing.guild_name}</p>
+          {boosted && (
+            <span
+              className="text-[11px] shrink-0 rounded px-1.5 py-0.5"
+              style={{ background: 'rgba(52,211,153,0.12)', color: 'var(--pb-positive)' }}
+            >
+              Boosted
+            </span>
+          )}
+        </div>
+        <p className="text-xs mt-0.5" style={{ color: 'var(--pb-text-faint)' }}>
+          {listing.member_count.toLocaleString()} members
+        </p>
+        {listing.description && (
+          <p className="text-sm mt-1.5 line-clamp-1" style={{ color: 'var(--pb-text-muted)' }}>
+            {listing.description}
+          </p>
+        )}
+        {listing.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {listing.tags.map((t) => (
+              <span
+                key={t}
+                className="text-xs rounded-full px-2 py-0.5"
+                style={{ background: 'var(--pb-surface-raised)', color: 'var(--pb-text-faint)' }}
+              >
+                #{t}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 shrink-0">
         <a
           href={voteHref}
-          className="flex-1 inline-flex items-center justify-center gap-1.5 text-sm rounded-md border border-neutral-700 py-1.5 hover:bg-neutral-800 transition-colors"
+          className="pb-btn-secondary text-sm !py-1.5"
         >
           ▲ {listing.vote_count}
         </a>
-        <a
-          href={listing.invite_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex-1 inline-flex items-center justify-center gap-1.5 text-sm rounded-md bg-blue-600 hover:bg-blue-700 py-1.5 text-white transition-colors"
-        >
+        <a href={listing.invite_url} target="_blank" rel="noopener noreferrer" className="pb-btn-primary text-sm !py-1.5">
           Join
         </a>
         {listing.ref_code && (
           <button
             onClick={copyRefLink}
             title="Copy your referral link — joins through it boost this listing's ranking"
-            className="shrink-0 text-sm rounded-md border border-neutral-700 px-2.5 py-1.5 hover:bg-neutral-800 transition-colors text-neutral-400"
+            className="pb-btn-secondary !px-2.5 !py-1.5"
           >
             {copied ? '✓' : '🔗'}
           </button>
