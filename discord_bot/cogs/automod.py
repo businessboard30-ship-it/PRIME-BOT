@@ -154,6 +154,15 @@ LEGACY_REMINDER_EMBED_TITLES = {
 class AutomodCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Message ids the bot itself just deleted via _enforce() below.
+        # Discord still fires on_message_delete for bot-initiated deletes,
+        # so without this, every automod action produced BOTH the
+        # "🛡️ Auto-mod action" embed (from _enforce) AND a "🗑️ Message
+        # deleted" embed (from the on_message_delete listener) for the
+        # same message — i.e. the log channel doubled up. A small bounded
+        # set of recently-self-deleted ids lets on_message_delete recognize
+        # and skip those, while still logging normal user/other deletes.
+        self._self_deleted_ids: set[int] = set()
         self._reminder_loop.start()
 
     def cog_unload(self):
@@ -496,12 +505,19 @@ class AutomodCog(GuildOnlyCog):
         action = config.get("action") or "delete"
         t0 = time.monotonic()
         try:
+            # Mark this id BEFORE deleting so the on_message_delete listener
+            # (which will fire from Discord's own gateway event once this
+            # delete goes through) knows to skip it instead of double-logging.
+            self._self_deleted_ids.add(message.id)
             await message.delete()
             logger.info(
                 "[automod] deleted msg %s in guild %s after %.2fs (reason=%s)",
                 message.id, message.guild.id, time.monotonic() - t0, reason,
             )
         except (discord.Forbidden, discord.NotFound) as e:
+            # Delete didn't actually happen — don't leave a stale id around
+            # to accidentally suppress a legitimate future delete log.
+            self._self_deleted_ids.discard(message.id)
             logger.warning(
                 "[automod] delete FAILED for msg %s in guild %s after %.2fs: %s",
                 message.id, message.guild.id, time.monotonic() - t0, e,
@@ -612,6 +628,12 @@ class AutomodCog(GuildOnlyCog):
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
         if message.guild is None or message.author.bot:
+            return
+        if message.id in self._self_deleted_ids:
+            # Already logged as a "🛡️ Auto-mod action" embed by _enforce();
+            # this gateway event is just Discord confirming that delete, so
+            # skip it here to avoid a duplicate "🗑️ Message deleted" entry.
+            self._self_deleted_ids.discard(message.id)
             return
         clone_id = getattr(self.bot, "clone_id", None)
         config = await db.get_automod_config(message.guild.id, clone_id=clone_id)
