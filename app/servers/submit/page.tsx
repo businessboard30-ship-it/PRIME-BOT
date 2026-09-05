@@ -27,7 +27,7 @@ const MAX_TAGS = 5
 // it's 100% query-param-driven, so the fallback just flashes briefly).
 export default function SubmitListingPage() {
   return (
-    <Suspense fallback={<Shell><p className="text-sm text-neutral-400">Loading…</p></Shell>}>
+    <Suspense fallback={<Shell><p className="text-sm" style={{ color: 'var(--pb-text-muted)' }}>Loading…</p></Shell>}>
       <SubmitListingPageInner />
     </Suspense>
   )
@@ -109,45 +109,55 @@ function SubmitListingPageInner() {
   }
 
   if (loading) {
-    return <Shell><p className="text-sm text-neutral-400">Loading…</p></Shell>
+    return <Shell><p className="text-sm" style={{ color: 'var(--pb-text-muted)' }}>Loading…</p></Shell>
   }
   if (loadError || !prefill) {
-    return <Shell><p className="text-sm text-red-400">{loadError}</p></Shell>
+    return <Shell><p className="text-sm" style={{ color: 'var(--pb-danger)' }}>{loadError}</p></Shell>
   }
 
   return (
     <Shell>
-      <h1 className="text-2xl font-semibold tracking-tight mb-1">List your server</h1>
-      <p className="text-sm text-neutral-500 mb-8">
+      <h1 className="pb-heading text-2xl font-semibold mb-1">List your server</h1>
+      <p className="text-sm mb-8" style={{ color: 'var(--pb-text-faint)' }}>
         Goes live immediately on <a href="/servers" className="underline">the public directory</a> —
         no approval wait.
       </p>
 
-      <div className="flex items-center gap-3 mb-8 p-3 rounded-lg border border-neutral-800 bg-neutral-900/40">
+      <div
+        className="flex items-center gap-3 mb-8 p-3 rounded-lg border"
+        style={{ borderColor: 'var(--pb-line)', background: 'var(--pb-surface)' }}
+      >
         {prefill.guild_icon_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={prefill.guild_icon_url} alt="" className="w-12 h-12 rounded-full" />
         ) : (
-          <div className="w-12 h-12 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500">
+          <div
+            className="w-12 h-12 rounded-full flex items-center justify-center"
+            style={{ background: 'var(--pb-surface-raised)', color: 'var(--pb-text-faint)' }}
+          >
             {prefill.guild_name.slice(0, 1).toUpperCase()}
           </div>
         )}
         <div>
           <p className="font-medium">{prefill.guild_name}</p>
-          <p className="text-xs text-neutral-500">{prefill.member_count.toLocaleString()} members</p>
+          <p className="text-xs" style={{ color: 'var(--pb-text-faint)' }}>
+            {prefill.member_count.toLocaleString()} members
+          </p>
         </div>
-        <span className="ml-auto text-xs text-neutral-600">from Discord — not editable here</span>
+        <span className="ml-auto text-xs" style={{ color: 'var(--pb-text-faint)' }}>
+          from Discord — not editable here
+        </span>
       </div>
 
       <label className="block mb-6">
         <span className="text-sm font-medium">Invite link</span>
         <input
-          className="input mt-1.5 w-full"
+          className="pb-input mt-1.5 w-full"
           placeholder="https://discord.gg/yourinvite"
           value={inviteUrl}
           onChange={(e) => setInviteUrl(e.target.value)}
         />
-        <span className="text-xs text-neutral-500 mt-1 block">
+        <span className="text-xs mt-1 block" style={{ color: 'var(--pb-text-faint)' }}>
           Use a permanent, never-expiring invite if you have one.
         </span>
       </label>
@@ -155,14 +165,14 @@ function SubmitListingPageInner() {
       <label className="block mb-6">
         <span className="text-sm font-medium">Description</span>
         <textarea
-          className="input mt-1.5 w-full resize-none"
+          className="pb-input mt-1.5 w-full resize-none"
           rows={3}
           maxLength={MAX_DESCRIPTION_LEN}
           placeholder="What's your server about?"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-        <span className="text-xs text-neutral-500 mt-1 block">
+        <span className="text-xs mt-1 block" style={{ color: 'var(--pb-text-faint)' }}>
           {description.length}/{MAX_DESCRIPTION_LEN}
         </span>
       </label>
@@ -171,9 +181,9 @@ function SubmitListingPageInner() {
         <span className="text-sm font-medium">Tags (up to {MAX_TAGS})</span>
         <div className="flex flex-wrap gap-2 mt-1.5 mb-2">
           {tags.map((t) => (
-            <span key={t} className="chip">
+            <span key={t} className="pb-chip">
               #{t}
-              <button className="chip-remove" onClick={() => setTags(tags.filter((x) => x !== t))} aria-label={`Remove ${t}`}>
+              <button className="pb-chip-remove" onClick={() => setTags(tags.filter((x) => x !== t))} aria-label={`Remove ${t}`}>
                 ×
               </button>
             </span>
@@ -182,37 +192,37 @@ function SubmitListingPageInner() {
         {tags.length < MAX_TAGS && (
           <form onSubmit={(e) => { e.preventDefault(); addTag() }} className="flex gap-2">
             <input
-              className="input flex-1"
+              className="pb-input flex-1"
               placeholder="e.g. gaming, anime, coding"
               value={tagInput}
               onChange={(e) => setTagInput(e.target.value)}
             />
-            <button type="submit" className="btn-secondary">Add</button>
+            <button type="submit" className="pb-btn-secondary">Add</button>
           </form>
         )}
       </label>
 
-      <button className="btn-primary" onClick={submit} disabled={saving || !inviteUrl.trim()}>
+      <button className="pb-btn-primary" onClick={submit} disabled={saving || !inviteUrl.trim()}>
         {saving ? 'Saving…' : 'Publish listing'}
       </button>
-      {saveError && <p className="text-sm text-red-400 mt-3">{saveError}</p>}
+      {saveError && <p className="text-sm mt-3" style={{ color: 'var(--pb-danger)' }}>{saveError}</p>}
       {saved && (
         <div className="mt-3">
-          <p className="text-sm text-emerald-500">
+          <p className="text-sm" style={{ color: 'var(--pb-positive)' }}>
             ✅ Saved — <a href="/servers" className="underline">view it on the directory</a>.
           </p>
           {refCode && (
-            <p className="text-xs text-neutral-500 mt-2">
+            <p className="text-xs mt-2" style={{ color: 'var(--pb-text-faint)' }}>
               Your boost link (share it — joins through it raise your ranking):{' '}
-              <code className="chip !px-2 !py-0.5">{`/servers?ref=${refCode}`}</code>
+              <code className="pb-code">{`/servers?ref=${refCode}`}</code>
             </p>
           )}
         </div>
       )}
 
-      <p className="text-xs text-neutral-500 mt-10">
+      <p className="text-xs mt-10" style={{ color: 'var(--pb-text-faint)' }}>
         This link edits your listing — don't share it outside your admin team. Rerun{' '}
-        <code className="chip !px-2 !py-0.5">/setup servers</code> in Discord any time to get it again.
+        <code className="pb-code">/setup servers</code> in Discord any time to get it again.
       </p>
     </Shell>
   )
@@ -220,68 +230,8 @@ function SubmitListingPageInner() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-screen bg-neutral-950 text-neutral-100 px-6 py-12">
+    <main className="pb-page px-6 py-12">
       <div className="max-w-xl mx-auto">{children}</div>
-      <style jsx global>{`
-        .input {
-          background: #171717;
-          border: 1px solid #333;
-          border-radius: 6px;
-          padding: 8px 10px;
-          font-size: 14px;
-          color: inherit;
-        }
-        .btn-primary {
-          background: #2563eb;
-          border-radius: 8px;
-          padding: 8px 18px;
-          font-size: 14px;
-          font-weight: 500;
-          color: white;
-          border: none;
-          cursor: pointer;
-        }
-        .btn-primary:hover {
-          background: #1d4ed8;
-        }
-        .btn-primary:disabled {
-          background: #404040;
-          cursor: not-allowed;
-        }
-        .btn-secondary {
-          background: #262626;
-          border: 1px solid #404040;
-          border-radius: 6px;
-          padding: 6px 14px;
-          font-size: 14px;
-          cursor: pointer;
-        }
-        .btn-secondary:hover {
-          background: #333;
-        }
-        .chip {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          background: #262626;
-          border: 1px solid #404040;
-          border-radius: 999px;
-          padding: 2px 4px 2px 10px;
-          font-size: 13px;
-        }
-        .chip-remove {
-          background: transparent;
-          border: none;
-          color: #a3a3a3;
-          cursor: pointer;
-          font-size: 15px;
-          line-height: 1;
-          padding: 2px 6px;
-        }
-        .chip-remove:hover {
-          color: #fff;
-        }
-      `}</style>
     </main>
   )
 }
