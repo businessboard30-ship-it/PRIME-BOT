@@ -234,16 +234,33 @@ class Database:
         DROP CONSTRAINT can complete in between another process's IF EXISTS
         check and its own DROP CONSTRAINT, which then fails with
         asyncpg.exceptions.UndefinedObjectError because the constraint is
-        already gone. A Postgres advisory lock here serializes the whole
-        migration pass across every process sharing this database, so only
-        one of them is ever inside _create_tables at a time and these
-        check-then-act migrations can no longer race each other.
+        already gone.
+
+        A Postgres advisory lock here serializes the whole migration pass
+        across every process sharing this database, so only one of them is
+        ever inside _create_tables at a time and these check-then-act
+        migrations can no longer race each other. This MUST be a session-
+        level lock (pg_advisory_lock/pg_advisory_unlock) with no enclosing
+        transaction around _create_tables — an earlier version of this fix
+        wrapped the whole migration pass in one transaction, which meant
+        every ALTER TABLE's ACCESS EXCLUSIVE lock was held until the entire
+        pass committed at the end, instead of being released after each
+        statement like before. With a dozen clones migrating in the same
+        second, that stalled every other clone's ordinary queries against
+        those tables (automod/ship/invites/etc.) long enough to blow past
+        command_timeout=10 and fail with TimeoutError — a self-inflicted
+        outage across the whole fleet, not just the migrating process.
+        Session-scoped lock + no surrounding transaction keeps the race fix
+        without introducing that stall: each statement still commits (and
+        releases its own lock) immediately, exactly as it did originally.
         """
         pool = await get_pool()
         async with pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("SELECT pg_advisory_xact_lock(727271001)")
+            await conn.execute("SELECT pg_advisory_lock(727271001)")
+            try:
                 await self._create_tables(conn)
+            finally:
+                await conn.execute("SELECT pg_advisory_unlock(727271001)")
             # NOTE: _migrate_stale_stripe_provider is no longer called here.
             # Stripe is now a fully supported clone payment provider (see
             # payments.StripePayment / payments.gateway_charge_amount and
