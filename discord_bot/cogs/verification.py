@@ -323,10 +323,11 @@ class VerificationCog(GuildOnlyCog):
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def setupverification(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         clone_id = _clone_id_of(interaction)
         current = await db.get_verification_config(interaction.guild_id, clone_id=clone_id)
         wizard = WizardView(interaction.user.id, current)
-        await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+        await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
