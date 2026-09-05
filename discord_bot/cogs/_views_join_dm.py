@@ -563,9 +563,21 @@ class _WelcomeEditButton(discord.ui.DynamicItem[discord.ui.Button], template=re.
         except asyncio.TimeoutError:
             current_template = ""
             channel_id = None
-        await interaction.response.send_modal(
-            WelcomeNudgeEditModal(self.guild_id, channel_id, current_template)
-        )
+
+        # Guard against a duplicate/late dispatch of this same interaction
+        # (e.g. a gateway resume replaying the event, or the DB call above
+        # eating enough of the 3s window that a race lets this callback run
+        # twice). send_modal() must be a first response, so if something
+        # already acknowledged this interaction, don't try again.
+        if interaction.response.is_done():
+            return
+        try:
+            await interaction.response.send_modal(
+                WelcomeNudgeEditModal(self.guild_id, channel_id, current_template)
+            )
+        except discord.HTTPException as e:
+            if e.code != 40060:  # already acknowledged — safe to swallow
+                raise
 
 
 class _WelcomeChannelButton(discord.ui.DynamicItem[discord.ui.Button], template=re.compile(r"^join_dm_wsub_chan:(\d+):(-|\d+)$").pattern):
