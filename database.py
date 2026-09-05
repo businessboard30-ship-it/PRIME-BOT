@@ -8150,7 +8150,10 @@ class Database:
         which haven't had one posted yet (wizard_message_id still NULL —
         covers both "never posted" and "posted manually via /invites setup
         before the delay elapsed", either of which should cancel the
-        pending auto-post). Powers InvitesCog._scheduler_loop."""
+        pending auto-post) AND which the server hasn't already turned the
+        tracker on for by some other path (enabled = false) — no point
+        nagging a guild that's already using the feature. Powers
+        InvitesCog._scheduler_loop."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -8159,6 +8162,7 @@ class Database:
                 WHERE clone_id IS NOT DISTINCT FROM $1
                   AND wizard_due_at IS NOT NULL AND wizard_due_at <= NOW()
                   AND wizard_message_id IS NULL
+                  AND COALESCE(enabled, FALSE) = FALSE
                 """,
                 clone_id,
             )
