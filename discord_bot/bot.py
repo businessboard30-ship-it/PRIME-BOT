@@ -97,6 +97,11 @@ class AnimeBotDiscord(commands.Bot):
         # running in the same guild as the main bot must never see or sell
         # into the main bot's premium groups, and vice versa.
         self.clone_id = clone_id
+        # Guards against _handle_new_guild running twice for the same
+        # join — see _handle_new_guild's docstring for why that happens
+        # and why an in-memory, per-process set (not a DB flag) is the
+        # right fix here.
+        self._new_guild_seen: set[int] = set()
 
     async def setup_hook(self):
         # Database pool: database.py's get_pool() lazily creates the pool on
@@ -384,7 +389,28 @@ class AnimeBotDiscord(commands.Bot):
         """Everything that should happen the first time this bot process
         (main or clone) ever observes itself being in this guild — shared
         by the live on_guild_join event and on_ready's catch-up pass for
-        joins that happened while this process wasn't connected yet."""
+        joins that happened while this process wasn't connected yet.
+
+        Both triggers can legitimately fire for the *same* join within
+        seconds of each other: on_guild_join dispatches immediately, but
+        this method does a handful of awaited DB/HTTP calls (invite
+        lookup, upsert, the owner DM's several cog sections) before it
+        finishes. If the gateway reconnects during that window — which
+        the "WebSocket ... ratelimited" / RESUME cycles seen in prod logs
+        show does happen, even seconds into a fresh connection — on_ready
+        fires again and re-runs its catch-up scan. That scan decides
+        "new vs already-known" by re-querying discord_guilds, and if the
+        first call's upsert_discord_guild hasn't committed yet, the guild
+        still looks brand new to the second call too. Net effect: this
+        method runs twice for one join, and the owner gets the combined
+        join DM twice. _new_guild_seen closes that window: the guard is
+        added synchronously before any `await` below, so a same-tick
+        re-entry from on_ready can never slip past it the way a
+        DB-backed check could."""
+        if guild.id in self._new_guild_seen:
+            logger.info(f"[join] duplicate _handle_new_guild suppressed for guild {guild.id}")
+            return
+        self._new_guild_seen.add(guild.id)
         invite_url = await self._best_effort_invite(guild)
         await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id, invite_url,
                                        owner_id=guild.owner_id)
@@ -630,6 +656,10 @@ class AnimeBotDiscord(commands.Bot):
     async def on_guild_remove(self, guild: discord.Guild):
         logger.info(f"Left guild: {guild.name} ({guild.id})")
         await db.mark_discord_guild_left(guild.id, self.clone_id)
+        # So a genuine future re-join (same process lifetime) isn't
+        # mistaken for the duplicate-fire case _new_guild_seen guards
+        # against and gets its join DM as normal.
+        self._new_guild_seen.discard(guild.id)
 
     @tasks.loop(minutes=5)
     async def _heartbeat_loop(self):
