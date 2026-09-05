@@ -692,6 +692,14 @@ class SetupChannelsCog(GuildOnlyCog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+    @group.command(name="servers", description="Get your link to list this server in PRIME-BOT's public directory")
+    async def servers_cmd(self, interaction: discord.Interaction):
+        listing_cog = interaction.client.get_cog("ServerListingCog")
+        if listing_cog is None:
+            await interaction.response.send_message("Server listing module isn't loaded.", ephemeral=True)
+            return
+        await listing_cog.request_listing_link(interaction)
+
     @group.command(name="roastme", description="Request the bot roast someone — needs an admin's approval")
     async def roastme_cmd(self, interaction: discord.Interaction):
         roast_cog = interaction.client.get_cog("RoastCog")
