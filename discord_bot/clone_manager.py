@@ -133,6 +133,20 @@ def _kill_orphaned_clone_processes():
 
 async def _reconcile(managed: Dict[int, ManagedClone]):
     try:
+        dupes = await db.get_duplicate_active_clone_tokens()
+        for d in dupes:
+            logger.error(
+                f"[DUPLICATE CLONE] bot '{d['bot_username']}' (bot_user_id={d['bot_user_id']}) "
+                f"has {len(d['clone_ids'])} ACTIVE clone_id rows: {d['clone_ids']} — this token will "
+                f"get one live process PER id below, so every event in its guilds gets handled/logged "
+                f"that many times. Fix: keep exactly one clone_id active, deactivate the rest, e.g. "
+                f"UPDATE discord_cloned_bots SET status='inactive' WHERE clone_id IN "
+                f"({', '.join(str(cid) for cid in d['clone_ids'][1:])});"
+            )
+    except Exception as e:
+        logger.error(f"Failed to check for duplicate active clone tokens: {e}")
+
+    try:
         active = await db.get_active_discord_clones()
     except Exception as e:
         logger.error(f"Failed to fetch active clones from the database: {e}")
