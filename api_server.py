@@ -84,6 +84,7 @@ ROUTES = {
     "/api/paystack_webhook": "api.paystack_webhook",
     "/api/vote_webhook": "api.vote_webhook",
     "/api/discord_dashboard": "api.discord_dashboard",
+    "/api/server_listings": "api.server_listings",
     "/api/cron_discord_announcements": "api.cron_discord_announcements",
     "/api/cron_discord_owner_broadcast": "api.cron_discord_owner_broadcast",
     "/api/cron_expire_monetization": "api.cron_expire_monetization",
@@ -91,6 +92,7 @@ ROUTES = {
     "/api/oauth_gdrive": "api.oauth_gdrive",
     "/api/discover_oauth_join": "api.discover_oauth_join",
     "/api/bump_oauth": "api.bump_oauth",
+    "/api/server_listing_vote_oauth": "api.server_listing_vote_oauth",
     # Discord app-verification requires real, permanently reachable ToS/
     # Privacy URLs — these were written in api/legal_pages.py but never
     # wired into the dispatcher (and its class names don't match the
