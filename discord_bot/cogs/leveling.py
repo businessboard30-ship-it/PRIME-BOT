@@ -21,7 +21,6 @@ import asyncio
 import io
 import logging
 import random
-import time
 
 import aiohttp
 import discord
@@ -92,7 +91,11 @@ class LevelingCog(GuildOnlyCog):
         # restart, which just means one extra XP award is possible right
         # after a deploy — harmless, not worth a DB round-trip per message
         # just to persist a 60-second cooldown.
-        self._last_award: dict[tuple[int, int], float] = {}
+        # No more in-memory cooldown dict here — the cooldown is now
+        # enforced atomically in db.add_xp (cooldown_seconds=), which
+        # holds across every process, not just this one. See add_xp's
+        # docstring for why an in-memory dict caused double level-up
+        # messages whenever two bot processes briefly overlapped.
 
     async def _grant_level_roles(self, member: discord.Member, new_level: int, clone_id=None):
         role_rows = await db.get_level_roles(member.guild.id, clone_id=clone_id)
@@ -110,22 +113,25 @@ class LevelingCog(GuildOnlyCog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.guild is None:
             return
-        key = (message.guild.id, message.author.id)
-        now = time.monotonic()
-        last = self._last_award.get(key, 0)
-        if now - last < XP_COOLDOWN_SECONDS:
-            return
-        self._last_award[key] = now
-
         clone_id = getattr(self.bot, "clone_id", None)
         current = await db.get_xp(message.guild.id, message.author.id, clone_id=clone_id)
         old_level = leveling.compute_level(current["total_xp"])
         config = await db.get_leveling_config(message.guild.id, clone_id=clone_id)
         multiplier = XP_RATE_MULTIPLIERS.get(config.get("xp_rate", "default"), 1.0)
         gained = max(1, round(random.randint(XP_MIN, XP_MAX) * multiplier))
-        new_total = current["total_xp"] + gained
-        new_level = leveling.compute_level(new_total)
-        await db.add_xp(message.guild.id, message.author.id, gained, new_level, clone_id=clone_id)
+        new_level_guess = leveling.compute_level(current["total_xp"] + gained)
+        # cooldown_seconds makes this atomic across processes — see
+        # add_xp's docstring. If this call lost the race (already on
+        # cooldown, including a duplicate process's call for the same
+        # message), row is None and we must not send anything.
+        row = await db.add_xp(
+            message.guild.id, message.author.id, gained, new_level_guess,
+            clone_id=clone_id, cooldown_seconds=XP_COOLDOWN_SECONDS,
+        )
+        if row is None:
+            return
+        new_level = row["level"]
+        new_total = row["total_xp"]
 
         if new_level > old_level and isinstance(message.author, discord.Member):
             announce_channel = message.channel
