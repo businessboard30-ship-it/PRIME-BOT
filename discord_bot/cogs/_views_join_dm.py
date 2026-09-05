@@ -205,7 +205,7 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             )
             manual_button = discord.ui.Button(
                 label="Read bot manual", style=discord.ButtonStyle.link,
-                emoji="📖", url=f"{DASHBOARD_BASE_URL}/manual",
+                emoji="📖", url="https://prime-bot-sigma.vercel.app/manual#moderation",
             )
             bottom_children = [manual_button, *bottom_children, support_button]
         container.add_item(discord.ui.ActionRow(*bottom_children))
