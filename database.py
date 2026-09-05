@@ -3227,20 +3227,24 @@ class Database:
             ON server_listings (ref_code) WHERE ref_code IS NOT NULL
         """)
 
-        # One row per (listing, voter) — the UNIQUE constraint IS the
-        # double-vote guard, no application-level check needed. voter_id
-        # comes from the identify-only OAuth login below (api/server_listing_
-        # vote_oauth.py), same "we only ever trust what Discord's /users/@me
-        # handed back" rule as bump_oauth.py / discover_oauth_join.py use for
-        # their own identity checks.
+        # One row per (listing, voter) — the UNIQUE INDEX below (not a
+        # table-level PRIMARY KEY, which can't take an expression like
+        # COALESCE) IS the double-vote guard, no application-level check
+        # needed. voter_id comes from the identify-only OAuth login below
+        # (api/server_listing_vote_oauth.py), same "we only ever trust what
+        # Discord's /users/@me handed back" rule as bump_oauth.py /
+        # discover_oauth_join.py use for their own identity checks.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS server_listing_votes (
                 guild_id BIGINT NOT NULL,
                 clone_id INTEGER,
                 voter_id BIGINT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (guild_id, COALESCE(clone_id, -1), voter_id)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS server_listing_votes_unique_key
+            ON server_listing_votes (guild_id, COALESCE(clone_id, -1), voter_id)
         """)
 
         # One-time OAuth states for the vote-login flow — exact same
