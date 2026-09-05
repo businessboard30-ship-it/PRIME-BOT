@@ -29,6 +29,7 @@ on_member_join, an event listener rather than a command.
 """
 
 import logging
+from urllib.parse import quote
 
 import discord
 from discord.ext import commands
@@ -38,6 +39,32 @@ from database import db
 from discord_bot.cogs._dm_support import GuildOnlyCog
 
 logger = logging.getLogger(__name__)
+
+
+async def _auto_generate_invite(guild: discord.Guild) -> str | None:
+    """Best-effort permanent invite (max_age=0, max_uses=0) so admins don't
+    have to go find/paste one themselves. Tries the guild's configured
+    system/rules channel first (most likely to already be public-facing),
+    then falls back to the first text channel the bot can actually create
+    an invite in. Returns None on any permission/API failure — the submit
+    page falls back to a manual paste in that case, same as before this
+    feature existed."""
+    candidates = [c for c in (guild.system_channel, guild.rules_channel) if c is not None]
+    candidates += [c for c in guild.text_channels if c not in candidates]
+
+    for channel in candidates:
+        perms = channel.permissions_for(guild.me)
+        if not perms.create_instant_invite:
+            continue
+        try:
+            invite = await channel.create_invite(
+                max_age=0, max_uses=0, unique=False,
+                reason="Auto-generated for the public server directory listing",
+            )
+            return invite.url
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+    return None
 
 
 def _clone_id_of(interaction: discord.Interaction):
@@ -109,10 +136,21 @@ class ServerListingCog(GuildOnlyCog):
             url += f"&clone_id={clone_id}"
 
         existing = await db.get_server_listing(guild.id, clone_id=clone_id)
+
+        # Only auto-generate an invite for a brand-new listing — an existing
+        # one already has an invite_code that on_member_join above is using
+        # for conversion tracking, so we never silently swap that out.
+        auto_invite_note = ""
+        if not existing:
+            auto_invite = await _auto_generate_invite(guild)
+            if auto_invite:
+                url += f"&invite_url={quote(auto_invite, safe='')}"
+                auto_invite_note = " We've already generated a permanent invite for you — just add a description and tags."
+
         status_line = (
             "You're already listed — this link opens your listing so you can edit it."
             if existing else
-            "Fill in your invite link and a short description, and it goes live immediately — no approval wait."
+            f"Fill in a short description and it goes live immediately — no approval wait.{auto_invite_note}"
         )
         await interaction.followup.send(
             f"📋 **Server directory link** (keep this private — it edits your listing, same as a password):\n"
