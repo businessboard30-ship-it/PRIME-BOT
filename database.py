@@ -3159,6 +3159,138 @@ class Database:
             ON discord_dashboard_tokens (guild_id, COALESCE(clone_id, -1))
         """)
 
+        # Public server directory ("list your server" button on the website).
+        # Same trust model as discord_dashboard_tokens above: a token is only
+        # ever handed out by /servers, which requires Manage Server AND only
+        # runs inside a guild the bot is already in — so possessing a valid
+        # token IS proof the bot is confirmed in that server. That's what lets
+        # server_listings below go live immediately on submit with no manual
+        # admin approval step.
+        #
+        # guild_name/guild_icon_url/member_count are captured server-side from
+        # interaction.guild when the token is (re)issued — NOT taken from the
+        # client's POST body — so a listing can't be spoofed with a fake name/
+        # icon while pointing its invite_url somewhere else. Every rerun of
+        # /servers refreshes these three columns (member count drifts) while
+        # keeping the same token, same idempotent-reuse convention as the
+        # dashboard token.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS server_listing_tokens (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                token TEXT NOT NULL UNIQUE,
+                guild_name TEXT NOT NULL,
+                guild_icon_url TEXT,
+                member_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS server_listing_tokens_guild_clone_key
+            ON server_listing_tokens (guild_id, COALESCE(clone_id, -1))
+        """)
+
+        # The actual public listing, one row per (guild, clone). invite_url
+        # and description/tags are the only fields the admin controls via the
+        # web form; everything else is copied over from server_listing_tokens
+        # at submit time (see upsert_server_listing).
+        # ref_code is the shareable "referral link boost" identifier
+        # (?ref=<code> on the public listing URL); join_credits is a count of
+        # confirmed conversions (see server_listing_ref_clicks below) folded
+        # in at read time by get_public_server_listings' ranking query, not
+        # stored redundantly here.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS server_listings (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                guild_name TEXT NOT NULL,
+                guild_icon_url TEXT,
+                member_count INTEGER NOT NULL DEFAULT 0,
+                invite_url TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                tags TEXT[] NOT NULL DEFAULT '{}',
+                ref_code TEXT UNIQUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS server_listings_guild_clone_key
+            ON server_listings (guild_id, COALESCE(clone_id, -1))
+        """)
+        # Older DBs created before ref_code existed — cheap idempotent add.
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS ref_code TEXT
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS server_listings_ref_code_key
+            ON server_listings (ref_code) WHERE ref_code IS NOT NULL
+        """)
+
+        # One row per (listing, voter) — the UNIQUE constraint IS the
+        # double-vote guard, no application-level check needed. voter_id
+        # comes from the identify-only OAuth login below (api/server_listing_
+        # vote_oauth.py), same "we only ever trust what Discord's /users/@me
+        # handed back" rule as bump_oauth.py / discover_oauth_join.py use for
+        # their own identity checks.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS server_listing_votes (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                voter_id BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (guild_id, COALESCE(clone_id, -1), voter_id)
+            )
+        """)
+
+        # One-time OAuth states for the vote-login flow — exact same
+        # shape/lifecycle as discover_oauth_states (mint on first leg, pop on
+        # callback, short TTL enforced by pop_vote_oauth_state's WHERE clause
+        # rather than a cron sweep).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS server_listing_vote_oauth_states (
+                state TEXT PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # Referral-boost click log — just a visit counter (no auth, no
+        # cookies/sessions to correlate: see the note on invite_code/
+        # last_known_invite_uses below for why conversion doesn't need
+        # per-visitor identity at all).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS server_listing_ref_clicks (
+                id SERIAL PRIMARY KEY,
+                ref_code TEXT NOT NULL,
+                clicked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS server_listing_ref_clicks_ref_idx
+            ON server_listing_ref_clicks (ref_code, clicked_at)
+        """)
+        # Conversion is attributed WITHOUT needing to know who clicked:
+        # invite_code is parsed once from the listing's own invite_url, and
+        # last_known_invite_uses is this bot's own last-seen use-count for
+        # that exact invite (fetched fresh with guild.invites() in
+        # server_listing.py's on_member_join — the bot is necessarily a
+        # member of every listed guild, same trust chain as the rest of this
+        # feature). A "conversion" = that invite's use-count went up while
+        # there's a recent (within REF_CLICK_WINDOW) unconverted click
+        # logged for this ref_code — good enough to rank by without
+        # fingerprinting individual visitors.
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS invite_code TEXT
+        """)
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS last_known_invite_uses INTEGER NOT NULL DEFAULT 0
+        """)
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS confirmed_conversions INTEGER NOT NULL DEFAULT 0
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS link_whitelist_domains (
                 id SERIAL PRIMARY KEY,
@@ -8902,6 +9034,246 @@ class Database:
                 "SELECT guild_id, clone_id FROM discord_dashboard_tokens WHERE token = $1", token
             )
             return dict(row) if row else None
+
+    # --- public server directory ("list your server") --------------------
+
+    async def get_or_create_listing_token(
+        self, guild_id: int, guild_name: str, guild_icon_url: Optional[str],
+        member_count: int, clone_id: Optional[int] = None,
+    ) -> str:
+        """Idempotent like get_or_create_dashboard_token (same token every
+        time /servers is rerun in this guild), but ALSO refreshes the
+        server-verified guild_name/guild_icon_url/member_count columns on
+        every call, since those can drift between runs and are what
+        upsert_server_listing trusts instead of client-supplied values."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT token FROM server_listing_tokens WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+            if row:
+                await conn.execute(
+                    """UPDATE server_listing_tokens
+                       SET guild_name = $3, guild_icon_url = $4, member_count = $5
+                       WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2""",
+                    guild_id, clone_id, guild_name, guild_icon_url, member_count,
+                )
+                return row["token"]
+            token = secrets.token_urlsafe(24)
+            await conn.execute(
+                """INSERT INTO server_listing_tokens
+                   (guild_id, clone_id, token, guild_name, guild_icon_url, member_count)
+                   VALUES ($1, $2, $3, $4, $5, $6)""",
+                guild_id, clone_id, token, guild_name, guild_icon_url, member_count,
+            )
+            return token
+
+    async def resolve_listing_token(self, token: str) -> Optional[Dict]:
+        """Returns {guild_id, clone_id, guild_name, guild_icon_url,
+        member_count} for a valid listing token, or None."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT guild_id, clone_id, guild_name, guild_icon_url, member_count
+                   FROM server_listing_tokens WHERE token = $1""", token
+            )
+            return dict(row) if row else None
+
+    async def get_server_listing(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM server_listings WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+            return dict(row) if row else None
+
+    async def upsert_server_listing(
+        self, guild_id: int, clone_id: Optional[int], guild_name: str,
+        guild_icon_url: Optional[str], member_count: int,
+        invite_url: str, description: str, tags: List[str],
+    ) -> Dict:
+        """guild_name/guild_icon_url/member_count MUST come from the
+        server_listing_tokens row (server-verified), never straight from the
+        client's request body — see server_listing_tokens' comment in
+        _create_tables."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO server_listings
+                    (guild_id, clone_id, guild_name, guild_icon_url, member_count,
+                     invite_url, description, tags, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                ON CONFLICT (guild_id, COALESCE(clone_id, -1)) DO UPDATE SET
+                    guild_name = EXCLUDED.guild_name,
+                    guild_icon_url = EXCLUDED.guild_icon_url,
+                    member_count = EXCLUDED.member_count,
+                    invite_url = EXCLUDED.invite_url,
+                    description = EXCLUDED.description,
+                    tags = EXCLUDED.tags,
+                    updated_at = NOW()
+                RETURNING *
+                """,
+                guild_id, clone_id, guild_name, guild_icon_url, member_count,
+                invite_url, description, tags,
+            )
+            return dict(row)
+
+    async def get_public_server_listings(self, limit: int = 200) -> List[Dict]:
+        """Ranked directory feed for the public /servers page: vote count
+        (from server_listing_votes) plus confirmed_conversions (rolled up
+        onto the listing row itself by _check_ref_conversion below) both
+        count toward discovery order, votes weighted higher since they
+        require a real sign-in while a conversion only requires a join. No
+        approval flag to filter on — see server_listing_tokens' comment for
+        why a row existing here already implies the bot-in-guild check."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT sl.*, COALESCE(v.vote_count, 0) AS vote_count
+                FROM server_listings sl
+                LEFT JOIN (
+                    SELECT guild_id, clone_id, COUNT(*) AS vote_count
+                    FROM server_listing_votes GROUP BY guild_id, clone_id
+                ) v ON v.guild_id = sl.guild_id AND v.clone_id IS NOT DISTINCT FROM sl.clone_id
+                ORDER BY (COALESCE(v.vote_count, 0) * 3 + sl.confirmed_conversions) DESC,
+                         sl.updated_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [dict(r) for r in rows]
+
+    # --- server listing votes ----------------------------------------------
+
+    async def cast_server_listing_vote(
+        self, guild_id: int, clone_id: Optional[int], voter_id: int
+    ) -> bool:
+        """Returns True if this vote was newly recorded, False if this voter
+        had already voted for this listing (ON CONFLICT DO NOTHING makes the
+        UNIQUE/PK constraint the actual double-vote guard, not this code)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """INSERT INTO server_listing_votes (guild_id, clone_id, voter_id)
+                   VALUES ($1, $2, $3)
+                   ON CONFLICT (guild_id, COALESCE(clone_id, -1), voter_id) DO NOTHING""",
+                guild_id, clone_id, voter_id,
+            )
+            return result.endswith("1")
+
+    async def has_voted(self, guild_id: int, clone_id: Optional[int], voter_id: int) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM server_listing_votes WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2 AND voter_id=$3",
+                guild_id, clone_id, voter_id,
+            )
+            return row is not None
+
+    async def create_vote_oauth_state(self, state: str, guild_id: int, clone_id: Optional[int]) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO server_listing_vote_oauth_states (state, guild_id, clone_id) VALUES ($1, $2, $3)",
+                state, guild_id, clone_id,
+            )
+
+    async def pop_vote_oauth_state(self, state: str) -> Optional[Dict]:
+        """One-time use, 10 minute TTL — same shape as
+        pop_discover_oauth_state (mint-then-pop, no separate cron sweep)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """DELETE FROM server_listing_vote_oauth_states
+                   WHERE state = $1 AND created_at > NOW() - INTERVAL '10 minutes'
+                   RETURNING guild_id, clone_id""",
+                state,
+            )
+            return dict(row) if row else None
+
+    # --- server listing referral-boost tracking ----------------------------
+
+    async def ensure_listing_ref_code(self, guild_id: int, clone_id: Optional[int]) -> str:
+        """Every listing gets a ref_code lazily on first request rather than
+        at submit time, so listings created before this feature existed
+        still get one transparently."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT ref_code FROM server_listings WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+            if row and row["ref_code"]:
+                return row["ref_code"]
+            code = secrets.token_urlsafe(6)
+            await conn.execute(
+                "UPDATE server_listings SET ref_code=$3 WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id, code,
+            )
+            return code
+
+    async def log_ref_click(self, ref_code: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO server_listing_ref_clicks (ref_code) VALUES ($1)", ref_code,
+            )
+
+    async def set_listing_invite_code(self, guild_id: int, clone_id: Optional[int], invite_code: str) -> None:
+        """Parsed once from invite_url at submit time (see server_listings.py
+        POST handler) — this is the invite _check_ref_conversion watches for
+        use-count increases on."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE server_listings SET invite_code=$3 WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id, invite_code,
+            )
+
+    async def check_ref_conversion(
+        self, guild_id: int, clone_id: Optional[int], invite_code: str, current_uses: int
+    ) -> None:
+        """Called from server_listing.py's on_member_join, once per join, for
+        whichever listing (if any) matches this guild + invite_code. No-ops
+        if this guild has no listing, the listing's invite_code doesn't
+        match the one that was actually used, or there's no unclaimed recent
+        click to attribute the bump to — a use-count increase with no
+        pending click just means organic invite traffic, not a referral."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT ref_code, last_known_invite_uses FROM server_listings
+                   WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2
+                     AND invite_code = $3""",
+                guild_id, clone_id, invite_code,
+            )
+            if row is None:
+                return
+            if current_uses <= row["last_known_invite_uses"]:
+                await conn.execute(
+                    "UPDATE server_listings SET last_known_invite_uses=$3 WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
+                    guild_id, clone_id, current_uses,
+                )
+                return
+            pending_click = await conn.fetchrow(
+                """SELECT id FROM server_listing_ref_clicks
+                   WHERE ref_code = $1 AND clicked_at > NOW() - INTERVAL '24 hours'
+                   ORDER BY clicked_at DESC LIMIT 1""",
+                row["ref_code"],
+            )
+            await conn.execute(
+                """UPDATE server_listings
+                   SET last_known_invite_uses = $3,
+                       confirmed_conversions = confirmed_conversions + CASE WHEN $4 THEN 1 ELSE 0 END
+                   WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2""",
+                guild_id, clone_id, current_uses, pending_click is not None,
+            )
+            if pending_click is not None:
+                await conn.execute("DELETE FROM server_listing_ref_clicks WHERE id=$1", pending_click["id"])
 
     async def add_submission(self, user_id: int, anime_name: str, episodes: int, genres: str, synopsis: str, image_url: str):
         """Add a new submission"""
