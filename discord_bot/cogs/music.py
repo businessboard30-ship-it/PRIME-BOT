@@ -45,6 +45,7 @@ disconnects after 60s of solo instead of sitting there indefinitely.
 
 import asyncio
 import logging
+import pathlib
 import random
 import subprocess
 import time
@@ -211,16 +212,10 @@ async def resolve_track(url: str, queued_by_id: int, voice_channel_id: int) -> d
 
 
 def _probe_duration_seconds(url: str) -> float:
-    """Blocking — must be run via asyncio.to_thread, same reasoning as
-    _extract_stream_info above. Used for direct-upload URLs (Discord CDN
-    attachment links), which — unlike yt-dlp-resolved tracks — never come
-    with duration metadata attached, so the Now Playing panel always
-    showed 0:00 total for anything queued via Upload a File / Browse &
-    Play. ffprobe can read duration straight off a remote URL without
-    downloading the whole file first. Returns 0.0 on any failure (missing
-    ffprobe, network hiccup, unreadable file) — same "never block playback
-    over a cosmetic detail" spirit as the rest of this module; the track
-    still queues and plays, it just won't show a total time."""
+    """Blocking — must be run via asyncio.to_thread. Used for direct-upload 
+    URLs (Discord CDN attachment links) to read duration without downloading 
+    the whole file. Returns 0.0 on any failure — never block playback over a 
+    cosmetic detail. Enhanced logging to diagnose 404/stale URL issues."""
     try:
         result = subprocess.run(
             [
@@ -231,9 +226,43 @@ def _probe_duration_seconds(url: str) -> float:
             ],
             capture_output=True, text=True, timeout=15,
         )
-        return max(0.0, float(result.stdout.strip()))
-    except (subprocess.TimeoutExpired, ValueError, OSError) as e:
-        logger.warning(f"[v0] ffprobe duration lookup failed for upload URL: {e!r}")
+        
+        # Check subprocess error code
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "404" in stderr or "Not Found" in stderr:
+                logger.error(
+                    f"[v0] ffprobe got 404 on URL (attachment may have expired): {url[:100]}... "
+                    f"| stderr: {stderr[:300]}"
+                )
+            else:
+                logger.warning(
+                    f"[v0] ffprobe failed with code {result.returncode} | URL: {url[:100]}... "
+                    f"| stderr: {stderr[:200]}"
+                )
+            return 0.0
+        
+        # Check for empty output
+        duration_str = result.stdout.strip()
+        if not duration_str:
+            logger.warning(f"[v0] ffprobe returned empty duration for: {url[:100]}...")
+            return 0.0
+        
+        # Try to parse as float
+        try:
+            return max(0.0, float(duration_str))
+        except ValueError:
+            logger.warning(f"[v0] ffprobe returned non-numeric duration '{duration_str}' for: {url[:100]}...")
+            return 0.0
+            
+    except subprocess.TimeoutExpired:
+        logger.warning(f"[v0] ffprobe timed out (15s) on URL: {url[:100]}...")
+        return 0.0
+    except OSError as e:
+        logger.warning(f"[v0] ffprobe not found or permission denied: {e}")
+        return 0.0
+    except Exception as e:
+        logger.warning(f"[v0] Unexpected error during ffprobe: {e!r} | URL: {url[:100]}...")
         return 0.0
 
 
@@ -296,6 +325,37 @@ class MusicCog(GuildOnlyCog):
         if guild_id not in self.states:
             self.states[guild_id] = GuildMusicState(guild_id)
         return self.states[guild_id]
+
+    async def _refresh_discord_cdn_url_if_needed(
+        self, guild: discord.Guild, url: str, entry_data: dict | None = None
+    ) -> str:
+        """If the URL is a Discord CDN attachment, try to re-fetch a fresh URL
+        from the original message. Discord CDN URLs expire (~24h) with a signature,
+        so we must refresh them before playback or they'll 404. Otherwise return
+        the URL unchanged (e.g., for YouTube links)."""
+        
+        # Only applies to Discord CDN URLs
+        if "cdn.discordapp.com" not in url:
+            return url
+        
+        # Try to get fresh URL from original message if we have the location data
+        if entry_data and entry_data.get("channel_id") and entry_data.get("message_id"):
+            try:
+                channel = guild.get_channel(int(entry_data["channel_id"]))
+                if channel is not None:
+                    message = await channel.fetch_message(int(entry_data["message_id"]))
+                    if message.attachments:
+                        fresh_url = message.attachments[0].url
+                        logger.info(f"[v0] Refreshed stale Discord CDN URL for playback in guild {guild.id}")
+                        return fresh_url
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                logger.warning(f"[v0] Couldn't refresh Discord CDN URL (channel/message gone): {e} — using stored URL anyway")
+        
+        # If we have entry_data but couldn't refresh, warn that URL might be stale
+        if entry_data and ("channel_id" in entry_data or "message_id" in entry_data):
+            logger.warning(f"[v0] Using potentially stale Discord CDN URL — couldn't fetch fresh one")
+        
+        return url  # Fall back to original if refresh fails or no entry data
 
     @app_commands.command(name="activate-pro", description="[Owner] Activate the Music Pro upgrade for this server after confirming payment")
     async def activate_pro(self, interaction: discord.Interaction):
@@ -393,13 +453,18 @@ class MusicCog(GuildOnlyCog):
         return None
 
     async def queue_direct_url_for_playback(
-        self, guild: discord.Guild, member: discord.Member, stream_url: str, title: str, clone_id, post_channel,
+        self, guild: discord.Guild, member: discord.Member, stream_url: str, title: str, 
+        clone_id, post_channel, entry_data: dict | None = None,
     ) -> str | None:
         """Like queue_track_for_submission, but for a URL that's already a
         playable media file — a raw Discord CDN attachment link (phone/PC
         upload) or a library replay — so it skips resolve_track/yt-dlp
         entirely and queues the URL as-is. Same never-raises contract:
-        returns None on success, or a short reason string on failure."""
+        returns None on success, or a short reason string on failure.
+        
+        entry_data: dict with optional "channel_id" and "message_id" to refresh
+        stale Discord CDN URLs before playback."""
+        
         if member.voice is None or member.voice.channel is None:
             return "you're not in a voice channel"
         voice_channel = member.voice.channel
@@ -413,11 +478,17 @@ class MusicCog(GuildOnlyCog):
                 f"ask an admin to run /activate-pro ({config.MUSIC_PRO_PRICE_LABEL}) for unlimited listens"
             )
 
+        # CRITICAL: Refresh Discord CDN URLs if they're stale — they expire in ~24h
+        stream_url = await self._refresh_discord_cdn_url_if_needed(guild, stream_url, entry_data)
+
+        # Probe duration — better error logging now
+        duration_seconds = await asyncio.to_thread(_probe_duration_seconds, stream_url)
+        
         track = {
             "stream_url": stream_url,
             "title": title,
             "uploader": member.display_name,
-            "duration_seconds": await asyncio.to_thread(_probe_duration_seconds, stream_url),
+            "duration_seconds": duration_seconds,
             "thumbnail": None,
             "queued_by": member.id,
             "voice_channel_id": voice_channel.id,
