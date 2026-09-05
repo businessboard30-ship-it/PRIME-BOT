@@ -1,15 +1,7 @@
 # path: nixpacks.toml
 [phases.setup]
 # libopus is required for discord.py to encode/play voice audio at all —
-# PyNaCl (in requirements-bot.txt) only covers voice *encryption*, not the
+# PyNaCl (in requirements.txt) only covers voice *encryption*, not the
 # actual Opus codec. Without this, voice_client.play() either raises or
 # produces silent audio: the "bot joins/queues but no sound" symptom.
 nixPkgs = ["ffmpeg", "libopus"]
-
-[phases.install]
-# requirements.txt is kept deliberately light because Vercel also reads it
-# for the /api serverless functions (it only recognizes that exact
-# filename, and doesn't tree-shake unused packages). The Discord/media-only
-# deps live in requirements-bot.txt and are installed here explicitly, so
-# Railway's worker/web processes still get everything they need.
-cmds = ["pip install -r requirements.txt -r requirements-bot.txt"]
