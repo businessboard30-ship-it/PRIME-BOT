@@ -3,7 +3,7 @@
   "provider": "node",
   "steps": {
     "install": {
-      "inputs": [{ "local": true, "include": ["."] }],
+      "inputs": ["...", { "local": true, "include": ["."] }],
       "commands": ["pnpm install"]
     },
     "build": {
