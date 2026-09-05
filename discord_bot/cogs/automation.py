@@ -37,6 +37,11 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 from database import db
 from discord_bot.i18n_helpers import get_lang, tr
 from discord_bot.cogs._views_shared import NavCardView, refresh_button
+from discord_bot.cogs._views_join_dm import (
+    _enable_reaction_roles, _enable_tickets, _enable_starboard,
+    _enable_suggestions, _enable_bump,
+)
+from discord_bot.cogs.verification import WizardView as _VerificationWizardView
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +84,7 @@ class ServerSetupView(discord.ui.View):
         self.clone_id = clone_id
         self.lang = lang
 
-    @discord.ui.button(label="Enable Auto-Moderation", style=discord.ButtonStyle.primary, emoji="🛡️")
+    @discord.ui.button(label="Enable Auto-Moderation", style=discord.ButtonStyle.primary, emoji="🛡️", row=0)
     async def enable_automod(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await db.set_automod_config(interaction.guild_id, clone_id=self.clone_id, word_filter_enabled=True,
@@ -90,7 +95,7 @@ class ServerSetupView(discord.ui.View):
         )
         await interaction.followup.send(msg, ephemeral=True)
 
-    @discord.ui.button(label="Enable Welcome Messages", style=discord.ButtonStyle.primary, emoji="👋")
+    @discord.ui.button(label="Enable Welcome Messages", style=discord.ButtonStyle.primary, emoji="👋", row=0)
     async def enable_welcome(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         await db.set_welcome_config(interaction.guild_id, clone_id=self.clone_id, enabled=True,
@@ -101,7 +106,7 @@ class ServerSetupView(discord.ui.View):
         )
         await interaction.followup.send(msg, ephemeral=True)
 
-    @discord.ui.button(label="Enable Leveling", style=discord.ButtonStyle.primary, emoji="📈")
+    @discord.ui.button(label="Enable Leveling", style=discord.ButtonStyle.primary, emoji="📈", row=0)
     async def enable_leveling(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Leveling has no on/off flag of its own — it's active as soon as
         # the LevelingCog's on_message listener is loaded, which it always
@@ -114,7 +119,7 @@ class ServerSetupView(discord.ui.View):
         )
         await interaction.response.send_message(msg, ephemeral=True)
 
-    @discord.ui.button(label="Enable Economy", style=discord.ButtonStyle.primary, emoji="💰")
+    @discord.ui.button(label="Enable Economy", style=discord.ButtonStyle.primary, emoji="💰", row=0)
     async def enable_economy(self, interaction: discord.Interaction, button: discord.ui.Button):
         msg = await tr(
             "💰 The economy game is already active — try `/economy daily`, `/economy work`, `/shop list`. "
@@ -122,7 +127,53 @@ class ServerSetupView(discord.ui.View):
         )
         await interaction.response.send_message(msg, ephemeral=True)
 
-    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, emoji="✅", row=1)
+    @discord.ui.button(label="Enable Verification", style=discord.ButtonStyle.primary, emoji="🔐", row=0)
+    async def enable_verification(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Unlike the DM-quickstart version of this feature, /serversetup
+        # already runs inside the guild — so the channel/role pickers in
+        # WizardView have real guild data to draw from, and we can open
+        # the actual setup wizard in place instead of pointing the admin
+        # at running /setupverification separately.
+        current = await db.get_verification_config(interaction.guild_id, clone_id=self.clone_id)
+        wizard = _VerificationWizardView(interaction.user.id, current)
+        await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+
+    @discord.ui.button(label="Enable Reaction Roles", style=discord.ButtonStyle.primary, emoji="🎭", row=1)
+    async def enable_reaction_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        ok, msg = await _enable_reaction_roles(interaction, interaction.guild, self.clone_id)
+        if msg:
+            await interaction.followup.send(await tr(msg, self.lang), ephemeral=True)
+
+    @discord.ui.button(label="Enable Tickets", style=discord.ButtonStyle.primary, emoji="🎫", row=1)
+    async def enable_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        ok, msg = await _enable_tickets(interaction, interaction.guild, self.clone_id)
+        if msg:
+            await interaction.followup.send(await tr(msg, self.lang), ephemeral=True)
+
+    @discord.ui.button(label="Enable Starboard", style=discord.ButtonStyle.primary, emoji="⭐", row=1)
+    async def enable_starboard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        ok, msg = await _enable_starboard(interaction, interaction.guild, self.clone_id)
+        if msg:
+            await interaction.followup.send(await tr(msg, self.lang), ephemeral=True)
+
+    @discord.ui.button(label="Enable Suggestions", style=discord.ButtonStyle.primary, emoji="💡", row=1)
+    async def enable_suggestions(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        ok, msg = await _enable_suggestions(interaction, interaction.guild, self.clone_id)
+        if msg:
+            await interaction.followup.send(await tr(msg, self.lang), ephemeral=True)
+
+    @discord.ui.button(label="Enable Bump Network", style=discord.ButtonStyle.primary, emoji="📣", row=1)
+    async def enable_bump(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        ok, msg = await _enable_bump(interaction, interaction.guild, self.clone_id)
+        if msg:
+            await interaction.followup.send(await tr(msg, self.lang), ephemeral=True)
+
+    @discord.ui.button(label="Done", style=discord.ButtonStyle.success, emoji="✅", row=2)
     async def finish(self, interaction: discord.Interaction, button: discord.ui.Button):
         for child in self.children:
             child.disabled = True
