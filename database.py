@@ -8022,7 +8022,18 @@ class Database:
     async def replace_invite_cache(self, guild_id: int, clone_id: Optional[int], cache: Dict[str, Dict]) -> None:
         """Wholesale replace, not a merge — called after every full
         guild.invites() fetch so deleted/expired invites drop out of the
-        cache instead of accumulating stale rows forever."""
+        cache instead of accumulating stale rows forever.
+
+        Upserts (ON CONFLICT ... DO UPDATE) rather than a plain INSERT:
+        Discord can dispatch on_guild_join twice in quick succession on a
+        reconnect, which fires two concurrent snapshot calls for the same
+        guild/clone. Both open their own DELETE+INSERT transaction; under
+        READ COMMITTED the second one's DELETE won't see the first's
+        not-yet-committed rows, so once the first transaction commits, the
+        second's INSERT collides on discord_invite_cache_guild_clone_code_key
+        and raises UniqueViolationError. Upserting makes the second call
+        harmless instead of a crash, regardless of which snapshot lands last.
+        """
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -8036,6 +8047,12 @@ class Database:
                         INSERT INTO discord_invite_cache
                             (guild_id, clone_id, invite_code, uses, inviter_id, is_vanity, updated_at)
                         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                        ON CONFLICT ON CONSTRAINT discord_invite_cache_guild_clone_code_key
+                        DO UPDATE SET
+                            uses = EXCLUDED.uses,
+                            inviter_id = EXCLUDED.inviter_id,
+                            is_vanity = EXCLUDED.is_vanity,
+                            updated_at = NOW()
                         """,
                         [
                             (guild_id, clone_id, code, data.get("uses", 0), data.get("inviter_id"), data.get("is_vanity", False))
