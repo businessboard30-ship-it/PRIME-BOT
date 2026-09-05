@@ -226,12 +226,25 @@ class AIToolsCog(commands.Cog):
 
         user_id = interaction.user.id
         tier = await self._tier(user_id)
-        allowed, warning = await check_ai_usage_limit(user_id, tier, "images")
-        if not allowed:
-            await interaction.response.send_message(f"❌ {warning}\n\n💎 Higher tiers get more daily images.", ephemeral=True)
+
+        # Guard against a duplicate INTERACTION_CREATE dispatch (Discord can
+        # occasionally redeliver the same interaction across a gateway
+        # resume/reconnect — this previously crashed with "Interaction has
+        # already been acknowledged" when a second, concurrent invocation of
+        # this same callback reached defer() after the first had already
+        # acknowledged it). If it's already been responded to, there's
+        # nothing more for this invocation to do — the other one owns it.
+        if interaction.response.is_done():
+            return
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException:
             return
 
-        await interaction.response.defer()
+        allowed, warning = await check_ai_usage_limit(user_id, tier, "images")
+        if not allowed:
+            await interaction.followup.send(f"❌ {warning}\n\n💎 Higher tiers get more daily images.", ephemeral=True)
+            return
 
         result = await generate_image(user_id, prompt, style_value)
         if not result or "error" in result:
