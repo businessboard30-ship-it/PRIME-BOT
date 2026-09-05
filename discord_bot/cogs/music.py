@@ -609,10 +609,16 @@ class MusicCog(GuildOnlyCog):
             state.current_started_at = None
             return
 
-        state.current = next_track
-        state.current_started_at = time.monotonic()
-        state.paused_at = None
-        state.paused_elapsed = 0.0
+        # Set only AFTER play() actually succeeds below — previously this was
+        # set here, before play() was attempted, so a play() failure (Opus
+        # not loaded, ffmpeg failing to spawn, etc.) left state.current
+        # pointing at a track that never started, and the panel would keep
+        # rendering that phantom "Now Playing" track — with a progress bar
+        # silently drifting — until something else (track-finished, a button
+        # press) happened to reset it. That's the "panel comes and vanishes
+        # on its own" symptom: it wasn't vanishing, it was stuck showing a
+        # track that was never actually playing.
+        pending_track = next_track
 
         source = discord.FFmpegPCMAudio(
             next_track["stream_url"],
@@ -635,7 +641,27 @@ class MusicCog(GuildOnlyCog):
             except Exception as e:
                 logger.error(f"[v0] Error scheduling next track in guild {guild_id}: {e}")
 
-        guild.voice_client.play(source, after=_after_play)
+        try:
+            guild.voice_client.play(source, after=_after_play)
+        except (discord.ClientException, discord.opus.OpusNotLoaded) as e:
+            # Most common cause: the system's libopus library isn't
+            # installed (see nixpacks.toml), so discord.py can't encode
+            # audio at all — play() raises immediately instead of producing
+            # sound. Don't leave state.current/current_started_at pointing
+            # at a track that never actually started; clear them and skip
+            # ahead so the panel reflects reality instead of getting stuck.
+            logger.error(f"[v0] play() failed in guild {guild_id} for {pending_track.get('title')!r}: {e!r}", exc_info=True)
+            state.current = None
+            state.current_started_at = None
+            clone_id = _clone_id_of(self.bot)
+            await refresh_posted_panel(self.bot, guild_id, clone_id=clone_id)
+            await self._refresh_voice_panel_if_any(guild_id, clone_id)
+            return
+
+        state.current = pending_track
+        state.current_started_at = time.monotonic()
+        state.paused_at = None
+        state.paused_elapsed = 0.0
 
     async def _on_track_finished(self, guild_id: int):
         await self._play_next(guild_id)
