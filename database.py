@@ -5641,6 +5641,52 @@ class Database:
     # discord_bot/clone_manager.py (see that file's docstring for why
     # Discord clones can't be routed the way Telegram's webhook clones are).
 
+    async def get_duplicate_active_clone_tokens(self) -> List[Dict]:
+        """Groups active discord_cloned_bots rows by bot_user_id (the
+        actual Discord bot identity a token belongs to) and returns only
+        the groups with more than one active row — i.e. the same bot
+        token registered as two (or more) separate active clones. Each
+        returned dict is {"bot_user_id", "bot_username", "clone_ids"}.
+        Used by clone_manager.py's startup/periodic duplicate check: this
+        is exactly the condition that causes one token to get two live
+        gateway connections (one subprocess per clone_id) and every event
+        in that clone's guilds — message deletes, joins, etc. — to be
+        logged/posted twice."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT bot_user_id, bot_username, array_agg(clone_id ORDER BY clone_id) AS clone_ids
+                FROM discord_cloned_bots
+                WHERE status = 'active'
+                GROUP BY bot_user_id, bot_username
+                HAVING COUNT(*) > 1
+                """
+            )
+            return [dict(r) for r in rows]
+
+    async def get_active_discord_clone_by_bot_user_id(self, bot_user_id: int) -> Optional[Dict]:
+        """Used by /registerclone to reject re-registering a token that's
+        already running as an active clone. bot_user_id (from Discord's
+        own /users/@me on the token, via validate_bot_token) identifies
+        the actual bot application regardless of which owner/clone_id row
+        it's stored under — a token is a token no matter who pastes it.
+        Without this check, running /registerclone twice with the same
+        token (double-click, retry after an apparent failure, or two
+        people registering the same bot) created two separate active
+        clone_id rows for one underlying Discord bot. clone_manager.py's
+        supervisor then dutifully started a subprocess PER clone_id, so
+        the same bot token ended up with two live, fully-cogged gateway
+        connections — every guild event (message delete, member join,
+        etc.) got delivered to both and logged/posted twice."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_cloned_bots WHERE bot_user_id = $1 AND status = 'active'",
+                bot_user_id,
+            )
+            return dict(row) if row else None
+
     async def create_discord_clone(self, owner_id: int, bot_token_encrypted: str, bot_user_id: int,
                                     bot_username: str, application_id: int) -> int:
         pool = await get_pool()
