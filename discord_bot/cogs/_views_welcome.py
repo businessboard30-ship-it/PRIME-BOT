@@ -733,9 +733,24 @@ class WelcomeStickerPresetSelect(discord.ui.DynamicItem[discord.ui.Select], temp
             return
         if self.item.values[0] == "__custom__":
             config = await _get_config_for_modal(self.guild_id, self.clone_id)
-            await interaction.response.send_modal(
-                WelcomeStickerModal(self.guild_id, self.clone_id, self.invoker_id, config.get("sticker_url"))
-            )
+            try:
+                await interaction.response.send_modal(
+                    WelcomeStickerModal(self.guild_id, self.clone_id, self.invoker_id, config.get("sticker_url"))
+                )
+            except discord.HTTPException as e:
+                if e.code != 40060:  # "Interaction has already been acknowledged"
+                    raise
+                # A rapid double-select/double-click sends Discord two
+                # SEPARATE interaction events for the same click. Each
+                # arrives as its own interaction object, so discord.py's
+                # local "already responded" guard (InteractionResponded)
+                # doesn't catch this — only Discord's API does, once the
+                # second one's send_modal call actually reaches it.
+                # Previously this surfaced as an unhandled HTTPException
+                # that discord.py just logged and swallowed, leaving that
+                # second click doing nothing with no feedback. Nothing to
+                # do here — the modal is already open from the first one.
+                pass
             return
         await interaction.response.defer()
         url = STICKER_PRESETS[self.item.values[0]]
