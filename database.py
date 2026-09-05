@@ -8047,7 +8047,7 @@ class Database:
                         INSERT INTO discord_invite_cache
                             (guild_id, clone_id, invite_code, uses, inviter_id, is_vanity, updated_at)
                         VALUES ($1, $2, $3, $4, $5, $6, NOW())
-                        ON CONFLICT ON CONSTRAINT discord_invite_cache_guild_clone_code_key
+                        ON CONFLICT (guild_id, COALESCE(clone_id, -1), invite_code)
                         DO UPDATE SET
                             uses = EXCLUDED.uses,
                             inviter_id = EXCLUDED.inviter_id,
