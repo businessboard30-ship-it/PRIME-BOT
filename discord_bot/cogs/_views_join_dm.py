@@ -330,6 +330,17 @@ class _PageNavButton(discord.ui.DynamicItem[discord.ui.Button], template=re.comp
         return cls(direction, guild_id, clone_id, current_page)
 
     async def callback(self, interaction: discord.Interaction):
+        # Defer FIRST, before either await below — Discord expires the
+        # interaction token 3 seconds after it's sent, and both
+        # _enabled_feature_keys and _extract_layout_intro_title_notices
+        # hit the DB (and the second one can also hit Discord's API for
+        # notices). Under load that pair can easily blow past 3 seconds,
+        # which used to surface to the owner as "Welcome Bot didn't
+        # respond in time" and a 404 Unknown interaction in the logs when
+        # edit_message ran on an already-expired token. Deferring is a
+        # near-instant local ack with no DB dependency, so it beats the
+        # window even when the rest of this doesn't.
+        await interaction.response.defer()
         target_page = self.current_page + 1 if self.direction == "next" else self.current_page - 1
         all_feature_keys = list(FEATURE_TOGGLES.keys())
         enabled = await _enabled_feature_keys(self.guild_id, self.clone_id)
@@ -339,11 +350,14 @@ class _PageNavButton(discord.ui.DynamicItem[discord.ui.Button], template=re.comp
             self.guild_id, clone_id=self.clone_id, feature_keys=all_feature_keys, page=target_page,
             intro=intro, title=title, notices=notices, enabled_keys=enabled,
         )
-        # One edit_message with the whole rebuilt layout — the embed and
-        # buttons can no longer be two separate calls with two separate
-        # sources of truth (that mismatch is exactly what let a page's
-        # fields and buttons drift apart before).
-        await interaction.response.edit_message(view=new_view)
+        # One edit with the whole rebuilt layout — the embed and buttons
+        # can no longer be two separate calls with two separate sources
+        # of truth (that mismatch is exactly what let a page's fields and
+        # buttons drift apart before). Since the response was already
+        # deferred above, this has to go through edit_original_response
+        # rather than response.edit_message (the initial response slot is
+        # already used).
+        await interaction.edit_original_response(view=new_view)
 
 
 class _RemindLaterButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_remind:(\d+):(-|\d+)$"):
@@ -490,6 +504,10 @@ class _WelcomeBackButton(discord.ui.DynamicItem[discord.ui.Button], template=re.
         return cls(int(match.group(1)), None if clone_part == "-" else int(clone_part))
 
     async def callback(self, interaction: discord.Interaction):
+        # Defer first — see _PageNavButton.callback for why: the two
+        # awaits below can outrun Discord's 3-second interaction-token
+        # window, and deferring is the near-instant ack that beats it.
+        await interaction.response.defer()
         all_feature_keys = list(FEATURE_TOGGLES.keys())
         enabled = await _enabled_feature_keys(self.guild_id, self.clone_id)
         enabled.add("welcome")  # got here by just turning welcome on
@@ -500,8 +518,9 @@ class _WelcomeBackButton(discord.ui.DynamicItem[discord.ui.Button], template=re.
         )
         # attachments=[] clears the welcome-card image left on the message
         # from the preview screen — otherwise Discord keeps serving it even
-        # though the new layout no longer references it.
-        await interaction.response.edit_message(view=main_view, attachments=[])
+        # though the new layout no longer references it. Goes through
+        # edit_original_response now that the initial response is deferred.
+        await interaction.edit_original_response(view=main_view, attachments=[])
 
 
 class _WelcomeEditButton(discord.ui.DynamicItem[discord.ui.Button], template=re.compile(r"^join_dm_wsub_edit:(\d+):(-|\d+)$").pattern):
