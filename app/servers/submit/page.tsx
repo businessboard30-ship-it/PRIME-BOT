@@ -2,7 +2,7 @@
 
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 type Prefill = {
@@ -20,7 +20,20 @@ const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
 const MAX_DESCRIPTION_LEN = 300
 const MAX_TAGS = 5
 
+// Next.js requires useSearchParams() to be wrapped in a Suspense boundary
+// for static prerendering — without it, the build fails at "Generating
+// static pages" with "useSearchParams() should be wrapped in a suspense
+// boundary" (this page has no static content worth prerendering anyway,
+// it's 100% query-param-driven, so the fallback just flashes briefly).
 export default function SubmitListingPage() {
+  return (
+    <Suspense fallback={<Shell><p className="text-sm text-neutral-400">Loading…</p></Shell>}>
+      <SubmitListingPageInner />
+    </Suspense>
+  )
+}
+
+function SubmitListingPageInner() {
   const searchParams = useSearchParams()
   const guildId = searchParams.get('guild_id') || ''
   const token = searchParams.get('token') || ''
@@ -199,7 +212,7 @@ export default function SubmitListingPage() {
 
       <p className="text-xs text-neutral-500 mt-10">
         This link edits your listing — don't share it outside your admin team. Rerun{' '}
-        <code className="chip !px-2 !py-0.5">/servers</code> in Discord any time to get it again.
+        <code className="chip !px-2 !py-0.5">/setup servers</code> in Discord any time to get it again.
       </p>
     </Shell>
   )
