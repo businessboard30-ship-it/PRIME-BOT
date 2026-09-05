@@ -1,3 +1,7 @@
 # path: nixpacks.toml
 [phases.setup]
-nixPkgs = ["ffmpeg"]
+# libopus is required for discord.py to encode/play voice audio at all —
+# PyNaCl (in requirements.txt) only covers voice *encryption*, not the
+# actual Opus codec. Without this, voice_client.play() either raises or
+# produces silent audio: the "bot joins/queues but no sound" symptom.
+nixPkgs = ["ffmpeg", "libopus"]
