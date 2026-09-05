@@ -112,12 +112,32 @@ async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, i
     # is_done() guard: some callers (e.g. toggle/action buttons that do
     # async work before this) already defer()/respond before calling in —
     # calling response.defer() again would raise InteractionResponded.
+    #
+    # That guard is check-then-act, though: Discord can redeliver the same
+    # interaction to two concurrent callback invocations, and both can see
+    # is_done() == False before either has actually deferred. The second
+    # defer() then hits the API after the first already acknowledged it,
+    # raising HTTPException 40060 ("Interaction has already been
+    # acknowledged"). Treat that as "someone else already deferred" instead
+    # of letting it propagate and drop the re-render on the floor.
     if not interaction.response.is_done():
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException as e:
+            if getattr(e, "code", None) != 40060:
+                raise
     config = await db.get_leveling_config(guild_id, clone_id=clone_id)
     role_rows = await db.get_level_roles(guild_id, clone_id=clone_id)
     view = build_wizard_view(guild_id, clone_id, invoker_id, config, role_rows)
-    await interaction.edit_original_response(view=view)
+    try:
+        await interaction.edit_original_response(view=view)
+    except discord.HTTPException:
+        # Original response may not exist yet if defer() itself lost the
+        # race entirely; fall back to a followup edit of the same message.
+        try:
+            await interaction.followup.edit_message("@original", view=view)
+        except discord.HTTPException:
+            pass
 
 
 async def remember_wizard_message(guild_id: int, clone_id, invoker_id, channel_id: int, message_id: int) -> None:
