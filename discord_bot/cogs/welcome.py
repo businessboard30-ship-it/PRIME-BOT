@@ -384,6 +384,7 @@ class WelcomeNudgeEditModal(discord.ui.Modal, title="Edit welcome message"):
 class WelcomeCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._recent_joins = {}  # Track recent joins to prevent duplicate welcome messages
 
     async def cog_load(self):
         self._nudge_owners.start()
@@ -394,6 +395,27 @@ class WelcomeCog(GuildOnlyCog):
         self._nudge_owners.cancel()
         self._announce_sticker_feature.cancel()
         self._announce_template_feature.cancel()
+
+    def _is_duplicate_join(self, member: discord.Member) -> bool:
+        """Check if this join event was already processed recently (within 3 seconds).
+        Prevents duplicate welcome messages from multiple on_member_join handlers."""
+        import time
+        key = (member.guild.id, member.id)
+        now = time.time()
+        
+        if key in self._recent_joins:
+            elapsed = now - self._recent_joins[key]
+            if elapsed < 3:  # Within 3 seconds = duplicate event
+                logger.warning(f"[WELCOME] Duplicate join detected for {member.id} in {member.guild.id} "
+                              f"(elapsed: {elapsed:.2f}s) — skipping duplicate welcome message")
+                return True
+            # Cleanup old entries (older than 10 seconds)
+            if elapsed > 10:
+                del self._recent_joins[key]
+        
+        # Record this join
+        self._recent_joins[key] = now
+        return False
 
     # ---- auto-posted setup wizard, fired from bot.py's on_guild_join ----
 
@@ -842,6 +864,10 @@ class WelcomeCog(GuildOnlyCog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
+        # DUPLICATE JOIN CHECK: Prevent duplicate welcome messages
+        if self._is_duplicate_join(member):
+            return
+        
         clone_id = getattr(self.bot, "clone_id", None)
         config = await db.get_welcome_config(member.guild.id, clone_id=clone_id)
         if not config.get("enabled"):
