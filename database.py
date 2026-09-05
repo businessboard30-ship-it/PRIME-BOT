@@ -3260,6 +3260,31 @@ class Database:
             )
         """)
 
+        # One-time OAuth states + short-lived result sessions for the
+        # landing page's "Sign in with Discord" button (api/discord_login_
+        # oauth.py). Unlike the vote flow above, login isn't scoped to one
+        # guild up front, so the state row carries nothing but itself —
+        # the callback discovers which guilds to show from Discord's own
+        # /users/@me/guilds response, never from anything client-supplied.
+        # The session row is the handoff from that server-side callback
+        # (which can't render a page) to the Next.js /login/servers page
+        # (which can't call Discord's token endpoint, since that needs the
+        # client secret) — it holds already-computed dashboard links, not
+        # raw Discord data, and is dead weight after its 30 minute TTL.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_login_oauth_states (
+                state TEXT PRIMARY KEY,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_login_sessions (
+                session_id TEXT PRIMARY KEY,
+                payload JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
         # Referral-boost click log — just a visit counter (no auth, no
         # cookies/sessions to correlate: see the note on invite_code/
         # last_known_invite_uses below for why conversion doesn't need
@@ -9198,6 +9223,76 @@ class Database:
                 state,
             )
             return dict(row) if row else None
+
+    # --- "Sign in with Discord" (landing page) ------------------------------
+
+    async def create_login_oauth_state(self, state: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO discord_login_oauth_states (state) VALUES ($1)", state
+            )
+
+    async def pop_login_oauth_state(self, state: str) -> bool:
+        """One-time use, 10 minute TTL — same convention as
+        pop_vote_oauth_state, just with no guild to hand back."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """DELETE FROM discord_login_oauth_states
+                   WHERE state = $1 AND created_at > NOW() - INTERVAL '10 minutes'
+                   RETURNING state""",
+                state,
+            )
+            return row is not None
+
+    async def get_active_clone_for_guilds(self, guild_ids: list) -> Dict[int, Optional[int]]:
+        """guild_id -> clone_id (None means the main bot, not a clone) for
+        whichever of guild_ids currently have PRIME-BOT in them. Guilds the
+        bot has left (left_at set) or never joined are simply absent from
+        the returned dict — the caller (discord_login_oauth.py) treats
+        absence as "not manageable here", same as it would treat a guild
+        Discord didn't return at all."""
+        if not guild_ids:
+            return {}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT guild_id, clone_id FROM discord_guilds
+                   WHERE guild_id = ANY($1::bigint[]) AND left_at IS NULL""",
+                guild_ids,
+            )
+            return {row["guild_id"]: row["clone_id"] for row in rows}
+
+    async def create_login_session(self, payload: list) -> str:
+        """Stores the already-resolved (guild, dashboard token) pairs a
+        login produced, keyed by an opaque id the browser is redirected
+        with — see discord_login_oauth.py's docstring for why this exists
+        as a separate step from the OAuth callback itself."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            session_id = secrets.token_urlsafe(24)
+            await conn.execute(
+                "INSERT INTO discord_login_sessions (session_id, payload) VALUES ($1, $2::jsonb)",
+                session_id, json.dumps(payload),
+            )
+            return session_id
+
+    async def get_login_session(self, session_id: str) -> Optional[list]:
+        """30 minute TTL, read-only (not popped) — the /login/servers page
+        may reload or re-fetch, and a stolen session id is no more
+        sensitive than one of the dashboard links it contains."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT payload FROM discord_login_sessions
+                   WHERE session_id = $1 AND created_at > NOW() - INTERVAL '30 minutes'""",
+                session_id,
+            )
+            if not row:
+                return None
+            payload = row["payload"]
+            return json.loads(payload) if isinstance(payload, str) else payload
 
     # --- server listing referral-boost tracking ----------------------------
 
