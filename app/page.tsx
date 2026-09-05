@@ -47,77 +47,44 @@ const ACTIVITY_LINES = [
   { kind: 'role', text: 'obed reacted \u2192 role @Gamer added', meta: '' },
 ]
 
-// Neon smoke look, cycling one color every 3s with a soft crossfade between
-// steps (transition on background-color, not the interval itself — the
-// interval just swaps the target color, the browser tweens to it).
-const SMOKE_COLORS = [
-  '#3b82f6', // blue — matches the reference art
-  '#a855f7', // purple
-  '#ef4444', // red
-  '#22d3ee', // cyan
-  '#f97316', // orange
-  '#ec4899', // pink
-  '#22c55e', // green
-]
 
 export default function Page() {
   return (
     <main className="pb-page">
-      <section className="relative overflow-hidden">
-        <div className="absolute inset-0">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/hero-car.png"
-            alt=""
-            className="w-full h-full object-cover"
-            style={{ objectPosition: '60% 50%' }}
-          />
-          <div
-            className="absolute inset-0"
-            style={{
-              background:
-                'linear-gradient(100deg, rgba(8,9,11,0.94) 0%, rgba(8,9,11,0.72) 32%, rgba(8,9,11,0.25) 58%, rgba(8,9,11,0.15) 100%)',
-            }}
-          />
-          <TireSmoke />
-        </div>
-
-        <div className="relative mx-auto max-w-3xl px-6 pt-10 pb-24 sm:pt-14 sm:pb-32">
-          <Suspense fallback={null}>
-            <ListingBanner />
-          </Suspense>
-
-          <div className="mt-16 sm:mt-20 max-w-xl">
-            <p className="text-sm" style={{ color: 'var(--pb-accent)' }}>
-              PRIME-BOT
-            </p>
-            <h1 className="pb-heading mt-3 text-4xl sm:text-5xl font-semibold leading-[1.1]">
-              One bot for the parts of running a server nobody enjoys doing by hand.
-            </h1>
-            <p className="mt-5 text-base sm:text-lg" style={{ color: 'var(--pb-text-muted)' }}>
-              Moderation, leveling, invites, and welcomes — set up in a few commands, running
-              quietly in the background after that.
-            </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <a href={BOT_INVITE_URL} target="_blank" rel="noopener noreferrer" className="pb-btn-primary">
-                Add to Discord
-              </a>
-              <a href={LOGIN_URL} className="pb-btn-secondary">
-                Sign in with Discord
-              </a>
+      <div className="mx-auto max-w-3xl px-6">
+        <Suspense fallback={null}>
+          <ListingBanner />
+        </Suspense>
+        <section className="pt-24 pb-16 sm:pt-32 sm:pb-20">
+          <div className="grid gap-10 sm:grid-cols-[1.1fr_0.9fr] sm:items-center">
+            <div>
+              <p className="text-sm" style={{ color: 'var(--pb-accent)' }}>
+                PRIME-BOT
+              </p>
+              <h1 className="pb-heading mt-3 text-4xl sm:text-5xl font-semibold leading-[1.1]">
+                One bot for the parts of running a server nobody enjoys doing by hand.
+              </h1>
+              <p className="mt-5 text-base sm:text-lg max-w-xl" style={{ color: 'var(--pb-text-muted)' }}>
+                Moderation, leveling, invites, and welcomes — set up in a few commands, running
+                quietly in the background after that.
+              </p>
+              <div className="mt-8 flex flex-wrap items-center gap-3">
+                <a href={BOT_INVITE_URL} target="_blank" rel="noopener noreferrer" className="pb-btn-primary">
+                  Add to Discord
+                </a>
+                <a href={LOGIN_URL} className="pb-btn-secondary">
+                  Sign in with Discord
+                </a>
+              </div>
+              <p className="mt-3 text-xs" style={{ color: 'var(--pb-text-faint)' }}>
+                Already added it somewhere? Sign in to manage a server you admin.
+              </p>
             </div>
-            <p className="mt-3 text-xs" style={{ color: 'var(--pb-text-faint)' }}>
-              Already added it somewhere? Sign in to manage a server you admin.
-            </p>
-          </div>
 
-          <div className="mt-14 sm:mt-0 sm:absolute sm:bottom-10 sm:right-6 sm:w-[280px]">
             <ActivityFeed />
           </div>
-        </div>
-      </section>
+        </section>
 
-      <div className="mx-auto max-w-3xl px-6">
         <section className="pb-16 border-t" style={{ borderColor: 'var(--pb-line)' }}>
           <div className="pt-16 grid gap-x-8 gap-y-10 sm:grid-cols-2">
             {FEATURES.map((f) => (
@@ -148,100 +115,6 @@ export default function Page() {
         </section>
       </div>
     </main>
-  )
-}
-
-// Two smoke sources anchored (by percentage, so they track the image at any
-// hero width) roughly over the car's front and rear tires in hero-car.png.
-// Each is a stack of blurred, screen-blended circles that drift and pulse —
-// the blur is what turns a plain circle into a soft, gradient-like glow, so
-// no actual gradient gets animated (gradients don't interpolate color
-// reliably across browsers; solid background-color does, cleanly, via a
-// plain CSS transition).
-function TireSmoke() {
-  const [colorIndex, setColorIndex] = useState(0)
-  const [reduced, setReduced] = useState(false)
-
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
-    setReduced(mq.matches)
-  }, [])
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setColorIndex((i) => (i + 1) % SMOKE_COLORS.length)
-    }, 3000)
-    return () => clearInterval(id)
-  }, [])
-
-  const color = SMOKE_COLORS[colorIndex]
-
-  return (
-    <>
-      <SmokePlume left="45%" top="66%" scale={0.75} color={color} reduced={reduced} delay={0} />
-      <SmokePlume left="87%" top="62%" scale={1.15} color={color} reduced={reduced} delay={1.4} />
-    </>
-  )
-}
-
-// A wheel effect made of two layers:
-// - WheelBlur: a fast-spinning conic-gradient ring right over the tire, so
-//   the rim itself reads as spinning (a real photo can't rotate, but a
-//   blurred spinning ring sitting on top of it sells the motion the same
-//   way a motion-blur photo does).
-// - Several SmokeStreak particles that launch from the tire and travel
-//   backward/outward with rotation and fade, instead of one soft pulsing
-//   blob — this is what actually reads as "smoking out" rather than a
-//   glow. Direction is mirrored per wheel (front tire kicks smoke back
-//   toward the rear, rear tire kicks it further back and out).
-function SmokePlume({
-  left, top, scale, color, reduced, delay,
-}: {
-  left: string; top: string; scale: number; color: string; reduced: boolean; delay: number
-}) {
-  const wheelSize = 90 * scale
-  const streaks = [0, 1, 2, 3]
-
-  return (
-    <div className="absolute" style={{ left, top, width: 0, height: 0 }} aria-hidden="true">
-      <div
-        style={{
-          position: 'absolute',
-          left: -wheelSize / 2,
-          top: -wheelSize / 2,
-          width: wheelSize,
-          height: wheelSize,
-          borderRadius: '9999px',
-          background: `conic-gradient(from 0deg, transparent 0deg, ${color} 60deg, transparent 140deg, transparent 220deg, ${color} 280deg, transparent 360deg)`,
-          filter: `blur(${5 * scale}px)`,
-          opacity: 0.65,
-          mixBlendMode: 'screen',
-          transition: 'background 1.4s ease',
-          animation: reduced ? 'none' : 'pb-wheel-spin 0.5s linear infinite',
-        }}
-      />
-      {streaks.map((i) => (
-        <div
-          key={i}
-          style={{
-            position: 'absolute',
-            left: -30 * scale,
-            top: -18 * scale,
-            width: (70 + i * 22) * scale,
-            height: (34 + i * 10) * scale,
-            borderRadius: '9999px',
-            backgroundColor: color,
-            filter: `blur(${(14 + i * 4) * scale}px)`,
-            opacity: 0.5,
-            mixBlendMode: 'screen',
-            transition: 'background-color 1.4s ease',
-            animation: reduced
-              ? 'none'
-              : `pb-smoke-streak-${i % 2 === 0 ? 'a' : 'b'} ${3.2 + i * 0.6}s ease-out ${delay + i * 0.5}s infinite`,
-          }}
-        />
-      ))}
-    </div>
   )
 }
 
