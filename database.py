@@ -5826,6 +5826,24 @@ class Database:
                 if row["status"] == "paid" and row["created_clone_id"] is not None:
                     return row["created_clone_id"]
 
+                # Same guard as /registerclone's free path: don't create a
+                # second active row for a bot_user_id that's already running
+                # as an active clone (e.g. this token was already registered
+                # for free/by another payment between checkout and webhook
+                # confirmation). Reuse that existing clone_id instead of
+                # spawning a duplicate gateway connection for it.
+                existing_active = await conn.fetchrow(
+                    "SELECT * FROM discord_cloned_bots WHERE bot_user_id = $1 AND status = 'active'",
+                    row["bot_user_id"],
+                )
+                if existing_active:
+                    clone_id = existing_active["clone_id"]
+                    await conn.execute(
+                        "UPDATE discord_clone_pending_payments SET status = 'paid', created_clone_id = $2 WHERE reference = $1",
+                        reference, clone_id
+                    )
+                    return clone_id
+
                 clone_row = await conn.fetchrow(
                     """
                     INSERT INTO discord_cloned_bots (owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id)
