@@ -114,14 +114,18 @@ def _panel_decode(match: "re.Match"):
 
 class PlayQueueChoiceView(discord.ui.View):
     """Ephemeral view shown when a user submits media — lets them pick
-    between playing immediately or queueing to the end."""
+    between playing immediately or queueing to the end. Supports passing
+    channel/message IDs for Discord CDN URL refresh."""
 
-    def __init__(self, guild_id: int, clone_id, url: str, media_title: str):
+    def __init__(self, guild_id: int, clone_id, url: str, media_title: str, 
+                 channel_id: int | None = None, message_id: int | None = None):
         super().__init__(timeout=120)
         self.guild_id = guild_id
         self.clone_id = clone_id
         self.url = url
         self.media_title = media_title
+        self.channel_id = channel_id  # For Discord CDN URL refresh
+        self.message_id = message_id  # For Discord CDN URL refresh
         self.result = None  # Will be set to "play_now" or "queue" after callback
 
     @discord.ui.button(label="▶️ Play Now", style=discord.ButtonStyle.success)
@@ -137,36 +141,59 @@ class PlayQueueChoiceView(discord.ui.View):
         await self._execute_choice(interaction)
 
     async def _execute_choice(self, interaction: discord.Interaction):
-        """Execute the chosen action and report back."""
+        """Execute the chosen action and report back. Passes message location
+        data if available so music cog can refresh stale Discord CDN URLs."""
         music_cog = interaction.client.get_cog("MusicCog")
         if music_cog is None:
             await interaction.followup.send("🎵 Playback isn't available right now — the music module isn't loaded.", ephemeral=True)
             return
 
         try:
-            # queue_track_for_submission handles checking if user is in VC,
-            # joining/creating channels as needed, and all playback logic.
-            # Wrapped in an overall timeout: resolve_track's yt-dlp call has
-            # only a per-socket timeout (30s), not a total-call bound, so a
-            # stalled/retrying extraction previously left this interaction
-            # stuck on "Bot is thinking..." indefinitely.
-            reason = await asyncio.wait_for(
-                music_cog.queue_track_for_submission(
-                    interaction.guild,
-                    interaction.user,
-                    self.url,
-                    self.clone_id,
-                    interaction.channel,  # Post channel for the Now Playing panel
-                    play_immediately=(self.result == "play_now"),
-                ),
-                timeout=60,
-            )
+            # If this came from a direct file upload (not a link submission),
+            # we have channel/message IDs to refresh stale Discord CDN URLs
+            entry_data = None
+            if self.channel_id and self.message_id:
+                entry_data = {
+                    "channel_id": self.channel_id,
+                    "message_id": self.message_id,
+                }
+            
+            # Check if this is a direct URL (Discord CDN) or a link (YouTube, etc.)
+            is_direct_url = "cdn.discordapp.com" in self.url or self.url.endswith((".mp3", ".mp4", ".wav", ".m4a"))
+            
+            if is_direct_url:
+                # Direct file URL — use queue_direct_url_for_playback with entry_data
+                reason = await asyncio.wait_for(
+                    music_cog.queue_direct_url_for_playback(
+                        interaction.guild,
+                        interaction.user,
+                        self.url,
+                        self.media_title,
+                        self.clone_id,
+                        interaction.channel,
+                        entry_data=entry_data,
+                    ),
+                    timeout=60,
+                )
+            else:
+                # Link submission (YouTube, etc.) — use queue_track_for_submission
+                reason = await asyncio.wait_for(
+                    music_cog.queue_track_for_submission(
+                        interaction.guild,
+                        interaction.user,
+                        self.url,
+                        self.clone_id,
+                        interaction.channel,
+                        play_immediately=(self.result == "play_now"),
+                    ),
+                    timeout=60,
+                )
         except asyncio.TimeoutError:
-            logger.error(f"[v0] queue_track_for_submission timed out for {self.url}")
+            logger.error(f"[v0] queue submission timed out for {self.url}")
             await interaction.followup.send(f"🎵 Queueing **{self.media_title}** took too long — try again in a moment.", ephemeral=True)
             return
         except Exception:
-            logger.error(f"[v0] queue_track_for_submission raised unexpectedly for {self.url}", exc_info=True)
+            logger.error(f"[v0] queue submission raised unexpectedly for {self.url}", exc_info=True)
             await interaction.followup.send(f"🎵 Failed to queue **{self.media_title}** — an unexpected error occurred (logged).", ephemeral=True)
             return
 
@@ -739,9 +766,21 @@ async def _show_play_queue_choice(
     guild_id: int,
     clone_id,
     title: str = "Media",
+    channel_id: int | None = None,
+    message_id: int | None = None,
 ) -> None:
     """Helper function to show the Play Now | Queue choice dialog.
-    Only shows if the user is in a voice channel."""
+    Only shows if the user is in a voice channel.
+    
+    Args:
+        interaction: Discord interaction
+        url: Media URL to play
+        guild_id: Guild ID
+        clone_id: Clone ID for multi-clone support
+        title: Media title
+        channel_id: Discord channel where file was posted (for CDN URL refresh)
+        message_id: Discord message ID of file upload (for CDN URL refresh)
+    """
     
     # Check if user is in a VC at all — only show the choice if they are
     user_voice = interaction.user.voice
@@ -754,8 +793,8 @@ async def _show_play_queue_choice(
         logger.warning("[v0] _show_play_queue_choice: MusicCog not loaded, skipping voice queue.")
         return
 
-    # Show the Play Now | Queue choice view
-    view = PlayQueueChoiceView(guild_id, clone_id, url, title)
+    # Show the Play Now | Queue choice view with optional CDN refresh data
+    view = PlayQueueChoiceView(guild_id, clone_id, url, title, channel_id, message_id)
     await interaction.followup.send(
         f"🎵 **{title}** is ready — how do you want to play it?",
         view=view,
@@ -910,7 +949,9 @@ class DownloadUploadButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         # Then check if they're in a VC and show the play/queue choice
         # Use the Discord CDN URL (stream_url) for playback
         await _show_play_queue_choice(
-            interaction, stream_url, self.guild_id, self.clone_id, title
+            interaction, stream_url, self.guild_id, self.clone_id, title,
+            channel_id=target.id,    # Storage channel where file was posted
+            message_id=sent.id,      # Message ID of uploaded file
         )
 
 
@@ -1049,6 +1090,7 @@ class LibraryPlaySelect(discord.ui.Select):
 
         reason = await music_cog.queue_direct_url_for_playback(
             interaction.guild, interaction.user, stream_url, entry["title"], self.clone_id, post_channel,
+            entry_data=entry,  # Passes channel_id and message_id for CDN URL refresh
         )
 
         if reason:
