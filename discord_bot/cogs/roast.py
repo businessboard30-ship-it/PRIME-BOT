@@ -713,6 +713,8 @@ class _RoastPickConfirmButton(discord.ui.DynamicItem[discord.ui.Button], templat
                 guild.id, interaction.message.id,
                 f"🔥 {interaction.user.display_name} already sent a challenge for this round.",
             )
+        except discord.NotFound:
+            logger.warning(f"[roast] start_challenge: interaction expired guild={guild.id}")
         except Exception as e:
             logger.exception(f"[roast] start_challenge failed guild={guild.id}: {e!r}")
             try:
@@ -764,6 +766,13 @@ class _RoastPickRemindButton(discord.ui.DynamicItem[discord.ui.Button], template
                 f"⏰ {interaction.user.display_name} already snoozed this round — I'll check back later.",
             )
             logger.info(f"[roast] admin={interaction.user.id} snoozed guild={guild.id}")
+        except discord.NotFound:
+            # Interaction token expired/invalidated (10062) partway through —
+            # a sibling click already resolved this round, or the ack came
+            # in too late. The DB/round-state work above may be partially
+            # applied; there's no valid interaction left to respond on, so
+            # just log and stop instead of throwing on the followup too.
+            logger.warning(f"[roast] remind_later: interaction expired guild={self.guild_id}")
         except Exception as e:
             # logger.exception() attaches the full traceback via exc_info,
             # but the one-line message itself used to say nothing about
@@ -826,6 +835,11 @@ class _RoastPickDontAskButton(discord.ui.DynamicItem[discord.ui.Button], templat
                 f"🔕 {interaction.user.display_name} already turned off auto-roasts for this server.",
             )
             logger.info(f"[roast] admin={interaction.user.id} disabled auto-roast guild={guild.id}")
+        except discord.NotFound:
+            # Same 10062 race as remind_later above — interaction went stale
+            # mid-callback (sibling already resolved the round, or the ack
+            # landed too late). Nothing valid left to respond on.
+            logger.warning(f"[roast] dont_ask_again: interaction expired guild={self.guild_id}")
         except Exception as e:
             logger.exception(f"[roast] dont_ask_again failed guild={self.guild_id}: {e!r}")
             try:
