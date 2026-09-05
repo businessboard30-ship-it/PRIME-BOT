@@ -823,7 +823,16 @@ class WelcomeToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_i
         if new_state and not dm_mode and not config.get("channel_id"):
             await interaction.response.send_message("Pick a channel (Step 1) before enabling.", ephemeral=True)
             return
-        await interaction.response.defer()
+        # Guard against a duplicate INTERACTION_CREATE dispatch — Discord
+        # occasionally redelivers the same interaction during a gateway
+        # resume, which previously crashed this callback with "Interaction
+        # has already been acknowledged" on defer().
+        if interaction.response.is_done():
+            return
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException:
+            return
         await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, enabled=new_state)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
