@@ -19,6 +19,15 @@ type Listing = {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
+const DISCORD_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || ''
+// Administrator (bit 8) — this bot's automod, roles, channels, and voice
+// features span enough of Discord's permission surface that a hand-picked
+// subset risks silently breaking something. Narrow this later once every
+// permission this bot actually needs has been audited.
+const BOT_INVITE_URL = DISCORD_CLIENT_ID
+  ? `https://discord.com/oauth2/authorize?client_id=${DISCORD_CLIENT_ID}&scope=bot+applications.commands&permissions=8`
+  : ''
+const SUPPORT_SERVER_INVITE = 'https://discord.gg/DYfajXrP9B'
 
 export default function ServersPage() {
   const [listings, setListings] = useState<Listing[] | null>(null)
@@ -125,6 +134,27 @@ export default function ServersPage() {
             an admin of a server the bot is already in, so every listing is automatically
             verified with no waiting on approval.
           </p>
+
+          <div className="mt-4 p-4 rounded-lg border border-neutral-800 bg-neutral-900/40 max-w-lg">
+            <p className="text-sm text-neutral-300">Don't have PRIME-BOT in your server yet?</p>
+            {BOT_INVITE_URL ? (
+              <a href={BOT_INVITE_URL} target="_blank" rel="noopener noreferrer" className="btn-primary inline-block mt-2">
+                + Add PRIME-BOT to your server
+              </a>
+            ) : (
+              <p className="text-xs text-neutral-500 mt-1">
+                Ask in the{' '}
+                <a href={SUPPORT_SERVER_INVITE} target="_blank" rel="noopener noreferrer" className="underline">
+                  support server
+                </a>{' '}
+                for an invite link.
+              </p>
+            )}
+            <p className="text-xs text-neutral-500 mt-2">
+              Already added? Continue with the steps below.
+            </p>
+          </div>
+
           <ol className="mt-4 space-y-2 text-sm text-neutral-300 list-decimal list-inside">
             <li>
               In your Discord server, run <code className="code">/setup servers</code> (you'll need the{' '}
