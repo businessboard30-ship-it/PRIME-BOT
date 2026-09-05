@@ -24,7 +24,10 @@ to keep a background loop running between invocations.
 """
 
 import asyncio
+import errno
+import fcntl
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -41,6 +44,11 @@ logger = logging.getLogger("discord_bot.clone_manager")
 POLL_INTERVAL_SECONDS = 30
 INITIAL_RESTART_BACKOFF_SECONDS = 15
 MAX_RESTART_BACKOFF_SECONDS = 300
+
+# Held for the lifetime of the process so a second supervisor can never
+# start on the same host while this one is alive (see _acquire_singleton_lock).
+LOCK_PATH = "/tmp/prime_bot_clone_manager.lock"
+_lock_fh = None
 
 
 class ManagedClone:
@@ -75,6 +83,72 @@ class ManagedClone:
         self.process = None
 
 
+def _acquire_singleton_lock():
+    """Grabs an exclusive, non-blocking flock on LOCK_PATH and holds it for
+    the life of the process (fd is kept alive in the global `_lock_fh` —
+    the OS releases the lock automatically if this process dies, however
+    it dies, so nothing needs to clean this up on exit).
+
+    This is the second, independent guard against double-running clones:
+    _kill_orphaned_clone_processes() below cleans up leftover *child*
+    processes from a previous supervisor, but does nothing to stop two
+    *supervisors* from being alive at the same time (e.g. a redeploy that
+    starts the new instance before the platform has finished tearing down
+    the old one, or someone manually running the module twice). Two live
+    supervisors each spawn their own full set of clone subprocesses, and
+    neither one's in-memory `managed` dict knows about the other's, so the
+    orphan-scan at startup can't catch this case — it only runs once, at
+    the moment each supervisor boots.
+
+    If the lock is already held, this process exits immediately rather
+    than silently running as a duplicate supervisor.
+    """
+    global _lock_fh
+    _lock_fh = open(LOCK_PATH, "a+")
+    try:
+        fcntl.flock(_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+        if e.errno in (errno.EACCES, errno.EAGAIN):
+            logger.error(
+                f"Another clone supervisor already holds {LOCK_PATH} — refusing to start a "
+                f"second one (this is exactly what causes every clone to double-log events). "
+                f"Exiting."
+            )
+            sys.exit(1)
+        raise
+    _lock_fh.seek(0)
+    _lock_fh.truncate()
+    _lock_fh.write(str(os.getpid()))
+    _lock_fh.flush()
+
+
+def _iter_processes():
+    """Yields (pid, cmdline) for every process visible under /proc, one
+    entry per PID directory. Reads directly from /proc instead of shelling
+    out to `pgrep` — `pgrep` comes from the procps package, which isn't
+    guaranteed to be installed in a minimal container image, and its
+    absence previously made the orphan scan below fail with
+    FileNotFoundError and silently skip cleanup entirely (see git history:
+    the pgrep-based version logged a warning and returned early whenever
+    the binary was missing, which meant orphans were never actually
+    killed on hosts without procps). /proc has no such dependency on
+    Linux, which is what this bot always deploys to.
+    """
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                raw = f.read()
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue  # process exited between listdir() and open(), or we can't read it
+        if not raw:
+            continue
+        cmdline = " ".join(part for part in raw.split(b"\x00") if part).decode("utf-8", "replace")
+        yield pid, cmdline
+
+
 def _kill_orphaned_clone_processes():
     """Finds and kills any `discord_bot.bot --clone-id ...` processes still
     alive from a PREVIOUS run of this supervisor.
@@ -96,34 +170,23 @@ def _kill_orphaned_clone_processes():
     necessarily a leftover from before this boot, so it's always safe to
     kill.
     """
-    try:
-        result = subprocess.run(
-            ["pgrep", "-af", "discord_bot.bot"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        logger.warning(f"Couldn't scan for orphaned clone processes ({e}) — skipping cleanup")
-        return
-
-    if result.returncode not in (0, 1):  # 1 = pgrep found nothing, not an error
-        logger.warning(f"pgrep exited {result.returncode} scanning for orphaned clones — skipping cleanup")
-        return
-
-    my_pid = str(subprocess.os.getpid())
+    my_pid = os.getpid()
     killed = 0
-    for line in result.stdout.splitlines():
-        if not line.strip():
-            continue
-        pid_str, _, cmdline = line.partition(" ")
-        if "--clone-id" not in cmdline or pid_str == my_pid:
+    try:
+        candidates = list(_iter_processes())
+    except OSError as e:
+        logger.warning(f"Couldn't scan /proc for orphaned clone processes ({e}) — skipping cleanup")
+        return
+
+    for pid, cmdline in candidates:
+        if "discord_bot.bot" not in cmdline or "--clone-id" not in cmdline or pid == my_pid:
             continue
         try:
-            pid = int(pid_str)
-            subprocess.os.kill(pid, 15)  # SIGTERM
+            os.kill(pid, 15)  # SIGTERM
             logger.warning(f"Killed orphaned clone process from a previous supervisor run: pid={pid} ({cmdline.strip()})")
             killed += 1
         except (ValueError, ProcessLookupError, PermissionError) as e:
-            logger.warning(f"Couldn't kill orphaned process pid={pid_str}: {e}")
+            logger.warning(f"Couldn't kill orphaned process pid={pid}: {e}")
 
     if killed:
         # Give them a moment to actually exit their gateway connections
@@ -135,14 +198,19 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
     try:
         dupes = await db.get_duplicate_active_clone_tokens()
         for d in dupes:
+            keep, drop = d["clone_ids"][0], d["clone_ids"][1:]
             logger.error(
                 f"[DUPLICATE CLONE] bot '{d['bot_username']}' (bot_user_id={d['bot_user_id']}) "
-                f"has {len(d['clone_ids'])} ACTIVE clone_id rows: {d['clone_ids']} — this token will "
-                f"get one live process PER id below, so every event in its guilds gets handled/logged "
-                f"that many times. Fix: keep exactly one clone_id active, deactivate the rest, e.g. "
-                f"UPDATE discord_cloned_bots SET status='inactive' WHERE clone_id IN "
-                f"({', '.join(str(cid) for cid in d['clone_ids'][1:])});"
+                f"has {len(d['clone_ids'])} ACTIVE clone_id rows: {d['clone_ids']} — this token would "
+                f"otherwise get one live process PER id, so every event in its guilds gets handled/logged "
+                f"that many times. Auto-remediating: keeping clone_id={keep} active and deactivating "
+                f"{drop}."
             )
+            for clone_id in drop:
+                try:
+                    await db.set_discord_clone_status(clone_id, "inactive")
+                except Exception as e:
+                    logger.error(f"Failed to deactivate duplicate clone_id={clone_id}: {e}")
     except Exception as e:
         logger.error(f"Failed to check for duplicate active clone tokens: {e}")
 
@@ -185,6 +253,7 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
 
 
 async def main():
+    _acquire_singleton_lock()
     logger.info("Starting Discord clone supervisor loop")
     _kill_orphaned_clone_processes()
     managed: Dict[int, ManagedClone] = {}
