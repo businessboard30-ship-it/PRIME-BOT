@@ -856,6 +856,17 @@ class WelcomeCog(GuildOnlyCog):
             if channel is None:
                 return
 
+        # Tracks whether a welcome message actually went out below, so the
+        # `except` block only ever sends the plain-text fallback when
+        # NOTHING was delivered yet. Previously the whole render+send flow
+        # shared one try/except: if channel.send()/dm.send() raised for any
+        # reason AFTER Discord had already received/posted the message
+        # (e.g. a slow-uploading GIF timing out on the response, or a
+        # transient network blip), the except block assumed the send had
+        # failed and sent the fallback text too — producing two welcome
+        # messages for one join. Now a raised exception only triggers the
+        # fallback path if `sent` is still False.
+        sent = False
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(str(member.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -878,15 +889,24 @@ class WelcomeCog(GuildOnlyCog):
                 try:
                     dm = await member.create_dm()
                     await dm.send(content=content, file=file)
+                    sent = True
                 except discord.Forbidden:
                     # Member has DMs closed / blocks the bot — nothing we
                     # can do without a channel fallback the admin didn't
-                    # ask for, so just log and move on.
+                    # ask for, so just log and move on. Treat as "handled"
+                    # so the except block below doesn't also try a fallback.
                     logger.info(f"[v0] Couldn't DM welcome card to {member.id} in guild {member.guild.id} (DMs closed).")
+                    sent = True
             else:
                 await channel.send(content=content, file=file)
+                sent = True
         except Exception as e:
             logger.error(f"[v0] Failed to render/send welcome card for guild {member.guild.id}: {e}")
+            if sent:
+                # The card already went out (or DMs were closed and we've
+                # already logged that) — whatever raised happened after the
+                # fact, so do NOT send a second, plain-text welcome.
+                return
             try:
                 fallback_text = _apply_template(config["message_template"], member)
                 if dm_mode:
