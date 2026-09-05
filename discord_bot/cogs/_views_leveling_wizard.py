@@ -305,10 +305,13 @@ class LevelingRewardRoleSelect(discord.ui.DynamicItem[discord.ui.RoleSelect], te
             )
             return
         ok = await db.add_level_role(self.guild_id, self.level, role.id, clone_id=self.clone_id)
-        await interaction.edit_original_response(
-            content=(f"✅ Level {self.level} now grants **{role.name}**." if ok else "❌ Couldn't save that."),
-            view=None,
-        )
+        result_view = discord.ui.LayoutView(timeout=None)
+        result_container = discord.ui.Container()
+        result_container.add_item(discord.ui.TextDisplay(
+            f"✅ Level {self.level} now grants **{role.name}**." if ok else "❌ Couldn't save that."
+        ))
+        result_view.add_item(result_container)
+        await interaction.edit_original_response(view=result_view)
         from discord_bot.cogs._views_leveling_wizard import refresh_posted_wizard
         await refresh_posted_wizard(interaction.client, self.guild_id, clone_id=self.clone_id)
 
