@@ -287,10 +287,26 @@ class AIToolsCog(commands.Cog):
         # the view to auto-upload File objects, so the actual bytes must
         # still be attached explicitly or Discord rejects the whole
         # message with "referenced attachment was not found".
-        if file is not None:
-            await interaction.followup.send(view=view, file=file)
-        else:
-            await interaction.followup.send(view=view)
+        try:
+            if file is not None:
+                await interaction.followup.send(view=view, file=file)
+            else:
+                await interaction.followup.send(view=view)
+        except discord.HTTPException as e:
+            # Discord's own explicit-content classifier can reject a
+            # generated image after we've already rendered it (error code
+            # 20009, "Explicit content cannot be sent to the desired
+            # recipient(s)") — most often because age-restricted content
+            # can't go to a non-age-gated channel/DM. This was previously
+            # unhandled and surfaced to the user as a generic command
+            # error instead of an explanation.
+            if e.code == 20009:
+                await interaction.followup.send(
+                    "That image was flagged as explicit content and can't be sent here "
+                    "(try an age-restricted channel, or adjust the prompt)."
+                )
+            else:
+                raise
 
     @app_commands.command(name="aistatus", description="Check your daily AI usage")
     async def aistatus(self, interaction: discord.Interaction):
