@@ -142,20 +142,40 @@ class ServerListingCog(GuildOnlyCog):
 
         existing = await db.get_server_listing(guild.id, clone_id=clone_id)
 
-        # Only auto-generate an invite for a brand-new listing — an existing
-        # one already has an invite_code that on_member_join above is using
-        # for conversion tracking, so we never silently swap that out.
-        auto_invite_note = ""
+        # Only auto-fill invite/description for a brand-new listing — an
+        # existing one already has its own saved invite_code (which
+        # on_member_join above uses for conversion tracking) and whatever
+        # description the admin already wrote, so re-running this command
+        # must never silently clobber either with fresh Discord data.
+        got_invite = False
+        got_description = False
         if not existing:
             auto_invite = await _auto_generate_invite(guild)
             if auto_invite:
                 url += f"&invite_url={quote(auto_invite, safe='')}"
-                auto_invite_note = " We've already generated a permanent invite for you — just add a description and tags."
+                got_invite = True
+
+            # guild.description is only ever set for Community-enabled
+            # servers (Server Settings -> Community -> description) —
+            # discord.py returns None for every other guild, so this is a
+            # no-op prefill for the common case rather than a guaranteed one.
+            if guild.description:
+                url += f"&description={quote(guild.description, safe='')}"
+                got_description = True
+
+        if got_invite and got_description:
+            auto_fill_note = " We've already filled in a permanent invite and your server's description — just add tags."
+        elif got_invite:
+            auto_fill_note = " We've already generated a permanent invite for you — just add a description and tags."
+        elif got_description:
+            auto_fill_note = " We've already pulled in your server's description — just add an invite link and tags."
+        else:
+            auto_fill_note = ""
 
         status_line = (
             "You're already listed — this link opens your listing so you can edit it."
             if existing else
-            f"Fill in a short description and it goes live immediately — no approval wait.{auto_invite_note}"
+            f"Fill in a short description and it goes live immediately — no approval wait.{auto_fill_note}"
         )
         await interaction.followup.send(
             f"📋 **Server directory link** (keep this private — it edits your listing, same as a password):\n"
