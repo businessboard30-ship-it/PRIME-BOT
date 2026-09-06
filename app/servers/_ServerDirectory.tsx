@@ -1,0 +1,295 @@
+// path: app/servers/_ServerDirectory.tsx
+
+'use client'
+
+/**
+ * The actual server-listing directory — search box, listing rows, and the
+ * "list your server" instructions. Extracted out of app/servers/page.tsx
+ * so app/page.tsx (the homepage) can render the exact same directory as
+ * its main content instead of duplicating this logic, per the site being
+ * a server-listing site first — the homepage shouldn't be a separate bot
+ * marketing page with the actual directory buried one click away.
+ *
+ * Rendered inside a <section>, not its own <main> — the caller (app/page.tsx
+ * or app/servers/page.tsx) owns the page-level <main> wrapper.
+ */
+
+import { useEffect, useState } from 'react'
+
+type Listing = {
+  guild_id: string
+  clone_id: number | null
+  guild_name: string
+  guild_icon_url: string | null
+  member_count: number
+  invite_url: string
+  description: string
+  tags: string[]
+  ref_code: string | null
+  vote_count: number
+  confirmed_conversions: number
+}
+
+const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
+const DISCORD_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || ''
+// Administrator (bit 8) — this bot's automod, roles, channels, and voice
+// features span enough of Discord's permission surface that a hand-picked
+// subset risks silently breaking something. Narrow this later once every
+// permission this bot actually needs has been audited.
+const BOT_INVITE_URL = DISCORD_CLIENT_ID
+  ? `https://discord.com/oauth2/authorize?client_id=${DISCORD_CLIENT_ID}&scope=bot+applications.commands&permissions=8`
+  : ''
+const SUPPORT_SERVER_INVITE = 'https://discord.gg/DYfajXrP9B'
+
+export default function ServerDirectory() {
+  const [listings, setListings] = useState<Listing[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [voteBanner, setVoteBanner] = useState<{ ok: boolean; msg: string } | null>(null)
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/server_listings`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.status !== 'ok') {
+          setError(data.message || 'Could not load the directory')
+        } else {
+          setListings(data.listings)
+        }
+      })
+      .catch(() => setError('Network error loading the directory'))
+
+    // Two independent things a landing URL can carry, both fire-and-forget:
+    //  - ?ref=<code> — someone followed a listing's boost link; log the
+    //    click server-side (see api/server_listings.py's Mode 0).
+    //  - ?vote=ok|err&msg=... — the redirect back from
+    //    api/server_listing_vote_oauth.py after a vote sign-in attempt.
+    const params = new URLSearchParams(window.location.search)
+    const ref = params.get('ref')
+    if (ref) {
+      fetch(`${API_BASE}/api/server_listings?ref=${encodeURIComponent(ref)}`).catch(() => {})
+    }
+    const voteResult = params.get('vote')
+    const voteMsg = params.get('msg')
+    if (voteResult && voteMsg) {
+      setVoteBanner({ ok: voteResult === 'ok', msg: voteMsg })
+    }
+    if (ref || voteResult) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, [])
+
+  function voteHref(l: Listing) {
+    const qs = new URLSearchParams({ guild_id: l.guild_id })
+    if (l.clone_id != null) qs.set('clone_id', String(l.clone_id))
+    return `${API_BASE}/api/server_listing_vote_oauth?${qs.toString()}`
+  }
+
+  const filtered = (listings || []).filter((l) => {
+    if (!query.trim()) return true
+    const q = query.trim().toLowerCase()
+    return (
+      l.guild_name.toLowerCase().includes(q) ||
+      l.description.toLowerCase().includes(q) ||
+      l.tags.some((t) => t.toLowerCase().includes(q))
+    )
+  })
+
+  return (
+    <>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="pb-heading text-2xl font-semibold">Server directory</h1>
+          <p className="text-sm mt-2 max-w-lg" style={{ color: 'var(--pb-text-muted)' }}>
+            Public Discord servers running PRIME-BOT. Listings go live instantly — see{' '}
+            <span style={{ color: 'var(--pb-text)' }}>List your server</span> below.
+          </p>
+        </div>
+        <a href="#list-your-server" className="pb-btn-primary shrink-0">
+          + List your server
+        </a>
+      </div>
+
+      {voteBanner && (
+        <p
+          className="text-sm mt-6"
+          style={{ color: voteBanner.ok ? 'var(--pb-positive)' : 'var(--pb-danger)' }}
+        >
+          {voteBanner.msg}
+        </p>
+      )}
+
+      <input
+        className="pb-input mt-8 w-full max-w-sm"
+        placeholder="Search servers, tags…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+
+      <div className="mt-8 rounded-lg border" style={{ borderColor: 'var(--pb-line)' }}>
+        {listings === null && !error && (
+          <p className="text-sm p-6" style={{ color: 'var(--pb-text-faint)' }}>
+            Loading…
+          </p>
+        )}
+        {error && (
+          <p className="text-sm p-6" style={{ color: 'var(--pb-danger)' }}>
+            {error}
+          </p>
+        )}
+        {listings !== null && filtered.length === 0 && (
+          <p className="text-sm p-6" style={{ color: 'var(--pb-text-faint)' }}>
+            {query ? `No servers match "${query}".` : 'No servers listed yet — be the first!'}
+          </p>
+        )}
+        {filtered.map((l, i) => (
+          <ServerRow
+            key={l.guild_id}
+            listing={l}
+            voteHref={voteHref(l)}
+            isLast={i === filtered.length - 1}
+          />
+        ))}
+      </div>
+
+      <section id="list-your-server" className="mt-16 pt-8 border-t" style={{ borderColor: 'var(--pb-line)' }}>
+        <h2 className="pb-heading text-lg font-medium">List your server</h2>
+        <p className="text-sm mt-2 max-w-lg" style={{ color: 'var(--pb-text-muted)' }}>
+          There's no open submission form here on purpose — a listing can only be created by
+          an admin of a server the bot is already in, so every listing is automatically
+          verified with no waiting on approval.
+        </p>
+
+        <div
+          className="mt-4 p-4 rounded-lg border max-w-lg"
+          style={{ borderColor: 'var(--pb-line)', background: 'var(--pb-surface)' }}
+        >
+          <p className="text-sm" style={{ color: 'var(--pb-text)' }}>
+            Don't have PRIME-BOT in your server yet?
+          </p>
+          {BOT_INVITE_URL ? (
+            <a href={BOT_INVITE_URL} target="_blank" rel="noopener noreferrer" className="pb-btn-primary inline-flex mt-2">
+              + Add PRIME-BOT to your server
+            </a>
+          ) : (
+            <p className="text-xs mt-1" style={{ color: 'var(--pb-text-faint)' }}>
+              Ask in the{' '}
+              <a href={SUPPORT_SERVER_INVITE} target="_blank" rel="noopener noreferrer" className="underline">
+                support server
+              </a>{' '}
+              for an invite link.
+            </p>
+          )}
+          <p className="text-xs mt-2" style={{ color: 'var(--pb-text-faint)' }}>
+            Already added? Continue with the steps below.
+          </p>
+        </div>
+
+        <ol className="mt-4 space-y-2 text-sm list-decimal list-inside" style={{ color: 'var(--pb-text-muted)' }}>
+          <li>
+            In your Discord server, run <code className="pb-code">/setup servers</code> (you'll need the{' '}
+            <span style={{ color: 'var(--pb-text)' }}>Manage Server</span> permission).
+          </li>
+          <li>The bot replies with a private link — open it.</li>
+          <li>Add your invite link, a short description, and up to 5 tags, then submit.</li>
+        </ol>
+        <p className="text-xs mt-4" style={{ color: 'var(--pb-text-faint)' }}>
+          Already listed? Rerunning <code className="pb-code">/setup servers</code> gives you the same
+          link back, so you can edit your listing any time.
+        </p>
+      </section>
+    </>
+  )
+}
+
+function ServerRow({ listing, voteHref, isLast }: { listing: Listing; voteHref: string; isLast: boolean }) {
+  const [copied, setCopied] = useState(false)
+  const boosted = listing.confirmed_conversions > 0
+
+  function copyRefLink() {
+    if (!listing.ref_code) return
+    const url = `${window.location.origin}/servers?ref=${listing.ref_code}`
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  return (
+    <div
+      className="flex items-center gap-4 px-4 py-4 transition-colors"
+      style={{
+        borderBottom: isLast ? 'none' : '1px solid var(--pb-line)',
+        borderLeft: boosted ? '2px solid var(--pb-positive)' : '2px solid transparent',
+      }}
+    >
+      {listing.guild_icon_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={listing.guild_icon_url} alt="" className="w-10 h-10 rounded-full shrink-0" />
+      ) : (
+        <div
+          className="w-10 h-10 rounded-full flex items-center justify-center text-sm shrink-0"
+          style={{ background: 'var(--pb-surface-raised)', color: 'var(--pb-text-faint)' }}
+        >
+          {listing.guild_name.slice(0, 1).toUpperCase()}
+        </div>
+      )}
+
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="font-medium truncate">{listing.guild_name}</p>
+          {boosted && (
+            <span
+              className="text-[11px] shrink-0 rounded px-1.5 py-0.5"
+              style={{ background: 'rgba(52,211,153,0.12)', color: 'var(--pb-positive)' }}
+            >
+              Boosted
+            </span>
+          )}
+        </div>
+        <p className="text-xs mt-0.5" style={{ color: 'var(--pb-text-faint)' }}>
+          {listing.member_count.toLocaleString()} members
+        </p>
+        {listing.description && (
+          <p className="text-sm mt-1.5 line-clamp-1" style={{ color: 'var(--pb-text-muted)' }}>
+            {listing.description}
+          </p>
+        )}
+        {listing.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {listing.tags.map((t) => (
+              <span
+                key={t}
+                className="text-xs rounded-full px-2 py-0.5"
+                style={{ background: 'var(--pb-surface-raised)', color: 'var(--pb-text-faint)' }}
+              >
+                #{t}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2 shrink-0">
+        <a
+          href={voteHref}
+          className="pb-btn-secondary text-sm !py-1.5"
+        >
+          ▲ {listing.vote_count}
+        </a>
+        <a href={listing.invite_url} target="_blank" rel="noopener noreferrer" className="pb-btn-primary text-sm !py-1.5">
+          Join
+        </a>
+        {listing.ref_code && (
+          <button
+            onClick={copyRefLink}
+            title="Copy your referral link — joins through it boost this listing's ranking"
+            className="pb-btn-secondary !px-2.5 !py-1.5"
+          >
+            {copied ? '✓' : '🔗'}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
