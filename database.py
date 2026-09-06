@@ -133,6 +133,13 @@ DEFAULT_AUTOPOST_CONTENT = [
 _pool = None
 _pool_loop = None  # the asyncio event loop _pool's connections belong to
 
+# Bump this any time _create_tables() actually changes (new table, new
+# ALTER TABLE migration step, etc.) so the next cold start applies it once.
+# Do NOT bump it for unrelated changes — an unnecessary bump forces every
+# bot/clone's next cold start to run the full DDL pass again, which is
+# exactly the schema-reload storm this version check exists to avoid.
+SCHEMA_VERSION = "1"
+
 
 async def get_pool():
     """
@@ -270,7 +277,40 @@ class Database:
             while not await conn.fetchval("SELECT pg_try_advisory_lock(727271001)"):
                 await asyncio.sleep(0.5)
             try:
-                await self._create_tables(conn)
+                # Skip the DDL pass entirely if the schema is already at the
+                # current version. Every CREATE TABLE IF NOT EXISTS / ALTER
+                # TABLE IF EXISTS below is a no-op once the schema exists,
+                # but Postgres event triggers fire on *any* executed DDL
+                # command regardless of whether it changed anything —
+                # Supabase installs one by default that sends
+                # NOTIFY pgrst, 'reload schema' on that. With the main bot
+                # and every clone each running this full ~90-statement pass
+                # on their own cold start (sometimes a dozen within the same
+                # second), that was forcing a full schema reintrospection
+                # (postgres-meta re-walking pg_timezone_names, pg_type,
+                # etc.) on every ordinary restart — not just on real schema
+                # changes. Bump SCHEMA_VERSION when you actually add/alter
+                # a table so the next cold start applies it once.
+                try:
+                    current_version = await conn.fetchval(
+                        "SELECT value FROM admin_config WHERE key = 'schema_version'"
+                    )
+                except asyncpg.exceptions.UndefinedTableError:
+                    # Very first run ever against this database — admin_config
+                    # itself doesn't exist yet, so the schema is definitely
+                    # not current.
+                    current_version = None
+                if current_version != SCHEMA_VERSION:
+                    await self._create_tables(conn)
+                    await conn.execute(
+                        """
+                        INSERT INTO admin_config (key, value, updated_at)
+                        VALUES ('schema_version', $1, CURRENT_TIMESTAMP)
+                        ON CONFLICT (key) DO UPDATE
+                        SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+                        """,
+                        SCHEMA_VERSION,
+                    )
             finally:
                 await conn.execute("SELECT pg_advisory_unlock(727271001)")
             # NOTE: _migrate_stale_stripe_provider is no longer called here.
