@@ -58,6 +58,16 @@ function SubmitListingPageInner() {
       setLoading(false)
       return
     }
+    // /setup servers (discord_bot/cogs/server_listing.py) may attach its
+    // own best-effort invite_url/description straight onto this page's URL
+    // for a brand-new listing (an auto-generated permanent invite, and the
+    // guild's Community description if it has one). Those are just a
+    // starting point for the form, though — anything already saved in the
+    // DB (returned by the API below) is the real prefill and always wins,
+    // so re-visiting an existing listing's link never clobbers what the
+    // admin already wrote here.
+    const urlInviteUrl = searchParams.get('invite_url') || ''
+    const urlDescription = searchParams.get('description') || ''
     fetch(`${API_BASE}/api/server_listings?guild_id=${guildId}&token=${encodeURIComponent(token)}`)
       .then((r) => r.json())
       .then((data) => {
@@ -65,14 +75,14 @@ function SubmitListingPageInner() {
           setLoadError(data.message || 'Could not load your server')
         } else {
           setPrefill(data)
-          setInviteUrl(data.invite_url || '')
-          setDescription(data.description || '')
+          setInviteUrl(data.invite_url || urlInviteUrl)
+          setDescription(data.description || urlDescription)
           setTags(data.tags || [])
         }
       })
       .catch(() => setLoadError('Network error loading your server'))
       .finally(() => setLoading(false))
-  }, [guildId, token])
+  }, [guildId, token, searchParams])
 
   function addTag() {
     const t = tagInput.trim().replace(/^#/, '').toLowerCase()
