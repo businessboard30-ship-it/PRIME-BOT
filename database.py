@@ -8725,6 +8725,9 @@ class Database:
     # Discord: automation polish (Phase 4) — autoresponders + scheduled posts
     # ─────────────────────────────────────────────────────────────────────
 
+    _AUTORESPONDERS_CACHE_TTL_SECONDS = 300
+    _autoresponders_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (list_of_dicts, fetched_at_monotonic)
+
     async def add_autoresponder(self, guild_id: int, trigger: str, response: str, created_by: int,
                                  clone_id: Optional[int] = None) -> int:
         pool = await get_pool()
@@ -8737,7 +8740,8 @@ class Database:
                 """,
                 guild_id, clone_id, trigger.lower(), response, created_by
             )
-            return row["id"]
+        self._autoresponders_cache.pop((guild_id, clone_id), None)
+        return row["id"]
 
     async def remove_autoresponder(self, guild_id: int, autoresponder_id: int, clone_id: Optional[int] = None) -> bool:
         pool = await get_pool()
@@ -8746,16 +8750,30 @@ class Database:
                 "DELETE FROM discord_autoresponders WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND id = $3",
                 guild_id, clone_id, autoresponder_id
             )
-            return result != "DELETE 0"
+        self._autoresponders_cache.pop((guild_id, clone_id), None)
+        return result != "DELETE 0"
 
     async def get_autoresponders(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
+        # on_message in discord_bot/cogs/automation.py calls this on every
+        # single message in every guild to check for trigger matches — had
+        # no cache at all, same gap _leveling_config_cache closed above.
+        cache_key = (guild_id, clone_id)
+        cached = self._autoresponders_cache.get(cache_key)
+        if cached is not None:
+            responders, fetched_at = cached
+            if time.monotonic() - fetched_at < self._AUTORESPONDERS_CACHE_TTL_SECONDS:
+                return responders
+
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM discord_autoresponders WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 ORDER BY id ASC",
                 guild_id, clone_id
             )
-            return [dict(r) for r in rows]
+            responders = [dict(r) for r in rows]
+
+        self._autoresponders_cache[cache_key] = (responders, time.monotonic())
+        return responders
 
     async def add_scheduled_announcement(self, guild_id: int, channel_id: int, message: str,
                                           next_run_at: datetime, created_by: int,
