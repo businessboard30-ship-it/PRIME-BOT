@@ -51,6 +51,7 @@ import logging
 import os
 import random
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
@@ -1280,6 +1281,16 @@ class RoastCog(GuildOnlyCog):
         # compared to a battle-long "fresh each pick" cycle.
         self._used_punchlines: dict[int, set[str]] = {}
         self._used_concedes: dict[int, set[str]] = {}
+        # (guild_id, clone_id) -> monotonic time of the last DB write to
+        # discord_roast_activity. on_message below fires on every single
+        # message in every guild and was writing to that table
+        # unconditionally each time — this table only feeds the inactivity/
+        # random-roast timers (checked on a multi-minute loop, see
+        # discord_roast_config's inactivity_minutes/random_check_minutes),
+        # so a write only needs to land at most once every couple minutes,
+        # not once per message.
+        self._last_activity_write: dict[tuple, float] = {}
+        self._ACTIVITY_WRITE_MIN_INTERVAL_SECONDS = 120
 
     def _pick_fresh_line(self, battle_id: int, bank: list[str], used_map: dict[int, set[str]]) -> str:
         used = used_map.setdefault(battle_id, set())
@@ -1529,15 +1540,20 @@ class RoastCog(GuildOnlyCog):
         if message.author.bot or message.guild is None:
             return
         clone_id = _clone_id_of(self.bot)
-        await db.execute(
-            """
-            INSERT INTO discord_roast_activity (guild_id, clone_id, last_message_at)
-            VALUES ($1, $2, NOW())
-            ON CONFLICT (guild_id, COALESCE(clone_id, -1))
-            DO UPDATE SET last_message_at = NOW()
-            """,
-            message.guild.id, clone_id,
-        )
+        activity_key = (message.guild.id, clone_id)
+        now = time.monotonic()
+        last_write = self._last_activity_write.get(activity_key, 0)
+        if now - last_write >= self._ACTIVITY_WRITE_MIN_INTERVAL_SECONDS:
+            self._last_activity_write[activity_key] = now
+            await db.execute(
+                """
+                INSERT INTO discord_roast_activity (guild_id, clone_id, last_message_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (guild_id, COALESCE(clone_id, -1))
+                DO UPDATE SET last_message_at = NOW()
+                """,
+                message.guild.id, clone_id,
+            )
 
         battle_id = self._active_by_channel.get(message.channel.id)
         if not battle_id:
