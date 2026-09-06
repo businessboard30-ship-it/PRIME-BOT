@@ -1694,6 +1694,37 @@ class RoastCog(GuildOnlyCog):
             )
             await self._propose_to_admins(guild)
 
+    async def _post_channel_fallback_notice(self, guild: discord.Guild):
+        """Last resort when every admin has DMs closed (_propose_to_admins
+        got sent=0): without this, the proposal just vanishes and nobody
+        ever finds out the bot wanted to start a roast — the trigger still
+        recorded last_roast_proposed_at, so it won't even retry soon.
+
+        Posts a plain notice (no picker view — the picker's select/button
+        items are locked to one specific admin_id, see build_target_picker_view,
+        so a channel-posted copy would only work for whichever admin's id
+        happened to be baked in) pointing admins at the manual trigger
+        instead. Tries the system channel first, then falls back to the
+        first text channel the bot can actually send in."""
+        channel = guild.system_channel
+        if channel is None or not channel.permissions_for(guild.me).send_messages:
+            channel = next(
+                (c for c in guild.text_channels if c.permissions_for(guild.me).send_messages),
+                None,
+            )
+        if channel is None:
+            logger.warning(f"[roast] no admins reachable and no postable channel found guild={guild.id}")
+            return
+        try:
+            await channel.send(
+                "😴 This server's gone quiet and I wanted to start a roast battle, but none of the "
+                "admins here have DMs open for me to ask. An admin can use the manual roast trigger "
+                "in **/setup** to start one anytime."
+            )
+            logger.info(f"[roast] posted channel fallback notice guild={guild.id} channel={channel.id}")
+        except discord.HTTPException:
+            logger.info(f"[roast] failed to post channel fallback notice guild={guild.id} channel={channel.id}")
+
     async def _propose_to_admins(self, guild: discord.Guild):
         admins = [m for m in guild.members if not m.bot and _is_admin_member(m)]
         if not admins:
@@ -1716,6 +1747,8 @@ class RoastCog(GuildOnlyCog):
         if round_messages:
             self._proposal_rounds[guild.id] = round_messages
         logger.info(f"[roast] proposal sent to {sent}/{len(admins)} admins guild={guild.id}")
+        if sent == 0:
+            await self._post_channel_fallback_notice(guild)
 
     # ---------- member-requested roast (needs admin approval) ----------
 
