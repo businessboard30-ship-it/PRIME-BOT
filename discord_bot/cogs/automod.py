@@ -896,7 +896,30 @@ class AutomodCog(GuildOnlyCog):
         lang = await get_lang(interaction)
         config = await db.get_automod_config(interaction.guild_id, clone_id=_clone_id_of(interaction))
         words = config.get("banned_words", [])
-        line = ", ".join(f"`{w}`" for w in words) if words else await tr("No blocked words configured.", lang)
+        if not words:
+            line = await tr("No blocked words configured.", lang)
+        else:
+            # Discord's component content field caps out at 4000 chars —
+            # a large enough banned-word list blows past that and the
+            # whole card fails to send (error code 50035). Truncate the
+            # rendered list itself, well under the cap, rather than
+            # letting it grow unbounded with the guild's word count.
+            parts = []
+            total_len = 0
+            shown = 0
+            for w in words:
+                piece = f"`{w}`"
+                add_len = len(piece) + (2 if parts else 0)  # ", " separator
+                if total_len + add_len > 3500:
+                    break
+                parts.append(piece)
+                total_len += add_len
+                shown += 1
+            line = ", ".join(parts)
+            remaining = len(words) - shown
+            if remaining > 0:
+                more = await tr("…and {remaining} more.", lang, remaining=remaining)
+                line = f"{line}\n\n{more}"
         buttons = [
             refresh_button(self, "bw_list"),
             ActionButton("Automod status", discord.ButtonStyle.secondary, self, "status", emoji="🛡️"),
