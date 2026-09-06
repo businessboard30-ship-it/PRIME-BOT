@@ -229,13 +229,24 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
             managed[clone_id].stop()
             del managed[clone_id]
 
-    # Start anything newly active that we're not already managing.
+    # Start anything newly active that we're not already managing. A short
+    # stagger between each one avoids Discord's gateway IDENTIFY rate limit
+    # — on a full cold start all clones land here in the same tight loop
+    # and each opens its own gateway connection within milliseconds of the
+    # others, which is exactly what triggered the
+    # "WebSocket ... is ratelimited, waiting ~59s" warnings: Discord throttles
+    # bursts of near-simultaneous identifies from the same process/host.
+    # A few seconds between each subprocess launch is enough to stay under
+    # that without meaningfully slowing down startup (13 clones * 3s = 39s
+    # total instead of Discord doing it for us via a forced ~60s wait).
+    STAGGER_SECONDS = 3
     for c in active:
         if c["clone_id"] not in managed:
             label = c.get("bot_username") or f"clone-{c['clone_id']}"
             m = ManagedClone(c["clone_id"], label)
             managed[c["clone_id"]] = m
             m.start()
+            await asyncio.sleep(STAGGER_SECONDS)
 
     # Restart anything that died, backing off per-clone so a bad token
     # (invalid/revoked, missing privileged intent, etc.) doesn't spin the
