@@ -375,10 +375,20 @@ class WelcomeNudgeEditModal(discord.ui.Modal, title="Edit welcome message"):
             member = guild.get_member(interaction.user.id) or interaction.user
             preview_text = _apply_template(new_template, member) if hasattr(member, "mention") else new_template
         view = WelcomeNudgeView(self.guild_id, self.channel_id, new_template)
-        await interaction.edit_original_response(
-            content=f"Updated. Here's the message it'll send:\n\n{preview_text}",
-            view=view,
-        )
+        new_content = f"Updated. Here's the message it'll send:\n\n{preview_text}"
+        try:
+            await interaction.edit_original_response(content=new_content, view=view)
+        except discord.HTTPException as e:
+            # The DM message this modal edits was sometimes originally sent
+            # with an attachment (see _send_nudge's dm.send(..., file=file,
+            # view=view) above) — editing an attachment-bearing message's
+            # content together with a fresh view can hit Discord's "content
+            # can't be used with this message" family of 400s depending on
+            # how that original message was rendered. Falling back to a
+            # followup message guarantees the updated text/buttons still
+            # reach the owner instead of the interaction silently erroring.
+            logger.info(f"[v0] Couldn't edit welcome-nudge message directly, sending followup instead: {e}")
+            await interaction.followup.send(content=new_content, view=view)
 
 
 class WelcomeCog(GuildOnlyCog):
@@ -916,16 +926,30 @@ class WelcomeCog(GuildOnlyCog):
                     dm = await member.create_dm()
                     await dm.send(content=content, file=file)
                     sent = True
-                except discord.Forbidden:
+                except (discord.Forbidden, discord.HTTPException) as dm_err:
                     # Member has DMs closed / blocks the bot — nothing we
                     # can do without a channel fallback the admin didn't
                     # ask for, so just log and move on. Treat as "handled"
                     # so the except block below doesn't also try a fallback.
-                    logger.info(f"[v0] Couldn't DM welcome card to {member.id} in guild {member.guild.id} (DMs closed).")
+                    # Discord returns this as a plain 400 HTTPException
+                    # (error code 50007, "Cannot send messages to this
+                    # user"), NOT a discord.Forbidden (403) — catching only
+                    # Forbidden here let it slip through uncaught and crash
+                    # the on_member_join listener.
+                    logger.info(f"[v0] Couldn't DM welcome card to {member.id} in guild {member.guild.id} (DMs closed): {dm_err}")
                     sent = True
             else:
                 await channel.send(content=content, file=file)
                 sent = True
+        except discord.Forbidden as e:
+            # Missing Access/Permissions in the target channel — this is a
+            # standing configuration problem (bot lost View/Send perms, or
+            # the channel was archived), not a one-off blip, so it will
+            # recur on every future join until an admin fixes it. Log at
+            # info instead of error to avoid alerting on noise, and skip
+            # the fallback plain-text retry below since it would just hit
+            # the exact same permission wall a second time.
+            logger.info(f"[v0] Welcome card skipped for guild {member.guild.id} (missing access): {e}")
         except Exception as e:
             logger.error(f"[v0] Failed to render/send welcome card for guild {member.guild.id}: {e}")
             if sent:
@@ -940,7 +964,7 @@ class WelcomeCog(GuildOnlyCog):
                     await dm.send(fallback_text)
                 else:
                     await channel.send(fallback_text)
-            except discord.Forbidden:
+            except (discord.Forbidden, discord.HTTPException):
                 pass
 
     group = app_commands.guild_only()(app_commands.Group(name="welcome", description="Configure welcome cards for new members"))
