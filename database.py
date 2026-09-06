@@ -301,6 +301,10 @@ class Database:
                     # not current.
                     current_version = None
                 if current_version != SCHEMA_VERSION:
+                    logger.info(
+                        f"[db init] schema_version {current_version!r} != {SCHEMA_VERSION!r} "
+                        f"— running full DDL pass (this triggers Supabase's schema-reload)."
+                    )
                     await self._create_tables(conn)
                     await conn.execute(
                         """
@@ -310,6 +314,10 @@ class Database:
                         SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
                         """,
                         SCHEMA_VERSION,
+                    )
+                else:
+                    logger.info(
+                        f"[db init] schema_version already {SCHEMA_VERSION!r} — skipping DDL pass."
                     )
             finally:
                 await conn.execute("SELECT pg_advisory_unlock(727271001)")
