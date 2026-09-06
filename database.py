@@ -627,18 +627,6 @@ class Database:
             )
         """)
 
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS subscription_payments (
-                subscription_id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL REFERENCES users(user_id),
-                payment_amount INTEGER NOT NULL,
-                subscription_month TEXT NOT NULL,
-                payment_method TEXT,
-                payment_reference TEXT UNIQUE,
-                status TEXT DEFAULT 'completed',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS admin_config (
@@ -710,18 +698,6 @@ class Database:
         # 20 FEATURES TABLES
         # ════���������════════════════════════════════════════════════════════════���═════════
 
-        # Feature 1-2: Inline Query & Chosen Results
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS inline_searches (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                query TEXT NOT NULL,
-                result_id TEXT NOT NULL,
-                result_type TEXT,
-                was_chosen BOOLEAN DEFAULT FALSE,
-                search_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
         # Feature 3: My Chat Member (bot added/removed)
         await conn.execute("""
@@ -761,55 +737,9 @@ class Database:
             )
         """)
 
-        # Feature 7: Shipping
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS shipping_orders (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                item_id TEXT,
-                shipping_address TEXT,
-                shipping_option TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Feature 8: User Profile Photos
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_profile_photos (
-                user_id BIGINT PRIMARY KEY,
-                file_id TEXT NOT NULL,
-                photo_url TEXT,
-                downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Feature 9: Edit Message Tracking
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS edited_messages (
-                id SERIAL PRIMARY KEY,
-                message_id BIGINT NOT NULL,
-                user_id BIGINT NOT NULL,
-                original_text TEXT,
-                edited_text TEXT,
-                edit_count INTEGER DEFAULT 1,
-                first_edited TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_edited TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Feature 10: Message Reactions
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS message_reactions (
-                id SERIAL PRIMARY KEY,
-                message_id BIGINT NOT NULL,
-                user_id BIGINT NOT NULL,
-                emoji TEXT NOT NULL,
-                reaction_type TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(message_id, user_id, emoji)
-            )
-        """)
 
         # Feature 11: Polls
         await conn.execute("""
@@ -825,129 +755,15 @@ class Database:
             )
         """)
 
-        # Feature 12: Dice/Lottery Rolls
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS dice_rolls (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                dice_type TEXT DEFAULT 'cube',
-                result INTEGER,
-                reward INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Feature 13: Games
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_games (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                game_name TEXT NOT NULL,
-                high_score INTEGER DEFAULT 0,
-                play_count INTEGER DEFAULT 0,
-                last_played TIMESTAMP
-            )
-        """)
 
-        # Feature 14: Web App Data
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS web_app_sessions (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                session_token TEXT UNIQUE,
-                web_app_data TEXT,
-                write_access_allowed BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP
-            )
-        """)
 
-        # Feature 15: Passport (Identity Verification)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS passport_verifications (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                document_type TEXT,
-                verification_status TEXT DEFAULT 'pending',
-                age_verified BOOLEAN DEFAULT FALSE,
-                verified_age INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Feature 16: Location & Geofencing
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_locations (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                latitude FLOAT NOT NULL,
-                longitude FLOAT NOT NULL,
-                location_name TEXT,
-                location_type TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS proximity_alerts (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                event_name TEXT NOT NULL,
-                event_latitude FLOAT NOT NULL,
-                event_longitude FLOAT NOT NULL,
-                alert_radius_km FLOAT DEFAULT 5,
-                alert_sent BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Feature 17: Video Chat Members
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS group_video_calls (
-                id SERIAL PRIMARY KEY,
-                group_id BIGINT NOT NULL,
-                call_started TIMESTAMP,
-                call_ended TIMESTAMP,
-                participant_count INTEGER,
-                status TEXT DEFAULT 'active'
-            )
-        """)
 
-        # Feature 18: User Shared (Referrals)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_shares (
-                id SERIAL PRIMARY KEY,
-                sharer_id BIGINT NOT NULL,
-                shared_user_id BIGINT NOT NULL,
-                share_type TEXT,
-                bonus_points INTEGER DEFAULT 100,
-                bonus_claimed BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Feature 19: Deep Links Tracking
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS deep_links (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                link_code TEXT UNIQUE,
-                target_type TEXT,
-                target_id TEXT,
-                clicked_count INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Feature 20: Write Access Allowed
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_write_access (
-                user_id BIGINT PRIMARY KEY,
-                write_access_allowed BOOLEAN DEFAULT FALSE,
-                permission_granted_at TIMESTAMP,
-                last_message_sent TIMESTAMP
-            )
-        """)
 
         # Clone Bot Payments - tracks pending/verified payments for bot cloning (Task 1)
         await conn.execute("""
@@ -1247,19 +1063,6 @@ class Database:
             )
         """)
 
-        # Managed Bot Tokens (user-registered bots)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS managed_bot_tokens (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL REFERENCES users(user_id),
-                bot_name TEXT NOT NULL,
-                bot_token TEXT UNIQUE NOT NULL,
-                bot_username TEXT,
-                is_valid BOOLEAN DEFAULT TRUE,
-                last_verified TIMESTAMP,
-                registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
         # Chat Lifecycle & Membership
         await conn.execute("""
@@ -1376,28 +1179,7 @@ class Database:
             )
         """)
 
-        # Mandatory Join Verifications
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS join_gate_verifications (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT NOT NULL,
-                verified BOOLEAN DEFAULT FALSE,
-                verified_at TIMESTAMP,
-                check_count INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
-        # Ad Analytics (click tracking for sponsored posts)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS ad_analytics (
-                id SERIAL PRIMARY KEY,
-                ad_id INTEGER REFERENCES ad_submissions(id),
-                impression_count INTEGER DEFAULT 0,
-                click_count INTEGER DEFAULT 0,
-                tracked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
 
         # Moderation Logs
         await conn.execute("""
