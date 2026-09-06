@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -6130,7 +6131,25 @@ class Database:
         "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
     }
 
+    # In-process cache for automod config: on_message/on_member_join/etc.
+    # call get_automod_config on every single event, and this table almost
+    # never changes (only via /automod commands), so a per-(guild, clone)
+    # TTL cache with write-through invalidation cuts that from one DB round
+    # trip per message to effectively zero. TTL is a safety net in case a
+    # future code path ever mutates the row outside set_automod_config
+    # (e.g. a direct SQL migration); normal admin edits invalidate
+    # immediately via set_automod_config below.
+    _AUTOMOD_CACHE_TTL_SECONDS = 300
+    _automod_config_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (config_dict, fetched_at_monotonic)
+
     async def get_automod_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        cache_key = (guild_id, clone_id)
+        cached = self._automod_config_cache.get(cache_key)
+        if cached is not None:
+            config, fetched_at = cached
+            if time.monotonic() - fetched_at < self._AUTOMOD_CACHE_TTL_SECONDS:
+                return config
+
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -6140,14 +6159,22 @@ class Database:
             if row:
                 d = dict(row)
                 d["banned_words"] = json.loads(d["banned_words"]) if isinstance(d["banned_words"], str) else d["banned_words"]
-                return d
-            return {"guild_id": guild_id, "clone_id": clone_id, **self._AUTOMOD_DEFAULTS}
+            else:
+                d = {"guild_id": guild_id, "clone_id": clone_id, **self._AUTOMOD_DEFAULTS}
+
+        self._automod_config_cache[cache_key] = (d, time.monotonic())
+        return d
 
     async def set_automod_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
         """fields may include any key from _AUTOMOD_DEFAULTS. Upserts, so the
         first /automod command in a guild works without a separate 'create'
         step. clone_id keeps a clone's filters/action/log-channel separate
-        from the main bot's (or another clone's) in a shared guild."""
+        from the main bot's (or another clone's) in a shared guild.
+
+        Always invalidates the read cache below (rather than just patching
+        it in place) so a failed/partial write, or a concurrent writer,
+        can't leave a stale merged config cached — the next get_automod_config
+        call re-reads from the DB and repopulates it fresh."""
         current = await self.get_automod_config(guild_id, clone_id)
         merged = {**current, **fields}
         pool = await get_pool()
@@ -6184,6 +6211,7 @@ class Database:
                 merged["wordfilter_notice_count"], merged["wordfilter_last_notice_at"],
                 merged["wizard_channel_id"], merged["wizard_message_id"], merged["wizard_invoker_id"],
             )
+        self._automod_config_cache.pop((guild_id, clone_id), None)
 
     async def get_media_storage_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
