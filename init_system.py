@@ -164,11 +164,80 @@ async def initialize_database_tables():
             
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS superbot_user_points (
-                    user_id BIGINT PRIMARY KEY,
-                    total_points INTEGER DEFAULT 0,
-                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    points INTEGER NOT NULL DEFAULT 0,
+                    action VARCHAR(64),
+                    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_superbot_user_points_user_id
+                ON superbot_user_points (user_id)
+            """)
+
+            # Migration: older deployments created this table with a
+            # (user_id PK, total_points, last_updated) schema instead of the
+            # per-action ledger schema the code actually queries against
+            # (points/action/recorded_at, one row per event). Backfill any
+            # missing columns and migrate existing data instead of dropping it.
+            existing_cols = {
+                r["column_name"]
+                for r in await conn.fetch("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'superbot_user_points'
+                """)
+            }
+
+            if "points" not in existing_cols:
+                await conn.execute(
+                    "ALTER TABLE superbot_user_points ADD COLUMN points INTEGER NOT NULL DEFAULT 0"
+                )
+                if "total_points" in existing_cols:
+                    await conn.execute(
+                        "UPDATE superbot_user_points SET points = total_points"
+                    )
+                    print("[v0] ✓ Migrated total_points -> points on superbot_user_points")
+
+            if "action" not in existing_cols:
+                await conn.execute(
+                    "ALTER TABLE superbot_user_points ADD COLUMN action VARCHAR(64)"
+                )
+
+            if "recorded_at" not in existing_cols:
+                await conn.execute(
+                    "ALTER TABLE superbot_user_points ADD COLUMN recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+                )
+
+            # Old schema used user_id as the PRIMARY KEY, which blocks more
+            # than one row per user (breaks the ledger model). Drop that
+            # constraint if it's still there so add_points() can insert
+            # multiple rows per user.
+            pk_cols = await conn.fetch("""
+                SELECT kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                WHERE tc.table_name = 'superbot_user_points'
+                    AND tc.constraint_type = 'PRIMARY KEY'
+            """)
+            pk_col_names = {r["column_name"] for r in pk_cols}
+            if pk_col_names == {"user_id"}:
+                constraint_name = await conn.fetchval("""
+                    SELECT tc.constraint_name
+                    FROM information_schema.table_constraints tc
+                    WHERE tc.table_name = 'superbot_user_points'
+                        AND tc.constraint_type = 'PRIMARY KEY'
+                """)
+                await conn.execute(
+                    f'ALTER TABLE superbot_user_points DROP CONSTRAINT "{constraint_name}"'
+                )
+                if "id" not in existing_cols:
+                    await conn.execute(
+                        "ALTER TABLE superbot_user_points ADD COLUMN id BIGSERIAL PRIMARY KEY"
+                    )
+                print("[v0] ✓ Migrated superbot_user_points off user_id PRIMARY KEY (ledger model)")
+
             print("[v0] ✓ Table ready: superbot_user_points")
             
     except Exception as e:
