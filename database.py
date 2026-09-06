@@ -5964,6 +5964,14 @@ class Database:
     _AUTOMOD_CACHE_TTL_SECONDS = 300
     _automod_config_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (config_dict, fetched_at_monotonic)
 
+    # Same read-cache pattern as _automod_config_cache above, applied to
+    # leveling config: on_message in discord_bot/cogs/leveling.py calls
+    # get_leveling_config() on every single message across every guild,
+    # and unlike automod this had no cache at all — a full round trip per
+    # message, all day, in every server the bot is in.
+    _LEVELING_CACHE_TTL_SECONDS = 300
+    _leveling_config_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (config_dict, fetched_at_monotonic)
+
     async def get_automod_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         cache_key = (guild_id, clone_id)
         cached = self._automod_config_cache.get(cache_key)
@@ -7914,6 +7922,13 @@ class Database:
     # --- /setup channels helpers ----------------------------------------
 
     async def get_leveling_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        cache_key = (guild_id, clone_id)
+        cached = self._leveling_config_cache.get(cache_key)
+        if cached is not None:
+            config, fetched_at = cached
+            if time.monotonic() - fetched_at < self._LEVELING_CACHE_TTL_SECONDS:
+                return config
+
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -7921,18 +7936,26 @@ class Database:
                 guild_id, clone_id
             )
             if row:
-                return dict(row)
-            return {
-                "guild_id": guild_id, "clone_id": clone_id,
-                "announce_channel_id": None, "announce_auto_created": False,
-                "xp_rate": "default", "card_style": "card",
-                "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
-            }
+                d = dict(row)
+            else:
+                d = {
+                    "guild_id": guild_id, "clone_id": clone_id,
+                    "announce_channel_id": None, "announce_auto_created": False,
+                    "xp_rate": "default", "card_style": "card",
+                    "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
+                }
+
+        self._leveling_config_cache[cache_key] = (d, time.monotonic())
+        return d
 
     async def set_leveling_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
         """fields may include announce_channel_id, announce_auto_created,
         xp_rate, card_style, wizard_channel_id, wizard_message_id,
-        wizard_invoker_id. Upserts, same pattern as set_welcome_config."""
+        wizard_invoker_id. Upserts, same pattern as set_welcome_config.
+
+        Always invalidates the read cache below afterward (same rationale
+        as set_automod_config) so a failed/partial write, or a concurrent
+        writer, can't leave a stale merged config cached."""
         current = await self.get_leveling_config(guild_id, clone_id)
         merged = {**current, **fields}
         pool = await get_pool()
@@ -7950,6 +7973,7 @@ class Database:
                 guild_id, clone_id, merged["announce_channel_id"], merged["announce_auto_created"], merged["xp_rate"],
                 merged["card_style"], merged["wizard_channel_id"], merged["wizard_message_id"], merged["wizard_invoker_id"],
             )
+        self._leveling_config_cache.pop((guild_id, clone_id), None)
 
     async def get_download_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
