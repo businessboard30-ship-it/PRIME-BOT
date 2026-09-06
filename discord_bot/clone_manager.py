@@ -236,10 +236,11 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
     # others, which is exactly what triggered the
     # "WebSocket ... is ratelimited, waiting ~59s" warnings: Discord throttles
     # bursts of near-simultaneous identifies from the same process/host.
-    # A few seconds between each subprocess launch is enough to stay under
-    # that without meaningfully slowing down startup (13 clones * 3s = 39s
-    # total instead of Discord doing it for us via a forced ~60s wait).
-    STAGGER_SECONDS = 3
+    # Discord's IDENTIFY limit is roughly 1 per 5 seconds; an earlier
+    # version of this stagger used 3s and still hit the rate limit once
+    # around the 8th-9th clone in the sequence (the margin was too thin
+    # once request jitter is added in). 6s gives real headroom.
+    STAGGER_SECONDS = 6
     for c in active:
         if c["clone_id"] not in managed:
             label = c.get("bot_username") or f"clone-{c['clone_id']}"
