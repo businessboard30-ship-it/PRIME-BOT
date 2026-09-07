@@ -66,7 +66,7 @@ from discord_bot.cogs._views_music_panel import (
 logger = logging.getLogger(__name__)
 
 SOLO_GRACE_SECONDS = 60
-SOLO_CHECK_INTERVAL_SECONDS = 15
+SOLO_CHECK_INTERVAL_SECONDS = 60
 LOOP_ORDER = ["off", "track", "queue"]
 
 YDL_BASE_OPTS = {
@@ -211,19 +211,11 @@ async def resolve_track(url: str, queued_by_id: int, voice_channel_id: int) -> d
     return raw
 
 
-def _probe_duration_seconds(url: str) -> float | None:
+def _probe_duration_seconds(url: str) -> float:
     """Blocking — must be run via asyncio.to_thread. Used for direct-upload 
     URLs (Discord CDN attachment links) to read duration without downloading 
-    the whole file.
-
-    Returns:
-      - a float duration (possibly 0.0) when ffprobe could reach the URL,
-      - None specifically when the URL is CONFIRMED DEAD (404/Not Found) —
-        callers must treat this as "do not queue for playback", since
-        ffmpeg will fail the exact same way at play time. Any other
-        failure (timeout, transient error, odd format ffprobe can't read
-        duration from) returns 0.0 so we still attempt playback rather
-        than block over a cosmetic detail."""
+    the whole file. Returns 0.0 on any failure — never block playback over a 
+    cosmetic detail. Enhanced logging to diagnose 404/stale URL issues."""
     try:
         result = subprocess.run(
             [
@@ -243,7 +235,6 @@ def _probe_duration_seconds(url: str) -> float | None:
                     f"[v0] ffprobe got 404 on URL (attachment may have expired): {url[:100]}... "
                     f"| stderr: {stderr[:300]}"
                 )
-                return None
             else:
                 logger.warning(
                     f"[v0] ffprobe failed with code {result.returncode} | URL: {url[:100]}... "
@@ -492,18 +483,7 @@ class MusicCog(GuildOnlyCog):
 
         # Probe duration — better error logging now
         duration_seconds = await asyncio.to_thread(_probe_duration_seconds, stream_url)
-
-        # None means ffprobe confirmed the URL is dead (404) — this is a
-        # Discord CDN attachment whose original message/attachment is gone
-        # and couldn't be refreshed. Queuing it anyway just defers the exact
-        # same failure to _play_next(), where it kills playback for the
-        # whole guild queue. Refuse to queue and tell the submitter instead.
-        if duration_seconds is None:
-            return (
-                "that file link has expired (the original message/attachment is gone) — "
-                "please re-upload or re-submit the track"
-            )
-
+        
         track = {
             "stream_url": stream_url,
             "title": title,
