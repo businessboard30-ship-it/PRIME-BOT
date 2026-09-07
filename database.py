@@ -277,20 +277,21 @@ class Database:
             while not await conn.fetchval("SELECT pg_try_advisory_lock(727271001)"):
                 await asyncio.sleep(0.5)
             try:
-                # Skip the DDL pass entirely if the schema is already at the
-                # current version. Every CREATE TABLE IF NOT EXISTS / ALTER
-                # TABLE IF EXISTS below is a no-op once the schema exists,
-                # but Postgres event triggers fire on *any* executed DDL
-                # command regardless of whether it changed anything —
-                # Supabase installs one by default that sends
-                # NOTIFY pgrst, 'reload schema' on that. With the main bot
-                # and every clone each running this full ~90-statement pass
-                # on their own cold start (sometimes a dozen within the same
-                # second), that was forcing a full schema reintrospection
-                # (postgres-meta re-walking pg_timezone_names, pg_type,
-                # etc.) on every ordinary restart — not just on real schema
-                # changes. Bump SCHEMA_VERSION when you actually add/alter
-                # a table so the next cold start applies it once.
+                # Skip the DDL pass entirely once the schema is already at
+                # the current version. Every CREATE TABLE IF NOT EXISTS /
+                # ALTER TABLE IF EXISTS in _create_tables is a no-op once
+                # the schema exists, but Postgres event triggers fire on
+                # *any* executed DDL command regardless of whether it
+                # changed anything — Supabase installs one by default that
+                # sends NOTIFY pgrst, 'reload schema' on that. With the main
+                # bot and every clone each running this full ~150-statement
+                # pass on their own cold start (sometimes a dozen within the
+                # same second, per the note above), that was forcing a full
+                # schema reintrospection (postgres-meta re-walking
+                # pg_timezone_names, pg_type, etc.) on every ordinary
+                # restart — not just on real schema changes. Bump
+                # SCHEMA_VERSION when you actually add/alter a table so the
+                # next cold start applies it once.
                 try:
                     current_version = await conn.fetchval(
                         "SELECT value FROM admin_config WHERE key = 'schema_version'"
@@ -3078,6 +3079,35 @@ class Database:
             CREATE UNIQUE INDEX IF NOT EXISTS server_listings_ref_code_key
             ON server_listings (ref_code) WHERE ref_code IS NOT NULL
         """)
+        # verified: manual admin override (site has no approval step — see
+        # server_listing_tokens' comment — so this exists purely so an admin
+        # can force a badge on/off; get_public_server_listings also computes
+        # an auto-verified heuristic from vote_count/age for listings where
+        # this is still FALSE). banner_url: optional wide image for the
+        # per-listing page, separate from guild_icon_url.
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS banner_url TEXT
+        """)
+        # Public "report this server" button on the directory — no auth,
+        # so this is a raw complaint log an admin reads manually, not an
+        # auto-moderation queue (no rate limit here; api/server_listings.py
+        # keeps the payload tiny so spam is cheap to scroll past).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS server_listing_reports (
+                id BIGSERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                reason TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS server_listing_reports_guild_idx
+            ON server_listing_reports (guild_id, COALESCE(clone_id, -1))
+        """)
 
         # One row per (listing, voter) — the UNIQUE INDEX below (not a
         # table-level PRIMARY KEY, which can't take an expression like
@@ -3097,6 +3127,13 @@ class Database:
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS server_listing_votes_unique_key
             ON server_listing_votes (guild_id, COALESCE(clone_id, -1), voter_id)
+        """)
+        # Added later — lets the top-voter leaderboard show a name instead
+        # of a bare snowflake ID. Nullable/backfill-free: votes cast before
+        # this column existed just show as "a voter" in the leaderboard (see
+        # get_top_voters), nothing re-fetches old identities retroactively.
+        await conn.execute("""
+            ALTER TABLE server_listing_votes ADD COLUMN IF NOT EXISTS voter_username TEXT
         """)
 
         # One-time OAuth states for the vote-login flow — exact same
@@ -5980,6 +6017,12 @@ class Database:
     _LEVELING_CACHE_TTL_SECONDS = 300
     _leveling_config_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (config_dict, fetched_at_monotonic)
 
+    # Same pattern again: on_message in discord_bot/cogs/automation.py
+    # calls get_autoresponders() on every single message to check for
+    # trigger matches, with no cache.
+    _AUTORESPONDERS_CACHE_TTL_SECONDS = 300
+    _autoresponders_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (list_of_dicts, fetched_at_monotonic)
+
     async def get_automod_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         cache_key = (guild_id, clone_id)
         cached = self._automod_config_cache.get(cache_key)
@@ -8733,9 +8776,6 @@ class Database:
     # Discord: automation polish (Phase 4) — autoresponders + scheduled posts
     # ─────────────────────────────────────────────────────────────────────
 
-    _AUTORESPONDERS_CACHE_TTL_SECONDS = 300
-    _autoresponders_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (list_of_dicts, fetched_at_monotonic)
-
     async def add_autoresponder(self, guild_id: int, trigger: str, response: str, created_by: int,
                                  clone_id: Optional[int] = None) -> int:
         pool = await get_pool()
@@ -9111,6 +9151,7 @@ class Database:
         self, guild_id: int, clone_id: Optional[int], guild_name: str,
         guild_icon_url: Optional[str], member_count: int,
         invite_url: str, description: str, tags: List[str],
+        banner_url: Optional[str] = None,
     ) -> Dict:
         """guild_name/guild_icon_url/member_count MUST come from the
         server_listing_tokens row (server-verified), never straight from the
@@ -9122,8 +9163,8 @@ class Database:
                 """
                 INSERT INTO server_listings
                     (guild_id, clone_id, guild_name, guild_icon_url, member_count,
-                     invite_url, description, tags, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                     invite_url, description, tags, banner_url, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
                 ON CONFLICT (guild_id, COALESCE(clone_id, -1)) DO UPDATE SET
                     guild_name = EXCLUDED.guild_name,
                     guild_icon_url = EXCLUDED.guild_icon_url,
@@ -9131,25 +9172,89 @@ class Database:
                     invite_url = EXCLUDED.invite_url,
                     description = EXCLUDED.description,
                     tags = EXCLUDED.tags,
+                    banner_url = EXCLUDED.banner_url,
                     updated_at = NOW()
                 RETURNING *
                 """,
                 guild_id, clone_id, guild_name, guild_icon_url, member_count,
-                invite_url, description, tags,
+                invite_url, description, tags, banner_url,
             )
             return dict(row)
 
-    async def get_public_server_listings(self, limit: int = 200) -> List[Dict]:
-        """Ranked directory feed for the public /servers page: vote count
-        (from server_listing_votes) plus confirmed_conversions (rolled up
-        onto the listing row itself by _check_ref_conversion below) both
-        count toward discovery order, votes weighted higher since they
-        require a real sign-in while a conversion only requires a join. No
-        approval flag to filter on — see server_listing_tokens' comment for
-        why a row existing here already implies the bot-in-guild check."""
+    # Sort keys the public directory feed accepts — mapped to real ORDER BY
+    # clauses here (never interpolated from the request directly) so a bad
+    # ?sort= value can't become a SQL injection vector.
+    _LISTING_SORTS = {
+        "trending": '(COALESCE(v.vote_count, 0) * 3 + sl.confirmed_conversions) DESC, sl.updated_at DESC',
+        "votes": 'COALESCE(v.vote_count, 0) DESC, sl.updated_at DESC',
+        "members": 'sl.member_count DESC, sl.updated_at DESC',
+        "newest": 'sl.created_at DESC',
+    }
+
+    async def get_public_server_listings(
+        self, limit: int = 24, offset: int = 0, sort: str = "trending",
+        tag: Optional[str] = None, nsfw: bool = False,
+    ) -> Dict:
+        """Ranked/filterable/paginated directory feed for the public /servers
+        page. vote count (from server_listing_votes) plus confirmed_
+        conversions (rolled up onto the listing row itself by
+        _check_ref_conversion below) both count toward the default
+        "trending" order, votes weighted higher since they require a real
+        sign-in while a conversion only requires a join. No approval flag to
+        filter on — see server_listing_tokens' comment for why a row
+        existing here already implies the bot-in-guild check.
+
+        `tag` filters to listings whose tags array contains it (case already
+        normalized to lowercase at submit time — see _clean_tags). `nsfw`
+        False (the default) hides anything tagged "nsfw"; True shows only
+        those, so the site's NSFW toggle is one filter, not two endpoints.
+        Returns {"listings": [...], "total": N} so the frontend can render
+        "load more" / page counts without a second round trip.
+        """
+        order_sql = self._LISTING_SORTS.get(sort, self._LISTING_SORTS["trending"])
         pool = await get_pool()
         async with pool.acquire() as conn:
+            where = ["('nsfw' = ANY(sl.tags)) = $3"]
+            params: list = [limit, offset, nsfw]
+            if tag:
+                where.append(f"${len(params) + 1} = ANY(sl.tags)")
+                params.append(tag)
+            where_sql = " AND ".join(where)
             rows = await conn.fetch(
+                f"""
+                SELECT sl.*, COALESCE(v.vote_count, 0) AS vote_count,
+                       COUNT(*) OVER () AS total_count
+                FROM server_listings sl
+                LEFT JOIN (
+                    SELECT guild_id, clone_id, COUNT(*) AS vote_count
+                    FROM server_listing_votes GROUP BY guild_id, clone_id
+                ) v ON v.guild_id = sl.guild_id AND v.clone_id IS NOT DISTINCT FROM sl.clone_id
+                WHERE {where_sql}
+                ORDER BY {order_sql}
+                LIMIT $1 OFFSET $2
+                """,
+                *params,
+            )
+            total = rows[0]["total_count"] if rows else 0
+            listings = []
+            for r in rows:
+                d = dict(r)
+                d.pop("total_count", None)
+                # Auto-verified heuristic for listings an admin hasn't
+                # manually flagged: enough real signal (votes or a
+                # confirmed join) that it's unlikely to be a throwaway
+                # listing. Manual `verified=TRUE` always wins regardless.
+                d["verified"] = d["verified"] or (d["vote_count"] >= 5 or d["confirmed_conversions"] >= 3)
+                listings.append(d)
+            return {"listings": listings, "total": total}
+
+    async def get_public_listing_by_guild(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        """Single listing plus vote_count, for the per-listing deep-link page
+        (app/servers/[guildId]/page.tsx) — same join as the directory feed
+        above, just narrowed to one row instead of paginated."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
                 """
                 SELECT sl.*, COALESCE(v.vote_count, 0) AS vote_count
                 FROM server_listings sl
@@ -9157,18 +9262,91 @@ class Database:
                     SELECT guild_id, clone_id, COUNT(*) AS vote_count
                     FROM server_listing_votes GROUP BY guild_id, clone_id
                 ) v ON v.guild_id = sl.guild_id AND v.clone_id IS NOT DISTINCT FROM sl.clone_id
-                ORDER BY (COALESCE(v.vote_count, 0) * 3 + sl.confirmed_conversions) DESC,
-                         sl.updated_at DESC
-                LIMIT $1
+                WHERE sl.guild_id = $1 AND sl.clone_id IS NOT DISTINCT FROM $2
                 """,
-                limit,
+                guild_id, clone_id,
             )
+            if not row:
+                return None
+            d = dict(row)
+            d["verified"] = d["verified"] or (d["vote_count"] >= 5 or d["confirmed_conversions"] >= 3)
+            return d
+
+    async def get_similar_listings(self, guild_id: int, clone_id: Optional[int] = None, limit: int = 4) -> List[Dict]:
+        """Up to `limit` other listings sharing at least one tag with this
+        one, ranked by shared-tag count then the same trending order as the
+        main directory feed. Used for the deep-link page's "similar
+        servers" section — a listing with no tags simply gets none back
+        rather than falling back to something unrelated."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT tags FROM server_listings WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+            if not row or not row["tags"]:
+                return []
+            rows = await conn.fetch(
+                """
+                SELECT sl.*, COALESCE(v.vote_count, 0) AS vote_count,
+                       cardinality(ARRAY(SELECT unnest(sl.tags) INTERSECT SELECT unnest($3::text[]))) AS shared_tags
+                FROM server_listings sl
+                LEFT JOIN (
+                    SELECT guild_id, clone_id, COUNT(*) AS vote_count
+                    FROM server_listing_votes GROUP BY guild_id, clone_id
+                ) v ON v.guild_id = sl.guild_id AND v.clone_id IS NOT DISTINCT FROM sl.clone_id
+                WHERE NOT (sl.guild_id = $1 AND sl.clone_id IS NOT DISTINCT FROM $2)
+                  AND sl.tags && $3::text[]
+                ORDER BY shared_tags DESC, (COALESCE(v.vote_count, 0) * 3 + sl.confirmed_conversions) DESC
+                LIMIT $4
+                """,
+                guild_id, clone_id, row["tags"], limit,
+            )
+            out = []
+            for r in rows:
+                d = dict(r)
+                d.pop("shared_tags", None)
+                d["verified"] = d["verified"] or (d["vote_count"] >= 5 or d["confirmed_conversions"] >= 3)
+                out.append(d)
+            return out
+
+    async def get_all_listing_invites(self) -> List[Dict]:
+        """guild_id/clone_id/invite_url for every listing — feed for the
+        dead-invite prune cron (api/cron_prune_dead_listings.py), which
+        checks each invite_url against Discord's API itself; this just
+        hands back what to check."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT guild_id, clone_id, invite_url FROM server_listings")
             return [dict(r) for r in rows]
+
+    async def delete_server_listing(self, guild_id: int, clone_id: Optional[int]) -> None:
+        """Used only by the dead-invite prune cron — a listing whose invite
+        404s gets removed outright rather than hidden, since there's no
+        "unlisted" state in this schema and a dead invite is useless to
+        keep around either way."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM server_listings WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+
+    async def report_listing(self, guild_id: int, clone_id: Optional[int], reason: str) -> None:
+        """Logs a public "report this server" click — see the reports table
+        comment in _create_tables for why there's deliberately no auto-action
+        or rate limit here, just a log an admin reads."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO server_listing_reports (guild_id, clone_id, reason) VALUES ($1, $2, $3)",
+                guild_id, clone_id, reason,
+            )
 
     # --- server listing votes ----------------------------------------------
 
     async def cast_server_listing_vote(
-        self, guild_id: int, clone_id: Optional[int], voter_id: int
+        self, guild_id: int, clone_id: Optional[int], voter_id: int, voter_username: Optional[str] = None,
     ) -> bool:
         """Returns True if this vote was newly recorded, False if this voter
         had already voted for this listing (ON CONFLICT DO NOTHING makes the
@@ -9176,12 +9354,27 @@ class Database:
         pool = await get_pool()
         async with pool.acquire() as conn:
             result = await conn.execute(
-                """INSERT INTO server_listing_votes (guild_id, clone_id, voter_id)
-                   VALUES ($1, $2, $3)
+                """INSERT INTO server_listing_votes (guild_id, clone_id, voter_id, voter_username)
+                   VALUES ($1, $2, $3, $4)
                    ON CONFLICT (guild_id, COALESCE(clone_id, -1), voter_id) DO NOTHING""",
-                guild_id, clone_id, voter_id,
+                guild_id, clone_id, voter_id, voter_username,
             )
             return result.endswith("1")
+
+    async def get_top_voters(self, guild_id: int, clone_id: Optional[int] = None, limit: int = 10) -> List[Dict]:
+        """Voters for one listing, most recent first (there's no per-voter
+        weighting, just one vote each — "top" here means the leaderboard of
+        who showed up, not a ranked score). voter_username may be null for
+        votes cast before that column existed."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT voter_id, voter_username, created_at FROM server_listing_votes
+                   WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2
+                   ORDER BY created_at DESC LIMIT $3""",
+                guild_id, clone_id, limit,
+            )
+            return [dict(r) for r in rows]
 
     async def has_voted(self, guild_id: int, clone_id: Optional[int], voter_id: int) -> bool:
         pool = await get_pool()
