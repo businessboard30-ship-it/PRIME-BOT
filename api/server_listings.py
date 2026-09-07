@@ -33,6 +33,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 from database import db
+from pow_captcha import issue_challenge, verify_solution
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,28 @@ class handler(BaseHTTPRequestHandler):
         token = query.get("token", [""])[0]
         ref = query.get("ref", [""])[0]
 
+        # Mode 0b: single-listing public lookup, for the per-listing deep
+        # link page (app/servers/[guildId]/page.tsx) and its OG meta tags.
+        # No token — this is the same data anyone gets from the directory
+        # feed, just narrowed to one guild instead of the whole list.
+        if token == "" and query.get("listing_guild_id", [""])[0].isdigit():
+            listing_guild_id = int(query["listing_guild_id"][0])
+
+            async def _run_single():
+                return await db.get_public_listing_by_guild(listing_guild_id)
+
+            try:
+                listing = asyncio.run(_run_single())
+            except Exception as e:
+                logger.error(f"[v0] server_listings single GET error: {e}")
+                self._json(500, {"status": "error", "message": "Internal error"})
+                return
+            if listing is None:
+                self._json(404, {"status": "error", "message": "No listing for that server"})
+                return
+            self._json(200, {"status": "ok", "listing": listing})
+            return
+
         # Mode 0: referral-boost click log. Fired by app/servers/page.tsx on
         # page load whenever the URL carries ?ref=<code> (i.e. someone
         # followed a listing's boost link). No auth, no session/cookie
@@ -127,18 +150,81 @@ class handler(BaseHTTPRequestHandler):
             self._json(200, {"status": "ok"})
             return
 
-        # Mode 1: public directory feed — no token needed.
-        if not token:
-            async def _run_public():
-                return await db.get_public_server_listings()
+        # Mode 0c: top-voter leaderboard for one listing, used by the
+        # per-listing deep-link page. Public, read-only, no auth needed —
+        # same privacy level as the vote count already shown everywhere.
+        if token == "" and query.get("leaderboard_guild_id", [""])[0].isdigit():
+            lb_guild_id = int(query["leaderboard_guild_id"][0])
+
+            async def _run_leaderboard():
+                return await db.get_top_voters(lb_guild_id, limit=10)
 
             try:
-                listings = asyncio.run(_run_public())
+                voters = asyncio.run(_run_leaderboard())
+            except Exception as e:
+                logger.error(f"[v0] server_listings leaderboard GET error: {e}")
+                self._json(500, {"status": "error", "message": "Internal error"})
+                return
+            self._json(200, {"status": "ok", "voters": voters})
+            return
+
+        # Mode 0d: "similar servers" — up to 4 other listings sharing at
+        # least one tag with the given guild, ranked the same as the main
+        # directory feed. Used on the per-listing deep-link page.
+        if token == "" and query.get("similar_to_guild_id", [""])[0].isdigit():
+            similar_guild_id = int(query["similar_to_guild_id"][0])
+
+            async def _run_similar():
+                return await db.get_similar_listings(similar_guild_id, limit=4)
+
+            try:
+                similar = asyncio.run(_run_similar())
+            except Exception as e:
+                logger.error(f"[v0] server_listings similar GET error: {e}")
+                self._json(500, {"status": "error", "message": "Internal error"})
+                return
+            self._json(200, {"status": "ok", "listings": similar})
+            return
+
+        # Mode 0e: proof-of-work captcha challenge for the submit form —
+        # see pow_captcha.py's docstring. No auth needed to request one,
+        # it's cheap to issue and the signature is what protects it.
+        if token == "" and query.get("pow_challenge", ["0"])[0] == "1":
+            self._json(200, {"status": "ok", **issue_challenge()})
+            return
+
+        # Mode 1: public directory feed — no token needed. Accepts sort
+        # (trending|votes|members|newest), tag (single tag filter), nsfw
+        # (0/1 toggle), page + page_size for "load more" pagination.
+        if not token:
+            sort = query.get("sort", ["trending"])[0]
+            tag = query.get("tag", [""])[0].strip().lstrip("#").lower() or None
+            nsfw = query.get("nsfw", ["0"])[0] == "1"
+            try:
+                page = max(1, int(query.get("page", ["1"])[0]))
+                page_size = min(60, max(1, int(query.get("page_size", ["24"])[0])))
+            except ValueError:
+                page, page_size = 1, 24
+
+            async def _run_public():
+                return await db.get_public_server_listings(
+                    limit=page_size, offset=(page - 1) * page_size,
+                    sort=sort, tag=tag, nsfw=nsfw,
+                )
+
+            try:
+                result = asyncio.run(_run_public())
             except Exception as e:
                 logger.error(f"[v0] server_listings public GET error: {e}")
                 self._json(500, {"status": "error", "message": "Internal error"})
                 return
-            self._json(200, {"status": "ok", "listings": listings})
+            self._json(200, {
+                "status": "ok",
+                "listings": result["listings"],
+                "total": result["total"],
+                "page": page,
+                "page_size": page_size,
+            })
             return
 
         # Mode 2: prefill data for the submit form — requires a valid token.
@@ -160,6 +246,7 @@ class handler(BaseHTTPRequestHandler):
                 "invite_url": existing["invite_url"] if existing else "",
                 "description": existing["description"] if existing else "",
                 "tags": existing["tags"] if existing else [],
+                "banner_url": existing["banner_url"] if existing else "",
             }
 
         try:
@@ -177,6 +264,40 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         import asyncio
         query = parse_qs(urlparse(self.path).query)
+
+        # Report mode: distinguished by ?report=1, no token needed — this
+        # is a public "flag this listing" action, not an edit. Kept as its
+        # own branch rather than a new endpoint file since it shares CORS/
+        # JSON helpers and the same guild_id-in-query convention.
+        if query.get("report", ["0"])[0] == "1":
+            report_guild_id_raw = query.get("guild_id", [""])[0]
+            if not report_guild_id_raw.isdigit():
+                self._json(400, {"status": "error", "message": "Missing guild_id"})
+                return
+            report_guild_id = int(report_guild_id_raw)
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._json(400, {"status": "error", "message": "Invalid JSON body"})
+                return
+            reason = str(body.get("reason", "")).strip()[:500]
+            if not reason:
+                self._json(400, {"status": "error", "message": "A reason is required"})
+                return
+
+            async def _run_report():
+                await db.report_listing(report_guild_id, None, reason)
+
+            try:
+                asyncio.run(_run_report())
+            except Exception as e:
+                logger.error(f"[v0] server_listings report POST error: {e}")
+                self._json(500, {"status": "error", "message": "Internal error"})
+                return
+            self._json(200, {"status": "ok"})
+            return
+
         token = query.get("token", [""])[0]
         guild_id_raw = query.get("guild_id", [""])[0]
         if not token or not guild_id_raw.isdigit():
@@ -194,6 +315,27 @@ class handler(BaseHTTPRequestHandler):
         invite_url = str(body.get("invite_url", "")).strip()
         description = str(body.get("description", "")).strip()[:MAX_DESCRIPTION_LEN]
         tags = _clean_tags(body.get("tags"))
+        banner_url = str(body.get("banner_url", "")).strip()[:500] or None
+        if banner_url and not re.match(r"^https?://\S+$", banner_url, re.IGNORECASE):
+            self._json(400, {"status": "error", "message": "Banner must be a valid image URL"})
+            return
+
+        # Proof-of-work captcha check — see pow_captcha.py. Required fields
+        # come back exactly as issued by the pow_challenge GET mode above;
+        # a missing/incomplete pow block is treated as a failed solve, not
+        # skipped, so the frontend can't accidentally submit without it.
+        pow_block = body.get("pow") or {}
+        pow_reason = verify_solution(
+            salt=str(pow_block.get("salt", "")),
+            difficulty=int(pow_block.get("difficulty", 0) or 0),
+            expires=int(pow_block.get("expires", 0) or 0),
+            signature=str(pow_block.get("signature", "")),
+            nonce=str(pow_block.get("nonce", "")),
+        )
+        if pow_reason is not None:
+            logger.info(f"[v0] server_listings POST failed captcha check: {pow_reason}")
+            self._json(400, {"status": "error", "message": "Captcha check failed — please try again"})
+            return
 
         if not invite_url:
             self._json(400, {"status": "error", "message": "An invite link is required"})
@@ -209,7 +351,7 @@ class handler(BaseHTTPRequestHandler):
             listing = await db.upsert_server_listing(
                 guild_id, resolved["clone_id"],
                 resolved["guild_name"], resolved["guild_icon_url"], resolved["member_count"],
-                invite_url, description, tags,
+                invite_url, description, tags, banner_url,
             )
             # Referral-boost link is assigned lazily right after the listing
             # first exists (or on every re-save, idempotently — same code
