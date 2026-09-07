@@ -15,6 +15,14 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 # does this automatically when this env var is set) or as query param ?secret=.
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
+# HMAC signing key for the self-hosted proof-of-work captcha on the server
+# listing submit form (api/server_listings.py). No external captcha vendor
+# involved — this key just signs/verifies challenges this backend issues to
+# itself, same trust model as CRON_SECRET above. Falls back to CRON_SECRET
+# if unset so there's a working default in dev, but set a dedicated value
+# in production.
+POW_SECRET_KEY = os.getenv("POW_SECRET_KEY", "") or CRON_SECRET
+
 # Temporary data directory (only for ephemeral cache, NOT production data)
 # All persistent data MUST go to DATABASE_URL (Postgres)
 DATA_DIR = os.getenv("DATA_DIR", "/tmp/data")
