@@ -98,14 +98,18 @@ async def do_verify(member: discord.Member, config: dict) -> tuple[bool, str | N
 
 
 class CaptchaModal(discord.ui.Modal, title="Verify you're human"):
-    answer = discord.ui.TextInput(label="Your answer", placeholder="Type the number", max_length=5)
-
     def __init__(self, guild_id: int, a: int, b: int):
         super().__init__(custom_id=f"verify_captcha:{guild_id}:{a}:{b}")
         self.guild_id = guild_id
         self.a = a
         self.b = b
-        self.answer.label = f"What is {a} + {b}?"
+        # TextInput.label is deprecated as of discord.py 2.6 in favor of
+        # wrapping the input in a Label component (the new Components v2
+        # pattern). The question text is only known once a/b are picked in
+        # __init__, so this can't be a static class-level TextInput like it
+        # used to be — build it here and add it explicitly instead.
+        self.answer = discord.ui.TextInput(placeholder="Type the number", max_length=5)
+        self.add_item(discord.ui.Label(text=f"What is {a} + {b}?", component=self.answer))
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.guild_id != self.guild_id:
