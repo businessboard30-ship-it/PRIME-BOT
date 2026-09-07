@@ -34,6 +34,7 @@ type Listing = {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://prime-bot.example.com'
 const DISCORD_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || ''
 // Administrator (bit 8) — this bot's automod, roles, channels, and voice
 // features span enough of Discord's permission surface that a hand-picked
@@ -294,6 +295,30 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
                   <a href={l.invite_url} target="_blank" rel="noopener noreferrer" className="pb-btn-secondary text-sm">
                     Join
                   </a>
+                  <a
+                    href={`${API_BASE}/api/server_listing_vote_oauth?guild_id=${l.guild_id}${l.clone_id ? `&clone_id=${l.clone_id}` : ''}`}
+                    className="text-sm px-3 py-1.5 rounded-md font-medium text-center"
+                    style={{
+                      background: 'rgba(59,130,246,0.15)',
+                      border: '1px solid var(--pb-accent)',
+                      color: 'var(--pb-accent)',
+                    }}
+                  >
+                    ▲ Vote
+                  </a>
+                  {l.ref_code && (
+                    <button
+                      className="text-xs underline"
+                      style={{ color: 'var(--pb-text-faint)' }}
+                      onClick={() => {
+                        const url = `${SITE_URL}/servers?ref=${l.ref_code}`
+                        navigator.clipboard?.writeText(url)
+                        setVoteBanner({ ok: true, msg: 'Boost link copied — share it to earn conversion credit.' })
+                      }}
+                    >
+                      Copy boost link
+                    </button>
+                  )}
                   <button
                     className="text-xs underline"
                     style={{ color: 'var(--pb-text-faint)' }}
