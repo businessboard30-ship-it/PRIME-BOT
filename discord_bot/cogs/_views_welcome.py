@@ -105,6 +105,12 @@ async def _fetch_sticker_bytes(session: aiohttp.ClientSession, sticker_url: str 
         async with session.get(sticker_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:
                 return None
+            content_type = resp.content_type or ""
+            if not content_type.startswith("image/"):
+                # See welcome.py's copy of this function for why this
+                # check exists — most commonly a page link instead of a
+                # direct media link.
+                return None
             return await resp.read()
     except Exception:
         return None
