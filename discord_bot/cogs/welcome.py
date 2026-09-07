@@ -103,6 +103,21 @@ async def _fetch_sticker_bytes(session: aiohttp.ClientSession, sticker_url: str 
         async with session.get(sticker_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:
                 return None
+            content_type = resp.content_type or ""
+            if not content_type.startswith("image/"):
+                # The most common cause: an admin pasted a page URL
+                # (tenor.com/view/...) instead of the direct media link
+                # (media.tenor.com/...) — this downloads HTML, which PIL
+                # would otherwise fail to decode with an opaque "cannot
+                # identify image file" error further downstream. Catching
+                # it here gives a log message that actually points at the
+                # fix.
+                logger.warning(
+                    f"[v0] Sticker URL {sticker_url} returned content-type "
+                    f"'{content_type}', not an image — likely a page link "
+                    f"instead of a direct media link. Skipping sticker."
+                )
+                return None
             return await resp.read()
     except Exception as e:
         logger.warning(f"[v0] Couldn't fetch sticker from {sticker_url}: {e}")
