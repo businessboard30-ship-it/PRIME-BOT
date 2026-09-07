@@ -121,12 +121,18 @@ async def _handle(query: dict) -> tuple[int, str]:
                 headers={"Authorization": f"Bearer {access_token}"},
             ) as identity_resp:
                 identity_resp.raise_for_status()
-                voter_id = int((await identity_resp.json())["id"])
+                identity = await identity_resp.json()
+                voter_id = int(identity["id"])
+                # global_name (the newer display name) falls back to the
+                # legacy username when a user hasn't set one — either way
+                # this is only ever used to label the leaderboard, never
+                # trusted for anything auth-related (voter_id is).
+                voter_username = identity.get("global_name") or identity.get("username")
     except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError):
         logger.exception("Discord OAuth exchange failed for server-listing vote (guild %s)", guild_id)
         return 302, _redirect_to_servers(guild_id, "Something went wrong signing you in.", ok=False)
 
-    newly_voted = await db.cast_server_listing_vote(guild_id, clone_id, voter_id)
+    newly_voted = await db.cast_server_listing_vote(guild_id, clone_id, voter_id, voter_username)
     msg = "Thanks for voting!" if newly_voted else "You already voted for this server."
     return 302, _redirect_to_servers(guild_id, msg, ok=True)
 
