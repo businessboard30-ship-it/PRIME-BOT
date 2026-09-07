@@ -16,7 +16,6 @@
  */
 
 import { useEffect, useState } from 'react'
-import ThemeToggle from '../../components/ThemeToggle'
 
 type Listing = {
   guild_id: string
@@ -158,17 +157,36 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
       )}
 
       <div className="flex items-center justify-between gap-4 mb-4">
-        <h1 className="pb-heading text-2xl font-semibold">Server directory</h1>
+        <h1
+          className="text-2xl font-semibold"
+          style={{ color: 'var(--pb-accent)', textShadow: '0 0 16px rgba(59,130,246,0.5)' }}
+        >
+          Server directory
+        </h1>
         <div className="flex items-center gap-2 shrink-0">
           <a href={BOT_INVITE_URL || SUPPORT_SERVER_INVITE} className="pb-btn-primary text-sm">
             Add PRIME-BOT
           </a>
-          <ThemeToggle />
         </div>
       </div>
 
       <input
-        className="pb-input w-full mb-3"
+        className="w-full mb-3 rounded-lg px-4 py-2.5 text-sm outline-none transition-shadow"
+        style={{
+          background: 'rgba(13,16,24,0.85)',
+          border: '1px solid var(--pb-accent)',
+          color: '#e5e7eb',
+          boxShadow:
+            '0 0 0 1px rgba(59,130,246,0.25), 0 0 18px rgba(59,130,246,0.35), inset 0 0 24px rgba(59,130,246,0.08)',
+        }}
+        onFocus={(e) => {
+          e.currentTarget.style.boxShadow =
+            '0 0 0 1px rgba(59,130,246,0.55), 0 0 28px rgba(59,130,246,0.6), inset 0 0 30px rgba(59,130,246,0.15)'
+        }}
+        onBlur={(e) => {
+          e.currentTarget.style.boxShadow =
+            '0 0 0 1px rgba(59,130,246,0.25), 0 0 18px rgba(59,130,246,0.35), inset 0 0 24px rgba(59,130,246,0.08)'
+        }}
         placeholder="Search servers, tags, descriptions…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
