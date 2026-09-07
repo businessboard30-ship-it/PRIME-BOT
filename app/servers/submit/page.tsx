@@ -4,6 +4,7 @@
 
 import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
+import Image from 'next/image'
 
 type Prefill = {
   guild_name: string
@@ -319,8 +320,21 @@ function SubmitListingPageInner() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <main className="pb-page px-6 py-12">
-      <div className="max-w-xl mx-auto">{children}</div>
+    <main className="relative px-6 py-12 min-h-screen overflow-hidden">
+      <Image
+        src="/submit-hero.png"
+        alt=""
+        fill
+        priority
+        sizes="100vw"
+        className="object-cover -z-20"
+        style={{ objectPosition: '20% center' }}
+      />
+      <div
+        className="fixed inset-0 -z-10"
+        style={{ background: 'linear-gradient(180deg, rgba(5,6,10,0.55) 0%, rgba(5,6,10,0.8) 35%, rgba(5,6,10,0.92) 100%)' }}
+      />
+      <div className="relative max-w-xl mx-auto">{children}</div>
     </main>
   )
 }
