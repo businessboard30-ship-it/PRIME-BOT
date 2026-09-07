@@ -18,6 +18,10 @@ type Prefill = {
 type SaveResult = { ref_code?: string | null }
 
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
+// Same categories shown as filter chips on the public directory
+// (app/servers/_ServerDirectory.tsx) — kept in sync manually since there's
+// no shared constants file yet. Suggestions shown while typing a tag below.
+const TAG_SUGGESTIONS = ['gaming', 'anime', 'coding', 'art', 'music', 'study', 'crypto', 'nsfw']
 const MAX_DESCRIPTION_LEN = 300
 const MAX_TAGS = 5
 
@@ -247,15 +251,43 @@ function SubmitListingPageInner() {
           ))}
         </div>
         {tags.length < MAX_TAGS && (
-          <form onSubmit={(e) => { e.preventDefault(); addTag() }} className="flex gap-2">
-            <input
-              className="pb-input flex-1"
-              placeholder="e.g. gaming, anime, coding"
-              value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
-            />
-            <button type="submit" className="pb-btn-secondary">Add</button>
-          </form>
+          <div className="relative">
+            <form onSubmit={(e) => { e.preventDefault(); addTag() }} className="flex gap-2">
+              <input
+                className="pb-input flex-1"
+                placeholder="e.g. gaming, anime, coding"
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                autoComplete="off"
+              />
+              <button type="submit" className="pb-btn-secondary">Add</button>
+            </form>
+            {tagInput.trim() && (() => {
+              const q = tagInput.trim().replace(/^#/, '').toLowerCase()
+              const matches = TAG_SUGGESTIONS.filter((s) => s.includes(q) && !tags.includes(s))
+              if (matches.length === 0) return null
+              return (
+                <div
+                  className="absolute z-10 mt-1 w-full rounded-lg border overflow-hidden"
+                  style={{ background: 'rgba(13,16,24,0.97)', borderColor: 'var(--pb-border)' }}
+                >
+                  {matches.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      className="block w-full text-left px-3 py-2 text-sm hover:bg-white/5"
+                      onClick={() => {
+                        if (tags.length < MAX_TAGS) setTags([...tags, s])
+                        setTagInput('')
+                      }}
+                    >
+                      #{s}
+                    </button>
+                  ))}
+                </div>
+              )
+            })()}
+          </div>
         )}
       </label>
 
