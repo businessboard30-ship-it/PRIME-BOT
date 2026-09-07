@@ -39,23 +39,24 @@ function Hero() {
     <div className="relative -mx-6 -mt-12 mb-12 overflow-hidden" style={{ height: '52vh', minHeight: 360, maxHeight: 620 }}>
       <Image
         src="/hero-angels.png"
-        alt="Five metallic angels with blue fire eyes and bloodied swords"
+        alt="Cloaked knight with a glowing blue sword before a floating spire castle"
         fill
         priority
         sizes="100vw"
-        className="object-cover object-center"
+        className="object-cover"
+        style={{ objectPosition: '30% center' }}
       />
 
-      {/* darken + fade into page background so text stays legible and it blends into pb-page below */}
+      {/* darken left->right subtly + fade into page background so text on the right stays legible */}
       <div
         className="absolute inset-0"
         style={{
           background:
-            'linear-gradient(180deg, rgba(5,6,10,0.35) 0%, rgba(5,6,10,0.25) 40%, rgba(5,6,10,0.85) 88%, var(--pb-bg, #0a0b0d) 100%)',
+            'linear-gradient(90deg, rgba(5,6,10,0.15) 0%, rgba(5,6,10,0.05) 45%, rgba(5,6,10,0.55) 100%), linear-gradient(180deg, rgba(5,6,10,0.15) 0%, rgba(5,6,10,0.15) 65%, var(--pb-bg, #0a0b0d) 100%)',
         }}
       />
 
-      <div className="relative h-full max-w-2xl mx-auto px-6 flex flex-col items-start justify-end pb-10">
+      <div className="relative h-full max-w-2xl mx-auto px-6 flex flex-col items-end justify-end text-right pb-10">
         <div
           className="inline-flex items-center gap-2 rounded-full border px-3 py-1 mb-4 backdrop-blur-sm"
           style={{
@@ -75,7 +76,7 @@ function Hero() {
         <h1
           className="text-3xl sm:text-4xl font-bold leading-tight tracking-tight"
           style={{
-            color: '#f5f6f8',
+            color: 'var(--pb-accent)',
             textShadow: '0 0 24px rgba(59,130,246,0.55), 0 2px 12px rgba(0,0,0,0.8)',
           }}
         >
