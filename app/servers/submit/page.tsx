@@ -12,6 +12,7 @@ type Prefill = {
   invite_url: string
   description: string
   tags: string[]
+  banner_url?: string
 }
 
 type SaveResult = { ref_code?: string | null }
@@ -46,6 +47,7 @@ function SubmitListingPageInner() {
   const [description, setDescription] = useState('')
   const [tagInput, setTagInput] = useState('')
   const [tags, setTags] = useState<string[]>([])
+  const [bannerUrl, setBannerUrl] = useState('')
 
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -78,6 +80,7 @@ function SubmitListingPageInner() {
           setInviteUrl(data.invite_url || urlInviteUrl)
           setDescription(data.description || urlDescription)
           setTags(data.tags || [])
+          setBannerUrl(data.banner_url || '')
         }
       })
       .catch(() => setLoadError('Network error loading your server'))
@@ -91,17 +94,48 @@ function SubmitListingPageInner() {
     setTagInput('')
   }
 
+  // Solves the self-hosted proof-of-work captcha in-browser (see
+  // pow_captcha.py) — brute-forces `nonce` until sha256(`${salt}:${nonce}`)
+  // starts with `difficulty` hex zeros. At the default difficulty (4) this
+  // takes a fraction of a second on any real device; no external captcha
+  // vendor, no widget, nothing to configure beyond the backend's own
+  // POW_SECRET_KEY env var.
+  async function solvePow(challenge: { salt: string; difficulty: number; expires: number; signature: string }) {
+    const encoder = new TextEncoder()
+    const target = '0'.repeat(challenge.difficulty)
+    for (let nonce = 0; ; nonce++) {
+      const data = encoder.encode(`${challenge.salt}:${nonce}`)
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+      const hex = Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, '0')).join('')
+      if (hex.startsWith(target)) {
+        return { ...challenge, nonce: String(nonce) }
+      }
+    }
+  }
+
   async function submit() {
     setSaving(true)
     setSaveError(null)
     setSaved(false)
     try {
+      const challengeRes = await fetch(`${API_BASE}/api/server_listings?pow_challenge=1`)
+      const challengeData = await challengeRes.json()
+      if (challengeData.status !== 'ok') {
+        setSaveError('Could not start the anti-spam check — try again')
+        setSaving(false)
+        return
+      }
+      const pow = await solvePow(challengeData)
+
       const res = await fetch(
         `${API_BASE}/api/server_listings?guild_id=${guildId}&token=${encodeURIComponent(token)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ invite_url: inviteUrl.trim(), description: description.trim(), tags }),
+          body: JSON.stringify({
+            invite_url: inviteUrl.trim(), description: description.trim(), tags,
+            banner_url: bannerUrl.trim(), pow,
+          }),
         }
       )
       const data = await res.json()
@@ -187,6 +221,19 @@ function SubmitListingPageInner() {
         </span>
       </label>
 
+      <label className="block mb-6">
+        <span className="text-sm font-medium">Banner image URL (optional)</span>
+        <input
+          className="pb-input mt-1.5 w-full"
+          placeholder="https://example.com/banner.png"
+          value={bannerUrl}
+          onChange={(e) => setBannerUrl(e.target.value)}
+        />
+        <span className="text-xs mt-1 block" style={{ color: 'var(--pb-text-faint)' }}>
+          Wide image shown at the top of your listing's page and in link previews. Host it anywhere public.
+        </span>
+      </label>
+
       <label className="block mb-8">
         <span className="text-sm font-medium">Tags (up to {MAX_TAGS})</span>
         <div className="flex flex-wrap gap-2 mt-1.5 mb-2">
@@ -213,7 +260,7 @@ function SubmitListingPageInner() {
       </label>
 
       <button className="pb-btn-primary" onClick={submit} disabled={saving || !inviteUrl.trim()}>
-        {saving ? 'Saving…' : 'Publish listing'}
+        {saving ? 'Verifying & saving…' : 'Publish listing'}
       </button>
       {saveError && <p className="text-sm mt-3" style={{ color: 'var(--pb-danger)' }}>{saveError}</p>}
       {saved && (
