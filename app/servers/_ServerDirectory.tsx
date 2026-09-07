@@ -35,6 +35,21 @@ type Listing = {
 
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://prime-bot.example.com'
+
+// Rotating "fire" palette for listing cards — 10 colors, cycled by index
+// so consecutive cards read as distinct without any per-server config.
+const FIRE_COLORS = [
+  { rgb: '59,130,246', hex: '#3b82f6' },  // blue
+  { rgb: '239,68,68', hex: '#ef4444' },   // red
+  { rgb: '168,85,247', hex: '#a855f7' },  // purple
+  { rgb: '34,197,94', hex: '#22c55e' },   // green
+  { rgb: '249,115,22', hex: '#f97316' },  // orange
+  { rgb: '236,72,153', hex: '#ec4899' },  // pink
+  { rgb: '234,179,8', hex: '#eab308' },   // gold
+  { rgb: '20,184,166', hex: '#14b8a6' },  // teal
+  { rgb: '139,92,246', hex: '#8b5cf6' },  // violet
+  { rgb: '6,182,212', hex: '#06b6d4' },   // cyan
+]
 const DISCORD_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || ''
 // Administrator (bit 8) — this bot's automod, roles, channels, and voice
 // features span enough of Discord's permission surface that a hand-picked
@@ -252,11 +267,17 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
 
       {!error && filtered.length > 0 && (
         <ul className="space-y-3">
-          {filtered.map((l) => (
+          {filtered.map((l, i) => {
+          const fire = FIRE_COLORS[i % FIRE_COLORS.length]
+          return (
             <li
               key={l.guild_id}
               className="rounded-lg border p-4"
-              style={{ borderColor: 'var(--pb-line)', background: 'var(--pb-surface)' }}
+              style={{
+                borderColor: fire.hex,
+                background: 'var(--pb-surface)',
+                boxShadow: `0 0 0 1px rgba(${fire.rgb},0.25), 0 0 20px rgba(${fire.rgb},0.35), inset 0 0 30px rgba(${fire.rgb},0.06)`,
+              }}
             >
               <div className="flex items-start gap-3">
                 {l.guild_icon_url ? (
@@ -299,9 +320,9 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
                     href={`${API_BASE}/api/server_listing_vote_oauth?guild_id=${l.guild_id}${l.clone_id ? `&clone_id=${l.clone_id}` : ''}`}
                     className="text-sm px-3 py-1.5 rounded-md font-medium text-center"
                     style={{
-                      background: 'rgba(59,130,246,0.15)',
-                      border: '1px solid var(--pb-accent)',
-                      color: 'var(--pb-accent)',
+                      background: `rgba(${fire.rgb},0.15)`,
+                      border: `1px solid ${fire.hex}`,
+                      color: fire.hex,
                     }}
                   >
                     ▲ Vote
@@ -330,7 +351,7 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
                 </div>
               </div>
             </li>
-          ))}
+          )})}
         </ul>
       )}
 
