@@ -3,12 +3,15 @@
 'use client'
 
 import { Suspense } from 'react'
+import Image from 'next/image'
 import { useSearchParams } from 'next/navigation'
 import ServerDirectory from './servers/_ServerDirectory'
 
 export default function Page() {
   return (
     <main className="pb-page px-6 py-12">
+      <Hero />
+
       <div className="max-w-2xl mx-auto">
         <Suspense fallback={null}>
           <ListingBanner />
@@ -27,6 +30,65 @@ export default function Page() {
         </section>
       </div>
     </main>
+  )
+}
+
+// Hero banner above the directory — 5 metallic angels art, PRIME LISTING badge.
+function Hero() {
+  return (
+    <div className="relative -mx-6 -mt-12 mb-12 overflow-hidden" style={{ height: '52vh', minHeight: 360, maxHeight: 620 }}>
+      <Image
+        src="/hero-angels.png"
+        alt="Five metallic angels with blue fire eyes and bloodied swords"
+        fill
+        priority
+        sizes="100vw"
+        className="object-cover object-center"
+      />
+
+      {/* darken + fade into page background so text stays legible and it blends into pb-page below */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            'linear-gradient(180deg, rgba(5,6,10,0.35) 0%, rgba(5,6,10,0.25) 40%, rgba(5,6,10,0.85) 88%, var(--pb-bg, #0a0b0d) 100%)',
+        }}
+      />
+
+      <div className="relative h-full max-w-2xl mx-auto px-6 flex flex-col items-start justify-end pb-10">
+        <div
+          className="inline-flex items-center gap-2 rounded-full border px-3 py-1 mb-4 backdrop-blur-sm"
+          style={{
+            borderColor: 'var(--pb-accent)',
+            background: 'rgba(20,21,25,0.55)',
+            boxShadow: '0 0 18px rgba(59,130,246,0.45)',
+          }}
+        >
+          <span
+            className="text-[10px] font-bold tracking-widest uppercase"
+            style={{ color: 'var(--pb-accent)' }}
+          >
+            ⚔ Prime Listing
+          </span>
+        </div>
+
+        <h1
+          className="text-3xl sm:text-4xl font-bold leading-tight tracking-tight"
+          style={{
+            color: '#f5f6f8',
+            textShadow: '0 0 24px rgba(59,130,246,0.55), 0 2px 12px rgba(0,0,0,0.8)',
+          }}
+        >
+          Find your next Discord server
+        </h1>
+        <p
+          className="mt-2 text-sm sm:text-base max-w-md"
+          style={{ color: 'rgba(229,231,235,0.85)', textShadow: '0 1px 6px rgba(0,0,0,0.9)' }}
+        >
+          A directory of communities running PRIME-BOT — admin-verified, ranked by votes.
+        </p>
+      </div>
+    </div>
   )
 }
 
