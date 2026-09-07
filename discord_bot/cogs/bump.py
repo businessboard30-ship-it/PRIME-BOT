@@ -496,7 +496,7 @@ class BumpEditModal(discord.ui.Modal, title="Edit bump listing"):
             label="Invite URL (bot listings only)", default=invite_url[:200], required=False, max_length=200
         )
         self.perks_input = discord.ui.TextInput(
-            label="What we offer (one per line, up to 4)",
+            label="Perks (also 'support: <link>')",
             style=discord.TextStyle.paragraph,
             default="\n".join(perks or [])[:400],
             required=False,
@@ -513,7 +513,6 @@ class BumpEditModal(discord.ui.Modal, title="Edit bump listing"):
         if support_url:
             trailer = f"support: {support_url}"
             self.perks_input.default = (self.perks_input.default + ("\n" if self.perks_input.default else "") + trailer)[:400]
-        self.perks_input.label = "Perks (also 'support: <link>')"
         self.add_item(self.name_input)
         self.add_item(self.description_input)
         self.add_item(self.tags_input)
