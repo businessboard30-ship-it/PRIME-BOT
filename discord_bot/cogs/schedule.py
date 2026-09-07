@@ -26,7 +26,7 @@ from database import db
 
 logger = logging.getLogger(__name__)
 
-CHECK_INTERVAL_SECONDS = 30
+CHECK_INTERVAL_SECONDS = 60
 DURATION_RE = re.compile(r"(\d+)\s*([smhdw])", re.IGNORECASE)
 UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
