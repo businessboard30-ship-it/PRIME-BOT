@@ -74,7 +74,7 @@ from discord_bot.cogs._views_roast_arena_host_wizard import (
 
 logger = logging.getLogger(__name__)
 
-POLL_INTERVAL_SECONDS = 30
+POLL_INTERVAL_SECONDS = 60
 # How long an admin has to approve an incoming challenge before it lapses.
 APPROVAL_EXPIRY_MINUTES = 30
 # After approval, how long the challenged server has for someone to accept.
