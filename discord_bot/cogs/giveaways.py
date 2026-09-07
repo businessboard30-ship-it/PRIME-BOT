@@ -172,7 +172,7 @@ class GiveawayCog(GuildOnlyCog):
         except discord.HTTPException:
             pass
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=60)
     async def _poller(self):
         try:
             active = await db.get_active_giveaways(getattr(self.bot, "clone_id", None))
