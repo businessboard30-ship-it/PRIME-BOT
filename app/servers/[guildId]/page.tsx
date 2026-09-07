@@ -60,8 +60,9 @@ async function fetchSimilar(guildId: string): Promise<Listing[]> {
   }
 }
 
-export async function generateMetadata({ params }: { params: { guildId: string } }): Promise<Metadata> {
-  const listing = await fetchListing(params.guildId)
+export async function generateMetadata({ params }: { params: Promise<{ guildId: string }> }): Promise<Metadata> {
+  const { guildId } = await params
+  const listing = await fetchListing(guildId)
   if (!listing) {
     return { title: 'Server not found — PRIME-BOT directory' }
   }
@@ -87,8 +88,9 @@ export async function generateMetadata({ params }: { params: { guildId: string }
   }
 }
 
-export default async function ListingPage({ params }: { params: { guildId: string } }) {
-  const listing = await fetchListing(params.guildId)
+export default async function ListingPage({ params }: { params: Promise<{ guildId: string }> }) {
+  const { guildId } = await params
+  const listing = await fetchListing(guildId)
 
   if (!listing) {
     return (
