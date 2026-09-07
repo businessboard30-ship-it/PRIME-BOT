@@ -561,7 +561,7 @@ class AutomodCog(GuildOnlyCog):
         received_at = time.monotonic()
         logger.info(
             "[automod] on_message received msg %s in guild %s at %s",
-            message.id, message.guild.id, datetime.utcnow().isoformat(),
+            message.id, message.guild.id, datetime.now(timezone.utc).isoformat(),
         )
 
         clone_id = getattr(self.bot, "clone_id", None)
