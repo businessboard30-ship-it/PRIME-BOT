@@ -269,9 +269,30 @@ class ShipCog(GuildOnlyCog):
 
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def _poller(self):
+        clone_id = _clone_id_of(self.bot)
+        # Batch-fetch config for every guild in one query instead of one
+        # SELECT per guild per tick — this loop runs every
+        # POLL_INTERVAL_SECONDS regardless of message volume, so with many
+        # guilds the old per-guild get_config() call was the dominant
+        # source of discord_ship_config reads (millions/day even quiet).
+        config_rows = await db.fetch(
+            "SELECT * FROM discord_ship_config WHERE clone_id IS NOT DISTINCT FROM $1",
+            clone_id,
+        )
+        configs_by_guild = {row["guild_id"]: row for row in config_rows}
+
         for guild in list(self.bot.guilds):
             try:
-                await self._check_guild(guild)
+                config = configs_by_guild.get(guild.id) or {
+                    "guild_id": guild.id,
+                    "clone_id": clone_id,
+                    "channel_id": None,
+                    "check_interval_minutes": DEFAULT_CHECK_INTERVAL_MINUTES,
+                    "chance_percent": DEFAULT_CHANCE_PERCENT,
+                    "enabled": False,
+                    "onboarding_dm_sent": False,
+                }
+                await self._check_guild(guild, config)
             except Exception:
                 logger.exception(f"[ship] poller failed for guild={guild.id}")
 
@@ -279,9 +300,10 @@ class ShipCog(GuildOnlyCog):
     async def _before_poller(self):
         await self.bot.wait_until_ready()
 
-    async def _check_guild(self, guild: discord.Guild):
+    async def _check_guild(self, guild: discord.Guild, config: dict = None):
         clone_id = _clone_id_of(self.bot)
-        config = await self.get_config(guild.id, clone_id)
+        if config is None:
+            config = await self.get_config(guild.id, clone_id)
         if not config["enabled"] or not config["channel_id"]:
             return
 
