@@ -10,6 +10,7 @@ type ManagedGuild = {
   guild_name: string
   guild_icon_url: string | null
   token: string
+  listing_token: string
   clone_id: number | null
 }
 
@@ -97,10 +98,9 @@ function LoginServersPageInner() {
 
       <div className="rounded-lg border" style={{ borderColor: 'var(--pb-line)' }}>
         {guilds.map((g, i) => (
-          <a
+          <div
             key={g.guild_id}
-            href={`/dashboard/${g.guild_id}?token=${encodeURIComponent(g.token)}${g.clone_id != null ? `&clone_id=${g.clone_id}` : ''}`}
-            className="flex items-center gap-3 px-4 py-3 transition-colors hover:opacity-80"
+            className="flex items-center gap-3 px-4 py-3"
             style={{ borderBottom: i === guilds.length - 1 ? 'none' : '1px solid var(--pb-line)' }}
           >
             {g.guild_icon_url ? (
@@ -115,8 +115,21 @@ function LoginServersPageInner() {
               </div>
             )}
             <span className="font-medium flex-1 truncate">{g.guild_name}</span>
-            <span className="text-sm" style={{ color: 'var(--pb-accent)' }}>Open dashboard →</span>
-          </a>
+            <a
+              href={`/servers/submit?token=${encodeURIComponent(g.listing_token)}&guild_id=${g.guild_id}`}
+              className="text-sm px-3 py-1.5 rounded-md font-medium"
+              style={{ border: '1px solid var(--pb-accent)', color: 'var(--pb-accent)' }}
+            >
+              List this server
+            </a>
+            <a
+              href={`/dashboard/${g.guild_id}?token=${encodeURIComponent(g.token)}${g.clone_id != null ? `&clone_id=${g.clone_id}` : ''}`}
+              className="text-sm"
+              style={{ color: 'var(--pb-text-faint)' }}
+            >
+              Open dashboard →
+            </a>
+          </div>
         ))}
       </div>
     </Shell>
