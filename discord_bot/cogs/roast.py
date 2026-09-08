@@ -1647,24 +1647,49 @@ class RoastCog(GuildOnlyCog):
     async def _check_triggers(self):
         clone_id = _clone_id_of(self.bot)
         now = datetime.now(timezone.utc)
+
+        # Batch-fetch config, activity, and in-flight battles for every
+        # guild in one query each, instead of 3 round trips per guild per
+        # tick. This loop runs every POLL_INTERVAL_SECONDS regardless of
+        # message volume, so with hundreds of guilds the old per-guild
+        # SELECTs were the dominant source of discord_roast_config and
+        # discord_roast_activity calls (millions/day) even on a quiet bot.
+        config_rows = await db.fetch(
+            "SELECT * FROM discord_roast_config WHERE clone_id IS NOT DISTINCT FROM $1",
+            clone_id,
+        )
+        configs_by_guild = {row["guild_id"]: row for row in config_rows}
+
+        activity_rows = await db.fetch(
+            "SELECT * FROM discord_roast_activity WHERE clone_id IS NOT DISTINCT FROM $1",
+            clone_id,
+        )
+        activity_by_guild = {row["guild_id"]: row for row in activity_rows}
+
+        busy_guild_ids = {
+            row["guild_id"]
+            for row in await db.fetch(
+                "SELECT DISTINCT guild_id FROM discord_roast_battles WHERE status IN ('pending','active','awaiting_approval')"
+            )
+        }
+
         for guild in self.bot.guilds:
             if getattr(guild, "unavailable", False):
                 continue
-            config = await self.get_config(guild.id, clone_id)
+            config = configs_by_guild.get(guild.id) or {
+                "inactivity_minutes": DEFAULT_INACTIVITY_MINUTES,
+                "random_chance_enabled": True,
+                "random_check_minutes": DEFAULT_RANDOM_CHECK_MINUTES,
+                "random_chance_percent": DEFAULT_RANDOM_CHANCE_PERCENT,
+                "enabled": True,
+            }
             if not config["enabled"]:
                 continue
             # skip guilds with an unresolved pending/active battle already
-            existing = await db.fetchrow(
-                "SELECT id FROM discord_roast_battles WHERE guild_id = $1 AND status IN ('pending','active','awaiting_approval') LIMIT 1",
-                guild.id,
-            )
-            if existing:
+            if guild.id in busy_guild_ids:
                 continue
 
-            activity = await db.fetchrow(
-                "SELECT * FROM discord_roast_activity WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
-                guild.id, clone_id,
-            )
+            activity = activity_by_guild.get(guild.id)
             last_message_at = activity["last_message_at"] if activity else None
             last_proposed_at = activity["last_roast_proposed_at"] if activity else None
 
