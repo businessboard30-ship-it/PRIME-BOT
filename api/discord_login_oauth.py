@@ -34,6 +34,12 @@ Leg 3 (?session only): the /login/servers page can't reach Discord's token
 Same trust rule as everywhere else in this codebase: the signed-in user's
 id/guilds/permissions are ALWAYS whatever Discord's own API handed back
 after the token exchange, never anything read from the query string.
+
+Leg 4 (DELETE ?session=...): real sign-out. There's still no cookie/auth
+system here (see above) — "signed in" just means "holding a session id
+that resolves to a row in discord_login_sessions" — so signing out means
+deleting that row server-side, not merely dropping the id client-side.
+Same session id reused after a DELETE behaves exactly like an expired one.
 """
 
 import asyncio
@@ -89,7 +95,11 @@ async def _handle(query: dict) -> tuple[int, str]:
         payload = await db.get_login_session(session_param)
         if payload is None:
             return 404, json.dumps({"status": "error", "message": "That sign-in link expired. Sign in again."})
-        return 200, json.dumps({"status": "ok", "guilds": payload})
+        return 200, json.dumps({
+            "status": "ok",
+            "user": payload.get("user"),
+            "guilds": payload.get("guilds", []),
+        })
 
     # Leg 1: fresh click from the landing page's "Sign in with Discord" button.
     if code_param is None and error is None and state is None:
@@ -140,9 +150,37 @@ async def _handle(query: dict) -> tuple[int, str]:
             ) as guilds_resp:
                 guilds_resp.raise_for_status()
                 my_guilds = await guilds_resp.json()
+
+            # The "identify" half of the "identify guilds" scope — just
+            # for showing who's signed in on /login/servers (avatar +
+            # name). Never used for auth decisions; guild access is still
+            # decided entirely from the /guilds response above.
+            async with session.get(
+                f"{DISCORD_API_BASE}/users/@me",
+                headers={"Authorization": f"Bearer {access_token}"},
+            ) as me_resp:
+                me_resp.raise_for_status()
+                me = await me_resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError):
         logger.exception("Discord OAuth exchange failed for login")
         return 302, _redirect_to_login_error("Something went wrong signing you in.")
+
+    user_id = me.get("id")
+    if me.get("avatar"):
+        avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{me['avatar']}.png?size=64"
+    else:
+        # No custom avatar set -> Discord's own default avatar, indexed
+        # off the user id (new username system) same as Discord's client does.
+        try:
+            default_index = (int(user_id) >> 22) % 6
+        except (TypeError, ValueError):
+            default_index = 0
+        avatar_url = f"https://cdn.discordapp.com/embed/avatars/{default_index}.png"
+    user_info = {
+        "id": user_id,
+        "username": me.get("global_name") or me.get("username") or "Discord user",
+        "avatar_url": avatar_url,
+    }
 
     # Keep only guilds this Discord user can actually manage.
     manageable = []
@@ -155,7 +193,7 @@ async def _handle(query: dict) -> tuple[int, str]:
             manageable.append(g)
 
     if not manageable:
-        session_id = await db.create_login_session([])
+        session_id = await db.create_login_session({"user": user_info, "guilds": []})
         return 302, f"{DASHBOARD_BASE_URL}/login/servers?session={session_id}"
 
     guild_ids = [int(g["id"]) for g in manageable]
@@ -186,19 +224,50 @@ async def _handle(query: dict) -> tuple[int, str]:
             "clone_id": clone_id,
         })
 
-    session_id = await db.create_login_session(results)
+    session_id = await db.create_login_session({"user": user_info, "guilds": results})
     return 302, f"{DASHBOARD_BASE_URL}/login/servers?session={session_id}"
+
+
+async def _handle_delete(query: dict) -> tuple[int, str]:
+    global _initialized
+    if not _initialized:
+        from init_system import initialize_system
+        await initialize_system()
+        _initialized = True
+
+    session_param = query.get("session", [None])[0]
+    if not session_param:
+        return 400, json.dumps({"status": "error", "message": "Missing session."})
+
+    deleted = await db.delete_login_session(session_param)
+    return 200, json.dumps({"status": "ok", "signed_out": deleted})
 
 
 class handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS")
 
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
         self.end_headers()
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+
+        try:
+            status, body = asyncio.run(_handle_delete(query))
+        except Exception:
+            logger.exception("discord_login_oauth sign-out error")
+            status, body = 500, json.dumps({"status": "error", "message": "Something went wrong. Please try again."})
+
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body.encode())
 
     def do_GET(self):
         parsed = urlparse(self.path)
