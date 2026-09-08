@@ -180,6 +180,13 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
           Server directory
         </h1>
         <div className="flex items-center gap-2 shrink-0">
+          <a
+            href={`${API_BASE}/api/discord_login_oauth`}
+            className="text-sm px-3 py-1.5 rounded-md font-medium"
+            style={{ border: '1px solid var(--pb-border)', color: 'var(--pb-text-muted)' }}
+          >
+            Sign in
+          </a>
           <a href={BOT_INVITE_URL || SUPPORT_SERVER_INVITE} className="pb-btn-primary text-sm">
             Add PRIME-BOT
           </a>
