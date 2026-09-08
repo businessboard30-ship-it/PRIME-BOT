@@ -16,6 +16,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import BoostModal from './_BoostModal'
 
 type Listing = {
   guild_id: string
@@ -30,11 +31,11 @@ type Listing = {
   ref_code: string | null
   vote_count: number
   confirmed_conversions: number
+  boost_count: number
   verified: boolean
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://prime-bot.example.com'
 
 // Rotating "fire" palette for listing cards — 10 colors, cycled by index
 // so consecutive cards read as distinct without any per-server config.
@@ -81,6 +82,7 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
   const [loadingMore, setLoadingMore] = useState(false)
   const [voteBanner, setVoteBanner] = useState<{ ok: boolean; msg: string } | null>(null)
   const [reportingId, setReportingId] = useState<string | null>(null)
+  const [boostingListing, setBoostingListing] = useState<Listing | null>(null)
 
   function fetchPage(pageNum: number, append: boolean) {
     if (append) setLoadingMore(true)
@@ -182,8 +184,7 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
         <div className="flex items-center gap-2 shrink-0">
           <a
             href={`${API_BASE}/api/discord_login_oauth`}
-            className="text-sm px-3 py-1.5 rounded-md font-medium"
-            style={{ border: '1px solid var(--pb-border)', color: 'var(--pb-text-muted)' }}
+            className="pb-btn-primary text-sm"
           >
             Sign in
           </a>
@@ -334,19 +335,13 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
                   >
                     ▲ Vote
                   </a>
-                  {l.ref_code && (
-                    <button
-                      className="text-xs underline"
-                      style={{ color: 'var(--pb-text-faint)' }}
-                      onClick={() => {
-                        const url = `${SITE_URL}/servers?ref=${l.ref_code}`
-                        navigator.clipboard?.writeText(url)
-                        setVoteBanner({ ok: true, msg: 'Boost link copied — share it to earn conversion credit.' })
-                      }}
-                    >
-                      Copy boost link
-                    </button>
-                  )}
+                  <button
+                    className="text-sm px-3 py-1.5 rounded-md font-medium"
+                    style={{ background: 'rgba(234,179,8,0.15)', color: '#eab308', border: '1px solid rgba(234,179,8,0.4)' }}
+                    onClick={() => setBoostingListing(l)}
+                  >
+                    ⚡ Boost
+                  </button>
                   <button
                     className="text-xs underline"
                     style={{ color: 'var(--pb-text-faint)' }}
@@ -380,6 +375,31 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
         Want your server listed? Run <code className="pb-code">/setup servers</code> in your Discord server
         (PRIME-BOT must already be a member) to get your private listing link.
       </section>
+
+      {boostingListing && (
+        <BoostModal
+          guildName={boostingListing.guild_name}
+          guildId={boostingListing.guild_id}
+          cloneId={boostingListing.clone_id}
+          refCode={boostingListing.ref_code}
+          onClose={() => setBoostingListing(null)}
+          onBoosted={(newBoostCount) => {
+            // Reflect the boost immediately in the list the user is
+            // looking at. The real ranking change (trending sort now
+            // weighing sl.boost_count — see database.py) takes effect
+            // on the next fetch from the server; this just avoids the
+            // card looking unchanged right after a successful boost.
+            setListings((prev) =>
+              prev
+                ? prev.map((l) =>
+                    l.guild_id === boostingListing.guild_id ? { ...l, boost_count: newBoostCount } : l
+                  )
+                : prev
+            )
+            setVoteBanner({ ok: true, msg: `Boost applied to ${boostingListing.guild_name}.` })
+          }}
+        />
+      )}
     </section>
   )
 }
