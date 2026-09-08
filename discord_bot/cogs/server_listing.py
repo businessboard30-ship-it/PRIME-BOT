@@ -32,13 +32,134 @@ import logging
 from urllib.parse import quote
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from config import DASHBOARD_BASE_URL
 from database import db
 from discord_bot.cogs._dm_support import GuildOnlyCog
 
 logger = logging.getLogger(__name__)
+
+VOTING_CHANNEL_NAME = "vote-for-us"
+
+
+class ServerListingVotePanelView(discord.ui.View):
+    """Persistent Vote/Boost buttons for the in-Discord panel (see
+    _ensure_voting_panel below). timeout=None + fixed custom_ids +
+    bot.add_view() in setup() below = survives restarts, same pattern
+    setup_channels.py's docstring describes for its own persistent views.
+
+    Deliberately NOT the web OAuth flow (api/server_listing_vote_oauth.py):
+    a button click already carries a verified Discord identity via
+    interaction.user, so there's no sign-in round trip needed at all here —
+    this is a second, simpler path to the same cast_server_listing_vote,
+    not a replacement for the web one (the public /servers site still needs
+    its own vote entry point for people browsing outside Discord).
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Vote", emoji="▲", style=discord.ButtonStyle.success, custom_id="sl_panel_vote")
+    async def vote_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if guild is None:
+            return
+        clone_id = _clone_id_of(interaction)
+        newly_voted = await db.cast_server_listing_vote(
+            guild.id, clone_id, interaction.user.id, str(interaction.user.display_name)
+        )
+        msg = (
+            "✅ Thanks for voting — it counts instantly on the public directory."
+            if newly_voted else
+            "You've already voted for this server. Thanks for the support!"
+        )
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @discord.ui.button(label="Boost", emoji="🚀", style=discord.ButtonStyle.primary, custom_id="sl_panel_boost")
+    async def boost_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        if guild is None:
+            return
+        clone_id = _clone_id_of(interaction)
+        listing = await db.get_server_listing(guild.id, clone_id=clone_id)
+        if not listing or not listing.get("ref_code"):
+            await interaction.response.send_message(
+                "This server hasn't been listed on the directory yet — an admin needs to run "
+                "`/setup servers` and finish the listing form first, then a boost link will work.",
+                ephemeral=True,
+            )
+            return
+        boost_url = f"{DASHBOARD_BASE_URL}/servers?ref={listing['ref_code']}"
+        await interaction.response.send_message(
+            f"🚀 **Your boost link:**\n{boost_url}\n\n"
+            "Share it anywhere — when someone joins this server through that link, "
+            "it counts toward this server's ranking on the directory.",
+            ephemeral=True,
+        )
+
+
+async def _ensure_voting_panel(guild: discord.Guild, clone_id) -> str:
+    """Idempotently creates (or reuses) a #vote-for-us channel with the
+    Vote/Boost/Visit-Site panel. Safe to call every time /setup servers
+    runs: reuses the existing channel+message if both still resolve, only
+    reposts if the channel or message got deleted. Returns a short status
+    string ("created" | "existing" | "no_permission") for the caller's
+    followup message.
+    """
+    existing = await db.get_server_listing(guild.id, clone_id=clone_id)
+    channel = None
+    if existing and existing.get("voting_channel_id"):
+        channel = guild.get_channel(existing["voting_channel_id"])
+        if channel is not None and existing.get("voting_message_id"):
+            try:
+                await channel.fetch_message(existing["voting_message_id"])
+                return "existing"
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass  # message gone — fall through and repost in the same channel
+
+    if channel is None:
+        me = guild.me
+        if me is None or not me.guild_permissions.manage_channels:
+            return "no_permission"
+        try:
+            channel = await guild.create_text_channel(
+                VOTING_CHANNEL_NAME, reason="Auto-created by /setup servers for the vote/boost panel",
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            return "no_permission"
+
+    embed = discord.Embed(
+        title=f"🗳️ Vote for {guild.name}",
+        description=(
+            "**▲ Vote** — supports this server on the public directory. One vote per person, "
+            "counts instantly.\n\n"
+            "**🚀 Boost** — get your own share link. Anyone who joins through it earns this "
+            "server ranking credit.\n\n"
+            "**🌐 Visit Site** — see this server's public listing page."
+        ),
+        color=discord.Color.blurple(),
+    )
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+
+    view = ServerListingVotePanelView()
+    view.add_item(discord.ui.Button(
+        label="Visit Site", emoji="🌐", style=discord.ButtonStyle.link,
+        url=f"{DASHBOARD_BASE_URL}/servers/{guild.id}",
+    ))
+
+    try:
+        message = await channel.send(embed=embed, view=view)
+    except (discord.Forbidden, discord.HTTPException):
+        return "no_permission"
+
+    await db.set_listing_voting_panel(
+        guild.id, clone_id, channel.id, message.id,
+        guild_name=guild.name, guild_icon_url=guild.icon.url if guild.icon else None,
+        member_count=guild.member_count or 0,
+    )
+    return "created"
 
 
 async def _auto_generate_invite(guild: discord.Guild) -> str | None:
@@ -78,6 +199,42 @@ def _clone_id_of_bot(bot: commands.Bot):
 class ServerListingCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._voting_panel_poller.start()
+
+    def cog_unload(self):
+        self._voting_panel_poller.cancel()
+
+    @tasks.loop(seconds=60)
+    async def _voting_panel_poller(self):
+        """Picks up listings the website marked voting_panel_pending (set by
+        upsert_server_listing on submit) and does the actual channel/panel
+        creation here, since api/server_listings.py — where the submit is
+        handled — is a separate process with no live guild/Discord access.
+        This is what makes the panel appear automatically on submit rather
+        than needing an admin to rerun /setup servers."""
+        clone_id = _clone_id_of_bot(self.bot)
+        try:
+            pending = await db.get_pending_voting_panels(clone_id)
+        except Exception:
+            logger.exception("[server_listing] failed polling for pending voting panels")
+            return
+        for row in pending:
+            guild = self.bot.get_guild(row["guild_id"])
+            if guild is None:
+                # Not in this process's cache (wrong clone, or bot left) —
+                # clear it so it doesn't get retried forever; a rerun of
+                # /setup servers would re-flag it if genuinely needed.
+                await db.clear_voting_panel_pending(row["guild_id"], row["clone_id"])
+                continue
+            try:
+                await _ensure_voting_panel(guild, row["clone_id"])
+            except Exception:
+                logger.exception("[server_listing] failed auto-creating voting panel for guild %s", guild.id)
+            await db.clear_voting_panel_pending(row["guild_id"], row["clone_id"])
+
+    @_voting_panel_poller.before_loop
+    async def _before_voting_panel_poller(self):
+        await self.bot.wait_until_ready()
 
     # ── referral-boost conversion (event listener, not a command) ─────────
 
@@ -185,4 +342,5 @@ class ServerListingCog(GuildOnlyCog):
 
 
 async def setup(bot: commands.Bot):
+    bot.add_view(ServerListingVotePanelView())
     await bot.add_cog(ServerListingCog(bot))
