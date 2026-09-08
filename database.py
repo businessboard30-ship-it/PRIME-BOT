@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "4"
 
 
 async def get_pool():
@@ -3207,6 +3207,25 @@ class Database:
         """)
         await conn.execute("""
             ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS confirmed_conversions INTEGER NOT NULL DEFAULT 0
+        """)
+        # Backing the in-Discord vote/boost/visit panel (server_listing.py's
+        # ServerListingVotePanelView) — remembers where the panel message
+        # lives so /setup servers can find-and-reuse it instead of spamming
+        # a new channel/message every time it's rerun.
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS voting_channel_id BIGINT
+        """)
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS voting_message_id BIGINT
+        """)
+        # Set TRUE by upsert_server_listing on every submit; cleared by the
+        # bot-side poller (server_listing.py's _voting_panel_poller) once it
+        # creates (or confirms it already has) the #vote-for-us panel. Lets
+        # the website submission — handled by api/server_listings.py, a
+        # separate process with no live Discord connection — signal the bot
+        # process to do the actual channel/message creation.
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS voting_panel_pending BOOLEAN NOT NULL DEFAULT FALSE
         """)
 
         await conn.execute("""
@@ -9163,8 +9182,8 @@ class Database:
                 """
                 INSERT INTO server_listings
                     (guild_id, clone_id, guild_name, guild_icon_url, member_count,
-                     invite_url, description, tags, banner_url, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                     invite_url, description, tags, banner_url, voting_panel_pending, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NOW())
                 ON CONFLICT (guild_id, COALESCE(clone_id, -1)) DO UPDATE SET
                     guild_name = EXCLUDED.guild_name,
                     guild_icon_url = EXCLUDED.guild_icon_url,
@@ -9173,6 +9192,10 @@ class Database:
                     description = EXCLUDED.description,
                     tags = EXCLUDED.tags,
                     banner_url = EXCLUDED.banner_url,
+                    -- Only (re)flag pending if this listing has never gotten
+                    -- its panel yet — an edit/resubmit of an already-panelled
+                    -- listing shouldn't trigger another channel-creation pass.
+                    voting_panel_pending = (server_listings.voting_channel_id IS NULL),
                     updated_at = NOW()
                 RETURNING *
                 """,
@@ -9181,7 +9204,60 @@ class Database:
             )
             return dict(row)
 
-    # Sort keys the public directory feed accepts — mapped to real ORDER BY
+    async def get_pending_voting_panels(self, clone_id: Optional[int], limit: int = 10) -> List[Dict]:
+        """Listings flagged voting_panel_pending for THIS process's clone_id
+        — each clone only ever sees its own guilds, so this is scoped the
+        same way ship_config/roast_config lookups are elsewhere, keeping it
+        a cheap per-clone poll rather than a full-table scan."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT guild_id, clone_id FROM server_listings
+                   WHERE voting_panel_pending = TRUE AND clone_id IS NOT DISTINCT FROM $1
+                   LIMIT $2""",
+                clone_id, limit,
+            )
+            return [dict(r) for r in rows]
+
+    async def clear_voting_panel_pending(self, guild_id: int, clone_id: Optional[int]) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE server_listings SET voting_panel_pending = FALSE "
+                "WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+
+    async def set_listing_voting_panel(
+        self, guild_id: int, clone_id: Optional[int],
+        channel_id: int, message_id: int,
+        guild_name: str, guild_icon_url: Optional[str] = None,
+        member_count: int = 0,
+    ) -> None:
+        """Remembers where the in-Discord vote/boost/visit panel
+        (server_listing.py's ServerListingVotePanelView) lives, so
+        /setup servers can find-and-reuse it on rerun instead of posting a
+        duplicate. Creates a bare server_listings row if the admin hasn't
+        submitted a full listing on the website yet — invite_url/description/
+        tags are left at their empty defaults, filled in later by the submit
+        form; the panel's Vote button works fine before that (votes aren't
+        tied to invite_url), Boost just tells them to list first."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO server_listings
+                    (guild_id, clone_id, guild_name, guild_icon_url, member_count,
+                     invite_url, description, tags, voting_channel_id, voting_message_id, updated_at)
+                VALUES ($1, $2, $3, $4, $5, '', '', '{}', $6, $7, NOW())
+                ON CONFLICT (guild_id, COALESCE(clone_id, -1)) DO UPDATE SET
+                    voting_channel_id = EXCLUDED.voting_channel_id,
+                    voting_message_id = EXCLUDED.voting_message_id,
+                    updated_at = NOW()
+                """,
+                guild_id, clone_id, guild_name, guild_icon_url, member_count,
+                channel_id, message_id,
+            )
     # clauses here (never interpolated from the request directly) so a bad
     # ?sort= value can't become a SQL injection vector.
     _LISTING_SORTS = {
@@ -9428,23 +9504,26 @@ class Database:
             )
             return row is not None
 
-    async def get_active_clone_for_guilds(self, guild_ids: list) -> Dict[int, Optional[int]]:
-        """guild_id -> clone_id (None means the main bot, not a clone) for
-        whichever of guild_ids currently have PRIME-BOT in them. Guilds the
-        bot has left (left_at set) or never joined are simply absent from
-        the returned dict — the caller (discord_login_oauth.py) treats
-        absence as "not manageable here", same as it would treat a guild
-        Discord didn't return at all."""
+    async def get_active_clone_for_guilds(self, guild_ids: list) -> Dict[int, Dict]:
+        """guild_id -> {"clone_id": ..., "member_count": ...} for whichever
+        of guild_ids currently have PRIME-BOT in them. Guilds the bot has
+        left (left_at set) or never joined are simply absent from the
+        returned dict — the caller (discord_login_oauth.py) treats absence
+        as "not manageable here", same as it would treat a guild Discord
+        didn't return at all. member_count comes along so callers minting a
+        server_listing_tokens row (which needs it) don't need a second
+        query — Discord's OAuth "guilds" scope response doesn't reliably
+        include it, unlike the live guild object a bot process has."""
         if not guild_ids:
             return {}
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT guild_id, clone_id FROM discord_guilds
+                """SELECT guild_id, clone_id, member_count FROM discord_guilds
                    WHERE guild_id = ANY($1::bigint[]) AND left_at IS NULL""",
                 guild_ids,
             )
-            return {row["guild_id"]: row["clone_id"] for row in rows}
+            return {row["guild_id"]: {"clone_id": row["clone_id"], "member_count": row["member_count"]} for row in rows}
 
     async def create_login_session(self, payload: list) -> str:
         """Stores the already-resolved (guild, dashboard token) pairs a
