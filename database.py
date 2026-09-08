@@ -7036,7 +7036,22 @@ class Database:
             )
             return [dict(r) for r in rows]
 
+    # Same read-cache pattern as _automod_config_cache above: voice_xp.py's
+    # _tick loop calls get_voice_xp_config once per (guild, clone, user)
+    # actively in voice, every 60s — with several concurrent voice users in
+    # a guild that's the same row fetched redundantly multiple times a
+    # minute, and this config rarely changes.
+    _VOICE_XP_CACHE_TTL_SECONDS = 300
+    _voice_xp_config_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (config_dict, fetched_at_monotonic)
+
     async def get_voice_xp_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        cache_key = (guild_id, clone_id)
+        cached = self._voice_xp_config_cache.get(cache_key)
+        if cached is not None:
+            config, fetched_at = cached
+            if time.monotonic() - fetched_at < self._VOICE_XP_CACHE_TTL_SECONDS:
+                return config
+
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -7044,11 +7059,15 @@ class Database:
                 guild_id, clone_id
             )
             if row:
-                return dict(row)
-            return {
-                "guild_id": guild_id, "clone_id": clone_id, "enabled": True,
-                "xp_per_minute": 10, "afk_channel_excluded": True,
-            }
+                d = dict(row)
+            else:
+                d = {
+                    "guild_id": guild_id, "clone_id": clone_id, "enabled": True,
+                    "xp_per_minute": 10, "afk_channel_excluded": True,
+                }
+
+        self._voice_xp_config_cache[cache_key] = (d, time.monotonic())
+        return d
 
     async def set_voice_xp_config(self, guild_id: int, clone_id: Optional[int] = None,
                                    enabled: Optional[bool] = None, xp_per_minute: Optional[int] = None,
@@ -7070,7 +7089,9 @@ class Database:
                 """,
                 guild_id, clone_id, enabled, xp_per_minute, afk_channel_excluded
             )
-            return dict(row)
+            d = dict(row)
+        self._voice_xp_config_cache[(guild_id, clone_id)] = (d, time.monotonic())
+        return d
 
     _UNSET = object()  # sentinel distinct from None, so callers can explicitly clear a nullable field
 
