@@ -721,9 +721,41 @@ async def main():
     args = parser.parse_args()
 
     token = await _resolve_token(args.clone_id)
-    bot = AnimeBotDiscord(clone_id=args.clone_id)
-    async with bot:
-        await bot.start(token)
+
+    # Retry login with real backoff instead of letting the process crash and
+    # relying on Railway's restart policy — that restarts almost instantly
+    # (~1.5s between attempts, per production logs), which is a tight loop
+    # hammering Discord's login endpoint. That's what trips Cloudflare's
+    # abuse-protection "error 1015" IP-level ban in front of discord.com —
+    # a ban that then makes EVERY subsequent attempt fail too, including
+    # ones that would've otherwise succeeded, until it expires. Backing off
+    # for real here is what lets that ban actually clear instead of being
+    # continuously re-triggered.
+    delay = 30
+    max_delay = 600  # 10 minutes
+    attempt = 0
+    while True:
+        attempt += 1
+        bot = AnimeBotDiscord(clone_id=args.clone_id)
+        try:
+            async with bot:
+                await bot.start(token)
+            return  # bot.start() only returns on a clean shutdown
+        except discord.HTTPException as e:
+            if e.status == 429:
+                logger.error(
+                    "[startup] Login rate-limited (attempt %d) — likely a Cloudflare "
+                    "block from too-frequent restarts, not a normal Discord rate limit. "
+                    "Backing off %ds before retrying.", attempt, delay,
+                )
+            else:
+                logger.exception("[startup] Login failed with HTTP %s (attempt %d) — backing off %ds.",
+                                  e.status, attempt, delay)
+        except Exception:
+            logger.exception("[startup] bot.start() failed (attempt %d) — backing off %ds.", attempt, delay)
+
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, max_delay)
 
 
 if __name__ == "__main__":
