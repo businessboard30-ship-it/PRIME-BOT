@@ -9282,11 +9282,32 @@ class Database:
     # clauses here (never interpolated from the request directly) so a bad
     # ?sort= value can't become a SQL injection vector.
     _LISTING_SORTS = {
-        "trending": '(COALESCE(v.vote_count, 0) * 3 + sl.confirmed_conversions) DESC, sl.updated_at DESC',
+        "trending": '(COALESCE(v.vote_count, 0) * 3 + sl.confirmed_conversions + sl.boost_count) DESC, sl.updated_at DESC',
         "votes": 'COALESCE(v.vote_count, 0) DESC, sl.updated_at DESC',
         "members": 'sl.member_count DESC, sl.updated_at DESC',
         "newest": 'sl.created_at DESC',
     }
+
+    async def add_listing_boosts(self, guild_id: str, clone_id: Optional[int], amount: int) -> int:
+        """Credits `amount` purchased boosts onto a listing's boost_count,
+        which feeds straight into the "trending" sort above (each boost
+        counts the same as one vote). Called by api/apply_boost.py right
+        after a purchase is confirmed — see that file for the current
+        (unwired) state of payment verification. Returns the new total so
+        the caller can show it back to the user without a second query.
+        """
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE server_listings
+                SET boost_count = boost_count + $3, updated_at = NOW()
+                WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                RETURNING boost_count
+                """,
+                guild_id, clone_id, amount,
+            )
+            return row["boost_count"] if row else 0
 
     async def get_public_server_listings(
         self, limit: int = 24, offset: int = 0, sort: str = "trending",
