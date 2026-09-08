@@ -9567,7 +9567,7 @@ class Database:
             )
             return {row["guild_id"]: {"clone_id": row["clone_id"], "member_count": row["member_count"]} for row in rows}
 
-    async def create_login_session(self, payload: list) -> str:
+    async def create_login_session(self, payload: dict) -> str:
         """Stores the already-resolved (guild, dashboard token) pairs a
         login produced, keyed by an opaque id the browser is redirected
         with — see discord_login_oauth.py's docstring for why this exists
@@ -9581,7 +9581,7 @@ class Database:
             )
             return session_id
 
-    async def get_login_session(self, session_id: str) -> Optional[list]:
+    async def get_login_session(self, session_id: str) -> Optional[dict]:
         """30 minute TTL, read-only (not popped) — the /login/servers page
         may reload or re-fetch, and a stolen session id is no more
         sensitive than one of the dashboard links it contains."""
@@ -9596,6 +9596,20 @@ class Database:
                 return None
             payload = row["payload"]
             return json.loads(payload) if isinstance(payload, str) else payload
+
+    async def delete_login_session(self, session_id: str) -> bool:
+        """Real sign-out: drops the session row so the session id this
+        browser holds (and anything cached from it, like the user's
+        avatar/username) is gone server-side too, not just forgotten
+        client-side. Returns whether a row was actually deleted, so the
+        caller can tell "signed out" from "already expired"."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "DELETE FROM discord_login_sessions WHERE session_id = $1 RETURNING session_id",
+                session_id,
+            )
+            return row is not None
 
     # --- server listing referral-boost tracking ----------------------------
 
