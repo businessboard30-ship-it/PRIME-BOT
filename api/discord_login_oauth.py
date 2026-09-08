@@ -164,19 +164,25 @@ async def _handle(query: dict) -> tuple[int, str]:
     results = []
     for g in manageable:
         gid = int(g["id"])
-        if gid not in active_clones:
+        info = active_clones.get(gid)
+        if info is None:
             continue  # PRIME-BOT isn't in this guild — nothing to link to.
-        clone_id = active_clones[gid]
-        token = await db.get_or_create_dashboard_token(gid, clone_id=clone_id)
+        clone_id = info["clone_id"]
+        guild_name = g.get("name", "Unknown server")
         icon_url = (
             f"https://cdn.discordapp.com/icons/{gid}/{g['icon']}.png"
             if g.get("icon") else None
         )
+        dashboard_token = await db.get_or_create_dashboard_token(gid, clone_id=clone_id)
+        listing_token = await db.get_or_create_listing_token(
+            gid, guild_name, icon_url, info["member_count"] or 0, clone_id=clone_id,
+        )
         results.append({
             "guild_id": str(gid),
-            "guild_name": g.get("name", "Unknown server"),
+            "guild_name": guild_name,
             "guild_icon_url": icon_url,
-            "token": token,
+            "token": dashboard_token,
+            "listing_token": listing_token,
             "clone_id": clone_id,
         })
 
