@@ -24,6 +24,19 @@ present:
     any already-saved invite_url/description/tags) for /servers/submit.
 
 POST always requires token + guild_id and upserts the listing.
+
+Caching: every read-only public GET mode below (the directory feed, a
+single listing, its leaderboard, its similar-servers list) sets a
+Cache-Control: s-maxage header via self._json(..., max_age=N). Vercel's
+edge CDN then serves repeat requests for the same query string straight
+from cache without this function running again — no DB hit at all on a
+cache hit. Token-gated modes (prefill), the report/click-log POST-like
+branches, and the pow_challenge endpoint deliberately never set max_age:
+those must always run fresh (a stale prefill would show old form data, a
+cached pow challenge could be replayed). Bump max_age here first if the
+DB is still seeing too much traffic; only add a separate in-process cache
+if that isn't enough, since this endpoint's serverless instances don't
+reliably stay warm between requests anyway.
 """
 import json
 import logging
@@ -92,9 +105,24 @@ class handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
-    def _json(self, status: int, payload: dict):
+    def _json(self, status: int, payload: dict, max_age: int | None = None):
+        """max_age, when set, adds a public Cache-Control header so Vercel's
+        edge CDN can serve repeat requests for identical query params
+        without invoking this function (and therefore without hitting the
+        DB) again. Only ever passed for read-only, non-personalized GET
+        modes below — never for POST, never for anything keyed off a
+        one-time token or captcha nonce, since caching those would either
+        leak stale writes or let a challenge/signature be replayed.
+        stale-while-revalidate lets a slightly-stale copy serve instantly
+        while the CDN refreshes in the background, so filter changes still
+        feel fast even on a cache miss."""
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        if max_age is not None:
+            self.send_header(
+                "Cache-Control",
+                f"public, s-maxage={max_age}, stale-while-revalidate={max_age * 4}",
+            )
         self._cors()
         self.end_headers()
         self.wfile.write(json.dumps(payload, default=_json_default).encode())
@@ -129,7 +157,7 @@ class handler(BaseHTTPRequestHandler):
             if listing is None:
                 self._json(404, {"status": "error", "message": "No listing for that server"})
                 return
-            self._json(200, {"status": "ok", "listing": listing})
+            self._json(200, {"status": "ok", "listing": listing}, max_age=60)
             return
 
         # Mode 0: referral-boost click log. Fired by app/servers/page.tsx on
@@ -165,7 +193,7 @@ class handler(BaseHTTPRequestHandler):
                 logger.error(f"[v0] server_listings leaderboard GET error: {e}")
                 self._json(500, {"status": "error", "message": "Internal error"})
                 return
-            self._json(200, {"status": "ok", "voters": voters})
+            self._json(200, {"status": "ok", "voters": voters}, max_age=60)
             return
 
         # Mode 0d: "similar servers" — up to 4 other listings sharing at
@@ -183,7 +211,7 @@ class handler(BaseHTTPRequestHandler):
                 logger.error(f"[v0] server_listings similar GET error: {e}")
                 self._json(500, {"status": "error", "message": "Internal error"})
                 return
-            self._json(200, {"status": "ok", "listings": similar})
+            self._json(200, {"status": "ok", "listings": similar}, max_age=120)
             return
 
         # Mode 0e: proof-of-work captcha challenge for the submit form —
@@ -224,7 +252,7 @@ class handler(BaseHTTPRequestHandler):
                 "total": result["total"],
                 "page": page,
                 "page_size": page_size,
-            })
+            }, max_age=30)
             return
 
         # Mode 2: prefill data for the submit form — requires a valid token.
