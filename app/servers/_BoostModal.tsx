@@ -233,6 +233,20 @@ function BoostHero({ guildName, onClose }: { guildName: string; onClose: () => v
       position: 'relative', height: 120, overflow: 'hidden',
       background: 'linear-gradient(180deg,#04122e 0%,#0a2a5c 55%,#123f7a 100%)',
     }}>
+      {/* Static hero art (already in /public from the site's main hero) sits
+          under the animated CSS streaks below — the falling-light div layer
+          keeps moving on top of it so the header still has motion instead
+          of a flat image. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/hero-angels.png"
+        alt=""
+        aria-hidden="true"
+        style={{
+          position: 'absolute', inset: 0, width: '100%', height: '100%',
+          objectFit: 'cover', opacity: 0.55, mixBlendMode: 'screen',
+        }}
+      />
       <style>{`
         @keyframes pbBoostFall {
           0% { transform: translateY(-10px); opacity: 0; }
