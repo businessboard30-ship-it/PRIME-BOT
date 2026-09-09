@@ -7,12 +7,15 @@
  * in _ServerDirectory.tsx (replacing the old inline "Copy boost link"
  * button — that link now lives here instead, alongside the boost tiers).
  *
- * PAYMENT IS NOT WIRED YET. Picking a tier and hitting "Confirm boost"
- * calls api/apply_boost.py directly, which currently trusts the client
- * and applies the boost immediately — see that file's header for what's
- * needed before this can take real money. Everything else here (the
- * tiers, the apply call, the trending-sort effect on the backend, the
- * boost-link copy) is real and working.
+ * Payment is wired through Paystack: picking a tier and hitting "Confirm
+ * boost" calls api/apply_boost.py, which now starts a real Paystack
+ * transaction and returns a checkout link instead of crediting boosts
+ * directly. This redirects the browser there; the boost itself is
+ * credited server-side once api/paystack_webhook.py sees the charge
+ * succeed (payment_type 'listing_boost'), same deferred-apply pattern as
+ * every other paid feature in this codebase — there's no page to bounce
+ * back to here, so the listing just shows the new boost_count next time
+ * it's loaded.
  */
 
 import { useState } from 'react'
@@ -47,7 +50,8 @@ export default function BoostModal({
 }) {
   const [selected, setSelected] = useState<number>(20)
   const [customBoosts, setCustomBoosts] = useState<string>('')
-  const [status, setStatus] = useState<'idle' | 'applying' | 'done' | 'error'>('idle')
+  const [email, setEmail] = useState<string>('')
+  const [status, setStatus] = useState<'idle' | 'applying' | 'redirecting' | 'error'>('idle')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
@@ -55,10 +59,15 @@ export default function BoostModal({
   const customAmount = Math.max(0, parseInt(customBoosts || '0', 10) || 0)
   const amount = isCustom ? customAmount : selected
   const price = isCustom ? customAmount * PRICE_PER_BOOST : (TIERS.find((t) => t.boosts === selected)?.price ?? 0)
+  const emailValid = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())
 
   async function confirmBoost() {
     if (amount <= 0) {
       setErrorMsg('Choose a boost amount first')
+      return
+    }
+    if (!emailValid) {
+      setErrorMsg('Enter a valid email for the receipt')
       return
     }
     setErrorMsg(null)
@@ -67,16 +76,20 @@ export default function BoostModal({
       const res = await fetch(`${API_BASE}/api/apply_boost`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ guild_id: guildId, clone_id: cloneId, amount }),
+        body: JSON.stringify({ guild_id: guildId, clone_id: cloneId, amount, email: email.trim() }),
       })
       const data = await res.json()
-      if (data.status !== 'ok') {
-        setErrorMsg(data.message || 'Could not apply boost')
+      if (data.status !== 'pending' || !data.authorization_url) {
+        setErrorMsg(data.message || 'Could not start checkout')
         setStatus('error')
         return
       }
-      setStatus('done')
-      onBoosted(data.boost_count)
+      setStatus('redirecting')
+      // Boosts are credited server-side once the webhook sees the charge
+      // succeed — there's no client-side count to hand back yet, so
+      // onBoosted isn't called here. Full-page redirect to Paystack's
+      // hosted checkout.
+      window.location.href = data.authorization_url
     } catch {
       setErrorMsg('Network error — try again')
       setStatus('error')
@@ -116,7 +129,7 @@ export default function BoostModal({
         <div style={{ padding: '1.25rem' }}>
           <p style={{ fontSize: 12, color: 'var(--pb-text-muted)', marginBottom: 16 }}>
             Boosts push this listing higher in trending, alongside votes and referral conversions.
-            Payment isn&apos;t wired up in this preview — confirming applies the boost directly.
+            Confirming takes you to a secure Paystack checkout — boosts are applied as soon as payment clears.
           </p>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 16 }}>
@@ -180,28 +193,28 @@ export default function BoostModal({
             </div>
           )}
 
+          <input
+            type="email"
+            placeholder="Email for receipt"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="pb-input"
+            style={{ width: '100%', marginBottom: 16 }}
+          />
+
           {errorMsg && (
             <p style={{ fontSize: 13, color: 'var(--pb-danger)', marginBottom: 12 }}>{errorMsg}</p>
           )}
 
-          {status === 'done' ? (
-            <div style={{ textAlign: 'center' }}>
-              <p style={{ fontSize: 13, color: 'var(--pb-positive)', marginBottom: 12 }}>
-                Boost applied — {amount} boosts added.
-              </p>
-              <button className="pb-btn-secondary w-full" onClick={onClose}>Done</button>
-            </div>
-          ) : (
-            <button
-              className="pb-btn-primary w-full"
-              disabled={status === 'applying' || amount <= 0}
-              onClick={confirmBoost}
-            >
-              {status === 'applying' ? 'Applying…' : 'Confirm boost'}
-            </button>
-          )}
+          <button
+            className="pb-btn-primary w-full"
+            disabled={status === 'applying' || status === 'redirecting' || amount <= 0}
+            onClick={confirmBoost}
+          >
+            {status === 'applying' ? 'Starting checkout…' : status === 'redirecting' ? 'Redirecting…' : 'Confirm boost'}
+          </button>
 
-          {refCode && status !== 'done' && (
+          {refCode && status !== 'redirecting' && (
             <button
               onClick={copyBoostLink}
               style={{
@@ -233,18 +246,18 @@ function BoostHero({ guildName, onClose }: { guildName: string; onClose: () => v
       position: 'relative', height: 120, overflow: 'hidden',
       background: 'linear-gradient(180deg,#04122e 0%,#0a2a5c 55%,#123f7a 100%)',
     }}>
-      {/* Static hero art (already in /public from the site's main hero) sits
-          under the animated CSS streaks below — the falling-light div layer
-          keeps moving on top of it so the header still has motion instead
-          of a flat image. */}
+      {/* Boost icon (public/boost-icon.png) — black background blends into
+          the gradient via mixBlendMode 'screen', so only the glowing blue
+          rocket/chevron artwork shows. Replaces the earlier generic
+          hero-angels.png crop for this modal specifically. */}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="/hero-angels.png"
+        src="/boost-icon.png"
         alt=""
         aria-hidden="true"
         style={{
-          position: 'absolute', inset: 0, width: '100%', height: '100%',
-          objectFit: 'cover', opacity: 0.55, mixBlendMode: 'screen',
+          position: 'absolute', top: '50%', right: 8, transform: 'translateY(-50%)',
+          height: '150%', width: 'auto', objectFit: 'contain', mixBlendMode: 'screen',
         }}
       />
       <style>{`
