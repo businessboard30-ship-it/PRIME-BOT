@@ -9,6 +9,16 @@ load_dotenv()
 BOT_TOKEN = os.getenv("SINOBANED2_BOT_TOKEN", "your_token_here")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
+# Public-facing name/URL of the server directory site (app/servers/...).
+# Same env-var name and fallback the frontend already uses (see
+# app/servers/[guildId]/page.tsx, app/sitemap.ts, etc.) so both sides stay
+# in sync without needing two separate settings. Used by discord_bot/cogs/
+# invites.py to mention the site by name when a join is attributed to a
+# listing's tracked invite link (see check_ref_conversion in database.py
+# for the matching web-side conversion tracking).
+SITE_NAME = os.getenv("SITE_NAME", "PRIME-BOT")
+SITE_URL = os.getenv("NEXT_PUBLIC_SITE_URL", "https://prime-bot.example.com")
+
 # Shared secret that protects the cron-triggered endpoints (api/cron_autopost.py,
 # api/cron_broadcast.py) from being called by anyone but your scheduler. Sent by
 # the caller either as header "Authorization: Bearer <CRON_SECRET>" (Vercel Cron
