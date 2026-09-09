@@ -6003,6 +6003,22 @@ class Database:
                 clone_id
             )
 
+    async def get_discord_clone_heartbeat(self, clone_id: int) -> Optional[datetime]:
+        """Returns the clone's last_heartbeat timestamp (None if it has
+        never reported one). Used by clone_manager.py's startup stagger to
+        confirm a clone actually reached on_ready (i.e. its gateway
+        IDENTIFY succeeded) before spawning the next clone, instead of
+        just sleeping a fixed number of seconds after the subprocess was
+        spawned — see _reconcile()'s docstring for why the fixed-sleep
+        approach doesn't actually bound the gap between IDENTIFY attempts."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT last_heartbeat FROM discord_cloned_bots WHERE clone_id = $1",
+                clone_id
+            )
+            return row["last_heartbeat"] if row else None
+
     # ─────────────────────────────────────────────────────────────────────
     # Discord: guild registry (what servers the bot is currently in)
     # ─────────────────────────────────────────────────────────────────────
