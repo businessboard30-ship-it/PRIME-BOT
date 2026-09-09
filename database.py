@@ -12011,7 +12011,7 @@ class Database:
                 guild_id, clone_id,
             )
 
-    async def mark_review_helpful(self, review_id: int) -> int:
+    async def increment_review_helpful(self, review_id: int) -> int:
         pool = await get_pool()
         async with pool.acquire() as conn:
             return await conn.fetchval(
