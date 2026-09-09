@@ -176,7 +176,7 @@ def render_status_lines(config: dict) -> list:
     ultra_unlocked = bool(config.get("ultra_pack_unlocked"))
     ultra_status = "✅ Unlocked" if ultra_unlocked else "🔒 Locked"
     lines.append(
-        f"-# Ultra Pack ({ultra_status}) — use your own png/jpg as the welcome-card "
+        f"-# Customize Card ({ultra_status}) — use your own png/jpg as the welcome-card "
         f"background instead of a preset look, one-time purchase for the whole server"
     )
     return lines
@@ -964,7 +964,7 @@ class WelcomeUltraPackButton(discord.ui.DynamicItem[discord.ui.Button], template
         self.clone_id = clone_id
         self.invoker_id = invoker_id
         unlocked = bool(config.get("ultra_pack_unlocked"))
-        label = "🖼️ Ultra Pack ✅" if unlocked else "🖼️ Buy Ultra Pack"
+        label = "🖼️ Customize Card ✅" if unlocked else "🖼️ Customize Card"
         style = discord.ButtonStyle.secondary if unlocked else discord.ButtonStyle.success
         super().__init__(discord.ui.Button(
             label=label, style=style,
@@ -982,7 +982,7 @@ class WelcomeUltraPackButton(discord.ui.DynamicItem[discord.ui.Button], template
         config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
         if config.get("ultra_pack_unlocked"):
             await interaction.response.send_message(
-                "This server already owns the ultra pack — set your background with `/welcome custombg`.",
+                "This server already owns Customize Card — set your background with `/welcome custombg`.",
                 ephemeral=True,
             )
             return
