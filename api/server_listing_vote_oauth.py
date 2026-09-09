@@ -70,14 +70,17 @@ async def _handle(query: dict) -> tuple[int, str]:
         guild_id_param = query.get("guild_id", [None])[0]
         clone_id_param = query.get("clone_id", [None])[0]
         if not guild_id_param:
+            logger.info("[vote-oauth] leg1 rejected: no guild_id in query %r", query)
             return 400, "<h2>Missing listing to vote for.</h2>"
         if not DISCORD_OAUTH_CLIENT_ID:
+            logger.warning("[vote-oauth] leg1 rejected: DISCORD_OAUTH_CLIENT_ID not configured")
             return 200, "<h2>Voting sign-in isn't set up yet.</h2>"
 
         guild_id = int(guild_id_param)
         clone_id = int(clone_id_param) if clone_id_param else None
         oauth_state = secrets.token_urlsafe(24)
         await db.create_vote_oauth_state(oauth_state, guild_id, clone_id)
+        logger.info("[vote-oauth] leg1 started: guild=%s clone_id=%s state=%s", guild_id, clone_id, oauth_state)
         params = {
             "client_id": DISCORD_OAUTH_CLIENT_ID,
             "redirect_uri": SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI,
@@ -88,16 +91,27 @@ async def _handle(query: dict) -> tuple[int, str]:
         return 302, f"{DISCORD_AUTHORIZE_URL}?{urlencode(params)}"
 
     if error:
+        logger.info("[vote-oauth] leg2: Discord returned error=%s state=%s", error, state)
         return 302, _redirect_to_servers(None, "Sign-in was cancelled.", ok=False)
 
     if not state:
+        logger.info("[vote-oauth] leg2 rejected: no state in query %r", query)
         return 400, "<h2>Missing sign-in state.</h2>"
 
     popped = await db.pop_vote_oauth_state(state)
     if popped is None:
+        # This is one of the likeliest silent-failure causes: the oauth
+        # state row is short-lived, so a slow Discord consent screen, a
+        # double-click of "Vote", or the callback firing twice can all
+        # land here — the vote page will say "expired, try again" but
+        # nothing before this logged WHY, so a real expiry looked
+        # identical to a bug. Logging the state here turns "vote didn't
+        # count" into a greppable fact instead of a guess.
+        logger.warning("[vote-oauth] leg2: state %s not found/already used — vote NOT cast", state)
         return 302, _redirect_to_servers(None, "That sign-in link expired. Try voting again.", ok=False)
 
     guild_id, clone_id = popped["guild_id"], popped["clone_id"]
+    logger.info("[vote-oauth] leg2: state %s resolved to guild=%s clone_id=%s", state, guild_id, clone_id)
 
     try:
         timeout = aiohttp.ClientTimeout(total=10)
@@ -129,10 +143,16 @@ async def _handle(query: dict) -> tuple[int, str]:
                 # trusted for anything auth-related (voter_id is).
                 voter_username = identity.get("global_name") or identity.get("username")
     except (aiohttp.ClientError, asyncio.TimeoutError, KeyError, ValueError):
-        logger.exception("Discord OAuth exchange failed for server-listing vote (guild %s)", guild_id)
+        logger.exception(
+            "[vote-oauth] leg2: Discord OAuth exchange FAILED for guild=%s — vote NOT cast", guild_id,
+        )
         return 302, _redirect_to_servers(guild_id, "Something went wrong signing you in.", ok=False)
 
+    logger.info("[vote-oauth] leg2: identity resolved voter=%s (%s) for guild=%s", voter_id, voter_username, guild_id)
     newly_voted = await db.cast_server_listing_vote(guild_id, clone_id, voter_id, voter_username)
+    logger.info(
+        "[vote-oauth] leg2 complete: guild=%s voter=%s newly_voted=%s", guild_id, voter_id, newly_voted,
+    )
     msg = "Thanks for voting!" if newly_voted else "You already voted for this server."
     return 302, _redirect_to_servers(guild_id, msg, ok=True)
 
