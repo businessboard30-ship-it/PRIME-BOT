@@ -97,6 +97,7 @@ ROUTES = {
     "/api/server_listing_vote_oauth": "api.server_listing_vote_oauth",
     "/api/discord_login_oauth": "api.discord_login_oauth",
     "/api/site_visits": "api.site_visits",
+    "/api/apply_boost": "api.apply_boost",
     # Discord app-verification requires real, permanently reachable ToS/
     # Privacy URLs — these were written in api/legal_pages.py but never
     # wired into the dispatcher (and its class names don't match the
@@ -127,7 +128,18 @@ class Dispatcher(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"ok")
             return
-        cls = _get_handler_class(path)
+        try:
+            cls = _get_handler_class(path)
+        except Exception:
+            logger.exception("Failed to load handler module for %s", path)
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+            self.wfile.write(b'{"status": "error", "message": "Internal server error"}')
+            return
         if cls is None:
             self.send_response(404)
             self.end_headers()
