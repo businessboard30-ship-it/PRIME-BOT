@@ -3145,6 +3145,38 @@ class Database:
             CREATE INDEX IF NOT EXISTS server_listing_reports_guild_idx
             ON server_listing_reports (guild_id, COALESCE(clone_id, -1))
         """)
+        # notified: flipped TRUE once the bot process (which has live
+        # Discord access, unlike this DB-only API layer that inserts the
+        # row — see api/server_listings.py's report mode) has forwarded
+        # this report to the configured channel. See report_notify_config
+        # below and discord_bot/cogs/report_notifications.py's poller,
+        # same "API writes a pending row, bot process polls and acts on
+        # it" split as server_listings.voting_panel_pending.
+        await conn.execute("""
+            ALTER TABLE server_listing_reports ADD COLUMN IF NOT EXISTS notified BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+
+        # Where forwarded reports get posted, one row per clone (NULL =
+        # main bot). asked_at is set the first time the bot DMs an admin
+        # the channel picker (see claim_report_channel_prompt_send — a
+        # single atomic claim, so the picker is only ever sent once even
+        # across restarts); channel_id/guild_id/configured_at stay NULL
+        # until an admin actually picks one via the ChannelSelect
+        # component. Reports just queue up (notified stays FALSE) until
+        # that happens — nothing is lost, it's just not forwarded yet.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS report_notify_config (
+                clone_id INTEGER,
+                guild_id BIGINT,
+                channel_id BIGINT,
+                asked_at TIMESTAMPTZ,
+                configured_at TIMESTAMPTZ
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS report_notify_config_clone_key
+            ON report_notify_config (COALESCE(clone_id, -1))
+        """)
 
         # One row per (listing, voter) — the UNIQUE INDEX below (not a
         # table-level PRIMARY KEY, which can't take an expression like
@@ -9757,6 +9789,66 @@ class Database:
             await conn.execute(
                 "INSERT INTO server_listing_reports (guild_id, clone_id, reason) VALUES ($1, NULL, $2)",
                 guild_id, reason,
+            )
+
+    async def list_unnotified_reports(self, limit: int = 20) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, guild_id, reason, created_at FROM server_listing_reports
+                   WHERE notified = FALSE ORDER BY created_at ASC LIMIT $1""",
+                limit,
+            )
+            return [dict(r) for r in rows]
+
+    async def mark_reports_notified(self, ids: List[int]) -> None:
+        if not ids:
+            return
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE server_listing_reports SET notified = TRUE WHERE id = ANY($1::bigint[])", ids,
+            )
+
+    async def claim_report_channel_prompt_send(self, clone_id: Optional[int] = None) -> bool:
+        """Atomic ask-once claim, same shape as claim_auto_listing_offer_send
+        — True only the very first time this fires for this clone_id, ever.
+        Inserts the row with channel_id still NULL; set_report_notify_channel
+        fills it in once an admin actually picks one."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO report_notify_config (clone_id, asked_at)
+                VALUES ($1, NOW())
+                ON CONFLICT (COALESCE(clone_id, -1)) DO NOTHING
+                RETURNING clone_id
+                """,
+                clone_id,
+            )
+            return row is not None
+
+    async def get_report_notify_channel(self, clone_id: Optional[int] = None) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM report_notify_config WHERE clone_id IS NOT DISTINCT FROM $1", clone_id,
+            )
+            return dict(row) if row else None
+
+    async def set_report_notify_channel(self, clone_id: Optional[int], guild_id: int, channel_id: int) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO report_notify_config (clone_id, guild_id, channel_id, asked_at, configured_at)
+                VALUES ($1, $2, $3, NOW(), NOW())
+                ON CONFLICT (COALESCE(clone_id, -1)) DO UPDATE SET
+                    guild_id = EXCLUDED.guild_id,
+                    channel_id = EXCLUDED.channel_id,
+                    configured_at = NOW()
+                """,
+                clone_id, guild_id, channel_id,
             )
 
     # --- server listing votes ----------------------------------------------
