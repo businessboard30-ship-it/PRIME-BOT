@@ -29,6 +29,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from discord_bot.cogs._dm_support import GuildOnlyCog
+from discord_bot.cogs._views_auto_listing_offer import offer_auto_listing
 from discord_bot.cogs._views_download_wizard import (
     build_wizard_view as build_download_wizard_view,
     remember_wizard_message as remember_download_wizard_message,
@@ -693,7 +694,23 @@ class SetupChannelsCog(GuildOnlyCog):
 
 
     @group.command(name="servers", description="Get your link to list this server in PRIME-BOT's public directory")
-    async def servers_cmd(self, interaction: discord.Interaction):
+    @app_commands.describe(resend="Resend the one-time auto-listing DM offer (Agree/Deny), even if it was declined before")
+    async def servers_cmd(self, interaction: discord.Interaction, resend: bool = False):
+        if resend:
+            if not _require_perm(interaction, "manage_guild"):
+                await _deny(interaction, "Manage Server")
+                return
+            clone_id = _clone_id_of(interaction.client)
+            await db.reset_auto_listing_offer(interaction.guild_id, clone_id)
+            await interaction.response.defer(ephemeral=True)
+            await offer_auto_listing(interaction.client, interaction.guild)
+            await interaction.followup.send(
+                "Resent — check your DMs (or this server's fallback channel if DMs are closed) "
+                "for the Agree/Deny listing offer.",
+                ephemeral=True,
+            )
+            return
+
         listing_cog = interaction.client.get_cog("ServerListingCog")
         if listing_cog is None:
             await interaction.response.send_message("Server listing module isn't loaded.", ephemeral=True)
