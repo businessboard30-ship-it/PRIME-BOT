@@ -85,6 +85,8 @@ ROUTES = {
     "/api/vote_webhook": "api.vote_webhook",
     "/api/discord_dashboard": "api.discord_dashboard",
     "/api/server_listings": "api.server_listings",
+    "/api/server_reviews": "api.server_reviews",
+    "/api/server_analytics": "api.server_analytics",
     "/api/cron_discord_announcements": "api.cron_discord_announcements",
     "/api/cron_discord_owner_broadcast": "api.cron_discord_owner_broadcast",
     "/api/cron_expire_monetization": "api.cron_expire_monetization",
