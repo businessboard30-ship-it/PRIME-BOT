@@ -39,6 +39,7 @@ import re
 import discord
 
 from database import db
+from config import DASHBOARD_BASE_URL
 
 _LATER_RE = re.compile(r"^automod_rem_later:(\d+)$")
 _STOP_RE = re.compile(r"^automod_rem_stop:(\d+)$")
@@ -52,7 +53,17 @@ def _disabled_view(interaction: discord.Interaction) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     for row in interaction.message.components:
         for child in getattr(row, "children", [row]):
-            if not isinstance(child, discord.Button) or not child.custom_id:
+            if not isinstance(child, discord.Button):
+                continue
+            if child.style == discord.ButtonStyle.link and child.url:
+                # Link buttons (the directory link) have no custom_id and
+                # nothing to disable — carry over as-is, same treatment
+                # _RebuiltCopyView gives the join-DM's link buttons.
+                view.add_item(discord.ui.Button(
+                    label=child.label, style=child.style, emoji=child.emoji, url=child.url,
+                ))
+                continue
+            if not child.custom_id:
                 continue
             view.add_item(discord.ui.Button(
                 label=child.label, style=child.style, emoji=child.emoji,
@@ -65,6 +76,17 @@ def build_reminder_view(batch_id: int) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     view.add_item(_ReminderLaterButton(batch_id))
     view.add_item(_ReminderDismissButton(batch_id))
+    # Same "List your server" link added to the combined join DM
+    # (see _views_join_dm.py's JoinDMLayoutView) — plain link button, no
+    # custom_id, so it needs no DynamicItem registration and _disabled_view
+    # above already carries any button over unchanged since it just copies
+    # label/style/emoji/custom_id from whatever's on the clicked message
+    # (a None custom_id here just means it's skipped as non-actionable,
+    # not touched, on Remind/Dismiss clicks).
+    view.add_item(discord.ui.Button(
+        label="List your server", style=discord.ButtonStyle.link,
+        emoji="🌐", url=f"{DASHBOARD_BASE_URL}/servers",
+    ))
     return view
 
 
