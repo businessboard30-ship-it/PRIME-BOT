@@ -31,6 +31,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from database import db
@@ -194,6 +195,36 @@ def _kill_orphaned_clone_processes():
         time.sleep(2)
 
 
+async def _wait_for_clone_ready(
+    clone_id: int,
+    spawned_at: datetime,
+    timeout_seconds: float,
+    poll_seconds: float,
+) -> bool:
+    """Polls last_heartbeat for this clone until it's newer than
+    spawned_at (proof this process instance reached on_ready, i.e. its
+    IDENTIFY succeeded), or the timeout elapses. Returns True if the
+    clone confirmed in time, False if the timeout was hit.
+
+    Comparing against spawned_at, not just "is last_heartbeat set", matters
+    because a clone that's been active before (redeploy, restart) will
+    already have a stale last_heartbeat from its previous run sitting in
+    the DB — without the spawned_at comparison this would return True
+    immediately without actually waiting for the NEW process to connect.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            last_heartbeat = await db.get_discord_clone_heartbeat(clone_id)
+        except Exception as e:
+            logger.warning(f"Couldn't check heartbeat for clone #{clone_id} while staggering startup: {e}")
+            last_heartbeat = None
+        if last_heartbeat is not None and last_heartbeat > spawned_at:
+            return True
+        await asyncio.sleep(poll_seconds)
+    return False
+
+
 async def _reconcile(managed: Dict[int, ManagedClone]):
     try:
         dupes = await db.get_duplicate_active_clone_tokens()
@@ -229,25 +260,51 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
             managed[clone_id].stop()
             del managed[clone_id]
 
-    # Start anything newly active that we're not already managing. A short
-    # stagger between each one avoids Discord's gateway IDENTIFY rate limit
-    # — on a full cold start all clones land here in the same tight loop
-    # and each opens its own gateway connection within milliseconds of the
-    # others, which is exactly what triggered the
-    # "WebSocket ... is ratelimited, waiting ~59s" warnings: Discord throttles
+    # Start anything newly active that we're not already managing.
+    #
+    # A fixed asyncio.sleep() here used to be the stagger mechanism (first
+    # 3s, then 6s), meant to avoid Discord's gateway IDENTIFY rate limit —
+    # on a full cold start all clones land here in the same tight loop and
+    # each opens its own gateway connection within milliseconds of the
+    # others, which is exactly what triggers the
+    # "WebSocket ... is ratelimited, waiting ~59s" warning: Discord throttles
     # bursts of near-simultaneous identifies from the same process/host.
-    # Discord's IDENTIFY limit is roughly 1 per 5 seconds; an earlier
-    # version of this stagger used 3s and still hit the rate limit once
-    # around the 8th-9th clone in the sequence (the margin was too thin
-    # once request jitter is added in). 6s gives real headroom.
-    STAGGER_SECONDS = 6
+    #
+    # That approach staggered the wrong thing: it spaced out when each
+    # subprocess was *spawned*, not when it actually reached IDENTIFY. Each
+    # subprocess has its own variable startup overhead before it gets there
+    # (DB pool creation, cog imports, REST login), and that overhead isn't
+    # constant across clones — so spawn times spaced exactly N seconds
+    # apart do NOT guarantee IDENTIFY attempts stay N seconds apart. Both
+    # 3s and 6s eventually hit the same failure, just at a later position
+    # in the sequence each time (drift needs more clones to accumulate
+    # enough to close a wider gap), which is the signature of a value
+    # that's papering over the real problem rather than fixing it.
+    #
+    # Instead: wait for confirmation that a clone actually got through
+    # its gateway handshake (on_ready fires -> touch_discord_clone_heartbeat
+    # updates last_heartbeat, see bot.py) before starting the next one, up
+    # to a bounded timeout so one hung/bad-token clone can't stall the
+    # whole startup sequence forever.
+    STAGGER_TIMEOUT_SECONDS = 30
+    STAGGER_POLL_SECONDS = 1
     for c in active:
         if c["clone_id"] not in managed:
             label = c.get("bot_username") or f"clone-{c['clone_id']}"
             m = ManagedClone(c["clone_id"], label)
             managed[c["clone_id"]] = m
+            spawned_at = datetime.now(timezone.utc)
             m.start()
-            await asyncio.sleep(STAGGER_SECONDS)
+            ready = await _wait_for_clone_ready(
+                c["clone_id"], spawned_at, STAGGER_TIMEOUT_SECONDS, STAGGER_POLL_SECONDS
+            )
+            if not ready:
+                logger.warning(
+                    f"Clone #{c['clone_id']} ({label}) hadn't confirmed its gateway "
+                    f"connection {STAGGER_TIMEOUT_SECONDS}s after spawning — proceeding "
+                    f"to the next clone anyway (it may still connect, or may be a bad/"
+                    f"revoked token — the restart-backoff loop below will keep retrying it)."
+                )
 
     # Restart anything that died, backing off per-clone so a bad token
     # (invalid/revoked, missing privileged intent, etc.) doesn't spin the
