@@ -87,7 +87,10 @@ function LoginServersPageInner() {
   }
 
   const header = user ? (
-    <div className="flex items-center gap-3 mb-8">
+    <div
+      className="relative z-10 flex items-center gap-3 mb-8 rounded-lg p-3"
+      style={{ background: 'var(--pb-surface)', border: '1px solid var(--pb-line)' }}
+    >
       <img
         src={user.avatar_url}
         alt=""
@@ -204,7 +207,10 @@ function Shell({ children }: { children: React.ReactNode }) {
         className="fixed inset-0 -z-10"
         style={{ background: 'linear-gradient(180deg, rgba(5,6,10,0.55) 0%, rgba(5,6,10,0.82) 35%, rgba(5,6,10,0.94) 100%)' }}
       />
-      <div className="relative max-w-lg mx-auto">{children}</div>
+      {/* isolate: pins this page's content to its own stacking context so
+          nothing from an in-flight route transition (e.g. the homepage's
+          ListingBanner) can ever composite on top of it again. */}
+      <div className="relative max-w-lg mx-auto isolate">{children}</div>
     </main>
   )
 }
