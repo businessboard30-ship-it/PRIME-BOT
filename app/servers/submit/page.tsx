@@ -22,7 +22,12 @@ const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
 // Same categories shown as filter chips on the public directory
 // (app/servers/_ServerDirectory.tsx) — kept in sync manually since there's
 // no shared constants file yet. Suggestions shown while typing a tag below.
-const TAG_SUGGESTIONS = ['gaming', 'anime', 'coding', 'art', 'music', 'study', 'crypto', 'nsfw']
+const TAG_SUGGESTIONS = [
+  'gaming', 'anime', 'coding', 'art', 'music', 'study', 'crypto',
+  'roleplay', 'community', 'memes', 'writing', 'programming', 'movies',
+  'tv', 'sports', 'fitness', 'food', 'photography', 'design', 'tech',
+  'science', 'books', 'languages', 'finance', 'esports',
+]
 const MAX_DESCRIPTION_LEN = 300
 const MAX_TAGS = 5
 
@@ -94,9 +99,21 @@ function SubmitListingPageInner() {
 
   function addTag() {
     const t = tagInput.trim().replace(/^#/, '').toLowerCase()
-    if (!t || tags.includes(t) || tags.length >= MAX_TAGS) return
+    if (!t || t === 'nsfw' || tags.includes(t) || visibleTagCount(tags) >= MAX_TAGS) return
     setTags([...tags, t])
     setTagInput('')
+  }
+
+  // 'nsfw' lives in the same `tags` array the database checks against
+  // (see database.py's ('nsfw' = ANY(sl.tags)) filter) but is surfaced as
+  // its own checkbox rather than a free-typed tag, so it shouldn't count
+  // against MAX_TAGS or show up twice in the chip list.
+  function visibleTagCount(list: string[]) {
+    return list.filter((t) => t !== 'nsfw').length
+  }
+
+  function toggleNsfw(checked: boolean) {
+    setTags(checked ? [...tags, 'nsfw'] : tags.filter((t) => t !== 'nsfw'))
   }
 
   // Solves the self-hosted proof-of-work captcha in-browser (see
@@ -242,7 +259,7 @@ function SubmitListingPageInner() {
       <label className="block mb-8">
         <span className="text-sm font-medium">Tags (up to {MAX_TAGS})</span>
         <div className="flex flex-wrap gap-2 mt-1.5 mb-2">
-          {tags.map((t) => (
+          {tags.filter((t) => t !== 'nsfw').map((t) => (
             <span key={t} className="pb-chip">
               #{t}
               <button className="pb-chip-remove" onClick={() => setTags(tags.filter((x) => x !== t))} aria-label={`Remove ${t}`}>
@@ -251,7 +268,7 @@ function SubmitListingPageInner() {
             </span>
           ))}
         </div>
-        {tags.length < MAX_TAGS && (
+        {visibleTagCount(tags) < MAX_TAGS && (
           <div className="relative">
             <form onSubmit={(e) => { e.preventDefault(); addTag() }} className="flex gap-2">
               <input
@@ -278,7 +295,7 @@ function SubmitListingPageInner() {
                       type="button"
                       className="block w-full text-left px-3 py-2 text-sm hover:bg-white/5"
                       onClick={() => {
-                        if (tags.length < MAX_TAGS) setTags([...tags, s])
+                        if (visibleTagCount(tags) < MAX_TAGS) setTags([...tags, s])
                         setTagInput('')
                       }}
                     >
@@ -290,6 +307,16 @@ function SubmitListingPageInner() {
             })()}
           </div>
         )}
+      </label>
+
+      <label className="flex items-center gap-2 mb-8 text-sm">
+        <input type="checkbox" checked={tags.includes('nsfw')} onChange={(e) => toggleNsfw(e.target.checked)} />
+        <span>
+          NSFW server
+          <span className="block text-xs mt-0.5" style={{ color: 'var(--pb-text-faint)' }}>
+            Hidden from the directory by default — only shows up when a visitor turns on the NSFW filter.
+          </span>
+        </span>
       </label>
 
       <button className="pb-btn-primary" onClick={submit} disabled={saving || !inviteUrl.trim()}>
