@@ -380,6 +380,25 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+-- Seed the tier catalog itself — verification_purchases.tier_name has an FK
+-- to this table, so purchases/wiring above would fail on an empty table.
+INSERT INTO verification_tier_config
+    (tier_name, display_name, badge_emoji, badge_color, price_usd, duration_days,
+     listing_priority, featured_on_homepage, boost_multiplier, description)
+VALUES
+    ('unverified', 'Unverified', NULL, NULL, 0, NULL, 0, FALSE, 1.0,
+     'Default state — no badge, standard listing priority.'),
+    ('auto_verified', 'Auto-Verified', '✅', '#22c55e', 0, NULL, 2, FALSE, 1.0,
+     'Earned automatically once a listing clears the click/vote/age/rating thresholds — see check_auto_verification().'),
+    ('manual_verified', 'Manual-Verified', '☑️', '#3b82f6', 0, NULL, 3, FALSE, 1.1,
+     'Granted by an admin, independent of the automatic thresholds.'),
+    ('gold_verified', 'Gold-Verified', '⭐', '#eab308', 4.99, 30, 4, TRUE, 1.25,
+     'Paid tier: homepage featuring plus a modest listing boost.'),
+    ('platinum_verified', 'Platinum-Verified', '💎', '#a855f7', 9.99, 30, 5, TRUE, 1.5,
+     'Top paid tier: highest listing priority and homepage featuring.')
+ON CONFLICT (tier_name) DO NOTHING;
+
+
 -- ============================================================================
 -- Migration Complete
 -- ============================================================================
