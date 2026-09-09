@@ -72,8 +72,9 @@ export default function BoostModal({
     }
     setErrorMsg(null)
     setStatus('applying')
+    const url = `${API_BASE}/api/apply_boost`
     try {
-      const res = await fetch(`${API_BASE}/api/apply_boost`, {
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ guild_id: guildId, clone_id: cloneId, amount, email: email.trim() }),
@@ -106,8 +107,11 @@ export default function BoostModal({
       window.location.href = data.authorization_url
     } catch (e) {
       // A real fetch-level failure (DNS, CORS block, connection refused)
-      // — no response was received at all.
-      setErrorMsg(`Network error — could not reach the checkout API (${e instanceof Error ? e.message : 'unknown'}). Try again.`)
+      // — no response was received at all. Showing the exact URL this
+      // tried to hit is the fastest way to tell "wrong domain" from
+      // "domain's right but something's actually down" without needing
+      // browser devtools open.
+      setErrorMsg(`Network error — could not reach ${url} (${e instanceof Error ? e.message : 'unknown'}). Try again.`)
       setStatus('error')
     }
   }
