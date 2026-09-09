@@ -3237,6 +3237,26 @@ class Database:
             ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS boost_count INTEGER NOT NULL DEFAULT 0
         """)
 
+        # Log of listing-boost purchases from the server-listing site's
+        # Boost modal (app/servers/_BoostModal.tsx) — mirrors the
+        # discover_category_payments pattern above rather than crediting
+        # boost_count directly off a client-trusted POST (see
+        # api/apply_boost.py's old header for the previously-unwired
+        # state). status is flipped to 'paid' by the Paystack webhook
+        # (payment_type == 'listing_boost'); the row is inserted 'pending'
+        # when the checkout link is created.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS listing_boost_payments (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                clone_id INTEGER,
+                reference TEXT UNIQUE NOT NULL,
+                amount INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
         # ── One directory listing per REAL Discord server, full stop ──────
         # Originally keyed by (guild_id, clone_id), meaning the same actual
         # server got a SEPARATE listing/vote-pool/panel for every bot
@@ -9448,9 +9468,9 @@ class Database:
     async def add_listing_boosts(self, guild_id: str, clone_id: Optional[int], amount: int) -> int:
         """Credits `amount` purchased boosts onto a listing's boost_count,
         which feeds straight into the "trending" sort above (each boost
-        counts the same as one vote). Called by api/apply_boost.py right
-        after a purchase is confirmed — see that file for the current
-        (unwired) state of payment verification. Returns the new total so
+        counts the same as one vote). Only called from
+        complete_listing_boost_payment below now that payment is wired —
+        never directly off a client-trusted POST. Returns the new total so
         the caller can show it back to the user without a second query.
 
         clone_id is accepted (the client may still send a stale non-null
@@ -9468,6 +9488,43 @@ class Database:
                 guild_id, amount,
             )
             return row["boost_count"] if row else 0
+
+    async def create_listing_boost_payment(self, guild_id: str, clone_id: Optional[int],
+                                             reference: str, amount: int) -> None:
+        """Inserted 'pending' at checkout time by api/apply_boost.py, right
+        after Paystack hands back a reference — mirrors
+        create_discover_category_payment's shape."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO listing_boost_payments (guild_id, clone_id, reference, amount)
+                VALUES ($1, $2, $3, $4)
+            """, guild_id, clone_id, reference, amount)
+
+    async def complete_listing_boost_payment(self, reference: str) -> Optional[Dict]:
+        """Marks the payment row paid and credits the boosts in one
+        transaction; returns the row (with guild_id/amount) so the webhook
+        can log it, or None if the reference is unknown or was already
+        processed (Paystack can retry the same webhook event)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow("""
+                    UPDATE listing_boost_payments SET status = 'paid'
+                    WHERE reference = $1 AND status = 'pending'
+                    RETURNING *
+                """, reference)
+                if not row:
+                    return None
+                new_total = await conn.fetchval("""
+                    UPDATE server_listings
+                    SET boost_count = boost_count + $2, updated_at = NOW()
+                    WHERE guild_id = $1
+                    RETURNING boost_count
+                """, row["guild_id"], row["amount"])
+                result = dict(row)
+                result["new_boost_count"] = new_total
+                return result
 
     async def get_public_server_listings(
         self, limit: int = 24, offset: int = 0, sort: str = "trending",
