@@ -158,7 +158,7 @@ async def start_ultra_pack_payment(interaction: discord.Interaction):
     config = await db.get_welcome_config(guild_id, clone_id=_clone_id_of(interaction))
     if config.get("ultra_pack_unlocked"):
         await interaction.followup.send(
-            "This server already owns the ultra pack — set your background with `/welcome custombg`.",
+            "This server already owns Customize Card — set your background with `/welcome custombg`.",
             ephemeral=True,
         )
         return
@@ -167,7 +167,7 @@ async def start_ultra_pack_payment(interaction: discord.Interaction):
     if user.id in DISCORD_CLONE_ADMIN_IDS:
         await db.unlock_ultra_pack(guild_id, clone_id=_clone_id_of(interaction))
         await interaction.followup.send(
-            "You're the bot owner — ultra pack unlocked without payment. Set your background with `/welcome custombg`.",
+            "You're the bot owner — Customize Card unlocked without payment. Set your background with `/welcome custombg`.",
             ephemeral=True,
         )
         return
@@ -230,7 +230,7 @@ async def start_ultra_pack_payment(interaction: discord.Interaction):
         else f"{amount_minor_units / fx.MINOR_UNIT_MULTIPLIER.get(charge_currency, 100):.2f} {charge_currency.upper()} (≈ ${price_usd:g} USD)"
     )
     embed = discord.Embed(
-        title="🖼️ Ultra Welcome Pack",
+        title="🖼️ Customize Card",
         description=(
             f"**Amount:** {charged_amount_display}\n\n"
             f"Unlocks `/welcome custombg` — point the welcome card at YOUR OWN png/jpeg for fully "
@@ -289,7 +289,7 @@ class VerifyUltraPackPaymentView(discord.ui.View):
             from discord_bot.cogs._views_welcome import refresh_posted_wizard
             await refresh_posted_wizard(interaction.client, guild_id, clone_id=_clone_id_of(interaction))
             await interaction.followup.send(
-                "✅ Payment confirmed — ultra pack unlocked! Set your background with `/welcome custombg`.",
+                "✅ Payment confirmed — Customize Card unlocked! Set your background with `/welcome custombg`.",
                 ephemeral=True,
             )
         else:
