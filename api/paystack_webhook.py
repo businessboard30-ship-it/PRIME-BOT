@@ -292,6 +292,26 @@ class handler(BaseHTTPRequestHandler):
                 else:
                     logger.warning(f"[v0] image_search_yandex payment {reference} confirmed but no matching pending row found")
 
+            elif payment_type == 'listing_boost':
+                # Backstop for the server-listing site's Boost modal
+                # (app/servers/_BoostModal.tsx via api/apply_boost.py) —
+                # that endpoint only creates the 'pending' row and the
+                # checkout link; crediting boost_count happens here, same
+                # deferred-apply shape as discover_category_upgrade above.
+                # No live gateway connection in this process, and the
+                # buyer has no Discord account tied to this purchase, so
+                # there's nothing to DM — the new boost_count just shows
+                # up next time the directory page loads.
+                completed = await db.complete_listing_boost_payment(reference)
+                if completed:
+                    logger.info(
+                        f"[v0] listing_boost payment {reference} confirmed — "
+                        f"guild_id={completed['guild_id']} amount={completed['amount']} "
+                        f"new boost_count={completed['new_boost_count']}"
+                    )
+                else:
+                    logger.warning(f"[v0] listing_boost payment {reference} confirmed but no matching pending row found")
+
             elif payment_type == 'image_search_unlock':
                 # Backstop for discord_bot/cogs/image_search.py's one-off
                 # "unlock source links" charge. Unlike the two cases above,
