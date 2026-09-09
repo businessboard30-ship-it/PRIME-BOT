@@ -42,6 +42,7 @@ from discord.ext import commands, tasks
 from database import db
 from discord_bot.cogs._dm_support import GuildOnlyCog
 from discord_bot.cogs._views_invites import check_wizard_access, build_wizard_view, remember_wizard_message
+from config import SITE_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -300,12 +301,31 @@ class InvitesCog(GuildOnlyCog):
         if channel is None:
             return
 
+        # Was this join via the invite link this server's own directory
+        # listing hands out? (See db.set_listing_invite_code /
+        # check_ref_conversion — that's the web side of the same tracked
+        # invite; this is just noticing it landed here too.) Only a plain,
+        # non-vanity invite_code match counts — the vanity branch below is
+        # a separate, mutually exclusive case.
+        via_site = False
+        if invite_code and not is_vanity:
+            try:
+                listing = await db.get_server_listing(guild.id, clone_id=clone_id)
+            except Exception:
+                listing = None
+            if listing and listing.get("invite_code") == invite_code:
+                via_site = True
+
         if inviter_id:
             _, net = await db.get_inviter_stats(guild.id, clone_id, inviter_id)
             content = (
                 f"📥 {member.mention} joined — invited by <@{inviter_id}> "
                 f"(**{net}** invite{'s' if net != 1 else ''})"
             )
+            if via_site:
+                content += f", via **{SITE_NAME}**"
+        elif via_site:
+            content = f"📥 {member.mention} joined via **{SITE_NAME}**."
         elif is_vanity:
             content = f"📥 {member.mention} joined via the server's **vanity invite**."
         elif no_permission:
