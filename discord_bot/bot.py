@@ -385,6 +385,22 @@ class AnimeBotDiscord(commands.Bot):
             if guild.id in existing_ids:
                 await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id,
                                                owner_id=guild.owner_id)
+                # Backfill for every guild the bot was already in BEFORE the
+                # auto-listing-offer feature shipped: those guilds will
+                # never fire on_guild_join again, so _handle_new_guild
+                # (where offer_auto_listing normally gets called) never
+                # runs for them. Calling it here too, on every on_ready,
+                # is safe and cheap either way — claim_auto_listing_offer_send
+                # is a single INSERT ON CONFLICT DO NOTHING, so a guild
+                # that's already been asked (pre- or post-deploy) just
+                # no-ops on every subsequent restart. Skipped for guilds
+                # that already have a listing — no point offering to
+                # auto-list something an admin already listed manually.
+                try:
+                    if not await db.get_server_listing(guild.id):
+                        await offer_auto_listing(self, guild)
+                except Exception:
+                    logger.exception(f"[startup] auto-listing offer backfill failed for guild {guild.id}")
             else:
                 await self._handle_new_guild(guild)
 
