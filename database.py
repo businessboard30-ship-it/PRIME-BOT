@@ -11972,7 +11972,7 @@ class Database:
                 INSERT INTO server_reviews
                     (guild_id, clone_id, reviewer_user_id, rating, review_text, is_verified_member)
                 VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (guild_id, clone_id, reviewer_user_id)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), reviewer_user_id)
                 DO UPDATE SET rating = $4, review_text = $5, review_date = NOW()
                 RETURNING *
                 """,
@@ -12175,7 +12175,7 @@ class Database:
                     (guild_id, clone_id, analytics_date, clicks_count, unique_ip_count,
                      votes_received, new_reviews_count, avg_rating)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (guild_id, clone_id, analytics_date)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), analytics_date)
                 DO UPDATE SET
                     clicks_count = $4, unique_ip_count = $5, votes_received = $6,
                     new_reviews_count = $7, avg_rating = $8
