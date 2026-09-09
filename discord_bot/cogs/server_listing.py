@@ -69,11 +69,19 @@ class ServerListingVotePanelView(discord.ui.View):
         newly_voted = await db.cast_server_listing_vote(
             guild.id, clone_id, interaction.user.id, str(interaction.user.display_name)
         )
-        msg = (
-            "✅ Thanks for voting — it counts instantly on the public directory."
-            if newly_voted else
-            "You've already voted for this server. Thanks for the support!"
-        )
+        if newly_voted:
+            msg = "✅ Thanks for voting — it counts instantly on the public directory."
+        else:
+            # Votes now run on a 12h cooldown rather than being permanent
+            # (see cast_server_listing_vote's docstring) — tell the voter
+            # when they're free to vote again instead of implying they can
+            # never vote for this server again.
+            remaining = await db.get_vote_cooldown_remaining(guild.id, interaction.user.id)
+            if remaining is not None:
+                hours = max(1, int(remaining.total_seconds() // 3600))
+                msg = f"You've already voted for this server — you can vote again in about {hours}h."
+            else:
+                msg = "You've already voted for this server. Thanks for the support!"
         await interaction.response.send_message(msg, ephemeral=True)
 
         # Refresh the panel message itself so the vote count on the card
