@@ -74,6 +74,33 @@ def _json_default(obj):
     raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 
+# JS's Number type is a float64, safely exact only up to 2**53 - 1.
+# Discord snowflakes (guild_id, voter_id, etc.) are 64-bit and routinely
+# exceed that, so shipping them as bare JSON numbers lets JSON.parse
+# silently round them to the nearest representable float — e.g.
+# 1538566465517781193 becomes 1538566465517781200 on the way into the
+# browser. That single off-by-a-few-digits corruption is what sent a real
+# vote to a guild_id that matched NO listing on the directory at all (see
+# the vote-oauth logs). Recursively stringifying any int outside the safe
+# range, right before every response goes out, fixes this for guild_id
+# specifically and for any other snowflake field this endpoint returns or
+# grows in future — no need to enumerate field names or trust every call
+# site to remember to str() its own IDs.
+_JS_MAX_SAFE_INT = 2 ** 53 - 1
+
+
+def _stringify_large_ints(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and (value > _JS_MAX_SAFE_INT or value < -_JS_MAX_SAFE_INT):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _stringify_large_ints(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_stringify_large_ints(v) for v in value]
+    return value
+
+
 async def _resolve(token: str, guild_id: int):
     """Same shape as discord_dashboard.py's _resolve — doesn't distinguish
     "bad token" from "token for a different guild" in the response."""
@@ -125,7 +152,7 @@ class handler(BaseHTTPRequestHandler):
             )
         self._cors()
         self.end_headers()
-        self.wfile.write(json.dumps(payload, default=_json_default).encode())
+        self.wfile.write(json.dumps(_stringify_large_ints(payload), default=_json_default).encode())
 
     def do_OPTIONS(self):
         self.send_response(204)
