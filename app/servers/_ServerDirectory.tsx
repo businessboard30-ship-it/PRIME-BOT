@@ -331,7 +331,9 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
                     {l.member_count.toLocaleString()} members · {l.vote_count} votes
                   </p>
                   {l.description && (
-                    <p className="text-sm mt-2" style={{ color: 'var(--pb-text-muted)' }}>{l.description}</p>
+                    <p className="text-sm mt-2" style={{ color: 'var(--pb-text-muted)' }}>
+                      {l.description.length > 20 ? `${l.description.slice(0, 20)}…` : l.description}
+                    </p>
                   )}
                   {l.tags.length > 0 && (
                     <div className="flex flex-wrap gap-1.5 mt-2">
