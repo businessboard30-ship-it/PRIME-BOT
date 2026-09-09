@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 
 
 async def get_pool():
@@ -3235,6 +3235,18 @@ class Database:
         # generic 500 "Internal error" on /servers.
         await conn.execute("""
             ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS boost_count INTEGER NOT NULL DEFAULT 0
+        """)
+
+        # Single-row running total for the site-wide visit-count banner
+        # (app/_VisitBanner.tsx -> api/site_visits.py). Just a counter, not
+        # a per-visit log — nothing here needs per-visitor identity or a
+        # history, only the current number shown in the banner.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS site_visit_counter (
+                id SMALLINT PRIMARY KEY DEFAULT 1,
+                count BIGINT NOT NULL DEFAULT 0,
+                CONSTRAINT site_visit_counter_single_row CHECK (id = 1)
+            )
         """)
 
         await conn.execute("""
@@ -9619,6 +9631,30 @@ class Database:
                 session_id,
             )
             return row is not None
+
+    async def record_site_visit(self) -> int:
+        """Atomically increments the single-row site_visit_counter and
+        returns the new total in the same round trip — see the table's
+        comment in _create_tables. Called once per page load from
+        api/site_visits.py; the ON CONFLICT branch is what actually runs
+        after the very first call ever seeds the row."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO site_visit_counter (id, count) VALUES (1, 1)
+                   ON CONFLICT (id) DO UPDATE SET count = site_visit_counter.count + 1
+                   RETURNING count"""
+            )
+            return row["count"]
+
+    async def get_site_visit_count(self) -> int:
+        """Read-only — not used by the banner itself (which calls
+        record_site_visit to both bump and read in one request) but kept
+        separate for anything that wants the count without incrementing."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT count FROM site_visit_counter WHERE id = 1")
+            return row["count"] if row else 0
 
     # --- server listing referral-boost tracking ----------------------------
 
