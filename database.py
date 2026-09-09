@@ -3043,6 +3043,30 @@ class Database:
             ON server_listing_tokens (guild_id, COALESCE(clone_id, -1))
         """)
 
+        # One-time "want me to auto-list this server?" DM/channel offer
+        # (see discord_bot/cogs/_views_auto_listing_offer.py). Sent at most
+        # once per (guild, clone) ever — the row's mere existence IS the
+        # "already asked" flag, checked/created atomically by
+        # claim_auto_listing_offer_send so two racing processes can't both
+        # send it. status starts 'sent' and moves to exactly one of
+        # 'agreed' / 'declined' when the admin taps a button; a 'declined'
+        # row is permanent — there is no reset path other than the admin
+        # running /setup servers manually, same as the offer's own decline
+        # message tells them.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS auto_listing_offer (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'sent',
+                sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                resolved_at TIMESTAMPTZ
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS auto_listing_offer_guild_clone_key
+            ON auto_listing_offer (guild_id, COALESCE(clone_id, -1))
+        """)
+
         # The actual public listing, one row per (guild, clone). invite_url
         # and description/tags are the only fields the admin controls via the
         # web form; everything else is copied over from server_listing_tokens
@@ -3090,6 +3114,19 @@ class Database:
         """)
         await conn.execute("""
             ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS banner_url TEXT
+        """)
+        # Migration: long_description added so the card's own description
+        # could be shortened to a 20-char teaser (app/servers/_ServerDirectory.tsx)
+        # without losing room for a real writeup — that writeup lives here
+        # instead and only renders on the per-listing page
+        # (app/servers/[guildId]/page.tsx), reached by tapping the server
+        # name on the card. Nullable and never backfilled from `description`
+        # — existing listings simply show no long description until the
+        # admin adds one; their original `description` value is untouched
+        # (see upsert_server_listing — description's own length cap didn't
+        # change, only the card's *display* truncates to 20 chars now).
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS long_description TEXT
         """)
         # Public "report this server" button on the directory — no auth,
         # so this is a raw complaint log an admin reads manually, not an
@@ -9357,7 +9394,7 @@ class Database:
         self, guild_id: int, clone_id: Optional[int], guild_name: str,
         guild_icon_url: Optional[str], member_count: int,
         invite_url: str, description: str, tags: List[str],
-        banner_url: Optional[str] = None,
+        banner_url: Optional[str] = None, long_description: Optional[str] = None,
     ) -> Dict:
         """guild_name/guild_icon_url/member_count MUST come from the
         server_listing_tokens row (server-verified), never straight from the
@@ -9367,15 +9404,18 @@ class Database:
         clone_id is accepted (existing call sites still pass it) but always
         stored as NULL — the listing is keyed on guild_id alone now, so
         resubmitting via a different bot identity updates the SAME row
-        instead of creating a second directory card for the same server."""
+        instead of creating a second directory card for the same server.
+
+        long_description is optional and independent of description's own
+        length cap — see the migration note in _create_tables."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO server_listings
                     (guild_id, clone_id, guild_name, guild_icon_url, member_count,
-                     invite_url, description, tags, banner_url, voting_panel_pending, updated_at)
-                VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, TRUE, NOW())
+                     invite_url, description, tags, banner_url, long_description, voting_panel_pending, updated_at)
+                VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NOW())
                 ON CONFLICT (guild_id) DO UPDATE SET
                     guild_name = EXCLUDED.guild_name,
                     guild_icon_url = EXCLUDED.guild_icon_url,
@@ -9384,6 +9424,7 @@ class Database:
                     description = EXCLUDED.description,
                     tags = EXCLUDED.tags,
                     banner_url = EXCLUDED.banner_url,
+                    long_description = EXCLUDED.long_description,
                     -- Only (re)flag pending if this listing has never gotten
                     -- its panel yet — an edit/resubmit of an already-panelled
                     -- listing shouldn't trigger another channel-creation pass.
@@ -9392,9 +9433,43 @@ class Database:
                 RETURNING *
                 """,
                 guild_id, guild_name, guild_icon_url, member_count,
-                invite_url, description, tags, banner_url,
+                invite_url, description, tags, banner_url, long_description,
             )
             return dict(row)
+
+    async def claim_auto_listing_offer_send(self, guild_id: int, clone_id: Optional[int] = None) -> bool:
+        """Atomically claims 'this process gets to send the one-time
+        auto-listing offer for this guild'. Returns True only the very
+        first time this is ever called for a (guild_id, clone_id) pair —
+        every later call (a restart, a duplicate join event, another
+        process) sees the row already exists and gets False. Same
+        insert-wins-once shape as claim_new_guild_handling, just without
+        the retry window since this only ever needs to fire once, ever."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO auto_listing_offer (guild_id, clone_id, status)
+                VALUES ($1, $2, 'sent')
+                ON CONFLICT (guild_id, COALESCE(clone_id, -1)) DO NOTHING
+                RETURNING guild_id
+                """,
+                guild_id, clone_id,
+            )
+            return row is not None
+
+    async def set_auto_listing_offer_status(self, guild_id: int, status: str, clone_id: Optional[int] = None) -> None:
+        """status is 'agreed' or 'declined' — called from the offer's own
+        button callbacks once the admin resolves it one way or the other."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE auto_listing_offer SET status = $3, resolved_at = NOW()
+                WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                """,
+                guild_id, clone_id, status,
+            )
 
     async def get_pending_voting_panels(self, clone_id: Optional[int], limit: int = 10) -> List[Dict]:
         """Every active bot process (main or any clone) polls this and
