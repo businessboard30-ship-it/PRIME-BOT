@@ -76,6 +76,18 @@ class ServerListingVotePanelView(discord.ui.View):
         )
         await interaction.response.send_message(msg, ephemeral=True)
 
+        # Refresh the panel message itself so the vote count on the card
+        # actually moves — previously this only ever sent the ephemeral
+        # reply above and the embed never changed, so the card looked
+        # permanently stuck even though the vote WAS recorded in the DB.
+        if newly_voted and interaction.message is not None:
+            try:
+                count = await db.get_server_listing_vote_count(guild.id, clone_id)
+                embed = _build_voting_embed(guild, count)
+                await interaction.message.edit(embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                pass  # best-effort — the vote itself already succeeded
+
     @discord.ui.button(label="Boost", emoji="🚀", style=discord.ButtonStyle.primary, custom_id="sl_panel_boost")
     async def boost_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
@@ -97,6 +109,28 @@ class ServerListingVotePanelView(discord.ui.View):
             "it counts toward this server's ranking on the directory.",
             ephemeral=True,
         )
+
+
+def _build_voting_embed(guild: discord.Guild, vote_count: int) -> discord.Embed:
+    """Shared embed builder so the panel (on creation/repost) and the vote
+    button's refresh (above) never drift out of sync on what the card
+    looks like. `vote_count` is a live field now — this is the actual fix
+    for the card never showing votes going up."""
+    embed = discord.Embed(
+        title=f"🗳️ Vote for {guild.name}",
+        description=(
+            "**▲ Vote** — supports this server on the public directory. One vote per person, "
+            "counts instantly.\n\n"
+            "**🚀 Boost** — get your own share link. Anyone who joins through it earns this "
+            "server ranking credit.\n\n"
+            "**🌐 Visit Site** — see this server's public listing page."
+        ),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Votes", value=str(vote_count))
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    return embed
 
 
 async def _ensure_voting_panel(guild: discord.Guild, clone_id) -> str:
@@ -142,19 +176,8 @@ async def _ensure_voting_panel(guild: discord.Guild, clone_id) -> str:
             member_count=guild.member_count or 0,
         )
 
-    embed = discord.Embed(
-        title=f"🗳️ Vote for {guild.name}",
-        description=(
-            "**▲ Vote** — supports this server on the public directory. One vote per person, "
-            "counts instantly.\n\n"
-            "**🚀 Boost** — get your own share link. Anyone who joins through it earns this "
-            "server ranking credit.\n\n"
-            "**🌐 Visit Site** — see this server's public listing page."
-        ),
-        color=discord.Color.blurple(),
-    )
-    if guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
+    current_votes = await db.get_server_listing_vote_count(guild.id, clone_id)
+    embed = _build_voting_embed(guild, current_votes)
 
     view = ServerListingVotePanelView()
     view.add_item(discord.ui.Button(
