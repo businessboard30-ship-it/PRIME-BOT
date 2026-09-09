@@ -20,6 +20,7 @@ type Listing = {
   member_count: number
   invite_url: string
   description: string
+  long_description: string | null
   tags: string[]
   vote_count: number
   verified: boolean
@@ -145,6 +146,12 @@ export default async function ListingPage({ params }: { params: Promise<{ guildI
         {listing.description && (
           <p className="text-sm leading-relaxed mb-4" style={{ color: 'var(--pb-text-muted)' }}>
             {listing.description}
+          </p>
+        )}
+
+        {listing.long_description && (
+          <p className="text-sm leading-relaxed mb-6 whitespace-pre-wrap" style={{ color: 'var(--pb-text-muted)' }}>
+            {listing.long_description}
           </p>
         )}
 
