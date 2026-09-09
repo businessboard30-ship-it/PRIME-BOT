@@ -389,7 +389,7 @@ class WelcomeNudgeView(discord.ui.View):
             custom_id=f"welcome_nudge_edit:{guild_id}",
         ))
         self.add_item(discord.ui.Button(
-            label="Ultra Pack", style=discord.ButtonStyle.primary, emoji="✨",
+            label="Customize Card", style=discord.ButtonStyle.primary, emoji="✨",
             custom_id=f"welcome_nudge_ultra:{guild_id}",
         ))
 
@@ -521,10 +521,10 @@ class WelcomeCog(GuildOnlyCog):
         await db.set_welcome_config(guild.id, clone_id=clone_id, onboarding_dm_sent=True)
 
         return (
-            "🖼️ Welcome cards + Ultra Pack",
+            "🖼️ Welcome cards + Customize Card",
             "I already dropped a setup wizard in the server for welcome-card images. "
             "Want the card background to be your own png/jpg instead of the built-in themes? "
-            f"That's the Ultra Pack (${bot_config.ULTRA_PACK_FEE_USD:g} one-time, whole server) — "
+            f"That's Customize Card (${bot_config.ULTRA_PACK_FEE_USD:g} one-time, whole server) — "
             "run `/welcome buyultra` anytime.",
         )
 
@@ -588,7 +588,7 @@ class WelcomeCog(GuildOnlyCog):
         elif custom_id.startswith("welcome_nudge_ultra:"):
             guild_id = int(custom_id.split(":", 1)[1])
             await interaction.response.send_message(
-                f"✨ **Ultra Pack — ${bot_config.ULTRA_PACK_FEE_USD:g} one-time, unlocks for the whole server**\n\n"
+                f"✨ **Customize Card — ${bot_config.ULTRA_PACK_FEE_USD:g} one-time, unlocks for the whole server**\n\n"
                 f"Instead of picking from the preset card themes, upload your own PNG or JPEG (a "
                 f"banner, logo, or photo) and every new member's welcome card gets rendered on top of "
                 f"it — same name/avatar/member-count layout, your background.\n\n"
@@ -890,10 +890,10 @@ class WelcomeCog(GuildOnlyCog):
                 f"person who joins:"
             )
             ultra_blurb = (
-                f"\n\n✨ **Ultra Pack (${bot_config.ULTRA_PACK_FEE_USD:g} one-time, whole server):** "
+                f"\n\n✨ **Customize Card (${bot_config.ULTRA_PACK_FEE_USD:g} one-time, whole server):** "
                 f"use your own PNG/JPEG as the welcome card background instead of a preset theme — "
                 f"upload a photo, banner, or logo and every new member's card is rendered on it. "
-                f"Tap **Ultra Pack** below to learn more, or run `/welcome buyultra` anytime."
+                f"Tap **Customize Card** below to learn more, or run `/welcome buyultra` anytime."
             )
             view = WelcomeNudgeView(guild.id, channel.id if channel else None, template)
             if avatar_bytes:
@@ -1120,7 +1120,7 @@ class WelcomeCog(GuildOnlyCog):
         from discord_bot.views_card_pack import start_card_pack_payment
         await start_card_pack_payment(interaction)
 
-    @group.command(name="buyultra", description="Buy the ultra pack (use your own png/jpeg as the welcome card background, one-time, whole server)")
+    @group.command(name="buyultra", description="Customize Card (use your own png/jpeg as the welcome card background, one-time, whole server)")
     async def buyultra(self, interaction: discord.Interaction):
         if not _require_perm(interaction, "manage_guild"):
             await _deny(interaction, "Manage Server")
@@ -1129,7 +1129,7 @@ class WelcomeCog(GuildOnlyCog):
         from discord_bot.views_card_pack import start_ultra_pack_payment
         await start_ultra_pack_payment(interaction)
 
-    @group.command(name="custombg", description="[Ultra pack] Set the welcome card's background to your own png/jpeg")
+    @group.command(name="custombg", description="[Customize Card] Set the welcome card's background to your own png/jpeg")
     @app_commands.describe(
         url="Direct link to a .png or .jpg image (not a page URL) — leave blank to clear it",
         image=f"Upload a .png or .jpg instead of a URL (max {CUSTOM_BG_MAX_BYTES // (1024 * 1024)}MB)",
@@ -1143,7 +1143,7 @@ class WelcomeCog(GuildOnlyCog):
         config = await db.get_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction))
         if not config.get("ultra_pack_unlocked"):
             await interaction.followup.send(
-                "Custom backgrounds are part of the ultra pack — this server hasn't bought it yet. "
+                "Custom backgrounds are part of Customize Card — this server hasn't bought it yet. "
                 "Run `/welcome buyultra` to unlock it for good.",
                 ephemeral=True,
             )
