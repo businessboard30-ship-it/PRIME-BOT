@@ -91,6 +91,15 @@ export default function DashboardPage() {
         <SaveStatus saving={saving} savedAt={savedAt} error={error} />
       </div>
 
+      <div className="mb-8">
+        <a
+          href={`/dashboard/${params.guildId}/analytics${token ? `?token=${token}` : ''}`}
+          className="pb-btn-secondary text-sm"
+        >
+          View server analytics →
+        </a>
+      </div>
+
       <Section title="What happens on a violation">
         <Row label="Action">
           <select
