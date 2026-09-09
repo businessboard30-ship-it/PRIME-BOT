@@ -1,39 +1,52 @@
 # path: api/apply_boost.py
 
 """
-Applies purchased boosts to a listing's boost_count (see database.py's
-add_listing_boosts and the "trending" sort in _LISTING_SORTS — each boost
-counts the same weight as one vote).
+Starts a real Paystack charge for purchased listing boosts instead of
+crediting boost_count directly off a client-trusted POST (see git history
+for the old do-not-wire-payment-yet stub this replaces — that existed only
+so the boost-purchase UI, app/servers/_BoostModal.tsx, had working "apply"
+logic to demo against).
 
-*** PAYMENT IS NOT WIRED IN FRONT OF THIS ENDPOINT YET. ***
-Right now this trusts whatever `amount` the client sends and applies it
-immediately — it exists so the boost-purchase UI (app/servers/_BoostModal.tsx)
-has real, working "apply" logic to demo against, per an explicit
-do-not-wire-payment-yet request. Before this goes live:
-  1. Create a pending charge (Paystack/Stripe — see payments.py /
-     api/paystack_webhook.py for the pattern already used elsewhere in
-     this repo) for `amount * PRICE_PER_BOOST` instead of crediting boosts
-     directly.
-  2. Only call db.add_listing_boosts from the payment webhook's success
-     handler, keyed off that charge, never from a client-triggered POST.
-  3. Delete/lock down this endpoint's direct-apply path.
+Flow now matches the rest of this repo's Paystack checkouts
+(discover_category_upgrade being the closest shape — see
+database.create_discover_category_payment / api/paystack_webhook.py):
+  1. This endpoint initializes a Paystack transaction for
+     `amount * PRICE_PER_BOOST_USD` and inserts a 'pending' row in
+     listing_boost_payments keyed by the reference Paystack returns.
+  2. It responds with {"status": "pending", "authorization_url", "reference"}
+     — the client redirects the browser to authorization_url to pay.
+  3. api/paystack_webhook.py's charge.success handler (payment_type ==
+     'listing_boost') marks that row 'paid' and credits boost_count via
+     database.complete_listing_boost_payment — this endpoint never touches
+     boost_count itself anymore.
 
-POST body: {"guild_id": "...", "clone_id": <int|null>, "amount": <int>}
+Charged in USD directly (no live FX lookup) — this is a public,
+unauthenticated web endpoint with no Discord interaction/locale to key a
+currency choice off, so it keeps the same behavior for every visitor
+rather than adding utils/currency's exchangerate.host round-trip as a new
+point of failure here.
+
+POST body: {"guild_id": "...", "clone_id": <int|null>, "amount": <int>,
+            "email": "..."}
 amount must be a positive integer, capped at MAX_BOOSTS_PER_REQUEST so a
-malformed or malicious request can't push a listing's boost_count to an
-absurd value while payment verification is still unwired.
+malformed request can't try to charge an absurd amount. email is required
+— Paystack needs one to initialize a transaction, and there's no logged-in
+user here to source it from.
 """
 import json
 import logging
 import asyncio
+import re
 from http.server import BaseHTTPRequestHandler
 
 from database import db
+from payments import paystack
 
 logger = logging.getLogger(__name__)
 
 MAX_BOOSTS_PER_REQUEST = 500
 PRICE_PER_BOOST_USD = 0.12  # 10 -> $1.20, 20 -> $2.40, 50 -> $6.00, custom -> amount * this
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class handler(BaseHTTPRequestHandler):
@@ -67,6 +80,7 @@ class handler(BaseHTTPRequestHandler):
         guild_id = str(body.get("guild_id") or "").strip()
         clone_id = body.get("clone_id")
         amount = body.get("amount")
+        email = str(body.get("email") or "").strip()
 
         if not guild_id:
             self._json(400, {"status": "error", "message": "Missing guild_id"})
@@ -77,18 +91,47 @@ class handler(BaseHTTPRequestHandler):
         if amount > MAX_BOOSTS_PER_REQUEST:
             self._json(400, {"status": "error", "message": f"amount exceeds {MAX_BOOSTS_PER_REQUEST}"})
             return
+        if not email or not _EMAIL_RE.match(email):
+            self._json(400, {"status": "error", "message": "A valid email is required to start checkout"})
+            return
+
+        price_usd = round(amount * PRICE_PER_BOOST_USD, 2)
+        amount_minor_units = round(price_usd * 100)
+
+        payment_result = paystack.initialize_payment(
+            email,
+            amount_minor_units,
+            0,  # no logged-in user_id on this public endpoint
+            f"ListingBoost_{guild_id}",
+            payment_type="listing_boost",
+            extra_metadata={"guild_id": guild_id, "clone_id": clone_id, "amount": amount},
+            currency="USD",
+        )
+
+        if not payment_result or payment_result.get("status") != "success":
+            logger.error(f"[v0] apply_boost: Paystack initialize failed for guild {guild_id}: {payment_result!r}")
+            self._json(502, {"status": "error", "message": "Couldn't start checkout right now — please try again shortly"})
+            return
+
+        reference = payment_result["reference"]
 
         async def _run():
-            return await db.add_listing_boosts(guild_id, clone_id, amount)
+            await db.create_listing_boost_payment(guild_id, clone_id, reference, amount)
 
         try:
-            new_total = asyncio.run(_run())
+            asyncio.run(_run())
         except Exception as e:
-            logger.error(f"[v0] apply_boost error: {e}")
+            logger.error(f"[v0] apply_boost: failed to log pending payment {reference}: {e}")
             self._json(500, {"status": "error", "message": "Internal error"})
             return
 
-        self._json(200, {"status": "ok", "boost_count": new_total, "applied": amount})
+        self._json(200, {
+            "status": "pending",
+            "authorization_url": payment_result["authorization_url"],
+            "reference": reference,
+            "amount": amount,
+            "price_usd": price_usd,
+        })
 
     def log_message(self, format, *args):
         logger.debug(f"[v0] apply_boost: {format % args}")
