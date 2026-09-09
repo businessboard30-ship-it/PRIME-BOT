@@ -211,6 +211,12 @@ class handler(BaseHTTPRequestHandler):
         if token == "" and ref and "guild_id" not in query:
             async def _run_click():
                 await db.log_ref_click(ref)
+                # Also feed the richer analytics tables (migration 009) used
+                # by the new dashboard/referral-widget, keyed on guild_id
+                # rather than bare ref_code.
+                guild_id = await db.get_guild_id_by_ref_code(ref)
+                if guild_id is not None:
+                    await db.log_listing_click(guild_id, None, ref_code_used=ref)
 
             try:
                 asyncio.run(_run_click())
