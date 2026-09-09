@@ -20,11 +20,20 @@ database.create_discover_category_payment / api/paystack_webhook.py):
      database.complete_listing_boost_payment — this endpoint never touches
      boost_count itself anymore.
 
-Charged in USD directly (no live FX lookup) — this is a public,
-unauthenticated web endpoint with no Discord interaction/locale to key a
-currency choice off, so it keeps the same behavior for every visitor
-rather than adding utils/currency's exchangerate.host round-trip as a new
-point of failure here.
+Priced in USD (PRICE_PER_BOOST_USD below) but CHARGED IN GHS via
+utils.currency.convert_from_usd — this bot's Paystack merchant account
+only has GHS enabled as a settlement currency. An earlier version of this
+endpoint passed currency="USD" straight through to Paystack on the
+(reasonable-looking, but wrong for this account) assumption that USD is
+safe since it's one of Paystack's globally supported currencies; live
+traffic showed every single checkout failing at initialize with
+Paystack's "Currency not supported by merchant" validation error, because
+supported-by-Paystack-generally and enabled-on-this-specific-account are
+different things. If convert_from_usd can't get a live FX rate (and has
+no cached one to fall back on) it returns "USD" unconverted — which is
+exactly the currency this account rejects — so that case is treated as a
+hard failure here rather than attempting (and predictably failing) the
+same broken charge again.
 
 POST body: {"guild_id": "...", "clone_id": <int|null>, "amount": <int>,
             "email": "..."}
@@ -41,6 +50,7 @@ from http.server import BaseHTTPRequestHandler
 
 from database import db
 from payments import paystack
+from utils.currency import convert_from_usd
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +106,20 @@ class handler(BaseHTTPRequestHandler):
             return
 
         price_usd = round(amount * PRICE_PER_BOOST_USD, 2)
-        amount_minor_units = round(price_usd * 100)
+
+        price_ghs, charge_currency = convert_from_usd(price_usd, "GHS")
+        if charge_currency != "GHS":
+            # convert_from_usd falls back to USD when it can't get a live
+            # (or cached) FX rate — but USD is exactly what this Paystack
+            # merchant account rejects (see module docstring), so that
+            # fallback would just reproduce the same failed charge.
+            logger.error(
+                f"[v0] apply_boost: no FX rate available to convert ${price_usd} to GHS for "
+                f"guild {guild_id} — refusing to charge in USD, which this account doesn't support"
+            )
+            self._json(502, {"status": "error", "message": "Couldn't start checkout right now — please try again shortly"})
+            return
+        amount_minor_units = round(price_ghs * 100)
 
         payment_result = paystack.initialize_payment(
             email,
@@ -105,7 +128,7 @@ class handler(BaseHTTPRequestHandler):
             f"ListingBoost_{guild_id}",
             payment_type="listing_boost",
             extra_metadata={"guild_id": guild_id, "clone_id": clone_id, "amount": amount},
-            currency="USD",
+            currency=charge_currency,
         )
 
         if not payment_result or payment_result.get("status") != "success":
