@@ -221,21 +221,38 @@ async def _upload_custom_bg(
 async def _refresh_custom_bg_url(bot: commands.Bot, config_row: dict) -> str | None:
     """Re-fetches the hosting message to get a live (non-expired)
     attachment URL. Returns None if the message/channel is gone."""
+    guild_id = config_row.get("guild_id")
     channel_id = config_row.get("custom_bg_channel_id")
     message_id = config_row.get("custom_bg_message_id")
     if not channel_id or not message_id:
+        # Expected for pasted-URL backgrounds (never went through the
+        # hosting-channel upload path) — not an error by itself.
         return None
     channel = bot.get_channel(int(channel_id))
     if channel is None:
         try:
             channel = await bot.fetch_channel(int(channel_id))
-        except discord.HTTPException:
+        except discord.HTTPException as e:
+            logger.warning(
+                f"[v0] custom-bg refresh for guild {guild_id}: hosting channel {channel_id} "
+                f"unreachable ({e}) — bot may have lost access or the channel was deleted"
+            )
             return None
     try:
         message = await channel.fetch_message(int(message_id))
-    except (discord.HTTPException, discord.NotFound):
+    except (discord.HTTPException, discord.NotFound) as e:
+        logger.warning(
+            f"[v0] custom-bg refresh for guild {guild_id}: hosting message {message_id} in "
+            f"channel {channel_id} not found ({e}) — was it deleted?"
+        )
         return None
-    return message.attachments[0].url if message.attachments else None
+    if not message.attachments:
+        logger.warning(
+            f"[v0] custom-bg refresh for guild {guild_id}: hosting message {message_id} "
+            f"has no attachments anymore"
+        )
+        return None
+    return message.attachments[0].url
 
 
 async def _custom_bg_bytes_for_render(
@@ -251,16 +268,33 @@ async def _custom_bg_bytes_for_render(
     (covers pasted-URL backgrounds, and uploaded ones if the hosting
     message/channel has since been deleted but the last-known link still
     happens to work)."""
+    guild_id = config_row.get("guild_id")
     if not config_row.get("ultra_pack_unlocked"):
+        logger.info(f"[v0] custom-bg render skipped for guild {guild_id}: ultra_pack_unlocked is False")
         return None
     url = None
     if bot is not None:
         url = await _refresh_custom_bg_url(bot, config_row)
+        if url:
+            logger.info(f"[v0] custom-bg render for guild {guild_id}: using refreshed hosting-message URL")
+        else:
+            logger.info(
+                f"[v0] custom-bg render for guild {guild_id}: couldn't refresh a live URL from the hosting "
+                f"message (channel_id={config_row.get('custom_bg_channel_id')}, "
+                f"message_id={config_row.get('custom_bg_message_id')}) — falling back to stored URL"
+            )
     if not url:
         url = (config_row.get("custom_background_url") or "").strip()
+        if url:
+            logger.info(f"[v0] custom-bg render for guild {guild_id}: using stored custom_background_url")
     if not url:
+        logger.info(f"[v0] custom-bg render for guild {guild_id}: no usable URL at all — rendering stock background")
         return None
-    data, _reason = await _fetch_custom_bg_bytes(session, url)
+    data, reason = await _fetch_custom_bg_bytes(session, url)
+    if data is None:
+        logger.warning(f"[v0] custom-bg render for guild {guild_id}: fetch of '{url}' failed ({reason}) — rendering stock background")
+    else:
+        logger.info(f"[v0] custom-bg render for guild {guild_id}: fetched {len(data)} bytes OK")
     return data
 
 
