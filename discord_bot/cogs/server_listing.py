@@ -128,6 +128,19 @@ async def _ensure_voting_panel(guild: discord.Guild, clone_id) -> str:
             )
         except (discord.Forbidden, discord.HTTPException):
             return "no_permission"
+        # Persist the channel id immediately — BEFORE attempting to send the
+        # panel message. If send() below fails (e.g. the bot can't actually
+        # post/embed in a channel it just created), this ensures the next
+        # call reuses THIS channel instead of leaking a new one every retry.
+        # message_id=0 is a sentinel meaning "channel exists, panel not
+        # posted yet"; the fetch_message check above only trusts a nonzero
+        # voting_message_id, so this row alone won't short-circuit as
+        # "existing" — it'll fall through and retry the send.
+        await db.set_listing_voting_panel(
+            guild.id, clone_id, channel.id, 0,
+            guild_name=guild.name, guild_icon_url=guild.icon.url if guild.icon else None,
+            member_count=guild.member_count or 0,
+        )
 
     embed = discord.Embed(
         title=f"🗳️ Vote for {guild.name}",
