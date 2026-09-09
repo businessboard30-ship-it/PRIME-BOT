@@ -115,13 +115,26 @@ async def _resolve(token: str, guild_id: int):
 def _clean_tags(raw) -> list[str]:
     if not isinstance(raw, list):
         return []
+    # 'nsfw' is a checkbox on the submit form, not one of the user's
+    # MAX_TAGS free-typed tags (see app/servers/submit/page.tsx's
+    # visibleTagCount) — pulled out here and re-appended after truncation
+    # so a submission with 5 real tags plus the checkbox doesn't silently
+    # lose the flag to the cap below.
+    has_nsfw = False
     out = []
     for t in raw:
         t = str(t).strip().lstrip("#").lower()
-        if t and t not in out:
+        if not t:
+            continue
+        if t == "nsfw":
+            has_nsfw = True
+            continue
+        if t not in out:
             out.append(t[:MAX_TAG_LEN])
         if len(out) >= MAX_TAGS:
             break
+    if has_nsfw:
+        out.append("nsfw")
     return out
 
 
