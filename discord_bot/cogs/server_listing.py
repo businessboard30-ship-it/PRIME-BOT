@@ -163,12 +163,19 @@ async def _ensure_voting_panel(guild: discord.Guild, clone_id) -> str:
     if channel is None:
         me = guild.me
         if me is None or not me.guild_permissions.manage_channels:
+            logger.info(
+                "[server_listing] can't create #%s in guild %s (%s): bot lacks Manage Channels",
+                VOTING_CHANNEL_NAME, guild.id, guild.name,
+            )
             return "no_permission"
         try:
             channel = await guild.create_text_channel(
                 VOTING_CHANNEL_NAME, reason="Auto-created by /setup servers for the vote/boost panel",
             )
         except (discord.Forbidden, discord.HTTPException):
+            logger.exception(
+                "[server_listing] create_text_channel failed in guild %s (%s)", guild.id, guild.name,
+            )
             return "no_permission"
         # Persist the channel id immediately — BEFORE attempting to send the
         # panel message. If send() below fails (e.g. the bot can't actually
@@ -196,6 +203,11 @@ async def _ensure_voting_panel(guild: discord.Guild, clone_id) -> str:
     try:
         message = await channel.send(embed=embed, view=view)
     except (discord.Forbidden, discord.HTTPException):
+        logger.exception(
+            "[server_listing] channel.send failed for #%s in guild %s (%s) — channel exists but bot "
+            "can't post/embed in it",
+            channel.name, guild.id, guild.name,
+        )
         return "no_permission"
 
     await db.set_listing_voting_panel(
@@ -255,7 +267,26 @@ class ServerListingCog(GuildOnlyCog):
         creation here, since api/server_listings.py — where the submit is
         handled — is a separate process with no live guild/Discord access.
         This is what makes the panel appear automatically on submit rather
-        than needing an admin to rerun /setup servers."""
+        than needing an admin to rerun /setup servers.
+
+        clear_voting_panel_pending is now only called after a resolved
+        outcome — success ("created"/"existing") or a guild that no bot
+        process could ever produce. It used to fire unconditionally right
+        after every attempt, which caused two silent, permanent failures:
+        1. "no_permission" (missing Manage Channels, or the send() itself
+           failing) was swallowed with no log line and the flag cleared —
+           so a fixable permission problem never got retried and never
+           told anyone why.
+        2. get_pending_voting_panels polls ALL pending rows on EVERY bot
+           process (main + every clone), each checking only its own
+           gateway cache. A guild that only belongs to a clone (not the
+           main bot) would hit `guild is None` on the main bot's poll
+           tick, which — since it cleared unconditionally — could
+           permanently discard the row before the clone's own poll ever
+           ran, racing the one process that could actually do the work.
+           Leaving it pending on guild=None lets every process retry
+           cheaply (a plain cache lookup) until whichever one actually has
+           the guild claims it."""
         clone_id = _clone_id_of_bot(self.bot)
         try:
             pending = await db.get_pending_voting_panels(clone_id)
@@ -265,15 +296,31 @@ class ServerListingCog(GuildOnlyCog):
         for row in pending:
             guild = self.bot.get_guild(row["guild_id"])
             if guild is None:
-                # Not in this process's cache (wrong clone, or bot left) —
-                # clear it so it doesn't get retried forever; a rerun of
-                # /setup servers would re-flag it if genuinely needed.
-                await db.clear_voting_panel_pending(row["guild_id"], row["clone_id"])
+                logger.info(
+                    "[server_listing] guild %s not in this process's cache — leaving pending "
+                    "for another clone/the main bot to pick up",
+                    row["guild_id"],
+                )
                 continue
             try:
-                await _ensure_voting_panel(guild, row["clone_id"])
+                status = await _ensure_voting_panel(guild, row["clone_id"])
             except Exception:
-                logger.exception("[server_listing] failed auto-creating voting panel for guild %s", guild.id)
+                logger.exception(
+                    "[server_listing] failed auto-creating voting panel for guild %s (%s) — will retry next poll",
+                    guild.id, guild.name,
+                )
+                continue
+            if status == "no_permission":
+                logger.warning(
+                    "[server_listing] voting panel NOT created for guild %s (%s): bot lacks "
+                    "Manage Channels (or can't post in the channel it made) — will keep retrying "
+                    "every 60s until permissions are fixed",
+                    guild.id, guild.name,
+                )
+                continue
+            logger.info(
+                "[server_listing] voting panel for guild %s (%s): %s", guild.id, guild.name, status,
+            )
             await db.clear_voting_panel_pending(row["guild_id"], row["clone_id"])
 
     @_voting_panel_poller.before_loop
