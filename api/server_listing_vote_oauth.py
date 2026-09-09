@@ -153,7 +153,17 @@ async def _handle(query: dict) -> tuple[int, str]:
     logger.info(
         "[vote-oauth] leg2 complete: guild=%s voter=%s newly_voted=%s", guild_id, voter_id, newly_voted,
     )
-    msg = "Thanks for voting!" if newly_voted else "You already voted for this server."
+    if newly_voted:
+        msg = "Thanks for voting!"
+    else:
+        # 12h cooldown, not a permanent one-vote-ever block (see
+        # cast_server_listing_vote) — tell them when they can come back.
+        remaining = await db.get_vote_cooldown_remaining(guild_id, voter_id)
+        if remaining is not None:
+            hours = max(1, int(remaining.total_seconds() // 3600))
+            msg = f"You already voted for this server — come back in about {hours}h."
+        else:
+            msg = "You already voted for this server."
     return 302, _redirect_to_servers(guild_id, msg, ok=True)
 
 
