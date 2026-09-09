@@ -9524,6 +9524,10 @@ class Database:
                 # listing. Manual `verified=TRUE` always wins regardless.
                 d["verified"] = d["verified"] or (d["vote_count"] >= 5 or d["confirmed_conversions"] >= 3)
                 listings.append(d)
+            logger.info(
+                "[server-listing-directory] fetched %d listings, vote_counts=%s",
+                len(listings), {d["guild_id"]: d["vote_count"] for d in listings},
+            )
             return {"listings": listings, "total": total}
 
     async def get_public_listing_by_guild(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
@@ -9644,7 +9648,22 @@ class Database:
                    ON CONFLICT (guild_id, voter_id) DO NOTHING""",
                 guild_id, voter_id, voter_username,
             )
-            return result.endswith("1")
+            newly_voted = result.endswith("1")
+            # Diagnostic logging — this is the one place a vote is actually
+            # written, so if a vote "doesn't count" this line says definitively
+            # whether the write happened, was a no-op (already-voted-before,
+            # which reads as INSERT 0 0 in Postgres command tags), or the
+            # caller's incoming clone_id was even worth passing (it isn't
+            # stored — see docstring — so a caller-side clone_id mismatch was
+            # never the actual cause of a miscount; this line makes that
+            # visible instead of assumed).
+            logger.info(
+                "[server-listing-vote] guild=%s voter=%s incoming_clone_id=%s -> %s (raw=%r)",
+                guild_id, voter_id, clone_id,
+                "NEW VOTE INSERTED" if newly_voted else "no-op (voter already voted for this guild_id)",
+                result,
+            )
+            return newly_voted
 
     async def get_server_listing_vote_count(self, guild_id: int, clone_id: Optional[int] = None) -> int:
         """Cheap COUNT(*) for one listing — used to keep the in-Discord
@@ -9658,7 +9677,9 @@ class Database:
                 "SELECT COUNT(*) AS c FROM server_listing_votes WHERE guild_id=$1",
                 guild_id,
             )
-            return row["c"] if row else 0
+            count = row["c"] if row else 0
+            logger.info("[server-listing-vote] count check guild=%s -> %s", guild_id, count)
+            return count
 
     async def get_top_voters(self, guild_id: int, clone_id: Optional[int] = None, limit: int = 10) -> List[Dict]:
         """Voters for one listing, most recent first (there's no per-voter
