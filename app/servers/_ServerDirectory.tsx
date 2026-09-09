@@ -17,6 +17,7 @@
 
 import { useEffect, useState } from 'react'
 import BoostModal from './_BoostModal'
+import { useSignedInUser } from '../_signedInSession'
 
 type Listing = {
   guild_id: string
@@ -159,6 +160,7 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
     return l.guild_name.toLowerCase().includes(q) || l.description.toLowerCase().includes(q) || l.tags.some((t) => t.includes(q))
   })
   const canLoadMore = (listings?.length || 0) < total
+  const { user, signOut } = useSignedInUser()
 
   return (
     <section>
@@ -182,12 +184,31 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
           Server directory
         </h1>
         <div className="flex items-center gap-2 shrink-0">
-          <a
-            href={`${API_BASE}/api/discord_login_oauth`}
-            className="pb-btn-primary text-sm"
-          >
-            Sign in
-          </a>
+          {user ? (
+            <div className="flex items-center gap-2">
+              <img
+                src={user.avatar_url}
+                alt=""
+                className="w-7 h-7 rounded-full"
+                style={{ border: '1px solid var(--pb-line)' }}
+              />
+              <span className="text-sm font-medium hidden sm:inline">{user.username}</span>
+              <button
+                onClick={signOut}
+                className="text-sm px-3 py-1.5 rounded-md font-medium"
+                style={{ border: '1px solid var(--pb-line)', color: 'var(--pb-text-faint)' }}
+              >
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <a
+              href={`${API_BASE}/api/discord_login_oauth`}
+              className="pb-btn-primary text-sm"
+            >
+              Sign in
+            </a>
+          )}
           <a href={BOT_INVITE_URL || SUPPORT_SERVER_INVITE} className="pb-btn-primary text-sm">
             Add PRIME-BOT
           </a>
