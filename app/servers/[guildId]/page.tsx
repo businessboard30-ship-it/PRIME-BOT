@@ -23,6 +23,8 @@ type Listing = {
   tags: string[]
   vote_count: number
   verified: boolean
+  clone_id: number | null
+  ref_code: string | null
 }
 
 async function fetchListing(guildId: string): Promise<Listing | null> {
@@ -154,9 +156,34 @@ export default async function ListingPage({ params }: { params: Promise<{ guildI
           </div>
         )}
 
-        <a href={listing.invite_url} target="_blank" rel="noopener noreferrer" className="pb-btn-primary">
-          Join server
-        </a>
+        <div className="flex flex-wrap gap-2">
+          <a href={listing.invite_url} target="_blank" rel="noopener noreferrer" className="pb-btn-primary">
+            Join server
+          </a>
+
+          {/* Sends the visitor through the same OAuth vote flow used on the
+              directory cards (api/server_listing_vote_oauth.py), so a vote
+              cast from the listing page counts the same as one from /servers. */}
+          <a
+            href={`${API_BASE}/api/server_listing_vote_oauth?guild_id=${listing.guild_id}${listing.clone_id ? `&clone_id=${listing.clone_id}` : ''}`}
+            className="pb-btn-secondary text-sm"
+          >
+            Vote for this server
+          </a>
+
+          {/* Referral link back to the directory — carries this listing's
+              ref_code so a click is attributed the same way boost links are
+              (see _BoostModal.tsx's copyBoostLink and api/server_listings.py
+              Mode 0). Only rendered when the listing actually has a code. */}
+          {listing.ref_code && (
+            <a
+              href={`${SITE_URL}/servers?ref=${listing.ref_code}`}
+              className="pb-btn-secondary text-sm"
+            >
+              Refer friends to the site
+            </a>
+          )}
+        </div>
 
         {voters.length > 0 && (
           <section className="mt-10 pt-6 border-t" style={{ borderColor: 'var(--pb-line)' }}>
