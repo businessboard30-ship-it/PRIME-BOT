@@ -198,6 +198,19 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         # lands on first. (Previously this was the support-server link
         # shown twice; the manual link now takes the second slot instead
         # of a duplicate.)
+        # "List your server" link — points at the same public directory
+        # /setup servers hands owners a personal link into (see
+        # discord_bot/cogs/server_listing.py). Plain link button like the
+        # two below: no custom_id, so it needs no DynamicItem registration
+        # and _RebuiltCopyView carries it over unchanged on every rebuild
+        # (Remind/Dismiss/feature-toggle clicks) since it matches
+        # component.style == link there already.
+        listing_button = discord.ui.Button(
+            label="List your server", style=discord.ButtonStyle.link,
+            emoji="🌐", url=f"{DASHBOARD_BASE_URL}/servers",
+        )
+        bottom_children = [*bottom_children, listing_button]
+
         if DISCORD_SUPPORT_SERVER_INVITE:
             support_button = discord.ui.Button(
                 label="Join our support server", style=discord.ButtonStyle.link,
