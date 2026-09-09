@@ -12,6 +12,7 @@ type Prefill = {
   member_count: number
   invite_url: string
   description: string
+  long_description?: string
   tags: string[]
   banner_url?: string
 }
@@ -28,7 +29,8 @@ const TAG_SUGGESTIONS = [
   'tv', 'sports', 'fitness', 'food', 'photography', 'design', 'tech',
   'science', 'books', 'languages', 'finance', 'esports',
 ]
-const MAX_DESCRIPTION_LEN = 300
+const MAX_DESCRIPTION_LEN = 20
+const MAX_LONG_DESCRIPTION_LEN = 1500
 const MAX_TAGS = 5
 
 // Next.js requires useSearchParams() to be wrapped in a Suspense boundary
@@ -55,6 +57,7 @@ function SubmitListingPageInner() {
 
   const [inviteUrl, setInviteUrl] = useState('')
   const [description, setDescription] = useState('')
+  const [longDescription, setLongDescription] = useState('')
   const [tagInput, setTagInput] = useState('')
   const [tags, setTags] = useState<string[]>([])
   const [bannerUrl, setBannerUrl] = useState('')
@@ -89,6 +92,7 @@ function SubmitListingPageInner() {
           setPrefill(data)
           setInviteUrl(data.invite_url || urlInviteUrl)
           setDescription(data.description || urlDescription)
+          setLongDescription(data.long_description || '')
           setTags(data.tags || [])
           setBannerUrl(data.banner_url || '')
         }
@@ -155,8 +159,9 @@ function SubmitListingPageInner() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            invite_url: inviteUrl.trim(), description: description.trim(), tags,
-            banner_url: bannerUrl.trim(), pow,
+            invite_url: inviteUrl.trim(), description: description.trim(),
+            long_description: longDescription.trim(),
+            tags, banner_url: bannerUrl.trim(), pow,
           }),
         }
       )
@@ -229,17 +234,32 @@ function SubmitListingPageInner() {
       </label>
 
       <label className="block mb-6">
-        <span className="text-sm font-medium">Description</span>
+        <span className="text-sm font-medium">Short description (shown on the card)</span>
         <textarea
           className="pb-input mt-1.5 w-full resize-none"
-          rows={3}
+          rows={2}
           maxLength={MAX_DESCRIPTION_LEN}
-          placeholder="What's your server about?"
+          placeholder="A quick one-liner"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
         <span className="text-xs mt-1 block" style={{ color: 'var(--pb-text-faint)' }}>
-          {description.length}/{MAX_DESCRIPTION_LEN}
+          {description.length}/{MAX_DESCRIPTION_LEN} — keep it short, this is what shows on the directory card.
+        </span>
+      </label>
+
+      <label className="block mb-6">
+        <span className="text-sm font-medium">Long description (shown on your listing page)</span>
+        <textarea
+          className="pb-input mt-1.5 w-full resize-none"
+          rows={6}
+          maxLength={MAX_LONG_DESCRIPTION_LEN}
+          placeholder="Tell people more about your server — rules, what makes it worth joining, events, etc."
+          value={longDescription}
+          onChange={(e) => setLongDescription(e.target.value)}
+        />
+        <span className="text-xs mt-1 block" style={{ color: 'var(--pb-text-faint)' }}>
+          {longDescription.length}/{MAX_LONG_DESCRIPTION_LEN} — optional. Shown when someone taps your server's name.
         </span>
       </label>
 
