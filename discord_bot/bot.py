@@ -42,6 +42,7 @@ from discord_bot.cogs._views_leveling_wizard import DYNAMIC_ITEMS as LEVELING_WI
 from discord_bot.cogs._views_download_wizard import DYNAMIC_ITEMS as DOWNLOAD_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leaderboard_links import DYNAMIC_ITEMS as LEADERBOARD_LINKS_DYNAMIC_ITEMS
 from discord_bot.cogs._views_registry_invite_consent import DYNAMIC_ITEMS as REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS
+from discord_bot.cogs._views_auto_listing_offer import DYNAMIC_ITEMS as AUTO_LISTING_OFFER_DYNAMIC_ITEMS, offer_auto_listing
 from discord_bot.cogs._views_giveaway_wizard import DYNAMIC_ITEMS as GIVEAWAY_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs.discover_players import DYNAMIC_ITEMS as DISCOVER_PLAYERS_DYNAMIC_ITEMS
 from discord_bot.cogs.roast import ROAST_DYNAMIC_ITEMS
@@ -136,6 +137,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*DOWNLOAD_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*LEADERBOARD_LINKS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*AUTO_LISTING_OFFER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*GIVEAWAY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DIRECT_PAID_DYNAMIC_ITEMS)
         self.add_dynamic_items(*VERIFICATION_DYNAMIC_ITEMS)
@@ -435,6 +437,10 @@ class AnimeBotDiscord(commands.Bot):
         welcome_cog = self.get_cog("WelcomeCog")
         if welcome_cog:
             await welcome_cog.post_setup_wizard_on_join(guild)
+        try:
+            await offer_auto_listing(self, guild)
+        except Exception:
+            logger.exception(f"[join] auto-listing offer failed for guild {guild.id}")
 
     async def _send_combined_owner_join_dm(self, guild: discord.Guild, *, is_initial_send: bool = True):
         """Single consolidated DM to the server owner covering everything
