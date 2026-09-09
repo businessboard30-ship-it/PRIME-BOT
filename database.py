@@ -11920,7 +11920,283 @@ class Database:
         async with pool.acquire() as conn:
             await conn.execute("UPDATE bump_listings SET reminder_sent_at = NOW() WHERE id = $1", listing_id)
 
+    # ========================================================================
+    # Feature Enhancements (migration 009): reviews, verification tiers,
+    # click/referral analytics, tag metadata. See
+    # database/migrations/009_feature_enhancements.sql for the schema.
+    # ========================================================================
 
+    # --- Reviews & Ratings ---------------------------------------------
+
+    async def add_server_review(self, guild_id: int, clone_id: Optional[int], reviewer_user_id: int,
+                                 rating: int, review_text: str = "",
+                                 is_verified_member: bool = False) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO server_reviews
+                    (guild_id, clone_id, reviewer_user_id, rating, review_text, is_verified_member)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (guild_id, clone_id, reviewer_user_id)
+                DO UPDATE SET rating = $4, review_text = $5, review_date = NOW()
+                RETURNING *
+                """,
+                guild_id, clone_id, reviewer_user_id, rating, review_text, is_verified_member,
+            )
+            await conn.execute("SELECT update_listing_metrics($1, $2)", guild_id, clone_id)
+            return dict(row)
+
+    async def get_server_reviews(self, guild_id: int, clone_id: Optional[int] = None,
+                                  page: int = 1, page_size: int = 10,
+                                  sort: str = "recent") -> List[Dict]:
+        order_by = {
+            "recent": "review_date DESC",
+            "helpful": "helpful_count DESC, review_date DESC",
+            "rating": "rating DESC, review_date DESC",
+        }.get(sort, "review_date DESC")
+        offset = max(page - 1, 0) * page_size
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT * FROM server_reviews
+                WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)
+                ORDER BY {order_by}
+                LIMIT $3 OFFSET $4
+                """,
+                guild_id, clone_id, page_size, offset,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_server_review_count(self, guild_id: int, clone_id: Optional[int] = None) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM server_reviews WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                guild_id, clone_id,
+            )
+
+    async def mark_review_helpful(self, review_id: int) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "UPDATE server_reviews SET helpful_count = helpful_count + 1 WHERE review_id = $1 RETURNING helpful_count",
+                review_id,
+            )
+
+    # --- Verification Tiers ---------------------------------------------
+
+    async def get_verification_tier_config(self, tier_name: Optional[str] = None) -> Any:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if tier_name:
+                row = await conn.fetchrow(
+                    "SELECT * FROM verification_tier_config WHERE tier_name = $1", tier_name,
+                )
+                return dict(row) if row else None
+            rows = await conn.fetch("SELECT * FROM verification_tier_config ORDER BY listing_priority")
+            return [dict(r) for r in rows]
+
+    async def create_verification_purchase(self, guild_id: int, clone_id: Optional[int], tier_name: str,
+                                             expires_at, payment_id: Optional[str] = None,
+                                             payment_method: Optional[str] = None,
+                                             auto_renew: bool = False) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO verification_purchases
+                    (guild_id, clone_id, tier_name, payment_id, payment_method, expires_at, auto_renew)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING *
+                """,
+                guild_id, clone_id, tier_name, payment_id, payment_method, expires_at, auto_renew,
+            )
+            await conn.execute(
+                "UPDATE server_listings SET verification_tier = $3 WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                guild_id, clone_id, tier_name,
+            )
+            return dict(row)
+
+    async def get_active_verification(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM verification_purchases
+                WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)
+                  AND status = 'active' AND expires_at > NOW()
+                ORDER BY expires_at DESC LIMIT 1
+                """,
+                guild_id, clone_id,
+            )
+            return dict(row) if row else None
+
+    async def check_auto_verification(self, guild_id: int, clone_id: Optional[int]) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT check_auto_verification($1, $2)", guild_id, clone_id,
+            )
+
+    async def get_verification_qualifications(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM verification_qualifications WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                guild_id, clone_id,
+            )
+            return dict(row) if row else None
+
+    # --- Click / Referral Analytics -------------------------------------
+
+    async def log_listing_click(self, guild_id: int, clone_id: Optional[int], ip_hash: Optional[str] = None,
+                                 referrer_source: Optional[str] = None, ref_code_used: Optional[str] = None,
+                                 user_agent_hash: Optional[str] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO listing_click_log
+                    (guild_id, clone_id, ip_hash, referrer_source, ref_code_used, user_agent_hash)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                guild_id, clone_id, ip_hash, referrer_source, ref_code_used, user_agent_hash,
+            )
+            if ref_code_used:
+                await conn.execute(
+                    """
+                    UPDATE listing_referral_stats
+                    SET clicks = clicks + 1, last_click_at = NOW()
+                    WHERE ref_code = $1
+                    """,
+                    ref_code_used,
+                )
+
+    async def create_referral_code(self, guild_id: int, clone_id: Optional[int], ref_code: str,
+                                    source_platform: str = "direct") -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO listing_referral_stats (guild_id, clone_id, ref_code, source_platform)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (ref_code) DO UPDATE SET source_platform = $4
+                RETURNING *
+                """,
+                guild_id, clone_id, ref_code, source_platform,
+            )
+            return dict(row)
+
+    async def record_referral_conversion(self, ref_code: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE listing_referral_stats
+                SET conversions = conversions + 1, last_conversion_at = NOW()
+                WHERE ref_code = $1
+                """,
+                ref_code,
+            )
+
+    async def get_referral_stats(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM listing_referral_stats
+                WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)
+                ORDER BY conversions DESC
+                """,
+                guild_id, clone_id,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_daily_analytics(self, guild_id: int, clone_id: Optional[int] = None,
+                                   days: int = 30) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM listing_daily_analytics
+                WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)
+                  AND analytics_date > CURRENT_DATE - ($3 * INTERVAL '1 day')
+                ORDER BY analytics_date ASC
+                """,
+                guild_id, clone_id, days,
+            )
+            return [dict(r) for r in rows]
+
+    async def upsert_daily_analytics_snapshot(self, guild_id: int, clone_id: Optional[int], analytics_date,
+                                               clicks_count: int = 0, unique_ip_count: int = 0,
+                                               votes_received: int = 0, new_reviews_count: int = 0,
+                                               avg_rating: Optional[float] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO listing_daily_analytics
+                    (guild_id, clone_id, analytics_date, clicks_count, unique_ip_count,
+                     votes_received, new_reviews_count, avg_rating)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (guild_id, clone_id, analytics_date)
+                DO UPDATE SET
+                    clicks_count = $4, unique_ip_count = $5, votes_received = $6,
+                    new_reviews_count = $7, avg_rating = $8
+                """,
+                guild_id, clone_id, analytics_date, clicks_count, unique_ip_count,
+                votes_received, new_reviews_count, avg_rating,
+            )
+
+    async def get_listing_metrics(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM server_listing_metrics WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                guild_id, clone_id,
+            )
+            return dict(row) if row else None
+
+    # --- Category / Tag Discovery ----------------------------------------
+
+    async def log_category_browse(self, tag_name: str, ip_hash: Optional[str] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO category_browse_log (tag_name, ip_hash) VALUES ($1, $2)",
+                tag_name, ip_hash,
+            )
+            await conn.execute(
+                "UPDATE tag_metadata SET total_clicks = total_clicks + 1, last_updated = NOW() WHERE tag_name = $1",
+                tag_name,
+            )
+
+    async def get_tag_metadata(self, tag_name: Optional[str] = None) -> Any:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if tag_name:
+                row = await conn.fetchrow("SELECT * FROM tag_metadata WHERE tag_name = $1", tag_name)
+                return dict(row) if row else None
+            rows = await conn.fetch("SELECT * FROM tag_metadata ORDER BY trending_score DESC")
+            return [dict(r) for r in rows]
+
+    async def get_trending_categories(self, limit: int = 10) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM category_trending LIMIT $1", limit,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_top_referral_performers(self, limit: int = 10) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM top_referral_performers LIMIT $1", limit,
+            )
+            return [dict(r) for r in rows]
 
 
 class InsufficientCreditsError(Exception):
