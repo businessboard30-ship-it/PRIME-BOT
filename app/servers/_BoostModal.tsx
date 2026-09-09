@@ -78,9 +78,23 @@ export default function BoostModal({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ guild_id: guildId, clone_id: cloneId, amount, email: email.trim() }),
       })
-      const data = await res.json()
+      let data: any = null
+      try {
+        data = await res.json()
+      } catch {
+        // Response wasn't JSON at all — the request reached *something*
+        // (so this isn't a true network failure), but not our API
+        // returning a clean error body. Surface the HTTP status instead
+        // of the generic network message so this is diagnosable: usually
+        // means API_BASE is pointed at the wrong deployment, or the
+        // /api/apply_boost function itself failed to start (missing env
+        // var, crashed import, etc.) and Vercel served an HTML error page.
+        setErrorMsg(`Checkout failed to start (HTTP ${res.status}, non-JSON response) — check the site's API configuration.`)
+        setStatus('error')
+        return
+      }
       if (data.status !== 'pending' || !data.authorization_url) {
-        setErrorMsg(data.message || 'Could not start checkout')
+        setErrorMsg(data.message || `Could not start checkout (HTTP ${res.status})`)
         setStatus('error')
         return
       }
@@ -90,8 +104,10 @@ export default function BoostModal({
       // onBoosted isn't called here. Full-page redirect to Paystack's
       // hosted checkout.
       window.location.href = data.authorization_url
-    } catch {
-      setErrorMsg('Network error — try again')
+    } catch (e) {
+      // A real fetch-level failure (DNS, CORS block, connection refused)
+      // — no response was received at all.
+      setErrorMsg(`Network error — could not reach the checkout API (${e instanceof Error ? e.message : 'unknown'}). Try again.`)
       setStatus('error')
     }
   }
