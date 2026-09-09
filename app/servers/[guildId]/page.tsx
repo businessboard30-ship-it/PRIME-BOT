@@ -8,6 +8,8 @@
 // the site knows about a server is what server_listings already stores.
 
 import type { Metadata } from 'next'
+import ReviewsSection from './ReviewsSection'
+import ReferralWidget from './ReferralWidget'
 
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://prime-bot.example.com'
@@ -191,6 +193,20 @@ export default async function ListingPage({ params }: { params: Promise<{ guildI
             </a>
           )}
         </div>
+
+        {listing.ref_code && (
+          <div className="mt-10">
+            <ReferralWidget
+              guildId={listing.guild_id}
+              refCode={listing.ref_code}
+              serverName={listing.guild_name}
+            />
+          </div>
+        )}
+
+        <section className="mt-10 pt-6 border-t" style={{ borderColor: 'var(--pb-line)' }}>
+          <ReviewsSection guildId={listing.guild_id} refCode={listing.ref_code || undefined} />
+        </section>
 
         {voters.length > 0 && (
           <section className="mt-10 pt-6 border-t" style={{ borderColor: 'var(--pb-line)' }}>
