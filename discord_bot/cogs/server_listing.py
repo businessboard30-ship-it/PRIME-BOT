@@ -60,7 +60,7 @@ class ServerListingVotePanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Vote", emoji="▲", style=discord.ButtonStyle.success, custom_id="sl_panel_vote")
+    @discord.ui.button(label="Vote", emoji="🔺", style=discord.ButtonStyle.success, custom_id="sl_panel_vote")
     async def vote_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         if guild is None:
