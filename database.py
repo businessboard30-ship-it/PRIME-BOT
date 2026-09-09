@@ -3160,18 +3160,29 @@ class Database:
         # main bot). asked_at is set the first time the bot DMs an admin
         # the channel picker (see claim_report_channel_prompt_send — a
         # single atomic claim, so the picker is only ever sent once even
-        # across restarts); channel_id/guild_id/configured_at stay NULL
-        # until an admin actually picks one via the ChannelSelect
-        # component. Reports just queue up (notified stays FALSE) until
-        # that happens — nothing is lost, it's just not forwarded yet.
+        # across restarts); channel_id/guild_id/dm_user_id/configured_at
+        # stay NULL until an admin actually picks a destination via the
+        # ChannelSelect or "DM me instead" button. Reports just queue up
+        # (notified stays FALSE) until that happens — nothing is lost,
+        # it's just not forwarded yet.
+        #
+        # dm_user_id: added so reports can be forwarded straight to the
+        # admin's DMs instead of posting in any server channel — mutually
+        # exclusive with guild_id/channel_id (report_notifications.py's
+        # poller checks dm_user_id first and DMs if set, otherwise falls
+        # back to the channel).
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS report_notify_config (
                 clone_id INTEGER,
                 guild_id BIGINT,
                 channel_id BIGINT,
+                dm_user_id BIGINT,
                 asked_at TIMESTAMPTZ,
                 configured_at TIMESTAMPTZ
             )
+        """)
+        await conn.execute("""
+            ALTER TABLE report_notify_config ADD COLUMN IF NOT EXISTS dm_user_id BIGINT
         """)
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS report_notify_config_clone_key
@@ -9513,6 +9524,20 @@ class Database:
                 guild_id, clone_id, status,
             )
 
+    async def reset_auto_listing_offer(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        """Deletes the claim row so claim_auto_listing_offer_send can
+        succeed again for this guild — the "resend" path _create_tables'
+        comment above says doesn't otherwise exist. Called from /setup
+        servers' resend flow (admin-gated at the command level, not here),
+        never automatically, so a declined/expired offer only ever comes
+        back when an admin explicitly asks for it."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM auto_listing_offer WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+
     async def get_pending_voting_panels(self, clone_id: Optional[int], limit: int = 10) -> List[Dict]:
         """Every active bot process (main or any clone) polls this and
         races to claim pending rows — clone_id is accepted but no longer
@@ -9851,14 +9876,35 @@ class Database:
         async with pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO report_notify_config (clone_id, guild_id, channel_id, asked_at, configured_at)
-                VALUES ($1, $2, $3, NOW(), NOW())
+                INSERT INTO report_notify_config (clone_id, guild_id, channel_id, dm_user_id, asked_at, configured_at)
+                VALUES ($1, $2, $3, NULL, NOW(), NOW())
                 ON CONFLICT (COALESCE(clone_id, -1)) DO UPDATE SET
                     guild_id = EXCLUDED.guild_id,
                     channel_id = EXCLUDED.channel_id,
+                    dm_user_id = NULL,
                     configured_at = NOW()
                 """,
                 clone_id, guild_id, channel_id,
+            )
+
+    async def set_report_notify_dm(self, clone_id: Optional[int], user_id: int) -> None:
+        """'DM me instead' path — mutually exclusive with the channel
+        (clears guild_id/channel_id so the poller's dm_user_id-first check
+        can't ever double-send to a stale channel left over from before
+        this was picked)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO report_notify_config (clone_id, guild_id, channel_id, dm_user_id, asked_at, configured_at)
+                VALUES ($1, NULL, NULL, $2, NOW(), NOW())
+                ON CONFLICT (COALESCE(clone_id, -1)) DO UPDATE SET
+                    guild_id = NULL,
+                    channel_id = NULL,
+                    dm_user_id = EXCLUDED.dm_user_id,
+                    configured_at = NOW()
+                """,
+                clone_id, user_id,
             )
 
     # --- server listing votes ----------------------------------------------
