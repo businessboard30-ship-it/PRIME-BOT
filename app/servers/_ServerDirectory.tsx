@@ -397,6 +397,11 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
       <section className="mt-10 pt-6 border-t text-sm" style={{ borderColor: 'var(--pb-line)', color: 'var(--pb-text-faint)' }}>
         Want your server listed? Run <code className="pb-code">/setup servers</code> in your Discord server
         (PRIME-BOT must already be a member) to get your private listing link.
+        <br />
+        Need help with something?{' '}
+        <a href={SUPPORT_SERVER_INVITE} target="_blank" rel="noopener noreferrer" className="underline" style={{ color: 'var(--pb-accent)' }}>
+          Contact support
+        </a>
       </section>
 
       {boostingListing && (
