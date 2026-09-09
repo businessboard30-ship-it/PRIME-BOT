@@ -5,6 +5,7 @@
 import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import Image from 'next/image'
+import { rememberLoginSession, forgetLoginSession } from '../../_signedInSession'
 
 type ManagedGuild = {
   guild_id: string
@@ -64,6 +65,9 @@ function LoginServersPageInner() {
         } else {
           setUser(data.user || null)
           setGuilds(data.guilds)
+          // Makes the sign-in visible on every other page too (directory
+          // header, homepage) — see _signedInSession.ts.
+          rememberLoginSession(session)
         }
       })
       .catch(() => setError('Network error loading your servers'))
@@ -82,6 +86,7 @@ function LoginServersPageInner() {
       // even if the DELETE didn't land, sending the user home with a dead session id
       // in the URL is a safe fallback, not a security gap.
     } finally {
+      forgetLoginSession()
       router.push('/')
     }
   }
