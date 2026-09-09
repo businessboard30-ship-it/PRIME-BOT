@@ -23,6 +23,16 @@
 import { useEffect, useState } from 'react'
 
 const STORAGE_KEY = 'pb_login_session'
+// Fired whenever the stored session changes (login/servers page saving a
+// fresh session, or signOut clearing one). localStorage's own 'storage'
+// event only fires in OTHER tabs, never the tab that made the change — and
+// Next.js's router cache can keep a page like /servers mounted across a
+// back/forward navigation without re-running its effects, so a component
+// that only checked localStorage once on mount could keep showing "Sign
+// in" forever after a same-tab sign-in on a different page. Dispatching
+// our own event lets every mounted useSignedInUser() instance re-check
+// immediately, in the same tab, regardless of whether it remounted.
+const SESSION_EVENT = 'pb-session-changed'
 
 export type SignedInUser = {
   id: string
@@ -40,6 +50,7 @@ export function rememberLoginSession(sessionId: string) {
     // page load via the URL param, it just won't carry over to other
     // pages. Not worth surfacing an error for.
   }
+  window.dispatchEvent(new Event(SESSION_EVENT))
 }
 
 export function forgetLoginSession() {
@@ -48,6 +59,7 @@ export function forgetLoginSession() {
   } catch {
     // see rememberLoginSession
   }
+  window.dispatchEvent(new Event(SESSION_EVENT))
 }
 
 /** Reads whatever session id is stashed locally and resolves it against
@@ -58,31 +70,56 @@ export function useSignedInUser(): { user: SignedInUser | null; loading: boolean
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    let sessionId: string | null = null
-    try {
-      sessionId = localStorage.getItem(STORAGE_KEY)
-    } catch {
-      sessionId = null
-    }
-    if (!sessionId) {
-      setLoading(false)
-      return
-    }
-    fetch(`${API_BASE}/api/discord_login_oauth?session=${encodeURIComponent(sessionId)}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.status === 'ok' && data.user) {
-          setUser(data.user)
-        } else {
-          forgetLoginSession()
+    let cancelled = false
+
+    function resolve() {
+      let sessionId: string | null = null
+      try {
+        sessionId = localStorage.getItem(STORAGE_KEY)
+      } catch {
+        sessionId = null
+      }
+      if (!sessionId) {
+        if (!cancelled) {
+          setUser(null)
+          setLoading(false)
         }
-      })
-      .catch(() => {
-        // Network hiccup, not "session invalid" — leave the stored id
-        // alone so the next page load can retry instead of forcing a
-        // fresh sign-in over a transient failure.
-      })
-      .finally(() => setLoading(false))
+        return
+      }
+      setLoading(true)
+      fetch(`${API_BASE}/api/discord_login_oauth?session=${encodeURIComponent(sessionId)}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (cancelled) return
+          if (data.status === 'ok' && data.user) {
+            setUser(data.user)
+          } else {
+            forgetLoginSession()
+            setUser(null)
+          }
+        })
+        .catch(() => {
+          // Network hiccup, not "session invalid" — leave the stored id
+          // alone so the next page load can retry instead of forcing a
+          // fresh sign-in over a transient failure.
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+    }
+
+    resolve()
+    // 'storage' covers other tabs; SESSION_EVENT covers this tab (a page
+    // that just signed in via rememberLoginSession) and also covers a
+    // cached, already-mounted page (e.g. /servers reached via back/
+    // forward) that never re-ran this effect on its own.
+    window.addEventListener('storage', resolve)
+    window.addEventListener(SESSION_EVENT, resolve)
+    return () => {
+      cancelled = true
+      window.removeEventListener('storage', resolve)
+      window.removeEventListener(SESSION_EVENT, resolve)
+    }
   }, [])
 
   function signOut() {
