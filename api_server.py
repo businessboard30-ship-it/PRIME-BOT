@@ -94,6 +94,7 @@ ROUTES = {
     "/api/bump_oauth": "api.bump_oauth",
     "/api/server_listing_vote_oauth": "api.server_listing_vote_oauth",
     "/api/discord_login_oauth": "api.discord_login_oauth",
+    "/api/site_visits": "api.site_visits",
     # Discord app-verification requires real, permanently reachable ToS/
     # Privacy URLs — these were written in api/legal_pages.py but never
     # wired into the dispatcher (and its class names don't match the
