@@ -43,6 +43,7 @@ from discord_bot.cogs._views_download_wizard import DYNAMIC_ITEMS as DOWNLOAD_WI
 from discord_bot.cogs._views_leaderboard_links import DYNAMIC_ITEMS as LEADERBOARD_LINKS_DYNAMIC_ITEMS
 from discord_bot.cogs._views_registry_invite_consent import DYNAMIC_ITEMS as REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS
 from discord_bot.cogs._views_auto_listing_offer import DYNAMIC_ITEMS as AUTO_LISTING_OFFER_DYNAMIC_ITEMS, offer_auto_listing
+from discord_bot.cogs._views_report_channel_picker import DYNAMIC_ITEMS as REPORT_CHANNEL_PICKER_DYNAMIC_ITEMS
 from discord_bot.cogs._views_giveaway_wizard import DYNAMIC_ITEMS as GIVEAWAY_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs.discover_players import DYNAMIC_ITEMS as DISCOVER_PLAYERS_DYNAMIC_ITEMS
 from discord_bot.cogs.roast import ROAST_DYNAMIC_ITEMS
@@ -138,6 +139,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*LEADERBOARD_LINKS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTO_LISTING_OFFER_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*REPORT_CHANNEL_PICKER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*GIVEAWAY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DIRECT_PAID_DYNAMIC_ITEMS)
         self.add_dynamic_items(*VERIFICATION_DYNAMIC_ITEMS)
@@ -199,6 +201,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.discover_players")
         await self.load_extension("discord_bot.cogs.admin")
         await self.load_extension("discord_bot.cogs.server_listing")
+        await self.load_extension("discord_bot.cogs.report_notifications")
         if self.clone_id is None:
             # Clone registration/management commands only make sense on the
             # main bot — a clone registering its own clones would need its
