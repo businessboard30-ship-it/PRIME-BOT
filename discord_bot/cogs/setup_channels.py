@@ -692,6 +692,31 @@ class SetupChannelsCog(GuildOnlyCog):
         else:
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @group.command(name="reportchannel", description="Choose which channel gets 'report this server' submissions")
+    @app_commands.describe(channel="The channel reports should be forwarded into")
+    async def reportchannel_cmd(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        # Run in-server rather than via DM: Discord's ChannelSelect (used
+        # by the one-time DM picker in _views_report_channel_picker.py)
+        # only populates options from the guild the interaction happened
+        # in — there's no guild in a DM, so that component can't list
+        # anything there. A plain channel option on an in-server command
+        # doesn't have that problem, since discord.py resolves it against
+        # this guild's real channel list.
+        if not _require_perm(interaction, "manage_guild"):
+            await _deny(interaction, "Manage Server")
+            return
+        clone_id = _clone_id_of(interaction.client)
+        try:
+            await db.set_report_notify_channel(clone_id, interaction.guild_id, channel.id)
+        except Exception:
+            logger.exception("[setup] /setup reportchannel save failed")
+            await interaction.response.send_message(
+                "Something went wrong saving that — try again in a moment.", ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"✅ Reports will be forwarded to {channel.mention} from now on.", ephemeral=True,
+        )
 
     @group.command(name="servers", description="Get your link to list this server in PRIME-BOT's public directory")
     @app_commands.describe(resend="Resend the one-time auto-listing DM offer (Agree/Deny), even if it was declined before")
