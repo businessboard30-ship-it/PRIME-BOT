@@ -51,6 +51,7 @@ from pow_captcha import issue_challenge, verify_solution
 logger = logging.getLogger(__name__)
 
 MAX_DESCRIPTION_LEN = 300
+MAX_LONG_DESCRIPTION_LEN = 1500
 MAX_TAGS = 5
 MAX_TAG_LEN = 20
 
@@ -313,6 +314,7 @@ class handler(BaseHTTPRequestHandler):
                 "member_count": resolved["member_count"],
                 "invite_url": existing["invite_url"] if existing else "",
                 "description": existing["description"] if existing else "",
+                "long_description": existing.get("long_description") if existing else "",
                 "tags": existing["tags"] if existing else [],
                 "banner_url": existing["banner_url"] if existing else "",
             }
@@ -382,6 +384,7 @@ class handler(BaseHTTPRequestHandler):
 
         invite_url = str(body.get("invite_url", "")).strip()
         description = str(body.get("description", "")).strip()[:MAX_DESCRIPTION_LEN]
+        long_description = str(body.get("long_description", "")).strip()[:MAX_LONG_DESCRIPTION_LEN] or None
         tags = _clean_tags(body.get("tags"))
         banner_url = str(body.get("banner_url", "")).strip()[:500] or None
         if banner_url and not re.match(r"^https?://\S+$", banner_url, re.IGNORECASE):
@@ -419,7 +422,7 @@ class handler(BaseHTTPRequestHandler):
             listing = await db.upsert_server_listing(
                 guild_id, resolved["clone_id"],
                 resolved["guild_name"], resolved["guild_icon_url"], resolved["member_count"],
-                invite_url, description, tags, banner_url,
+                invite_url, description, tags, banner_url, long_description,
             )
             # Referral-boost link is assigned lazily right after the listing
             # first exists (or on every re-save, idempotently — same code
