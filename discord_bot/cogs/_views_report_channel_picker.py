@@ -50,7 +50,7 @@ async def prompt_report_channel(bot) -> None:
     clone_id = _clone_id_of_bot(bot)
     try:
         existing = await db.get_report_notify_channel(clone_id)
-        if existing and existing.get("channel_id"):
+        if existing and (existing.get("channel_id") or existing.get("dm_user_id")):
             return  # already configured
         claimed = await db.claim_report_channel_prompt_send(clone_id)
     except Exception:
@@ -64,15 +64,18 @@ async def prompt_report_channel(bot) -> None:
         return
 
     view = discord.ui.View(timeout=None)
-    view.add_item(ReportChannelSelect(clone_id))
+    view.add_item(ReportChannelDMButton(clone_id))
 
     for admin_id in admin_ids:
         try:
             user = bot.get_user(admin_id) or await bot.fetch_user(admin_id)
             await user.send(
-                "📮 One-time setup — pick a channel and I'll forward every **\"report this server\"** "
-                "submission from the site's directory straight into it (no more checking the DB by hand). "
-                "Pick any text channel in a server we're both in:",
+                "📮 One-time setup — I can forward every **\"report this server\"** submission "
+                "from the site's directory straight into a channel (no more checking the DB by hand).\n\n"
+                "Run `/setup reportchannel #channel-name` **in your server** to pick where they go "
+                "(has to be run there, not here — Discord can only show me your server's channel "
+                "list from inside the server itself), or tap the button below to just have them "
+                "DMed to you instead:",
                 view=view,
             )
             return  # only need one admin to configure it
@@ -124,4 +127,49 @@ class ReportChannelSelect(
         )
 
 
-DYNAMIC_ITEMS = (ReportChannelSelect,)
+def _dm_encode(clone_id) -> str:
+    return f"reportchan:dm:{clone_id if clone_id is not None else -1}"
+
+
+def _dm_id_pattern() -> str:
+    return r"reportchan:dm:(?P<clone_id>-?\d+)"
+
+
+class ReportChannelDMButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=_dm_id_pattern(),
+):
+    """The working half of the picker DM: a ChannelSelect can't populate
+    any options outside a guild (see module docstring), so this button —
+    wired to db.set_report_notify_dm — is the only choice this DM can
+    actually offer. Picking a real channel now happens via /reportchannel,
+    run inside the server (report_notifications.py)."""
+
+    def __init__(self, clone_id):
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="DM me instead",
+            style=discord.ButtonStyle.secondary,
+            custom_id=_dm_encode(clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Item, match: "re.Match[str]", /):
+        raw = int(match["clone_id"])
+        return cls(None if raw == -1 else raw)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            await db.set_report_notify_dm(self.clone_id, interaction.user.id)
+        except Exception:
+            logger.exception("[report-channel-picker] failed saving DM fallback for clone %s", self.clone_id)
+            await interaction.edit_original_response(content="Something went wrong saving that — try again.", view=None)
+            return
+        await interaction.edit_original_response(
+            content="✅ Done — reports will be DMed to you here from now on.",
+            view=None,
+        )
+
+
+DYNAMIC_ITEMS = (ReportChannelSelect, ReportChannelDMButton)
