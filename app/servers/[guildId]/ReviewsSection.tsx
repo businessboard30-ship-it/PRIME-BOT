@@ -23,6 +23,32 @@ interface ReviewsResponse {
   rating_distribution: Record<number, number>;
 }
 
+// Hoisted OUTSIDE ReviewsSection: defining a component inline inside another
+// component's function body gives it a brand-new identity on every render of
+// the parent. React then treats it as a different component type each time
+// and unmounts/remounts the whole subtree instead of just updating props —
+// which is what made the stars (and anything below them) flash and vanish
+// for an instant on every tap, since tapping a star itself triggers the
+// parent re-render (setUserRating) that recreated this component.
+const RatingStars: React.FC<{ rating: number; interactive?: boolean; onRate?: (r: number) => void }> = ({
+  rating,
+  interactive = false,
+  onRate,
+}) => (
+  <div className="flex gap-1">
+    {[1, 2, 3, 4, 5].map((star) => (
+      <Star
+        key={star}
+        size={interactive ? 28 : 16}
+        className={`${
+          star <= rating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-300'
+        } ${interactive ? 'cursor-pointer' : ''}`}
+        onClick={() => interactive && onRate?.(star)}
+      />
+    ))}
+  </div>
+);
+
 const ReviewsSection: React.FC<{ guildId: string; refCode?: string }> = ({ guildId, refCode }) => {
   const [reviews, setReviews] = useState<Review[]>([]);
   const [avgRating, setAvgRating] = useState<number>(0);
@@ -34,6 +60,7 @@ const ReviewsSection: React.FC<{ guildId: string; refCode?: string }> = ({ guild
   const [userRating, setUserRating] = useState(0);
   const [userReviewText, setUserReviewText] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [helpfulPending, setHelpfulPending] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     fetchReviews();
@@ -109,24 +136,40 @@ const ReviewsSection: React.FC<{ guildId: string; refCode?: string }> = ({ guild
     return `${Math.floor(diffDays / 30)} months ago`;
   };
 
-  const RatingStars: React.FC<{ rating: number; interactive?: boolean; onRate?: (r: number) => void }> = ({
-    rating,
-    interactive = false,
-    onRate,
-  }) => (
-    <div className="flex gap-1">
-      {[1, 2, 3, 4, 5].map((star) => (
-        <Star
-          key={star}
-          size={interactive ? 28 : 16}
-          className={`${
-            star <= rating ? 'fill-yellow-400 text-yellow-400' : 'text-gray-300'
-          } ${interactive ? 'cursor-pointer' : ''}`}
-          onClick={() => interactive && onRate?.(star)}
-        />
-      ))}
-    </div>
-  );
+  const handleMarkHelpful = async (reviewId: number) => {
+    if (helpfulPending.has(reviewId)) return; // already in flight for this review
+    setHelpfulPending((prev) => new Set(prev).add(reviewId));
+    // Optimistic update — bump the count immediately instead of waiting on
+    // a full fetchReviews() round trip, so the tap feels instant.
+    setReviews((prev) =>
+      prev.map((r) => (r.review_id === reviewId ? { ...r, helpful_count: r.helpful_count + 1 } : r))
+    );
+    try {
+      const response = await fetch(`/api/server_reviews?review_id=${reviewId}&helpful=1`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await response.json();
+      if (data.status !== 'ok') {
+        // Roll back the optimistic bump on failure.
+        setReviews((prev) =>
+          prev.map((r) => (r.review_id === reviewId ? { ...r, helpful_count: r.helpful_count - 1 } : r))
+        );
+      }
+    } catch (error) {
+      console.error('Failed to mark review helpful:', error);
+      setReviews((prev) =>
+        prev.map((r) => (r.review_id === reviewId ? { ...r, helpful_count: r.helpful_count - 1 } : r))
+      );
+    } finally {
+      setHelpfulPending((prev) => {
+        const next = new Set(prev);
+        next.delete(reviewId);
+        return next;
+      });
+    }
+  };
 
   return (
     <div className="mt-12 border-t border-gray-200 pt-8">
@@ -281,7 +324,11 @@ const ReviewsSection: React.FC<{ guildId: string; refCode?: string }> = ({ guild
                 <p className="text-gray-700 mb-3 leading-relaxed">{review.review_text}</p>
               )}
 
-              <button className="flex items-center gap-2 text-sm text-gray-600 hover:text-blue-600 transition-colors">
+              <button
+                onClick={() => handleMarkHelpful(review.review_id)}
+                disabled={helpfulPending.has(review.review_id)}
+                className="flex items-center gap-2 text-sm text-gray-600 hover:text-blue-600 transition-colors disabled:opacity-50"
+              >
                 <ThumbsUp size={16} />
                 Helpful ({review.helpful_count})
               </button>
