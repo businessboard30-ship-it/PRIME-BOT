@@ -3227,6 +3227,15 @@ class Database:
         await conn.execute("""
             ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS voting_panel_pending BOOLEAN NOT NULL DEFAULT FALSE
         """)
+        # Missing migration — get_public_server_listings' "trending" sort
+        # (the directory page's default) and add_listing_boosts() both
+        # already referenced sl.boost_count with no ALTER TABLE ever
+        # creating it, so every default-sort page load hit Postgres with
+        # "column sl.boost_count does not exist" and surfaced as the
+        # generic 500 "Internal error" on /servers.
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS boost_count INTEGER NOT NULL DEFAULT 0
+        """)
 
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS link_whitelist_domains (
