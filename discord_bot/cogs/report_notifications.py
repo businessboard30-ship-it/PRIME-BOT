@@ -3,8 +3,9 @@
 """
 Forwards public "report this server" submissions (see
 app/servers/_ServerDirectory.tsx's Report button -> api/server_listings.py
--> database.report_listing) into a Discord channel an admin picked via
-the one-time DM in _views_report_channel_picker.py.
+-> database.report_listing) into a Discord channel an admin picked, either
+via /setup reportchannel (run in the server, defined in setup_channels.py)
+or the one-time DM fallback in _views_report_channel_picker.py.
 
 api/server_listings.py is a separate serverless process with no live
 Discord connection, so it can only write a pending row — this cog is
