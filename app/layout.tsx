@@ -2,6 +2,7 @@ import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Space_Grotesk, Inter } from 'next/font/google'
 import './globals.css'
+import VisitBanner from './_VisitBanner'
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
@@ -52,6 +53,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${spaceGrotesk.variable} ${inter.variable}`}>
       <body className="antialiased">
+        <VisitBanner />
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
