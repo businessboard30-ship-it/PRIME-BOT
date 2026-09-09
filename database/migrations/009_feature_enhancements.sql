@@ -25,9 +25,18 @@ CREATE TABLE IF NOT EXISTS server_reviews (
     review_text TEXT NOT NULL DEFAULT '',
     review_date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     helpful_count INTEGER DEFAULT 0,
-    is_verified_member BOOLEAN DEFAULT FALSE,
-    UNIQUE(guild_id, clone_id, reviewer_user_id)
+    is_verified_member BOOLEAN DEFAULT FALSE
 );
+
+-- Plain UNIQUE(guild_id, clone_id, reviewer_user_id) would NOT dedupe rows
+-- where clone_id IS NULL (the main bot, not a clone) — Postgres treats
+-- NULL <> NULL for uniqueness purposes, so two "same reviewer, same guild,
+-- no clone" reviews wouldn't collide and ON CONFLICT wouldn't match them.
+-- Match the COALESCE(clone_id, -1) pattern already used elsewhere in this
+-- schema (see server_listings_guild_clone_key) via an expression index,
+-- and target it explicitly from add_server_review()'s ON CONFLICT.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_server_reviews_unique
+    ON server_reviews (guild_id, COALESCE(clone_id, -1), reviewer_user_id);
 
 CREATE INDEX IF NOT EXISTS idx_server_reviews_guild 
     ON server_reviews(guild_id, clone_id);
@@ -106,9 +115,14 @@ CREATE TABLE IF NOT EXISTS verification_qualifications (
     avg_rating DECIMAL(2,1),
     age_days INTEGER,
     qualifies_for_auto BOOLEAN DEFAULT FALSE,
-    last_checked TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(guild_id, clone_id)
+    last_checked TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Same NULL-uniqueness issue as server_reviews above — expression index
+-- instead of a plain column UNIQUE, so ON CONFLICT can target rows where
+-- clone_id IS NULL.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_verification_qualifications_unique
+    ON verification_qualifications (guild_id, COALESCE(clone_id, -1));
 
 CREATE INDEX IF NOT EXISTS idx_verification_qualifications_guild 
     ON verification_qualifications(guild_id, clone_id);
@@ -173,9 +187,12 @@ CREATE TABLE IF NOT EXISTS listing_daily_analytics (
     votes_received INTEGER DEFAULT 0,
     new_reviews_count INTEGER DEFAULT 0,
     avg_rating DECIMAL(2,1),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(guild_id, clone_id, analytics_date)
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Same NULL-uniqueness issue as above.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_listing_daily_analytics_unique
+    ON listing_daily_analytics (guild_id, COALESCE(clone_id, -1), analytics_date);
 
 CREATE INDEX IF NOT EXISTS idx_daily_analytics_guild 
     ON listing_daily_analytics(guild_id, clone_id, analytics_date DESC);
@@ -253,9 +270,9 @@ LEFT JOIN listing_click_log lcl
     ON sl.guild_id = lcl.guild_id 
     AND sl.clone_id = lcl.clone_id
     AND lcl.clicked_at > NOW() - INTERVAL '30 days'
-LEFT JOIN server_votes sv 
+LEFT JOIN server_listing_votes sv 
     ON sl.guild_id = sv.guild_id 
-    AND sv.vote_date > NOW() - INTERVAL '90 days'
+    AND sv.created_at > NOW() - INTERVAL '90 days'
 GROUP BY sl.guild_id, sl.clone_id, sl.guild_name, sl.invite_url, 
          sl.verification_tier, sl.avg_rating, sl.review_count, 
          sl.member_count, sl.updated_at;
@@ -268,7 +285,7 @@ SELECT
     ref_code,
     clicks,
     conversions,
-    ROUND(conversions::float / NULLIF(clicks, 0) * 100, 2) as conversion_rate,
+    ROUND((conversions::numeric / NULLIF(clicks, 0)) * 100, 2) as conversion_rate,
     last_conversion_at
 FROM listing_referral_stats
 WHERE clicks > 0
@@ -277,12 +294,12 @@ ORDER BY conversions DESC;
 -- View: Category trending
 CREATE OR REPLACE VIEW category_trending AS
 SELECT
-    tag_name,
-    server_count,
-    COALESCE(SUM(cbl.browse_id IS NOT NULL), 0) as recent_views,
+    tm.tag_name,
+    tm.server_count,
+    COALESCE(SUM(CASE WHEN cbl.browse_id IS NOT NULL THEN 1 ELSE 0 END), 0) as recent_views,
     ROUND(
-        COALESCE(SUM(CASE WHEN cbl.browsed_at > NOW() - INTERVAL '7 days' THEN 1 ELSE 0 END), 0)::float /
-        NULLIF(COALESCE(SUM(CASE WHEN cbl.browsed_at > NOW() - INTERVAL '30 days' THEN 1 ELSE 0 END), 0), 0) * 100,
+        (COALESCE(SUM(CASE WHEN cbl.browsed_at > NOW() - INTERVAL '7 days' THEN 1 ELSE 0 END), 0)::numeric /
+        NULLIF(COALESCE(SUM(CASE WHEN cbl.browsed_at > NOW() - INTERVAL '30 days' THEN 1 ELSE 0 END), 0), 0)) * 100,
         1
     ) as trending_percentage
 FROM tag_metadata tm
@@ -304,15 +321,15 @@ BEGIN
     SET avg_rating = (
         SELECT ROUND(AVG(rating)::numeric, 1)
         FROM server_reviews
-        WHERE guild_id = p_guild_id AND clone_id = p_clone_id
+        WHERE guild_id = p_guild_id AND COALESCE(clone_id, -1) = COALESCE(p_clone_id, -1)
     ),
     review_count = (
         SELECT COUNT(*)
         FROM server_reviews
-        WHERE guild_id = p_guild_id AND clone_id = p_clone_id
+        WHERE guild_id = p_guild_id AND COALESCE(clone_id, -1) = COALESCE(p_clone_id, -1)
     ),
     updated_at = NOW()
-    WHERE guild_id = p_guild_id AND clone_id = p_clone_id;
+    WHERE guild_id = p_guild_id AND COALESCE(clone_id, -1) = COALESCE(p_clone_id, -1);
 END;
 $$ LANGUAGE plpgsql;
 
@@ -330,24 +347,24 @@ BEGIN
     SELECT COALESCE(COUNT(*), 0)
     INTO v_clicks
     FROM listing_click_log
-    WHERE guild_id = p_guild_id AND clone_id = p_clone_id
+    WHERE guild_id = p_guild_id AND COALESCE(clone_id, -1) = COALESCE(p_clone_id, -1)
     AND clicked_at > NOW() - INTERVAL '30 days';
 
     SELECT COALESCE(COUNT(*), 0)
     INTO v_votes
-    FROM server_votes
+    FROM server_listing_votes
     WHERE guild_id = p_guild_id
-    AND vote_date > NOW() - INTERVAL '90 days';
+    AND created_at > NOW() - INTERVAL '90 days';
 
     SELECT EXTRACT(DAY FROM (NOW() - sl.created_at))
     INTO v_age
     FROM server_listings sl
-    WHERE guild_id = p_guild_id AND clone_id = p_clone_id;
+    WHERE guild_id = p_guild_id AND COALESCE(clone_id, -1) = COALESCE(p_clone_id, -1);
 
     SELECT avg_rating
     INTO v_avg_rating
     FROM server_listings
-    WHERE guild_id = p_guild_id AND clone_id = p_clone_id;
+    WHERE guild_id = p_guild_id AND COALESCE(clone_id, -1) = COALESCE(p_clone_id, -1);
 
     -- Check thresholds: 50+ clicks, 25+ votes, 30+ days old
     v_qualifies := (v_clicks >= 50 AND v_votes >= 25 AND COALESCE(v_age, 0) >= 30 
@@ -357,7 +374,7 @@ BEGIN
     INSERT INTO verification_qualifications
         (guild_id, clone_id, clicks_30d, votes_total, avg_rating, age_days, qualifies_for_auto, last_checked)
     VALUES (p_guild_id, p_clone_id, v_clicks, v_votes, v_avg_rating, COALESCE(v_age, 0), v_qualifies, NOW())
-    ON CONFLICT (guild_id, clone_id)
+    ON CONFLICT (guild_id, (COALESCE(clone_id, -1)))
     DO UPDATE SET
         clicks_30d = v_clicks,
         votes_total = v_votes,
@@ -371,7 +388,7 @@ BEGIN
         UPDATE server_listings
         SET verification_tier = 'auto_verified',
             auto_verified_at = NOW()
-        WHERE guild_id = p_guild_id AND clone_id = p_clone_id
+        WHERE guild_id = p_guild_id AND COALESCE(clone_id, -1) = COALESCE(p_clone_id, -1)
         AND verification_tier = 'unverified';
     END IF;
 
