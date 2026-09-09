@@ -9504,9 +9504,9 @@ class Database:
                        COUNT(*) OVER () AS total_count
                 FROM server_listings sl
                 LEFT JOIN (
-                    SELECT guild_id, clone_id, COUNT(*) AS vote_count
-                    FROM server_listing_votes GROUP BY guild_id, clone_id
-                ) v ON v.guild_id = sl.guild_id AND v.clone_id IS NOT DISTINCT FROM sl.clone_id
+                    SELECT guild_id, COUNT(*) AS vote_count
+                    FROM server_listing_votes GROUP BY guild_id
+                ) v ON v.guild_id = sl.guild_id
                 WHERE {where_sql}
                 ORDER BY {order_sql}
                 LIMIT $1 OFFSET $2
@@ -9537,9 +9537,9 @@ class Database:
                 SELECT sl.*, COALESCE(v.vote_count, 0) AS vote_count
                 FROM server_listings sl
                 LEFT JOIN (
-                    SELECT guild_id, clone_id, COUNT(*) AS vote_count
-                    FROM server_listing_votes GROUP BY guild_id, clone_id
-                ) v ON v.guild_id = sl.guild_id AND v.clone_id IS NOT DISTINCT FROM sl.clone_id
+                    SELECT guild_id, COUNT(*) AS vote_count
+                    FROM server_listing_votes GROUP BY guild_id
+                ) v ON v.guild_id = sl.guild_id
                 WHERE sl.guild_id = $1 AND sl.clone_id IS NOT DISTINCT FROM $2
                 """,
                 guild_id, clone_id,
@@ -9570,9 +9570,9 @@ class Database:
                        cardinality(ARRAY(SELECT unnest(sl.tags) INTERSECT SELECT unnest($3::text[]))) AS shared_tags
                 FROM server_listings sl
                 LEFT JOIN (
-                    SELECT guild_id, clone_id, COUNT(*) AS vote_count
-                    FROM server_listing_votes GROUP BY guild_id, clone_id
-                ) v ON v.guild_id = sl.guild_id AND v.clone_id IS NOT DISTINCT FROM sl.clone_id
+                    SELECT guild_id, COUNT(*) AS vote_count
+                    FROM server_listing_votes GROUP BY guild_id
+                ) v ON v.guild_id = sl.guild_id
                 WHERE NOT (sl.guild_id = $1 AND sl.clone_id IS NOT DISTINCT FROM $2)
                   AND sl.tags && $3::text[]
                 ORDER BY shared_tags DESC, (COALESCE(v.vote_count, 0) * 3 + sl.confirmed_conversions) DESC
