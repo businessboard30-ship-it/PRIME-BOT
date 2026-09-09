@@ -3237,6 +3237,120 @@ class Database:
             ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS boost_count INTEGER NOT NULL DEFAULT 0
         """)
 
+        # ── One directory listing per REAL Discord server, full stop ──────
+        # Originally keyed by (guild_id, clone_id), meaning the same actual
+        # server got a SEPARATE listing/vote-pool/panel for every bot
+        # identity (main bot vs. each clone) that was ever added to it.
+        # That's wrong: it's one site with one directory, so a server that
+        # has both a clone and the main bot (or gets migrated from a clone
+        # to the main bot, or vice versa) should have exactly one listing,
+        # one vote count, one panel — not a duplicate card on /servers.
+        #
+        # This migration merges any pre-existing per-clone duplicates down
+        # to a single guild_id-keyed row/vote-set, then swaps the unique
+        # indexes so it can never happen again. Runs every boot (idempotent
+        # — a fully-merged DB just does zero-row updates and no-ops on the
+        # index swap via IF NOT EXISTS/DROP IF EXISTS).
+
+        # 1) Votes: same voter voting via two different bot identities for
+        # the same guild currently creates two rows (unique key included
+        # clone_id) — keep only the earliest per (guild_id, voter_id),
+        # drop the rest, then blank clone_id so the count reads as one pool.
+        await conn.execute("""
+            DELETE FROM server_listing_votes a USING server_listing_votes b
+            WHERE a.guild_id = b.guild_id AND a.voter_id = b.voter_id
+              AND (a.created_at, a.ctid) > (b.created_at, b.ctid)
+        """)
+        await conn.execute("""
+            DROP INDEX IF EXISTS server_listing_votes_unique_key
+        """)
+        await conn.execute("""
+            UPDATE server_listing_votes SET clone_id = NULL WHERE clone_id IS NOT NULL
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS server_listing_votes_unique_key
+            ON server_listing_votes (guild_id, voter_id)
+        """)
+
+        # 2) Listings: for any guild_id with more than one row (one per
+        # clone_id it was ever listed under), keep the "best" one —
+        # prefer whichever already has a live voting panel, then whichever
+        # was updated most recently — fold every other row's boost_count
+        # into it, then delete the losers.
+        await conn.execute("""
+            WITH ranked AS (
+                SELECT guild_id, clone_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY guild_id
+                           ORDER BY (voting_channel_id IS NOT NULL) DESC, updated_at DESC
+                       ) AS rn
+                FROM server_listings
+            ),
+            losers AS (
+                SELECT sl.guild_id, sl.clone_id, sl.boost_count
+                FROM server_listings sl
+                JOIN ranked r ON r.guild_id = sl.guild_id AND r.clone_id IS NOT DISTINCT FROM sl.clone_id
+                WHERE r.rn > 1
+            ),
+            winner AS (
+                SELECT guild_id, clone_id FROM ranked WHERE rn = 1
+            ),
+            boost_totals AS (
+                SELECT l.guild_id, COALESCE(SUM(l.boost_count), 0) AS extra_boost
+                FROM losers l GROUP BY l.guild_id
+            )
+            UPDATE server_listings sl
+            SET boost_count = sl.boost_count + bt.extra_boost
+            FROM winner w, boost_totals bt
+            WHERE sl.guild_id = w.guild_id AND sl.clone_id IS NOT DISTINCT FROM w.clone_id
+              AND sl.guild_id = bt.guild_id
+        """)
+        await conn.execute("""
+            DELETE FROM server_listings sl
+            WHERE EXISTS (
+                SELECT 1 FROM (
+                    SELECT guild_id, clone_id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY guild_id
+                               ORDER BY (voting_channel_id IS NOT NULL) DESC, updated_at DESC
+                           ) AS rn
+                    FROM server_listings
+                ) r
+                WHERE r.guild_id = sl.guild_id AND r.clone_id IS NOT DISTINCT FROM sl.clone_id AND r.rn > 1
+            )
+        """)
+        await conn.execute("""
+            DROP INDEX IF EXISTS server_listings_guild_clone_key
+        """)
+        await conn.execute("""
+            UPDATE server_listings SET clone_id = NULL WHERE clone_id IS NOT NULL
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS server_listings_guild_key
+            ON server_listings (guild_id)
+        """)
+
+        # 3) Tokens: not identity-bearing (just an access credential per
+        # login), but same guild_id+clone_id split no longer makes sense —
+        # collapse to one live token per guild so the "list this server"
+        # link resolves to the same listing no matter which bot instance
+        # issued the token.
+        await conn.execute("""
+            DELETE FROM server_listing_tokens a USING server_listing_tokens b
+            WHERE a.guild_id = b.guild_id AND (a.created_at, a.ctid) < (b.created_at, b.ctid)
+        """)
+        await conn.execute("""
+            DROP INDEX IF EXISTS server_listing_tokens_guild_clone_key
+        """)
+        await conn.execute("""
+            UPDATE server_listing_tokens SET clone_id = NULL WHERE clone_id IS NOT NULL
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS server_listing_tokens_guild_key
+            ON server_listing_tokens (guild_id)
+        """)
+
+
         # Single-row running total for the site-wide visit-count banner
         # (app/_VisitBanner.tsx -> api/site_visits.py). Just a counter, not
         # a per-visit log — nothing here needs per-visitor identity or a
@@ -9164,33 +9278,41 @@ class Database:
         time /servers is rerun in this guild), but ALSO refreshes the
         server-verified guild_name/guild_icon_url/member_count columns on
         every call, since those can drift between runs and are what
-        upsert_server_listing trusts instead of client-supplied values."""
+        upsert_server_listing trusts instead of client-supplied values.
+
+        `clone_id` is accepted but IGNORED for lookup/storage — tokens are
+        now one-per-guild regardless of which bot instance issued them (see
+        the server_listings migration note in _create_tables): a token
+        minted via a clone must resolve to the exact same listing as one
+        minted via the main bot for that same real Discord server."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT token FROM server_listing_tokens WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
-                guild_id, clone_id
+                "SELECT token FROM server_listing_tokens WHERE guild_id = $1",
+                guild_id
             )
             if row:
                 await conn.execute(
                     """UPDATE server_listing_tokens
-                       SET guild_name = $3, guild_icon_url = $4, member_count = $5
-                       WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2""",
-                    guild_id, clone_id, guild_name, guild_icon_url, member_count,
+                       SET guild_name = $2, guild_icon_url = $3, member_count = $4
+                       WHERE guild_id = $1""",
+                    guild_id, guild_name, guild_icon_url, member_count,
                 )
                 return row["token"]
             token = secrets.token_urlsafe(24)
             await conn.execute(
                 """INSERT INTO server_listing_tokens
                    (guild_id, clone_id, token, guild_name, guild_icon_url, member_count)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
-                guild_id, clone_id, token, guild_name, guild_icon_url, member_count,
+                   VALUES ($1, NULL, $2, $3, $4, $5)""",
+                guild_id, token, guild_name, guild_icon_url, member_count,
             )
             return token
 
     async def resolve_listing_token(self, token: str) -> Optional[Dict]:
         """Returns {guild_id, clone_id, guild_name, guild_icon_url,
-        member_count} for a valid listing token, or None."""
+        member_count} for a valid listing token, or None. clone_id in the
+        row is always NULL now (see get_or_create_listing_token) — kept in
+        the SELECT only so old call sites destructuring it don't break."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -9200,11 +9322,14 @@ class Database:
             return dict(row) if row else None
 
     async def get_server_listing(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        """clone_id is accepted but ignored — one listing per real guild_id,
+        shared across the main bot and every clone (see the migration note
+        in _create_tables)."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM server_listings WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
-                guild_id, clone_id
+                "SELECT * FROM server_listings WHERE guild_id = $1",
+                guild_id
             )
             return dict(row) if row else None
 
@@ -9217,7 +9342,12 @@ class Database:
         """guild_name/guild_icon_url/member_count MUST come from the
         server_listing_tokens row (server-verified), never straight from the
         client's request body — see server_listing_tokens' comment in
-        _create_tables."""
+        _create_tables.
+
+        clone_id is accepted (existing call sites still pass it) but always
+        stored as NULL — the listing is keyed on guild_id alone now, so
+        resubmitting via a different bot identity updates the SAME row
+        instead of creating a second directory card for the same server."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -9225,8 +9355,8 @@ class Database:
                 INSERT INTO server_listings
                     (guild_id, clone_id, guild_name, guild_icon_url, member_count,
                      invite_url, description, tags, banner_url, voting_panel_pending, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NOW())
-                ON CONFLICT (guild_id, COALESCE(clone_id, -1)) DO UPDATE SET
+                VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, TRUE, NOW())
+                ON CONFLICT (guild_id) DO UPDATE SET
                     guild_name = EXCLUDED.guild_name,
                     guild_icon_url = EXCLUDED.guild_icon_url,
                     member_count = EXCLUDED.member_count,
@@ -9241,23 +9371,26 @@ class Database:
                     updated_at = NOW()
                 RETURNING *
                 """,
-                guild_id, clone_id, guild_name, guild_icon_url, member_count,
+                guild_id, guild_name, guild_icon_url, member_count,
                 invite_url, description, tags, banner_url,
             )
             return dict(row)
 
     async def get_pending_voting_panels(self, clone_id: Optional[int], limit: int = 10) -> List[Dict]:
-        """Listings flagged voting_panel_pending for THIS process's clone_id
-        — each clone only ever sees its own guilds, so this is scoped the
-        same way ship_config/roast_config lookups are elsewhere, keeping it
-        a cheap per-clone poll rather than a full-table scan."""
+        """Every active bot process (main or any clone) polls this and
+        races to claim pending rows — clone_id is accepted but no longer
+        used to scope the query, since a listing isn't "owned" by one bot
+        identity anymore. Whichever process's guild cache actually resolves
+        the guild_id in _voting_panel_poller wins; harmless if more than one
+        process sees the same pending row since clear_voting_panel_pending
+        is idempotent."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT guild_id, clone_id FROM server_listings
-                   WHERE voting_panel_pending = TRUE AND clone_id IS NOT DISTINCT FROM $1
-                   LIMIT $2""",
-                clone_id, limit,
+                   WHERE voting_panel_pending = TRUE
+                   LIMIT $1""",
+                limit,
             )
             return [dict(r) for r in rows]
 
@@ -9265,9 +9398,8 @@ class Database:
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE server_listings SET voting_panel_pending = FALSE "
-                "WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
-                guild_id, clone_id,
+                "UPDATE server_listings SET voting_panel_pending = FALSE WHERE guild_id=$1",
+                guild_id,
             )
 
     async def set_listing_voting_panel(
@@ -9283,7 +9415,11 @@ class Database:
         submitted a full listing on the website yet — invite_url/description/
         tags are left at their empty defaults, filled in later by the submit
         form; the panel's Vote button works fine before that (votes aren't
-        tied to invite_url), Boost just tells them to list first."""
+        tied to invite_url), Boost just tells them to list first.
+
+        clone_id is accepted but always stored as NULL — the panel belongs
+        to the guild, not to whichever bot identity happened to create it,
+        so a clone and the main bot both resolve to the same panel row."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
@@ -9291,13 +9427,13 @@ class Database:
                 INSERT INTO server_listings
                     (guild_id, clone_id, guild_name, guild_icon_url, member_count,
                      invite_url, description, tags, voting_channel_id, voting_message_id, updated_at)
-                VALUES ($1, $2, $3, $4, $5, '', '', '{}', $6, $7, NOW())
-                ON CONFLICT (guild_id, COALESCE(clone_id, -1)) DO UPDATE SET
+                VALUES ($1, NULL, $2, $3, $4, '', '', '{}', $5, $6, NOW())
+                ON CONFLICT (guild_id) DO UPDATE SET
                     voting_channel_id = EXCLUDED.voting_channel_id,
                     voting_message_id = EXCLUDED.voting_message_id,
                     updated_at = NOW()
                 """,
-                guild_id, clone_id, guild_name, guild_icon_url, member_count,
+                guild_id, guild_name, guild_icon_url, member_count,
                 channel_id, message_id,
             )
     # clauses here (never interpolated from the request directly) so a bad
@@ -9316,17 +9452,20 @@ class Database:
         after a purchase is confirmed — see that file for the current
         (unwired) state of payment verification. Returns the new total so
         the caller can show it back to the user without a second query.
-        """
+
+        clone_id is accepted (the client may still send a stale non-null
+        value from an old cached listing) but ignored — matched on
+        guild_id alone since listings no longer split by bot identity."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE server_listings
-                SET boost_count = boost_count + $3, updated_at = NOW()
-                WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                SET boost_count = boost_count + $2, updated_at = NOW()
+                WHERE guild_id = $1
                 RETURNING boost_count
                 """,
-                guild_id, clone_id, amount,
+                guild_id, amount,
             )
             return row["boost_count"] if row else 0
 
@@ -9463,23 +9602,25 @@ class Database:
         """Used only by the dead-invite prune cron — a listing whose invite
         404s gets removed outright rather than hidden, since there's no
         "unlisted" state in this schema and a dead invite is useless to
-        keep around either way."""
+        keep around either way. clone_id is accepted but ignored — matched
+        on guild_id alone."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
-                "DELETE FROM server_listings WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
-                guild_id, clone_id,
+                "DELETE FROM server_listings WHERE guild_id=$1",
+                guild_id,
             )
 
     async def report_listing(self, guild_id: int, clone_id: Optional[int], reason: str) -> None:
         """Logs a public "report this server" click — see the reports table
         comment in _create_tables for why there's deliberately no auto-action
-        or rate limit here, just a log an admin reads."""
+        or rate limit here, just a log an admin reads. clone_id is stored
+        as NULL now, same as the listing it refers to."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO server_listing_reports (guild_id, clone_id, reason) VALUES ($1, $2, $3)",
-                guild_id, clone_id, reason,
+                "INSERT INTO server_listing_reports (guild_id, clone_id, reason) VALUES ($1, NULL, $2)",
+                guild_id, reason,
             )
 
     # --- server listing votes ----------------------------------------------
@@ -9489,14 +9630,19 @@ class Database:
     ) -> bool:
         """Returns True if this vote was newly recorded, False if this voter
         had already voted for this listing (ON CONFLICT DO NOTHING makes the
-        UNIQUE/PK constraint the actual double-vote guard, not this code)."""
+        UNIQUE/PK constraint the actual double-vote guard, not this code).
+
+        clone_id is accepted (callers still pass whichever bot identity the
+        vote came through) but stored as NULL — one vote pool per guild_id
+        regardless of whether it came via the main bot's panel, a clone's
+        panel, or the web OAuth flow."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             result = await conn.execute(
                 """INSERT INTO server_listing_votes (guild_id, clone_id, voter_id, voter_username)
-                   VALUES ($1, $2, $3, $4)
-                   ON CONFLICT (guild_id, COALESCE(clone_id, -1), voter_id) DO NOTHING""",
-                guild_id, clone_id, voter_id, voter_username,
+                   VALUES ($1, NULL, $2, $3)
+                   ON CONFLICT (guild_id, voter_id) DO NOTHING""",
+                guild_id, voter_id, voter_username,
             )
             return result.endswith("1")
 
@@ -9504,13 +9650,13 @@ class Database:
         """Cheap COUNT(*) for one listing — used to keep the in-Discord
         vote/boost panel embed (server_listing.py) showing a live number,
         separately from the heavier directory-feed join in
-        get_public_server_listings/get_public_listing_by_guild."""
+        get_public_server_listings/get_public_listing_by_guild. clone_id is
+        accepted but ignored — one shared vote pool per guild_id."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT COUNT(*) AS c FROM server_listing_votes "
-                "WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
-                guild_id, clone_id,
+                "SELECT COUNT(*) AS c FROM server_listing_votes WHERE guild_id=$1",
+                guild_id,
             )
             return row["c"] if row else 0
 
@@ -9518,23 +9664,26 @@ class Database:
         """Voters for one listing, most recent first (there's no per-voter
         weighting, just one vote each — "top" here means the leaderboard of
         who showed up, not a ranked score). voter_username may be null for
-        votes cast before that column existed."""
+        votes cast before that column existed. clone_id is accepted but
+        ignored — one shared vote pool per guild_id."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT voter_id, voter_username, created_at FROM server_listing_votes
-                   WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2
-                   ORDER BY created_at DESC LIMIT $3""",
-                guild_id, clone_id, limit,
+                   WHERE guild_id=$1
+                   ORDER BY created_at DESC LIMIT $2""",
+                guild_id, limit,
             )
             return [dict(r) for r in rows]
 
     async def has_voted(self, guild_id: int, clone_id: Optional[int], voter_id: int) -> bool:
+        """clone_id is accepted but ignored — a vote cast via any bot
+        identity counts for the guild as a whole."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT 1 FROM server_listing_votes WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2 AND voter_id=$3",
-                guild_id, clone_id, voter_id,
+                "SELECT 1 FROM server_listing_votes WHERE guild_id=$1 AND voter_id=$2",
+                guild_id, voter_id,
             )
             return row is not None
 
@@ -9675,19 +9824,20 @@ class Database:
     async def ensure_listing_ref_code(self, guild_id: int, clone_id: Optional[int]) -> str:
         """Every listing gets a ref_code lazily on first request rather than
         at submit time, so listings created before this feature existed
-        still get one transparently."""
+        still get one transparently. clone_id is accepted but ignored —
+        matched on guild_id alone."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT ref_code FROM server_listings WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
-                guild_id, clone_id,
+                "SELECT ref_code FROM server_listings WHERE guild_id=$1",
+                guild_id,
             )
             if row and row["ref_code"]:
                 return row["ref_code"]
             code = secrets.token_urlsafe(6)
             await conn.execute(
-                "UPDATE server_listings SET ref_code=$3 WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
-                guild_id, clone_id, code,
+                "UPDATE server_listings SET ref_code=$2 WHERE guild_id=$1",
+                guild_id, code,
             )
             return code
 
@@ -9701,12 +9851,13 @@ class Database:
     async def set_listing_invite_code(self, guild_id: int, clone_id: Optional[int], invite_code: str) -> None:
         """Parsed once from invite_url at submit time (see server_listings.py
         POST handler) — this is the invite _check_ref_conversion watches for
-        use-count increases on."""
+        use-count increases on. clone_id is accepted but ignored — matched
+        on guild_id alone."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE server_listings SET invite_code=$3 WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
-                guild_id, clone_id, invite_code,
+                "UPDATE server_listings SET invite_code=$2 WHERE guild_id=$1",
+                guild_id, invite_code,
             )
 
     async def check_ref_conversion(
@@ -9717,21 +9868,28 @@ class Database:
         if this guild has no listing, the listing's invite_code doesn't
         match the one that was actually used, or there's no unclaimed recent
         click to attribute the bump to — a use-count increase with no
-        pending click just means organic invite traffic, not a referral."""
+        pending click just means organic invite traffic, not a referral.
+
+        clone_id is accepted (server_listing.py's on_member_join hands over
+        the REAL running bot's clone_id, which for a clone process is a
+        non-null integer) but ignored here — the listing row is always
+        guild_id-keyed now with clone_id=NULL, so filtering on the live
+        bot's own clone_id would silently never match for any guild running
+        a clone, breaking referral-boost tracking for every clone-hosted
+        listing. Matched on guild_id alone."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """SELECT ref_code, last_known_invite_uses FROM server_listings
-                   WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2
-                     AND invite_code = $3""",
-                guild_id, clone_id, invite_code,
+                   WHERE guild_id=$1 AND invite_code = $2""",
+                guild_id, invite_code,
             )
             if row is None:
                 return
             if current_uses <= row["last_known_invite_uses"]:
                 await conn.execute(
-                    "UPDATE server_listings SET last_known_invite_uses=$3 WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
-                    guild_id, clone_id, current_uses,
+                    "UPDATE server_listings SET last_known_invite_uses=$2 WHERE guild_id=$1",
+                    guild_id, current_uses,
                 )
                 return
             pending_click = await conn.fetchrow(
@@ -9742,10 +9900,10 @@ class Database:
             )
             await conn.execute(
                 """UPDATE server_listings
-                   SET last_known_invite_uses = $3,
-                       confirmed_conversions = confirmed_conversions + CASE WHEN $4 THEN 1 ELSE 0 END
-                   WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2""",
-                guild_id, clone_id, current_uses, pending_click is not None,
+                   SET last_known_invite_uses = $2,
+                       confirmed_conversions = confirmed_conversions + CASE WHEN $3 THEN 1 ELSE 0 END
+                   WHERE guild_id=$1""",
+                guild_id, current_uses, pending_click is not None,
             )
             if pending_click is not None:
                 await conn.execute("DELETE FROM server_listing_ref_clicks WHERE id=$1", pending_click["id"])
