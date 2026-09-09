@@ -9500,6 +9500,20 @@ class Database:
             )
             return result.endswith("1")
 
+    async def get_server_listing_vote_count(self, guild_id: int, clone_id: Optional[int] = None) -> int:
+        """Cheap COUNT(*) for one listing — used to keep the in-Discord
+        vote/boost panel embed (server_listing.py) showing a live number,
+        separately from the heavier directory-feed join in
+        get_public_server_listings/get_public_listing_by_guild."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*) AS c FROM server_listing_votes "
+                "WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+            return row["c"] if row else 0
+
     async def get_top_voters(self, guild_id: int, clone_id: Optional[int] = None, limit: int = 10) -> List[Dict]:
         """Voters for one listing, most recent first (there's no per-voter
         weighting, just one vote each — "top" here means the leaderboard of
