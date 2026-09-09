@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "8"
+SCHEMA_VERSION = "9"
 
 
 async def get_pool():
@@ -4215,6 +4215,16 @@ class Database:
         new_guild_claims_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "007_new_guild_join_claims.sql"
         if new_guild_claims_migration.exists():
             await conn.execute(new_guild_claims_migration.read_text())
+
+        # Server directory feature enhancements — reviews/ratings,
+        # verification tiers, click/referral analytics, category/tag
+        # metadata (see api/server_reviews.py, api/server_analytics.py,
+        # and the ReviewsSection/ReferralWidget/AnalyticsDashboard
+        # frontend components). Same additive-only, idempotent
+        # migration-file pattern as 001-007 above.
+        feature_enhancements_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "009_feature_enhancements.sql"
+        if feature_enhancements_migration.exists():
+            await conn.execute(feature_enhancements_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
@@ -10110,6 +10120,18 @@ class Database:
                 "UPDATE server_listings SET ref_code=$2 WHERE guild_id=$1",
                 guild_id, code,
             )
+            # Also seed listing_referral_stats (migration 009) so the new
+            # ReferralWidget/analytics dashboard has a row to read/increment
+            # from the moment a code exists, instead of only appearing after
+            # the first click.
+            await conn.execute(
+                """
+                INSERT INTO listing_referral_stats (guild_id, clone_id, ref_code)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (ref_code) DO NOTHING
+                """,
+                guild_id, clone_id, code,
+            )
             return code
 
     async def log_ref_click(self, ref_code: str) -> None:
@@ -10118,6 +10140,18 @@ class Database:
             await conn.execute(
                 "INSERT INTO server_listing_ref_clicks (ref_code) VALUES ($1)", ref_code,
             )
+
+    async def get_guild_id_by_ref_code(self, ref_code: str) -> Optional[int]:
+        """Looks up the listing a ref_code belongs to, so callers that only
+        have the code (e.g. the public referral-click endpoint) can also
+        log against the richer listing_click_log/listing_referral_stats
+        tables added in migration 009, which key on guild_id."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT guild_id FROM server_listings WHERE ref_code=$1", ref_code,
+            )
+            return row["guild_id"] if row else None
 
     async def set_listing_invite_code(self, guild_id: int, clone_id: Optional[int], invite_code: str) -> None:
         """Parsed once from invite_url at submit time (see server_listings.py
