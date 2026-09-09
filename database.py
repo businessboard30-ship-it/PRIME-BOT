@@ -9629,12 +9629,28 @@ class Database:
 
     # --- server listing votes ----------------------------------------------
 
+    VOTE_COOLDOWN = timedelta(hours=12)
+
     async def cast_server_listing_vote(
         self, guild_id: int, clone_id: Optional[int], voter_id: int, voter_username: Optional[str] = None,
     ) -> bool:
-        """Returns True if this vote was newly recorded, False if this voter
-        had already voted for this listing (ON CONFLICT DO NOTHING makes the
-        UNIQUE/PK constraint the actual double-vote guard, not this code).
+        """Returns True if this vote was newly recorded (first-ever vote from
+        this voter for this guild, OR a re-vote after VOTE_COOLDOWN has
+        elapsed since their last one). False if they already voted within
+        the last 12 hours.
+
+        Previously ON CONFLICT DO NOTHING made a vote permanent — the same
+        Discord account could never vote for the same server twice, ever.
+        Now it's ON CONFLICT DO UPDATE, gated by a WHERE clause on the
+        existing row's created_at: if that row is older than the cooldown,
+        the UPDATE lands (bumping created_at to NOW(), which is what
+        actually re-enables voting and also re-freshens their spot in the
+        top-voters leaderboard); if it's still within cooldown, the WHERE
+        clause makes Postgres skip the row entirely, which reads back as
+        the exact same "0 rows affected" result DO NOTHING used to give for
+        an already-voted voter — so the True/False contract callers rely on
+        (server_listing.py's button, server_listing_vote_oauth.py) needs no
+        changes, only this table's own conflict handling does.
 
         clone_id is accepted (callers still pass whichever bot identity the
         vote came through) but stored as NULL — one vote pool per guild_id
@@ -9645,25 +9661,35 @@ class Database:
             result = await conn.execute(
                 """INSERT INTO server_listing_votes (guild_id, clone_id, voter_id, voter_username)
                    VALUES ($1, NULL, $2, $3)
-                   ON CONFLICT (guild_id, voter_id) DO NOTHING""",
-                guild_id, voter_id, voter_username,
+                   ON CONFLICT (guild_id, voter_id) DO UPDATE
+                   SET created_at = NOW(), voter_username = EXCLUDED.voter_username
+                   WHERE server_listing_votes.created_at < NOW() - $4::interval""",
+                guild_id, voter_id, voter_username, self.VOTE_COOLDOWN,
             )
             newly_voted = result.endswith("1")
-            # Diagnostic logging — this is the one place a vote is actually
-            # written, so if a vote "doesn't count" this line says definitively
-            # whether the write happened, was a no-op (already-voted-before,
-            # which reads as INSERT 0 0 in Postgres command tags), or the
-            # caller's incoming clone_id was even worth passing (it isn't
-            # stored — see docstring — so a caller-side clone_id mismatch was
-            # never the actual cause of a miscount; this line makes that
-            # visible instead of assumed).
             logger.info(
                 "[server-listing-vote] guild=%s voter=%s incoming_clone_id=%s -> %s (raw=%r)",
                 guild_id, voter_id, clone_id,
-                "NEW VOTE INSERTED" if newly_voted else "no-op (voter already voted for this guild_id)",
+                "VOTE RECORDED (new or cooldown elapsed)" if newly_voted else "no-op (still within 12h cooldown)",
                 result,
             )
             return newly_voted
+
+    async def get_vote_cooldown_remaining(self, guild_id: int, voter_id: int) -> Optional[timedelta]:
+        """How much longer this voter must wait before they can vote again
+        for this guild, or None if they've never voted / are already past
+        cooldown. Callers use this to show "come back in Xh" instead of a
+        flat "you already voted" that never explains when to return."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT created_at FROM server_listing_votes WHERE guild_id=$1 AND voter_id=$2",
+                guild_id, voter_id,
+            )
+            if row is None:
+                return None
+            remaining = (row["created_at"] + self.VOTE_COOLDOWN) - datetime.now(timezone.utc)
+            return remaining if remaining.total_seconds() > 0 else None
 
     async def get_server_listing_vote_count(self, guild_id: int, clone_id: Optional[int] = None) -> int:
         """Cheap COUNT(*) for one listing — used to keep the in-Discord
