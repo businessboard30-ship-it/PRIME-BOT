@@ -8997,7 +8997,12 @@ class Database:
                 "SELECT clone_id FROM discord_cloned_bots WHERE bot_user_id = $1 AND status = 'active'",
                 bot_user_id
             )
-            return row["clone_id"] if row else None
+            resolved = row["clone_id"] if row else None
+            logger.info(
+                "[vote-bonus] resolve_clone_id_by_bot_user_id bot_user_id=%s -> clone_id=%s",
+                bot_user_id, resolved,
+            )
+            return resolved
 
     async def grant_vote_bonus_for_voter(self, user_id: int, clone_id: Optional[int], reason: str = "vote_bonus_webhook") -> List[Dict]:
         """Called from api/vote_webhook.py once a vote is verified. A vote
@@ -9025,6 +9030,10 @@ class Database:
                 """,
                 user_id, clone_id
             )
+        logger.info(
+            "[vote-bonus] grant_vote_bonus_for_voter user=%s clone_id=%s -> %d eligible-config guild(s) found",
+            user_id, clone_id, len(rows),
+        )
         credited = []
         for row in rows:
             cooldown_seconds = row["vote_cooldown_hours"] * 3600
@@ -9033,12 +9042,26 @@ class Database:
                 else (datetime.now(timezone.utc) - row["last_vote_bonus_at"].replace(tzinfo=timezone.utc)).total_seconds()
             )
             if elapsed < cooldown_seconds:
+                logger.info(
+                    "[vote-bonus] user=%s guild=%s skipped — %ss remaining of %ss cooldown",
+                    user_id, row["guild_id"], cooldown_seconds - elapsed, cooldown_seconds,
+                )
                 continue
             new_balance = await self.adjust_economy_balance(
                 row["guild_id"], user_id, row["vote_bonus_amount"], reason,
                 clone_id=clone_id, cooldown_field="last_vote_bonus_at"
             )
+            logger.info(
+                "[vote-bonus] user=%s guild=%s credited amount=%s new_balance=%s",
+                user_id, row["guild_id"], row["vote_bonus_amount"], new_balance,
+            )
             credited.append({"guild_id": row["guild_id"], "amount": row["vote_bonus_amount"], "new_balance": new_balance})
+        if not credited:
+            logger.warning(
+                "[vote-bonus] user=%s clone_id=%s — vote verified but credited NO guilds "
+                "(no economy balance row yet, vote_bonus disabled, or all on cooldown)",
+                user_id, clone_id,
+            )
         return credited
 
     async def get_economy_leaderboard(self, guild_id: int, clone_id: Optional[int] = None, limit: int = 10) -> List[Dict]:
@@ -9786,9 +9809,17 @@ class Database:
                 guild_id, clone_id,
             )
             if not row:
+                logger.warning(
+                    "[server-listing-vote] get_public_listing_by_guild guild=%s clone_id=%s -> NO LISTING FOUND",
+                    guild_id, clone_id,
+                )
                 return None
             d = dict(row)
             d["verified"] = d["verified"] or (d["vote_count"] >= 5 or d["confirmed_conversions"] >= 3)
+            logger.info(
+                "[server-listing-vote] get_public_listing_by_guild guild=%s clone_id=%s -> vote_count=%s verified=%s",
+                guild_id, clone_id, d["vote_count"], d["verified"],
+            )
             return d
 
     async def get_similar_listings(self, guild_id: int, clone_id: Optional[int] = None, limit: int = 4) -> List[Dict]:
@@ -10005,9 +10036,18 @@ class Database:
                 guild_id, voter_id,
             )
             if row is None:
+                logger.info(
+                    "[server-listing-vote] cooldown check guild=%s voter=%s -> no prior vote row",
+                    guild_id, voter_id,
+                )
                 return None
             remaining = (row["created_at"] + self.VOTE_COOLDOWN) - datetime.now(timezone.utc)
-            return remaining if remaining.total_seconds() > 0 else None
+            result = remaining if remaining.total_seconds() > 0 else None
+            logger.info(
+                "[server-listing-vote] cooldown check guild=%s voter=%s -> %s",
+                guild_id, voter_id, result,
+            )
+            return result
 
     async def get_server_listing_vote_count(self, guild_id: int, clone_id: Optional[int] = None) -> int:
         """Cheap COUNT(*) for one listing — used to keep the in-Discord
@@ -10050,7 +10090,9 @@ class Database:
                 "SELECT 1 FROM server_listing_votes WHERE guild_id=$1 AND voter_id=$2",
                 guild_id, voter_id,
             )
-            return row is not None
+            voted = row is not None
+            logger.info("[server-listing-vote] has_voted guild=%s voter=%s -> %s", guild_id, voter_id, voted)
+            return voted
 
     async def create_vote_oauth_state(self, state: str, guild_id: int, clone_id: Optional[int]) -> None:
         pool = await get_pool()
