@@ -323,6 +323,15 @@ class ServerListingCog(GuildOnlyCog):
                     row["guild_id"],
                 )
                 continue
+            # Atomic claim BEFORE attempting anything — see
+            # claim_voting_panel_pending's docstring. When a guild has
+            # several clone bots in it (not just the main bot), more than
+            # one process can reach this exact point for the same guild_id
+            # in the same tick; only the one that actually flips the row
+            # proceeds, everyone else backs off here.
+            claimed = await db.claim_voting_panel_pending(row["guild_id"])
+            if not claimed:
+                continue
             try:
                 status = await _ensure_voting_panel(guild, row["clone_id"])
             except Exception:
@@ -330,6 +339,7 @@ class ServerListingCog(GuildOnlyCog):
                     "[server_listing] failed auto-creating voting panel for guild %s (%s) — will retry next poll",
                     guild.id, guild.name,
                 )
+                await db.set_voting_panel_pending(row["guild_id"])
                 continue
             if status == "no_permission":
                 logger.warning(
@@ -338,10 +348,13 @@ class ServerListingCog(GuildOnlyCog):
                     "every 60s until permissions are fixed",
                     guild.id, guild.name,
                 )
+                await db.set_voting_panel_pending(row["guild_id"])
                 continue
             logger.info(
                 "[server_listing] voting panel for guild %s (%s): %s", guild.id, guild.name, status,
             )
+            # Already cleared by claim_voting_panel_pending above — this
+            # call is now just a harmless no-op kept for clarity/safety.
             await db.clear_voting_panel_pending(row["guild_id"], row["clone_id"])
 
     @_voting_panel_poller.before_loop
