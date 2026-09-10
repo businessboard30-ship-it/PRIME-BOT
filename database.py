@@ -9770,23 +9770,37 @@ class Database:
                 guild_id,
             )
 
-    async def reset_voting_panel(self, guild_id: int) -> None:
-        """Clears a listing's stored voting_channel_id/voting_message_id and
-        re-flags voting_panel_pending — called by _panel_vote_sync in
-        server_listing.py when it hits a Forbidden/NotFound editing the
-        panel message (e.g. "Cannot edit a message authored by another
-        user" — the stored message_id belongs to a bot/webhook other than
-        the one currently running, so this bot can never edit it no matter
-        how many times the sync loop retries). Without this, that failure
-        just repeats every tick forever. _voting_panel_poller picks the
-        cleared row back up on its next pass and posts a fresh panel this
-        bot actually owns."""
+    async def clear_voting_panel_message(self, guild_id: int) -> None:
+        """Clears ONLY voting_message_id (keeps voting_channel_id) and
+        re-flags voting_panel_pending — called by _panel_vote_sync and the
+        Vote button's own click handler in server_listing.py when either
+        hits a Forbidden/NotFound editing the panel message (e.g. error
+        50005 "Cannot edit a message authored by another user" — the stored
+        message_id belongs to a bot/webhook other than the one currently
+        running, so this bot can never edit it no matter how many times
+        anything retries).
+
+        Deliberately does NOT touch voting_channel_id — an earlier version
+        of this method cleared both, which meant _ensure_voting_panel's
+        reuse check (`if existing.get("voting_channel_id")`) failed too and
+        it created a WHOLE NEW #vote-for-us channel instead of just a new
+        message — reintroducing the exact duplicate-channel bug
+        claim_voting_panel_pending was built to prevent, just from a
+        different trigger. Keeping channel_id means _ensure_voting_panel's
+        `channel = guild.get_channel(...)` still resolves to the existing
+        channel, so it falls straight through to posting a fresh message
+        there — one broken old message plus one new one in the SAME
+        channel, not a second channel. The caller should also best-effort
+        delete the old message first (Manage Messages permission covers
+        deleting another bot's message even though editing it is
+        forbidden) so that stale duplicate doesn't lingering in the
+        channel at all."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE server_listings
-                SET voting_channel_id = NULL, voting_message_id = NULL, voting_panel_pending = TRUE
+                SET voting_message_id = NULL, voting_panel_pending = TRUE
                 WHERE guild_id = $1
                 """,
                 guild_id,
