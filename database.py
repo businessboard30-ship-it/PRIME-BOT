@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "11"
+SCHEMA_VERSION = "12"
 # History (why this matters): "9" -> "10" fixed report_notify_config's
 # dm_user_id column and server_listing_votes' unique-index migration —
 # both had been sitting in _create_tables for a while but never actually
@@ -148,6 +148,9 @@ SCHEMA_VERSION = "11"
 # (UndefinedColumnError / InvalidColumnReferenceError) — an unrelated bot
 # feature silently broken for who knows how long. "10" -> "11" adds
 # server_listings.invite_dead_notified_at (_dead_invite_poller below).
+# "11" -> "12" adds server_listings.online_count and the new
+# listing_member_snapshots table (discord_bot/cogs/listing_snapshots.py's
+# "online now" badge + member-count trend arrow on the public directory).
 # Rule going forward: ANY new CREATE TABLE / ALTER TABLE / CREATE INDEX
 # added to _create_tables MUST come with a version bump in the same
 # change, or it's dead code that silently never executes.
@@ -3139,6 +3142,41 @@ class Database:
         # change, only the card's *display* truncates to 20 chars now).
         await conn.execute("""
             ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS long_description TEXT
+        """)
+        # online_count: latest "members currently online" reading, refreshed
+        # periodically by discord_bot/cogs/listing_snapshots.py via Discord's
+        # REST GET /guilds/{id}?with_counts=true (approximate_presence_count)
+        # — deliberately NOT sourced from the gateway's presence intent,
+        # which is privileged and this bot doesn't request. Denormalized
+        # here (rather than only in the snapshot table below) so the
+        # directory feed's live "online now" badge is a single-table read,
+        # not a join. NULL means no reading has landed yet (bot not yet
+        # ticked for this guild) — the frontend hides the badge in that case
+        # rather than showing a misleading 0.
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS online_count INTEGER
+        """)
+        # Rolling history of member_count/online_count readings, one row per
+        # guild per snapshot tick, purely to power the directory's growth
+        # trend arrow (member count now vs. ~24h ago) — see
+        # get_public_server_listings' trend join and
+        # listing_snapshots.py's prune step (rows older than
+        # SNAPSHOT_RETENTION_DAYS are deleted each tick so this can't grow
+        # unbounded). Matched on guild_id, COALESCE(clone_id,-1) same as
+        # server_listings itself.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS listing_member_snapshots (
+                id BIGSERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                member_count INTEGER NOT NULL,
+                online_count INTEGER,
+                captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS listing_member_snapshots_lookup_idx
+            ON listing_member_snapshots (guild_id, COALESCE(clone_id, -1), captured_at DESC)
         """)
         # Public "report this server" button on the directory — no auth,
         # so this is a raw complaint log an admin reads manually, not an
@@ -9762,9 +9800,67 @@ class Database:
                 result["new_boost_count"] = new_total
                 return result
 
+    async def get_all_listed_guild_refs(self) -> List[Dict]:
+        """guild_id/clone_id for every current listing — feed for
+        listing_snapshots.py's periodic member/online-count refresh, same
+        shape/purpose as get_all_listing_invites above but without the
+        invite_url this job doesn't need."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT guild_id, clone_id FROM server_listings")
+            return [dict(r) for r in rows]
+
+    async def record_listing_snapshot(
+        self, guild_id: int, clone_id: Optional[int], member_count: int, online_count: Optional[int],
+    ) -> None:
+        """Called once per guild per tick by listing_snapshots.py. Updates
+        server_listings' own member_count/online_count (so every other
+        query — directory feed, deep-link page, leaderboard — reflects the
+        latest reading with no extra join) and appends a row to
+        listing_member_snapshots for the trend arrow's ~24h-ago comparison.
+        member_count here is Discord's own guild count (kept in sync
+        server-side too, since it can otherwise only change on-page when a
+        listing is re-submitted)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE server_listings
+                    SET member_count = $3, online_count = $4, updated_at = NOW()
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                    """,
+                    guild_id, clone_id, member_count, online_count,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO listing_member_snapshots (guild_id, clone_id, member_count, online_count)
+                    VALUES ($1, $2, $3, $4)
+                    """,
+                    guild_id, clone_id, member_count, online_count,
+                )
+
+    async def prune_listing_snapshots(self, retention_days: int = 30) -> int:
+        """Deletes snapshot rows older than retention_days — called at the
+        end of each listing_snapshots.py tick so the history table stays
+        bounded regardless of how long the bot's been running. Returns the
+        number of rows deleted, purely for the tick's log line."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM listing_member_snapshots WHERE captured_at < NOW() - ($1 || ' days')::interval",
+                str(retention_days),
+            )
+            # asyncpg command tags look like "DELETE 42"
+            try:
+                return int(result.split()[-1])
+            except (ValueError, IndexError):
+                return 0
+
     async def get_public_server_listings(
         self, limit: int = 24, offset: int = 0, sort: str = "trending",
         tag: Optional[str] = None, nsfw: bool = False,
+        q: Optional[str] = None, tags: Optional[list] = None,
     ) -> Dict:
         """Ranked/filterable/paginated directory feed for the public /servers
         page. vote count (from server_listing_votes) plus confirmed_
@@ -9776,7 +9872,12 @@ class Database:
         existing here already implies the bot-in-guild check.
 
         `tag` filters to listings whose tags array contains it (case already
-        normalized to lowercase at submit time — see _clean_tags). `nsfw`
+        normalized to lowercase at submit time — see _clean_tags). `tags`
+        (plural) is the multi-select version: listings must contain ALL of
+        the given tags, not just one — `tag` and `tags` can both be set and
+        combine as an AND. `q` does a case-insensitive substring match
+        against guild_name and description (server-wide, not just the
+        current page, unlike the frontend's old client-side filter). `nsfw`
         False (the default) hides anything tagged "nsfw"; True shows only
         those, so the site's NSFW toggle is one filter, not two endpoints.
         Returns {"listings": [...], "total": N} so the frontend can render
@@ -9790,16 +9891,40 @@ class Database:
             if tag:
                 where.append(f"${len(params) + 1} = ANY(sl.tags)")
                 params.append(tag)
+            if tags:
+                # Every requested tag must be present — sl.tags @> ARRAY[...]
+                # rather than one ANY() per tag, so this stays one param.
+                where.append(f"sl.tags @> ${len(params) + 1}")
+                params.append(list(tags))
+            if q:
+                where.append(
+                    f"(sl.guild_name ILIKE ${len(params) + 1} OR sl.description ILIKE ${len(params) + 1})"
+                )
+                params.append(f"%{q}%")
             where_sql = " AND ".join(where)
             rows = await conn.fetch(
                 f"""
                 SELECT sl.*, COALESCE(v.vote_count, 0) AS vote_count,
+                       prev.member_count AS prev_member_count,
                        COUNT(*) OVER () AS total_count
                 FROM server_listings sl
                 LEFT JOIN (
                     SELECT guild_id, COUNT(*) AS vote_count
                     FROM server_listing_votes GROUP BY guild_id
                 ) v ON v.guild_id = sl.guild_id
+                -- Nearest snapshot at least ~24h old, per listing — used
+                -- only for the directory card's growth trend arrow. LATERAL
+                -- + LIMIT 1 rather than a windowed join since this needs
+                -- "closest to 24h ago", not an exact timestamp match.
+                LEFT JOIN LATERAL (
+                    SELECT member_count
+                    FROM listing_member_snapshots s
+                    WHERE s.guild_id = sl.guild_id
+                      AND s.clone_id IS NOT DISTINCT FROM sl.clone_id
+                      AND s.captured_at <= NOW() - INTERVAL '20 hours'
+                    ORDER BY s.captured_at DESC
+                    LIMIT 1
+                ) prev ON TRUE
                 WHERE {where_sql}
                 ORDER BY {order_sql}
                 LIMIT $1 OFFSET $2
@@ -9811,17 +9936,30 @@ class Database:
             for r in rows:
                 d = dict(r)
                 d.pop("total_count", None)
+                prev_member_count = d.pop("prev_member_count", None)
                 # Auto-verified heuristic for listings an admin hasn't
                 # manually flagged: enough real signal (votes or a
                 # confirmed join) that it's unlikely to be a throwaway
                 # listing. Manual `verified=TRUE` always wins regardless.
                 d["verified"] = d["verified"] or (d["vote_count"] >= 5 or d["confirmed_conversions"] >= 3)
+                # member_count_trend/_delta: null until a snapshot at least
+                # ~20h old exists for this listing (a brand-new listing or
+                # one the snapshot job hasn't reached yet just shows no
+                # arrow — never a fabricated "flat"). Delta can be negative.
+                if prev_member_count is None:
+                    d["member_count_trend"] = None
+                    d["member_count_delta"] = None
+                else:
+                    delta = d["member_count"] - prev_member_count
+                    d["member_count_delta"] = delta
+                    d["member_count_trend"] = "up" if delta > 0 else ("down" if delta < 0 else "flat")
                 listings.append(d)
             logger.info(
                 "[server-listing-directory] fetched %d listings, vote_counts=%s",
                 len(listings), {d["guild_id"]: d["vote_count"] for d in listings},
             )
             return {"listings": listings, "total": total}
+
 
     async def get_public_listing_by_guild(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
         """Single listing plus vote_count, for the per-listing deep-link page
