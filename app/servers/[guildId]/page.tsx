@@ -10,6 +10,7 @@
 import type { Metadata } from 'next'
 import ReviewsSection from './ReviewsSection'
 import ReferralWidget from './ReferralWidget'
+import AddServerButton from '../_AddServerButton'
 
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://prime-bot.example.com'
@@ -196,6 +197,12 @@ export default async function ListingPage({ params }: { params: Promise<{ guildI
               Refer friends to the site
             </a>
           )}
+
+          {/* Same optional-bot choice as the directory header's matching
+              button — see _AddServerButton.tsx. This page is a server
+              component (for generateMetadata's OG tags), so the
+              interactive picker itself lives in that client component. */}
+          <AddServerButton className="pb-btn-secondary text-sm" />
         </div>
 
         {listing.ref_code && (
