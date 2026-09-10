@@ -273,10 +273,13 @@ class ServerListingCog(GuildOnlyCog):
         self.bot = bot
         self._voting_panel_poller.start()
         self._dead_invite_poller.start()
+        self._panel_vote_sync.start()
+        self._panel_vote_cache: dict[int, int] = {}
 
     def cog_unload(self):
         self._voting_panel_poller.cancel()
         self._dead_invite_poller.cancel()
+        self._panel_vote_sync.cancel()
 
     @tasks.loop(seconds=60)
     async def _voting_panel_poller(self):
@@ -409,6 +412,54 @@ class ServerListingCog(GuildOnlyCog):
 
     @_dead_invite_poller.before_loop
     async def _before_dead_invite_poller(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(seconds=60)
+    async def _panel_vote_sync(self):
+        """Fixes the panel showing a stale vote count when the vote that
+        pushed it up came through the website (api/server_listing_vote_oauth.py)
+        or the top.gg/discordbotlist webhook (api/vote_webhook.py) instead
+        of a click on THIS panel's own button — neither of those has
+        gateway access to edit the Discord message, so without this poll
+        the embed only ever updated for panel-button votes and silently
+        drifted behind for every other vote source. Keyed off an
+        in-memory {guild_id: last_known_count} cache (per-process, reset on
+        restart — harmless, worst case is one extra no-op edit after a
+        restart) so a guild with no vote change since last tick costs a
+        cheap count compare instead of a Discord API call every pass.
+        """
+        try:
+            panels = await db.get_active_voting_panels()
+        except Exception:
+            logger.exception("[server_listing] failed polling active voting panels for vote-count sync")
+            return
+        for row in panels:
+            guild_id = row["guild_id"]
+            live_count = row["vote_count"]
+            if self._panel_vote_cache.get(guild_id) == live_count:
+                continue  # no change since last tick — skip the edit
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                continue  # not this process's guild — whichever process has it will sync it
+            channel = guild.get_channel(row["voting_channel_id"])
+            if channel is None:
+                continue
+            try:
+                message = await channel.fetch_message(row["voting_message_id"])
+                embed = _build_voting_embed(guild, live_count)
+                await message.edit(embed=embed)
+                logger.info(
+                    "[server-listing-vote] panel vote-count synced guild=%s %s -> %s",
+                    guild_id, self._panel_vote_cache.get(guild_id), live_count,
+                )
+                self._panel_vote_cache[guild_id] = live_count
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                logger.warning(
+                    "[server-listing-vote] panel vote-count sync FAILED guild=%s — %s", guild_id, e,
+                )
+
+    @_panel_vote_sync.before_loop
+    async def _before_panel_vote_sync(self):
         await self.bot.wait_until_ready()
 
     async def _resolve_owner(self, guild: discord.Guild):
