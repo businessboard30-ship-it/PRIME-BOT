@@ -268,7 +268,16 @@ SELECT
 FROM server_listings sl
 LEFT JOIN listing_click_log lcl 
     ON sl.guild_id = lcl.guild_id 
-    AND sl.clone_id = lcl.clone_id
+    -- NOT "AND sl.clone_id = lcl.clone_id": server_listings.clone_id is
+    -- always NULL now (one listing per real guild_id, see the
+    -- one-listing-per-guild migration), and SQL's NULL = NULL is NULL,
+    -- not TRUE — so that extra join condition silently matched ZERO rows
+    -- ever, meaning total_clicks_30d in this view always read 0
+    -- regardless of actual click volume. listing_click_log's own clone_id
+    -- still varies (it's the bot identity that logged the click), which
+    -- is exactly why this looked like it should filter but never
+    -- actually needed to: guild_id alone already identifies the one
+    -- listing a click belongs to.
     AND lcl.clicked_at > NOW() - INTERVAL '30 days'
 LEFT JOIN server_listing_votes sv 
     ON sl.guild_id = sv.guild_id 
