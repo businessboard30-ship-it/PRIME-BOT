@@ -106,12 +106,18 @@ class handler(BaseHTTPRequestHandler):
             sort = "recent"
 
         async def _run_get():
-            return await db.get_server_reviews(
-                guild_id=guild_id,
-                limit=page_size,
-                offset=(page - 1) * page_size,
-                sort=sort
+            reviews = await db.get_server_reviews(
+                guild_id=guild_id, page=page, page_size=page_size, sort=sort,
             )
+            total = await db.get_server_review_count(guild_id=guild_id)
+            stats = await db.get_server_review_stats(guild_id=guild_id)
+            return {
+                "reviews": reviews,
+                "total": total,
+                "review_count": total,
+                "avg_rating": stats["avg_rating"],
+                "rating_distribution": stats["rating_distribution"],
+            }
 
         try:
             result = asyncio.run(_run_get())
@@ -211,25 +217,23 @@ class handler(BaseHTTPRequestHandler):
         is_verified_member = bool(body.get("is_verified_member", False))
 
         async def _submit_review():
-            # Check if user already has a review for this guild
-            existing = await db.get_user_review_for_guild(guild_id, discord_user_id)
-            if existing:
-                # Update existing review
-                return await db.update_server_review(
-                    review_id=existing["review_id"],
-                    rating=rating_raw,
-                    review_text=review_text,
-                    is_verified_member=is_verified_member
-                )
-            else:
-                # Create new review
-                return await db.create_server_review(
-                    guild_id=guild_id,
-                    reviewer_user_id=discord_user_id,
-                    rating=rating_raw,
-                    review_text=review_text,
-                    is_verified_member=is_verified_member
-                )
+            # add_server_review is a single atomic upsert (ON CONFLICT on
+            # guild/clone/reviewer DO UPDATE) — no separate "does a review
+            # already exist" check-then-act needed, and none of
+            # get_user_review_for_guild/create_server_review/
+            # update_server_review exist as actual database.py methods
+            # (they never did — every review submission was hitting
+            # AttributeError and getting swallowed into a 500 here before
+            # this fix, hence "reviews vanishing": nothing was ever
+            # actually being saved).
+            return await db.add_server_review(
+                guild_id=guild_id,
+                clone_id=None,
+                reviewer_user_id=discord_user_id,
+                rating=rating_raw,
+                review_text=review_text,
+                is_verified_member=is_verified_member,
+            )
 
         try:
             review = asyncio.run(_submit_review())
