@@ -9725,6 +9725,51 @@ class Database:
                 guild_id,
             )
 
+    async def claim_voting_panel_pending(self, guild_id: int) -> bool:
+        """Atomically flips voting_panel_pending FALSE and reports whether
+        THIS call was the one that did it. Guards against the exact race
+        that used to create several duplicate #vote-for-us channels in one
+        guild: _voting_panel_poller runs on EVERY bot process (main + every
+        clone) every 60s, and when a guild has multiple clone bots in it
+        (not just the main bot), every one of those processes independently
+        resolves the same pending row via its own self.bot.get_guild(...)
+        at roughly the same moment. Without a single atomic "I get to try
+        this one" step, each of them would see voting_channel_id still NULL
+        in _ensure_voting_panel's check and race to guild.create_text_
+        channel() — a plain UPDATE...WHERE...RETURNING here is atomic at
+        the database level regardless of how many processes call it
+        concurrently, so only the first one gets rowcount 1 (True); every
+        other concurrent caller gets 0 rows (False) and backs off instead
+        of attempting its own channel creation.
+
+        Only the caller that gets True should proceed to
+        _ensure_voting_panel; on a transient failure or "no_permission"
+        that caller must call set_voting_panel_pending back to True itself
+        (this method's flip is one-way) so the row isn't silently dropped."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE server_listings SET voting_panel_pending = FALSE
+                WHERE guild_id = $1 AND voting_panel_pending = TRUE
+                RETURNING guild_id
+                """,
+                guild_id,
+            )
+            return row is not None
+
+    async def set_voting_panel_pending(self, guild_id: int) -> None:
+        """Re-flags a row claim_voting_panel_pending just claimed, when the
+        attempt that claimed it didn't actually finish (transient exception,
+        or "no_permission" — still fixable, should keep retrying every
+        60s)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE server_listings SET voting_panel_pending = TRUE WHERE guild_id = $1",
+                guild_id,
+            )
+
     async def reset_voting_panel(self, guild_id: int) -> None:
         """Clears a listing's stored voting_channel_id/voting_message_id and
         re-flags voting_panel_pending — called by _panel_vote_sync in
