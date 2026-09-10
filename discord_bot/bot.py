@@ -201,6 +201,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.discover_players")
         await self.load_extension("discord_bot.cogs.admin")
         await self.load_extension("discord_bot.cogs.server_listing")
+        await self.load_extension("discord_bot.cogs.listing_snapshots")
         await self.load_extension("discord_bot.cogs.report_notifications")
         if self.clone_id is None:
             # Clone registration/management commands only make sense on the
