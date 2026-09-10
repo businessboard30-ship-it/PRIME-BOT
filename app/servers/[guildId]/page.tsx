@@ -11,6 +11,7 @@ import type { Metadata } from 'next'
 import ReviewsSection from './ReviewsSection'
 import ReferralWidget from './ReferralWidget'
 import AddServerButton from '../_AddServerButton'
+import CopyQrButtons from '../_CopyQrButtons'
 
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://prime-bot.example.com'
@@ -203,6 +204,10 @@ export default async function ListingPage({ params }: { params: Promise<{ guildI
               component (for generateMetadata's OG tags), so the
               interactive picker itself lives in that client component. */}
           <AddServerButton className="pb-btn-secondary text-sm" />
+        </div>
+
+        <div className="mt-3">
+          <CopyQrButtons guildName={listing.guild_name} inviteUrl={listing.invite_url} />
         </div>
 
         {listing.ref_code && (
