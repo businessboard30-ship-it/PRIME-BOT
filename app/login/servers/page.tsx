@@ -1,221 +1,255 @@
-// path: app/login/servers/page.tsx
+// path: app/servers/[guildId]/page.tsx
 
-'use client'
+// Server component (no 'use client') so generateMetadata can run at
+// request time and produce real Open Graph tags per listing — Discord/
+// Twitter/etc. unfurl this URL using these tags, not the client-rendered
+// directory below. The actual visible page content is intentionally the
+// same shape as a directory row rather than a heavier profile, since all
+// the site knows about a server is what server_listings already stores.
 
-import { Suspense, useEffect, useState } from 'react'
-import { useSearchParams, useRouter } from 'next/navigation'
-import Image from 'next/image'
-import { rememberLoginSession, forgetLoginSession } from '../../_signedInSession'
+import type { Metadata } from 'next'
+import ReviewsSection from './ReviewsSection'
+import ReferralWidget from './ReferralWidget'
+import AddServerButton from '../_AddServerButton'
 
-type ManagedGuild = {
+const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://prime-bot.example.com'
+
+type Listing = {
   guild_id: string
   guild_name: string
   guild_icon_url: string | null
-  token: string
-  listing_token: string
+  banner_url: string | null
+  member_count: number
+  invite_url: string
+  description: string
+  long_description: string | null
+  tags: string[]
+  vote_count: number
+  verified: boolean
   clone_id: number | null
+  ref_code: string | null
 }
 
-type SignedInUser = {
-  id: string
-  username: string
-  avatar_url: string
-}
-
-const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
-const DISCORD_CLIENT_ID = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID || ''
-const BOT_INVITE_URL = DISCORD_CLIENT_ID
-  ? `https://discord.com/oauth2/authorize?client_id=${DISCORD_CLIENT_ID}&scope=bot+applications.commands&permissions=8`
-  : 'https://discord.gg/DYfajXrP9B'
-
-// Same reason as app/servers/submit/page.tsx: useSearchParams() needs a
-// Suspense boundary or static prerendering fails the build.
-export default function LoginServersPage() {
-  return (
-    <Suspense fallback={<Shell><p className="text-sm" style={{ color: 'var(--pb-text-muted)' }}>Loading…</p></Shell>}>
-      <LoginServersPageInner />
-    </Suspense>
-  )
-}
-
-function LoginServersPageInner() {
-  const searchParams = useSearchParams()
-  const router = useRouter()
-  const session = searchParams.get('session') || ''
-  const urlError = searchParams.get('error') || ''
-
-  const [user, setUser] = useState<SignedInUser | null>(null)
-  const [guilds, setGuilds] = useState<ManagedGuild[] | null>(null)
-  const [error, setError] = useState<string | null>(urlError || null)
-  const [loading, setLoading] = useState(!urlError)
-  const [signingOut, setSigningOut] = useState(false)
-
-  useEffect(() => {
-    if (urlError) return
-    if (!session) {
-      setError('Missing sign-in session — try signing in again.')
-      setLoading(false)
-      return
-    }
-    fetch(`${API_BASE}/api/discord_login_oauth?session=${encodeURIComponent(session)}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.status !== 'ok') {
-          setError(data.message || 'Could not load your servers')
-        } else {
-          setUser(data.user || null)
-          setGuilds(data.guilds)
-          // Makes the sign-in visible on every other page too (directory
-          // header, homepage) — see _signedInSession.ts.
-          rememberLoginSession(session)
-        }
-      })
-      .catch(() => setError('Network error loading your servers'))
-      .finally(() => setLoading(false))
-  }, [session, urlError])
-
-  async function signOut() {
-    if (!session || signingOut) return
-    setSigningOut(true)
-    try {
-      await fetch(`${API_BASE}/api/discord_login_oauth?session=${encodeURIComponent(session)}`, {
-        method: 'DELETE',
-      })
-    } catch {
-      // Session is a short-lived, low-value credential (see discord_login_oauth.py) —
-      // even if the DELETE didn't land, sending the user home with a dead session id
-      // in the URL is a safe fallback, not a security gap.
-    } finally {
-      forgetLoginSession()
-      router.push('/')
-    }
+async function fetchListing(guildId: string): Promise<Listing | null> {
+  try {
+    const res = await fetch(`${API_BASE}/api/server_listings?listing_guild_id=${guildId}`, {
+      // Was `next: { revalidate: 60 }` — that let this page show a
+      // vote/join count up to a minute stale right after someone voted,
+      // which read as "voting doesn't work" even though the DB write
+      // itself was instant. no-store trades that staleness for a fresh
+      // fetch on every request — fine here since this endpoint is a cheap
+      // single-row lookup, not the paginated directory feed.
+      cache: 'no-store',
+    })
+    const data = await res.json()
+    if (data.status !== 'ok') return null
+    return data.listing
+  } catch {
+    return null
   }
+}
 
-  const header = user ? (
-    <div
-      className="relative z-10 flex items-center gap-3 mb-8 rounded-lg p-3"
-      style={{ background: 'var(--pb-surface)', border: '1px solid var(--pb-line)' }}
-    >
-      <img
-        src={user.avatar_url}
-        alt=""
-        className="w-9 h-9 rounded-full"
-        style={{ border: '1px solid var(--pb-line)' }}
-      />
-      <span className="text-sm font-medium flex-1 truncate">{user.username}</span>
-      <button
-        onClick={signOut}
-        disabled={signingOut}
-        className="text-sm px-3 py-1.5 rounded-md font-medium disabled:opacity-50"
-        style={{ border: '1px solid var(--pb-line)', color: 'var(--pb-text-faint)' }}
-      >
-        {signingOut ? 'Signing out…' : 'Sign out'}
-      </button>
-    </div>
-  ) : null
-
-  if (loading) {
-    return <Shell><p className="text-sm" style={{ color: 'var(--pb-text-muted)' }}>Checking your servers…</p></Shell>
+async function fetchLeaderboard(guildId: string): Promise<{ voter_id: string; voter_username: string | null }[]> {
+  try {
+    const res = await fetch(`${API_BASE}/api/server_listings?leaderboard_guild_id=${guildId}`, { next: { revalidate: 300 } })
+    const data = await res.json()
+    return data.status === 'ok' ? data.voters : []
+  } catch {
+    return []
   }
+}
 
-  if (error) {
+async function fetchSimilar(guildId: string): Promise<Listing[]> {
+  try {
+    const res = await fetch(`${API_BASE}/api/server_listings?similar_to_guild_id=${guildId}`, { next: { revalidate: 300 } })
+    const data = await res.json()
+    return data.status === 'ok' ? data.listings : []
+  } catch {
+    return []
+  }
+}
+
+export async function generateMetadata({ params }: { params: Promise<{ guildId: string }> }): Promise<Metadata> {
+  const { guildId } = await params
+  const listing = await fetchListing(guildId)
+  if (!listing) {
+    return { title: 'Server not found — PRIME-BOT directory' }
+  }
+  const title = `${listing.guild_name} — Discord server`
+  const description = listing.description || `${listing.member_count.toLocaleString()} members. Join on the PRIME-BOT server directory.`
+  const image = listing.banner_url || listing.guild_icon_url || undefined
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      url: `${SITE_URL}/servers/${listing.guild_id}`,
+      images: image ? [{ url: image }] : undefined,
+      type: 'website',
+    },
+    twitter: {
+      card: image ? 'summary_large_image' : 'summary',
+      title,
+      description,
+      images: image ? [image] : undefined,
+    },
+  }
+}
+
+export default async function ListingPage({ params }: { params: Promise<{ guildId: string }> }) {
+  const { guildId } = await params
+  const listing = await fetchListing(guildId)
+
+  if (!listing) {
     return (
-      <Shell>
-        <p className="text-sm" style={{ color: 'var(--pb-danger)' }}>{error}</p>
-        <a href={`${API_BASE}/api/discord_login_oauth`} className="pb-btn-primary inline-flex mt-4">
-          Sign in with Discord
-        </a>
-      </Shell>
+      <main className="pb-page px-6 py-12">
+        <div className="max-w-xl mx-auto">
+          <p className="text-sm" style={{ color: 'var(--pb-danger)' }}>
+            No listing found for that server —{' '}
+            <a href="/servers" className="underline">back to the directory</a>.
+          </p>
+        </div>
+      </main>
     )
   }
 
-  if (!guilds || guilds.length === 0) {
-    return (
-      <Shell>
-        {header}
-        <h1 className="pb-heading text-2xl font-semibold mb-2">No servers to manage yet</h1>
-        <p className="text-sm max-w-md" style={{ color: 'var(--pb-text-muted)' }}>
-          Either PRIME-BOT isn't in any server you have Manage Server on, or it hasn't been added
-          anywhere yet.
-        </p>
-        <a href={BOT_INVITE_URL} target="_blank" rel="noopener noreferrer" className="pb-btn-primary inline-flex mt-6">
-          + Add PRIME-BOT to a server
-        </a>
-      </Shell>
-    )
-  }
+  const [voters, similar] = await Promise.all([
+    fetchLeaderboard(listing.guild_id),
+    fetchSimilar(listing.guild_id),
+  ])
 
   return (
-    <Shell>
-      {header}
-      <h1 className="pb-heading text-2xl font-semibold mb-1">Choose a server</h1>
-      <p className="text-sm mb-8" style={{ color: 'var(--pb-text-faint)' }}>
-        Servers you manage that already have PRIME-BOT.
-      </p>
-
-      <div className="rounded-lg border" style={{ borderColor: 'var(--pb-line)' }}>
-        {guilds.map((g, i) => (
-          <div
-            key={g.guild_id}
-            className="flex items-center gap-3 px-4 py-3"
-            style={{ borderBottom: i === guilds.length - 1 ? 'none' : '1px solid var(--pb-line)' }}
-          >
-            {g.guild_icon_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={g.guild_icon_url} alt="" className="w-9 h-9 rounded-full" />
-            ) : (
-              <div
-                className="w-9 h-9 rounded-full flex items-center justify-center text-sm"
-                style={{ background: 'var(--pb-surface-raised)', color: 'var(--pb-text-faint)' }}
-              >
-                {g.guild_name.slice(0, 1).toUpperCase()}
-              </div>
-            )}
-            <span className="font-medium flex-1 truncate">{g.guild_name}</span>
-            <a
-              href={`/servers/submit?token=${encodeURIComponent(g.listing_token)}&guild_id=${g.guild_id}`}
-              className="text-sm px-3 py-1.5 rounded-md font-medium"
-              style={{ border: '1px solid var(--pb-accent)', color: 'var(--pb-accent)' }}
+    <main className="pb-page px-6 py-12">
+      <div className="max-w-xl mx-auto">
+        {listing.banner_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={listing.banner_url} alt="" className="w-full rounded-lg mb-6 object-cover" style={{ maxHeight: 200 }} />
+        )}
+        <div className="flex items-start gap-3 mb-4">
+          {listing.guild_icon_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={listing.guild_icon_url} alt="" className="w-16 h-16 rounded-full" />
+          ) : (
+            <div
+              className="w-16 h-16 rounded-full flex items-center justify-center text-2xl"
+              style={{ background: 'var(--pb-surface-raised)', color: 'var(--pb-text-faint)' }}
             >
-              List this server
-            </a>
-            <a
-              href={`/dashboard/${g.guild_id}?token=${encodeURIComponent(g.token)}${g.clone_id != null ? `&clone_id=${g.clone_id}` : ''}`}
-              className="text-sm"
-              style={{ color: 'var(--pb-text-faint)' }}
-            >
-              Open dashboard →
-            </a>
+              {listing.guild_name.slice(0, 1).toUpperCase()}
+            </div>
+          )}
+          <div>
+            <h1 className="pb-heading text-2xl font-semibold flex items-center gap-2">
+              {listing.guild_name}
+              {listing.verified && <span className="text-sm" style={{ color: 'var(--pb-accent)' }}>✓ Verified</span>}
+            </h1>
+            <p className="text-sm mt-1" style={{ color: 'var(--pb-text-faint)' }}>
+              {listing.member_count.toLocaleString()} members · {listing.vote_count} votes
+            </p>
           </div>
-        ))}
-      </div>
-    </Shell>
-  )
-}
+        </div>
 
-// Same full-bleed background-hero treatment as /servers/submit — this page
-// is reached right after the Discord OAuth redirect, so it shouldn't feel
-// like a bare utility screen.
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <main className="relative px-6 py-12 min-h-screen overflow-hidden">
-      <Image
-        src="/hero-car.png"
-        alt=""
-        fill
-        priority
-        sizes="100vw"
-        className="object-cover -z-20"
-        style={{ objectPosition: '50% center' }}
-      />
-      <div
-        className="fixed inset-0 -z-10"
-        style={{ background: 'linear-gradient(180deg, rgba(5,6,10,0.55) 0%, rgba(5,6,10,0.82) 35%, rgba(5,6,10,0.94) 100%)' }}
-      />
-      {/* isolate: pins this page's content to its own stacking context so
-          nothing from an in-flight route transition (e.g. the homepage's
-          ListingBanner) can ever composite on top of it again. */}
-      <div className="relative max-w-lg mx-auto isolate">{children}</div>
+        {listing.description && (
+          <p className="text-sm leading-relaxed mb-4" style={{ color: 'var(--pb-text-muted)' }}>
+            {listing.description}
+          </p>
+        )}
+
+        {listing.long_description && (
+          <p className="text-sm leading-relaxed mb-6 whitespace-pre-wrap" style={{ color: 'var(--pb-text-muted)' }}>
+            {listing.long_description}
+          </p>
+        )}
+
+        {listing.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-6">
+            {listing.tags.map((t) => (
+              <span key={t} className="pb-chip text-xs">#{t}</span>
+            ))}
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <a href={listing.invite_url} target="_blank" rel="noopener noreferrer" className="pb-btn-primary">
+            Join server
+          </a>
+
+          {/* Sends the visitor through the same OAuth vote flow used on the
+              directory cards (api/server_listing_vote_oauth.py), so a vote
+              cast from the listing page counts the same as one from /servers. */}
+          <a
+            href={`${API_BASE}/api/server_listing_vote_oauth?guild_id=${listing.guild_id}${listing.clone_id ? `&clone_id=${listing.clone_id}` : ''}`}
+            className="pb-btn-secondary text-sm"
+          >
+            Vote for this server
+          </a>
+
+          {/* Referral link back to the directory — carries this listing's
+              ref_code so a click is attributed the same way boost links are
+              (see _BoostModal.tsx's copyBoostLink and api/server_listings.py
+              Mode 0). Only rendered when the listing actually has a code. */}
+          {listing.ref_code && (
+            <a
+              href={`${SITE_URL}/servers?ref=${listing.ref_code}`}
+              className="pb-btn-secondary text-sm"
+            >
+              Refer friends to the site
+            </a>
+          )}
+
+          {/* Same optional-bot choice as the directory header's matching
+              button — see _AddServerButton.tsx. This page is a server
+              component (for generateMetadata's OG tags), so the
+              interactive picker itself lives in that client component. */}
+          <AddServerButton className="pb-btn-secondary text-sm" />
+        </div>
+
+        {listing.ref_code && (
+          <div className="mt-10">
+            <ReferralWidget
+              guildId={listing.guild_id}
+              refCode={listing.ref_code}
+              serverName={listing.guild_name}
+            />
+          </div>
+        )}
+
+        <section className="mt-10 pt-6 border-t" style={{ borderColor: 'var(--pb-line)' }}>
+          <ReviewsSection guildId={listing.guild_id} refCode={listing.ref_code || undefined} />
+        </section>
+
+        {voters.length > 0 && (
+          <section className="mt-10 pt-6 border-t" style={{ borderColor: 'var(--pb-line)' }}>
+            <h2 className="pb-heading text-base font-medium mb-3">Recent voters</h2>
+            <ul className="space-y-1.5 text-sm" style={{ color: 'var(--pb-text-muted)' }}>
+              {voters.map((v) => (
+                <li key={v.voter_id}>{v.voter_username || 'A voter'}</li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {similar.length > 0 && (
+          <section className="mt-10 pt-6 border-t" style={{ borderColor: 'var(--pb-line)' }}>
+            <h2 className="pb-heading text-base font-medium mb-3">Similar servers</h2>
+            <ul className="space-y-3">
+              {similar.map((s) => (
+                <li key={s.guild_id} className="rounded-lg border p-3" style={{ borderColor: 'var(--pb-line)' }}>
+                  <a href={`/servers/${s.guild_id}`} className="font-medium hover:underline">{s.guild_name}</a>
+                  <p className="text-xs mt-0.5" style={{ color: 'var(--pb-text-faint)' }}>
+                    {s.member_count.toLocaleString()} members
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <p className="text-xs mt-8">
+          <a href="/servers" className="underline" style={{ color: 'var(--pb-text-faint)' }}>← Back to the directory</a>
+        </p>
+      </div>
     </main>
   )
 }
