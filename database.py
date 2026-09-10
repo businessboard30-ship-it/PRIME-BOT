@@ -9783,11 +9783,21 @@ class Database:
             )
     # clauses here (never interpolated from the request directly) so a bad
     # ?sort= value can't become a SQL injection vector.
+    # guild_id appended as a final tiebreaker on every sort — without it,
+    # rows tied on the primary key(s) (e.g. two listings with the same
+    # boost_count/vote_count AND the same updated_at, or ties on
+    # member_count/created_at) have no guaranteed stable order between two
+    # separate queries. Combined with OFFSET-based "load more" pagination,
+    # an unstable tie order could reshuffle which rows land on which page
+    # between one fetch and the next — surfacing the same listing more
+    # than once (or skipping one) as the user scrolls. guild_id is unique
+    # per listing (see server_listings_guild_key), so this always fully
+    # resolves any tie the same way every time.
     _LISTING_SORTS = {
-        "trending": '(COALESCE(v.vote_count, 0) * 3 + sl.confirmed_conversions + sl.boost_count) DESC, sl.updated_at DESC',
-        "votes": 'COALESCE(v.vote_count, 0) DESC, sl.updated_at DESC',
-        "members": 'sl.member_count DESC, sl.updated_at DESC',
-        "newest": 'sl.created_at DESC',
+        "trending": '(COALESCE(v.vote_count, 0) * 3 + sl.confirmed_conversions + sl.boost_count) DESC, sl.updated_at DESC, sl.guild_id DESC',
+        "votes": 'COALESCE(v.vote_count, 0) DESC, sl.updated_at DESC, sl.guild_id DESC',
+        "members": 'sl.member_count DESC, sl.updated_at DESC, sl.guild_id DESC',
+        "newest": 'sl.created_at DESC, sl.guild_id DESC',
     }
 
     async def add_listing_boosts(self, guild_id: str, clone_id: Optional[int], amount: int) -> int:
