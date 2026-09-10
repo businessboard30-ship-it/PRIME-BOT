@@ -453,7 +453,27 @@ class ServerListingCog(GuildOnlyCog):
                     guild_id, self._panel_vote_cache.get(guild_id), live_count,
                 )
                 self._panel_vote_cache[guild_id] = live_count
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+            except (discord.NotFound, discord.Forbidden) as e:
+                # Permanent, not transient — the message is gone (NotFound)
+                # or this bot process can never edit it (Forbidden, e.g.
+                # error 50005 "Cannot edit a message authored by another
+                # user" — the stored message_id belongs to some other
+                # bot/webhook). Retrying every 60s forever fixes nothing;
+                # clear the stale panel refs so _voting_panel_poller posts
+                # a fresh one this bot actually owns.
+                logger.warning(
+                    "[server-listing-vote] panel vote-count sync FAILED guild=%s — %s — "
+                    "resetting stored panel so a fresh one gets created",
+                    guild_id, e,
+                )
+                try:
+                    await db.reset_voting_panel(guild_id)
+                except Exception:
+                    logger.exception("[server_listing] failed resetting broken voting panel for guild %s", guild_id)
+                self._panel_vote_cache.pop(guild_id, None)
+            except discord.HTTPException as e:
+                # Could be transient (rate limit, momentary 5xx) — log and
+                # let the next tick retry rather than resetting the panel.
                 logger.warning(
                     "[server-listing-vote] panel vote-count sync FAILED guild=%s — %s", guild_id, e,
                 )
