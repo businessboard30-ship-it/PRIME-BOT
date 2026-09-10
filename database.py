@@ -9559,7 +9559,16 @@ class Database:
         instead of creating a second directory card for the same server.
 
         long_description is optional and independent of description's own
-        length cap — see the migration note in _create_tables."""
+        length cap — see the migration note in _create_tables.
+
+        voting_panel_pending is only ever set for guilds the bot is
+        actually in (checked against discord_guilds here) — since listing a
+        server no longer requires the bot at all (see
+        api/discord_login_oauth.py's bot_present flag), flagging it
+        unconditionally would leave _voting_panel_poller retrying forever
+        for a guild no bot process will ever have in its gateway cache
+        (harmless but permanent log noise, one row per bot-less listing,
+        every 60s, forever)."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -9567,7 +9576,11 @@ class Database:
                 INSERT INTO server_listings
                     (guild_id, clone_id, guild_name, guild_icon_url, member_count,
                      invite_url, description, tags, banner_url, long_description, voting_panel_pending, updated_at)
-                VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, NOW())
+                VALUES (
+                    $1, NULL, $2, $3, $4, $5, $6, $7, $8, $9,
+                    EXISTS (SELECT 1 FROM discord_guilds WHERE guild_id = $1 AND left_at IS NULL),
+                    NOW()
+                )
                 ON CONFLICT (guild_id) DO UPDATE SET
                     guild_name = EXCLUDED.guild_name,
                     guild_icon_url = EXCLUDED.guild_icon_url,
@@ -9578,9 +9591,13 @@ class Database:
                     banner_url = EXCLUDED.banner_url,
                     long_description = EXCLUDED.long_description,
                     -- Only (re)flag pending if this listing has never gotten
-                    -- its panel yet — an edit/resubmit of an already-panelled
-                    -- listing shouldn't trigger another channel-creation pass.
-                    voting_panel_pending = (server_listings.voting_channel_id IS NULL),
+                    -- its panel yet AND the bot is actually in the guild now
+                    -- (it may have been added after the listing was first
+                    -- created without it).
+                    voting_panel_pending = (
+                        server_listings.voting_channel_id IS NULL
+                        AND EXISTS (SELECT 1 FROM discord_guilds WHERE guild_id = $1 AND left_at IS NULL)
+                    ),
                     updated_at = NOW()
                 RETURNING *
                 """,
@@ -9677,12 +9694,24 @@ class Database:
         identity anymore. Whichever process's guild cache actually resolves
         the guild_id in _voting_panel_poller wins; harmless if more than one
         process sees the same pending row since clear_voting_panel_pending
-        is idempotent."""
+        is idempotent.
+
+        Filtered to guilds actually in discord_guilds (bot present) —
+        upsert_server_listing now only sets voting_panel_pending TRUE in
+        that case going forward, but this guard also covers any row that
+        got flagged before that change (or a guild the bot has since left):
+        without it, those rows would sit here forever, "not in this
+        process's cache" on every single poll of every process, forever,
+        for a guild no process could ever pick up."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT guild_id, clone_id FROM server_listings
-                   WHERE voting_panel_pending = TRUE
+                """SELECT sl.guild_id, sl.clone_id FROM server_listings sl
+                   WHERE sl.voting_panel_pending = TRUE
+                     AND EXISTS (
+                         SELECT 1 FROM discord_guilds dg
+                         WHERE dg.guild_id = sl.guild_id AND dg.left_at IS NULL
+                     )
                    LIMIT $1""",
                 limit,
             )
@@ -9693,6 +9722,28 @@ class Database:
         async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE server_listings SET voting_panel_pending = FALSE WHERE guild_id=$1",
+                guild_id,
+            )
+
+    async def reset_voting_panel(self, guild_id: int) -> None:
+        """Clears a listing's stored voting_channel_id/voting_message_id and
+        re-flags voting_panel_pending — called by _panel_vote_sync in
+        server_listing.py when it hits a Forbidden/NotFound editing the
+        panel message (e.g. "Cannot edit a message authored by another
+        user" — the stored message_id belongs to a bot/webhook other than
+        the one currently running, so this bot can never edit it no matter
+        how many times the sync loop retries). Without this, that failure
+        just repeats every tick forever. _voting_panel_poller picks the
+        cleared row back up on its next pass and posts a fresh panel this
+        bot actually owns."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE server_listings
+                SET voting_channel_id = NULL, voting_message_id = NULL, voting_panel_pending = TRUE
+                WHERE guild_id = $1
+                """,
                 guild_id,
             )
 
