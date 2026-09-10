@@ -14,7 +14,7 @@ from typing import Optional, List, Dict, Any, Tuple
 
 import asyncpg
 
-from config import DATABASE_URL
+from config import DATABASE_URL, DASHBOARD_BASE_URL
 from utils.crypto import secret_manager
 
 logger = logging.getLogger(__name__)
@@ -12148,6 +12148,30 @@ class Database:
                 review_id,
             )
 
+    async def get_server_review_stats(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """avg_rating + a 1..5 rating_distribution for one listing —
+        api/server_reviews.py's GET needs both alongside the paginated
+        list from get_server_reviews, so this is a small separate query
+        rather than trying to cram every shape it needs into one query."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            avg_rating = await conn.fetchval(
+                "SELECT AVG(rating)::float FROM server_reviews WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                guild_id, clone_id,
+            )
+            rows = await conn.fetch(
+                "SELECT rating, COUNT(*) AS c FROM server_reviews "
+                "WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1) GROUP BY rating",
+                guild_id, clone_id,
+            )
+            distribution = {i: 0 for i in range(1, 6)}
+            for r in rows:
+                distribution[r["rating"]] = r["c"]
+            return {
+                "avg_rating": round(avg_rating, 2) if avg_rating is not None else 0.0,
+                "rating_distribution": distribution,
+            }
+
     # --- Verification Tiers ---------------------------------------------
 
     async def get_verification_tier_config(self, tier_name: Optional[str] = None) -> Any:
@@ -12321,6 +12345,140 @@ class Database:
                 guild_id, clone_id,
             )
             return dict(row) if row else None
+
+    async def get_server_analytics(self, guild_id: int, clone_id: Optional[int] = None, days: int = 30) -> Optional[Dict]:
+        """Backs api/server_analytics.py's dashboard GET — see that
+        module's do_GET docstring for the exact response shape this
+        fills in. This was previously just... not implemented at all
+        (api/server_analytics.py called a method that didn't exist, so
+        every single dashboard load was a guaranteed 500 — this is the
+        actual "where are the stats" fix).
+
+        clone_id is accepted for the referral-stats lookup (still a real
+        per-bot column on listing_referral_stats) but everything on
+        server_listings/server_reviews/server_listing_votes/
+        listing_click_log is guild_id-keyed with clone_id always NULL
+        now (see the one-listing-per-guild migration), so those queries
+        don't filter on it.
+
+        Returns None if this guild has no listing at all — caller
+        (api/server_analytics.py) already 403s before ever getting here
+        if the token doesn't resolve, so a None here specifically means
+        "authenticated, but there's genuinely no listing/data yet"."""
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            listing = await conn.fetchrow(
+                """SELECT guild_name, member_count, verification_tier, created_at, ref_code
+                   FROM server_listings WHERE guild_id = $1""",
+                guild_id,
+            )
+            if listing is None:
+                return None
+
+            clicks_total = await conn.fetchval(
+                "SELECT COUNT(*) FROM listing_click_log WHERE guild_id = $1 AND clicked_at > $2",
+                guild_id, since,
+            )
+            clicks_today = await conn.fetchval(
+                "SELECT COUNT(*) FROM listing_click_log WHERE guild_id = $1 AND clicked_at > NOW() - INTERVAL '1 day'",
+                guild_id,
+            )
+            clicks_by_day = await conn.fetch(
+                """SELECT clicked_at::date AS day, COUNT(*) AS c FROM listing_click_log
+                   WHERE guild_id = $1 AND clicked_at > $2 GROUP BY day ORDER BY day""",
+                guild_id, since,
+            )
+            unique_visitors = await conn.fetchval(
+                """SELECT COUNT(DISTINCT ip_hash) FROM listing_click_log
+                   WHERE guild_id = $1 AND clicked_at > $2 AND ip_hash IS NOT NULL""",
+                guild_id, since,
+            )
+            clicks_by_source = await conn.fetch(
+                """SELECT COALESCE(referrer_source, 'direct') AS source, COUNT(*) AS c
+                   FROM listing_click_log WHERE guild_id = $1 AND clicked_at > $2 GROUP BY source""",
+                guild_id, since,
+            )
+
+            votes_total = await conn.fetchval(
+                "SELECT COUNT(*) FROM server_listing_votes WHERE guild_id = $1", guild_id,
+            )
+            votes_by_day = await conn.fetch(
+                """SELECT created_at::date AS day, COUNT(*) AS c FROM server_listing_votes
+                   WHERE guild_id = $1 AND created_at > $2 GROUP BY day ORDER BY day""",
+                guild_id, since,
+            )
+
+            avg_rating = await conn.fetchval(
+                "SELECT AVG(rating)::float FROM server_reviews WHERE guild_id = $1", guild_id,
+            )
+            review_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM server_reviews WHERE guild_id = $1", guild_id,
+            )
+            recent_reviews = await conn.fetch(
+                """SELECT rating, review_text, review_date FROM server_reviews
+                   WHERE guild_id = $1 ORDER BY review_date DESC LIMIT 5""",
+                guild_id,
+            )
+
+            ref_row = await conn.fetchrow(
+                """SELECT clicks, conversions FROM listing_referral_stats
+                   WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)
+                   ORDER BY clicks DESC LIMIT 1""",
+                guild_id, clone_id,
+            )
+
+            qual = await conn.fetchrow(
+                "SELECT * FROM verification_qualifications WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                guild_id, clone_id,
+            )
+
+        ref_clicks = ref_row["clicks"] if ref_row else 0
+        ref_conversions = ref_row["conversions"] if ref_row else 0
+        conversion_rate = round((ref_conversions / ref_clicks) * 100, 2) if ref_clicks else 0.0
+
+        return {
+            "server": {
+                "guild_name": listing["guild_name"],
+                "member_count": listing["member_count"],
+                "verification_tier": listing["verification_tier"],
+                "created_at": listing["created_at"],
+            },
+            "metrics": {
+                "clicks_total": clicks_total or 0,
+                "clicks_today": clicks_today or 0,
+                "clicks_by_day": [{"date": r["day"].isoformat(), "count": r["c"]} for r in clicks_by_day],
+                "unique_visitors": unique_visitors or 0,
+                "votes_total": votes_total or 0,
+                "votes_by_day": [{"date": r["day"].isoformat(), "count": r["c"]} for r in votes_by_day],
+                "avg_rating": round(avg_rating, 2) if avg_rating is not None else 0.0,
+                "review_count": review_count or 0,
+                "recent_reviews": [
+                    {"rating": r["rating"], "text": r["review_text"], "date": r["review_date"].isoformat()}
+                    for r in recent_reviews
+                ],
+                "members_estimated": listing["member_count"] or 0,
+            },
+            "referral": {
+                "ref_code": listing["ref_code"],
+                "ref_url": f"{DASHBOARD_BASE_URL}/servers?ref={listing['ref_code']}" if listing["ref_code"] else None,
+                "total_clicks": ref_clicks,
+                "conversions": ref_conversions,
+                "conversion_rate": conversion_rate,
+                "clicks_by_source": {r["source"]: r["c"] for r in clicks_by_source},
+            },
+            "verification": {
+                "current_tier": listing["verification_tier"],
+                # Not computed — nothing in this codebase defines a tier
+                # ordering to walk yet (see verification_tier_config for
+                # the raw tier rows themselves). Left explicit rather than
+                # guessed so the frontend doesn't render a wrong "next
+                # tier" as if it were real.
+                "next_tier": None,
+                "qualifications": dict(qual) if qual else None,
+            },
+        }
+
 
     # --- Category / Tag Discovery ----------------------------------------
 
