@@ -319,3 +319,146 @@
 .pb-toggle[aria-checked='true'] .pb-toggle-knob {
   transform: translateX(16px);
 }
+
+/* ---------------------------------------------------------------------- */
+/* Server directory: listing skeleton, entrance animation, hover glow     */
+/* ---------------------------------------------------------------------- */
+
+/* Was referenced but never defined — cards rendered as invisible/collapsed
+   placeholders while loading. Animated shimmer instead of a flat block. */
+.pb-skeleton-row {
+  height: 92px;
+  border-radius: 0.5rem;
+  border: 1px solid var(--pb-line);
+  background: linear-gradient(
+    90deg,
+    var(--pb-surface) 25%,
+    var(--pb-surface-raised) 50%,
+    var(--pb-surface) 75%
+  );
+  background-size: 200% 100%;
+  animation: pb-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes pb-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Staggered fade/slide-in for listing cards as they mount. Delay is set
+   per-card via the --pb-delay custom property in _ServerDirectory.tsx. */
+@keyframes pb-card-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.pb-listing-card {
+  animation: pb-card-in 0.35s ease-out backwards;
+  animation-delay: var(--pb-delay, 0s);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+
+.pb-listing-card:hover,
+.pb-listing-card:focus-within {
+  transform: translateY(-2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pb-skeleton-row,
+  .pb-listing-card {
+    animation: none;
+  }
+  .pb-listing-card:hover,
+  .pb-listing-card:focus-within {
+    transform: none;
+  }
+}
+
+/* Keeps search/sort/tag controls reachable while scrolling a long
+   directory feed. Backdrop blur + bg so listing cards scrolling underneath
+   don't show through and make the controls hard to read. */
+.pb-filter-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding-top: 0.75rem;
+  margin-top: -0.75rem;
+  background: rgba(11,12,15,0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Verified/boosted listings get a subtle animated gradient border instead
+   of the flat single-color one, so top-tier servers read as visually
+   distinct in the feed rather than only via sort order. */
+@keyframes pb-tier-shift {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+/* "Online now" presence badge — small pulsing green dot next to the live
+   count populated by discord_bot/cogs/listing_snapshots.py. */
+.pb-online-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--pb-positive);
+  box-shadow: 0 0 0 rgba(52, 211, 153, 0.6);
+  animation: pb-online-pulse 2s ease-out infinite;
+}
+
+@keyframes pb-online-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6); }
+  70% { box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pb-online-dot {
+    animation: none;
+  }
+}
+
+.pb-tier-glass {
+  position: relative;
+}
+
+.pb-tier-glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  padding: 1.5px;
+  border-radius: inherit;
+  background: linear-gradient(120deg, #eab308, #a855f7, #06b6d4, #eab308);
+  background-size: 300% 300%;
+  animation: pb-tier-shift 6s linear infinite;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pb-tier-glass::before {
+    animation: none;
+  }
+}
+
+/* Command palette (⌘K) — quick pop-in/scale so it feels snappy rather
+   than instantaneous, matching the same restrained motion language as
+   the card entrance animation above. */
+@keyframes pb-cmdk-in {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.pb-cmdk-modal {
+  animation: pb-cmdk-in 0.15s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pb-cmdk-modal {
+    animation: none;
+  }
+}
