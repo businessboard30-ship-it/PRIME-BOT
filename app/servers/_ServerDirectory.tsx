@@ -18,6 +18,7 @@
 import { useEffect, useRef, useState } from 'react'
 import BoostModal from './_BoostModal'
 import { useSignedInUser } from '../_signedInSession'
+import AddServerButton from './_AddServerButton'
 
 type Listing = {
   guild_id: string
@@ -384,6 +385,12 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
           <a href={BOT_INVITE_URL || SUPPORT_SERVER_INVITE} className="pb-btn-primary text-sm">
             Add PRIME-BOT
           </a>
+          {/* Distinct from "Add PRIME-BOT" above in intent — this one reads
+              as "list your server here". PRIME-BOT is optional for listing
+              now (see api/discord_login_oauth.py's bot_present flag), so
+              this offers both paths instead of assuming one — see
+              _AddServerButton.tsx. */}
+          <AddServerButton className="pb-btn-secondary text-sm" />
         </div>
       </div>
 
