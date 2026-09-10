@@ -9599,6 +9599,39 @@ class Database:
                 guild_id, clone_id,
             )
 
+    async def get_active_voting_panels(self, limit: int = 200) -> List[Dict]:
+        """Every listing that already has a posted panel message (as
+        opposed to get_pending_voting_panels, which is for ones that don't
+        yet) plus its LIVE vote count from server_listing_votes. Used by
+        _panel_vote_sync (server_listing.py) to keep the Discord panel
+        embed's vote number in sync even when the vote itself came in
+        through a path that never touches that Discord message — the web
+        OAuth flow (api/server_listing_vote_oauth.py) or the top.gg/
+        discordbotlist webhook (api/vote_webhook.py) both write straight to
+        server_listing_votes with no gateway access to edit anything, which
+        is exactly why the panel button's own inline refresh (see
+        vote_button above) was never enough on its own — it only covers
+        votes cast from that same button click."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT sl.guild_id, sl.clone_id, sl.voting_channel_id, sl.voting_message_id,
+                       COALESCE(v.vote_count, 0) AS vote_count
+                FROM server_listings sl
+                LEFT JOIN (
+                    SELECT guild_id, COUNT(*) AS vote_count
+                    FROM server_listing_votes GROUP BY guild_id
+                ) v ON v.guild_id = sl.guild_id
+                WHERE sl.voting_channel_id IS NOT NULL
+                  AND sl.voting_message_id IS NOT NULL
+                  AND sl.voting_message_id != 0
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [dict(r) for r in rows]
+
     async def get_pending_voting_panels(self, clone_id: Optional[int], limit: int = 10) -> List[Dict]:
         """Every active bot process (main or any clone) polls this and
         races to claim pending rows — clone_id is accepted but no longer
