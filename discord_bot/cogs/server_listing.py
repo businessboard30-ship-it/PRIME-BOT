@@ -105,12 +105,40 @@ class ServerListingVotePanelView(discord.ui.View):
                     "[server-listing-vote] panel embed refreshed guild=%s new_count=%s",
                     guild.id, count,
                 )
-            except (discord.Forbidden, discord.HTTPException) as e:
+            except (discord.Forbidden, discord.NotFound) as e:
+                # Same permanent failure _panel_vote_sync already self-heals
+                # from (error 50005 "Cannot edit a message authored by
+                # another user", or the message got deleted) — this handler
+                # just hadn't been taught to do the same thing, so a card
+                # stuck in this state stayed stuck on every click until the
+                # separate 60s sync loop happened to reach it first. Reset
+                # here too so the fix isn't a race between "did the sync
+                # loop get here yet" and "did someone click Vote first".
+                logger.warning(
+                    "[server-listing-vote] panel embed refresh FAILED guild=%s — vote still recorded — "
+                    "resetting stored panel so a fresh one gets created — %s",
+                    guild.id, e,
+                )
+                # Best-effort delete of the un-editable message first —
+                # Manage Messages permission covers deleting another bot's
+                # message even though editing it is forbidden — so the old
+                # broken card doesn't sit alongside the fresh one about to
+                # get posted in the same channel.
+                try:
+                    await interaction.message.delete()
+                except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                    pass
+                try:
+                    await db.clear_voting_panel_message(guild.id)
+                except Exception:
+                    logger.exception("[server_listing] failed resetting broken voting panel for guild %s", guild.id)
+            except discord.HTTPException as e:
+                # Possibly transient — don't reset the panel for this one,
+                # just log and let the next real change retry the edit.
                 logger.warning(
                     "[server-listing-vote] panel embed refresh FAILED guild=%s — vote still recorded — %s",
                     guild.id, e,
                 )
-                pass  # best-effort — the vote itself already succeeded
 
     @discord.ui.button(label="Boost", emoji="🚀", style=discord.ButtonStyle.primary, custom_id="sl_panel_boost")
     async def boost_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -457,6 +485,7 @@ class ServerListingCog(GuildOnlyCog):
             channel = guild.get_channel(row["voting_channel_id"])
             if channel is None:
                 continue
+            message = None
             try:
                 message = await channel.fetch_message(row["voting_message_id"])
                 embed = _build_voting_embed(guild, live_count)
@@ -472,15 +501,27 @@ class ServerListingCog(GuildOnlyCog):
                 # error 50005 "Cannot edit a message authored by another
                 # user" — the stored message_id belongs to some other
                 # bot/webhook). Retrying every 60s forever fixes nothing;
-                # clear the stale panel refs so _voting_panel_poller posts
-                # a fresh one this bot actually owns.
+                # clear just the message ref (NOT the channel — see
+                # clear_voting_panel_message's docstring) so
+                # _voting_panel_poller posts a fresh message in this SAME
+                # channel instead of creating a whole new #vote-for-us
+                # channel.
                 logger.warning(
                     "[server-listing-vote] panel vote-count sync FAILED guild=%s — %s — "
                     "resetting stored panel so a fresh one gets created",
                     guild_id, e,
                 )
+                if message is not None:
+                    # Forbidden case: we successfully fetched it, just can't
+                    # edit it — Manage Messages still lets us delete
+                    # another bot's message, so remove the dead duplicate
+                    # instead of leaving it next to the fresh one.
+                    try:
+                        await message.delete()
+                    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                        pass
                 try:
-                    await db.reset_voting_panel(guild_id)
+                    await db.clear_voting_panel_message(guild_id)
                 except Exception:
                     logger.exception("[server_listing] failed resetting broken voting panel for guild %s", guild_id)
                 self._panel_vote_cache.pop(guild_id, None)
