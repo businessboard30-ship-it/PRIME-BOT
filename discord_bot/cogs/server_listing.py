@@ -64,8 +64,16 @@ class ServerListingVotePanelView(discord.ui.View):
     async def vote_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         guild = interaction.guild
         if guild is None:
+            logger.warning(
+                "[server-listing-vote] panel vote_button fired with no guild — interaction.user=%s",
+                interaction.user.id if interaction.user else None,
+            )
             return
         clone_id = _clone_id_of(interaction)
+        logger.info(
+            "[server-listing-vote] panel vote_button clicked guild=%s user=%s clone_id=%s",
+            guild.id, interaction.user.id, clone_id,
+        )
         newly_voted = await db.cast_server_listing_vote(
             guild.id, clone_id, interaction.user.id, str(interaction.user.display_name)
         )
@@ -93,7 +101,15 @@ class ServerListingVotePanelView(discord.ui.View):
                 count = await db.get_server_listing_vote_count(guild.id, clone_id)
                 embed = _build_voting_embed(guild, count)
                 await interaction.message.edit(embed=embed)
-            except (discord.Forbidden, discord.HTTPException):
+                logger.info(
+                    "[server-listing-vote] panel embed refreshed guild=%s new_count=%s",
+                    guild.id, count,
+                )
+            except (discord.Forbidden, discord.HTTPException) as e:
+                logger.warning(
+                    "[server-listing-vote] panel embed refresh FAILED guild=%s — vote still recorded — %s",
+                    guild.id, e,
+                )
                 pass  # best-effort — the vote itself already succeeded
 
     @discord.ui.button(label="Boost", emoji="🚀", style=discord.ButtonStyle.primary, custom_id="sl_panel_boost")
