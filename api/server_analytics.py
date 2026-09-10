@@ -207,8 +207,9 @@ class handler(BaseHTTPRequestHandler):
             async def _log_click():
                 return await db.log_listing_click(
                     guild_id=guild_id,
-                    ref_code=ref_code,
-                    source=source
+                    clone_id=None,
+                    referrer_source=source,
+                    ref_code_used=ref_code,
                 )
             
             try:
