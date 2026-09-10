@@ -100,8 +100,6 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
   const [boostingListing, setBoostingListing] = useState<Listing | null>(null)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [qrGuildId, setQrGuildId] = useState<string | null>(null)
-  const [copiedId, setCopiedId] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
 
   // --- Command palette (⌘K) --------------------------------------------
@@ -200,7 +198,18 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
           setError(data.message || 'Could not load the directory')
         } else {
           setTotal(data.total || 0)
-          setListings((prev) => (append && prev ? [...prev, ...data.listings] : data.listings))
+          setListings((prev) => {
+            if (!append || !prev) return data.listings
+            // De-dupe by guild_id when appending a "load more" page — a
+            // guild_id is unique per listing (server_listings_guild_key),
+            // so any repeat here means offset-based pagination and a
+            // live-changing sort (trending includes boost_count/vote_count,
+            // which can shift a row's rank between one page fetch and the
+            // next) put the same row in two pages, not a real second
+            // listing. Keeps the earlier occurrence's position.
+            const seen = new Set(prev.map((l) => l.guild_id))
+            return [...prev, ...data.listings.filter((l: Listing) => !seen.has(l.guild_id))]
+          })
         }
       })
       .catch(() => setError('Network error loading the directory'))
@@ -251,16 +260,6 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
       window.alert('Network error sending report — try again later.')
     } finally {
       setReportingId(null)
-    }
-  }
-
-  async function copyInvite(guildId: string, inviteUrl: string) {
-    try {
-      await navigator.clipboard.writeText(inviteUrl)
-      setCopiedId(guildId)
-      setTimeout(() => setCopiedId((cur) => (cur === guildId ? null : cur)), 1500)
-    } catch {
-      window.prompt('Copy this invite link:', inviteUrl)
     }
   }
 
@@ -657,36 +656,6 @@ export default function ServerDirectory({ initialTag }: { initialTag?: string } 
                   <a href={l.invite_url} target="_blank" rel="noopener noreferrer" className="pb-btn-secondary text-sm">
                     Join
                   </a>
-                  <div className="flex items-center gap-1">
-                    <button
-                      className="text-xs px-2 py-1 rounded-md"
-                      style={{ background: 'var(--pb-surface-raised)', border: '1px solid var(--pb-line)', color: 'var(--pb-text-faint)' }}
-                      title="Copy invite link"
-                      onClick={() => copyInvite(l.guild_id, l.invite_url)}
-                    >
-                      {copiedId === l.guild_id ? 'Copied ✓' : 'Copy'}
-                    </button>
-                    <button
-                      className="text-xs px-2 py-1 rounded-md"
-                      style={{ background: 'var(--pb-surface-raised)', border: '1px solid var(--pb-line)', color: 'var(--pb-text-faint)' }}
-                      title="Show QR code"
-                      onClick={() => setQrGuildId(qrGuildId === l.guild_id ? null : l.guild_id)}
-                    >
-                      QR
-                    </button>
-                  </div>
-                  {qrGuildId === l.guild_id && (
-                    // Uses a public QR-image API purely for the rendering
-                    // math (no data leaves the client beyond the invite
-                    // URL itself, which is already public) — no new
-                    // dependency or backend endpoint needed for this.
-                    <img
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(l.invite_url)}`}
-                      alt={`QR code for ${l.guild_name} invite`}
-                      className="w-24 h-24 rounded-md"
-                      style={{ background: '#fff', padding: '4px' }}
-                    />
-                  )}
                   <a
                     href={`${API_BASE}/api/server_listing_vote_oauth?guild_id=${l.guild_id}${l.clone_id ? `&clone_id=${l.clone_id}` : ''}`}
                     className="text-sm px-3 py-1.5 rounded-md font-medium text-center"
