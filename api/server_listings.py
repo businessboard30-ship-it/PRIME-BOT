@@ -275,6 +275,14 @@ class handler(BaseHTTPRequestHandler):
             sort = query.get("sort", ["trending"])[0]
             tag = query.get("tag", [""])[0].strip().lstrip("#").lower() or None
             nsfw = query.get("nsfw", ["0"])[0] == "1"
+            q = query.get("q", [""])[0].strip()[:100] or None
+            # Multi-select tags: comma-separated in one ?tags= param rather
+            # than repeated keys, so URLSearchParams on the frontend stays
+            # a plain string map. Same cleanup as _clean_tags (lowercase,
+            # strip '#') but capped independently since this is a filter,
+            # not a submission.
+            tags_raw = query.get("tags", [""])[0]
+            tags = [t.strip().lstrip("#").lower() for t in tags_raw.split(",") if t.strip()][:MAX_TAGS] or None
             try:
                 page = max(1, int(query.get("page", ["1"])[0]))
                 page_size = min(60, max(1, int(query.get("page_size", ["24"])[0])))
@@ -284,7 +292,7 @@ class handler(BaseHTTPRequestHandler):
             async def _run_public():
                 return await db.get_public_server_listings(
                     limit=page_size, offset=(page - 1) * page_size,
-                    sort=sort, tag=tag, nsfw=nsfw,
+                    sort=sort, tag=tag, nsfw=nsfw, q=q, tags=tags,
                 )
 
             try:
