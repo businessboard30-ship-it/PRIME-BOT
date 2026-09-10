@@ -33,9 +33,13 @@ type Listing = {
 async function fetchListing(guildId: string): Promise<Listing | null> {
   try {
     const res = await fetch(`${API_BASE}/api/server_listings?listing_guild_id=${guildId}`, {
-      // Directory data changes with votes/edits — don't let Next cache a
-      // stale vote count or invite link indefinitely.
-      next: { revalidate: 60 },
+      // Was `next: { revalidate: 60 }` — that let this page show a
+      // vote/join count up to a minute stale right after someone voted,
+      // which read as "voting doesn't work" even though the DB write
+      // itself was instant. no-store trades that staleness for a fresh
+      // fetch on every request — fine here since this endpoint is a cheap
+      // single-row lookup, not the paginated directory feed.
+      cache: 'no-store',
     })
     const data = await res.json()
     if (data.status !== 'ok') return null
