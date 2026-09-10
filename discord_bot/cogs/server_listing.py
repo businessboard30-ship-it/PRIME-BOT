@@ -256,9 +256,11 @@ class ServerListingCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._voting_panel_poller.start()
+        self._dead_invite_poller.start()
 
     def cog_unload(self):
         self._voting_panel_poller.cancel()
+        self._dead_invite_poller.cancel()
 
     @tasks.loop(seconds=60)
     async def _voting_panel_poller(self):
@@ -326,6 +328,83 @@ class ServerListingCog(GuildOnlyCog):
     @_voting_panel_poller.before_loop
     async def _before_voting_panel_poller(self):
         await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=30)
+    async def _dead_invite_poller(self):
+        """Catches listings whose invite_code no longer resolves in
+        guild.invites() — deleted channel, manually revoked in Server
+        Settings, or (rarely) actually expired — and DMs the guild owner
+        so a directory visitor doesn't hit a dead Join link with nobody
+        the wiser. 30-minute cadence (vs. the voting panel's 60s) since
+        invites don't die often and this is a courtesy heads-up, not
+        something latency-sensitive.
+
+        Same "poll everything, whichever process can see the guild acts"
+        shape as _voting_panel_poller: every bot process (main + every
+        clone) runs this independently and only does anything for
+        guild_ids its own gateway cache actually resolves.
+        """
+        try:
+            listings = await db.get_listings_with_invite_code()
+        except Exception:
+            logger.exception("[server_listing] failed polling for dead invites")
+            return
+        for row in listings:
+            guild = self.bot.get_guild(row["guild_id"])
+            if guild is None:
+                continue  # not this process's guild — leave it for whichever one has it
+            try:
+                invites = await guild.invites()
+            except (discord.Forbidden, discord.HTTPException):
+                # Can't check right now (bot lost Manage Server, etc.) —
+                # not the same thing as "confirmed dead", so don't flag it
+                # off a permission hiccup. Just retry next pass.
+                continue
+            alive = any(inv.code == row["invite_code"] for inv in invites)
+            if alive:
+                if row.get("invite_dead_notified_at") is not None:
+                    await db.clear_dead_invite_notify(guild.id)
+                continue
+
+            claimed = await db.claim_dead_invite_notify(guild.id)
+            if not claimed:
+                continue  # already told the owner about this exact dead streak
+
+            owner = await self._resolve_owner(guild)
+            if owner is None:
+                logger.info(
+                    "[server_listing] invite dead for guild %s (%s) but couldn't resolve an owner to notify",
+                    guild.id, guild.name,
+                )
+                continue
+            try:
+                await owner.send(
+                    f"⚠️ **{guild.name}**'s invite link on the server directory looks dead — it's been "
+                    "deleted, revoked, or expired, so anyone clicking Join from your listing right now "
+                    "hits a broken link.\n\n"
+                    "Run `/setup servers` in your server to get a fresh listing link, then submit it "
+                    "again — a working invite gets auto-filled in unless you'd rather paste your own."
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                logger.info(
+                    "[server_listing] couldn't DM owner %s about dead invite for guild %s",
+                    getattr(owner, "id", "?"), guild.id,
+                )
+
+    @_dead_invite_poller.before_loop
+    async def _before_dead_invite_poller(self):
+        await self.bot.wait_until_ready()
+
+    async def _resolve_owner(self, guild: discord.Guild):
+        # Same shape as automod.py's _resolve_owner — kept as a separate
+        # copy rather than a shared import since the two cogs' DM
+        # notification flows are otherwise unrelated and this is a
+        # three-line lookup, not worth a cross-cog dependency for.
+        try:
+            owner = guild.owner or (await guild.fetch_owner() if guild.owner_id else None)
+        except (discord.HTTPException, discord.Forbidden):
+            return None
+        return owner if (owner is not None and not owner.bot) else None
 
     # ── referral-boost conversion (event listener, not a command) ─────────
 
