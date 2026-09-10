@@ -138,16 +138,19 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "10"  # bumped from "9" — report_notify_config's dm_user_id
-# column (ALTER TABLE ... ADD COLUMN IF NOT EXISTS dm_user_id below) was
-# added to _create_tables without a matching version bump, so on every
-# real deployment init() saw schema_version == SCHEMA_VERSION and skipped
-# the DDL pass entirely — the column was never actually created against
-# the live database. Went unnoticed until /setup reportchannel became the
-# first real caller to INSERT into that column and hit
-# asyncpg.exceptions.UndefinedColumnError. Bumping this forces the DDL
-# pass (all of it idempotent CREATE/ALTER ... IF NOT EXISTS) to run once
-# more so the column actually gets created this time.
+SCHEMA_VERSION = "11"
+# History (why this matters): "9" -> "10" fixed report_notify_config's
+# dm_user_id column and server_listing_votes' unique-index migration —
+# both had been sitting in _create_tables for a while but never actually
+# ran on the live DB, because init() below skips the whole DDL pass
+# whenever schema_version already equals SCHEMA_VERSION. Nothing failed
+# LOUDLY until real callers finally hit the missing column/wrong index
+# (UndefinedColumnError / InvalidColumnReferenceError) — an unrelated bot
+# feature silently broken for who knows how long. "10" -> "11" adds
+# server_listings.invite_dead_notified_at (_dead_invite_poller below).
+# Rule going forward: ANY new CREATE TABLE / ALTER TABLE / CREATE INDEX
+# added to _create_tables MUST come with a version bump in the same
+# change, or it's dead code that silently never executes.
 
 
 async def get_pool():
@@ -3296,6 +3299,16 @@ class Database:
         """)
         await conn.execute("""
             ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS confirmed_conversions INTEGER NOT NULL DEFAULT 0
+        """)
+        # Tracks whether the owner's already been DMed that their listing's
+        # invite_code no longer resolves in guild.invites() (deleted channel,
+        # manually revoked, expired) — see server_listing.py's
+        # _dead_invite_poller. NULL = not currently flagged/notified; set on
+        # first detection so a 30-min poll doesn't re-DM every cycle until
+        # they fix it, cleared automatically once a live invite is seen
+        # again (fresh /setup servers run, or a working link pasted back).
+        await conn.execute("""
+            ALTER TABLE server_listings ADD COLUMN IF NOT EXISTS invite_dead_notified_at TIMESTAMPTZ
         """)
         # Backing the in-Discord vote/boost/visit panel (server_listing.py's
         # ServerListingVotePanelView) — remembers where the panel message
@@ -10234,6 +10247,51 @@ class Database:
             await conn.execute(
                 "UPDATE server_listings SET invite_code=$2 WHERE guild_id=$1",
                 guild_id, invite_code,
+            )
+
+    async def get_listings_with_invite_code(self) -> List[Dict]:
+        """Every listing that has a real invite_code parsed, for
+        server_listing.py's _dead_invite_poller to verify against a live
+        guild.invites() call. No clone_id filter needed: every bot process
+        (main + every clone) polls this and only acts on guild_ids it can
+        actually resolve via self.bot.get_guild — same "poll everything,
+        whoever has the guild wins" shape as get_pending_voting_panels."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT guild_id, guild_name, invite_code, invite_dead_notified_at
+                   FROM server_listings WHERE invite_code IS NOT NULL"""
+            )
+            return [dict(r) for r in rows]
+
+    async def claim_dead_invite_notify(self, guild_id: int) -> bool:
+        """Atomically claims 'notify this guild's owner their listing's
+        invite looks dead' — True only the first time this fires for the
+        CURRENT dead streak (invite_dead_notified_at starts NULL and this
+        sets it), so a 30-min poll interval doesn't re-DM the owner every
+        cycle until they actually fix it. See clear_dead_invite_notify for
+        the reset half."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """UPDATE server_listings SET invite_dead_notified_at = NOW()
+                   WHERE guild_id = $1 AND invite_dead_notified_at IS NULL""",
+                guild_id,
+            )
+            return result.endswith("1")
+
+    async def clear_dead_invite_notify(self, guild_id: int) -> None:
+        """Resets the notified flag once a live invite is seen again for
+        this listing (a fresh /setup servers run regenerates invite_code,
+        or the owner pastes a working link back) — so if it ever dies a
+        second time, the owner gets DMed about that occurrence too instead
+        of the flag staying permanently 'already told them' forever."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE server_listings SET invite_dead_notified_at = NULL
+                   WHERE guild_id = $1 AND invite_dead_notified_at IS NOT NULL""",
+                guild_id,
             )
 
     async def check_ref_conversion(
