@@ -19,12 +19,13 @@ Leg 1 (no ?code, no ?session): GET /api/discord_login_oauth
 
 Leg 2 (callback, ?code&?state): exchange code for identity + the user's
   guild list (with per-guild permissions Discord itself computed), keep
-  only guilds where (a) the user has Manage Server or Administrator, and
-  (b) PRIME-BOT is actually in that guild right now (discord_guilds table —
-  never trust "is the bot here" to anything Discord's OAuth response says,
-  since that scope doesn't even tell us that). Mint/reuse a dashboard token
-  for each, stash the result as a session row, redirect to the dashboard
-  site's /login/servers?session=<id>.
+  only guilds where the user has Manage Server or Administrator. PRIME-BOT
+  being in the guild is no longer required to list it (see the bot_present
+  flag below) — it only determines whether a dashboard link and a live
+  member_count are available yet. Mint/reuse a dashboard token (only when
+  the bot is present) and a listing token (always) for each, stash the
+  result as a session row, redirect to the dashboard site's
+  /login/servers?session=<id>.
 
 Leg 3 (?session only): the /login/servers page can't reach Discord's token
   endpoint itself (that needs the client secret), so it calls back here to
@@ -203,17 +204,31 @@ async def _handle(query: dict) -> tuple[int, str]:
     for g in manageable:
         gid = int(g["id"])
         info = active_clones.get(gid)
-        if info is None:
-            continue  # PRIME-BOT isn't in this guild — nothing to link to.
-        clone_id = info["clone_id"]
         guild_name = g.get("name", "Unknown server")
         icon_url = (
             f"https://cdn.discordapp.com/icons/{gid}/{g['icon']}.png"
             if g.get("icon") else None
         )
-        dashboard_token = await db.get_or_create_dashboard_token(gid, clone_id=clone_id)
+        # Bot presence is now OPTIONAL for listing (previously this whole
+        # guild was skipped — "PRIME-BOT isn't in this guild — nothing to
+        # link to" — when info was None). A user can now list a server the
+        # bot has never been in at all: they just won't get a dashboard
+        # link or a live member_count until they add it later. Identity
+        # (guild_name/icon) still always comes straight from Discord's own
+        # OAuth response, never anything client-typed, so this doesn't
+        # reopen the spoofing risk get_or_create_listing_token's docstring
+        # warns about — only the member_count placeholder is weaker without
+        # the bot's live guild object.
+        if info is not None:
+            clone_id = info["clone_id"]
+            member_count = info["member_count"] or 0
+            dashboard_token = await db.get_or_create_dashboard_token(gid, clone_id=clone_id)
+        else:
+            clone_id = None
+            member_count = 0
+            dashboard_token = None
         listing_token = await db.get_or_create_listing_token(
-            gid, guild_name, icon_url, info["member_count"] or 0, clone_id=clone_id,
+            gid, guild_name, icon_url, member_count, clone_id=clone_id,
         )
         results.append({
             "guild_id": str(gid),
@@ -222,6 +237,10 @@ async def _handle(query: dict) -> tuple[int, str]:
             "token": dashboard_token,
             "listing_token": listing_token,
             "clone_id": clone_id,
+            # Lets /login/servers show "Open dashboard" only where it'll
+            # actually work, and a "bot not added yet" hint otherwise,
+            # without the frontend having to infer it from token being null.
+            "bot_present": info is not None,
         })
 
     session_id = await db.create_login_session({"user": user_info, "guilds": results})
