@@ -138,7 +138,16 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "9"
+SCHEMA_VERSION = "10"  # bumped from "9" — report_notify_config's dm_user_id
+# column (ALTER TABLE ... ADD COLUMN IF NOT EXISTS dm_user_id below) was
+# added to _create_tables without a matching version bump, so on every
+# real deployment init() saw schema_version == SCHEMA_VERSION and skipped
+# the DDL pass entirely — the column was never actually created against
+# the live database. Went unnoticed until /setup reportchannel became the
+# first real caller to INSERT into that column and hit
+# asyncpg.exceptions.UndefinedColumnError. Bumping this forces the DDL
+# pass (all of it idempotent CREATE/ALTER ... IF NOT EXISTS) to run once
+# more so the column actually gets created this time.
 
 
 async def get_pool():
