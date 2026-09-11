@@ -97,6 +97,46 @@ class LevelingCog(GuildOnlyCog):
         # docstring for why an in-memory dict caused double level-up
         # messages whenever two bot processes briefly overlapped.
 
+    async def _ensure_announce_channel(self, guild: discord.Guild, config: dict, clone_id=None):
+        """Returns a channel to post level-ups in. If announce_channel_id
+        is unset (or was auto-created and then deleted), creates a
+        dedicated #level-ups channel once and remembers it — same pattern
+        as automod's ensure_log_channel — instead of falling back to
+        whatever channel the level-up message happened to land in, which
+        is what was spamming random channels before this.
+
+        If an admin deliberately picked a channel (announce_auto_created
+        is False) and it later gets deleted, this does NOT silently
+        replace their choice with a new auto-created one — falls back to
+        message.channel for that one send, same as before, so it doesn't
+        override a deliberate admin decision without them noticing.
+        """
+        existing_id = config.get("announce_channel_id")
+        if existing_id:
+            found = guild.get_channel(int(existing_id))
+            if found is not None:
+                return found
+            if not config.get("announce_auto_created"):
+                return None
+
+        if not guild.me.guild_permissions.manage_channels:
+            return None
+
+        try:
+            channel = await guild.create_text_channel(
+                "level-ups",
+                reason="PRIME-BOT: auto-created level-up announcement channel",
+            )
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.info(f"[leveling] couldn't auto-create level-ups channel in {guild.id}: {e}")
+            return None
+
+        await db.set_leveling_config(
+            guild.id, clone_id=clone_id,
+            announce_channel_id=channel.id, announce_auto_created=True,
+        )
+        return channel
+
     async def _grant_level_roles(self, member: discord.Member, new_level: int, clone_id=None):
         role_rows = await db.get_level_roles(member.guild.id, clone_id=clone_id)
         for row in role_rows:
@@ -134,12 +174,9 @@ class LevelingCog(GuildOnlyCog):
         new_total = row["total_xp"]
 
         if new_level > old_level and isinstance(message.author, discord.Member):
-            announce_channel = message.channel
-            announce_channel_id = config.get("announce_channel_id")
-            if announce_channel_id:
-                found = message.guild.get_channel(int(announce_channel_id))
-                if found is not None:
-                    announce_channel = found
+            announce_channel = await self._ensure_announce_channel(message.guild, config, clone_id=clone_id)
+            if announce_channel is None:
+                announce_channel = message.channel
             card_style = config.get("card_style", "card")
             if card_style != "off":
                 await self._send_level_up_card(announce_channel, message.author, new_level, new_total, card_style)
