@@ -270,10 +270,17 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
     elsewhere, so has_paid()/get_latest_pending_payment() scoping stays
     consistent between the manual and automatic paths.
 
-    Unlike the old version of this function, there's no buyer-facing
-    Discord confirmation button anymore — completing checkout on Selar
-    redirects the buyer straight to the web /unlock page (see module
-    docstring), which is where "I've Paid" now lives.
+    Buyer identification no longer depends on Selar's redirect carrying
+    any dynamic data — Selar's product-level "redirect after purchase" is
+    a single static URL, same for every buyer, with nothing appended
+    (confirmed). Instead: the Selar product's own Custom Checkout Form
+    (Selar dashboard feature) collects the buyer's Discord username and
+    server name as compulsory checkout questions, visible per-sale in the
+    Selar dashboard for manual cross-checking — same idea as the
+    synthetic buyer email, just via Selar's own form fields instead of a
+    URL param a buyer could silently overwrite. The web /unlock page
+    itself stays generic (no prefill, no per-buyer state) — its only job
+    is a plain "I've Paid" button.
     """
     user = interaction.user
     reference = _reference_for(payment_type, user.id)
@@ -295,6 +302,8 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
     pay_view.add_item(discord.ui.Button(label="💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
     await interaction.followup.send(
         f"Pay **{amount_display}** on Selar using the button below. "
+        f"You'll be asked for your Discord username and server name at checkout — "
+        f"enter them exactly as they appear so an admin can match your payment. "
         f"Once checkout completes, Selar will send you to a confirmation page — "
         f"tap **I've Paid** there and it'll be reviewed shortly.",
         view=pay_view, ephemeral=True,
