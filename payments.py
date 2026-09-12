@@ -283,6 +283,53 @@ paystack = PaystackPayment()
 stripe_gateway = StripePayment()
 
 
+class PaymentLinkPayment:
+    """"Connect payment link" provider — for a clone owner who doesn't
+    want to hand over a Stripe secret key at all, just a plain checkout
+    link (a Stripe Payment Link, Selar link, or anything else that takes
+    a buyer to a hosted checkout). Same two-method interface as
+    PaystackPayment/StripePayment so every existing call site
+    (resolve_gateway() callers just do gateway.initialize_payment(...) /
+    gateway.verify_payment(...)) works unchanged — no per-call-site
+    rewiring needed.
+
+    The trade-off: a bare link has no API, so there's no live "was this
+    paid" check the way Paystack/Stripe verification works. initialize_payment
+    hands back the owner's link as-is (ignoring amount/currency — the
+    link's own price is whatever the owner set on it) and verify_payment
+    always reports back as unconfirmed; completing one of these requires
+    the clone owner (or a main admin) to run
+    `/clonemonetize confirmpurchase` with the reference shown to the
+    buyer, at which point it's unlocked through the same UNLOCK_HANDLERS
+    payments_manual.py already uses for the fully-manual (Selar) flow."""
+
+    def initialize_payment(self, email: str, amount_minor_units: int, user_id: int, bot_name: str,
+                            payment_type: str = "bot_clone", extra_metadata: Optional[Dict] = None,
+                            api_key: Optional[str] = None, currency: str = "GHS") -> Optional[Dict]:
+        if not api_key:
+            return {"status": "error", "message": "This clone hasn't connected a payment link yet"}
+        import secrets as _secrets
+        reference = f"link_{payment_type}_{user_id}_{_secrets.token_hex(4)}"
+        return {"status": "success", "reference": reference, "authorization_url": api_key, "access_code": None}
+
+    def verify_payment(self, reference: str, api_key: Optional[str] = None) -> Optional[Dict]:
+        # Never auto-confirms — see class docstring. "pending" (not
+        # "failed") so a caller that only branches on == "success" shows
+        # its normal "not confirmed yet" retry message rather than
+        # anything implying the payment was rejected.
+        return {
+            "status": "pending",
+            "message": (
+                "This bot's payments are confirmed manually by its owner. "
+                f"Keep this reference and let them know you've paid: `{reference}` — "
+                "they'll confirm it with `/clonemonetize confirmpurchase`."
+            ),
+        }
+
+
+payment_link_gateway = PaymentLinkPayment()
+
+
 async def resolve_gateway(clone_id: int, platform: str = "telegram"):
     """Look up which gateway + key a payment for this clone should use.
 
@@ -315,9 +362,16 @@ async def resolve_gateway(clone_id: int, platform: str = "telegram"):
     api_key = cfg.get("api_key")
 
     if provider == "paystack" and api_key:
+        # Legacy only — Paystack is no longer offered as a NEW choice in
+        # /clonemonetize setpayment (Stripe or a payment link only, per
+        # the project owner), but a clone that connected one before that
+        # change keeps working rather than silently losing its payment
+        # routing.
         return paystack, api_key, "paystack"
     if provider == "stripe" and api_key:
         return stripe_gateway, api_key, "stripe"
+    if provider == "payment_link" and api_key:
+        return payment_link_gateway, api_key, "payment_link"
     return paystack, None, "paystack"
 
 
@@ -349,7 +403,9 @@ async def resolve_gateway_for_provider(clone_id: int, provider: str, platform: s
 
     if provider == "stripe" and api_key:
         return stripe_gateway, api_key
-    if provider == "paystack" and api_key:
+    if provider == "payment_link" and api_key:
+        return payment_link_gateway, api_key
+    if provider == "paystack" and api_key:  # legacy — see resolve_gateway's comment
         return paystack, api_key
     return paystack, None
 
@@ -386,6 +442,10 @@ def gateway_charge_amount(provider: str, ghs_amount: float) -> Dict:
         if amount_minor_units < 50:  # Stripe's practical minimum charge is ~$0.50
             return {"error": "below_minimum"}
         return {"amount_minor_units": amount_minor_units, "currency": "usd"}
+    # payment_link: the link's own price is whatever the owner set on it
+    # when creating it — there's no per-transaction amount to pass through
+    # an API, so this is only used for display/logging on our side, in GHS
+    # like everything else.
     # paystack (or falling back to it) — GHS direct, 2 decimal places -> pesewas
     return {"amount_minor_units": round(ghs_amount * 100), "currency": "GHS"}
 
