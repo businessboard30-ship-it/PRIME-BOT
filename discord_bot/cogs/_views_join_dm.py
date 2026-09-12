@@ -989,7 +989,7 @@ class _BuildBotTokenModal(discord.ui.Modal, title="Paste your bot's token"):
     it's moot either way."""
 
     token = discord.ui.TextInput(
-        label="Bot token (Developer Portal → Bot → Reset Token)",
+        label="Bot token (Bot tab → Reset Token)",
         placeholder="Paste the token here — only I ever see it",
         style=discord.TextStyle.short, required=True, max_length=100,
     )
@@ -1064,6 +1064,8 @@ async def _start_build_bot_wizard(interaction: discord.Interaction, guild: disco
 # can never drift out of sync or out of order the way two separately
 # maintained lists (embed fields vs. button keys) used to.
 FEATURE_TOGGLES = {
+    "build_bot": ("Build Bot", "🤖", _start_build_bot_wizard, None,
+                  "Run your own copy of this bot under your own name — takes about 2 minutes, no coding needed."),
     "welcome": ("Welcome messages", "👋", _enable_welcome, None,
                 "Greet new members automatically in a channel of your choice."),
     "channels": ("Create suggested channels", "📁", _enable_channels, None,
@@ -1090,8 +1092,6 @@ FEATURE_TOGGLES = {
                      "Let members submit ideas for staff and members to vote on."),
     "automod": ("Auto-moderation", "🛡️", _enable_automod, _AutomodOptionsView,
                 "Filter spam, invite links, and mass-mention raids."),
-    "build_bot": ("Build Bot", "🤖", _start_build_bot_wizard, None,
-                  "Run your own copy of this bot under your own name — takes about 2 minutes, no coding needed."),
 }
 
 # How many feature buttons show per page. Each feature now takes its own
