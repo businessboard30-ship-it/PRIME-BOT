@@ -37,7 +37,19 @@ _PAYMENT_TYPE_RE = re.compile(r"^[a-z_]{1,50}$")
 class handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-        query = parse_qs(urlparse(self.path).query)
+        raw_path = self.path
+        query = parse_qs(urlparse(raw_path).query)
+
+        # TEMPORARY diagnostic — logs the exact raw request Selar sends on
+        # redirect, unconditionally, before any validation. Purpose: confirm
+        # once and for all whether Selar's post-checkout redirect actually
+        # carries the reference/payment_type/buyer_id/sig/ts query params
+        # payments_manual.py baked into the pay link's redirect_url, or
+        # whether it fires with an empty/stripped query string instead.
+        # DELETE this log line once that's confirmed either way — it's not
+        # meant to stay in production (full raw path may end up in log
+        # aggregators/monitoring you don't control).
+        logger.warning(f"[selar-redirect][DIAGNOSTIC] raw incoming path: {raw_path!r}")
 
         def _one(key):
             values = query.get(key)
