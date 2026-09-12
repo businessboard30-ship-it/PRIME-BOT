@@ -1,25 +1,56 @@
-"""Manual payment path (Selar + DM approval), used whenever
-config.PAYMENT_MODE == "manual" instead of the Paystack/Stripe flow in
-payments.py/resolve_gateway().
+"""Manual payment path (Selar + web confirmation + DM approval), used
+whenever config.PAYMENT_MODE == "manual" instead of the Paystack/Stripe
+flow in payments.py/resolve_gateway().
 
 Shape: a caller (views_card_pack.py's ultra/card-pack flow, clone_admin.py's
 /registerclone flow, etc.) calls start_manual_payment() instead of
 resolve_gateway()+initialize_payment(). That logs a pending payment the
 same way the automatic path does (db.log_payment, provider="selar") and
-DMs every approver (main-bot admins + the relevant clone owner, if any) a
-card with Approve/Reject buttons. Tapping Approve calls this payment_type's
-entry in UNLOCK_HANDLERS — the SAME unlock functions the automatic path
-already calls after a gateway confirms — so nothing about what "paid"
-means diverges between the two modes; only how a payment gets *confirmed*
-differs.
+sends the buyer a DM with a "Pay on Selar" link — nothing else. Confirmation
+now happens entirely on the web, not in Discord:
 
-Not wired to Zapier or any other webhook — confirmation is always a human
-tapping a button after checking the Selar dashboard, by design (see
-conversation this was scoped in). No public endpoint is needed anywhere
-in this module.
+  1. Buyer taps "Pay on Selar". The link carries a `redirect_url` pointing
+     back at api/selar_redirect.py, with the reference/payment_type/buyer
+     id/target and an HMAC signature (utils/selar_signing.py) baked in —
+     Selar hands the browser straight back to that URL once checkout
+     completes.
+  2. api/selar_redirect.py checks the signature and format, then forwards
+     the browser to the Next.js frontend's /unlock page. That page is only
+     ever reachable with a *valid* signed reference this way — someone
+     guessing a reference format (they're visible in the Selar dashboard's
+     buyer-email trick below) and hitting /unlock directly gets rejected,
+     because they have no way to produce a signature api/selar_redirect
+     would have accepted.
+  3. /unlock's own "I've Paid" button (web, not Discord) posts to
+     api/selar_submit.py, which re-checks the same signature, atomically
+     claims the payment for review (db.claim_manual_payment_for_review —
+     a second tap, or a page reload + resubmit, is a no-op instead of a
+     second admin DM), and DMs every approver.
+  4. Tapping Approve/Reject in that DM calls this payment_type's entry in
+     UNLOCK_HANDLERS — the SAME unlock functions the automatic path
+     already calls after a gateway confirms — so nothing about what "paid"
+     means diverges between the two modes; only how a payment gets
+     *confirmed* differs.
+
+Approve/Reject are discord.ui.DynamicItems (not a plain View), so they
+survive a bot restart: the DM itself is sent over plain REST from
+api/selar_submit.py (that process has no live gateway connection to build
+a discord.ui.View on — see discord_bot/dm_send.py), and whichever process
+IS connected to the gateway when a button is actually clicked reconstructs
+the item from its custom_id alone, matching every other persistent-button
+pattern in this codebase (see discord_bot/cogs/roast.py's
+_RoastApproveButton for the closest precedent).
+
+Not wired to a Selar webhook — Selar currently provides no webhook
+delivery, so confirmation is always a human tapping Approve after checking
+the Selar dashboard. The only thing the web step buys over the old
+Discord-DM "I've Paid" button is that it forces exactly one signed,
+tamper-evident submission per completed checkout instead of trusting
+whatever the buyer's Discord client sends.
 """
 
 import logging
+import re
 import secrets
 from typing import Optional
 from urllib.parse import urlencode
@@ -27,11 +58,14 @@ from urllib.parse import urlencode
 import discord
 
 from database import db
-from config import SELAR_PRODUCT_LINKS, DISCORD_CLONE_ADMIN_IDS
+from config import SELAR_PRODUCT_LINKS, DISCORD_CLONE_ADMIN_IDS, PUBLIC_BASE_URL
+from utils.selar_signing import sign_selar_target
 
 logger = logging.getLogger(__name__)
 
 PROVIDER = "selar"
+
+_APPROVAL_ID_RE = r"(\d+)"
 
 
 def _reference_for(payment_type: str, user_id: int) -> str:
@@ -40,16 +74,38 @@ def _reference_for(payment_type: str, user_id: int) -> str:
     return f"selar_{payment_type}_{user_id}_{secrets.token_hex(4)}"
 
 
-def _prefilled_selar_link(payment_type: str, user_id: int) -> Optional[str]:
+def _prefilled_selar_link(payment_type: str, user_id: int, guild_id: Optional[int],
+                           clone_id: Optional[int], reference: str) -> Optional[str]:
     """Appends add_to_cart=1 + a synthetic email carrying the Discord user
     id, same trick views_card_pack.py already uses for Paystack
     (f"user_{user.id}@animebot.com") — Selar has no raw 'reference' field,
     so this doubles as one: whatever shows in the Selar dashboard's buyer
-    email is the Discord id to match against the DM."""
+    email is the Discord id to match against, for an admin eyeballing the
+    dashboard directly.
+
+    Also appends redirect_url — a signed link back to api/selar_redirect.py
+    — so Selar hands the buyer's browser back to us once checkout
+    completes, instead of leaving them stranded on Selar's own confirmation
+    page with no way to get to a confirmation step at all."""
     base = SELAR_PRODUCT_LINKS.get(payment_type)
     if not base:
         return None
-    params = {"add_to_cart": "1", "email": f"user_{user_id}@animebot.com"}
+    signature, ts = sign_selar_target(reference, payment_type, user_id, guild_id, clone_id)
+    redirect_params = {
+        "reference": reference, "payment_type": payment_type, "buyer_id": user_id,
+        "sig": signature, "ts": ts,
+    }
+    if guild_id is not None:
+        redirect_params["guild_id"] = guild_id
+    if clone_id is not None:
+        redirect_params["clone_id"] = clone_id
+    redirect_url = f"{PUBLIC_BASE_URL}/api/selar_redirect?{urlencode(redirect_params)}"
+
+    params = {
+        "add_to_cart": "1",
+        "email": f"user_{user_id}@animebot.com",
+        "redirect_url": redirect_url,
+    }
     sep = "&" if "?" in base else "?"
     return f"{base}{sep}{urlencode(params)}"
 
@@ -67,17 +123,21 @@ async def _resolve_approvers(bot: discord.Client, guild_id: Optional[int]) -> li
     return list(approvers)
 
 
-async def _send_approval_dms(bot: discord.Client, reference: str, payment_type: str, buyer_id: int,
-                              guild_id: Optional[int], clone_id: Optional[int], amount_display: str) -> None:
-    """Actually DMs the approvers with the Approve/Reject card. Split out
-    from start_manual_payment so it can be triggered by the buyer's
-    "I've Paid" tap (BuyerConfirmView below) instead of firing the moment
-    checkout starts — we only want you notified once someone claims they
-    actually paid, not on every buyer who clicks the Selar link."""
+async def send_manual_payment_approval_dms(bot: discord.Client, payment_id: int, reference: str,
+                                            payment_type: str, buyer_id: int, guild_id: Optional[int],
+                                            clone_id: Optional[int], amount_display: str) -> None:
+    """Called from api/selar_submit.py once the buyer's web "I've Paid"
+    submission has been atomically claimed (db.claim_manual_payment_for_review
+    already returned True for this reference — this function assumes that
+    already happened and does not re-check it, so callers must not invoke
+    it speculatively). DMs every approver a persistent Approve/Reject card
+    keyed by payment_id, the payment_logs primary key, since DynamicItem
+    custom_ids need something short and numeric rather than the full
+    reference string."""
     approver_ids = await _resolve_approvers(bot, guild_id)
     location_line = f"Guild: `{guild_id}`" if guild_id is not None else f"Clone: `#{clone_id}`"
     msg = (
-        f"💰 **Manual payment — buyer says they've paid**\n"
+        f"💰 **Manual payment — buyer confirmed on the web**\n"
         f"Buyer: <@{buyer_id}> (`{buyer_id}`)\n"
         f"Type: `{payment_type}` — {amount_display}\n"
         f"Reference: `{reference}`\n"
@@ -85,127 +145,104 @@ async def _send_approval_dms(bot: discord.Client, reference: str, payment_type: 
         f"Check Selar for a matching sale (buyer email `user_{buyer_id}@animebot.com`), "
         f"then Approve or Reject below."
     )
+    view = ManualApprovalView(payment_id)
     for admin_id in approver_ids:
         try:
             admin_user = await bot.fetch_user(admin_id)
-            await admin_user.send(
-                msg,
-                view=ManualApprovalView(reference, payment_type, buyer_id, guild_id, clone_id, amount_display),
-            )
+            await admin_user.send(msg, view=view)
         except discord.HTTPException:
             logger.warning(f"[manual-pay] couldn't DM approver {admin_id} for reference {reference}")
 
 
-class BuyerConfirmView(discord.ui.View):
-    """Sent to the BUYER alongside the Selar pay link. They tap this only
-    after actually completing checkout — that's what triggers the
-    approval DM(s), instead of firing one the moment they start checkout
-    (which would fire for every click, paid or not, and give no signal
-    about whether they actually finished)."""
+class _ManualPayApproveButton(discord.ui.DynamicItem[discord.ui.Button], template=rf"^manualpay_approve:{_APPROVAL_ID_RE}$"):
+    """Approve half of the admin DM card. DynamicItem (not a plain View)
+    because the DM is sent from api/selar_submit.py — a process with no
+    live gateway connection — so nothing about this button can rely on
+    in-memory state; everything it needs is re-derived from payment_id at
+    click time via a fresh DB lookup."""
 
-    def __init__(self, reference: str, payment_type: str, buyer_id: int,
-                 guild_id: Optional[int], clone_id: Optional[int], amount_display: str):
-        super().__init__(timeout=None)
-        self.reference = reference
-        self.payment_type = payment_type
-        self.buyer_id = buyer_id
-        self.guild_id = guild_id
-        self.clone_id = clone_id
-        self.amount_display = amount_display
+    def __init__(self, payment_id: int):
+        self.payment_id = payment_id
+        super().__init__(discord.ui.Button(
+            label="✅ Approve", style=discord.ButtonStyle.success,
+            custom_id=f"manualpay_approve:{payment_id}",
+        ))
 
-    @discord.ui.button(label="✅ I've Paid", style=discord.ButtonStyle.success, custom_id="manual_pay_ive_paid")
-    async def ive_paid(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.buyer_id:
-            await interaction.response.send_message("This isn't your payment to confirm.", ephemeral=True)
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match"):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        row = await db.get_payment_row_by_id(self.payment_id)
+        if not row or row.get("status") != "awaiting_review":
+            await interaction.followup.send("This payment's already been resolved or wasn't found.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True)
 
-        pending = await db.get_latest_pending_payment(self.buyer_id, self.payment_type, chat_id=self.guild_id)
-        if not pending or pending.get("paystack_reference") != self.reference:
+        handler = UNLOCK_HANDLERS.get(row["payment_type"])
+        if handler is None:
             await interaction.followup.send(
-                "Couldn't find this pending payment anymore — it may already be resolved.", ephemeral=True
+                f"No unlock handler wired for `{row['payment_type']}` yet — approve manually in code.", ephemeral=True
             )
             return
 
-        await _send_approval_dms(
-            interaction.client, self.reference, self.payment_type, self.buyer_id,
-            self.guild_id, self.clone_id, self.amount_display,
-        )
+        await db.mark_payment_paid(row["paystack_reference"])
+        await handler(row["paystack_reference"], row["user_id"], row.get("chat_id"), row.get("group_id"))
 
-        button.disabled = True
-        button.label = "⏳ Reported — awaiting confirmation"
-        try:
-            await interaction.message.edit(view=self)
-        except (discord.NotFound, discord.Forbidden):
-            # Original message/DM channel gone (e.g. buyer deleted the DM,
-            # or Discord returns 403 Missing Access once the DM channel is
-            # no longer reachable — same "harmless" case as NotFound, just
-            # a different error code) — the approval DM already went out
-            # above; just skip the visual update instead of crashing the
-            # interaction.
-            pass
-        await interaction.followup.send(
-            "Thanks — flagged for review. You'll get a DM as soon as it's confirmed.", ephemeral=True
+        for child in self.view.children:
+            child.disabled = True
+        await interaction.message.edit(
+            content=f"{interaction.message.content}\n\n✅ **Approved** by {interaction.user.mention}",
+            view=self.view,
         )
+        await _notify_buyer(interaction.client, row["user_id"], row["payment_type"], approved=True)
+
+
+class _ManualPayRejectButton(discord.ui.DynamicItem[discord.ui.Button], template=rf"^manualpay_reject:{_APPROVAL_ID_RE}$"):
+    def __init__(self, payment_id: int):
+        self.payment_id = payment_id
+        super().__init__(discord.ui.Button(
+            label="❌ Reject", style=discord.ButtonStyle.danger,
+            custom_id=f"manualpay_reject:{payment_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match"):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        row = await db.get_payment_row_by_id(self.payment_id)
+        if not row or row.get("status") != "awaiting_review":
+            await interaction.followup.send("This payment's already been resolved or wasn't found.", ephemeral=True)
+            return
+
+        await db.mark_manual_payment_rejected(self.payment_id)
+        for child in self.view.children:
+            child.disabled = True
+        await interaction.message.edit(
+            content=f"{interaction.message.content}\n\n❌ **Rejected** by {interaction.user.mention}",
+            view=self.view,
+        )
+        await _notify_buyer(interaction.client, row["user_id"], row["payment_type"], approved=False)
 
 
 class ManualApprovalView(discord.ui.View):
-    """Sent to every approver DM. Only the Approve/Reject tap matters —
-    this view has no persistent custom_id registration (same reasoning as
-    BuyCardPackView: never posted publicly, so an on-restart re-register
-    isn't needed — if the bot restarts mid-review, the approver can just
-    check the pending payment manually and re-run the unlock)."""
+    """timeout=None + DynamicItem children (see above) so this survives a
+    bot restart instead of expiring in-memory — a real concern here since
+    review can happen well after the DM was sent."""
 
-    def __init__(self, reference: str, payment_type: str, buyer_id: int,
-                 guild_id: Optional[int], clone_id: Optional[int], amount_display: str):
+    def __init__(self, payment_id: int):
         super().__init__(timeout=None)
-        self.reference = reference
-        self.payment_type = payment_type
-        self.buyer_id = buyer_id
-        self.guild_id = guild_id
-        self.clone_id = clone_id
-        self.amount_display = amount_display
+        self.payment_id = payment_id
+        self.add_item(_ManualPayApproveButton(payment_id))
+        self.add_item(_ManualPayRejectButton(payment_id))
 
-    @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success, custom_id="manual_pay_approve")
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        pending = await db.get_latest_pending_payment(self.buyer_id, self.payment_type, chat_id=self.guild_id)
-        if not pending or pending.get("paystack_reference") != self.reference:
-            # Reference already handled (approved/rejected elsewhere) or gone.
-            await interaction.followup.send("This payment's already been resolved or wasn't found.", ephemeral=True)
-            return
 
-        handler = UNLOCK_HANDLERS.get(self.payment_type)
-        if handler is None:
-            await interaction.followup.send(
-                f"No unlock handler wired for `{self.payment_type}` yet — approve manually in code.", ephemeral=True
-            )
-            return
-
-        await db.mark_payment_paid(self.reference)
-        await handler(self.reference, self.buyer_id, self.guild_id, self.clone_id)
-
-        for item in self.children:
-            item.disabled = True
-        await interaction.message.edit(
-            content=f"{interaction.message.content}\n\n✅ **Approved** by {interaction.user.mention}", view=self
-        )
-        await _notify_buyer(interaction.client, self.buyer_id, self.payment_type, approved=True)
-
-    @discord.ui.button(label="❌ Reject", style=discord.ButtonStyle.danger, custom_id="manual_pay_reject")
-    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        pool_row = await db.get_latest_pending_payment(self.buyer_id, self.payment_type, chat_id=self.guild_id)
-        if not pool_row or pool_row.get("paystack_reference") != self.reference:
-            await interaction.followup.send("This payment's already been resolved or wasn't found.", ephemeral=True)
-            return
-
-        for item in self.children:
-            item.disabled = True
-        await interaction.message.edit(
-            content=f"{interaction.message.content}\n\n❌ **Rejected** by {interaction.user.mention}", view=self
-        )
-        await _notify_buyer(interaction.client, self.buyer_id, self.payment_type, approved=False)
+# Registered in discord_bot/bot.py via bot.add_dynamic_items(*MANUAL_PAYMENT_DYNAMIC_ITEMS)
+# so Approve/Reject keep working after a restart, same mechanism as every
+# other persistent button in this codebase.
+MANUAL_PAYMENT_DYNAMIC_ITEMS = (_ManualPayApproveButton, _ManualPayRejectButton)
 
 
 async def _notify_buyer(bot: discord.Client, buyer_id: int, payment_type: str, approved: bool) -> None:
@@ -232,9 +269,16 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
     (discord_clone). Matches how log_payment's chat_id is already used
     elsewhere, so has_paid()/get_latest_pending_payment() scoping stays
     consistent between the manual and automatic paths.
+
+    Unlike the old version of this function, there's no buyer-facing
+    Discord confirmation button anymore — completing checkout on Selar
+    redirects the buyer straight to the web /unlock page (see module
+    docstring), which is where "I've Paid" now lives.
     """
     user = interaction.user
-    link = _prefilled_selar_link(payment_type, user.id)
+    reference = _reference_for(payment_type, user.id)
+    clone_id = getattr(interaction.client, "clone_id", None)
+    link = _prefilled_selar_link(payment_type, user.id, guild_id, clone_id, reference)
     if not link:
         await interaction.followup.send(
             "Manual payments aren't set up for this yet — please try again later.", ephemeral=True
@@ -242,19 +286,18 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
         logger.error(f"[manual-pay] no SELAR_PRODUCT_LINKS entry for payment_type={payment_type}")
         return
 
-    reference = _reference_for(payment_type, user.id)
     await db.log_payment(
         user.id, 0.0, reference, status="pending",
         payment_type=payment_type, chat_id=guild_id, provider=PROVIDER,
     )
 
-    clone_id = getattr(interaction.client, "clone_id", None)
-    confirm_view = BuyerConfirmView(reference, payment_type, user.id, guild_id, clone_id, amount_display)
-    confirm_view.add_item(discord.ui.Button(label="💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
+    pay_view = discord.ui.View(timeout=None)
+    pay_view.add_item(discord.ui.Button(label="💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
     await interaction.followup.send(
         f"Pay **{amount_display}** on Selar using the button below. "
-        f"Once you've completed checkout, tap **I've Paid** so it gets reviewed and confirmed.",
-        view=confirm_view, ephemeral=True,
+        f"Once checkout completes, Selar will send you to a confirmation page — "
+        f"tap **I've Paid** there and it'll be reviewed shortly.",
+        view=pay_view, ephemeral=True,
     )
 
 
