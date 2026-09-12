@@ -21,6 +21,7 @@ from discord.ext import commands, tasks
 
 from database import db
 from discord_bot.cogs._views_report_channel_picker import prompt_report_channel
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,10 @@ logger = logging.getLogger(__name__)
 class ReportNotificationsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # A clone with no report channel configured (or one that's just
+        # quiet) shouldn't hit the DB every 45s forever — see
+        # _adaptive_skip.py.
+        self._gate = AdaptiveSkip(idle_threshold=5, idle_skip=8)
         self._report_poller.start()
 
     def cog_unload(self):
@@ -35,6 +40,8 @@ class ReportNotificationsCog(commands.Cog):
 
     @tasks.loop(seconds=45)
     async def _report_poller(self):
+        if not self._gate.should_run():
+            return
         clone_id = getattr(self.bot, "clone_id", None)
         try:
             config = await db.get_report_notify_channel(clone_id)
@@ -42,6 +49,7 @@ class ReportNotificationsCog(commands.Cog):
             logger.exception("[report-notifications] config lookup failed")
             return
         if not config or not config.get("channel_id"):
+            self._gate.record(found_something=False)
             return  # not configured yet on this process — nothing to do
 
         channel = self.bot.get_channel(config["channel_id"])
@@ -58,6 +66,7 @@ class ReportNotificationsCog(commands.Cog):
         except Exception:
             logger.exception("[report-notifications] fetch failed")
             return
+        self._gate.record(found_something=bool(reports))
         if not reports:
             return
 
