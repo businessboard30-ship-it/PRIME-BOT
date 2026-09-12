@@ -148,6 +148,10 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*VERIFICATION_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DISCOVER_PLAYERS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ROAST_DYNAMIC_ITEMS)
+        # Roast Arena disabled (see roast_arena load_extension comment
+        # above) — its buttons won't be interacted with if the cog never
+        # loads, but left registered here too so nothing errors if it's
+        # ever turned back on mid-process.
         self.add_dynamic_items(*ROAST_ARENA_CONSENT_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ROAST_ARENA_CHALLENGE_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ROAST_ARENA_HOST_WIZARD_DYNAMIC_ITEMS)
@@ -185,7 +189,10 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.discover")
         await self.load_extension("discord_bot.cogs.ai_tools")
         await self.load_extension("discord_bot.cogs.roast")
-        await self.load_extension("discord_bot.cogs.roast_arena")
+        # Roast Arena disabled — unused, and its poller was one of the
+        # background egress contributors. Extension + dynamic items left
+        # in place; just not loaded, so re-enabling is a one-line revert.
+        # await self.load_extension("discord_bot.cogs.roast_arena")
         await self.load_extension("discord_bot.cogs.ship")
         await self.load_extension("discord_bot.cogs.ai_store")
         await self.load_extension("discord_bot.cogs.external_tools")
