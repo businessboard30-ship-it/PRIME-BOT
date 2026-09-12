@@ -481,6 +481,84 @@ class AnimeBotDiscord(commands.Bot):
         if welcome_cog:
             await welcome_cog.post_setup_wizard_on_join(guild)
 
+    async def _build_join_dm_content(self, guild: discord.Guild, clone_id) -> dict:
+        """Gathers everything the combined join DM's view is built from —
+        title, intro, the feature-button key order, and every cog's
+        notice section (automod/ship/welcome) — without touching Discord
+        at all. Split out of _send_combined_owner_join_dm so /start (see
+        quickstart.py) can build the exact same content on demand,
+        instead of copy-pasting this section-by-section gathering and
+        risking the two drifting apart the way the old
+        hardcoded-feature-key-list bug already did once (see the comment
+        below on feature_keys). Returns a dict rather than a tuple so a
+        future field can be added without every call site's unpacking
+        needing to change.
+
+        Deliberately excludes record_quickstart_sent (that's a one-time,
+        real-join-only side effect, not content) and the listing/invite
+        join_offer (also real-join-only — see is_initial_send below) —
+        both stay the caller's responsibility."""
+        title = "🚀 Thanks for adding me!"
+        intro = f"Here's everything worth knowing about **{guild.name}** in one message:"
+        intro += "\n\n⬇️ **Media downloads** work right away, no setup — grab audio/video from a link with `/download`."
+
+        feature_keys = []
+        quickstart_cog = self.get_cog("QuickstartCog")
+        if quickstart_cog:
+            # See the historical note this replaced: a hardcoded list here
+            # used to duplicate FEATURE_TOGGLES' own key order and could
+            # silently drift from it. Reading FEATURE_TOGGLES.keys()
+            # directly removes that second list entirely.
+            from discord_bot.cogs._views_join_dm import FEATURE_TOGGLES
+            feature_keys = list(FEATURE_TOGGLES.keys())
+
+        notices = []
+        automod_cog = self.get_cog("AutomodCog")
+        if automod_cog:
+            try:
+                for notice_title, body in await automod_cog.build_join_notice_fields(guild, clone_id=clone_id):
+                    notices.append((notice_title, body))
+            except Exception:
+                logger.exception(f"[join-dm] automod section failed for guild {guild.id}")
+
+        ship_cog = self.get_cog("ShipCog")
+        if ship_cog:
+            try:
+                field = await ship_cog.build_join_notice_field(guild)
+                if field:
+                    notices.append((field[0], field[1]))
+            except Exception:
+                logger.exception(f"[join-dm] ship section failed for guild {guild.id}")
+
+        welcome_cog = self.get_cog("WelcomeCog")
+        if welcome_cog:
+            try:
+                field = await welcome_cog.build_join_notice_field(guild, clone_id=clone_id)
+                if field:
+                    notices.append((field[0], field[1]))
+            except Exception:
+                logger.exception(f"[join-dm] ultra pack section failed for guild {guild.id}")
+
+        return {
+            "title": title, "intro": intro, "feature_keys": feature_keys, "notices": notices,
+            "has_quickstart_cog": quickstart_cog is not None,
+        }
+
+    async def _build_join_dm_view(self, guild: discord.Guild, clone_id, content: dict,
+                                   join_offer: dict = None) -> discord.ui.LayoutView:
+        """Turns _build_join_dm_content's output into an actual
+        JoinDMLayoutView — split out for the same reason as that method:
+        one shared place both the real on-join send and the on-demand
+        /start resend build from, so they can never render differently
+        for the same guild state."""
+        from discord_bot.cogs._views_join_dm import _enabled_feature_keys
+        enabled = await _enabled_feature_keys(guild.id, clone_id)
+        return build_join_dm_view(
+            guild.id, clone_id=clone_id, feature_keys=content["feature_keys"],
+            intro=content["intro"], title=content["title"], notices=content["notices"],
+            enabled_keys=enabled, guild_name=guild.name, join_offer=join_offer,
+        )
+
     async def _send_combined_owner_join_dm(self, guild: discord.Guild, *, is_initial_send: bool = True,
                                             needs_invite_consent: bool = False):
         """Single consolidated DM to the server owner covering everything
@@ -515,61 +593,10 @@ class AnimeBotDiscord(commands.Bot):
         # no longer a separate embed-fields list and a separate button
         # list that can drift out of sync (that mismatch is exactly what
         # produced the owner-reported bug of buttons floating apart from
-        # their text). intro/notices below just supply the content;
-        # build_join_dm_view does all the actual layout.
-        title = "🚀 Thanks for adding me!"
-        intro = f"Here's everything worth knowing about **{guild.name}** in one message:"
-        # /download needs no setup, so it has no toggle button and no
-        # Section of its own — mentioned in the intro instead so it
-        # isn't silently dropped from the DM entirely.
-        intro += "\n\n⬇️ **Media downloads** work right away, no setup — grab audio/video from a link with `/download`."
-
-        feature_keys = []
-        quickstart_cog = self.get_cog("QuickstartCog")
-        record_quickstart_sent = False
-        if quickstart_cog:
-            # Was a hardcoded list here that duplicated FEATURE_TOGGLES'
-            # own key order — despite this comment previously (wrongly)
-            # claiming it was the only such list. It wasn't: _PageNavButton
-            # in _views_join_dm.py rebuilds each page from
-            # list(FEATURE_TOGGLES.keys()) (dict insertion order), which
-            # could silently differ from whatever order was hand-typed
-            # here — exactly the two-lists-drift-apart bug this comment
-            # already warned about once (see the QUICKSTART_ITEMS history
-            # above). Reading FEATURE_TOGGLES.keys() directly here removes
-            # the second list entirely: initial send and every page-nav
-            # rebuild now always agree, because there's only one order to
-            # agree with.
-            from discord_bot.cogs._views_join_dm import FEATURE_TOGGLES
-            feature_keys = list(FEATURE_TOGGLES.keys())
-            record_quickstart_sent = True
-
-        notices = []
-        automod_cog = self.get_cog("AutomodCog")
-        if automod_cog:
-            try:
-                for notice_title, body in await automod_cog.build_join_notice_fields(guild, clone_id=clone_id):
-                    notices.append((notice_title, body))
-            except Exception:
-                logger.exception(f"[join-dm] automod section failed for guild {guild.id}")
-
-        ship_cog = self.get_cog("ShipCog")
-        if ship_cog:
-            try:
-                field = await ship_cog.build_join_notice_field(guild)
-                if field:
-                    notices.append((field[0], field[1]))
-            except Exception:
-                logger.exception(f"[join-dm] ship section failed for guild {guild.id}")
-
-        welcome_cog = self.get_cog("WelcomeCog")
-        if welcome_cog:
-            try:
-                field = await welcome_cog.build_join_notice_field(guild, clone_id=clone_id)
-                if field:
-                    notices.append((field[0], field[1]))
-            except Exception:
-                logger.exception(f"[join-dm] ultra pack section failed for guild {guild.id}")
+        # their text). _build_join_dm_content/_build_join_dm_view above
+        # do all the actual gathering/layout now.
+        content = await self._build_join_dm_content(guild, clone_id)
+        record_quickstart_sent = content["has_quickstart_cog"]
 
         # The one-time listing/registry-invite asks (see _views_join_dm.py's
         # join_offer rendering) — only ever computed on the actual join,
@@ -594,13 +621,7 @@ class AnimeBotDiscord(commands.Bot):
         backup_join_offer = {"show_listing": show_listing, "show_invite": False} if show_listing else None
 
         try:
-            from discord_bot.cogs._views_join_dm import _enabled_feature_keys
-            enabled = await _enabled_feature_keys(guild.id, clone_id)
-            view = build_join_dm_view(
-                guild.id, clone_id=clone_id, feature_keys=feature_keys,
-                intro=intro, title=title, notices=notices, enabled_keys=enabled,
-                guild_name=guild.name, join_offer=owner_join_offer,
-            )
+            view = await self._build_join_dm_view(guild, clone_id, content, join_offer=owner_join_offer)
             await owner.send(view=view)
             # Only recorded as "sent" once the DM actually goes out — this
             # used to fire right after building the quickstart section's
@@ -634,15 +655,10 @@ class AnimeBotDiscord(commands.Bot):
         # which is redundant once the first one is already sitting there.
         if is_initial_send:
             try:
-                from discord_bot.cogs._views_join_dm import _default_text_channel, _enabled_feature_keys
+                from discord_bot.cogs._views_join_dm import _default_text_channel
                 channel = _default_text_channel(guild)
                 if channel is not None:
-                    enabled = await _enabled_feature_keys(guild.id, clone_id)
-                    backup_view = build_join_dm_view(
-                        guild.id, clone_id=clone_id, feature_keys=feature_keys,
-                        intro=intro, title=title, notices=notices, enabled_keys=enabled,
-                        guild_name=guild.name, join_offer=backup_join_offer,
-                    )
+                    backup_view = await self._build_join_dm_view(guild, clone_id, content, join_offer=backup_join_offer)
                     await channel.send(view=backup_view)
             except (discord.HTTPException, discord.Forbidden, discord.NotFound):
                 logger.info(f"[join-dm] Could not post backup join notice in guild {guild.id}")
