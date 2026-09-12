@@ -101,6 +101,12 @@ CREATE TABLE IF NOT EXISTS payment_logs (
     payment_id SERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     amount DECIMAL(10,2) NOT NULL,
+    -- status: 'pending' -> (Selar manual path only) 'awaiting_review' once
+    -- the buyer confirms via the web /unlock page (see payments_manual.py)
+    -- -> 'completed' (db.mark_payment_paid, admin Approve) or 'rejected'
+    -- (db.mark_manual_payment_rejected, admin Reject). Automatic gateway
+    -- payments (Paystack/Stripe) go straight from 'pending' to 'completed'
+    -- and never pass through 'awaiting_review'/'rejected'.
     status VARCHAR(50) DEFAULT 'pending',
     payment_method VARCHAR(50),
     paystack_reference VARCHAR(255) UNIQUE,
