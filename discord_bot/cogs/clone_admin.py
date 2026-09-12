@@ -420,14 +420,17 @@ class CloneAdminCog(commands.Cog):
 
         from config import PAYMENT_MODE
         if PAYMENT_MODE == "manual":
-            from payments_manual import _reference_for, _prefilled_selar_link, BuyerConfirmView
+            from payments_manual import _reference_for, _prefilled_selar_link
             reference = _reference_for("discord_clone_monetization", interaction.user.id)
             await db.start_discord_monetization_payment(clone_id, interaction.user.id, reference)
             await db.log_payment(
                 interaction.user.id, 0.0, reference, status="pending",
                 payment_type="discord_clone_monetization", provider="selar",
             )
-            link = _prefilled_selar_link("discord_clone_monetization", interaction.user.id)
+            # No guild_id (account-level purchase) — clone_id IS passed so
+            # the signed redirect_url and the eventual admin DM can scope
+            # to this specific clone, same as views_card_pack.py's calls.
+            link = _prefilled_selar_link("discord_clone_monetization", interaction.user.id, None, clone_id, reference)
             if not link:
                 await interaction.followup.send(
                     "❌ Manual payments aren't set up for monetization yet — please try again later.",
@@ -435,15 +438,13 @@ class CloneAdminCog(commands.Cog):
                 )
                 return
 
-            confirm_view = BuyerConfirmView(
-                reference, "discord_clone_monetization", interaction.user.id, None, None,
-                f"GHS {CLONE_MONETIZATION_FEE_GHS}",
-            )
-            confirm_view.add_item(discord.ui.Button(label="💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
+            pay_view = discord.ui.View(timeout=None)
+            pay_view.add_item(discord.ui.Button(label="💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
             await interaction.followup.send(
                 f"**Activate Monetization — GHS {CLONE_MONETIZATION_FEE_GHS}/month** for clone `#{clone_id}`.\n\n"
-                f"Tap **Pay on Selar**, complete checkout, then tap **I've Paid** below so it gets reviewed.",
-                view=confirm_view, ephemeral=True,
+                f"Tap **Pay on Selar** and complete checkout — you'll be redirected to a confirmation "
+                f"page where tapping **I've Paid** sends it for review.",
+                view=pay_view, ephemeral=True,
             )
             return
 
