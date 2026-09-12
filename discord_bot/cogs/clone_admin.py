@@ -4,9 +4,14 @@ of handlers/clone_bot.py, adapted for the fact that a Discord clone needs
 its own always-on process rather than just a webhook routing rule (see
 discord_bot/clone_manager.py's docstring for why).
 
-Only loaded on the main bot (see discord_bot/bot.py's setup_hook) — a clone
-registering further clones would need its own token to hand out, which
-defeats the point.
+Loaded on every bot process now, main and clones alike (see
+discord_bot/bot.py's setup_hook) — clones are allowed to onboard their own
+sub-clones via this same cog and the "Build Bot" wizard
+(discord_bot/cogs/_views_join_dm.py). Revenue and approval rights for any
+clone-of-clone registration still belong solely to the main project owner
+— see _resolve_approvers' discord_clone carve-out in payments_manual.py —
+the hosting clone's owner is only ever recorded for lineage
+(parent_clone_id), never paid or asked to approve.
 """
 
 import asyncio
@@ -22,6 +27,7 @@ from discord.ext import commands
 from database import db
 from discord_clone_service import validate_bot_token, build_invite_url, set_default_install_params
 from utils.crypto import secret_manager
+from payments_manual import start_manual_payment
 from payments import paystack
 from config import (
     DISCORD_CLONE_FEE_GHS, DISCORD_CLONE_FREE_EVERY_NTH, DISCORD_CLONE_ADMIN_IDS,
@@ -51,6 +57,91 @@ async def _owes_payment(owner_id: int) -> bool:
     return True
 
 
+async def register_clone_token(interaction: discord.Interaction, token: str, owner_id: int,
+                                hosting_clone_id: Optional[int] = None) -> None:
+    """Shared by /registerclone and the "Build Bot" button wizard
+    (discord_bot/cogs/_views_join_dm.py's modal) — the only place token
+    validation + payment-gating + clone creation happens, so the two entry
+    points can never drift apart. Caller must already have called
+    interaction.response.defer(ephemeral=True, thinking=True) (or
+    equivalent) before this — every response here goes through
+    interaction.followup.
+
+    hosting_clone_id is the clone_id of whichever bot process the
+    registration happened through — None on the main bot, or the hosting
+    clone's own clone_id when a clone owner ran this on their clone
+    (clone-of-clone). It's recorded as parent_clone_id purely for
+    tracking/analytics; it never changes who gets paid or who approves
+    (see payments_manual.py's discord_clone carve-out in
+    _resolve_approvers — that revenue and approval right belongs solely
+    to the main project owner)."""
+    result = await validate_bot_token(token)
+    if not result["ok"]:
+        await interaction.followup.send(f"❌ Couldn't validate that token: {result['error']}", ephemeral=True)
+        return
+
+    # Best-effort: make Discord's own App Directory / Discover "Add to
+    # Server" button work out of the box for this clone (see
+    # set_default_install_params's docstring for why this is needed).
+    # Never blocks registration — a clone owner can still fix this
+    # manually in the Portal if it fails.
+    install_result = await set_default_install_params(token)
+    if not install_result.get("ok"):
+        logger.warning(
+            f"[v0] couldn't set default install params for application "
+            f"{result['application_id']}: {install_result.get('error')}"
+        )
+
+    encrypted = secret_manager.encrypt(token)
+
+    if not await _owes_payment(owner_id):
+        clone_id = await db.create_discord_clone(
+            owner_id=owner_id,
+            bot_token_encrypted=encrypted,
+            bot_user_id=result["bot_user_id"],
+            bot_username=result["bot_username"],
+            application_id=result["application_id"],
+            parent_clone_id=hosting_clone_id,
+        )
+        await _send_registered(interaction, result, clone_id, free=True)
+        return
+
+    # Paid path: don't create the clone yet — stash the validated token and
+    # bot info, then hand off to the manual Selar payment flow. Nothing
+    # goes live until the project owner approves the manual "I've Paid"
+    # submission (see payments_manual.py's _unlock_discord_clone, which
+    # calls db.complete_discord_clone_pending_payment once approved) — this
+    # is "don't finish registering it until paid," not "let it come online
+    # and refuse commands until paid."
+    reference = await db.store_discord_clone_pending_payment(
+        owner_id=owner_id,
+        bot_token_encrypted=encrypted,
+        bot_user_id=result["bot_user_id"],
+        bot_username=result["bot_username"],
+        application_id=result["application_id"],
+        parent_clone_id=hosting_clone_id,
+    )
+    await start_manual_payment(
+        interaction, "discord_clone",
+        amount_display=f"GHS {DISCORD_CLONE_FEE_GHS}",
+        reference=reference,
+    )
+
+
+async def _send_registered(interaction: discord.Interaction, result: dict, clone_id: int, free: bool = False):
+    invite = build_invite_url(result["application_id"])
+    prefix = "✅ Registered" if not free else "✅ Registered (free clone!)"
+    await interaction.followup.send(
+        f"{prefix} **{result['bot_username']}** as clone `#{clone_id}`.\n\n"
+        f"It'll come online within about a minute. Invite it to your server(s) here:\n{invite}\n\n"
+        f"Its Discord App Directory listing is also set up to add it as a real member "
+        f"(not just register commands), so \"Add to Server\" from Discover works correctly too.\n\n"
+        f"Once it's in a server, an admin there can run `/createpremium` to set up its own "
+        f"premium group(s) — completely separate from this bot's and from any other clone's.",
+        ephemeral=True,
+    )
+
+
 class CloneAdminCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -69,7 +160,10 @@ class CloneAdminCog(commands.Cog):
         # Force DM-only so a pasted token is never visible in a channel's
         # history (or to anyone with message-history access) even for a
         # split second — same reasoning as Telegram's clone flow keeping
-        # token entry in a private chat.
+        # token entry in a private chat. The "Build Bot" wizard's modal
+        # doesn't need this (see register_clone_token's docstring), so
+        # this restriction is specific to the slash command's typed
+        # argument.
         if interaction.guild_id is not None:
             await interaction.response.send_message(
                 "For your token's safety, please send me this command in a DM instead of a server channel.",
@@ -78,91 +172,9 @@ class CloneAdminCog(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
-
-        result = await validate_bot_token(token)
-        if not result["ok"]:
-            await interaction.followup.send(f"❌ Couldn't validate that token: {result['error']}", ephemeral=True)
-            return
-
-        # Best-effort: make Discord's own App Directory / Discover "Add to
-        # Server" button work out of the box for this clone (see
-        # set_default_install_params's docstring for why this is needed).
-        # Never blocks registration — a clone owner can still fix this
-        # manually in the Portal if it fails.
-        install_result = await set_default_install_params(token)
-        if not install_result.get("ok"):
-            logger.warning(
-                f"[v0] couldn't set default install params for application "
-                f"{result['application_id']}: {install_result.get('error')}"
-            )
-
-        owner_id = interaction.user.id
-        encrypted = secret_manager.encrypt(token)
-
-        if not await _owes_payment(owner_id):
-            clone_id = await db.create_discord_clone(
-                owner_id=owner_id,
-                bot_token_encrypted=encrypted,
-                bot_user_id=result["bot_user_id"],
-                bot_username=result["bot_username"],
-                application_id=result["application_id"],
-            )
-            await self._send_registered(interaction, result, clone_id, free=True)
-            return
-
-        # Paid path: don't create the clone yet — stash the validated token
-        # and bot info, start a Paystack charge, and let
-        # api/paystack_webhook.py's discord_clone case finish the job the
-        # moment Paystack confirms it server-to-server. No manual "Verify"
-        # step needed on this end.
-        email = f"discorduser_{owner_id}@animebot.com"
-        payment_result = paystack.initialize_payment(
-            email,
-            DISCORD_CLONE_FEE_GHS * 100,  # GHS -> pesewas
-            owner_id,
-            f"DiscordClone_{owner_id}",
-            payment_type="discord_clone",
-        )
-        if not payment_result or payment_result.get("status") != "success":
-            await interaction.followup.send(
-                "❌ Couldn't start a payment right now — please try again shortly.", ephemeral=True
-            )
-            return
-
-        reference = payment_result["reference"]
-        await db.store_discord_clone_pending_payment(
-            reference=reference,
-            owner_id=owner_id,
-            bot_token_encrypted=encrypted,
-            bot_user_id=result["bot_user_id"],
-            bot_username=result["bot_username"],
-            application_id=result["application_id"],
-        )
-
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(
-            label="💳 Pay Now", url=payment_result["authorization_url"], style=discord.ButtonStyle.link
-        ))
-        await interaction.followup.send(
-            f"💰 Registering **{result['bot_username']}** costs **GHS {DISCORD_CLONE_FEE_GHS}**.\n\n"
-            f"Tap **Pay Now** and complete checkout — your clone will be created automatically "
-            f"within a minute or two of payment, no need to come back and confirm. Check `/myclones` "
-            f"once it's done.",
-            view=view,
-            ephemeral=True,
-        )
-
-    async def _send_registered(self, interaction: discord.Interaction, result: dict, clone_id: int, free: bool = False):
-        invite = build_invite_url(result["application_id"])
-        prefix = "✅ Registered" if not free else "✅ Registered (free clone!)"
-        await interaction.followup.send(
-            f"{prefix} **{result['bot_username']}** as clone `#{clone_id}`.\n\n"
-            f"It'll come online within about a minute. Invite it to your server(s) here:\n{invite}\n\n"
-            f"Its Discord App Directory listing is also set up to add it as a real member "
-            f"(not just register commands), so \"Add to Server\" from Discover works correctly too.\n\n"
-            f"Once it's in a server, an admin there can run `/createpremium` to set up its own "
-            f"premium group(s) — completely separate from this bot's and from any other clone's.",
-            ephemeral=True,
+        hosting_clone_id = getattr(interaction.client, "clone_id", None)
+        await register_clone_token(
+            interaction, token, owner_id=interaction.user.id, hosting_clone_id=hosting_clone_id,
         )
 
     # ── /myclones ─────────────────────────────────────────────────────────
@@ -180,7 +192,14 @@ class CloneAdminCog(commands.Cog):
         buttons = [refresh_button(self, "myclones")]
         for c in clones:
             heartbeat = c["last_heartbeat"].strftime("%Y-%m-%d %H:%M UTC") if c["last_heartbeat"] else "never"
-            lines.append(f"**#{c['clone_id']} — {c['bot_username']}**\n{c['status']} · last seen {heartbeat}")
+            line = f"**#{c['clone_id']} — {c['bot_username']}**\n{c['status']} · last seen {heartbeat}"
+            # Sub-clones registered through THIS clone's own wizard —
+            # tracking only, doesn't affect payment/approval (see
+            # register_clone_token's parent_clone_id docstring).
+            sub_count = await db.count_sub_clones(c["clone_id"])
+            if sub_count:
+                line += f" · {sub_count} sub-clone{'s' if sub_count != 1 else ''} spawned through it"
+            lines.append(line)
             buttons.append(ActionButton(
                 f"Monetize #{c['clone_id']}", discord.ButtonStyle.primary, self,
                 "monetize_activate", args=(c["clone_id"],),
@@ -360,9 +379,10 @@ class CloneAdminCog(commands.Cog):
             await interaction.followup.send(
                 f"💰 Monetization is **not active** on clone `#{clone_id}`.\n\n"
                 f"Activating (GHS {CLONE_MONETIZATION_FEE_GHS}/month) unlocks:\n"
-                f"• Connecting your own Paystack key\n"
+                f"• Connecting your own Stripe key, or a plain payment link, so purchases pay you directly\n"
                 f"• Setting your own prices for this bot's paid features\n\n"
-                f"Until activated, this clone's payments go through the main bot's account at default prices.\n"
+                f"Until activated, this clone's payments go through the main bot's account at default prices — "
+                f"same as today.\n"
                 f"Run `/clonemonetize activate clone_id:{clone_id}` to start.",
                 ephemeral=True,
             )
@@ -534,10 +554,12 @@ class CloneAdminCog(commands.Cog):
         if await self._owned_clone_or_deny(interaction, clone_id) is None:
             return
         cfg = await db.get_discord_clone_payment_config(clone_id)
-        if cfg["provider"] == "paystack" and cfg["api_key"]:
-            label = "your own connected Paystack key"
-        elif cfg["provider"] == "stripe" and cfg["api_key"]:
+        if cfg["provider"] == "stripe" and cfg["api_key"]:
             label = "your own connected Stripe key (charged in USD — GHS prices are converted live)"
+        elif cfg["provider"] == "payment_link" and cfg["api_key"]:
+            label = "your own connected payment link (you confirm each purchase yourself with `/clonemonetize confirmpurchase`)"
+        elif cfg["provider"] == "paystack" and cfg["api_key"]:
+            label = "your own connected Paystack key (legacy — new connections use Stripe or a payment link instead)"
         else:
             label = "the main bot's account (default)"
         await interaction.followup.send(
@@ -546,12 +568,12 @@ class CloneAdminCog(commands.Cog):
             ephemeral=True,
         )
 
-    @clonemonetize.command(name="setpayment", description="Route this clone's payments to your own Paystack/Stripe key, or back to the main bot's")
+    @clonemonetize.command(name="setpayment", description="Route this clone's payments to your own Stripe key or payment link, or back to the main bot's")
     @app_commands.describe(clone_id="The id shown by /myclones", provider="Where payments should go",
-                            secret_key="Your Paystack or Stripe secret key (not needed for 'main')")
+                            secret_key="Your Stripe secret key, or your payment link URL (not needed for 'main')")
     @app_commands.choices(provider=[
-        app_commands.Choice(name="My own Paystack account", value="paystack"),
         app_commands.Choice(name="My own Stripe account", value="stripe"),
+        app_commands.Choice(name="My own payment link", value="payment_link"),
         app_commands.Choice(name="Main bot's account (default)", value="main"),
     ])
     async def monetize_setpayment(self, interaction: discord.Interaction, clone_id: int, provider: app_commands.Choice[str], secret_key: str = None):
@@ -568,8 +590,9 @@ class CloneAdminCog(commands.Cog):
             return
 
         if not secret_key or len(secret_key) < 10:
+            field = "payment link" if provider.value == "payment_link" else "secret key"
             await interaction.followup.send(
-                "Provide your secret key in the `secret_key` option to switch to your own account.", ephemeral=True
+                f"Provide your {field} in the `secret_key` option to switch to your own account.", ephemeral=True
             )
             return
 
@@ -579,25 +602,76 @@ class CloneAdminCog(commands.Cog):
                 "Grab it from your Stripe Dashboard → Developers → API keys.", ephemeral=True
             )
             return
-        if provider.value == "paystack" and not secret_key.startswith("sk_"):
+        if provider.value == "payment_link" and not secret_key.startswith(("https://", "http://")):
             await interaction.followup.send(
-                "That doesn't look like a Paystack secret key (should start with `sk_`).", ephemeral=True
+                "That doesn't look like a link — paste the full checkout URL (e.g. a Stripe Payment Link), "
+                "starting with `https://`.", ephemeral=True
             )
             return
 
+        # Encrypted at rest either way (secret_manager.encrypt, see
+        # database.set_discord_clone_payment_provider) — stored in its own
+        # per-provider slot and never decrypted back out to a command
+        # response or /clonemonetize payment's status check, only used
+        # server-side to build a checkout.
         await db.set_discord_clone_payment_provider(clone_id, interaction.user.id, provider.value, api_key=secret_key)
-        note = (
-            "This clone's prices are set in GHS — since Stripe doesn't settle in GHS, each charge is "
-            "converted to USD live at checkout time using current exchange rates."
-            if provider.value == "stripe" else
-            "This clone's payments will now go to your own account."
-        )
+        if provider.value == "stripe":
+            note = (
+                "This clone's prices are set in GHS — since Stripe doesn't settle in GHS, each charge is "
+                "converted to USD live at checkout time using current exchange rates."
+            )
+        else:
+            note = (
+                "Buyers will be sent straight to that link to pay you directly. Since a plain link has no way "
+                "for me to confirm payment automatically, you'll need to run `/clonemonetize confirmpurchase` "
+                "with the reference the buyer gives you once you've checked it landed."
+            )
         await interaction.followup.send(
             f"✅ {provider.name} connected for clone `#{clone_id}`. {note}\n"
-            f"(Consider deleting your command-usage message from Discord's history since it contained the raw key — "
-            f"slash command inputs aren't visible to other members, but they do stay in your own client history.)",
+            f"(Consider deleting your command-usage message from Discord's history since it contained the raw "
+            f"{'key' if provider.value == 'stripe' else 'link'} — slash command inputs aren't visible to other "
+            f"members, but they do stay in your own client history.)",
             ephemeral=True,
         )
+
+    @clonemonetize.command(name="confirmpurchase", description="Manually confirm a purchase made through your connected payment link")
+    @app_commands.describe(clone_id="The id shown by /myclones", reference="The reference the buyer gave you")
+    async def monetize_confirmpurchase(self, interaction: discord.Interaction, clone_id: int, reference: str):
+        # No defer here — the admin-bypass branch below defers itself, and
+        # the ownership-check branch defers via _owned_clone_or_deny();
+        # deferring twice on the same interaction raises
+        # discord.InteractionResponded.
+        if _is_clone_admin(interaction.user.id):
+            await interaction.response.defer(ephemeral=True)
+        elif await self._owned_clone_or_deny(interaction, clone_id) is None:
+            return
+
+        row = await db.get_payment_row_by_reference(reference)
+        if not row:
+            await interaction.followup.send("No payment found with that reference.", ephemeral=True)
+            return
+        if row.get("status") == "paid":
+            await interaction.followup.send("That purchase is already confirmed.", ephemeral=True)
+            return
+        if row.get("provider") != "payment_link":
+            await interaction.followup.send(
+                "This command is only for purchases made through a connected payment link.", ephemeral=True
+            )
+            return
+
+        from payments_manual import UNLOCK_HANDLERS, _notify_buyer
+        handler = UNLOCK_HANDLERS.get(row["payment_type"])
+        if handler is None:
+            await interaction.followup.send(
+                f"No unlock handler wired for `{row['payment_type']}` yet — contact support.", ephemeral=True
+            )
+            return
+
+        await db.mark_payment_paid(reference)
+        await handler(reference, row["user_id"], row.get("chat_id"), row.get("group_id"))
+        await _notify_buyer(interaction.client, row["user_id"], row["payment_type"], approved=True)
+        await interaction.followup.send(f"✅ Confirmed and unlocked for <@{row['user_id']}>.", ephemeral=True)
+
 
 
     # ── /ownermonetize — one-shot owner shortcut ─────────────────────────
