@@ -107,6 +107,7 @@ CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
         (["starboard"], "configure the starboard"),
         (["ticket"], "configure a ticket system"),
         (["invites"], "invite tracker setup"),
+        (["start"], "resend the setup quickstart DM (feature toggles, one tap each) to yourself"),
         (["serversetup"], "guided setup wizard for this bot's features"),
         (["autoresponder"], "manage auto-responses"),
         (["announce", "announcements", "cancelannouncement"], "scheduled announcements"),
