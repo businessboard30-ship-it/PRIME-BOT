@@ -316,46 +316,83 @@ def _suggested_channel(guild: discord.Guild) -> discord.TextChannel | None:
     return None
 
 
+STICKER_PREFIX = "sticker_announce_"
+TEMPLATE_PREFIX = "template_announce_"
+
+
 class StickerAnnounceView(discord.ui.View):
-    """Sent once to the owner of a guild that ALREADY had welcome cards
-    enabled, letting them know cards can now include an animated sticker
-    (which is already live for them, since card_style defaults to 'gif'
-    and sticker_url now defaults to a real working GIF). Same
-    fixed-custom_id-on-buttons pattern as WelcomeNudgeView, for the same
-    reason: needs to survive a bot restart between send and tap."""
+    """Sent once (now in #mod-logs, combined with TemplateAnnounceView's
+    buttons when both apply — see _send_card_features_post) letting a
+    guild that ALREADY had welcome cards enabled know cards can now
+    include an animated sticker (already live for them, since
+    card_style defaults to 'gif' and sticker_url now defaults to a real
+    working GIF). Fixed-custom_id buttons so on_interaction can handle a
+    tap on an old post even after a bot restart."""
 
     def __init__(self, guild_id: int):
         super().__init__(timeout=None)
         self.add_item(discord.ui.Button(
             label="Looks good", style=discord.ButtonStyle.success, emoji="✅",
-            custom_id=f"sticker_announce_ack:{guild_id}",
+            custom_id=f"{STICKER_PREFIX}ack:{guild_id}",
         ))
         self.add_item(discord.ui.Button(
             label="Turn sticker off", style=discord.ButtonStyle.secondary, emoji="🚫",
-            custom_id=f"sticker_announce_disable:{guild_id}",
+            custom_id=f"{STICKER_PREFIX}disable:{guild_id}",
         ))
 
 
 class TemplateAnnounceView(discord.ui.View):
-    """Sent once to the owner of a guild whose welcome card is still the
-    plain flat-color card (either because they customized it before the
-    designed template existed, or because they've customized colors/shape
-    since) — invites them to try the new welcome_bg_wolf.png template card.
-    Purely opt-in: tapping "No thanks" leaves their existing card exactly
-    as it is, and set_welcome_config never overrides it again once a
-    choice is recorded here. Same fixed-custom_id pattern as
-    StickerAnnounceView, for the same restart-survival reason."""
+    """Sent once (now in #mod-logs, combined with StickerAnnounceView's
+    buttons when both apply — see _send_card_features_post) to a guild
+    whose welcome card is still the plain flat-color card (either
+    because it was customized before the designed template existed, or
+    because colors/shape have been customized since) — invites a tap to
+    try the new welcome_bg_wolf.png template card. Purely opt-in:
+    tapping "No thanks" leaves the existing card exactly as it is, and
+    set_welcome_config never overrides it again once a choice is
+    recorded here. Same fixed-custom_id pattern as StickerAnnounceView,
+    for the same restart-survival reason."""
 
     def __init__(self, guild_id: int):
         super().__init__(timeout=None)
         self.add_item(discord.ui.Button(
             label="Try the new look", style=discord.ButtonStyle.success, emoji="✨",
-            custom_id=f"template_announce_try:{guild_id}",
+            custom_id=f"{TEMPLATE_PREFIX}try:{guild_id}",
         ))
         self.add_item(discord.ui.Button(
             label="Keep my card", style=discord.ButtonStyle.secondary, emoji="🚫",
-            custom_id=f"template_announce_decline:{guild_id}",
+            custom_id=f"{TEMPLATE_PREFIX}decline:{guild_id}",
         ))
+
+
+def _build_card_announce_view(guild_id: int, *, sticker: bool, template: bool) -> discord.ui.View:
+    """Combined view for _send_card_features_post — includes only
+    whichever group(s) actually apply, same shape as
+    _views_combined_join_offer.py's _build_view."""
+    view = discord.ui.View(timeout=None)
+    if sticker:
+        for item in StickerAnnounceView(guild_id).children:
+            view.add_item(item)
+    if template:
+        for item in TemplateAnnounceView(guild_id).children:
+            view.add_item(item)
+    return view
+
+
+def _open_card_groups(interaction: discord.Interaction) -> set[str]:
+    """Which announcement group(s) still have live buttons on the
+    message this interaction fired from — read off the actual
+    components rather than tracked state, same approach as
+    _views_combined_join_offer.py's _open_groups."""
+    groups: set[str] = set()
+    for row in interaction.message.components:
+        for child in getattr(row, "children", []):
+            cid = getattr(child, "custom_id", None) or ""
+            if cid.startswith(STICKER_PREFIX):
+                groups.add("sticker")
+            elif cid.startswith(TEMPLATE_PREFIX):
+                groups.add("template")
+    return groups
 
 
 class WelcomeNudgeView(discord.ui.View):
@@ -447,13 +484,11 @@ class WelcomeCog(GuildOnlyCog):
 
     async def cog_load(self):
         self._nudge_owners.start()
-        self._announce_sticker_feature.start()
-        self._announce_template_feature.start()
+        self._announce_card_features.start()
 
     async def cog_unload(self):
         self._nudge_owners.cancel()
-        self._announce_sticker_feature.cancel()
-        self._announce_template_feature.cancel()
+        self._announce_card_features.cancel()
 
     def _is_duplicate_join(self, member: discord.Member) -> bool:
         """Check if this join event was already processed recently (within 3 seconds).
@@ -596,46 +631,45 @@ class WelcomeCog(GuildOnlyCog):
                 f"to purchase, then `/welcome custombg` to upload your image once it's unlocked.",
                 ephemeral=True,
             )
-        elif custom_id.startswith("sticker_announce_ack:"):
+        elif custom_id.startswith(f"{STICKER_PREFIX}ack:"):
             guild_id = int(custom_id.split(":", 1)[1])
             clone_id = getattr(self.bot, "clone_id", None)
             await interaction.response.defer()
             await db.set_sticker_announce_status(guild_id, "acknowledged", clone_id=clone_id)
-            await interaction.edit_original_response(
-                content="✅ Nice — no action needed, it's already live. Change it anytime with "
-                        "`/welcome sticker` or `/welcome style`.",
-                view=None, attachments=[],
+            await self._finish_sticker_announce(
+                interaction, guild_id,
+                "✅ Nice — no action needed, it's already live. Change it anytime with "
+                "`/welcome sticker` or `/welcome style`.",
             )
-        elif custom_id.startswith("sticker_announce_disable:"):
+        elif custom_id.startswith(f"{STICKER_PREFIX}disable:"):
             guild_id = int(custom_id.split(":", 1)[1])
             clone_id = getattr(self.bot, "clone_id", None)
             await interaction.response.defer()
             await db.set_welcome_config(guild_id, clone_id=clone_id, card_style="static", sticker_url="")
             await db.set_sticker_announce_status(guild_id, "disabled", clone_id=clone_id)
-            await interaction.edit_original_response(
-                content="🚫 Turned off — your welcome card is back to the plain version. "
-                        "Re-enable anytime with `/welcome sticker <url>`.",
-                view=None, attachments=[],
+            await self._finish_sticker_announce(
+                interaction, guild_id,
+                "🚫 Turned off — your welcome card is back to the plain version. "
+                "Re-enable anytime with `/welcome sticker <url>`.",
             )
-        elif custom_id.startswith("template_announce_try:"):
+        elif custom_id.startswith(f"{TEMPLATE_PREFIX}try:"):
             guild_id = int(custom_id.split(":", 1)[1])
             clone_id = getattr(self.bot, "clone_id", None)
             await interaction.response.defer()
             await db.set_welcome_config(guild_id, clone_id=clone_id, use_template=True)
             await db.set_template_announce_status(guild_id, "tried", clone_id=clone_id)
-            await interaction.edit_original_response(
-                content="✨ Switched on — new members will see the new card starting now. "
-                        "Change it back anytime with `/welcome colors`.",
-                view=None, attachments=[],
+            await self._finish_template_announce(
+                interaction, guild_id,
+                "✨ Switched on — new members will see the new card starting now. "
+                "Change it back anytime with `/welcome colors`.",
             )
-        elif custom_id.startswith("template_announce_decline:"):
+        elif custom_id.startswith(f"{TEMPLATE_PREFIX}decline:"):
             guild_id = int(custom_id.split(":", 1)[1])
             clone_id = getattr(self.bot, "clone_id", None)
             await interaction.response.defer()
             await db.set_template_announce_status(guild_id, "declined", clone_id=clone_id)
-            await interaction.edit_original_response(
-                content="Got it — your card stays exactly as it is.",
-                view=None, attachments=[],
+            await self._finish_template_announce(
+                interaction, guild_id, "Got it — your card stays exactly as it is.",
             )
 
     @tasks.loop(hours=24)
@@ -667,20 +701,16 @@ class WelcomeCog(GuildOnlyCog):
         await self.bot.wait_until_ready()
 
     @tasks.loop(hours=24)
-    async def _announce_sticker_feature(self):
-        """Once, for every guild that ALREADY had welcome cards enabled
-        before the sticker feature existed AND is still on the flat card
-        (use_template False — the wolf template has no sticker slot at
-        all, see render_welcome_card's docstring, so announcing the
-        sticker to a template-card guild would show an image that can't
-        possibly have one), DMs the owner a preview showing the sticker
-        is now live on their card (card_style/sticker_url both default to
-        the animated version, so there's nothing to opt into — this is
-        purely a heads-up + an easy opt-out). Guilds that turn welcome
-        cards on for the FIRST time after this feature shipped don't need
-        this — they see the sticker immediately in their normal /welcome
-        setup preview, so this loop only targets the backlog of
-        already-enabled, still-flat-card guilds."""
+    async def _announce_card_features(self):
+        """Combines what used to be two separate daily owner DMs —
+        _announce_sticker_feature and _announce_template_feature — into
+        ONE post in the guild's #mod-logs channel. Both used to fire
+        independently under the exact same guard (welcome enabled,
+        use_template False), so any guild matching that got two separate
+        DMs in the same pass; this checks both conditions together and
+        sends at most one post covering whichever of the two still needs
+        announcing. Stays quiet entirely if the guild has no #mod-logs
+        channel configured (or it's been deleted) — same as _send_nudge."""
         clone_id = getattr(self.bot, "clone_id", None)
         for guild in list(self.bot.guilds):
             try:
@@ -688,137 +718,124 @@ class WelcomeCog(GuildOnlyCog):
                 if not config.get("enabled"):
                     continue  # covered by _nudge_owners instead
                 if config.get("use_template", True):
-                    continue  # wolf card has no sticker slot — nothing to announce
-                if config.get("sticker_announce_status"):
-                    continue  # owner already acked or disabled it
-                if config.get("sticker_announced_at"):
-                    continue  # already sent once — don't repeat every cycle
-                self.bot.loop.create_task(self._send_sticker_announcement(guild, config, clone_id))
-            except Exception as e:
-                logger.error(f"[v0] sticker announcement failed for guild {guild.id}: {e}")
+                    continue  # already on the new card, which also has the sticker — nothing to announce
 
-    @_announce_sticker_feature.before_loop
-    async def _before_announce_sticker_feature(self):
+                sticker_needed = (
+                    not config.get("sticker_announce_status")
+                    and not config.get("sticker_announced_at")
+                )
+                template_needed = (
+                    not config.get("template_announce_status")
+                    and not config.get("template_announced_at")
+                )
+                if not sticker_needed and not template_needed:
+                    continue
+                self.bot.loop.create_task(
+                    self._send_card_features_post(guild, config, clone_id, sticker_needed, template_needed)
+                )
+            except Exception as e:
+                logger.error(f"[v0] card-features announcement failed for guild {guild.id}: {e}")
+
+    @_announce_card_features.before_loop
+    async def _before_announce_card_features(self):
         await self.bot.wait_until_ready()
 
-    async def _send_sticker_announcement(self, guild: discord.Guild, config: dict, clone_id: int | None):
-        """Renders the guild's actual current welcome card (with the
-        sticker) and DMs it to the owner, once. Marked sent regardless of
-        DM success/failure so a closed-DMs owner doesn't get retried
-        every cycle forever."""
+    async def _send_card_features_post(self, guild: discord.Guild, config: dict, clone_id: int | None,
+                                        sticker_needed: bool, template_needed: bool):
+        """Posts the combined sticker+template announcement ONCE in the
+        guild's #mod-logs channel. Marked sent regardless of post
+        success/failure (or of the channel not existing) so a guild
+        without mod-logs doesn't get re-checked and re-skipped forever."""
         try:
-            owner = guild.owner or await guild.fetch_member(guild.owner_id)
-            if owner is None:
+            automod_config = await db.get_automod_config(guild.id, clone_id=clone_id)
+            log_channel_id = automod_config.get("log_channel_id")
+            log_channel = guild.get_channel(int(log_channel_id)) if log_channel_id else None
+            if log_channel is None:
+                logger.info(f"[v0] card-features announcement skipped, no mod-logs channel guild={guild.id}")
                 return
+
+            preview_member = guild.me
+            file = None
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(str(owner.display_avatar.replace(size=256).url),
+                    async with session.get(str(preview_member.display_avatar.replace(size=256).url),
                                             timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         avatar_bytes = await resp.read()
-                    sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
-                    custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, self.bot)
-                card_bytes, image_format = await asyncio.to_thread(
-                    render_welcome_card,
-                    avatar_bytes, owner.display_name, f"Member #{guild.member_count}",
-                    background_color=config["background_color"], accent_color=config["accent_color"],
-                    sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
-                    guild_name=guild.name, use_template=config.get("use_template", True),
-                    theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
-                )
+                    if sticker_needed:
+                        # Render the guild's ACTUAL current card (with the
+                        # sticker) — this is a "here's what you already have"
+                        # heads-up, not a preview of something new to opt into.
+                        sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
+                        custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, self.bot)
+                        card_bytes, image_format = await asyncio.to_thread(
+                            render_welcome_card,
+                            avatar_bytes, preview_member.display_name, f"Member #{guild.member_count}",
+                            background_color=config["background_color"], accent_color=config["accent_color"],
+                            sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
+                            guild_name=guild.name, use_template=config.get("use_template", True),
+                            theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
+                        )
+                    else:
+                        # Template-only: PREVIEW of the new template card,
+                        # since by definition this guild is still on the flat one.
+                        card_bytes, image_format = await asyncio.to_thread(
+                            render_welcome_card,
+                            avatar_bytes, preview_member.display_name, f"Member #{guild.member_count}",
+                            guild_name=guild.name, use_template=True,
+                            theme=config.get("card_theme", "wolf"),
+                        )
                 ext = "gif" if image_format == "GIF" else "png"
                 file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
             except Exception as e:
-                logger.warning(f"[v0] couldn't render sticker-announcement preview for guild {guild.id}: {e}")
-                file = None
+                logger.warning(f"[v0] couldn't render card-features announcement preview for guild {guild.id}: {e}")
 
-            dm = await owner.create_dm()
-            intro = (
-                f"🎉 Heads up — **{guild.name}**'s welcome cards can now include an animated "
-                f"sticker, and it's already live (no setup needed). Here's what it looks like now:"
-            )
-            view = StickerAnnounceView(guild.id)
-            if file:
-                await dm.send(content=intro, file=file, view=view)
-            else:
-                await dm.send(content=intro, view=view)
-        except discord.Forbidden:
-            pass
-        except Exception as e:
-            logger.error(f"[v0] sticker announcement DM failed for guild {guild.id}: {e}")
-        finally:
-            await db.mark_sticker_announcement_sent(guild.id, clone_id=clone_id)
-
-    @tasks.loop(hours=24)
-    async def _announce_template_feature(self):
-        """Once, for every guild whose welcome cards are enabled but still
-        on the flat card (use_template False — either backfilled because
-        they'd customized it before the template existed, or because
-        they've customized colors/shape since), DMs the owner a preview of
-        the new template card with a one-tap opt-in. Guilds already on
-        use_template True need nothing — they're already seeing it."""
-        clone_id = getattr(self.bot, "clone_id", None)
-        for guild in list(self.bot.guilds):
-            try:
-                config = await db.get_welcome_config(guild.id, clone_id=clone_id)
-                if not config.get("enabled"):
-                    continue  # covered by _nudge_owners instead
-                if config.get("use_template"):
-                    continue  # already on the new card, nothing to announce
-                if config.get("template_announce_status"):
-                    continue  # owner already tried it or declined
-                if config.get("template_announced_at"):
-                    continue  # already sent once — don't repeat every cycle
-                self.bot.loop.create_task(self._send_template_announcement(guild, config, clone_id))
-            except Exception as e:
-                logger.error(f"[v0] template announcement failed for guild {guild.id}: {e}")
-
-    @_announce_template_feature.before_loop
-    async def _before_announce_template_feature(self):
-        await self.bot.wait_until_ready()
-
-    async def _send_template_announcement(self, guild: discord.Guild, config: dict, clone_id: int | None):
-        """Renders a PREVIEW of the new template card (not the guild's
-        actual current card, since by definition this guild is still on
-        the flat one) and DMs it to the owner, once. Marked sent regardless
-        of DM success/failure so a closed-DMs owner doesn't get retried
-        every cycle forever."""
-        try:
-            owner = guild.owner or await guild.fetch_member(guild.owner_id)
-            if owner is None:
-                return
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(str(owner.display_avatar.replace(size=256).url),
-                                            timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        avatar_bytes = await resp.read()
-                card_bytes, image_format = await asyncio.to_thread(
-                    render_welcome_card,
-                    avatar_bytes, owner.display_name, f"Member #{guild.member_count}",
-                    guild_name=guild.name, use_template=True,
-                    theme=config.get("card_theme", "wolf"),
+            parts = []
+            if sticker_needed:
+                parts.append(
+                    f"🎉 **{guild.name}**'s welcome cards can now include an animated sticker, and "
+                    f"it's already live (no setup needed)."
                 )
-                ext = "gif" if image_format == "GIF" else "png"
-                file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
-            except Exception as e:
-                logger.warning(f"[v0] couldn't render template-announcement preview for guild {guild.id}: {e}")
-                file = None
+            if template_needed:
+                parts.append(
+                    f"✨ There's also a new designed welcome card available for **{guild.name}**. "
+                    f"Current colors/style are untouched either way."
+                )
+            intro = " ".join(parts) + "\n\nHere's what it looks like now:" if sticker_needed else " ".join(parts) + "\n\nHere's a preview of the new look:"
+            view = _build_card_announce_view(guild.id, sticker=sticker_needed, template=template_needed)
 
-            dm = await owner.create_dm()
-            intro = (
-                f"✨ Heads up — there's a new designed welcome card available for **{guild.name}**. "
-                f"Your current colors/style are untouched either way — here's a preview of the new look:"
-            )
-            view = TemplateAnnounceView(guild.id)
             if file:
-                await dm.send(content=intro, file=file, view=view)
+                await log_channel.send(content=intro, file=file, view=view)
             else:
-                await dm.send(content=intro, view=view)
-        except discord.Forbidden:
-            pass
+                await log_channel.send(content=intro, view=view)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.info(f"[v0] card-features announcement post failed in mod-logs guild={guild.id}: {e}")
         except Exception as e:
-            logger.error(f"[v0] template announcement DM failed for guild {guild.id}: {e}")
+            logger.error(f"[v0] card-features announcement failed for guild {guild.id}: {e}")
         finally:
-            await db.mark_template_announcement_sent(guild.id, clone_id=clone_id)
+            if sticker_needed:
+                await db.mark_sticker_announcement_sent(guild.id, clone_id=clone_id)
+            if template_needed:
+                await db.mark_template_announcement_sent(guild.id, clone_id=clone_id)
+
+    async def _finish_sticker_announce(self, interaction: discord.Interaction, guild_id: int, note: str):
+        """Answer the sticker half, keeping the template half's buttons
+        (if present and still unanswered)."""
+        still_open = _open_card_groups(interaction)
+        still_open.discard("sticker")
+        template_open = "template" in still_open
+        content = interaction.message.content + f"\n> {note}"
+        view = _build_card_announce_view(guild_id, sticker=False, template=template_open) if template_open else None
+        await interaction.edit_original_response(content=content, view=view, attachments=interaction.message.attachments)
+
+    async def _finish_template_announce(self, interaction: discord.Interaction, guild_id: int, note: str):
+        """Answer the template half, keeping the sticker half's buttons
+        (if present and still unanswered)."""
+        still_open = _open_card_groups(interaction)
+        still_open.discard("template")
+        sticker_open = "sticker" in still_open
+        content = interaction.message.content + f"\n> {note}"
+        view = _build_card_announce_view(guild_id, sticker=sticker_open, template=False) if sticker_open else None
+        await interaction.edit_original_response(content=content, view=view, attachments=interaction.message.attachments)
 
     async def _send_nudge(self, guild: discord.Guild, clone_id: int | None):
         """Posts the reminder ONCE in the guild's #mod-logs channel
