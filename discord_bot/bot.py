@@ -43,6 +43,7 @@ from discord_bot.cogs._views_download_wizard import DYNAMIC_ITEMS as DOWNLOAD_WI
 from discord_bot.cogs._views_leaderboard_links import DYNAMIC_ITEMS as LEADERBOARD_LINKS_DYNAMIC_ITEMS
 from discord_bot.cogs._views_registry_invite_consent import DYNAMIC_ITEMS as REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS
 from discord_bot.cogs._views_auto_listing_offer import DYNAMIC_ITEMS as AUTO_LISTING_OFFER_DYNAMIC_ITEMS, offer_auto_listing
+from discord_bot.cogs._views_combined_join_offer import DYNAMIC_ITEMS as COMBINED_JOIN_OFFER_DYNAMIC_ITEMS, offer_combined_join_dm
 from discord_bot.cogs._views_report_channel_picker import DYNAMIC_ITEMS as REPORT_CHANNEL_PICKER_DYNAMIC_ITEMS
 from discord_bot.cogs._views_giveaway_wizard import DYNAMIC_ITEMS as GIVEAWAY_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs.discover_players import DYNAMIC_ITEMS as DISCOVER_PLAYERS_DYNAMIC_ITEMS
@@ -139,6 +140,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*LEADERBOARD_LINKS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTO_LISTING_OFFER_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*COMBINED_JOIN_OFFER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REPORT_CHANNEL_PICKER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*GIVEAWAY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DIRECT_PAID_DYNAMIC_ITEMS)
@@ -449,18 +451,19 @@ class AnimeBotDiscord(commands.Bot):
         invite_url = await self._best_effort_invite(guild)
         await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id, invite_url,
                                        owner_id=guild.owner_id)
-        if invite_url is None:
-            from discord_bot.cogs._views_registry_invite_consent import offer_registry_invite_consent
-            await offer_registry_invite_consent(self, guild)
         await self._alert_owners_of_join(guild)
         await self._send_combined_owner_join_dm(guild)
         welcome_cog = self.get_cog("WelcomeCog")
         if welcome_cog:
             await welcome_cog.post_setup_wizard_on_join(guild)
+        # Auto-listing offer + registry-invite consent used to be two
+        # separate owner DMs fired back-to-back here. offer_combined_join_dm
+        # sends them as one message (whichever of the two actually applies)
+        # instead of two separate "shots".
         try:
-            await offer_auto_listing(self, guild)
+            await offer_combined_join_dm(self, guild, needs_invite_consent=invite_url is None)
         except Exception:
-            logger.exception(f"[join] auto-listing offer failed for guild {guild.id}")
+            logger.exception(f"[join] combined listing/invite offer failed for guild {guild.id}")
 
     async def _send_combined_owner_join_dm(self, guild: discord.Guild, *, is_initial_send: bool = True):
         """Single consolidated DM to the server owner covering everything
