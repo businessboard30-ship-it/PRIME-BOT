@@ -1712,7 +1712,14 @@ class RoastCog(GuildOnlyCog):
                 if idle_minutes >= config["inactivity_minutes"] and not already_proposed_this_idle:
                     triggered = True
 
-            if not triggered and not on_cooldown and config["random_chance_enabled"]:
+            # Random-chance trigger requires at least one tracked message.
+            # Without this guard, a guild with no activity row yet (bot just
+            # joined / roast just enabled, nothing said since) still passes
+            # `due_for_check` on the very first poller tick, since that only
+            # checks last_proposed_at — so the suggestion could fire within
+            # POLL_INTERVAL_SECONDS of joining, before the server has any
+            # real activity to be "randomly" checking in on.
+            if not triggered and not on_cooldown and config["random_chance_enabled"] and last_message_at:
                 due_for_check = (
                     last_proposed_at is None
                     or (now - last_proposed_at).total_seconds() / 60 >= config["random_check_minutes"]
