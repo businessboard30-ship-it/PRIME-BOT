@@ -98,6 +98,9 @@ ROUTES = {
     "/api/discord_login_oauth": "api.discord_login_oauth",
     "/api/site_visits": "api.site_visits",
     "/api/apply_boost": "api.apply_boost",
+    "/api/selar_redirect": "api.selar_redirect",
+    "/api/selar_submit": "api.selar_submit",
+    "/api/selar_status": "api.selar_status",
     # Discord app-verification requires real, permanently reachable ToS/
     # Privacy URLs — these were written in api/legal_pages.py but never
     # wired into the dispatcher (and its class names don't match the
