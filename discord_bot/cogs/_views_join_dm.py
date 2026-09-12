@@ -1090,11 +1090,33 @@ class _BuildBotTokenModal(discord.ui.Modal, title="Paste your bot's token"):
         # Shared with /registerclone — see clone_admin.py's
         # register_clone_token, which both entry points call so
         # validation/payment/creation logic only ever lives in one place.
+        # Wrapped in try/except now — register_clone_token used to be
+        # called bare here, so any unhandled exception inside it (a DB
+        # hiccup, an unexpected Discord API error neither validate_bot_
+        # token nor set_default_install_params' own try/excepts caught)
+        # left the deferred "thinking..." spinner stuck with no follow-up
+        # ever sent, for the owner to stare at until the interaction
+        # token quietly expired ~15 minutes later — exactly the "been
+        # thinking 5 minutes" bug report. Logging + a followup here means
+        # the owner always gets *something* back, and the traceback is
+        # actually findable in the logs.
         from discord_bot.cogs.clone_admin import register_clone_token
-        await register_clone_token(
-            interaction, self.token.value.strip(),
-            owner_id=interaction.user.id, hosting_clone_id=self.clone_id,
-        )
+        try:
+            await register_clone_token(
+                interaction, self.token.value.strip(),
+                owner_id=interaction.user.id, hosting_clone_id=self.clone_id,
+            )
+        except Exception:
+            logger.exception(
+                "join_dm build-bot token registration failed for guild %s (user %s)",
+                self.guild_id, interaction.user.id,
+            )
+            await interaction.followup.send(
+                "Something went wrong registering that token — double check you copied the full "
+                "token from the **Bot** tab (not the application ID or public key), then tap "
+                "**Build Bot** again to retry.",
+                ephemeral=True,
+            )
 
 
 class _BuildBotPasteButton(discord.ui.DynamicItem[discord.ui.Button],
@@ -1154,9 +1176,10 @@ async def _start_build_bot_wizard(interaction: discord.Interaction, guild: disco
         "**Let's get your own bot running — 4 quick steps:**\n\n"
         "1️⃣ Go to the Discord Developer Portal: https://discord.com/developers/applications\n"
         "2️⃣ Click **New Application**, give it any name.\n"
-        "3️⃣ Open the **Installation** tab on the left. Under **Guild Install → Permissions**, "
-        "just add **Administrator** — simplest option, covers everything the bot needs so you "
-        "don't have to hunt through the full permissions list one by one.\n"
+        "3️⃣ Open the **Installation** tab on the left. Under **Guild Install → Scopes**, add "
+        "**bot** (it's not there by default — just `applications.commands` is). Then under "
+        "**Permissions**, just add **Administrator** — simplest option, covers everything the "
+        "bot needs so you don't have to hunt through the full permissions list one by one.\n"
         "4️⃣ Open the **Bot** tab, click **Reset Token** (or **Copy** if you already have one) — "
         "this copies a long code to your clipboard. That's your bot's token.\n\n"
         "Once you've copied it, tap the button below and paste it in. I never show it to anyone "
