@@ -167,7 +167,14 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         # button." Matches the bordered notice-card treatment in the
         # reference mockup, which also ships these as text + a slash-
         # command hint, never a button.
-        if notices:
+        #
+        # Only shown on the LAST page now, not every page — page 1 used to
+        # spend space on these plain-text notices even though they're not
+        # the first thing a brand-new owner needs; moving them to the end
+        # frees that space for an extra "Turn on" button up front instead
+        # (see FEATURES_PER_PAGE below).
+        is_last_page = page == total_pages - 1
+        if notices and is_last_page:
             container.add_item(discord.ui.Separator())
             for notice_title, notice_body in notices:
                 container.add_item(discord.ui.TextDisplay(f"**{notice_title}**\n{notice_body}"))
@@ -972,6 +979,80 @@ async def _enable_role_setup_wizard(interaction: discord.Interaction, guild: dis
     return None, None
 
 
+class _BuildBotTokenModal(discord.ui.Modal, title="Paste your bot's token"):
+    """Single-field modal that takes over from clone_admin.py's
+    /registerclone slash command for the button-driven wizard. A modal
+    field is never visible in a channel's history the way a slash
+    command's typed argument briefly can be, so this doesn't need the
+    DM-only restriction /registerclone enforces for that reason — this
+    whole wizard already only runs from a DM anyway (the join DM), so
+    it's moot either way."""
+
+    token = discord.ui.TextInput(
+        label="Bot token (Developer Portal → Bot → Reset Token)",
+        placeholder="Paste the token here — only I ever see it",
+        style=discord.TextStyle.short, required=True, max_length=100,
+    )
+
+    def __init__(self, guild_id: int, clone_id):
+        super().__init__()
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        # Shared with /registerclone — see clone_admin.py's
+        # register_clone_token, which both entry points call so
+        # validation/payment/creation logic only ever lives in one place.
+        from discord_bot.cogs.clone_admin import register_clone_token
+        await register_clone_token(
+            interaction, self.token.value.strip(),
+            owner_id=interaction.user.id, hosting_clone_id=self.clone_id,
+        )
+
+
+class _BuildBotPasteButton(discord.ui.Button):
+    """Plain (non-persistent) button on the ephemeral instructions
+    message — deliberately NOT a DynamicItem/persistent button, because
+    opening a modal has to be the very first response to a fresh
+    interaction, and this button's own click is exactly that fresh
+    interaction. Nothing here needs to survive a restart: it's a few
+    seconds between reading the instructions and tapping it."""
+
+    def __init__(self, guild_id: int, clone_id):
+        super().__init__(label="I have my token — paste it", style=discord.ButtonStyle.success, emoji="📋")
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(_BuildBotTokenModal(self.guild_id, self.clone_id))
+
+
+async def _start_build_bot_wizard(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """"Build Bot" — a button-driven stand-in for /registerclone, kept as
+    plain as possible on purpose (project owner wants this explained "for
+    a 3-year-old"). This is only ever reached via _FeatureToggleButton,
+    which already called interaction.response.defer(ephemeral=True)
+    before invoking this handler — so a modal can't be opened directly on
+    THIS interaction; instead this sends the instructions plus a fresh
+    button, and that button's own (undeferred) click is what opens the
+    modal. Returns None/None: nothing is enabled yet, and this never
+    behaves like a toggle."""
+    view = discord.ui.View(timeout=300)
+    view.add_item(_BuildBotPasteButton(guild.id, clone_id))
+    await interaction.followup.send(
+        "**Let's get your own bot running — 3 quick steps:**\n\n"
+        "1️⃣ Go to the Discord Developer Portal: https://discord.com/developers/applications\n"
+        "2️⃣ Click **New Application**, give it any name, then open the **Bot** tab on the left.\n"
+        "3️⃣ Click **Reset Token** (or **Copy** if you already have one) — this copies a long "
+        "code to your clipboard. That's your bot's token.\n\n"
+        "Once you've copied it, tap the button below and paste it in. I never show it to anyone "
+        "else, and nothing goes live until you've pasted it here.",
+        view=view, ephemeral=True,
+    )
+    return None, None
+
+
 # key -> (label, emoji, handler, options_view_builder | None, blurb). Handler
 # returns (success: bool | None, message: str | None); None/None means it
 # already responded itself. options_view_builder(guild_id, clone_id) -> View
@@ -1009,14 +1090,18 @@ FEATURE_TOGGLES = {
                      "Let members submit ideas for staff and members to vote on."),
     "automod": ("Auto-moderation", "🛡️", _enable_automod, _AutomodOptionsView,
                 "Filter spam, invite links, and mass-mention raids."),
+    "build_bot": ("Build Bot", "🤖", _start_build_bot_wizard, None,
+                  "Run your own copy of this bot under your own name — takes about 2 minutes, no coding needed."),
 }
 
 # How many feature buttons show per page. Each feature now takes its own
 # row (row=idx, see build_join_dm_view) so its button stays lined up with
 # that feature's embed instead of sharing a row with others. That leaves
 # row 3 for Prev/Next and row 4 for Remind/Dismiss out of Discord's 5-row
-# cap, so 3 features per page is the max that still fits.
-FEATURES_PER_PAGE = 3
+# cap, so 4 features per page is the max that still fits — freed up from
+# 3 now that the informational notices (word filter status, Ship, etc.)
+# no longer eat vertical space on every page, only the last one.
+FEATURES_PER_PAGE = 4
 
 
 class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_FEATURE_ID_RE.pattern):
