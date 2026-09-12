@@ -1022,30 +1022,40 @@ async def _enable_suggestions(interaction: discord.Interaction, guild: discord.G
 
 
 async def _enable_verification(interaction: discord.Interaction, guild: discord.Guild, clone_id):
-    """Unlike rolesetup/leveling's wizards, this one can't just open as an
-    ephemeral follow-up here: WizardView's channel/unverified-role/
-    verified-role pickers are native discord.ui.ChannelSelect/RoleSelect
-    components, which only resolve options against a guild — and this
-    button (see _FeatureToggleButton.callback) is only ever clicked from
-    a DM, where interaction.guild is None. Posting the wizard here would
-    render those pickers with nothing to choose from. So instead of
-    opening it in place like rolesetup does, point the admin at running
-    /setupverification in the server itself, where the pickers actually
-    have guild data to draw from. Returns None/None: nothing is enabled
-    yet, so the "Turn on" button shouldn't flip state."""
-    await interaction.followup.send(
-        "Join verification needs channel and role pickers that only work inside the server "
-        f"— head to **{guild.name}** and run `/setupverification` there to set it up.",
-        ephemeral=True,
-    )
-    return None, None
+    """Same trick as _enable_invites below: WizardView's ChannelSelect/
+    RoleSelect and its role-creating/channel-locking button callbacks
+    (verification.py) all read interaction.guild/interaction.user
+    directly rather than a stored guild_id — which only fails when the
+    wizard is attached to a DM message (interaction.guild is None
+    there). A component interaction otherwise always carries the guild
+    of whatever channel its message lives in, regardless of how that
+    message got posted — so sending this same WizardView as a normal
+    (non-ephemeral) message straight into the guild, instead of as the
+    ephemeral followup /setupverification uses, gives every one of its
+    pickers/buttons a real guild to act on. Not persistent (WizardView
+    is a plain discord.ui.View with timeout=600, not a DynamicItem) and
+    doesn't survive a bot restart mid-setup — same limitation
+    /setupverification itself already has, nothing new introduced here."""
+    from discord_bot.cogs.verification import WizardView
+
+    channel = _default_text_channel(guild)
+    if channel is None:
+        return False, "I couldn't find a channel I'm able to post in — create one and try `/setupverification`."
+
+    current = await db.get_verification_config(guild.id, clone_id=clone_id)
+    wizard = WizardView(interaction.user.id, current)
+    try:
+        await channel.send(embed=wizard.build_embed(), view=wizard)
+    except (discord.Forbidden, discord.HTTPException):
+        return False, "I couldn't post there — try `/setupverification` directly in the server instead."
+    return True, f"Posted the join verification setup in {channel.mention} — head over and pick your options there."
 
 
 async def _enable_invites(interaction: discord.Interaction, guild: discord.Guild, clone_id):
-    """Unlike _enable_verification just above, this one CAN reach the real
-    setup wizard from a DM tap — build_wizard_view/_views_invites.py's
-    ChannelSelect and create-channel button both need a live guild-bound
-    interaction to work, but building the view itself doesn't; it's the
+    """Same trick as _enable_verification just above — see that
+    docstring for the full reasoning. build_wizard_view/
+    _views_invites.py's ChannelSelect and create-channel button both
+    need a live guild-bound interaction to work, but building the view itself doesn't; it's the
     same view InvitesCog.post_setup_wizard_on_join posts via a plain
     channel.send(view=...), no interaction involved. So instead of
     pointing the owner back at a slash command, this posts that exact
