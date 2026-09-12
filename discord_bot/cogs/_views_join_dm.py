@@ -1151,13 +1151,19 @@ async def _start_build_bot_wizard(interaction: discord.Interaction, guild: disco
     view = discord.ui.View(timeout=None)
     view.add_item(_BuildBotPasteButton(guild.id, clone_id))
     await interaction.followup.send(
-        "**Let's get your own bot running — 3 quick steps:**\n\n"
+        "**Let's get your own bot running — 4 quick steps:**\n\n"
         "1️⃣ Go to the Discord Developer Portal: https://discord.com/developers/applications\n"
-        "2️⃣ Click **New Application**, give it any name, then open the **Bot** tab on the left.\n"
-        "3️⃣ Click **Reset Token** (or **Copy** if you already have one) — this copies a long "
-        "code to your clipboard. That's your bot's token.\n\n"
+        "2️⃣ Click **New Application**, give it any name.\n"
+        "3️⃣ Open the **Installation** tab on the left. Under **Guild Install → Permissions**, "
+        "just add **Administrator** — simplest option, covers everything the bot needs so you "
+        "don't have to hunt through the full permissions list one by one.\n"
+        "4️⃣ Open the **Bot** tab, click **Reset Token** (or **Copy** if you already have one) — "
+        "this copies a long code to your clipboard. That's your bot's token.\n\n"
         "Once you've copied it, tap the button below and paste it in. I never show it to anyone "
-        "else, and nothing goes live until you've pasted it here.",
+        "else, and nothing goes live until you've pasted it here.\n\n"
+        "💰 Once it's running, you can start earning from it too — `/clonemonetize` lets you set "
+        "your own prices for premium features and route payments to your own payment link, so you "
+        "keep what your server(s) pay, not just get a free bot.",
         view=view, ephemeral=True,
     )
     return None, None
