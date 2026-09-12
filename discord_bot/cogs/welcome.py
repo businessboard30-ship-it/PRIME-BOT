@@ -622,15 +622,27 @@ class WelcomeCog(GuildOnlyCog):
             )
         elif custom_id.startswith("welcome_nudge_ultra:"):
             guild_id = int(custom_id.split(":", 1)[1])
-            await interaction.response.send_message(
-                f"✨ **Customize Card — ${bot_config.ULTRA_PACK_FEE_USD:g} one-time, unlocks for the whole server**\n\n"
-                f"Instead of picking from the preset card themes, upload your own PNG or JPEG (a "
-                f"banner, logo, or photo) and every new member's welcome card gets rendered on top of "
-                f"it — same name/avatar/member-count layout, your background.\n\n"
-                f"Run `/welcome buyultra` in **{interaction.client.get_guild(guild_id).name if interaction.client.get_guild(guild_id) else 'the server'}** "
-                f"to purchase, then `/welcome custombg` to upload your image once it's unlocked.",
-                ephemeral=True,
-            )
+            clone_id = getattr(self.bot, "clone_id", None)
+            config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+            if config.get("ultra_pack_unlocked"):
+                await interaction.response.send_message(
+                    "This server already owns Customize Card — set your background with `/welcome custombg`.",
+                    ephemeral=True,
+                )
+                return
+            # Used to just describe the feature and tell the owner to go
+            # type `/welcome buyultra` themselves — pure friction for
+            # what should be one tap. Calls the exact same
+            # start_ultra_pack_payment flow the slash command and the
+            # in-wizard Customize Card button (WelcomeUltraPackButton in
+            # _views_welcome.py) already use, so this pulls up the real
+            # Selar payment link right here instead of just talking about
+            # it. ephemeral+thinking since start_ultra_pack_payment posts
+            # its own separate ephemeral embed via followup — there's no
+            # existing wizard message here to edit in place.
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            from discord_bot.views_card_pack import start_ultra_pack_payment
+            await start_ultra_pack_payment(interaction, guild_id=guild_id)
         elif custom_id.startswith(f"{STICKER_PREFIX}ack:"):
             guild_id = int(custom_id.split(":", 1)[1])
             clone_id = getattr(self.bot, "clone_id", None)
