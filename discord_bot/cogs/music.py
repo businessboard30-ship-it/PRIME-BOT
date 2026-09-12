@@ -798,9 +798,16 @@ class MusicCog(GuildOnlyCog):
 
     @tasks.loop(seconds=SOLO_CHECK_INTERVAL_SECONDS)
     async def voice_solo_watcher(self):
-        for guild in self.bot.guilds:
-            voice_client = guild.voice_client
-            if voice_client is None or voice_client.channel is None:
+        # Only look at guilds the bot is actually connected to a voice
+        # channel in right now — self.bot.voice_clients is exactly that
+        # list. Previously this looped over EVERY guild on the clone every
+        # tick just to check "is anyone in voice here?", which is wasted
+        # work on a clone with hundreds of guilds and no active playback.
+        # No music playing anywhere on this clone means this loop now does
+        # nothing at all instead of a no-op pass over every guild.
+        for voice_client in list(self.bot.voice_clients):
+            guild = voice_client.guild
+            if guild is None or voice_client.channel is None:
                 continue
             state = self._state(guild.id)
             non_bot_members = [m for m in voice_client.channel.members if not m.bot]
