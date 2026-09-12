@@ -3634,6 +3634,21 @@ class Database:
         await conn.execute("""
             ALTER TABLE discord_cloned_bots ADD COLUMN IF NOT EXISTS custom_data JSONB DEFAULT '{}'::jsonb
         """)
+        # parent_clone_id: NULL for a top-level registration made directly
+        # on the main bot; set to the hosting clone's own clone_id when a
+        # clone owner registered a sub-clone through that clone's "Build
+        # Bot" wizard / /registerclone. Tracking/analytics only — see
+        # /myclones' sub-clone count and clone_admin.py's
+        # register_clone_token docstring. Not a real FK on purpose: a
+        # parent clone can later be removed/deactivated without cascading
+        # into its already-registered sub-clones.
+        await conn.execute("""
+            ALTER TABLE discord_cloned_bots ADD COLUMN IF NOT EXISTS parent_clone_id INTEGER
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_discord_cloned_bots_parent
+            ON discord_cloned_bots (parent_clone_id)
+        """)
 
         # Discord's own monetization-activation table — deliberately NOT the
         # same clone_monetization_subscriptions table Telegram uses: that
@@ -3686,6 +3701,13 @@ class Database:
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_discord_clone_pending_payments_owner
             ON discord_clone_pending_payments (owner_id)
+        """)
+        # parent_clone_id: same lineage-tracking column as
+        # discord_cloned_bots.parent_clone_id, carried from here into the
+        # created row by complete_discord_clone_pending_payment once
+        # payment is approved.
+        await conn.execute("""
+            ALTER TABLE discord_clone_pending_payments ADD COLUMN IF NOT EXISTS parent_clone_id INTEGER
         """)
 
         # --- Discord port: multiple premium groups per guild -------------------
@@ -5744,6 +5766,16 @@ class Database:
             row = await conn.fetchrow("SELECT * FROM payment_logs WHERE payment_id = $1", payment_id)
             return dict(row) if row else None
 
+    async def get_payment_row_by_reference(self, reference: str) -> Optional[Dict]:
+        """Same idea as get_payment_row_by_id but keyed by the reference
+        string a buyer would actually have and give to a clone owner —
+        used by /clonemonetize confirmpurchase, where there's no numeric
+        payment_id to type."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM payment_logs WHERE paystack_reference = $1", reference)
+            return dict(row) if row else None
+
     async def mark_manual_payment_rejected(self, payment_id: int) -> bool:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -5959,18 +5991,34 @@ class Database:
             return dict(row) if row else None
 
     async def create_discord_clone(self, owner_id: int, bot_token_encrypted: str, bot_user_id: int,
-                                    bot_username: str, application_id: int) -> int:
+                                    bot_username: str, application_id: int,
+                                    parent_clone_id: Optional[int] = None) -> int:
+        # parent_clone_id: the hosting clone's own clone_id when this clone
+        # was registered through another clone's "Build Bot" wizard/
+        # /registerclone, NULL for a top-level registration made directly
+        # on the main bot. Tracking/analytics only (see /myclones) — never
+        # used to route payment or approval, which always go to the main
+        # project owner regardless of this value.
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO discord_cloned_bots (owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO discord_cloned_bots (owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id, parent_clone_id)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING clone_id
                 """,
-                owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id
+                owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id, parent_clone_id
             )
             return row["clone_id"]
+
+    async def count_sub_clones(self, clone_id: int) -> int:
+        """How many clones were registered through this clone's own wizard
+        — used by /myclones' small addition to show sub-clone counts."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM discord_cloned_bots WHERE parent_clone_id = $1", clone_id
+            )
 
     async def get_discord_clone(self, clone_id: int) -> Optional[Dict]:
         pool = await get_pool()
@@ -6037,19 +6085,32 @@ class Database:
                 "SELECT COUNT(*) FROM discord_cloned_bots WHERE owner_id = $1", owner_id
             )
 
-    async def store_discord_clone_pending_payment(self, reference: str, owner_id: int, bot_token_encrypted: str,
-                                                    bot_user_id: int, bot_username: str, application_id: int) -> None:
+    async def store_discord_clone_pending_payment(self, owner_id: int, bot_token_encrypted: str,
+                                                    bot_user_id: int, bot_username: str, application_id: int,
+                                                    reference: Optional[str] = None,
+                                                    parent_clone_id: Optional[int] = None) -> str:
+        """reference is now optional: when the caller doesn't have one yet
+        (e.g. clone_admin.py's register_clone_token, which needs to stash
+        this row BEFORE calling start_manual_payment so the row exists the
+        moment Selar's redirect/webhook fires under that same reference),
+        one is generated here and returned. parent_clone_id carries clone-
+        of-clone lineage through to the row complete_discord_clone_pending_payment
+        eventually creates."""
+        if reference is None:
+            import secrets as _secrets
+            reference = f"selar_discord_clone_{owner_id}_{_secrets.token_hex(4)}"
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO discord_clone_pending_payments
-                    (reference, owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                    (reference, owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id, parent_clone_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (reference) DO NOTHING
                 """,
-                reference, owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id
+                reference, owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id, parent_clone_id
             )
+        return reference
 
     async def get_discord_clone_pending_payment(self, reference: str) -> Optional[Dict]:
         pool = await get_pool()
@@ -6096,12 +6157,12 @@ class Database:
 
                 clone_row = await conn.fetchrow(
                     """
-                    INSERT INTO discord_cloned_bots (owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id)
-                    VALUES ($1, $2, $3, $4, $5)
+                    INSERT INTO discord_cloned_bots (owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id, parent_clone_id)
+                    VALUES ($1, $2, $3, $4, $5, $6)
                     RETURNING clone_id
                     """,
                     row["owner_id"], row["bot_token_encrypted"], row["bot_user_id"],
-                    row["bot_username"], row["application_id"]
+                    row["bot_username"], row["application_id"], row.get("parent_clone_id")
                 )
                 clone_id = clone_row["clone_id"]
                 await conn.execute(
