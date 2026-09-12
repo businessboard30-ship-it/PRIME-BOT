@@ -640,11 +640,12 @@ class WelcomeCog(GuildOnlyCog):
 
     @tasks.loop(hours=24)
     async def _nudge_owners(self):
-        """Once a day, DMs the owner of any guild that has never turned
-        welcome cards on — skipping guilds that already said no. The DM
-        includes a rendered preview built from that server's own name/
-        description/icon, plus Approve/Deny buttons, so turning it on
-        takes one tap instead of a wizard."""
+        """Once a day, posts a reminder in the #mod-logs channel of any
+        guild that has never turned welcome cards on — skipping guilds
+        that already said no, and staying quiet for guilds with no
+        mod-logs channel set up. The post includes a rendered preview
+        built from that server's own name/icon, plus Approve/Deny
+        buttons, so turning it on takes one tap instead of a wizard."""
         clone_id = getattr(self.bot, "clone_id", None)
         for guild in list(self.bot.guilds):
             try:
@@ -655,9 +656,8 @@ class WelcomeCog(GuildOnlyCog):
                     continue
                 if config.get("nudge_sent_at"):
                     continue  # already nudged once and not denied — don't spam every cycle
-                # Fire-and-forget: _send_nudge holds a 2-minute sleep
-                # between its two DMs, and awaiting that inline here would
-                # stall every other guild in this pass behind it.
+                # Fire-and-forget: keeps this guild's mod-logs lookup/post
+                # from stalling every other guild in this pass.
                 self.bot.loop.create_task(self._send_nudge(guild, clone_id))
             except Exception as e:
                 logger.error(f"[v0] welcome nudge failed for guild {guild.id}: {e}")
@@ -821,60 +821,62 @@ class WelcomeCog(GuildOnlyCog):
             await db.mark_template_announcement_sent(guild.id, clone_id=clone_id)
 
     async def _send_nudge(self, guild: discord.Guild, clone_id: int | None):
-        """Sends the reminder DM twice, 2 minutes apart, then stops for
-        good — whether or not the owner ever responds. A response at any
-        later time (Approve/Deny/Edit) is still handled normally by
-        on_interaction; this method just controls how many times the DM
-        itself goes out. Runs as a fire-and-forget background task (see
-        _nudge_owners), so it catches its own errors instead of relying
-        on a caller's try/except."""
+        """Posts the reminder ONCE in the guild's #mod-logs channel
+        (discord_automod_config.log_channel_id) — never to DMs, and never
+        fires twice. If the guild has no mod-logs channel configured, or
+        the channel was deleted since, this stays completely quiet: no
+        DM fallback, no retry, nothing posted anywhere else. Runs as a
+        fire-and-forget background task (see _nudge_owners), so it
+        catches its own errors instead of relying on a caller's
+        try/except.
+
+        Previously this sent the same reminder as an owner DM, twice,
+        2 minutes apart — that was the bug: two DMs firing for what's
+        meant to be a single one-time nudge, landing in the owner's
+        personal inbox instead of a channel mods/admins can actually see
+        together. Now it's a single post, mod-logs-channel only."""
         try:
-            owner = guild.owner or await guild.fetch_member(guild.owner_id)
-            if owner is None:
+            automod_config = await db.get_automod_config(guild.id, clone_id=clone_id)
+            log_channel_id = automod_config.get("log_channel_id")
+            log_channel = guild.get_channel(int(log_channel_id)) if log_channel_id else None
+            if log_channel is None:
+                logger.info(f"[v0] welcome nudge skipped, no mod-logs channel guild={guild.id}")
+                # Still mark it sent so this guild isn't re-checked (and
+                # re-skipped) every single day forever — same as a
+                # successful send, this attempt is done either way.
+                await db.mark_welcome_nudge_sent(guild.id, clone_id=clone_id)
                 return
+
             template = _suggested_template(guild)
             channel = _suggested_channel(guild)
 
             # Persist the suggested template/channel now (still
             # enabled=False) so Edit and Approve both read/write the same
             # row instead of Approve silently re-deriving a fresh
-            # suggestion that would discard whatever the owner just edited.
+            # suggestion that would discard whatever a mod just edited.
             await db.set_welcome_config(
                 guild.id, clone_id=clone_id, enabled=False,
                 channel_id=channel.id if channel else None, message_template=template,
             )
 
-            sent_once = await self._send_nudge_dm(guild, owner, channel, template, clone_id)
-            # Mark it sent right after the first attempt (not after the
-            # second) so a crash/restart between the two sends can't cause
-            # the daily loop to treat this guild as never-nudged and
-            # restart the whole two-message sequence from scratch.
+            await self._send_nudge_post(guild, log_channel, channel, template, clone_id)
             await db.mark_welcome_nudge_sent(guild.id, clone_id=clone_id)
-            if not sent_once:
-                return  # DMs closed — no point trying a second time
-
-            await asyncio.sleep(120)
-
-            current = await db.get_welcome_config(guild.id, clone_id=clone_id)
-            if current.get("enabled") or current.get("nudge_status"):
-                return  # owner already acted on the first DM — don't send a second
-
-            await self._send_nudge_dm(guild, owner, channel, template, clone_id)
         except Exception as e:
             logger.error(f"[v0] welcome nudge failed for guild {guild.id}: {e}")
 
-    async def _send_nudge_dm(self, guild: discord.Guild, owner: discord.abc.User,
-                              channel: discord.TextChannel | None, template: str,
-                              clone_id: int | None) -> bool:
-        """Renders and sends a single reminder DM. Returns False if the
-        owner's DMs are closed, True otherwise."""
+    async def _send_nudge_post(self, guild: discord.Guild, log_channel: discord.TextChannel,
+                                suggested_channel: discord.TextChannel | None, template: str,
+                                clone_id: int | None) -> bool:
+        """Renders and posts the reminder once, in log_channel (the
+        guild's #mod-logs). Returns False if the bot can't post there."""
         avatar_bytes = None
         sticker_bytes = None
         custom_bg_bytes = None
         config = await db.get_welcome_config(guild.id, clone_id=clone_id)
+        preview_member = guild.me
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(str(owner.display_avatar.replace(size=256).url),
+                async with session.get(str(preview_member.display_avatar.replace(size=256).url),
                                         timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
@@ -883,7 +885,6 @@ class WelcomeCog(GuildOnlyCog):
             pass
 
         try:
-            dm = await owner.create_dm()
             intro = (
                 f"👋 **{guild.name}** doesn't have welcome cards set up yet — new members just "
                 f"join quietly with no greeting.\n\nHere's what one would look like for the next "
@@ -895,7 +896,7 @@ class WelcomeCog(GuildOnlyCog):
                 f"upload a photo, banner, or logo and every new member's card is rendered on it. "
                 f"Tap **Customize Card** below to learn more, or run `/welcome buyultra` anytime."
             )
-            view = WelcomeNudgeView(guild.id, channel.id if channel else None, template)
+            view = WelcomeNudgeView(guild.id, suggested_channel.id if suggested_channel else None, template)
             if avatar_bytes:
                 # Preview with the sticker/style the guild would actually
                 # get if approved — get_welcome_config returns sane
@@ -904,7 +905,7 @@ class WelcomeCog(GuildOnlyCog):
                 # a representative preview, not a bare card.
                 card_bytes, image_format = await asyncio.to_thread(
                     render_welcome_card,
-                    avatar_bytes, owner.display_name, "Member #1",
+                    avatar_bytes, preview_member.display_name, "Member #1",
                     background_color=config["background_color"], accent_color=config["accent_color"],
                     sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                     guild_name=guild.name, use_template=config.get("use_template", True),
@@ -912,13 +913,17 @@ class WelcomeCog(GuildOnlyCog):
                 )
                 ext = "gif" if image_format == "GIF" else "png"
                 file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
-                preview_text = _apply_template(template, owner)
-                channel_note = f"\nWould post in {channel.mention}." if channel else "\nI'd need you to pick a channel — no postable channel found."
-                await dm.send(content=f"{intro}\n\n{preview_text}{channel_note}{ultra_blurb}", file=file, view=view)
+                preview_text = _apply_template(template, preview_member)
+                channel_note = (
+                    f"\nWould post in {suggested_channel.mention}." if suggested_channel
+                    else "\nI'd need a channel picked — no postable channel found."
+                )
+                await log_channel.send(content=f"{intro}\n\n{preview_text}{channel_note}{ultra_blurb}", file=file, view=view)
             else:
-                await dm.send(content=f"{intro}{ultra_blurb}", view=view)
+                await log_channel.send(content=f"{intro}{ultra_blurb}", view=view)
             return True
-        except discord.Forbidden:
+        except (discord.Forbidden, discord.HTTPException):
+            logger.info(f"[v0] welcome nudge post failed in mod-logs guild={guild.id} channel={log_channel.id}")
             return False
 
     @commands.Cog.listener()
