@@ -358,25 +358,45 @@ class AutomodCog(GuildOnlyCog):
             return None
         return owner if (owner is not None and not owner.bot) else None
 
-    async def _send_combined_reminder(self, owner: discord.User, items: list, clone_id):
-        """One DM per owner per tick, covering every pending item across
-        every guild of theirs collected this tick — instead of the old
+    async def _send_combined_reminder(self, guild: discord.Guild, channel: discord.abc.Messageable, items: list, clone_id):
+        """One message per guild per tick, covering every pending item
+        collected for that guild this tick — instead of the old
         _notify_owner_log_channel / _notify_owner_word_filter each firing
-        its own separate DM. A single "Remind me later" / "Don't ask
-        again" button pair (see _views_automod_reminders.py) applies to
-        every item in the message at once.
+        its own separate DM, and instead of the later DM-to-owner combined
+        reminder. Now posted straight into the guild's own mod/log channel
+        rather than the owner's DMs — nagging an admin channel they
+        already read beats a DM they may never see (or that just gets
+        turned off at the OS/Discord level). A single "Remind me later" /
+        "Don't ask again" button pair (see _views_automod_reminders.py)
+        applies to every item in the message at once.
+
+        `channel` must already be resolved and non-None — see
+        _reminder_loop, which only calls this when the guild has a usable
+        log channel; if it doesn't, the caller skips the guild entirely
+        (no DM fallback — silence is the correct behavior there, not a
+        bug).
 
         Creates the DB batch row BEFORE sending so the buttons have a real
         batch id to key off of the moment the message exists; deletes that
-        row again if the send turns out to fail for a known reason (DMs
-        closed, etc.) rather than leaving an orphaned row nothing will
-        ever reference. Per-item notice_count/last_notice_at are only
-        bumped AFTER a successful send — same "don't burn a slot on an
-        unknown failure" care _notify_owner_word_filter used to take,
-        just applied to the whole batch instead of one item."""
-        if owner is None or not items:
+        row again if the send turns out to fail for a known reason
+        (channel deleted, missing permissions, etc.) rather than leaving
+        an orphaned row nothing will ever reference. Per-item
+        notice_count/last_notice_at are only bumped AFTER a successful
+        send — same "don't burn a slot on an unknown failure" care
+        _notify_owner_word_filter used to take, just applied to the whole
+        batch instead of one item."""
+        if channel is None or not items:
             return
-        batch_id = await db.create_automod_reminder_batch(clone_id, owner.id, items)
+        # owner_id on the batch row is kept only for historical/legacy
+        # cleanup purposes (see owner_cleanup_reminders) and because the
+        # column is NOT NULL; it no longer determines where the message
+        # is sent, and an unresolvable owner is not a reason to skip
+        # posting the in-channel reminder itself.
+        owner = await self._resolve_owner(guild)
+        owner_id = owner.id if owner is not None else guild.owner_id
+        if owner_id is None:
+            return
+        batch_id = await db.create_automod_reminder_batch(clone_id, owner_id, items)
 
         embed = discord.Embed(
             title="🔔 A few things need your attention",
@@ -405,11 +425,10 @@ class AutomodCog(GuildOnlyCog):
         view = build_reminder_view(batch_id)
 
         try:
-            dm_channel = owner.dm_channel or await owner.create_dm()
-            message = await dm_channel.send(embed=embed, view=view)
+            message = await channel.send(embed=embed, view=view)
         except (discord.HTTPException, discord.Forbidden, discord.NotFound):
             # Known, final outcome — nothing will ever back this batch row.
-            logger.info(f"Could not DM combined automod reminder to owner {owner.id}")
+            logger.info(f"Could not post combined automod reminder in guild {guild.id}'s log channel")
             await db.delete_automod_reminder_batch(batch_id)
             return
         except Exception:
@@ -419,7 +438,7 @@ class AutomodCog(GuildOnlyCog):
             await db.delete_automod_reminder_batch(batch_id)
             raise
 
-        await db.set_automod_reminder_batch_message(batch_id, dm_channel.id, message.id)
+        await db.set_automod_reminder_batch_message(batch_id, channel.id, message.id)
 
         for item in items:
             if item["type"] == "log_channel":
@@ -439,26 +458,32 @@ class AutomodCog(GuildOnlyCog):
     async def _reminder_loop(self):
         """Two independent, idempotent jobs per guild, safe to run on every
         tick and every restart:
-          1. Log channel — backfill + up to MAX_LOG_CHANNEL_NOTICES owner
-             DMs, spaced by LOG_CHANNEL_REMINDER_GAP. Manually-configured
-             log channels (log_channel_auto_created=False) are never
-             touched — see ensure_log_channel.
-          2. Word filter — up to MAX_WORDFILTER_NOTICES owner DMs nudging
-             them to turn word_filter_enabled on, spaced by
-             WORDFILTER_REMINDER_GAP. Stops the moment an owner turns the
+          1. Log channel — backfill + up to MAX_LOG_CHANNEL_NOTICES
+             in-channel notices, spaced by LOG_CHANNEL_REMINDER_GAP.
+             Manually-configured log channels (log_channel_auto_created=
+             False) are never touched — see ensure_log_channel.
+          2. Word filter — up to MAX_WORDFILTER_NOTICES in-channel notices
+             nudging admins to turn word_filter_enabled on, spaced by
+             WORDFILTER_REMINDER_GAP. Stops the moment someone turns the
              filter on themselves — see the toggle command.
 
         Both jobs are collected first (per guild) WITHOUT sending
-        anything, then grouped by owner so an owner of several guilds gets
-        ONE combined DM instead of one per guild/type — see
-        _send_combined_reminder. This is also what keeps a post-downtime
-        catch-up pass from bursting several separate messages at an owner
-        in the same minute: however many items piled up while offline
-        still collapse into a single DM per owner per tick."""
+        anything, then combined into ONE message per guild instead of one
+        per guild/type — see _send_combined_reminder. This is also what
+        keeps a post-downtime catch-up pass from bursting several separate
+        messages at once: however many items piled up while offline still
+        collapse into a single message per guild per tick.
+
+        These are posted straight into the guild's own mod/log channel —
+        never DMed to the owner. If a guild doesn't currently have a
+        resolvable log channel (bot lacks one, channel was deleted,
+        permissions missing, etc.), that guild is skipped entirely for
+        this tick: no DM fallback, no other channel guessed at. Silence is
+        the correct behavior here, not a bug — the guild's notice counters
+        are left untouched so it's picked back up cleanly once a log
+        channel exists again."""
         clone_id = getattr(self.bot, "clone_id", None)
         now = discord.utils.utcnow()
-        owner_items: dict = {}
-        owner_objs: dict = {}
         for guild in list(self.bot.guilds):
             try:
                 config = await db.get_automod_config(guild.id, clone_id=clone_id)
@@ -467,20 +492,27 @@ class AutomodCog(GuildOnlyCog):
                 pending = [i for i in (log_item, wf_item) if i is not None]
                 if not pending:
                     continue
-                owner = await self._resolve_owner(guild)
-                if owner is None:
-                    continue
-                owner_items.setdefault(owner.id, []).extend(pending)
-                owner_objs[owner.id] = owner
-            except Exception:
-                logger.exception(f"_reminder_loop failed collecting for guild {guild.id}")
 
-        for owner_id, items in owner_items.items():
-            try:
-                await self._send_combined_reminder(owner_objs[owner_id], items, clone_id)
+                # Re-fetch config in case _collect_log_channel_item just
+                # created/adopted the log channel this tick (it writes
+                # log_channel_id straight to the DB but `config` here is
+                # the stale pre-collection snapshot).
+                channel_id = None
+                for item in pending:
+                    if item["type"] == "log_channel":
+                        channel_id = item["channel_id"]
+                        break
+                if channel_id is None:
+                    channel_id = config.get("log_channel_id")
+                channel = guild.get_channel(int(channel_id)) if channel_id else None
+                if channel is None:
+                    # No mod/log channel to post in — stay quiet, no DM.
+                    continue
+
+                await self._send_combined_reminder(guild, channel, pending, clone_id)
             except Exception:
-                logger.exception(f"_reminder_loop failed sending combined reminder to owner {owner_id}")
-            await asyncio.sleep(1)  # spread DMs out instead of bursting
+                logger.exception(f"_reminder_loop failed for guild {guild.id}")
+            await asyncio.sleep(1)  # spread sends out instead of bursting
 
     @_reminder_loop.before_loop
     async def _before_reminder_loop(self):
