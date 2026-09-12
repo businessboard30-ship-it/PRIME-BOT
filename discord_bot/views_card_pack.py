@@ -145,14 +145,19 @@ async def start_card_pack_payment(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-async def start_ultra_pack_payment(interaction: discord.Interaction):
+async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: int = None):
     """Same shape as start_card_pack_payment above, for the SEPARATE ultra
     pack — this one unlocks /welcome custombg (own png/jpeg background)
     rather than the fixed artist themes, so it's gated on
     ultra_pack_unlocked, not card_pack_unlocked, and has its own price/
     payment_type so a guild can own either pack independently.
-    Call after interaction.response.defer(ephemeral=True, thinking=True)."""
-    guild_id = interaction.guild_id
+    Call after interaction.response.defer(ephemeral=True, thinking=True).
+
+    guild_id is optional and defaults to interaction.guild_id — pass it
+    explicitly when calling this from a DM-context interaction (e.g.
+    welcome.py's welcome_nudge_ultra handler), where interaction.guild_id
+    is always None since the button lives on a DM, not a guild message."""
+    guild_id = guild_id if guild_id is not None else interaction.guild_id
     user = interaction.user
 
     config = await db.get_welcome_config(guild_id, clone_id=_clone_id_of(interaction))
