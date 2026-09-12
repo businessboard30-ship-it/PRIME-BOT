@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "12"
+SCHEMA_VERSION = "13"
 # History (why this matters): "9" -> "10" fixed report_notify_config's
 # dm_user_id column and server_listing_votes' unique-index migration —
 # both had been sitting in _create_tables for a while but never actually
@@ -151,6 +151,15 @@ SCHEMA_VERSION = "12"
 # "11" -> "12" adds server_listings.online_count and the new
 # listing_member_snapshots table (discord_bot/cogs/listing_snapshots.py's
 # "online now" badge + member-count trend arrow on the public directory).
+# "12" -> "13" adds discord_cloned_bots.parent_clone_id (+ its index) and
+# discord_clone_pending_payments.parent_clone_id — both ALTER TABLE ADD
+# COLUMN IF NOT EXISTS steps were added to _create_tables without this
+# bump, so on any DB that already had schema_version='12' stored, the DDL
+# pass was skipped and the column never got created. That's what caused
+# create_discord_clone()'s INSERT to fail with
+# asyncpg.exceptions.UndefinedColumnError: column "parent_clone_id" of
+# relation "discord_cloned_bots" does not exist, every time the join-DM
+# "Build Bot" flow tried to register a clone.
 # Rule going forward: ANY new CREATE TABLE / ALTER TABLE / CREATE INDEX
 # added to _create_tables MUST come with a version bump in the same
 # change, or it's dead code that silently never executes.
