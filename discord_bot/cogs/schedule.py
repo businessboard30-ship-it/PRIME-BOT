@@ -1,3 +1,5 @@
+# path: discord_bot/cogs/schedule.py
+
 """
 General-purpose scheduled messages — distinct from autopost.py, which only
 rotates a fixed self-promo content library. This lets an admin schedule
@@ -23,6 +25,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from database import db
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +68,9 @@ def _clone_id_of(interaction: discord.Interaction):
 class ScheduleCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # See _adaptive_skip.py's docstring — backs off the DB poll once
+        # this clone has had nothing scheduled for a while.
+        self._gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
         self._poller.start()
 
     def cog_unload(self):
@@ -72,11 +78,14 @@ class ScheduleCog(commands.Cog):
 
     @tasks.loop(seconds=CHECK_INTERVAL_SECONDS)
     async def _poller(self):
+        if not self._gate.should_run():
+            return
         try:
             due = await db.get_due_scheduled_messages(getattr(self.bot, "clone_id", None))
         except Exception:
             logger.exception("[v0] Failed to poll due scheduled messages")
             return
+        self._gate.record(found_something=bool(due))
 
         for job in due:
             channel = self.bot.get_channel(job["channel_id"])
