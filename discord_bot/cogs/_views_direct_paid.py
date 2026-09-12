@@ -3,7 +3,7 @@
 """
 "I've Paid" button for buyers who paid via a bare Selar link (broadcast DM
 or the raw link shared outside any slash command) instead of going through
-/welcome buyultra — see payments_manual.py's BuyerConfirmView for that
+/welcome buyultra — see payments_manual.py's web /unlock confirmation for that
 normal flow, which already knows guild_id because it was captured when the
 buyer ran the command.
 
@@ -139,7 +139,7 @@ class _PayNowButton(discord.ui.DynamicItem[discord.ui.Button], template=_PAY_NOW
         return cls(match.group(1))
 
     async def callback(self, interaction: discord.Interaction):
-        from payments_manual import _prefilled_selar_link  # avoid import cycle, same as _DirectPaidButton below
+        from config import SELAR_PRODUCT_LINKS  # avoid import cycle, same as _DirectPaidButton below
 
         await interaction.response.defer(ephemeral=True)
 
@@ -148,7 +148,17 @@ class _PayNowButton(discord.ui.DynamicItem[discord.ui.Button], template=_PAY_NOW
         # everywhere else a Selar/Paystack link is handed out, so whoever
         # approves this claim manually can search Selar's buyer-email
         # column for this Discord id instead of eyeballing timing/amount.
-        link = _prefilled_selar_link(self.payment_type, interaction.user.id)
+        #
+        # Deliberately NOT payments_manual._prefilled_selar_link's signed
+        # redirect_url version: that signature is over (reference,
+        # payment_type, buyer_id, guild_id, clone_id), and this button is
+        # tapped before ANY of guild_id/reference are known (they're only
+        # resolved once "I've Paid" fires the guild-matching logic below) —
+        # there is nothing to sign yet. This claim path stays Discord-native
+        # end to end rather than bouncing through the web /unlock page.
+        from urllib.parse import urlencode
+        base = SELAR_PRODUCT_LINKS.get(self.payment_type)
+        link = f"{base}{'&' if '?' in base else '?'}{urlencode({'add_to_cart': '1', 'email': f'user_{interaction.user.id}@animebot.com'})}" if base else None
         if not link:
             await interaction.followup.send(
                 "This payment type isn't set up anymore — please contact support directly.", ephemeral=True,
@@ -192,7 +202,7 @@ class _DirectPaidButton(discord.ui.DynamicItem[discord.ui.Button], template=_DIR
         return cls(match.group(1))
 
     async def callback(self, interaction: discord.Interaction):
-        from payments_manual import _send_approval_dms, _resolve_approvers, _reference_for, UNLOCK_HANDLERS  # avoid import cycle
+        from payments_manual import send_manual_payment_approval_dms, _reference_for, UNLOCK_HANDLERS  # avoid import cycle
 
         await interaction.response.defer(ephemeral=True)
 
@@ -234,10 +244,18 @@ class _DirectPaidButton(discord.ui.DynamicItem[discord.ui.Button], template=_DIR
                 buyer_id, 0.0, reference, status="pending",
                 payment_type=self.payment_type, chat_id=guild.id, provider="selar",
             )
-            await _send_approval_dms(
-                interaction.client, reference, self.payment_type, buyer_id,
-                guild.id, clone_id, amount_display,
-            )
+            # This tap of "I've Paid" IS the buyer's confirmation — unlike
+            # the web /unlock flow there's no separate submit step, so
+            # claim straight from 'pending' (guaranteed to succeed, this
+            # reference was just created above) purely to get payment_id
+            # and keep every approval DM going through the same
+            # awaiting_review path the web flow uses.
+            claimed = await db.claim_manual_payment_for_review(reference)
+            if claimed:
+                await send_manual_payment_approval_dms(
+                    interaction.client, claimed["payment_id"], reference, self.payment_type, buyer_id,
+                    guild.id, clone_id, amount_display,
+                )
             await interaction.followup.send(
                 f"Thanks — flagged for review against **{guild.name}** (found via your Manage Server "
                 f"permission there). You'll get a DM as soon as it's confirmed.", ephemeral=True,
@@ -280,10 +298,12 @@ class _DirectPaidButton(discord.ui.DynamicItem[discord.ui.Button], template=_DIR
                 buyer_id, 0.0, reference, status="pending",
                 payment_type=self.payment_type, chat_id=None, provider="selar",
             )
-            await _send_approval_dms(
-                interaction.client, reference, self.payment_type, buyer_id,
-                None, clone["clone_id"], amount_display,
-            )
+            claimed = await db.claim_manual_payment_for_review(reference)
+            if claimed:
+                await send_manual_payment_approval_dms(
+                    interaction.client, claimed["payment_id"], reference, self.payment_type, buyer_id,
+                    None, clone["clone_id"], amount_display,
+                )
             await interaction.followup.send(
                 f"Thanks — flagged for review against your clone **{clone['bot_username']}**. "
                 f"You'll get a DM as soon as it's confirmed.", ephemeral=True,
@@ -311,7 +331,7 @@ class _DirectPaidButton(discord.ui.DynamicItem[discord.ui.Button], template=_DIR
 
 async def _notify_approvers_unresolved(client: discord.Client, buyer_id: int, payment_type: str,
                                         clone_id, reason: str, candidate_guilds=None, candidate_clones=None) -> None:
-    """Same approver set _send_approval_dms uses, but for a claim that
+    """Same approver set send_manual_payment_approval_dms uses, but for a claim that
     couldn't be auto-resolved to exactly one guild (or, for
     discord_clone_monetization, exactly one owned clone) — no
     Approve/Reject view (there's nothing to unlock yet without a
