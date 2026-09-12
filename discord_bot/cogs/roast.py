@@ -69,7 +69,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 ROAST_MODEL = "llama-3.1-70b-versatile"
 
-POLL_INTERVAL_SECONDS = 60
+POLL_INTERVAL_SECONDS = 300
 # Minimum time between admin roast-suggestion DMs, regardless of trigger.
 PROPOSAL_COOLDOWN_MINUTES = 60 * 24 * 2  # 2 days
 # "Remind me later" snooze — shorter than the normal cooldown so the admin
