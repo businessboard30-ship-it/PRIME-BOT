@@ -149,6 +149,59 @@ class handler(BaseHTTPRequestHandler):
         logger.debug(f"[selar-submit] {format % args}")
 
 
+async def _resolve_discord_name(user_id: int, bot_token: str) -> str:
+    """GET /users/{id} works off the bot token alone — unlike a mutual-
+    server member lookup, this resolves ANY Discord user by id, which is
+    exactly why <@user_id> mentions were showing as "@unknown-user" in
+    admin DMs (Discord's client can only render a mention it has cached
+    locally; it doesn't fetch on your behalf just because the DM contains
+    one). Falls back to the raw id string on any failure so the DM never
+    ends up with a blank buyer field."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(
+                f"https://discord.com/api/v10/users/{user_id}",
+                headers={"Authorization": f"Bot {bot_token}"},
+            ) as resp:
+                if resp.status != 200:
+                    return str(user_id)
+                data = await resp.json()
+                username = data.get("username")
+                discriminator = data.get("discriminator")
+                if not username:
+                    return str(user_id)
+                # Post-2023 Discord usernames have discriminator "0" (migrated
+                # off the old tag system) — only show #1234 for legacy accounts
+                # that still have a real one.
+                if discriminator and discriminator != "0":
+                    return f"{username}#{discriminator}"
+                return username
+    except Exception as e:
+        logger.warning(f"[selar-submit] couldn't resolve username for {user_id}: {e}")
+        return str(user_id)
+
+
+async def _resolve_guild_name(guild_id: int, bot_token: str) -> str:
+    """GET /guilds/{id} only succeeds if this bot token's bot is actually a
+    member of that guild — which it always is here, since a manual payment
+    can only have been started from within that guild in the first place."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(
+                f"https://discord.com/api/v10/guilds/{guild_id}",
+                headers={"Authorization": f"Bot {bot_token}"},
+            ) as resp:
+                if resp.status != 200:
+                    return str(guild_id)
+                data = await resp.json()
+                return data.get("name") or str(guild_id)
+    except Exception as e:
+        logger.warning(f"[selar-submit] couldn't resolve guild name for {guild_id}: {e}")
+        return str(guild_id)
+
+
 async def _notify_approvers(payment_row: dict, guild_id, clone_id, amount_display: str) -> None:
     payment_id = payment_row["payment_id"]
     reference = payment_row["paystack_reference"]
@@ -172,13 +225,26 @@ async def _notify_approvers(payment_row: dict, guild_id, clone_id, amount_displa
         logger.error(f"[selar-submit] no bot token available to notify approvers for reference {reference}")
         return
 
-    location_line = f"Guild: `{guild_id}`" if guild_id is not None else (f"Clone: `#{clone_id}`" if clone_id else "Scope: account-level")
+    # Resolve real names up front — a raw snowflake id in the DM gives you
+    # nothing to act on, and <@id> mentions silently render as
+    # "@unknown-user" whenever Discord's client has no cached data for
+    # that user (exactly what was happening before this fix).
+    buyer_name = await _resolve_discord_name(buyer_id, bot_token)
+    guild_line = ""
+    if guild_id is not None:
+        guild_name = await _resolve_guild_name(guild_id, bot_token)
+        guild_line = f"Server: **{guild_name}** (`{guild_id}`)\n"
+    elif clone_id:
+        guild_line = f"Clone: `#{clone_id}`\n"
+    else:
+        guild_line = "Scope: account-level\n"
+
     msg = (
         f"💰 **Manual payment — buyer confirmed on the web**\n"
-        f"Buyer: <@{buyer_id}> (`{buyer_id}`)\n"
+        f"Buyer: **{buyer_name}** (`{buyer_id}`)\n"
         f"Type: `{payment_type}` — {amount_display}\n"
         f"Reference: `{reference}`\n"
-        f"{location_line}\n\n"
+        f"{guild_line}\n"
         f"Check Selar for a matching sale (buyer email `user_{buyer_id}@animebot.com`), "
         f"then Approve or Reject below."
     )
