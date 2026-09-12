@@ -214,11 +214,14 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.server_listing")
         await self.load_extension("discord_bot.cogs.listing_snapshots")
         await self.load_extension("discord_bot.cogs.report_notifications")
-        if self.clone_id is None:
-            # Clone registration/management commands only make sense on the
-            # main bot — a clone registering its own clones would need its
-            # own gateway token to hand out, which defeats the point.
-            await self.load_extension("discord_bot.cogs.clone_admin")
+        # Loaded on clones too now, not just the main bot: a clone can host
+        # its own "Build Bot" wizard / /registerclone for sub-clones. Each
+        # sub-clone still gets its own independent bot token supplied by
+        # whoever registers it — the hosting clone never hands out its own
+        # token — and all clone-of-clone revenue/approval still belongs
+        # solely to the main project owner (see payments_manual.py's
+        # discord_clone carve-out in _resolve_approvers).
+        await self.load_extension("discord_bot.cogs.clone_admin")
 
         self.join_dm_reminder_loop.start()
 
