@@ -43,7 +43,12 @@ from discord_bot.cogs._views_download_wizard import DYNAMIC_ITEMS as DOWNLOAD_WI
 from discord_bot.cogs._views_leaderboard_links import DYNAMIC_ITEMS as LEADERBOARD_LINKS_DYNAMIC_ITEMS
 from discord_bot.cogs._views_registry_invite_consent import DYNAMIC_ITEMS as REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS
 from discord_bot.cogs._views_auto_listing_offer import DYNAMIC_ITEMS as AUTO_LISTING_OFFER_DYNAMIC_ITEMS, offer_auto_listing
-from discord_bot.cogs._views_combined_join_offer import DYNAMIC_ITEMS as COMBINED_JOIN_OFFER_DYNAMIC_ITEMS, offer_combined_join_dm
+# offer_combined_join_dm itself is no longer called — that flow is now
+# folded onto the combined join DM's last page (see _views_join_dm.py's
+# join_offer handling, wired from _send_combined_owner_join_dm below).
+# DYNAMIC_ITEMS import stays so any already-sent DM using the old
+# combinedjoin: custom_ids (sent before this change shipped) still works.
+from discord_bot.cogs._views_combined_join_offer import DYNAMIC_ITEMS as COMBINED_JOIN_OFFER_DYNAMIC_ITEMS
 from discord_bot.cogs._views_report_channel_picker import DYNAMIC_ITEMS as REPORT_CHANNEL_PICKER_DYNAMIC_ITEMS
 from discord_bot.cogs._views_giveaway_wizard import DYNAMIC_ITEMS as GIVEAWAY_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs.discover_players import DYNAMIC_ITEMS as DISCOVER_PLAYERS_DYNAMIC_ITEMS
@@ -464,20 +469,20 @@ class AnimeBotDiscord(commands.Bot):
         await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id, invite_url,
                                        owner_id=guild.owner_id)
         await self._alert_owners_of_join(guild)
-        await self._send_combined_owner_join_dm(guild)
+        # Auto-listing offer + registry-invite consent used to fire as
+        # their own separate owner DM(s) here (first as two separate
+        # messages, then combined into one via offer_combined_join_dm) —
+        # landing as a second/third "shot" right after the combined join
+        # DM above. Now folded onto that same DM's last page instead (see
+        # _views_join_dm.py's join_offer handling), so needs_invite_consent
+        # just gets threaded straight into _send_combined_owner_join_dm.
+        await self._send_combined_owner_join_dm(guild, needs_invite_consent=invite_url is None)
         welcome_cog = self.get_cog("WelcomeCog")
         if welcome_cog:
             await welcome_cog.post_setup_wizard_on_join(guild)
-        # Auto-listing offer + registry-invite consent used to be two
-        # separate owner DMs fired back-to-back here. offer_combined_join_dm
-        # sends them as one message (whichever of the two actually applies)
-        # instead of two separate "shots".
-        try:
-            await offer_combined_join_dm(self, guild, needs_invite_consent=invite_url is None)
-        except Exception:
-            logger.exception(f"[join] combined listing/invite offer failed for guild {guild.id}")
 
-    async def _send_combined_owner_join_dm(self, guild: discord.Guild, *, is_initial_send: bool = True):
+    async def _send_combined_owner_join_dm(self, guild: discord.Guild, *, is_initial_send: bool = True,
+                                            needs_invite_consent: bool = False):
         """Single consolidated DM to the server owner covering everything
         that used to be several separate on-join DMs (quickstart tips,
         automod's log-channel/word-filter notices, ship's onboarding
@@ -566,12 +571,35 @@ class AnimeBotDiscord(commands.Bot):
             except Exception:
                 logger.exception(f"[join-dm] ultra pack section failed for guild {guild.id}")
 
+        # The one-time listing/registry-invite asks (see _views_join_dm.py's
+        # join_offer rendering) — only ever computed on the actual join,
+        # never on join_dm_reminder_loop's resends, so the owner isn't
+        # re-asked "want me to list this?" every time the reminder fires.
+        # claim_auto_listing_offer_send is the same atomic one-shot claim
+        # _views_auto_listing_offer.py always used, so this is still only
+        # ever True the very first time this runs for a guild no matter
+        # how many processes/resends race it.
+        show_listing = False
+        if is_initial_send:
+            try:
+                show_listing = await db.claim_auto_listing_offer_send(guild.id, clone_id)
+            except Exception:
+                logger.exception(f"[join-dm] listing-offer claim failed for guild {guild.id}")
+        show_invite = is_initial_send and bool(needs_invite_consent)
+        owner_join_offer = {"show_listing": show_listing, "show_invite": show_invite} if (show_listing or show_invite) else None
+        # Registry-invite consent stays owner-DM-only (same as the old
+        # standalone _views_registry_invite_consent.py never had a channel
+        # fallback) — the in-server backup copy below only ever offers the
+        # listing half.
+        backup_join_offer = {"show_listing": show_listing, "show_invite": False} if show_listing else None
+
         try:
             from discord_bot.cogs._views_join_dm import _enabled_feature_keys
             enabled = await _enabled_feature_keys(guild.id, clone_id)
             view = build_join_dm_view(
                 guild.id, clone_id=clone_id, feature_keys=feature_keys,
                 intro=intro, title=title, notices=notices, enabled_keys=enabled,
+                guild_name=guild.name, join_offer=owner_join_offer,
             )
             await owner.send(view=view)
             # Only recorded as "sent" once the DM actually goes out — this
@@ -613,6 +641,7 @@ class AnimeBotDiscord(commands.Bot):
                     backup_view = build_join_dm_view(
                         guild.id, clone_id=clone_id, feature_keys=feature_keys,
                         intro=intro, title=title, notices=notices, enabled_keys=enabled,
+                        guild_name=guild.name, join_offer=backup_join_offer,
                     )
                     await channel.send(view=backup_view)
             except (discord.HTTPException, discord.Forbidden, discord.NotFound):
