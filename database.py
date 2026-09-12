@@ -5718,6 +5718,64 @@ class Database:
                 )
             return row is not None
 
+    async def get_payment_by_reference(self, reference: str) -> Optional[Dict]:
+        """Used by the Selar manual-payment web flow (api/selar_redirect.py,
+        api/selar_submit.py, api/selar_status.py) to look a pending payment
+        up by its own reference rather than by (user_id, payment_type) —
+        those endpoints only ever have the reference the buyer's own pay
+        link carried, not a live Discord session to derive the other keys
+        from."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM payment_logs WHERE paystack_reference = $1", reference
+            )
+            return dict(row) if row else None
+
+    async def get_payment_row_by_id(self, payment_id: int) -> Optional[Dict]:
+        """Used by payments_manual.py's persistent Approve/Reject
+        DynamicItems — they only carry payment_id (payment_logs' numeric
+        primary key, since a DynamicItem custom_id needs to be short) in
+        their custom_id, and re-derive everything else (payment_type,
+        buyer, reference, group/chat scoping) fresh from the DB on every
+        click rather than trusting anything held in memory."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM payment_logs WHERE payment_id = $1", payment_id)
+            return dict(row) if row else None
+
+    async def mark_manual_payment_rejected(self, payment_id: int) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE payment_logs SET status = 'rejected' WHERE payment_id = $1 AND status = 'awaiting_review'",
+                payment_id,
+            )
+            return result.endswith(" 1")
+
+    async def claim_manual_payment_for_review(self, reference: str) -> Optional[Dict]:
+        """Atomically flips a manual (Selar) payment from 'pending' to
+        'awaiting_review' — used by api/selar_submit.py so a buyer mashing
+        the web "I've Paid" button (or re-loading /unlock and submitting
+        again) only ever triggers ONE approval DM. Returns the claimed row
+        only for the request that actually performed the flip; every later
+        call for the same reference sees status already != 'pending' and
+        gets None back, so the caller knows not to re-notify admins.
+
+        Requires payment_logs.provider (added by database/migrations/
+        010_selar_manual_payment_web_flow.sql) — run that migration before
+        this function is ever called, or this raises on
+        'column "provider" does not exist'."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE payment_logs SET status = 'awaiting_review' "
+                "WHERE paystack_reference = $1 AND status = 'pending' AND provider = 'selar' "
+                "RETURNING *",
+                reference,
+            )
+            return dict(row) if row else None
+
     async def get_revenue_by_type(self, payment_types: List[str]) -> List[Dict]:
         """Real revenue aggregation off payment_logs (the same table every
         Discord + Telegram paywall already writes to via log_payment) —
@@ -5782,59 +5840,6 @@ class Database:
                 "UPDATE payment_logs SET status = 'completed' WHERE paystack_reference = $1",
                 reference
             )
-
-    async def get_payment_by_reference(self, reference: str) -> Optional[Dict]:
-        """Used by the Selar manual-payment web flow (api/selar_redirect.py,
-        api/selar_submit.py, api/selar_status.py) to look a pending payment
-        up by its own reference rather than by (user_id, payment_type) —
-        those endpoints only ever have the reference the buyer's own pay
-        link carried, not a live Discord session to derive the other keys
-        from."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM payment_logs WHERE paystack_reference = $1", reference
-            )
-            return dict(row) if row else None
-
-    async def get_payment_row_by_id(self, payment_id: int) -> Optional[Dict]:
-        """Used by payments_manual.py's persistent Approve/Reject
-        DynamicItems — they only carry payment_id (payment_logs' numeric
-        primary key, since a DynamicItem custom_id needs to be short) in
-        their custom_id, and re-derive everything else (payment_type,
-        buyer, reference, group/chat scoping) fresh from the DB on every
-        click rather than trusting anything held in memory."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM payment_logs WHERE payment_id = $1", payment_id)
-            return dict(row) if row else None
-
-    async def mark_manual_payment_rejected(self, payment_id: int) -> bool:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            result = await conn.execute(
-                "UPDATE payment_logs SET status = 'rejected' WHERE payment_id = $1 AND status = 'awaiting_review'",
-                payment_id,
-            )
-            return result.endswith(" 1")
-
-    async def claim_manual_payment_for_review(self, reference: str) -> Optional[Dict]:
-        """Atomically flips a manual (Selar) payment from 'pending' to
-        'awaiting_review' — used by api/selar_submit.py so a buyer mashing
-        the web "I've Paid" button (or re-loading /unlock and submitting
-        again) only ever triggers ONE approval DM. Returns the claimed row
-        only for the request that actually performed the flip; every later
-        call for the same reference sees status already != 'pending' and
-        gets None back, so the caller knows not to re-notify admins."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "UPDATE payment_logs SET status = 'awaiting_review' "
-                "WHERE paystack_reference = $1 AND status = 'pending' AND provider = 'selar' "
-                "RETURNING *",
-                reference,
-            )
-            return dict(row) if row else None
 
     # ────────────────────────────────────────────────────────────────────��
     # Discord: multiple premium groups per guild (per clone)
