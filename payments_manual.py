@@ -110,11 +110,22 @@ def _prefilled_selar_link(payment_type: str, user_id: int, guild_id: Optional[in
     return f"{base}{sep}{urlencode(params)}"
 
 
-async def _resolve_approvers(bot: discord.Client, guild_id: Optional[int]) -> list[int]:
+async def _resolve_approvers(bot: discord.Client, guild_id: Optional[int],
+                              payment_type: Optional[str] = None) -> list[int]:
     """Main-bot admins always get the DM. If this payment happened inside
     a guild running a Discord clone, that clone's owner is added too —
-    looked up via the clone's owner_id, not guesswork."""
+    looked up via the clone's owner_id, not guesswork.
+
+    Carve-out: discord_clone registrations (including clone-of-clone ones
+    made through a hosting clone's own "Build Bot" wizard) never add the
+    hosting clone's owner here, regardless of which clone process the
+    registration happened through — that revenue and approval right
+    belongs solely to the main project owner (DISCORD_CLONE_ADMIN_IDS),
+    never to whichever clone owner happened to host the sub-clone's
+    registration."""
     approvers = set(DISCORD_CLONE_ADMIN_IDS)
+    if payment_type == "discord_clone":
+        return list(approvers)
     clone_id = getattr(bot, "clone_id", None)
     if clone_id:
         clone = await db.get_discord_clone(clone_id)
@@ -134,7 +145,7 @@ async def send_manual_payment_approval_dms(bot: discord.Client, payment_id: int,
     keyed by payment_id, the payment_logs primary key, since DynamicItem
     custom_ids need something short and numeric rather than the full
     reference string."""
-    approver_ids = await _resolve_approvers(bot, guild_id)
+    approver_ids = await _resolve_approvers(bot, guild_id, payment_type=payment_type)
     location_line = f"Guild: `{guild_id}`" if guild_id is not None else f"Clone: `#{clone_id}`"
     msg = (
         f"💰 **Manual payment — buyer confirmed on the web**\n"
@@ -260,9 +271,21 @@ async def _notify_buyer(bot: discord.Client, buyer_id: int, payment_type: str, a
 
 
 async def start_manual_payment(interaction: discord.Interaction, payment_type: str,
-                                amount_display: str, guild_id: Optional[int] = None) -> None:
+                                amount_display: str, guild_id: Optional[int] = None,
+                                reference: Optional[str] = None) -> str:
     """Call after interaction.response.defer(ephemeral=True, thinking=True) —
     mirrors start_card_pack_payment's calling convention in views_card_pack.py.
+
+    reference: pass a pre-generated reference when the caller needs to
+    stash payment-type-specific data (e.g. clone_admin.py's
+    store_discord_clone_pending_payment) under the exact same reference
+    this function logs and Selar's redirect later reports back — that
+    write has to happen before this call anyway (so the pending row
+    exists the moment a webhook/redirect fires), which means it can't
+    wait for this function to generate one internally. Defaults to
+    generating one as before when the caller doesn't need to. Returns the
+    reference either way, in case the caller wants to log/store it after
+    the fact instead.
 
     guild_id: pass the guild this purchase is FOR when it's a whole-guild
     unlock (card pack, ultra pack) — None for account-level purchases
@@ -283,7 +306,7 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
     is a plain "I've Paid" button.
     """
     user = interaction.user
-    reference = _reference_for(payment_type, user.id)
+    reference = reference or _reference_for(payment_type, user.id)
     clone_id = getattr(interaction.client, "clone_id", None)
     link = _prefilled_selar_link(payment_type, user.id, guild_id, clone_id, reference)
     if not link:
@@ -291,7 +314,7 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
             "Manual payments aren't set up for this yet — please try again later.", ephemeral=True
         )
         logger.error(f"[manual-pay] no SELAR_PRODUCT_LINKS entry for payment_type={payment_type}")
-        return
+        return reference
 
     await db.log_payment(
         user.id, 0.0, reference, status="pending",
@@ -308,6 +331,7 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
         f"tap **I've Paid** there and it'll be reviewed shortly.",
         view=pay_view, ephemeral=True,
     )
+    return reference
 
 
 # ─────────────────────────────────────────────────────────────────────
