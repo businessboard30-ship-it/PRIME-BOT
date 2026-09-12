@@ -37,6 +37,7 @@ from discord.ext import commands, tasks
 from config import DASHBOARD_BASE_URL
 from database import db
 from discord_bot.cogs._dm_support import GuildOnlyCog
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 
 logger = logging.getLogger(__name__)
 
@@ -299,6 +300,13 @@ def _clone_id_of_bot(bot: commands.Bot):
 class ServerListingCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # These three loops run on every process (main + every clone)
+        # regardless of whether that clone's servers use listings/voting
+        # panels at all — back off the DB poll once a loop's had nothing
+        # relevant for a while. See _adaptive_skip.py.
+        self._voting_panel_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
+        self._dead_invite_gate = AdaptiveSkip(idle_threshold=3, idle_skip=6)
+        self._panel_vote_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
         self._voting_panel_poller.start()
         self._dead_invite_poller.start()
         self._panel_vote_sync.start()
@@ -336,12 +344,15 @@ class ServerListingCog(GuildOnlyCog):
            Leaving it pending on guild=None lets every process retry
            cheaply (a plain cache lookup) until whichever one actually has
            the guild claims it."""
+        if not self._voting_panel_gate.should_run():
+            return
         clone_id = _clone_id_of_bot(self.bot)
         try:
             pending = await db.get_pending_voting_panels(clone_id)
         except Exception:
             logger.exception("[server_listing] failed polling for pending voting panels")
             return
+        self._voting_panel_gate.record(found_something=bool(pending))
         for row in pending:
             guild = self.bot.get_guild(row["guild_id"])
             if guild is None:
@@ -404,15 +415,19 @@ class ServerListingCog(GuildOnlyCog):
         clone) runs this independently and only does anything for
         guild_ids its own gateway cache actually resolves.
         """
+        if not self._dead_invite_gate.should_run():
+            return
         try:
             listings = await db.get_listings_with_invite_code()
         except Exception:
             logger.exception("[server_listing] failed polling for dead invites")
             return
+        relevant_here = False
         for row in listings:
             guild = self.bot.get_guild(row["guild_id"])
             if guild is None:
                 continue  # not this process's guild — leave it for whichever one has it
+            relevant_here = True
             try:
                 invites = await guild.invites()
             except (discord.Forbidden, discord.HTTPException):
@@ -450,6 +465,7 @@ class ServerListingCog(GuildOnlyCog):
                     "[server_listing] couldn't DM owner %s about dead invite for guild %s",
                     getattr(owner, "id", "?"), guild.id,
                 )
+        self._dead_invite_gate.record(found_something=relevant_here)
 
     @_dead_invite_poller.before_loop
     async def _before_dead_invite_poller(self):
@@ -469,11 +485,14 @@ class ServerListingCog(GuildOnlyCog):
         restart) so a guild with no vote change since last tick costs a
         cheap count compare instead of a Discord API call every pass.
         """
+        if not self._panel_vote_gate.should_run():
+            return
         try:
             panels = await db.get_active_voting_panels()
         except Exception:
             logger.exception("[server_listing] failed polling active voting panels for vote-count sync")
             return
+        relevant_here = False
         for row in panels:
             guild_id = row["guild_id"]
             live_count = row["vote_count"]
@@ -482,6 +501,7 @@ class ServerListingCog(GuildOnlyCog):
             guild = self.bot.get_guild(guild_id)
             if guild is None:
                 continue  # not this process's guild — whichever process has it will sync it
+            relevant_here = True
             channel = guild.get_channel(row["voting_channel_id"])
             if channel is None:
                 continue
@@ -531,6 +551,7 @@ class ServerListingCog(GuildOnlyCog):
                 logger.warning(
                     "[server-listing-vote] panel vote-count sync FAILED guild=%s — %s", guild_id, e,
                 )
+        self._panel_vote_gate.record(found_something=relevant_here)
 
     @_panel_vote_sync.before_loop
     async def _before_panel_vote_sync(self):
