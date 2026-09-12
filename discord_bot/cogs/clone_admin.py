@@ -137,7 +137,10 @@ async def _send_registered(interaction: discord.Interaction, result: dict, clone
         f"Its Discord App Directory listing is also set up to add it as a real member "
         f"(not just register commands), so \"Add to Server\" from Discover works correctly too.\n\n"
         f"Once it's in a server, an admin there can run `/createpremium` to set up its own "
-        f"premium group(s) — completely separate from this bot's and from any other clone's.",
+        f"premium group(s) — completely separate from this bot's and from any other clone's.\n\n"
+        f"💰 Want to earn from it? Run `/clonemonetize activate clone_id:{clone_id}` — you can set "
+        f"your own prices for premium features and connect your own payment link with "
+        f"`/clonemonetize setpayment`, so payments from servers using your clone go to you.",
         ephemeral=True,
     )
 
