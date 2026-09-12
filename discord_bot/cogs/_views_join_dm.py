@@ -1041,6 +1041,41 @@ async def _enable_verification(interaction: discord.Interaction, guild: discord.
     return None, None
 
 
+async def _enable_invites(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """Unlike _enable_verification just above, this one CAN reach the real
+    setup wizard from a DM tap — build_wizard_view/_views_invites.py's
+    ChannelSelect and create-channel button both need a live guild-bound
+    interaction to work, but building the view itself doesn't; it's the
+    same view InvitesCog.post_setup_wizard_on_join posts via a plain
+    channel.send(view=...), no interaction involved. So instead of
+    pointing the owner back at a slash command, this posts that exact
+    wizard straight into the guild right now and tells them where to
+    find it — clicking its picker/create-channel button there gives it a
+    normal in-guild interaction, so those work exactly as they do when
+    /invites setup posts them. invoker_id is set to whoever tapped this
+    button (already permission-checked in _FeatureToggleButton.callback
+    above), same invoker-gated pattern check_wizard_access uses
+    everywhere else."""
+    from discord_bot.cogs._views_invites import build_wizard_view, remember_wizard_message
+
+    channel = _default_text_channel(guild)
+    if channel is None:
+        return False, "I couldn't find a channel I'm able to post in — create one and try `/invites setup`."
+
+    config = await db.get_invite_tracker_config(guild.id, clone_id=clone_id)
+    intro = (
+        f"{interaction.user.mention} started this from the setup DM — pick a channel below "
+        f"(or create one) to finish turning on the invite tracker."
+    )
+    view = build_wizard_view(guild.id, clone_id, interaction.user.id, config, intro=intro)
+    try:
+        message = await channel.send(view=view)
+    except (discord.Forbidden, discord.HTTPException):
+        return False, "I couldn't post there — try `/invites setup` directly in the server instead."
+    await remember_wizard_message(guild.id, clone_id, interaction.user.id, message.channel.id, message.id)
+    return True, f"Posted the invite tracker setup in {channel.mention} — head over and pick your channel there."
+
+
 async def _enable_role_setup_wizard(interaction: discord.Interaction, guild: discord.Guild, clone_id):
     """Own personal button (not combined with channels/downloadhub — see
     "channels" and "downloadhub" below for those). Opens the real
@@ -1211,6 +1246,8 @@ FEATURE_TOGGLES = {
                  "Create commonly-useful channels for this server in one tap."),
     "downloadhub": ("Downloadhub", "📥", _enable_downloadhub, None,
                      "Auto-creates a #downloads channel where members submit music/video links or upload files, with playback right in voice."),
+    "invites": ("Invite tracker", "🔗", _enable_invites, None,
+                "See who invited each new member, with a leaderboard and join announcements."),
     "verification": ("Join verification", "🔐", _enable_verification, None,
                       "Anti-raid gate — new members get an Unverified role until they pass a captcha or button click."),
     "reactionroles": ("Reaction roles", "🎭", _enable_reaction_roles, None,
@@ -1233,14 +1270,13 @@ FEATURE_TOGGLES = {
                 "Filter spam, invite links, and mass-mention raids."),
 }
 
-# How many feature buttons show per page. Each feature now takes its own
-# row (row=idx, see build_join_dm_view) so its button stays lined up with
-# that feature's embed instead of sharing a row with others. That leaves
-# row 3 for Prev/Next and row 4 for Remind/Dismiss out of Discord's 5-row
-# cap, so 4 features per page is the max that still fits — freed up from
-# 3 now that the informational notices (word filter status, Ship, etc.)
-# no longer eat vertical space on every page, only the last one.
-FEATURES_PER_PAGE = 4
+# How many feature buttons show per page. Each feature is a
+# discord.ui.Section (button as its accessory) inside the one shared
+# Container, not a literal ActionRow — so unlike the nav row / bottom
+# link row below, these are NOT subject to Discord's 5-action-row cap.
+# The real ceiling here is Components V2's ~40-component-per-message
+# limit and plain message length, not row count.
+FEATURES_PER_PAGE = 5
 
 
 class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_FEATURE_ID_RE.pattern):
