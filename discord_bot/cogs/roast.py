@@ -61,6 +61,7 @@ from discord.ext import commands, tasks
 from config import DISCORD_CLONE_ADMIN_IDS
 from database import db
 from discord_bot.cogs._dm_support import GuildOnlyCog
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 
 logger = logging.getLogger(__name__)
 
@@ -1291,6 +1292,11 @@ class RoastCog(GuildOnlyCog):
         # not once per message.
         self._last_activity_write: dict[tuple, float] = {}
         self._ACTIVITY_WRITE_MIN_INTERVAL_SECONDS = 120
+        # See _adaptive_skip.py — these two sub-checks back off
+        # independently once a clone has had nothing stale to expire /
+        # nothing actually triggering for a while.
+        self._expire_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
+        self._trigger_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
 
     def _pick_fresh_line(self, battle_id: int, bank: list[str], used_map: dict[int, set[str]]) -> str:
         used = used_map.setdefault(battle_id, set())
@@ -1623,9 +1629,12 @@ class RoastCog(GuildOnlyCog):
         await self.bot.wait_until_ready()
 
     async def _expire_stale_challenges(self):
+        if not self._expire_gate.should_run():
+            return
         rows = await db.fetch(
             "SELECT * FROM discord_roast_battles WHERE status IN ('pending', 'awaiting_approval', 'approving') AND expires_at <= NOW()"
         )
+        self._expire_gate.record(found_something=bool(rows))
         for battle in rows:
             await db.execute(
                 "UPDATE discord_roast_battles SET status = 'expired', resolved_at = NOW() WHERE id = $1",
@@ -1645,6 +1654,8 @@ class RoastCog(GuildOnlyCog):
                         pass
 
     async def _check_triggers(self):
+        if not self._trigger_gate.should_run():
+            return
         clone_id = _clone_id_of(self.bot)
         now = datetime.now(timezone.utc)
 
@@ -1665,6 +1676,13 @@ class RoastCog(GuildOnlyCog):
             clone_id,
         )
         activity_by_guild = {row["guild_id"]: row for row in activity_rows}
+        # Gate on whether this clone has ANY tracked chat activity for
+        # roast at all — not on whether a proposal fires this exact tick
+        # (that's naturally False most ticks even on a busy server, due
+        # to cooldowns, so gating on that would wrongly back off active
+        # clones). Zero activity rows means nobody's using roast on this
+        # clone yet, which is safe to slow down.
+        self._trigger_gate.record(found_something=bool(activity_rows))
 
         busy_guild_ids = {
             row["guild_id"]
