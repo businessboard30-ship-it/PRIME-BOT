@@ -40,6 +40,7 @@ from discord.ext import commands, tasks
 
 from config import DISCORD_CLONE_ADMIN_IDS
 from database import db
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 
 logger = logging.getLogger(__name__)
 
@@ -696,6 +697,10 @@ class BumpChannelSelectView(discord.ui.View):
 class BumpCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # A clone with an empty bump queue / no reminders due shouldn't
+        # keep hitting the DB every tick forever — see _adaptive_skip.py.
+        self._worker_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
+        self._reminder_gate = AdaptiveSkip(idle_threshold=5, idle_skip=8)
         # Registers the custom_id regex patterns once, globally — this is
         # what makes the ad-card buttons keep responding on old messages
         # after a restart, with no per-listing state kept in memory (see
@@ -1082,12 +1087,15 @@ class BumpCog(commands.Cog):
 
     @tasks.loop(seconds=WORKER_TICK_SECONDS)
     async def bump_worker(self):
+        if not self._worker_gate.should_run():
+            return
         clone_id = _clone_id_of(self.bot)
         try:
             due = await db.bump_get_due_queue(clone_id, limit=MAX_SENDS_PER_TICK)
         except Exception:
             logger.exception("[bump] failed to fetch due queue")
             return
+        self._worker_gate.record(found_something=bool(due))
 
         for row in due:
             if self.bot.get_guild(row["target_guild_id"]) is None:
@@ -1122,6 +1130,8 @@ class BumpCog(commands.Cog):
 
     @tasks.loop(seconds=REMINDER_TICK_SECONDS)
     async def bump_reminder_worker(self):
+        if not self._reminder_gate.should_run():
+            return
         clone_id = _clone_id_of(self.bot)
         cooldown_seconds = await self._cooldown_seconds()
         try:
@@ -1129,6 +1139,7 @@ class BumpCog(commands.Cog):
         except Exception:
             logger.exception("[bump] failed to fetch listings needing a reminder")
             return
+        self._reminder_gate.record(found_something=bool(due))
 
         for listing in due:
             guild = self.bot.get_guild(listing["guild_id"])
