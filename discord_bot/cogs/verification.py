@@ -154,12 +154,54 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
 
         # Slot it directly below the bot's top role so the bot can always
         # assign/remove it later, regardless of where else it ends up.
+        #
+        # A single role.edit(position=...) call used to be used here —
+        # Discord's single-role position PATCH is well-known to be
+        # unreliable/racy (it computes the new order against a snapshot
+        # that can already be stale by the time it's applied, especially
+        # right after create_role added a new row to that same list), so
+        # this silently no-op'd or landed the role in the wrong slot more
+        # often than it should have. That's exactly what produced the
+        # confusing "I just created this role and now you're telling me
+        # it's above me" report: the auto-create step created the role,
+        # its own reposition attempt quietly failed or under/over-shot,
+        # and the wizard's Finish-step check (further down, comparing
+        # unverified_role.position to guild.me.top_role.position) is what
+        # actually caught it — after the fact, with no obvious link back
+        # to the button that just ran. guild.edit_role_positions() is
+        # Discord's documented reliable path (bulk reorder, not a single
+        # role's position field), so use that instead.
+        #
+        # Also guard the case no reposition can ever fix: if the bot's
+        # OWN top role is already sitting at (or just above) @everyone,
+        # there's no slot below it to put anything — no amount of
+        # repositioning the new role changes that. Tell the owner to
+        # move the BOT's role up instead of quietly creating a
+        # role that's doomed to end up misplaced.
+        if bot_member.top_role.position <= 1:
+            wizard.unverified_role_id = role.id
+            wizard.auto_created_role_id = role.id
+            wizard._creating_role = False
+            await wizard.refresh(interaction)
+            await interaction.followup.send(
+                f"✅ Created {role.mention}, but my own highest role is already at (or near) the "
+                "bottom of your server's role list, so there's no room to slot this — or any role "
+                "— below me. Go to **Server Settings → Roles** and drag my bot's role up above "
+                "**Unverified** (and above whatever else you want me to manage), then run "
+                "/setupverification again.",
+                ephemeral=True,
+            )
+            return
+
+        target_position = bot_member.top_role.position - 1
         try:
-            target_position = max(1, bot_member.top_role.position - 1)
-            await role.edit(position=target_position)
+            await guild.edit_role_positions(positions={role: target_position})
         except discord.HTTPException:
-            # Non-fatal — the role still works, it just may need manual
-            # repositioning if it ended up above the bot's top role.
+            # Non-fatal — the role still works for permission overwrites,
+            # it just may need manual repositioning if it ended up above
+            # the bot's top role. The Finish-step check below (and this
+            # button's own confirmation message) still catch that case
+            # and tell the owner what to do about it.
             logger.warning(
                 "verification: auto-created Unverified role %s in guild %s but failed to reposition it",
                 role.id, guild.id,
@@ -169,6 +211,22 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
         wizard.auto_created_role_id = role.id
         wizard._creating_role = False
         await wizard.refresh(interaction)
+
+        # Re-fetch the role rather than trusting the pre-edit `role`
+        # object's cached position — confirms the reposition actually
+        # landed instead of just assuming edit_role_positions succeeded,
+        # so the owner hears about a misplaced role NOW, from the button
+        # that caused it, instead of only later at the Finish step.
+        moved_role = guild.get_role(role.id) or role
+        if moved_role.position >= bot_member.top_role.position:
+            await interaction.followup.send(
+                f"⚠️ Created {role.mention}, but I couldn't slot it below my own role — it's still "
+                "at or above me, so I won't be able to assign/remove it. Move it below my role in "
+                "**Server Settings → Roles**, then run /setupverification again.",
+                ephemeral=True,
+            )
+            return
+
         await interaction.followup.send(
             f"✅ Created {role.mention} and selected it as your Unverified role.",
             ephemeral=True,
