@@ -60,10 +60,20 @@ class ChannelSelect(discord.ui.ChannelSelect):
         super().__init__(
             placeholder="2. Choose the #verify channel",
             channel_types=[discord.ChannelType.text],
+            # default_values pre-populates the picker with whatever's
+            # already chosen — without this, Discord always renders a
+            # select back at its bare placeholder after every
+            # edit_message, even though the bot already has a value for
+            # it internally. That mismatch is exactly what made this
+            # look like "nothing was picked, pick it again" after an
+            # auto-create or after a value carried over from a previous
+            # /setupverification run.
+            default_values=[discord.Object(id=wizard.channel_id)] if wizard.channel_id else [],
         )
 
     async def callback(self, interaction: discord.Interaction):
         self.wizard.channel_id = self.values[0].id
+        self.default_values = self.values
         await self.wizard.refresh(interaction)
 
 
@@ -98,12 +108,17 @@ class AutoCreateVerifyChannelButton(discord.ui.Button):
             return
 
         # Reuse an earlier auto-create from this same session rather than
-        # spawning a duplicate #verify channel on a double click.
+        # spawning a duplicate #verify channel on a double click. Still
+        # refreshes the picker (not just an ephemeral note) so the
+        # dropdown visibly shows the reused channel instead of looking
+        # like nothing's selected.
         if wizard.auto_created_channel_id:
             existing = interaction.guild.get_channel(wizard.auto_created_channel_id)
             if existing is not None:
                 wizard.channel_id = existing.id
-                await interaction.response.send_message(
+                wizard.channel_select.default_values = [existing]
+                await wizard.refresh(interaction)
+                await interaction.followup.send(
                     f"Already created {existing.mention} earlier — reusing it instead of making a duplicate.",
                     ephemeral=True,
                 )
@@ -119,7 +134,9 @@ class AutoCreateVerifyChannelButton(discord.ui.Button):
         if existing_by_name is not None:
             wizard.channel_id = existing_by_name.id
             wizard.auto_created_channel_id = existing_by_name.id
-            await interaction.response.send_message(
+            wizard.channel_select.default_values = [existing_by_name]
+            await wizard.refresh(interaction)
+            await interaction.followup.send(
                 f"A channel called {existing_by_name.mention} already exists in this server — "
                 "reusing it instead of creating a duplicate.",
                 ephemeral=True,
@@ -148,6 +165,7 @@ class AutoCreateVerifyChannelButton(discord.ui.Button):
 
         wizard.channel_id = channel.id
         wizard.auto_created_channel_id = channel.id
+        wizard.channel_select.default_values = [channel]
         wizard._creating_channel = False
         await wizard.refresh(interaction)
         await interaction.followup.send(
@@ -158,10 +176,17 @@ class AutoCreateVerifyChannelButton(discord.ui.Button):
 class UnverifiedRoleSelect(discord.ui.RoleSelect):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
-        super().__init__(placeholder="3. Choose the Unverified role")
+        super().__init__(
+            placeholder="3. Choose the Unverified role",
+            # Same reasoning as ChannelSelect above — pre-populate so a
+            # carried-over or auto-created role shows as actually
+            # selected instead of resetting to the bare placeholder.
+            default_values=[discord.Object(id=wizard.unverified_role_id)] if wizard.unverified_role_id else [],
+        )
 
     async def callback(self, interaction: discord.Interaction):
         self.wizard.unverified_role_id = self.values[0].id
+        self.default_values = self.values
         await self.wizard.refresh(interaction)
 
 
@@ -186,12 +211,16 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
             return
 
         # If we already auto-created a role earlier in this session, reuse it
-        # instead of spawning a duplicate "Unverified" role.
+        # instead of spawning a duplicate "Unverified" role. Refreshes the
+        # picker (not just an ephemeral note) so it visibly shows the
+        # reused role instead of looking unselected.
         if wizard.auto_created_role_id:
             existing = interaction.guild.get_role(wizard.auto_created_role_id)
             if existing is not None:
                 wizard.unverified_role_id = existing.id
-                await interaction.response.send_message(
+                wizard.unverified_role_select.default_values = [existing]
+                await wizard.refresh(interaction)
+                await interaction.followup.send(
                     f"Already created {existing.mention} earlier — reusing it instead of making a duplicate.",
                     ephemeral=True,
                 )
@@ -210,7 +239,9 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
         if existing_by_name is not None:
             wizard.unverified_role_id = existing_by_name.id
             wizard.auto_created_role_id = existing_by_name.id
-            await interaction.response.send_message(
+            wizard.unverified_role_select.default_values = [existing_by_name]
+            await wizard.refresh(interaction)
+            await interaction.followup.send(
                 f"A role called {existing_by_name.mention} already exists in this server — "
                 "reusing it instead of creating a duplicate.",
                 ephemeral=True,
@@ -269,6 +300,7 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
         if bot_member.top_role.position <= 1:
             wizard.unverified_role_id = role.id
             wizard.auto_created_role_id = role.id
+            wizard.unverified_role_select.default_values = [role]
             wizard._creating_role = False
             await wizard.refresh(interaction)
             await interaction.followup.send(
@@ -297,6 +329,7 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
 
         wizard.unverified_role_id = role.id
         wizard.auto_created_role_id = role.id
+        wizard.unverified_role_select.default_values = [role]
         wizard._creating_role = False
         await wizard.refresh(interaction)
 
@@ -324,10 +357,14 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
 class VerifiedRoleSelect(discord.ui.RoleSelect):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
-        super().__init__(placeholder="4. (Optional) Choose a Verified role", min_values=0, max_values=1)
+        super().__init__(
+            placeholder="4. (Optional) Choose a Verified role", min_values=0, max_values=1,
+            default_values=[discord.Object(id=wizard.verified_role_id)] if wizard.verified_role_id else [],
+        )
 
     async def callback(self, interaction: discord.Interaction):
         self.wizard.verified_role_id = self.values[0].id if self.values else None
+        self.default_values = self.values
         await self.wizard.refresh(interaction)
 
 
@@ -422,9 +459,17 @@ class WizardView(discord.ui.View):
         self.auto_created_channel_id = None
         self._creating_role = False
         self._creating_channel = False
+        # channel_select/unverified_role_select kept as direct attributes
+        # (not just added via add_item) so AutoCreateVerifyChannelButton /
+        # AutoCreateUnverifiedButton can update their .default_values
+        # after creating/reusing an entity — that's what makes the
+        # picker visibly show the auto-created choice instead of
+        # resetting to its placeholder on the next refresh.
+        self.channel_select = ChannelSelect(self)
+        self.unverified_role_select = UnverifiedRoleSelect(self)
         self.add_item(ModeSelect(self))
-        self.add_item(ChannelSelect(self))
-        self.add_item(UnverifiedRoleSelect(self))
+        self.add_item(self.channel_select)
+        self.add_item(self.unverified_role_select)
         self.add_item(VerifiedRoleSelect(self))
         self.add_item(AutoCreateUnverifiedButton(self))
         self.add_item(AutoCreateVerifyChannelButton(self))
