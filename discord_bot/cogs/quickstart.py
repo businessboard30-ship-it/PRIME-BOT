@@ -23,6 +23,7 @@ do" pointer covering several unrelated features in one message.
 import logging
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from database import db
@@ -99,6 +100,43 @@ class QuickstartCog(commands.Cog):
             logger.info(f"[v0] Channel-suggestions follow-up skipped for guild {guild.id}: {e}")
         except Exception as e:
             logger.error(f"[v0] Channel-suggestions follow-up failed for guild {guild.id}: {e}")
+
+    @app_commands.command(name="start", description="Get the bot's setup quickstart sent to your DMs again")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def start(self, interaction: discord.Interaction):
+        """On-demand resend of the exact same combined join DM
+        (bot.py's _send_combined_owner_join_dm) that landed when the bot
+        first joined — for whoever dismissed it, never got it (DMs were
+        closed at the time), or just wants the "Turn on: ..." buttons
+        again without hunting for the original message. Built from
+        _build_join_dm_content/_build_join_dm_view (bot.py) — the same
+        two helpers the real on-join send and the reminder loop use — so
+        this can never render a stale or different version of that DM.
+
+        Deliberately skips the one-time listing/registry-invite offer
+        (join_offer=None below): those are real-join-only asks, already
+        answered or already shown once for this guild, and re-asking on
+        every manual /start would defeat the whole point of them being
+        one-time. Not gated to just the guild owner — anyone with Manage
+        Server can pull this up, same as every other feature button in
+        the DM already re-checks Manage Server per click regardless of
+        who originally received it."""
+        await interaction.response.defer(ephemeral=True)
+        clone_id = getattr(self.bot, "clone_id", None)
+        content = await self.bot._build_join_dm_content(interaction.guild, clone_id)
+        view = await self.bot._build_join_dm_view(interaction.guild, clone_id, content)
+        try:
+            await interaction.user.send(view=view)
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send(
+                "I couldn't DM you — check that this server allows direct messages from server members "
+                "(Privacy Settings), then try again.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send("Sent! Check your DMs. 📬", ephemeral=True)
 
     def _build_embed(self, guild: discord.Guild, intro: str) -> discord.Embed:
         embed = discord.Embed(
