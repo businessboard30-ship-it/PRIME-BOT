@@ -67,6 +67,94 @@ class ChannelSelect(discord.ui.ChannelSelect):
         await self.wizard.refresh(interaction)
 
 
+class AutoCreateVerifyChannelButton(discord.ui.Button):
+    """Mirrors AutoCreateUnverifiedButton below (same double-tap guard,
+    same reuse-if-it-already-exists check, same "no room below me"
+    guard) but for the #verify channel side of setup instead of the
+    role side — the wizard previously only let you pick an EXISTING
+    channel via ChannelSelect above, with no way to create one in one
+    tap the way the Unverified role already could. Shares row 4 with
+    AutoCreateUnverifiedButton/FinishButton/CancelButton — that row
+    still has room for a 4th button (Discord allows up to 5 per row),
+    and every select above already occupies its own full row (0-3), so
+    this can't go anywhere else without exceeding Discord's 5-row cap
+    per message."""
+
+    def __init__(self, wizard: "WizardView"):
+        self.wizard = wizard
+        super().__init__(
+            label="✨ Auto-create #verify channel",
+            style=discord.ButtonStyle.primary,
+            row=4,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        wizard = self.wizard
+
+        if wizard._creating_channel:
+            await interaction.response.send_message(
+                "Already creating the channel — one sec, don't tap again.", ephemeral=True
+            )
+            return
+
+        # Reuse an earlier auto-create from this same session rather than
+        # spawning a duplicate #verify channel on a double click.
+        if wizard.auto_created_channel_id:
+            existing = interaction.guild.get_channel(wizard.auto_created_channel_id)
+            if existing is not None:
+                wizard.channel_id = existing.id
+                await interaction.response.send_message(
+                    f"Already created {existing.mention} earlier — reusing it instead of making a duplicate.",
+                    ephemeral=True,
+                )
+                return
+            # Deleted out-of-band since — fall through and create a fresh one.
+            wizard.auto_created_channel_id = None
+
+        # Cross-session guard, same reasoning as the role side: catches
+        # re-running /setupverification (a brand new WizardView with no
+        # memory of the earlier click) — source of truth is the guild
+        # itself, not this view.
+        existing_by_name = discord.utils.get(interaction.guild.text_channels, name="verify")
+        if existing_by_name is not None:
+            wizard.channel_id = existing_by_name.id
+            wizard.auto_created_channel_id = existing_by_name.id
+            await interaction.response.send_message(
+                f"A channel called {existing_by_name.mention} already exists in this server — "
+                "reusing it instead of creating a duplicate.",
+                ephemeral=True,
+            )
+            return
+
+        wizard._creating_channel = True
+        guild = interaction.guild
+
+        try:
+            channel = await guild.create_text_channel(
+                "verify", reason=f"Verification setup by {interaction.user} (auto-created)",
+            )
+        except discord.Forbidden:
+            wizard._creating_channel = False
+            await interaction.response.send_message(
+                "I don't have permission to create channels here — grant me **Manage Channels**, "
+                "or pick an existing channel from the dropdown instead.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as e:
+            wizard._creating_channel = False
+            await interaction.response.send_message(f"Couldn't create the channel: {e}", ephemeral=True)
+            return
+
+        wizard.channel_id = channel.id
+        wizard.auto_created_channel_id = channel.id
+        wizard._creating_channel = False
+        await wizard.refresh(interaction)
+        await interaction.followup.send(
+            f"✅ Created {channel.mention} and selected it as your verify channel.", ephemeral=True,
+        )
+
+
 class UnverifiedRoleSelect(discord.ui.RoleSelect):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
@@ -331,12 +419,15 @@ class WizardView(discord.ui.View):
         self.unverified_role_id = current.get("unverified_role_id")
         self.verified_role_id = current.get("verified_role_id")
         self.auto_created_role_id = None
+        self.auto_created_channel_id = None
         self._creating_role = False
+        self._creating_channel = False
         self.add_item(ModeSelect(self))
         self.add_item(ChannelSelect(self))
         self.add_item(UnverifiedRoleSelect(self))
         self.add_item(VerifiedRoleSelect(self))
         self.add_item(AutoCreateUnverifiedButton(self))
+        self.add_item(AutoCreateVerifyChannelButton(self))
         self.add_item(FinishButton(self))
         self.add_item(CancelButton(self))
 
