@@ -5,7 +5,7 @@ a self-service Bots Archive & Directory, Discord bot-cloning, and an ads/AI
 marketplace — all wired into a single `discord.py` application.
 
 **Status:** Live | **Platform:** Discord (gateway) | **Host:** Railway (or any
-always-on process host — NOT Vercel/serverless, see note below)
+always-on process host — NOT Vercel/serverless, see note below)1
 
 ---
 
