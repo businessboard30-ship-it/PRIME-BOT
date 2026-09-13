@@ -33,6 +33,7 @@ import re
 import discord
 
 import config as app_config
+from payments_manual import start_manual_payment
 
 LOOP_LABELS = {"off": "loop off", "track": "loop track", "queue": "loop queue"}
 LOOP_ORDER = ["off", "track", "queue"]
@@ -100,10 +101,7 @@ def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> disco
         browse_row.add_item(_browse_button(guild_id, clone_id))
         container.add_item(browse_row)
         pro_row = discord.ui.ActionRow()
-        pro_row.add_item(discord.ui.Button(
-            label=f"Upgrade to Pro — {app_config.MUSIC_PRO_PRICE_LABEL}", emoji="⭐",
-            style=discord.ButtonStyle.link, url=app_config.music_pro_payment_url_for_guild(guild_id),
-        ))
+        pro_row.add_item(MusicProUpgradeButton(guild_id, clone_id))
         container.add_item(pro_row)
         view.add_item(container)
         return view
@@ -160,10 +158,7 @@ def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> disco
     # payments can be matched back to a server — see
     # music_pro_payment_url_for_guild in config.py.
     pro_row = discord.ui.ActionRow()
-    pro_row.add_item(discord.ui.Button(
-        label=f"Upgrade to Pro — {app_config.MUSIC_PRO_PRICE_LABEL}", emoji="⭐",
-        style=discord.ButtonStyle.link, url=app_config.music_pro_payment_url_for_guild(guild_id),
-    ))
+    pro_row.add_item(MusicProUpgradeButton(guild_id, clone_id))
     items.append(pro_row)
 
     for item in items:
@@ -366,6 +361,40 @@ class MusicVolumeButton(discord.ui.DynamicItem[discord.ui.Button], template=_vol
         await _rerender(interaction, self.guild_id, self.clone_id)
 
 
+class MusicProUpgradeButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^musicpanel_upgradepro:(\d+):(-?\d+|-)$"):
+    """Replaces the old plain link button (straight to
+    music_pro_payment_url_for_guild, no pending-payment record at all) —
+    this one logs a 'pending' payment_logs row via start_manual_payment
+    BEFORE handing the buyer the Selar link, the same way every other
+    manual-payment product in this repo works, so the web /unlock
+    confirmation flow (OAuth sign-in + "I've Paid") has something to match
+    the buyer against. See payments_manual.py's UNLOCK_HANDLERS["music_pro"]."""
+
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        clone_part = "-" if clone_id is None else str(clone_id)
+        super().__init__(discord.ui.Button(
+            label=f"Upgrade to Pro — {app_config.MUSIC_PRO_PRICE_LABEL}", emoji="⭐",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"musicpanel_upgradepro:{guild_id}:{clone_part}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id = int(match.group(1))
+        clone_part = match.group(2)
+        clone_id = None if clone_part == "-" else int(clone_part)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await start_manual_payment(
+            interaction, "music_pro", app_config.MUSIC_PRO_PRICE_LABEL,
+            guild_id=self.guild_id,
+        )
+
+
 class MusicLoopButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("loop")):
     def __init__(self, guild_id: int, clone_id, mode: str = "off"):
         self.guild_id = guild_id
@@ -425,5 +454,5 @@ async def refresh_posted_panel(bot, guild_id: int, clone_id=None) -> None:
 DYNAMIC_ITEMS = (
     MusicPauseResumeButton, MusicSkipButton, MusicStopButton,
     MusicQueueButton, MusicLoopButton, MusicReplayButton,
-    MusicShuffleButton, MusicVolumeButton,
+    MusicShuffleButton, MusicVolumeButton, MusicProUpgradeButton,
 )
