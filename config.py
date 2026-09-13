@@ -290,11 +290,8 @@ SELAR_PRODUCT_LINKS = {
     "welcome_card_pack": "https://selar.com/t3417c1292",
     "ultra_welcome_pack": "https://selar.com/147d44d7fw",
     "discord_clone_monetization": "https://selar.com/3ic91865s1",
-    # TODO: replace with the real Selar product checkout URL once that
-    # product is created on Selar at CUSTOM_ROLE_FEE_USD — the feature is
-    # non-functional (falls into start_manual_payment's "not set up yet"
-    # branch) until this is a real link.
-    "custom_role": "https://selar.com/REPLACE_ME_custom_role",
+    # Real $3.99 Custom Role product on Selar.
+    "custom_role": "https://selar.com/25619x5078",
 }
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):
