@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "17"
+SCHEMA_VERSION = "18"
 # History (why this matters): "9" -> "10" fixed report_notify_config's
 # dm_user_id column and server_listing_votes' unique-index migration —
 # both had been sitting in _create_tables for a while but never actually
@@ -175,6 +175,16 @@ SCHEMA_VERSION = "17"
 # discord_xp.boost_pitched) for the per-user paid XP boost — see
 # leveling-boost-build-prompt.md §2 and payments_manual.py's
 # UNLOCK_HANDLERS["xp_boost"]. Same bump-or-it-never-runs trap as above.
+# "17" -> "18": the live DB's admin_config.schema_version row was already
+# stamped '17' from an earlier deploy, before 013_xp_boost.sql's CREATE
+# TABLE actually landed in _create_tables — so init() saw current
+# version == SCHEMA_VERSION and skipped the DDL pass forever, and
+# discord_xp_boosts was never created (asyncpg.exceptions.
+# UndefinedTableError in leveling.py's on_message -> get_active_xp_boost).
+# This bump is the fix: it's the one-line, no-manual-SQL way to force
+# every process's next cold start to re-run the whole (idempotent)
+# _create_tables pass, which includes 013_xp_boost.sql, then re-stamp
+# schema_version='18'. Nothing else changed in this pass.
 # Rule going forward: ANY new CREATE TABLE / ALTER TABLE / CREATE INDEX
 # added to _create_tables MUST come with a version bump in the same
 # change, or it's dead code that silently never executes.
