@@ -13,7 +13,9 @@ member hits level 10 — see its own docstring for the interpolation model.
 import io
 import logging
 import math
+import os
 import random
+from functools import lru_cache
 from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -23,7 +25,43 @@ logger = logging.getLogger(__name__)
 CARD_WIDTH = 900
 CARD_HEIGHT = 300
 AVATAR_SIZE = 180
-FONT_PATH: Optional[str] = None  # e.g. "assets/fonts/Inter-Bold.ttf"
+
+_FONT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "assets", "fonts"))
+
+FONT_PATH: Optional[str] = os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf")
+
+# Fallback chain for user-controlled text (display names, role names) —
+# see draw_text_fallback() below. Previously every draw.text() call for a
+# username/role name went through _load_font(), which (with FONT_PATH
+# left unset) fell back all the way to Pillow's built-in bitmap font.
+# That font only really covers ASCII: any member with a "fancy" Discord
+# name (fullwidth characters, mathematical-alphanumeric bold/script/
+# fraktur styles, Cyrillic look-alikes, CJK, symbols, zalgo, etc.) came
+# out as a row of tofu boxes on the level-up card / leaderboard — see the
+# lamback studioz leaderboard screenshot. It also looked soft/blurry at
+# the sizes this file draws at, since the bitmap font isn't vector/hinted
+# for arbitrary sizes the way a real TTF is.
+#
+# Order matters: each font is tried in turn per-character, first match
+# wins, so put the best-looking / most narrowly-scoped font first and
+# the broadest (but blockiest) catch-all last.
+#   1. DejaVuSans-Bold  — crisp primary face: Latin/Latin-Extended,
+#      Cyrillic, Greek, Armenian, Georgian, IPA, most punctuation/arrows.
+#   2. FreeSansBold     — a handful of blocks DejaVu doesn't cover
+#      (circled letters, some extra symbol ranges).
+#   3. unifont.otf      — GNU Unifont, near-complete BMP coverage
+#      (CJK unified ideographs, fullwidth forms, most remaining symbol
+#      blocks) — blocky/pixel-style, but a real glyph beats a tofu box.
+#   4. unifont_upper.otf — Unifont's supplementary-plane half: covers the
+#      Mathematical Alphanumeric Symbols block (the bold/script/fraktur/
+#      double-struck "fancy font" styles people paste into Discord
+#      names) plus misc supplementary symbols/emoji shapes.
+_FALLBACK_FONT_FILES = [
+    "DejaVuSans-Bold.ttf",
+    "FreeSansBold.ttf",
+    "unifont.otf",
+    "unifont_upper.otf",
+]
 
 
 def _load_font(size: int):
@@ -37,6 +75,101 @@ def _load_font(size: int):
         return ImageFont.load_default(size=size)
     except TypeError:
         return ImageFont.load_default()
+
+
+@lru_cache(maxsize=None)
+def _fallback_cmaps():
+    """Loads each fallback font's codepoint->glyph map once (via
+    fonttools) so per-character "does this font have this glyph" checks
+    during rendering are a plain dict lookup, not a font re-parse.
+    Returns a list of (font_path, cmap_dict) in priority order; a font
+    that fails to load (missing file, corrupt, fonttools unavailable) is
+    just skipped, so this always degrades gracefully back toward
+    whatever prefix of the chain does load."""
+    chain = []
+    try:
+        from fontTools.ttLib import TTFont as _TTFont
+    except Exception as e:
+        logger.warning(f"[level_card] fonttools unavailable, no font fallback chain: {e}")
+        return chain
+    for filename in _FALLBACK_FONT_FILES:
+        path = os.path.join(_FONT_DIR, filename)
+        try:
+            cmap = _TTFont(path, fontNumber=0, lazy=True).getBestCmap()
+        except Exception as e:
+            logger.warning(f"[level_card] couldn't load fallback font {filename!r}: {e}")
+            continue
+        chain.append((path, cmap))
+    return chain
+
+
+@lru_cache(maxsize=None)
+def _font_at(path: str, size: int):
+    return ImageFont.truetype(path, size)
+
+
+def _font_for_char(ch: str, size: int):
+    """First font in the fallback chain that actually has this
+    character's glyph, else the primary font (Pillow will draw its own
+    .notdef box for it — only happens for codepoints truly outside all
+    four bundled fonts, which is rare)."""
+    cp = ord(ch)
+    chain = _fallback_cmaps()
+    for path, cmap in chain:
+        if cp in cmap:
+            return _font_at(path, size)
+    if chain:
+        return _font_at(chain[0][0], size)
+    return _load_font(size)
+
+
+def draw_text_fallback(draw: ImageDraw.ImageDraw, xy: tuple, text: str, size: int, fill) -> float:
+    """Like draw.text(), but for user-controlled strings (display names,
+    role names): walks the fallback chain per character and draws
+    consecutive same-font characters together as one run, so mixed-script
+    names (plain Latin + fullwidth/Cyrillic-lookalike/mathematical-
+    alphanumeric/CJK/etc.) render as real glyphs across the whole string
+    instead of just the ASCII portion. Returns the x position immediately
+    after the drawn text, so callers can keep laying out content to its
+    right without a separate textlength_fallback() call.
+
+    Static, app-authored labels ("LEVEL UP!", "Level {n}", "XP", etc.)
+    don't need this — they're plain ASCII and use _load_font()/draw.text()
+    directly, same as before.
+    """
+    if not text:
+        return xy[0]
+    x, y = xy
+    run_start = 0
+    run_font = _font_for_char(text[0], size)
+    for i in range(1, len(text) + 1):
+        next_font = _font_for_char(text[i], size) if i < len(text) else None
+        if next_font is not run_font:
+            run_text = text[run_start:i]
+            draw.text((x, y), run_text, font=run_font, fill=fill)
+            x += draw.textlength(run_text, font=run_font)
+            run_start = i
+            run_font = next_font
+    return x
+
+
+def _textlength_fallback(draw: ImageDraw.ImageDraw, text: str, size: int) -> float:
+    """Total rendered width of `text` under draw_text_fallback's per-
+    character font selection — same run-splitting logic, just measuring
+    instead of drawing. Used by _fit_text so the shrink-to-fit width
+    check matches what will actually be drawn."""
+    if not text:
+        return 0.0
+    total = 0.0
+    run_start = 0
+    run_font = _font_for_char(text[0], size)
+    for i in range(1, len(text) + 1):
+        next_font = _font_for_char(text[i], size) if i < len(text) else None
+        if next_font is not run_font:
+            total += draw.textlength(text[run_start:i], font=run_font)
+            run_start = i
+            run_font = next_font
+    return total
 
 
 def _hex_to_rgb(hex_color: str) -> tuple:
@@ -80,8 +213,9 @@ def render_level_card(avatar_bytes: bytes, username: str, new_level: int,
     # "LEVEL UP!" tag
     draw.text((text_x, 55), "LEVEL UP!", font=_load_font(26), fill=accent_rgb)
 
-    # Username
-    draw.text((text_x, 90), username, font=_load_font(44), fill=(255, 255, 255))
+    # Username — fallback-aware so non-Latin/"fancy" characters in the
+    # member's display name render as real glyphs, not tofu boxes.
+    draw_text_fallback(draw, (text_x, 90), username, 44, (255, 255, 255))
 
     # New level, large
     draw.text((text_x, 148), f"Level {new_level}", font=_load_font(34), fill=(255, 255, 255))
@@ -297,7 +431,7 @@ def render_level_card_evolved(avatar_bytes: bytes, username: str, new_level: int
     # transition from render_level_card -> render_level_card_evolved at
     # level 10 doesn't visually jump around.
     draw.text((text_x, 40), "LEVEL UP!", font=_load_font(24), fill=ring_rgb)
-    draw.text((text_x, 72), username, font=_load_font(38), fill=(255, 255, 255))
+    draw_text_fallback(draw, (text_x, 72), username, 38, (255, 255, 255))
 
     # Big "Lv. N" + stage label stacked underneath, matching the reference
     # sheet's "Lv. 10 / AWAKENED" grouping.
@@ -419,16 +553,19 @@ _LB_RANK_COLORS = {1: (255, 205, 90), 2: (200, 205, 215), 3: (205, 140, 90)}
 
 def _fit_text(draw: ImageDraw.ImageDraw, text: str, max_width: int, font_size: int, min_size: int = 12) -> tuple:
     """Shrinks font size until text fits max_width, same idea as
-    welcome_card.py's _fit_text_to_box but returning (font, text) for a
+    welcome_card.py's _fit_text_to_box but returning (size, text) for a
     single line rather than wrapping — leaderboard rows are one line each,
-    so a long display name should shrink, not wrap."""
+    so a long display name should shrink, not wrap.
+
+    Measures via _textlength_fallback (not a single _load_font call) so
+    the shrink decision matches what draw_text_fallback will actually
+    render for names that mix scripts/fonts across the fallback chain."""
     size = font_size
     while size > min_size:
-        font = _load_font(size)
-        if draw.textlength(text, font=font) <= max_width:
-            return font, text
+        if _textlength_fallback(draw, text, size) <= max_width:
+            return size, text
         size -= 2
-    return _load_font(min_size), text
+    return min_size, text
 
 
 def render_leaderboard_card(entries: list, guild_name: str = "",
@@ -450,9 +587,11 @@ def render_leaderboard_card(entries: list, guild_name: str = "",
     bg = Image.new("RGB", (LEADERBOARD_WIDTH, height), _hex_to_rgb(background_color))
     draw = ImageDraw.Draw(bg)
 
-    # Header — no emoji baked into the image (Pillow's fallback font can't
-    # render them, unlike Discord's own client text elsewhere on this
-    # message) — plain "XP LEADERBOARD" label instead.
+    # Header — plain "XP LEADERBOARD" label. Still no emoji baked in here:
+    # this is a static, app-authored string (not a user display name), so
+    # it stays on _load_font/draw.text like the rest of the fixed labels
+    # on this card — draw_text_fallback is only needed for the
+    # user-controlled display_name/role_name strings below.
     draw.rectangle([(0, 0), (LEADERBOARD_WIDTH, 4)], fill=accent_rgb)
     title = f"{guild_name} - XP LEADERBOARD" if guild_name else "XP LEADERBOARD"
     draw.text((30, 26), title, font=_load_font(28), fill=(255, 255, 255))
@@ -489,11 +628,13 @@ def render_leaderboard_card(entries: list, guild_name: str = "",
         )
         bg.paste(avatar, (avatar_x, avatar_y), mask)
 
-        # Display name
+        # Display name — fallback-aware so fullwidth/CJK/mathematical-
+        # alphanumeric/Cyrillic-lookalike characters in a member's name
+        # render as real glyphs instead of tofu boxes.
         name_x = avatar_x + _LB_AVATAR_SIZE + 26
         name_max_width = 300
-        name_font, name_text = _fit_text(draw, entry.get("display_name", "Unknown"), name_max_width, 24)
-        draw.text((name_x, y + 14), name_text, font=name_font, fill=(255, 255, 255))
+        name_size, name_text = _fit_text(draw, entry.get("display_name", "Unknown"), name_max_width, 24)
+        draw_text_fallback(draw, (name_x, y + 14), name_text, name_size, (255, 255, 255))
 
         # Level / XP, under the name
         level = entry.get("level", 0)
@@ -507,8 +648,8 @@ def render_leaderboard_card(entries: list, guild_name: str = "",
         if role_name:
             role_color_hex = entry.get("role_color") or "#99AAB5"
             role_rgb = _hex_to_rgb(role_color_hex) if role_color_hex != "#000000" else (153, 170, 181)
-            badge_font, badge_text = _fit_text(draw, role_name, 220, 16, min_size=12)
-            text_w = draw.textlength(badge_text, font=badge_font)
+            badge_size, badge_text = _fit_text(draw, role_name, 220, 16, min_size=12)
+            text_w = _textlength_fallback(draw, badge_text, badge_size)
             pad_x = 14
             badge_w = int(text_w + pad_x * 2)
             badge_h = 30
@@ -519,8 +660,8 @@ def render_leaderboard_card(entries: list, guild_name: str = "",
                 (badge_x1, badge_y1, badge_x2, badge_y1 + badge_h), radius=badge_h // 2,
                 outline=role_rgb, width=2,
             )
-            draw.text((badge_x1 + pad_x, badge_y1 + (badge_h - 16) // 2 - 1), badge_text,
-                       font=badge_font, fill=role_rgb)
+            draw_text_fallback(draw, (badge_x1 + pad_x, badge_y1 + (badge_h - 16) // 2 - 1), badge_text,
+                                badge_size, role_rgb)
 
         y += _LB_ROW_HEIGHT + _LB_ROW_PAD
 
