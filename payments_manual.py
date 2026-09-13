@@ -380,10 +380,22 @@ async def _unlock_custom_role(reference: str, buyer_id: int, guild_id: Optional[
     await db.grant_custom_role_entitlement(guild_id, buyer_id, clone_id=clone_id)
 
 
+async def _unlock_music_pro(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """Replaces the old manual /activate-pro command (discord_bot/cogs/
+    music.py) as the thing that actually flips db.discord_pro_guilds — the
+    command itself still exists as a fallback, but approving here does the
+    same db.set_guild_pro call automatically. guild_id is required (Music
+    Pro is per-server, same as welcome_card_pack/ultra_welcome_pack) —
+    start_manual_payment must be called with guild_id=interaction.guild.id
+    for this payment_type."""
+    await db.set_guild_pro(guild_id, True, buyer_id, clone_id=clone_id)
+
+
 UNLOCK_HANDLERS = {
     "welcome_card_pack": _unlock_welcome_card_pack,
     "ultra_welcome_pack": _unlock_ultra_pack,
     "discord_clone": _unlock_discord_clone,
     "discord_clone_monetization": _unlock_discord_clone_monetization,
     "custom_role": _unlock_custom_role,
+    "music_pro": _unlock_music_pro,
 }
