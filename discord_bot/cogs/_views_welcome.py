@@ -279,6 +279,8 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, gree
 
     channel_row = discord.ui.ActionRow()
     channel_row.add_item(WelcomeChannelSelect(guild_id, clone_id, invoker_id, config))
+    create_channel_row = discord.ui.ActionRow()
+    create_channel_row.add_item(WelcomeCreateChannelButton(guild_id, clone_id, invoker_id))
     delivery_row = discord.ui.ActionRow()
     delivery_row.add_item(WelcomeDeliverySelect(guild_id, clone_id, invoker_id, config))
     shape_row = discord.ui.ActionRow()
@@ -298,7 +300,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, gree
         header_lines = [greeting, "", *header_lines]
     text = discord.ui.TextDisplay("\n".join(header_lines))
 
-    items = [text, discord.ui.Separator(), channel_row, delivery_row]
+    items = [text, discord.ui.Separator(), channel_row, create_channel_row, delivery_row]
 
     if use_template:
         look_row = discord.ui.ActionRow()
@@ -421,6 +423,78 @@ class WelcomeChannelSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], tem
             return
         await interaction.response.defer()
         channel = self.item.values[0]
+        await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, channel_id=channel.id)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class WelcomeCreateChannelButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("mkchan")):
+    """Companion to WelcomeChannelSelect's Step 1 — that select only lists
+    channels that already exist, which is a dead end for a brand new server
+    with no obvious welcome channel yet. This creates one (named "welcome",
+    read-only for @everyone so members can't post in it) and points the
+    welcome config at it in one tap, instead of making the admin leave this
+    panel to create a channel manually first."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        super().__init__(discord.ui.Button(
+            label="Create a welcome channel", emoji="➕",
+            style=discord.ButtonStyle.secondary,
+            custom_id=_encode("mkchan", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Couldn't find this server.", ephemeral=True)
+            return
+        me = guild.me
+        if me is None or not me.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "I need the **Manage Channels** permission to create a welcome channel — "
+                "grant it, or pick an existing channel in Step 1 instead.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+
+        # Read-only for @everyone (view + read history, no sending) —
+        # a welcome channel is meant to be announcements-style, not a chat.
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=True, send_messages=False, read_message_history=True,
+            ),
+            me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, embed_links=True,
+                attach_files=True, read_message_history=True,
+            ),
+        }
+        try:
+            channel = await guild.create_text_channel(
+                "welcome", overwrites=overwrites,
+                reason=f"Auto-created by PRIME-BOT welcome setup (requested by {interaction.user})",
+            )
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "Discord refused that — I likely have Manage Channels but not permission "
+                "at this exact position in the role/channel hierarchy.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as e:
+            logger.warning(f"[welcome] create_text_channel failed in guild {self.guild_id}: {e}")
+            await interaction.followup.send("Couldn't create the channel — try again in a moment.", ephemeral=True)
+            return
+
         await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, channel_id=channel.id)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
@@ -1003,7 +1077,7 @@ class WelcomeUltraPackButton(discord.ui.DynamicItem[discord.ui.Button], template
 # _views_join_dm.py's DYNAMIC_ITEMS, so these keep working after a
 # restart regardless of which process originally sent the message.
 DYNAMIC_ITEMS = (
-    WelcomeChannelSelect, WelcomeDeliverySelect, WelcomeThemeSelect, WelcomeCardLookSelect,
+    WelcomeChannelSelect, WelcomeCreateChannelButton, WelcomeDeliverySelect, WelcomeThemeSelect, WelcomeCardLookSelect,
     WelcomeCardStyleSelect, WelcomeAvatarShapeSelect, WelcomeStickerPresetSelect,
     WelcomeEditMessageButton, WelcomeToggleButton, WelcomePreviewButton, WelcomeModeToggleButton,
     WelcomeUltraPackButton,
