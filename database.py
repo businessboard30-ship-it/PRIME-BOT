@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "15"
+SCHEMA_VERSION = "16"
 # History (why this matters): "9" -> "10" fixed report_notify_config's
 # dm_user_id column and server_listing_votes' unique-index migration —
 # both had been sitting in _create_tables for a while but never actually
@@ -165,6 +165,12 @@ SCHEMA_VERSION = "15"
 # never-runs trap as above. "14" -> "15" adds
 # 011_custom_role_panel.sql (panel_channel_id/panel_message_id columns on
 # discord_custom_role_settings, for the join-DM "Custom Role" panel).
+# "15" -> "16" adds 012_selar_static_redirect_flow.sql (payment_logs.
+# clone_id/provider/group_id + discord_login_oauth_states.return_to, for
+# the OAuth-based Selar manual-payment confirmation flow — see
+# payments_manual.py / api/selar_submit.py). Same bump-or-it-never-runs
+# trap as above — this migration would otherwise silently never execute
+# on any DB that already had schema_version='15' stored.
 # Rule going forward: ANY new CREATE TABLE / ALTER TABLE / CREATE INDEX
 # added to _create_tables MUST come with a version bump in the same
 # change, or it's dead code that silently never executes.
@@ -4340,6 +4346,17 @@ class Database:
         if custom_roles_migration.exists():
             await conn.execute(custom_roles_migration.read_text())
 
+        # Selar manual-payment web-confirmation flow (OAuth-based buyer
+        # match, replacing the old signed-redirect design) — see
+        # payments_manual.py's module docstring and api/selar_submit.py.
+        # Same additive-only, idempotent migration-file pattern as 001-010;
+        # this one also folds in payment_logs.provider/group_id, which a
+        # prior root-level migration file was meant to add but never
+        # actually got wired into this runner.
+        selar_static_redirect_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "012_selar_static_redirect_flow.sql"
+        if selar_static_redirect_migration.exists():
+            await conn.execute(selar_static_redirect_migration.read_text())
+
         # Custom Role perk — panel channel/message tracking, additive on
         # top of 010 above (see discord_bot/cogs/_views_join_dm.py's
         # _enable_custom_role_panel).
@@ -5684,7 +5701,7 @@ class Database:
 
     async def log_payment(self, user_id: int, amount: float, reference: str, status: str = "pending",
                            payment_type: str = None, chat_id: int = None, group_id: int = None,
-                           provider: str = "paystack"):
+                           provider: str = "paystack", clone_id: int = None):
         """Log a payment to the generic payment_logs table (reused here for
         utility-subscription payments rather than a new table).
 
@@ -5715,6 +5732,13 @@ class Database:
         in-flight payment. Defaults to 'paystack' for every caller that
         predates per-provider tracking (main bot, Telegram, anything not
         yet updated to pass it explicitly).
+
+        clone_id: which discord_clones row this purchase is FOR, for
+        account-level Selar purchases (discord_clone, discord_clone_
+        monetization) that have no guild to scope via chat_id. Persisted
+        here (rather than only ever carried through a signed redirect URL)
+        so get_latest_pending_selar_payment() and the web /unlock
+        confirmation flow can recover it without any client-supplied data.
         """
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -5724,9 +5748,9 @@ class Database:
                     user_id
                 )
                 await conn.execute(
-                    "INSERT INTO payment_logs (user_id, amount, status, paystack_reference, payment_type, chat_id, group_id, provider) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (paystack_reference) DO NOTHING",
-                    user_id, amount, status, reference, payment_type, chat_id, group_id, provider
+                    "INSERT INTO payment_logs (user_id, amount, status, paystack_reference, payment_type, chat_id, group_id, provider, clone_id) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (paystack_reference) DO NOTHING",
+                    user_id, amount, status, reference, payment_type, chat_id, group_id, provider, clone_id
                 )
 
     async def has_paid(self, user_id: int, payment_type: str, chat_id: int = None, group_id: int = None) -> bool:
@@ -5812,6 +5836,31 @@ class Database:
                 payment_id,
             )
             return result.endswith(" 1")
+
+    async def get_latest_pending_selar_payment(self, user_id: int, payment_type: str) -> Optional[Dict]:
+        """Used by api/selar_submit.py's OAuth-based confirmation flow —
+        Selar's redirect back to /unlock carries no dynamic buyer data at
+        all (its per-product 'redirect after purchase' is one static URL,
+        same for every buyer), so a signed reference is no longer available
+        to look a row up by. Instead: once the buyer proves who they are via
+        Discord OAuth on /unlock, find the most recent 'pending' row THEY
+        themselves started for this payment_type (start_manual_payment
+        already wrote it the moment they tapped 'Pay on Selar' in Discord)
+        and claim that one.
+
+        Newest-first (payment_id DESC) so a buyer who abandoned an older
+        attempt and started a fresh one still gets matched to the current
+        attempt, not a stale one. Scoped to provider='selar' so this never
+        accidentally claims a pending row from the automatic gateway path."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM payment_logs WHERE user_id = $1 AND payment_type = $2 "
+                "AND provider = 'selar' AND status = 'pending' "
+                "ORDER BY payment_id DESC LIMIT 1",
+                user_id, payment_type,
+            )
+            return dict(row) if row else None
 
     async def claim_manual_payment_for_review(self, reference: str) -> Optional[Dict]:
         """Atomically flips a manual (Selar) payment from 'pending' to
@@ -10666,25 +10715,33 @@ class Database:
 
     # --- "Sign in with Discord" (landing page) ------------------------------
 
-    async def create_login_oauth_state(self, state: str) -> None:
+    async def create_login_oauth_state(self, state: str, return_to: str = None) -> None:
+        """return_to: an in-app path (e.g. '/unlock?payment_type=ultra_welcome_pack')
+        to send the browser back to once sign-in completes, instead of the
+        default /login/servers — lets the /unlock confirmation page reuse
+        this same 'Sign in with Discord' flow instead of needing its own.
+        None preserves the original landing-page behavior."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO discord_login_oauth_states (state) VALUES ($1)", state
+                "INSERT INTO discord_login_oauth_states (state, return_to) VALUES ($1, $2)",
+                state, return_to,
             )
 
-    async def pop_login_oauth_state(self, state: str) -> bool:
+    async def pop_login_oauth_state(self, state: str) -> Optional[Dict]:
         """One-time use, 10 minute TTL — same convention as
-        pop_vote_oauth_state, just with no guild to hand back."""
+        pop_vote_oauth_state. Returns {'return_to': ...} (return_to may be
+        None) on success, or None if the state was missing/expired/already
+        used."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """DELETE FROM discord_login_oauth_states
                    WHERE state = $1 AND created_at > NOW() - INTERVAL '10 minutes'
-                   RETURNING state""",
+                   RETURNING return_to""",
                 state,
             )
-            return row is not None
+            return dict(row) if row else None
 
     async def get_active_clone_for_guilds(self, guild_ids: list) -> Dict[int, Dict]:
         """guild_id -> {"clone_id": ..., "member_count": ...} for whichever
