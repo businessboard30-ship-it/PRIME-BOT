@@ -16,7 +16,7 @@ import unicodedata
 import discord
 
 from database import db
-from config import CUSTOM_ROLE_FONT_STYLES, CUSTOM_ROLE_COLOR_PALETTE
+from config import CUSTOM_ROLE_FONT_STYLES, CUSTOM_ROLE_COLOR_PALETTE, CUSTOM_ROLE_FEE_USD
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +140,101 @@ class CustomRoleWizardView(discord.ui.View):
             await interaction.edit_original_response(embed=self.build_embed(), view=self)
         else:
             await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+
+async def launch_custom_role(interaction: discord.Interaction, clone_id) -> None:
+    """Shared entry point for both /customrole and the persistent panel
+    button below — checks the kill switch and entitlement, then shows
+    either the Selar buy button or the styling wizard. Callers must NOT
+    have deferred/responded yet; this always makes the first response
+    itself (ephemeral)."""
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("This only works inside a server.", ephemeral=True)
+        return
+
+    if await db.is_custom_role_feature_disabled(guild.id, clone_id=clone_id):
+        await interaction.response.send_message("Custom roles are turned off in this server.", ephemeral=True)
+        return
+
+    entitlement = await db.get_custom_role_entitlement(guild.id, interaction.user.id, clone_id=clone_id)
+    if not entitlement:
+        await interaction.response.send_message(
+            f"Custom Role is a one-time **${CUSTOM_ROLE_FEE_USD}** unlock — style your own role "
+            "(name, font, color, optional icon) anytime after, unlimited edits.",
+            view=_BuyCustomRoleView(guild.id), ephemeral=True,
+        )
+        return
+
+    wizard = CustomRoleWizardView(interaction.user.id, guild.id, clone_id, existing=entitlement)
+    await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+
+
+class _BuyCustomRoleView(discord.ui.View):
+    """Kept here (not in custom_role.py) so both the /customrole command
+    and the persistent panel button below share the exact same buy flow —
+    payments_manual.start_manual_payment is imported lazily inside the
+    callback to avoid a payments_manual <-> this module import cycle."""
+
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+
+    @discord.ui.button(label=f"💳 Unlock Custom Role — ${CUSTOM_ROLE_FEE_USD}", style=discord.ButtonStyle.success)
+    async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from payments_manual import start_manual_payment
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await start_manual_payment(
+            interaction, payment_type="custom_role",
+            amount_display=f"${CUSTOM_ROLE_FEE_USD}", guild_id=self.guild_id,
+        )
+
+
+class CustomRolePanelButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^customrole_panel:(\d+):(-|\d+)$"):
+    """Persistent button posted in the #custom-roles panel (see
+    discord_bot/cogs/_views_join_dm.py's _enable_custom_role_panel).
+    DynamicItem so it keeps working across bot restarts, same as every
+    other panel button in this codebase — guild_id/clone_id ride in the
+    custom_id rather than any in-memory state."""
+
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="🎨 Get Custom Role", style=discord.ButtonStyle.success,
+            custom_id=f"customrole_panel:{guild_id}:{'-' if clone_id is None else clone_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match"):
+        guild_id = int(match.group(1))
+        clone_id = None if match.group(2) == "-" else int(match.group(2))
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await launch_custom_role(interaction, self.clone_id)
+
+
+async def post_custom_role_panel(channel: discord.TextChannel, guild_id: int, clone_id) -> discord.Message:
+    """Posts the standing embed + persistent button in `channel` and
+    returns the message — called once by _enable_custom_role_panel, which
+    then stashes channel/message ids via db.set_custom_role_panel so a
+    second join-DM tap reuses this instead of creating a duplicate."""
+    embed = discord.Embed(
+        title="🎨 Get a Custom Role",
+        description=(
+            f"Style your own role — name, font, color, and an optional icon — for a one-time "
+            f"**${CUSTOM_ROLE_FEE_USD}**. Tap below to get started; you can restyle it anytime "
+            f"afterward at no extra cost."
+        ),
+        color=discord.Color.blurple(),
+    )
+    view = discord.ui.View(timeout=None)
+    view.add_item(CustomRolePanelButton(guild_id, clone_id))
+    return await channel.send(embed=embed, view=view)
+
+
+DYNAMIC_ITEMS = (CustomRolePanelButton,)
 
 
 class _NameModal(discord.ui.Modal, title="Custom role name"):
