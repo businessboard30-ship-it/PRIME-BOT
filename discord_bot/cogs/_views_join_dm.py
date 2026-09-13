@@ -29,7 +29,7 @@ import logging
 import discord
 
 from database import db
-from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE
+from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, CUSTOM_ROLE_FEE_USD
 # Reused business logic for the listing/registry-invite offer now embedded
 # on the join DM's last page (see JoinDMLayoutView's join_offer handling
 # below) — same functions the standalone _views_auto_listing_offer.py /
@@ -975,6 +975,30 @@ async def _enable_reaction_roles(interaction: discord.Interaction, guild: discor
     )
 
 
+async def _enable_custom_role_panel(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """Auto-creates (or reuses) a #custom-roles channel and posts the
+    persistent "Get Custom Role" panel — same create-if-missing,
+    reuse-if-it-already-exists shape as _enable_downloadhub/_enable_tickets
+    above. The panel button (CustomRolePanelButton) launches the exact same
+    buy-or-wizard flow as running /customrole directly."""
+    from discord_bot.cogs._views_custom_role import post_custom_role_panel
+
+    existing = await db.get_custom_role_panel(guild.id, clone_id=clone_id)
+    existing_channel_id = existing.get("panel_channel_id") if existing else None
+    existing_channel = guild.get_channel(existing_channel_id) if existing_channel_id else None
+    if existing_channel is not None:
+        return True, f"Custom Role panel is already posted in {existing_channel.mention}."
+
+    try:
+        channel = await guild.create_text_channel("custom-roles", reason="Custom Role panel set up via join-DM button")
+    except discord.Forbidden:
+        return False, "I don't have permission to create channels here — create one and try `/customrole`."
+
+    msg = await post_custom_role_panel(channel, guild.id, clone_id)
+    await db.set_custom_role_panel(guild.id, channel.id, msg.id, clone_id=clone_id)
+    return True, f"Custom Role panel posted in {channel.mention} — members can buy and style their own role there."
+
+
 async def _enable_leveling(interaction: discord.Interaction, guild: discord.Guild, clone_id):
     channel = _default_text_channel(guild)
     await db.set_voice_xp_config(guild.id, clone_id=clone_id, enabled=True)
@@ -1260,8 +1284,8 @@ FEATURE_TOGGLES = {
                 "See who invited each new member, with a leaderboard and join announcements."),
     "verification": ("Join verification", "🔐", _enable_verification, None,
                       "Anti-raid gate — new members get an Unverified role until they pass a captcha or button click."),
-    "reactionroles": ("Reaction roles", "🎭", _enable_reaction_roles, None,
-                       "Let members self-assign roles by reacting to a message."),
+    "customrole": ("Custom Role", "🎨", _enable_custom_role_panel, None,
+                    "Let members buy a personal custom role — their own name, font, color, and icon."),
     "leveling": ("Leveling / XP", "📈", _enable_leveling, _LevelingOptionsView,
                  "Reward active members with levels and roles over time."),
     "analytics": ("Server analytics", "📊", _enable_analytics, None,
