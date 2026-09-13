@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "16"
+SCHEMA_VERSION = "17"
 # History (why this matters): "9" -> "10" fixed report_notify_config's
 # dm_user_id column and server_listing_votes' unique-index migration —
 # both had been sitting in _create_tables for a while but never actually
@@ -171,6 +171,10 @@ SCHEMA_VERSION = "16"
 # payments_manual.py / api/selar_submit.py). Same bump-or-it-never-runs
 # trap as above — this migration would otherwise silently never execute
 # on any DB that already had schema_version='15' stored.
+# "16" -> "17" adds 013_xp_boost.sql (discord_xp_boosts table +
+# discord_xp.boost_pitched) for the per-user paid XP boost — see
+# leveling-boost-build-prompt.md §2 and payments_manual.py's
+# UNLOCK_HANDLERS["xp_boost"]. Same bump-or-it-never-runs trap as above.
 # Rule going forward: ANY new CREATE TABLE / ALTER TABLE / CREATE INDEX
 # added to _create_tables MUST come with a version bump in the same
 # change, or it's dead code that silently never executes.
@@ -4357,6 +4361,16 @@ class Database:
         if selar_static_redirect_migration.exists():
             await conn.execute(selar_static_redirect_migration.read_text())
 
+        # Per-user paid XP boost — discord_xp_boosts table + discord_xp.
+        # boost_pitched (so the "⚡ Boost XP" level-up-card pitch is shown
+        # once, not on every level-up under level 3). See
+        # leveling-boost-build-prompt.md §2 and payments_manual.py's
+        # UNLOCK_HANDLERS["xp_boost"]. Same additive-only, idempotent
+        # migration-file pattern as 001-012.
+        xp_boost_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "013_xp_boost.sql"
+        if xp_boost_migration.exists():
+            await conn.execute(xp_boost_migration.read_text())
+
         # Custom Role perk — panel channel/message tracking, additive on
         # top of 010 above (see discord_bot/cogs/_views_join_dm.py's
         # _enable_custom_role_panel).
@@ -6994,6 +7008,57 @@ class Database:
                 guild_id, user_id, clone_id
             )
             return dict(row) if row else {"guild_id": guild_id, "user_id": user_id, "clone_id": clone_id, "total_xp": 0, "level": 0, "last_xp_at": None}
+
+    async def mark_boost_pitched(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> None:
+        """Flips discord_xp.boost_pitched so _send_level_up_card's "⚡ Boost
+        XP" button is only attached the first time a sub-level-3 member
+        levels up, not on every level-up in that range. Only meaningful once
+        the member already has a discord_xp row (which they always do by
+        the time a level-up card is being sent — add_xp() just wrote it)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_xp SET boost_pitched = TRUE "
+                "WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
+                guild_id, user_id, clone_id
+            )
+
+    async def get_active_xp_boost(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        """Returns the member's active discord_xp_boosts row (multiplier +
+        expires_at) if one exists and hasn't expired yet, else None. Checked
+        on_message, after XP_RATE_MULTIPLIERS is applied — see leveling.py."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_xp_boosts "
+                "WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3 "
+                "AND expires_at > NOW()",
+                guild_id, user_id, clone_id
+            )
+            return dict(row) if row else None
+
+    async def activate_xp_boost(self, guild_id: int, user_id: int, multiplier: float,
+                                 duration_days: int, clone_id: Optional[int] = None) -> Dict:
+        """Called from payments_manual.py's UNLOCK_HANDLERS["xp_boost"] on
+        approval. ON CONFLICT re-activates: a second purchase (e.g. buying
+        again after a previous boost expired, or topping up before it does)
+        replaces expires_at with a fresh duration_days from NOW() rather than
+        stacking — simplest behavior, and matches how one-time unlocks
+        elsewhere in this file (unlock_ultra_pack etc.) just set a flag
+        rather than accumulate."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_xp_boosts (guild_id, user_id, clone_id, multiplier, expires_at, activated_at)
+                VALUES ($1, $2, $3, $4, NOW() + ($5 * INTERVAL '1 day'), NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO UPDATE
+                    SET multiplier = $4, expires_at = NOW() + ($5 * INTERVAL '1 day'), activated_at = NOW()
+                RETURNING *
+                """,
+                guild_id, user_id, clone_id, multiplier, duration_days
+            )
+            return dict(row)
 
     async def set_guild_invite_url(self, guild_id: int, invite_url: str, clone_id: Optional[int] = None) -> None:
         """Sets invite_url on an existing discord_guilds row without
