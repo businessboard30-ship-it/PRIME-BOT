@@ -13,3 +13,8 @@ davey>=0.1.5
 groq>=0.4.2
 cryptography>=42.0.0
 Pillow>=10.0.0
+# Used by modules/level_card.py's font-fallback chain (draw_text_fallback)
+# to check which bundled font actually has a given character's glyph, so
+# usernames with fullwidth/CJK/mathematical-alphanumeric/etc. characters
+# render as real glyphs instead of Pillow's default-font tofu boxes.
+fonttools>=4.0.0
