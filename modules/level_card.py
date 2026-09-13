@@ -26,7 +26,12 @@ CARD_WIDTH = 900
 CARD_HEIGHT = 300
 AVATAR_SIZE = 180
 
-_FONT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "assets", "fonts"))
+_FONT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+# ^ repo root (modules/ is one level under it) — the 4 font files below
+# live directly at the repo root (same level as database.py), not in an
+# assets/fonts/ subfolder. Simpler to upload/verify via GitHub's web UI
+# (drag straight onto the repo root, no nested-path 404s from partial
+# uploads landing in the wrong folder).
 
 FONT_PATH: Optional[str] = os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf")
 
