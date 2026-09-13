@@ -356,6 +356,10 @@ class SetupSuggestLayoutView(discord.ui.LayoutView):
             container.add_item(discord.ui.TextDisplay("## ✅ Nothing to suggest\nEvery suggested channel already exists or was previously skipped."))
             if extra_note:
                 container.add_item(discord.ui.TextDisplay(extra_note.strip()))
+            container.add_item(discord.ui.ActionRow(discord.ui.Button(
+                label="⬅️ Back to menu", style=discord.ButtonStyle.secondary,
+                custom_id=f"setupch_back:{guild_id}",
+            )))
             self.add_item(container)
             return
 
@@ -403,6 +407,10 @@ class SetupSuggestLayoutView(discord.ui.LayoutView):
         container.add_item(discord.ui.TextDisplay(f"-# {footer}"))
 
         bottom = []
+        bottom.append(discord.ui.Button(
+            label="⬅️ Back to menu", style=discord.ButtonStyle.secondary,
+            custom_id=f"setupch_back:{guild_id}",
+        ))
         bottom.append(discord.ui.Button(
             label="✅ Create All Suggested", style=discord.ButtonStyle.primary,
             custom_id=f"setupch_createall:{guild_id}:{page}",
@@ -674,6 +682,29 @@ class SetupChannelsCog(GuildOnlyCog):
                 embed = build_suggestions_embed(guild, missing, page=target_page)
                 view = SetupSuggestView(guild_id, missing, page=target_page)
                 await interaction.response.edit_message(embed=embed, view=view)
+        elif custom_id.startswith("setupch_back:"):
+            # Only ever reached from the join-DM's V2 "Create suggested
+            # channels" screen (is_v2_message gates every other branch's
+            # layout-vs-classic choice above; this button only exists on
+            # the layout view in the first place — see
+            # SetupSuggestLayoutView) — restores the original quickstart
+            # list on that same message, same rebuild the welcome
+            # sub-screen's own Back button (_WelcomeBackButton) uses.
+            _, guild_id_s = custom_id.split(":", 1)
+            guild_id = int(guild_id_s)
+            clone_id = _clone_id_of(interaction.client)
+            from discord_bot.cogs._views_join_dm import (
+                FEATURE_TOGGLES, _enabled_feature_keys, _build_main_join_dm_parts, build_join_dm_view,
+            )
+            await interaction.response.defer()
+            all_feature_keys = list(FEATURE_TOGGLES.keys())
+            enabled = await _enabled_feature_keys(guild_id, clone_id)
+            intro, title, notices = await _build_main_join_dm_parts(interaction.client, guild_id, clone_id)
+            main_view = build_join_dm_view(
+                guild_id, clone_id=clone_id, feature_keys=all_feature_keys,
+                intro=intro, title=title, notices=notices, enabled_keys=enabled,
+            )
+            await interaction.edit_original_response(view=main_view, attachments=[])
 
     group = app_commands.guild_only()(app_commands.Group(name="setup", description="Server setup helpers"))
 
