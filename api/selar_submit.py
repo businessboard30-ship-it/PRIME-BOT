@@ -38,7 +38,7 @@ from database import db
 from config import (
     DISCORD_CLONE_ADMIN_IDS, DISCORD_BOT_TOKEN, DISCORD_SUPPORT_SERVER_INVITE,
     WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, CLONE_MONETIZATION_FEE_USD, DISCORD_CLONE_ACTIVATION_FEE_USD,
-    MUSIC_PRO_PRICE_LABEL,
+    MUSIC_PRO_PRICE_LABEL, XP_BOOST_FEE_USD,
 )
 from discord_bot.dm_send import dm_user_with_buttons
 
@@ -61,6 +61,7 @@ _AMOUNT_DISPLAY = {
     # confirmed $10 flat, the actual price on this Selar product.
     "discord_clone": f"${DISCORD_CLONE_ACTIVATION_FEE_USD:g} USD",
     "music_pro": MUSIC_PRO_PRICE_LABEL,
+    "xp_boost": f"${XP_BOOST_FEE_USD:g} USD",
 }
 
 
