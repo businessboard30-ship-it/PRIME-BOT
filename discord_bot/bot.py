@@ -60,6 +60,7 @@ from discord_bot.cogs._views_music_panel import DYNAMIC_ITEMS as MUSIC_PANEL_DYN
 from payments_manual import MANUAL_PAYMENT_DYNAMIC_ITEMS
 from discord_bot.cogs._views_direct_paid import DYNAMIC_ITEMS as DIRECT_PAID_DYNAMIC_ITEMS
 from discord_bot.cogs._views_verification import DYNAMIC_ITEMS as VERIFICATION_DYNAMIC_ITEMS
+from discord_bot.cogs._views_custom_role import DYNAMIC_ITEMS as CUSTOM_ROLE_DYNAMIC_ITEMS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,6 +152,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*GIVEAWAY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DIRECT_PAID_DYNAMIC_ITEMS)
         self.add_dynamic_items(*VERIFICATION_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*CUSTOM_ROLE_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DISCOVER_PLAYERS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ROAST_DYNAMIC_ITEMS)
         # Roast Arena disabled (see roast_arena load_extension comment
