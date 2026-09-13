@@ -222,7 +222,13 @@ DISCORD_LOGIN_OAUTH_REDIRECT_URI = os.getenv(
 # move together. Every DISCORD_CLONE_FREE_EVERY_NTH clone an owner registers
 # is free (e.g. 3 -> their 3rd, 6th, 9th... clone skips payment); set to 0 to
 # disable the free-clone perk entirely.
-DISCORD_CLONE_FEE_GHS = 101
+DISCORD_CLONE_FEE_GHS = 101  # unused — kept only so nothing else importing it breaks; see below
+# Real price for "CLONE ACTIVATION FEE" on Selar (selar.com/274bo7m038,
+# unlisted/live) — $10 flat, not DISCORD_CLONE_FEE_GHS above. Registering a
+# clone always goes through the manual/Selar path (clone_admin.py's
+# register_clone_token has no automatic-Paystack branch for this one, unlike
+# monetization), so this is the only price that's actually ever charged.
+DISCORD_CLONE_ACTIVATION_FEE_USD = 10
 
 # Media Connect subscription (Jellyfin/Plex/Google Drive movie-search
 # feature) — priced at $2/month. GHS conversion is approximate and drifts
@@ -302,6 +308,11 @@ SELAR_PRODUCT_LINKS = {
     # this file, so it can't be referenced here directly without a forward-
     # reference NameError at import time).
     "music_pro": "https://selar.com/61l8115885",
+    # "CLONE ACTIVATION FEE" — unlisted (not shown on Selar store home),
+    # live. Backs clone_admin.py's register_clone_token() paid path
+    # (DISCORD_CLONE_FEE_GHS) — NOT the unused CLONE_BOT_FEE_GHS constant
+    # elsewhere in this file, which nothing actually charges.
+    "discord_clone": "https://selar.com/274bo7m038",
 }
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):
@@ -469,6 +480,13 @@ DISCORD_BOT_USER_ID = int(os.getenv("DISCORD_BOT_USER_ID", "0") or "0")
 # database.py's expire_monetization_subscriptions(), run by
 # api/cron_expire_monetization.py).
 CLONE_MONETIZATION_FEE_GHS = 20
+# Correction: the manual/Selar path actually charges a flat $4 USD, not
+# CLONE_MONETIZATION_FEE_GHS/month — that GHS constant is only still used
+# by the automatic Paystack branch in clone_admin.py's monetize command
+# (a separate gateway/currency, left as-is here). CLONE_MONETIZATION_FEE_USD
+# is what discord_bot/cogs/clone_admin.py's manual branch and
+# api/selar_submit.py's approver-DM amount display should read from.
+CLONE_MONETIZATION_FEE_USD = 4
 CLONE_MONETIZATION_DAYS = 30
 
 # --- Yandex direct-search subscription --------------------------------------
