@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler
 from database import db
 from config import (
     DISCORD_CLONE_ADMIN_IDS, DISCORD_BOT_TOKEN, DISCORD_SUPPORT_SERVER_INVITE,
-    WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, CLONE_MONETIZATION_FEE_GHS, CLONE_BOT_FEE_GHS,
+    WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, CLONE_MONETIZATION_FEE_USD, DISCORD_CLONE_ACTIVATION_FEE_USD,
     MUSIC_PRO_PRICE_LABEL,
 )
 from discord_bot.dm_send import dm_user_with_buttons
@@ -52,8 +52,14 @@ _PAYMENT_TYPE_RE = re.compile(r"^[a-z_]{1,50}$")
 _AMOUNT_DISPLAY = {
     "welcome_card_pack": f"${WELCOME_CARD_PACK_FEE_USD:g} USD",
     "ultra_welcome_pack": f"${ULTRA_PACK_FEE_USD:g} USD",
-    "discord_clone_monetization": f"₵{CLONE_MONETIZATION_FEE_GHS:g} GHS",
-    "discord_clone": f"₵{CLONE_BOT_FEE_GHS:g} GHS",
+    # Actual manual/Selar price is a flat $4 — the CLONE_MONETIZATION_FEE_GHS
+    # constant is only the (separate-currency) automatic Paystack path's
+    # rate, not what this flow charges. See config.py's comment on
+    # CLONE_MONETIZATION_FEE_USD.
+    "discord_clone_monetization": f"${CLONE_MONETIZATION_FEE_USD:g} USD",
+    # DISCORD_CLONE_ACTIVATION_FEE_USD, not the unused DISCORD_CLONE_FEE_GHS —
+    # confirmed $10 flat, the actual price on this Selar product.
+    "discord_clone": f"${DISCORD_CLONE_ACTIVATION_FEE_USD:g} USD",
     "music_pro": MUSIC_PRO_PRICE_LABEL,
 }
 
