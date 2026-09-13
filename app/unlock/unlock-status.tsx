@@ -12,6 +12,13 @@ import { useSearchParams } from 'next/navigation'
 // login sessions for this flow.
 const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
 
+// Default support-server link shown before any clone-specific one is known
+// (a clone's own invite only comes back from api/selar_submit's response,
+// once its clone_id has been resolved server-side — see _resolve_brand in
+// api/selar_submit.py). Set this to the same value as config.py's
+// DISCORD_SUPPORT_SERVER_INVITE.
+const DEFAULT_SUPPORT_SERVER_INVITE = process.env.NEXT_PUBLIC_SUPPORT_SERVER_INVITE || ''
+
 type Status = 'pending' | 'awaiting_review' | 'verified' | 'rejected' | 'invalid'
 type Identity = { id: string; username: string; avatar_url: string }
 
@@ -36,6 +43,8 @@ export function UnlockStatus() {
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [supportServerInvite, setSupportServerInvite] = useState(DEFAULT_SUPPORT_SERVER_INVITE)
+  const [brandName, setBrandName] = useState('')
 
   // Leg 3 of api/discord_login_oauth.py: exchange the session id the
   // callback redirected us with for the identity Discord's own OAuth
@@ -118,6 +127,8 @@ export function UnlockStatus() {
       const body = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(body.message ?? 'Unable to submit payment')
       if (body.reference) setReference(body.reference)
+      if (body.support_server_invite) setSupportServerInvite(body.support_server_invite)
+      if (body.brand_name) setBrandName(body.brand_name)
       setStatus(body.status ?? 'awaiting_review')
     } catch (reason) {
       // Roll the dim back only on a real failure, so a genuine network
@@ -145,7 +156,7 @@ export function UnlockStatus() {
       <div className="mx-auto max-w-xl space-y-8">
         <div className="space-y-3">
           <p className="pb-heading text-xs" style={{ color: 'var(--pb-text-muted)' }}>
-            PRIME-BOT / Unlock
+            Unlock
           </p>
           <h1 className="text-3xl font-semibold tracking-tight" style={{ color: 'var(--pb-text)' }}>
             {status === 'verified' ? 'Your unlock is active.' : missingPaymentType ? 'This link isn\u2019t valid' : 'Confirm your payment'}
@@ -218,8 +229,20 @@ export function UnlockStatus() {
           )}
         </section>
 
+        {supportServerInvite && (
+          <a
+            className="inline-flex text-sm underline"
+            style={{ color: 'var(--pb-text-muted)' }}
+            href={supportServerInvite}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Need help? {brandName ? `Join ${brandName}'s` : 'Join the'} support server
+          </a>
+        )}
+
         <a className="pb-btn-secondary inline-flex" href="/">
-          Return to PRIME-BOT
+          Return home
         </a>
       </div>
     </main>
