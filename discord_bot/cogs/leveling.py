@@ -30,8 +30,9 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 
 from database import db
 from modules import leveling
-from modules.level_card import render_level_card
+from modules.level_card import render_level_card, render_level_card_evolved, render_leaderboard_card
 from discord_bot.cogs._views_shared import ActionButton, NavCardView
+from discord_bot.cogs._views_leveling_boost import BoostXPButton, build_boost_xp_view
 from discord_bot.cogs._views_leveling_wizard import (
     build_wizard_view as build_leveling_wizard_view,
     remember_wizard_message as remember_leveling_wizard_message,
@@ -158,6 +159,14 @@ class LevelingCog(GuildOnlyCog):
         old_level = leveling.compute_level(current["total_xp"])
         config = await db.get_leveling_config(message.guild.id, clone_id=clone_id)
         multiplier = XP_RATE_MULTIPLIERS.get(config.get("xp_rate", "default"), 1.0)
+        # Per-user paid XP boost (see leveling-boost-build-prompt.md §2) —
+        # stacks multiplicatively on top of the guild's own xp_rate setting,
+        # not instead of it. get_active_xp_boost already filters out expired
+        # rows (expires_at > NOW()), so no separate expiry check is needed
+        # here.
+        boost = await db.get_active_xp_boost(message.guild.id, message.author.id, clone_id=clone_id)
+        if boost:
+            multiplier *= float(boost["multiplier"])
         gained = max(1, round(random.randint(XP_MIN, XP_MAX) * multiplier))
         new_level_guess = leveling.compute_level(current["total_xp"] + gained)
         # cooldown_seconds makes this atomic across processes — see
@@ -179,19 +188,33 @@ class LevelingCog(GuildOnlyCog):
                 announce_channel = message.channel
             card_style = config.get("card_style", "card")
             if card_style != "off":
-                await self._send_level_up_card(announce_channel, message.author, new_level, new_total, card_style)
+                await self._send_level_up_card(
+                    announce_channel, message.author, new_level, new_total, card_style,
+                    boost_pitched=row.get("boost_pitched", False), clone_id=clone_id,
+                )
             await self._grant_level_roles(message.author, new_level, clone_id=clone_id)
 
-    async def _send_level_up_card(self, channel, member: discord.Member, new_level: int, new_total_xp: int, card_style: str = "card"):
+    async def _send_level_up_card(self, channel, member: discord.Member, new_level: int, new_total_xp: int,
+                                   card_style: str = "card", boost_pitched: bool = False, clone_id=None):
         """Renders and sends the level-up announcement. card_style == "text"
         skips the PIL render + avatar fetch entirely and just posts a plain
         message (people asked for this — some don't want the image spam,
         and it's also just faster / no PIL work per level-up). card_style
         == "card" is the original image-card behavior, unchanged. "off" is
-        handled by the caller (on_message) before this is even called."""
+        handled by the caller (on_message) before this is even called.
+
+        boost_pitched / clone_id: when new_level is still below 3 and the
+        member hasn't been shown the "⚡ Boost XP" button yet (per
+        discord_xp.boost_pitched), it's attached to this message and the
+        flag is flipped so it isn't repeated on every level-up below 3 —
+        see leveling-boost-build-prompt.md §2."""
+        show_boost_button = new_level < 3 and not boost_pitched
         if card_style == "text":
             try:
-                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!")
+                view = build_boost_xp_view(member.guild.id, clone_id) if show_boost_button else None
+                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", view=view)
+                if show_boost_button:
+                    await db.mark_boost_pitched(member.guild.id, member.id, clone_id=clone_id)
             except discord.Forbidden:
                 pass
             return
@@ -205,13 +228,31 @@ class LevelingCog(GuildOnlyCog):
             # Off-loaded to a thread — see welcome_card.py's render calls for
             # why: synchronous PIL work run inline would block the bot's
             # single event loop for everyone, not just this member.
-            card_bytes = await asyncio.to_thread(
-                render_level_card,
-                avatar_bytes, member.display_name, new_level,
-                p["current_xp_in_level"], p["xp_needed_for_next_level"],
-            )
+            #
+            # Level 10+ automatically switches to the free "evolving" card
+            # — no config option, no payment gate (see leveling-boost-
+            # build-prompt.md §1). This only decides which image renderer
+            # runs; card_style ("card"/"text"/"off") semantics above are
+            # untouched.
+            if new_level >= 10:
+                progress_fraction = min(1.0, (new_level - 10) / 10)
+                card_bytes = await asyncio.to_thread(
+                    render_level_card_evolved,
+                    avatar_bytes, member.display_name, new_level,
+                    p["current_xp_in_level"], p["xp_needed_for_next_level"],
+                    "#05070d", "#3B9AFF", progress_fraction,
+                )
+            else:
+                card_bytes = await asyncio.to_thread(
+                    render_level_card,
+                    avatar_bytes, member.display_name, new_level,
+                    p["current_xp_in_level"], p["xp_needed_for_next_level"],
+                )
             file = discord.File(fp=io.BytesIO(card_bytes), filename="levelup.png")
-            await channel.send(content=f"🎉 {member.mention} leveled up!", file=file)
+            view = build_boost_xp_view(member.guild.id, clone_id) if show_boost_button else None
+            await channel.send(content=f"🎉 {member.mention} leveled up!", file=file, view=view)
+            if show_boost_button:
+                await db.mark_boost_pitched(member.guild.id, member.id, clone_id=clone_id)
         except discord.Forbidden:
             pass
         except Exception as e:
@@ -248,14 +289,47 @@ class LevelingCog(GuildOnlyCog):
             await interaction.followup.send("No XP earned yet.", ephemeral=True)
             return
 
-        embed = discord.Embed(title="🏆 XP leaderboard", color=discord.Color.gold())
-        lines = []
-        view = discord.ui.View(timeout=None)
+        # Resolve member/role client-side, same as before — db.get_xp_
+        # leaderboard's row shape (user_id, level, total_xp) is untouched.
+        members = [interaction.guild.get_member(row["user_id"]) for row in rows]
 
-        for i, row in enumerate(rows, start=1):
-            member = interaction.guild.get_member(row["user_id"])
+        async def _fetch_avatar(session, member):
+            if member is None:
+                return None
+            try:
+                async with session.get(
+                    str(member.display_avatar.replace(size=128).url), timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    return await resp.read()
+            except Exception as e:
+                logger.warning(f"[v0] Couldn't fetch leaderboard avatar for {member.id}: {e}")
+                return None
+
+        # Fetch all avatars concurrently — 10 members means 10 HTTP
+        # fetches, and doing them sequentially would make /leaderboard
+        # noticeably slow for a full top-10.
+        async with aiohttp.ClientSession() as session:
+            avatar_results = await asyncio.gather(*(_fetch_avatar(session, m) for m in members))
+
+        entries = []
+        view = discord.ui.View(timeout=None)
+        view.add_item(BoostXPButton(interaction.guild_id, clone_id))
+
+        for i, (row, member, avatar_bytes) in enumerate(zip(rows, members, avatar_results), start=1):
             name = member.display_name if member else f"User {row['user_id']}"
-            lines.append(f"**{i}.** {name} — Level {row['level']} ({row['total_xp']} XP)")
+            role_name = role_color = None
+            if member is not None and member.top_role.name != "@everyone":
+                role_name = member.top_role.name
+                # discord.Colour.default() (no role color set) is 0/black —
+                # treat that the same as "no color", same fallback
+                # render_leaderboard_card itself applies for a "#000000" hex.
+                if member.top_role.color.value:
+                    role_color = str(member.top_role.color)
+            entries.append({
+                "avatar_bytes": avatar_bytes, "display_name": name,
+                "level": row["level"], "total_xp": row["total_xp"],
+                "role_name": role_name, "role_color": role_color,
+            })
 
             link = await db.get_leader_link(interaction.guild_id, row["user_id"], clone_id=clone_id)
             if link and link["status"] == "approved":
@@ -263,11 +337,9 @@ class LevelingCog(GuildOnlyCog):
                     label=f"#{i} · {name}'s server", style=discord.ButtonStyle.link, url=link["invite_url"]
                 ))
 
-        embed.description = "\n".join(lines)
-        if view.children:
-            await interaction.followup.send(embed=embed, view=view)
-        else:
-            await interaction.followup.send(embed=embed)
+        card_bytes = await asyncio.to_thread(render_leaderboard_card, entries, interaction.guild.name)
+        file = discord.File(fp=io.BytesIO(card_bytes), filename="leaderboard.png")
+        await interaction.followup.send(file=file, view=view)
 
     group = app_commands.guild_only()(app_commands.Group(name="levelrole", description="Configure level-up role rewards"))
 
