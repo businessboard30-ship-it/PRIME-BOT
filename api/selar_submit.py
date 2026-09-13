@@ -2,32 +2,31 @@
 
 """
 Backs the web /unlock page's "I've Paid" button (app/unlock/unlock-status.tsx)
-— the web-side replacement for the old Discord "I've Paid" DM button (see
-payments_manual.py's module docstring for the full flow).
+— see payments_manual.py's module docstring for the full flow.
 
-Re-verifies the same HMAC signature api/selar_redirect.py already checked
-(defense in depth — this endpoint is a public POST, so it must not trust
-that a request only ever arrives via that redirect), then atomically claims
-the payment for review via db.claim_manual_payment_for_review. That claim
-is the actual duplicate-tap guard: a second POST for the same reference
-(double-tap, page reload + resubmit, or a replayed request) finds the row
-already flipped out of 'pending' and gets a no-op response back — the
-frontend dims/disables its own button immediately on tap as a first line
-of defense, but this is what actually prevents a second approval DM.
+Selar's product-level "redirect after purchase" is a single static URL per
+product with nothing appended (confirmed) — there is no per-buyer reference/
+signature round-tripped back to us the way the old design assumed. So this
+endpoint identifies the buyer the only way it can: via the Discord OAuth
+session api/discord_login_oauth.py already minted for them when they signed
+in on /unlock (session_id is opaque and server-verified — the buyer's real
+Discord user_id is read back out of the stored session payload, never
+trusted from anything the browser sends directly).
 
-No live discord.py Client here (this runs in the Railway API-server
-process, not the gateway-connected bot — see discord_bot/dm_send.py's
-docstring), so approver DMs go over plain REST via dm_user_with_buttons,
-carrying Approve/Reject buttons whose custom_id matches the
-discord.ui.DynamicItem templates registered in discord_bot/bot.py
-(payments_manual.MANUAL_PAYMENT_DYNAMIC_ITEMS) — whichever bot process is
-actually connected to the gateway when a button is clicked reconstructs
-the item from that custom_id alone.
+Once identified, db.get_latest_pending_selar_payment(user_id, payment_type)
+finds the 'pending' payment_logs row start_manual_payment() wrote the moment
+the buyer tapped "Pay on Selar" in Discord, and db.claim_manual_payment_
+for_review atomically flips it to 'awaiting_review' — that claim is the
+actual duplicate-tap guard: a second POST for the same row (double-tap, page
+reload + resubmit) finds it already out of 'pending' and gets a no-op back.
 
-POST body (JSON): {reference, payment_type, buyer_id, sig, guild_id?, clone_id?}
-— the same fields app/unlock forwarded from api/selar_redirect.py's query
-string, round-tripped back to us so this endpoint never has to trust a
-bare reference on its own.
+This does NOT prove the buyer actually paid — it only proves which Discord
+account is claiming to have. The real check is still a human: the approver
+DM tells the admin to cross-reference the Selar dashboard's buyer-typed
+Discord username/server name (Selar Custom Checkout Form fields) before
+tapping Approve.
+
+POST body (JSON): {session_id, payment_type}
 """
 import json
 import logging
@@ -37,15 +36,13 @@ from http.server import BaseHTTPRequestHandler
 
 from database import db
 from config import (
-    SELAR_PRODUCT_LINKS, DISCORD_CLONE_ADMIN_IDS, DISCORD_BOT_TOKEN,
+    DISCORD_CLONE_ADMIN_IDS, DISCORD_BOT_TOKEN,
     WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, CLONE_MONETIZATION_FEE_GHS, CLONE_BOT_FEE_GHS,
 )
-from utils.selar_signing import verify_selar_target
 from discord_bot.dm_send import dm_user_with_buttons
 
 logger = logging.getLogger(__name__)
 
-_REFERENCE_RE = re.compile(r"^[A-Za-z0-9._:-]{6,160}$")
 _PAYMENT_TYPE_RE = re.compile(r"^[a-z_]{1,50}$")
 
 # Mirrors discord_bot/cogs/_views_direct_paid.py's _AMOUNT_DISPLAY — this
@@ -87,63 +84,73 @@ class handler(BaseHTTPRequestHandler):
             self._json(400, {"status": "error", "message": "Invalid JSON body"})
             return
 
-        reference = str(body.get("reference") or "").strip()
+        session_id = str(body.get("session_id") or "").strip()
         payment_type = str(body.get("payment_type") or "").strip()
-        sig = str(body.get("sig") or "").strip()
-        buyer_id_raw = body.get("buyer_id")
-        ts_raw = body.get("ts")
-        guild_id_raw = body.get("guild_id")
-        clone_id_raw = body.get("clone_id")
 
-        try:
-            buyer_id = int(buyer_id_raw)
-            ts = int(ts_raw)
-            guild_id = int(guild_id_raw) if guild_id_raw not in (None, "") else None
-            clone_id = int(clone_id_raw) if clone_id_raw not in (None, "") else None
-        except (TypeError, ValueError):
-            self._json(400, {"status": "error", "message": "Invalid payment target"})
-            return
-
-        if not _REFERENCE_RE.match(reference) or not _PAYMENT_TYPE_RE.match(payment_type):
-            self._json(400, {"status": "error", "message": "Invalid payment target"})
-            return
-
-        if not verify_selar_target(reference, payment_type, buyer_id, guild_id, clone_id, ts, sig):
-            logger.warning(f"[selar-submit] rejected submission for reference={reference!r} (bad/expired signature)")
-            self._json(403, {"status": "error", "message": "This confirmation link is invalid or has expired — reopen the payment from Discord"})
+        if not session_id or not _PAYMENT_TYPE_RE.match(payment_type):
+            self._json(400, {"status": "error", "message": "Missing or invalid payment target"})
             return
 
         async def _run():
-            claimed = await db.claim_manual_payment_for_review(reference)
+            session = await db.get_login_session(session_id)
+            if not session or not session.get("user", {}).get("id"):
+                return "no_session", None, None
+
+            try:
+                user_id = int(session["user"]["id"])
+            except (TypeError, ValueError):
+                return "no_session", None, None
+
+            pending = await db.get_latest_pending_selar_payment(user_id, payment_type)
+            if not pending:
+                return "no_pending", None, None
+
+            claimed = await db.claim_manual_payment_for_review(pending["paystack_reference"])
             if not claimed:
-                # Either already submitted once, or already resolved by an
-                # admin — either way, not our job to notify again.
-                existing = await db.get_payment_by_reference(reference)
-                return None, existing
-            return claimed, claimed
+                # Someone already submitted this exact row (double-tap,
+                # reload+resubmit) — not our job to notify again, just
+                # report its current status back.
+                existing = await db.get_payment_by_reference(pending["paystack_reference"])
+                return "already_claimed", session, existing
+
+            return "claimed", session, claimed
 
         try:
-            claimed, current = asyncio.run(_run())
+            outcome, session, row = asyncio.run(_run())
         except Exception as e:
-            logger.error(f"[selar-submit] DB error claiming reference {reference}: {e}")
+            logger.error(f"[selar-submit] DB error for session={session_id!r} payment_type={payment_type!r}: {e}")
             self._json(500, {"status": "error", "message": "Internal error"})
             return
 
-        if not claimed:
-            status = (current or {}).get("status", "pending")
-            self._json(200, {"status": status, "submitted": True, "notified": False})
+        if outcome == "no_session":
+            self._json(401, {"status": "error", "message": "Your sign-in expired — sign in with Discord again."})
             return
 
+        if outcome == "no_pending":
+            self._json(404, {
+                "status": "error",
+                "message": "No pending payment found for your Discord account — start the payment again from Discord, then come back here.",
+            })
+            return
+
+        if outcome == "already_claimed":
+            status = (row or {}).get("status", "pending")
+            reference = (row or {}).get("paystack_reference", "")
+            self._json(200, {"status": status, "reference": reference, "submitted": True, "notified": False})
+            return
+
+        # outcome == "claimed"
+        reference = row["paystack_reference"]
         amount_display = _AMOUNT_DISPLAY.get(payment_type, payment_type.replace("_", " ").title())
         try:
-            asyncio.run(_notify_approvers(claimed, guild_id, clone_id, amount_display))
+            asyncio.run(_notify_approvers(row, amount_display))
         except Exception as e:
             # The claim itself already succeeded and is durably recorded —
             # a failed DM is not fatal, an admin can still find this row
             # via its 'awaiting_review' status and approve manually.
             logger.error(f"[selar-submit] failed to notify approvers for reference {reference}: {e}")
 
-        self._json(200, {"status": "awaiting_review", "submitted": True, "notified": True})
+        self._json(200, {"status": "awaiting_review", "reference": reference, "submitted": True, "notified": True})
 
     def log_message(self, format, *args):
         logger.debug(f"[selar-submit] {format % args}")
@@ -202,11 +209,13 @@ async def _resolve_guild_name(guild_id: int, bot_token: str) -> str:
         return str(guild_id)
 
 
-async def _notify_approvers(payment_row: dict, guild_id, clone_id, amount_display: str) -> None:
+async def _notify_approvers(payment_row: dict, amount_display: str) -> None:
     payment_id = payment_row["payment_id"]
     reference = payment_row["paystack_reference"]
     payment_type = payment_row["payment_type"]
     buyer_id = payment_row["user_id"]
+    guild_id = payment_row.get("chat_id")
+    clone_id = payment_row.get("clone_id")
 
     approver_ids = set(DISCORD_CLONE_ADMIN_IDS)
     bot_token = DISCORD_BOT_TOKEN
@@ -228,7 +237,7 @@ async def _notify_approvers(payment_row: dict, guild_id, clone_id, amount_displa
     # Resolve real names up front — a raw snowflake id in the DM gives you
     # nothing to act on, and <@id> mentions silently render as
     # "@unknown-user" whenever Discord's client has no cached data for
-    # that user (exactly what was happening before this fix).
+    # that user.
     buyer_name = await _resolve_discord_name(buyer_id, bot_token)
     guild_line = ""
     if guild_id is not None:
@@ -240,12 +249,13 @@ async def _notify_approvers(payment_row: dict, guild_id, clone_id, amount_displa
         guild_line = "Scope: account-level\n"
 
     msg = (
-        f"💰 **Manual payment — buyer confirmed on the web**\n"
+        f"💰 **Manual payment — buyer confirmed on the web (Discord sign-in)**\n"
         f"Buyer: **{buyer_name}** (`{buyer_id}`)\n"
         f"Type: `{payment_type}` — {amount_display}\n"
         f"Reference: `{reference}`\n"
         f"{guild_line}\n"
-        f"Check Selar for a matching sale (buyer email `user_{buyer_id}@animebot.com`), "
+        f"Cross-check the Selar dashboard's buyer-typed Discord username/server name "
+        f"(buyer email `user_{buyer_id}@animebot.com`) against the above before approving, "
         f"then Approve or Reject below."
     )
     buttons = [
