@@ -313,6 +313,9 @@ SELAR_PRODUCT_LINKS = {
     # (DISCORD_CLONE_FEE_GHS) — NOT the unused CLONE_BOT_FEE_GHS constant
     # elsewhere in this file, which nothing actually charges.
     "discord_clone": "https://selar.com/274bo7m038",
+    # Per-user XP boost (2x XP / 7 days) — see config.XP_BOOST_FEE_USD.
+    # Real $3 "XP BOOST PAYMENT" product on Selar (unlisted, live).
+    "xp_boost": "https://selar.com/910n9763c7",
 }
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):
@@ -323,6 +326,15 @@ SELAR_PRODUCT_LINKS = {
 # rationale in that cog's module docstring for why this price sits between
 # ULTRA_PACK_FEE_USD and WELCOME_CARD_PACK_FEE_USD.
 CUSTOM_ROLE_FEE_USD = 3.99
+
+# Per-user paid XP boost (discord_bot/cogs/leveling.py's "⚡ Boost XP"
+# button — see leveling-boost-build-prompt.md §2): 2x XP for 7 days, flat
+# impulse-buy price. Per-user AND per-guild (buying it in one server never
+# boosts XP in another) — see database/migrations/013_xp_boost.sql's
+# discord_xp_boosts table.
+XP_BOOST_FEE_USD = 3
+XP_BOOST_MULTIPLIER = 2.0
+XP_BOOST_DURATION_DAYS = 7
 
 # 20 Unicode "font style" transformations for the custom-role wizard's name
 # step (character substitution, not real fonts — renders in any Discord
