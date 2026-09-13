@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "13"
+SCHEMA_VERSION = "14"
 # History (why this matters): "9" -> "10" fixed report_notify_config's
 # dm_user_id column and server_listing_votes' unique-index migration —
 # both had been sitting in _create_tables for a while but never actually
@@ -159,7 +159,10 @@ SCHEMA_VERSION = "13"
 # create_discord_clone()'s INSERT to fail with
 # asyncpg.exceptions.UndefinedColumnError: column "parent_clone_id" of
 # relation "discord_cloned_bots" does not exist, every time the join-DM
-# "Build Bot" flow tried to register a clone.
+# "Build Bot" flow tried to register a clone. "13" -> "14" adds the
+# 010_custom_roles.sql migration (discord_custom_roles +
+# discord_custom_role_settings tables for /customrole) — same bump-or-it-
+# never-runs trap as above.
 # Rule going forward: ANY new CREATE TABLE / ALTER TABLE / CREATE INDEX
 # added to _create_tables MUST come with a version bump in the same
 # change, or it's dead code that silently never executes.
@@ -4328,6 +4331,13 @@ class Database:
         if feature_enhancements_migration.exists():
             await conn.execute(feature_enhancements_migration.read_text())
 
+        # Custom Role perk — per-user, one-time entitlement + the role's
+        # saved name/font/color/icon (see discord_bot/cogs/custom_role.py).
+        # Same additive-only, idempotent migration-file pattern as 001-009.
+        custom_roles_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "010_custom_roles.sql"
+        if custom_roles_migration.exists():
+            await conn.execute(custom_roles_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -8351,6 +8361,90 @@ class Database:
                 "UPDATE discord_welcome_config SET ultra_pack_unlocked = TRUE, updated_at = NOW() "
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id,
+            )
+
+    # ─────────────────────────────────────────────────────────────────
+    # Custom Role perk (see discord_bot/cogs/custom_role.py, config.py's
+    # CUSTOM_ROLE_FEE_USD, database/migrations/010_custom_roles.sql)
+    # ─────────────────────────────────────────────────────────────────
+
+    async def grant_custom_role_entitlement(self, guild_id: int, user_id: int,
+                                             clone_id: Optional[int] = None) -> None:
+        """Called from payments_manual.py's UNLOCK_HANDLERS once a
+        custom_role payment is approved. Just marks the buyer as entitled —
+        it does NOT create the Discord role itself; the buyer still has to
+        run /customrole to launch the wizard (and can re-run it later to
+        restyle, since this is a one-time unlock, unlimited edits). Upsert
+        so re-approving (shouldn't normally happen) never errors."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_custom_roles (guild_id, clone_id, user_id, unlocked_at, updated_at)
+                VALUES ($1, $2, $3, NOW(), NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO NOTHING
+                """,
+                guild_id, clone_id, user_id,
+            )
+
+    async def get_custom_role_entitlement(self, guild_id: int, user_id: int,
+                                           clone_id: Optional[int] = None) -> Optional[dict]:
+        """Returns the buyer's row (entitlement + whatever role state is
+        saved so far), or None if they've never paid in this guild."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_custom_roles WHERE guild_id = $1 "
+                "AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3",
+                guild_id, clone_id, user_id,
+            )
+            return dict(row) if row else None
+
+    async def save_custom_role(self, guild_id: int, user_id: int, role_id: int,
+                                base_name: str, font_style: str, color_hex: str,
+                                icon: Optional[str], clone_id: Optional[int] = None) -> None:
+        """Called by the wizard's Confirm step after the role is actually
+        created/edited on Discord — saves the mapping so re-running
+        /customrole later edits this same role instead of creating a new
+        one. Assumes grant_custom_role_entitlement already inserted the
+        row (payment happens before the wizard can even launch), so this
+        is an UPDATE, not an upsert."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE discord_custom_roles
+                SET role_id = $4, base_name = $5, font_style = $6, color_hex = $7, icon = $8, updated_at = NOW()
+                WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                """,
+                guild_id, clone_id, user_id, role_id, base_name, font_style, color_hex, icon,
+            )
+
+    async def is_custom_role_feature_disabled(self, guild_id: int, clone_id: Optional[int] = None) -> bool:
+        """/customroleadmin's kill switch — lets a server owner turn the
+        whole perk off (e.g. they don't want paying members' roles visually
+        ranked above others) without affecting any other guild."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT disabled FROM discord_custom_role_settings WHERE guild_id = $1 "
+                "AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+            return bool(row and row["disabled"])
+
+    async def set_custom_role_feature_disabled(self, guild_id: int, disabled: bool,
+                                                clone_id: Optional[int] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_custom_role_settings (guild_id, clone_id, disabled, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
+                    disabled = $3, updated_at = NOW()
+                """,
+                guild_id, clone_id, disabled,
             )
 
     async def set_welcome_wizard_pointer(
