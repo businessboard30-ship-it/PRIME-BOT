@@ -292,6 +292,16 @@ SELAR_PRODUCT_LINKS = {
     "discord_clone_monetization": "https://selar.com/3ic91865s1",
     # Real $3.99 Custom Role product on Selar.
     "custom_role": "https://selar.com/25619x5078",
+    # Music Pro ($4.99/server, one-time) — previously its own bespoke link
+    # button (music_pro_payment_url_for_guild) with no pending-payment
+    # record and a manual /activate-pro command. Folded into the same
+    # start_manual_payment/OAuth-confirmation flow as everything else here
+    # — see discord_bot/cogs/_views_music_panel.py's Upgrade-to-Pro button
+    # and payments_manual.py's UNLOCK_HANDLERS["music_pro"]. Same literal
+    # URL as MUSIC_PRO_PAYMENT_URL below (that one is defined further down
+    # this file, so it can't be referenced here directly without a forward-
+    # reference NameError at import time).
+    "music_pro": "https://selar.com/61l8115885",
 }
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):
@@ -382,6 +392,13 @@ DISCORD_OWNER_BRAND_NAME = os.getenv("DISCORD_OWNER_BRAND_NAME", "the bot owner"
 # owner join DM wizard (discord_bot/cogs/_views_join_dm.py). Empty string
 # means the button is simply omitted rather than sent broken.
 DISCORD_SUPPORT_SERVER_INVITE = os.getenv("DISCORD_SUPPORT_SERVER_INVITE", "https://discord.gg/DYfajXrP9B")
+# Frontend (dash-production) equivalent of the line above — Next.js only
+# inlines env vars prefixed NEXT_PUBLIC_ at build time, so this can't just
+# reuse DISCORD_SUPPORT_SERVER_INVITE from this (backend) process; set it
+# separately on the frontend Railway service. Read by
+# app/unlock/unlock-status.tsx as the default support-server link shown
+# before a clone-specific one (if any) comes back from api/selar_submit.
+NEXT_PUBLIC_SUPPORT_SERVER_INVITE = os.getenv("NEXT_PUBLIC_SUPPORT_SERVER_INVITE", DISCORD_SUPPORT_SERVER_INVITE)
 
 # Music Pro upgrade — $4.99 one-time, per-SERVER (not per-member), via
 # Selar. No webhook wired up yet, so paying doesn't auto-activate — an
