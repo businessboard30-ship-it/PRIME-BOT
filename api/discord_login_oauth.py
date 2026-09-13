@@ -90,6 +90,7 @@ async def _handle(query: dict) -> tuple[int, str]:
     state = query.get("state", [None])[0]
     error = query.get("error", [None])[0]
     session_param = query.get("session", [None])[0]
+    return_to_param = query.get("return_to", [None])[0]
 
     # Leg 3: /login/servers fetching its own already-computed results.
     if session_param and code_param is None and state is None:
@@ -108,7 +109,16 @@ async def _handle(query: dict) -> tuple[int, str]:
             return 200, "<h2>Sign-in isn't set up yet.</h2>"
         import secrets as _secrets
         oauth_state = _secrets.token_urlsafe(24)
-        await db.create_login_oauth_state(oauth_state)
+        # Only accept an in-app relative path (starts with '/', no '://')
+        # as return_to — never redirect somewhere this handler didn't
+        # already decide on itself, since a caller-supplied full URL here
+        # would be an open redirect.
+        safe_return_to = (
+            return_to_param
+            if return_to_param and return_to_param.startswith("/") and "://" not in return_to_param
+            else None
+        )
+        await db.create_login_oauth_state(oauth_state, return_to=safe_return_to)
         params = {
             "client_id": DISCORD_OAUTH_CLIENT_ID,
             "redirect_uri": DISCORD_LOGIN_OAUTH_REDIRECT_URI,
@@ -124,9 +134,16 @@ async def _handle(query: dict) -> tuple[int, str]:
     if not state:
         return 400, "<h2>Missing sign-in state.</h2>"
 
-    ok = await db.pop_login_oauth_state(state)
-    if not ok:
+    popped_state = await db.pop_login_oauth_state(state)
+    if not popped_state:
         return 302, _redirect_to_login_error("That sign-in link expired. Try again.")
+    return_to = popped_state.get("return_to")
+
+    def _session_redirect(session_id: str) -> str:
+        if return_to:
+            sep = "&" if "?" in return_to else "?"
+            return f"{DASHBOARD_BASE_URL}{return_to}{sep}session={session_id}"
+        return f"{DASHBOARD_BASE_URL}/login/servers?session={session_id}"
 
     try:
         timeout = aiohttp.ClientTimeout(total=10)
@@ -195,7 +212,7 @@ async def _handle(query: dict) -> tuple[int, str]:
 
     if not manageable:
         session_id = await db.create_login_session({"user": user_info, "guilds": []})
-        return 302, f"{DASHBOARD_BASE_URL}/login/servers?session={session_id}"
+        return 302, _session_redirect(session_id)
 
     guild_ids = [int(g["id"]) for g in manageable]
     active_clones = await db.get_active_clone_for_guilds(guild_ids)
@@ -244,7 +261,7 @@ async def _handle(query: dict) -> tuple[int, str]:
         })
 
     session_id = await db.create_login_session({"user": user_info, "guilds": results})
-    return 302, f"{DASHBOARD_BASE_URL}/login/servers?session={session_id}"
+    return 302, _session_redirect(session_id)
 
 
 async def _handle_delete(query: dict) -> tuple[int, str]:
