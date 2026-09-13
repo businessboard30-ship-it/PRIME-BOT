@@ -36,8 +36,9 @@ from http.server import BaseHTTPRequestHandler
 
 from database import db
 from config import (
-    DISCORD_CLONE_ADMIN_IDS, DISCORD_BOT_TOKEN,
+    DISCORD_CLONE_ADMIN_IDS, DISCORD_BOT_TOKEN, DISCORD_SUPPORT_SERVER_INVITE,
     WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, CLONE_MONETIZATION_FEE_GHS, CLONE_BOT_FEE_GHS,
+    MUSIC_PRO_PRICE_LABEL,
 )
 from discord_bot.dm_send import dm_user_with_buttons
 
@@ -53,7 +54,30 @@ _AMOUNT_DISPLAY = {
     "ultra_welcome_pack": f"${ULTRA_PACK_FEE_USD:g} USD",
     "discord_clone_monetization": f"₵{CLONE_MONETIZATION_FEE_GHS:g} GHS",
     "discord_clone": f"₵{CLONE_BOT_FEE_GHS:g} GHS",
+    "music_pro": MUSIC_PRO_PRICE_LABEL,
 }
+
+
+async def _resolve_brand(clone_id) -> dict:
+    """Which support server / name /unlock should show for this purchase.
+    A clone's own custom_data (see database.py's discord_cloned_bots.
+    custom_data comment) can override both; falls back to the main
+    PRIME-BOT support server and no brand name at all (frontend just shows
+    generic copy) when there's no clone, or the clone hasn't set these."""
+    if clone_id:
+        clone = await db.get_discord_clone(clone_id)
+        if clone:
+            custom_data = clone.get("custom_data") or {}
+            if isinstance(custom_data, str):
+                try:
+                    custom_data = json.loads(custom_data)
+                except (TypeError, ValueError):
+                    custom_data = {}
+            return {
+                "support_server_invite": custom_data.get("support_server_invite") or DISCORD_SUPPORT_SERVER_INVITE,
+                "brand_name": custom_data.get("bot_name") or clone.get("bot_username"),
+            }
+    return {"support_server_invite": DISCORD_SUPPORT_SERVER_INVITE, "brand_name": None}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -136,12 +160,14 @@ class handler(BaseHTTPRequestHandler):
         if outcome == "already_claimed":
             status = (row or {}).get("status", "pending")
             reference = (row or {}).get("paystack_reference", "")
-            self._json(200, {"status": status, "reference": reference, "submitted": True, "notified": False})
+            brand = asyncio.run(_resolve_brand((row or {}).get("clone_id")))
+            self._json(200, {"status": status, "reference": reference, "submitted": True, "notified": False, **brand})
             return
 
         # outcome == "claimed"
         reference = row["paystack_reference"]
         amount_display = _AMOUNT_DISPLAY.get(payment_type, payment_type.replace("_", " ").title())
+        brand = asyncio.run(_resolve_brand(row.get("clone_id")))
         try:
             asyncio.run(_notify_approvers(row, amount_display))
         except Exception as e:
@@ -150,7 +176,7 @@ class handler(BaseHTTPRequestHandler):
             # via its 'awaiting_review' status and approve manually.
             logger.error(f"[selar-submit] failed to notify approvers for reference {reference}: {e}")
 
-        self._json(200, {"status": "awaiting_review", "reference": reference, "submitted": True, "notified": True})
+        self._json(200, {"status": "awaiting_review", "reference": reference, "submitted": True, "notified": True, **brand})
 
     def log_message(self, format, *args):
         logger.debug(f"[selar-submit] {format % args}")
