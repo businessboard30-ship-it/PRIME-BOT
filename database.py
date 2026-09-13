@@ -8742,6 +8742,31 @@ class Database:
         self._leveling_config_cache[cache_key] = (d, time.monotonic())
         return d
 
+    async def get_guild_leveling_announce_channels(self, guild_id: int) -> List[Dict]:
+        """Returns every (clone_id, announce_channel_id, announce_auto_created)
+        row across ALL clones/main-bot for this guild that has a
+        non-null announce_channel_id — i.e. every candidate "level-ups"
+        channel any process has ever recorded for this guild, regardless
+        of which clone_id owns it.
+
+        Used by leveling.py's _ensure_announce_channel so that when the
+        main bot and one or more clones are all running in the same
+        guild, they share a single auto-created #level-ups channel
+        instead of each clone_id creating its own — discord_leveling_config
+        is keyed per (guild_id, clone_id), so without this cross-clone
+        lookup each process only ever sees its own row and independently
+        concludes no channel exists yet.
+        """
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT clone_id, announce_channel_id, announce_auto_created "
+                "FROM discord_leveling_config "
+                "WHERE guild_id = $1 AND announce_channel_id IS NOT NULL",
+                guild_id,
+            )
+            return [dict(r) for r in rows]
+
     async def set_leveling_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
         """fields may include announce_channel_id, announce_auto_created,
         xp_rate, card_style, wizard_channel_id, wizard_message_id,
