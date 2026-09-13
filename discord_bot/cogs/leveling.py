@@ -111,6 +111,20 @@ class LevelingCog(GuildOnlyCog):
         replace their choice with a new auto-created one — falls back to
         message.channel for that one send, same as before, so it doesn't
         override a deliberate admin decision without them noticing.
+
+        discord_leveling_config is keyed per (guild_id, clone_id), so the
+        main bot and every clone running in the same guild each have
+        their own row here — without the cross-clone check below, each
+        one independently sees no announce_channel_id set on ITS row and
+        creates its own separate #level-ups channel the first time
+        someone levels up on that process. Before creating anything, we
+        check every OTHER clone_id's config for this guild (via
+        get_guild_leveling_announce_channels) for a channel that still
+        actually exists, and adopt it into our own config instead of
+        making a new one. A manually-picked (non-auto-created) channel
+        wins over an auto-created one, since that reflects a deliberate
+        admin choice made on whichever process the admin happened to
+        configure.
         """
         existing_id = config.get("announce_channel_id")
         if existing_id:
@@ -119,6 +133,31 @@ class LevelingCog(GuildOnlyCog):
                 return found
             if not config.get("announce_auto_created"):
                 return None
+
+        # No usable channel recorded under THIS clone_id yet — see if the
+        # main bot or another clone in this same guild already has one
+        # before creating a brand new #level-ups channel.
+        candidates = await db.get_guild_leveling_announce_channels(guild.id)
+        manual_match = None
+        auto_match = None
+        for row in candidates:
+            if row["clone_id"] == clone_id:
+                continue  # our own row, already checked above
+            found = guild.get_channel(int(row["announce_channel_id"]))
+            if found is None:
+                continue  # stale reference on that clone's config; skip
+            if row["announce_auto_created"]:
+                auto_match = auto_match or found
+            else:
+                manual_match = manual_match or found
+        reused = manual_match or auto_match
+        if reused is not None:
+            await db.set_leveling_config(
+                guild.id, clone_id=clone_id,
+                announce_channel_id=reused.id,
+                announce_auto_created=(reused is auto_match),
+            )
+            return reused
 
         if not guild.me.guild_permissions.manage_channels:
             return None
