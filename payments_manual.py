@@ -6,31 +6,42 @@ Shape: a caller (views_card_pack.py's ultra/card-pack flow, clone_admin.py's
 /registerclone flow, etc.) calls start_manual_payment() instead of
 resolve_gateway()+initialize_payment(). That logs a pending payment the
 same way the automatic path does (db.log_payment, provider="selar") and
-sends the buyer a DM with a "Pay on Selar" link — nothing else. Confirmation
-now happens entirely on the web, not in Discord:
+sends the buyer a DM with a plain "Pay on Selar" link — nothing else.
+Confirmation happens entirely on the web, not in Discord:
 
-  1. Buyer taps "Pay on Selar". The link carries a `redirect_url` pointing
-     back at api/selar_redirect.py, with the reference/payment_type/buyer
-     id/target and an HMAC signature (utils/selar_signing.py) baked in —
-     Selar hands the browser straight back to that URL once checkout
-     completes.
-  2. api/selar_redirect.py checks the signature and format, then forwards
-     the browser to the Next.js frontend's /unlock page. That page is only
-     ever reachable with a *valid* signed reference this way — someone
-     guessing a reference format (they're visible in the Selar dashboard's
-     buyer-email trick below) and hitting /unlock directly gets rejected,
-     because they have no way to produce a signature api/selar_redirect
-     would have accepted.
-  3. /unlock's own "I've Paid" button (web, not Discord) posts to
-     api/selar_submit.py, which re-checks the same signature, atomically
-     claims the payment for review (db.claim_manual_payment_for_review —
-     a second tap, or a page reload + resubmit, is a no-op instead of a
-     second admin DM), and DMs every approver.
-  4. Tapping Approve/Reject in that DM calls this payment_type's entry in
+  1. Buyer taps "Pay on Selar" in the DM. This is a bare Selar checkout
+     link — Selar's product-level "redirect after purchase" is a single
+     STATIC url per product (confirmed: nothing is appended to it, no
+     per-buyer query params), so unlike the old design there is nothing
+     dynamic to bake into the link itself. Each Selar product's own Custom
+     Checkout Form asks the buyer to type their Discord username and
+     server name — that's the human-readable evidence an admin cross-checks
+     against the Selar dashboard later; see _prefilled_selar_link.
+  2. The moment the button is shown (before the buyer ever leaves Discord),
+     this module already wrote a 'pending' payment_logs row keyed by
+     (user_id, payment_type[, chat_id=guild_id][, clone_id]) via
+     db.log_payment — that row is what the web step below matches against.
+  3. Selar redirects EVERY buyer of that product to the same static
+     .../unlock?payment_type=<type> page on the Next.js frontend
+     (app/unlock/unlock-status.tsx). That page asks the buyer to sign in
+     with Discord (reusing api/discord_login_oauth.py) — this is the only
+     identity check the web step has, since Selar's redirect carries none.
+  4. Once signed in, the buyer taps "I've Paid". That posts to
+     api/selar_submit.py with their OAuth session id + payment_type.
+     selar_submit resolves the real Discord user_id from the session
+     server-side (never trusts anything the browser sent directly), looks
+     up db.get_latest_pending_selar_payment(user_id, payment_type) — the
+     row from step 2 — and atomically claims it for review
+     (db.claim_manual_payment_for_review; a second tap/reload is a no-op
+     instead of a second admin DM), then DMs every approver.
+  5. Tapping Approve/Reject in that DM calls this payment_type's entry in
      UNLOCK_HANDLERS — the SAME unlock functions the automatic path
      already calls after a gateway confirms — so nothing about what "paid"
      means diverges between the two modes; only how a payment gets
-     *confirmed* differs.
+     *confirmed* differs. The admin still double-checks against the Selar
+     dashboard's buyer-typed username/server name before approving —
+     that's the actual fraud check; the OAuth match only proves WHICH
+     Discord account is tapping "I've Paid", not that they actually paid.
 
 Approve/Reject are discord.ui.DynamicItems (not a plain View), so they
 survive a bot restart: the DM itself is sent over plain REST from
@@ -43,10 +54,15 @@ _RoastApproveButton for the closest precedent).
 
 Not wired to a Selar webhook — Selar currently provides no webhook
 delivery, so confirmation is always a human tapping Approve after checking
-the Selar dashboard. The only thing the web step buys over the old
-Discord-DM "I've Paid" button is that it forces exactly one signed,
-tamper-evident submission per completed checkout instead of trusting
-whatever the buyer's Discord client sends.
+the Selar dashboard. The web step's job is narrower than in the old
+signed-redirect design: it no longer proves a specific checkout completed
+(Selar's static redirect can't tell us that), it only identifies WHO is
+claiming to have paid, cheaply, instead of trusting whatever the buyer's
+Discord client sends with zero verification at all.
+
+utils/selar_signing.py and api/selar_redirect.py implement the OLD
+signed-redirect design and are no longer part of this live path — left in
+place rather than deleted; safe to remove in a follow-up.
 """
 
 import logging
@@ -58,8 +74,7 @@ from urllib.parse import urlencode
 import discord
 
 from database import db
-from config import SELAR_PRODUCT_LINKS, DISCORD_CLONE_ADMIN_IDS, PUBLIC_BASE_URL
-from utils.selar_signing import sign_selar_target
+from config import SELAR_PRODUCT_LINKS, DISCORD_CLONE_ADMIN_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -78,33 +93,22 @@ def _prefilled_selar_link(payment_type: str, user_id: int, guild_id: Optional[in
                            clone_id: Optional[int], reference: str) -> Optional[str]:
     """Appends add_to_cart=1 + a synthetic email carrying the Discord user
     id, same trick views_card_pack.py already uses for Paystack
-    (f"user_{user.id}@animebot.com") — Selar has no raw 'reference' field,
-    so this doubles as one: whatever shows in the Selar dashboard's buyer
-    email is the Discord id to match against, for an admin eyeballing the
+    (f"user_{user.id}@animebot.com") — whatever shows in the Selar
+    dashboard's buyer email is the Discord id, for an admin eyeballing the
     dashboard directly.
 
-    Also appends redirect_url — a signed link back to api/selar_redirect.py
-    — so Selar hands the buyer's browser back to us once checkout
-    completes, instead of leaving them stranded on Selar's own confirmation
-    page with no way to get to a confirmation step at all."""
+    No redirect_url param anymore: Selar's product-level "redirect after
+    purchase" is a single static URL per product (set once, in the Selar
+    dashboard itself — see 011_selar_static_redirect_flow.sql), so there is
+    nothing dynamic left to append here. guild_id/clone_id/reference are
+    unused by the link itself now — they're only needed by the caller to
+    write the matching db.log_payment row (see start_manual_payment)."""
     base = SELAR_PRODUCT_LINKS.get(payment_type)
     if not base:
         return None
-    signature, ts = sign_selar_target(reference, payment_type, user_id, guild_id, clone_id)
-    redirect_params = {
-        "reference": reference, "payment_type": payment_type, "buyer_id": user_id,
-        "sig": signature, "ts": ts,
-    }
-    if guild_id is not None:
-        redirect_params["guild_id"] = guild_id
-    if clone_id is not None:
-        redirect_params["clone_id"] = clone_id
-    redirect_url = f"{PUBLIC_BASE_URL}/api/selar_redirect?{urlencode(redirect_params)}"
-
     params = {
         "add_to_cart": "1",
         "email": f"user_{user_id}@animebot.com",
-        "redirect_url": redirect_url,
     }
     sep = "&" if "?" in base else "?"
     return f"{base}{sep}{urlencode(params)}"
@@ -319,6 +323,7 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
     await db.log_payment(
         user.id, 0.0, reference, status="pending",
         payment_type=payment_type, chat_id=guild_id, provider=PROVIDER,
+        clone_id=clone_id,
     )
 
     pay_view = discord.ui.View(timeout=None)
