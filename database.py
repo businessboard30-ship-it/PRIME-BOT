@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "14"
+SCHEMA_VERSION = "15"
 # History (why this matters): "9" -> "10" fixed report_notify_config's
 # dm_user_id column and server_listing_votes' unique-index migration —
 # both had been sitting in _create_tables for a while but never actually
@@ -162,7 +162,9 @@ SCHEMA_VERSION = "14"
 # "Build Bot" flow tried to register a clone. "13" -> "14" adds the
 # 010_custom_roles.sql migration (discord_custom_roles +
 # discord_custom_role_settings tables for /customrole) — same bump-or-it-
-# never-runs trap as above.
+# never-runs trap as above. "14" -> "15" adds
+# 011_custom_role_panel.sql (panel_channel_id/panel_message_id columns on
+# discord_custom_role_settings, for the join-DM "Custom Role" panel).
 # Rule going forward: ANY new CREATE TABLE / ALTER TABLE / CREATE INDEX
 # added to _create_tables MUST come with a version bump in the same
 # change, or it's dead code that silently never executes.
@@ -4338,6 +4340,13 @@ class Database:
         if custom_roles_migration.exists():
             await conn.execute(custom_roles_migration.read_text())
 
+        # Custom Role perk — panel channel/message tracking, additive on
+        # top of 010 above (see discord_bot/cogs/_views_join_dm.py's
+        # _enable_custom_role_panel).
+        custom_role_panel_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "011_custom_role_panel.sql"
+        if custom_role_panel_migration.exists():
+            await conn.execute(custom_role_panel_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -8445,6 +8454,33 @@ class Database:
                     disabled = $3, updated_at = NOW()
                 """,
                 guild_id, clone_id, disabled,
+            )
+
+    async def get_custom_role_panel(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[dict]:
+        """Returns {"panel_channel_id", "panel_message_id"} (or None) —
+        used by _enable_custom_role_panel to avoid creating a second
+        #custom-roles channel if one's already set up."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT panel_channel_id, panel_message_id FROM discord_custom_role_settings "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+            return dict(row) if row else None
+
+    async def set_custom_role_panel(self, guild_id: int, channel_id: int, message_id: int,
+                                     clone_id: Optional[int] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_custom_role_settings (guild_id, clone_id, panel_channel_id, panel_message_id, updated_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
+                    panel_channel_id = $3, panel_message_id = $4, updated_at = NOW()
+                """,
+                guild_id, clone_id, channel_id, message_id,
             )
 
     async def set_welcome_wizard_pointer(
