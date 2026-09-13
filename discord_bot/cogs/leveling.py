@@ -248,12 +248,9 @@ class LevelingCog(GuildOnlyCog):
             await interaction.followup.send("No XP earned yet.", ephemeral=True)
             return
 
-        from discord_bot.cogs._views_leaderboard_links import LeaderLinkPromptView
-
         embed = discord.Embed(title="🏆 XP leaderboard", color=discord.Color.gold())
         lines = []
         view = discord.ui.View(timeout=None)
-        to_prompt = []
 
         for i, row in enumerate(rows, start=1):
             member = interaction.guild.get_member(row["user_id"])
@@ -265,27 +262,12 @@ class LevelingCog(GuildOnlyCog):
                 view.add_item(discord.ui.Button(
                     label=f"#{i} · {name}'s server", style=discord.ButtonStyle.link, url=link["invite_url"]
                 ))
-            elif link is None and member is not None:
-                to_prompt.append(member)
 
         embed.description = "\n".join(lines)
         if view.children:
             await interaction.followup.send(embed=embed, view=view)
         else:
             await interaction.followup.send(embed=embed)
-
-        # DM prompts happen after the leaderboard is already sent — a slow
-        # or blocked DM shouldn't delay the public response, and members
-        # with DMs closed just get skipped silently (Forbidden).
-        for member in to_prompt:
-            try:
-                await member.send(
-                    f"You're in the top 10 on **{interaction.guild.name}**'s leaderboard. Want to add your "
-                    "server's invite link so others can check it out from `/leaderboard`?",
-                    view=LeaderLinkPromptView(interaction.guild_id, clone_id, interaction.guild.name),
-                )
-            except (discord.Forbidden, discord.HTTPException):
-                pass
 
     group = app_commands.guild_only()(app_commands.Group(name="levelrole", description="Configure level-up role rewards"))
 
