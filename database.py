@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "18"
+SCHEMA_VERSION = "19"
 # History (why this matters): "9" -> "10" fixed report_notify_config's
 # dm_user_id column and server_listing_votes' unique-index migration —
 # both had been sitting in _create_tables for a while but never actually
@@ -188,6 +188,11 @@ SCHEMA_VERSION = "18"
 # Rule going forward: ANY new CREATE TABLE / ALTER TABLE / CREATE INDEX
 # added to _create_tables MUST come with a version bump in the same
 # change, or it's dead code that silently never executes.
+# "18" -> "19" adds discord_leveling_config.leaderboard_autopost_channel_id
+# and .leaderboard_last_posted_at (ALTER TABLE ADD COLUMN IF NOT EXISTS) for
+# the daily automatic /leaderboard post — see get_due_leaderboard_autoposts
+# and leveling.py's _leaderboard_autopost_loop. Same bump-or-it-never-runs
+# trap as above.
 
 
 async def get_pool():
@@ -1983,6 +1988,17 @@ class Database:
         )
         await conn.execute(
             "ALTER TABLE discord_leveling_config ADD COLUMN IF NOT EXISTS wizard_invoker_id BIGINT"
+        )
+        # leaderboard_autopost_channel_id: opt-in "post /leaderboard here once
+        # a day automatically" channel, NULL = off. Reuses this same
+        # per-(guild_id, clone_id) config row rather than a whole new table —
+        # one more nullable column, not a new join, for get_due_leaderboard_
+        # autoposts below to scan.
+        await conn.execute(
+            "ALTER TABLE discord_leveling_config ADD COLUMN IF NOT EXISTS leaderboard_autopost_channel_id BIGINT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_leveling_config ADD COLUMN IF NOT EXISTS leaderboard_last_posted_at TIMESTAMPTZ"
         )
 
         # --- Leaderboard server links (feature expansion) -------------------
@@ -8737,6 +8753,7 @@ class Database:
                     "announce_channel_id": None, "announce_auto_created": False,
                     "xp_rate": "default", "card_style": "card",
                     "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
+                    "leaderboard_autopost_channel_id": None, "leaderboard_last_posted_at": None,
                 }
 
         self._leveling_config_cache[cache_key] = (d, time.monotonic())
@@ -8783,14 +8800,53 @@ class Database:
                 """
                 INSERT INTO discord_leveling_config
                     (guild_id, clone_id, announce_channel_id, announce_auto_created, xp_rate, card_style,
-                     wizard_channel_id, wizard_message_id, wizard_invoker_id, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                     wizard_channel_id, wizard_message_id, wizard_invoker_id, leaderboard_autopost_channel_id, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
                     announce_channel_id = $3, announce_auto_created = $4, xp_rate = $5, card_style = $6,
-                    wizard_channel_id = $7, wizard_message_id = $8, wizard_invoker_id = $9, updated_at = NOW()
+                    wizard_channel_id = $7, wizard_message_id = $8, wizard_invoker_id = $9,
+                    leaderboard_autopost_channel_id = $10, updated_at = NOW()
                 """,
                 guild_id, clone_id, merged["announce_channel_id"], merged["announce_auto_created"], merged["xp_rate"],
                 merged["card_style"], merged["wizard_channel_id"], merged["wizard_message_id"], merged["wizard_invoker_id"],
+                merged["leaderboard_autopost_channel_id"],
+            )
+        self._leveling_config_cache.pop((guild_id, clone_id), None)
+
+    async def get_due_leaderboard_autoposts(self, clone_id: Optional[int], limit: int = 10) -> List[Dict]:
+        """Single batched query (not one per guild) for guilds whose daily
+        leaderboard auto-post is due — same shape as get_due_discord_
+        autoposts. NULL leaderboard_last_posted_at (never posted) counts as
+        due immediately. Scoped to this process's clone_id so the main bot
+        and clones don't double-post in a shared guild."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT guild_id, clone_id, leaderboard_autopost_channel_id
+                FROM discord_leveling_config
+                WHERE leaderboard_autopost_channel_id IS NOT NULL
+                AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                AND (
+                    leaderboard_last_posted_at IS NULL
+                    OR NOW() - leaderboard_last_posted_at >= INTERVAL '24 hours'
+                )
+                ORDER BY leaderboard_last_posted_at NULLS FIRST
+                LIMIT $2
+                """,
+                clone_id, limit,
+            )
+            return [dict(r) for r in rows]
+
+    async def mark_leaderboard_posted(self, guild_id: int, clone_id: Optional[int]) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE discord_leveling_config SET leaderboard_last_posted_at = NOW()
+                WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)
+                """,
+                guild_id, clone_id,
             )
         self._leveling_config_cache.pop((guild_id, clone_id), None)
 
