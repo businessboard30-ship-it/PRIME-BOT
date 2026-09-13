@@ -30,9 +30,9 @@ from utils.crypto import secret_manager
 from payments_manual import start_manual_payment
 from payments import paystack
 from config import (
-    DISCORD_CLONE_FEE_GHS, DISCORD_CLONE_FREE_EVERY_NTH, DISCORD_CLONE_ADMIN_IDS,
-    CLONE_MONETIZATION_FEE_GHS, CLONE_MONETIZATION_DAYS, PRICE_REGISTRY,
-    DISCORD_OWNER_BROADCAST_IDS, SELAR_PRODUCT_LINKS,
+    DISCORD_CLONE_ACTIVATION_FEE_USD, DISCORD_CLONE_FREE_EVERY_NTH, DISCORD_CLONE_ADMIN_IDS,
+    CLONE_MONETIZATION_FEE_GHS, CLONE_MONETIZATION_FEE_USD, CLONE_MONETIZATION_DAYS, PRICE_REGISTRY,
+    DISCORD_OWNER_BROADCAST_IDS, SELAR_PRODUCT_LINKS, PAYMENT_MODE,
 )
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 
@@ -123,7 +123,7 @@ async def register_clone_token(interaction: discord.Interaction, token: str, own
     )
     await start_manual_payment(
         interaction, "discord_clone",
-        amount_display=f"GHS {DISCORD_CLONE_FEE_GHS}",
+        amount_display=f"${DISCORD_CLONE_ACTIVATION_FEE_USD}",
         reference=reference,
     )
 
@@ -381,7 +381,7 @@ class CloneAdminCog(commands.Cog):
         else:
             await interaction.followup.send(
                 f"💰 Monetization is **not active** on clone `#{clone_id}`.\n\n"
-                f"Activating (GHS {CLONE_MONETIZATION_FEE_GHS}/month) unlocks:\n"
+                f"Activating ({'$' + str(CLONE_MONETIZATION_FEE_USD) if PAYMENT_MODE == 'manual' else f'GHS {CLONE_MONETIZATION_FEE_GHS}/month'}) unlocks:\n"
                 f"• Connecting your own Stripe key, or a plain payment link, so purchases pay you directly\n"
                 f"• Setting your own prices for this bot's paid features\n\n"
                 f"Until activated, this clone's payments go through the main bot's account at default prices — "
@@ -449,10 +449,11 @@ class CloneAdminCog(commands.Cog):
             await db.log_payment(
                 interaction.user.id, 0.0, reference, status="pending",
                 payment_type="discord_clone_monetization", provider="selar",
+                clone_id=clone_id,
             )
             # No guild_id (account-level purchase) — clone_id IS passed so
-            # the signed redirect_url and the eventual admin DM can scope
-            # to this specific clone, same as views_card_pack.py's calls.
+            # the eventual admin DM and web /unlock branding can scope to
+            # this specific clone, same as views_card_pack.py's calls.
             link = _prefilled_selar_link("discord_clone_monetization", interaction.user.id, None, clone_id, reference)
             if not link:
                 await interaction.followup.send(
@@ -464,7 +465,7 @@ class CloneAdminCog(commands.Cog):
             pay_view = discord.ui.View(timeout=None)
             pay_view.add_item(discord.ui.Button(label="💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
             await interaction.followup.send(
-                f"**Activate Monetization — GHS {CLONE_MONETIZATION_FEE_GHS}/month** for clone `#{clone_id}`.\n\n"
+                f"**Activate Monetization — ${CLONE_MONETIZATION_FEE_USD}** for clone `#{clone_id}`.\n\n"
                 f"Tap **Pay on Selar** and complete checkout — you'll be redirected to a confirmation "
                 f"page where tapping **I've Paid** sends it for review.",
                 view=pay_view, ephemeral=True,
