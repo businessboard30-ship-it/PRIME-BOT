@@ -1,3 +1,5 @@
+# path: payments_manual.py
+
 """Manual payment path (Selar + web confirmation + DM approval), used
 whenever config.PAYMENT_MODE == "manual" instead of the Paystack/Stripe
 flow in payments.py/resolve_gateway().
@@ -391,6 +393,18 @@ async def _unlock_music_pro(reference: str, buyer_id: int, guild_id: Optional[in
     await db.set_guild_pro(guild_id, True, buyer_id, clone_id=clone_id)
 
 
+async def _unlock_xp_boost(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """Per-user, per-guild temporary XP multiplier (see
+    leveling-boost-build-prompt.md §2 and database/migrations/013_xp_boost.
+    sql's discord_xp_boosts table). guild_id is required — the boost only
+    applies in the server it was bought from, so
+    discord_bot/cogs/_views_music_panel.py-style buttons for this
+    payment_type must call start_manual_payment with
+    guild_id=interaction.guild.id, same as custom_role/music_pro above."""
+    from config import XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS
+    await db.activate_xp_boost(guild_id, buyer_id, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS, clone_id=clone_id)
+
+
 UNLOCK_HANDLERS = {
     "welcome_card_pack": _unlock_welcome_card_pack,
     "ultra_welcome_pack": _unlock_ultra_pack,
@@ -398,4 +412,5 @@ UNLOCK_HANDLERS = {
     "discord_clone_monetization": _unlock_discord_clone_monetization,
     "custom_role": _unlock_custom_role,
     "music_pro": _unlock_music_pro,
+    "xp_boost": _unlock_xp_boost,
 }
