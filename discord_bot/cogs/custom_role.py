@@ -3,11 +3,13 @@ who already paid (see payments_manual.py's "custom_role" UNLOCK_HANDLERS
 entry), or shows a Selar "buy" button for one who hasn't yet — same
 one-time, self-serve-forever shape as the welcome/ultra packs, just scoped
 per-user instead of per-guild. /customroleadmin lets a server owner turn
-the whole feature off for their guild.
+the whole feature off. The persistent #custom-roles panel (posted via the
+join-DM "Custom Role" quickstart button, see _views_join_dm.py) hits the
+exact same launch_custom_role() entry point as this slash command.
 
-See discord_bot/cogs/_views_custom_role.py for the wizard itself and
-config.py's CUSTOM_ROLE_FEE_USD / CUSTOM_ROLE_FONT_STYLES / CUSTOM_ROLE_COLOR_PALETTE
-for pricing and styling data.
+See discord_bot/cogs/_views_custom_role.py for the wizard, the panel
+button, and config.py's CUSTOM_ROLE_FEE_USD / CUSTOM_ROLE_FONT_STYLES /
+CUSTOM_ROLE_COLOR_PALETTE for pricing and styling data.
 """
 
 import logging
@@ -17,25 +19,9 @@ from discord import app_commands
 from discord.ext import commands
 
 from database import db
-from config import CUSTOM_ROLE_FEE_USD
-from payments_manual import start_manual_payment
-from discord_bot.cogs._views_custom_role import CustomRoleWizardView
+from discord_bot.cogs._views_custom_role import launch_custom_role
 
 logger = logging.getLogger(__name__)
-
-
-class _BuyCustomRoleView(discord.ui.View):
-    def __init__(self, guild_id: int):
-        super().__init__(timeout=120)
-        self.guild_id = guild_id
-
-    @discord.ui.button(label=f"💳 Unlock Custom Role — ${CUSTOM_ROLE_FEE_USD}", style=discord.ButtonStyle.success)
-    async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        await start_manual_payment(
-            interaction, payment_type="custom_role",
-            amount_display=f"${CUSTOM_ROLE_FEE_USD}", guild_id=self.guild_id,
-        )
 
 
 class CustomRoleCog(commands.Cog):
@@ -46,25 +32,7 @@ class CustomRoleCog(commands.Cog):
     @app_commands.guild_only()
     async def customrole(self, interaction: discord.Interaction):
         clone_id = getattr(self.bot, "clone_id", None)
-        guild = interaction.guild
-
-        if await db.is_custom_role_feature_disabled(guild.id, clone_id=clone_id):
-            await interaction.response.send_message(
-                "Custom roles are turned off in this server.", ephemeral=True
-            )
-            return
-
-        entitlement = await db.get_custom_role_entitlement(guild.id, interaction.user.id, clone_id=clone_id)
-        if not entitlement:
-            await interaction.response.send_message(
-                f"Custom Role is a one-time **${CUSTOM_ROLE_FEE_USD}** unlock — style your own role "
-                "(name, font, color, optional icon) anytime after via this same command, unlimited edits.",
-                view=_BuyCustomRoleView(guild.id), ephemeral=True,
-            )
-            return
-
-        wizard = CustomRoleWizardView(interaction.user.id, guild.id, clone_id, existing=entitlement)
-        await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+        await launch_custom_role(interaction, clone_id)
 
     @app_commands.command(name="customroleadmin", description="Enable or disable the Custom Role feature for this server")
     @app_commands.describe(disabled="True to turn the feature off, False to turn it back on")
