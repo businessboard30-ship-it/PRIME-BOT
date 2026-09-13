@@ -290,7 +290,81 @@ SELAR_PRODUCT_LINKS = {
     "welcome_card_pack": "https://selar.com/t3417c1292",
     "ultra_welcome_pack": "https://selar.com/147d44d7fw",
     "discord_clone_monetization": "https://selar.com/3ic91865s1",
+    # TODO: replace with the real Selar product checkout URL once that
+    # product is created on Selar at CUSTOM_ROLE_FEE_USD — the feature is
+    # non-functional (falls into start_manual_payment's "not set up yet"
+    # branch) until this is a real link.
+    "custom_role": "https://selar.com/REPLACE_ME_custom_role",
 }
+
+# Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):
+# one-time, per-user unlock — buyer pays once, then can (re)style a
+# personal role (name/font/color/icon) forever via the wizard, same
+# "pay once, self-serve forever" shape as welcome_card_pack/ultra_welcome_pack
+# but scoped to one buyer instead of the whole guild. See the design
+# rationale in that cog's module docstring for why this price sits between
+# ULTRA_PACK_FEE_USD and WELCOME_CARD_PACK_FEE_USD.
+CUSTOM_ROLE_FEE_USD = 3.99
+
+# 20 Unicode "font style" transformations for the custom-role wizard's name
+# step (character substitution, not real fonts — renders in any Discord
+# text field). key -> (Display Label, example). The wizard applies each
+# style's mapping table (built from these examples) to whatever name the
+# buyer types; "plain" (no entry needed here) is offered separately by the
+# wizard itself.
+CUSTOM_ROLE_FONT_STYLES = {
+    "bold": ("Bold", "𝗦𝗮𝗺𝗽𝗹𝗲"),
+    "italic": ("Italic", "𝑆𝑎𝑚𝑝𝑙𝑒"),
+    "bold_italic": ("Bold Italic", "𝑺𝒂𝒎𝒑𝒍𝒆"),
+    "serif": ("Serif", "𝑆𝑎𝑚𝑝𝑙𝑒"),
+    "serif_bold": ("Serif Bold", "𝐒𝐚𝐦𝐩𝐥𝐞"),
+    "serif_italic": ("Serif Italic", "𝑆𝑎𝑚𝑝𝑙𝑒"),
+    "serif_bold_italic": ("Serif Bold Italic", "𝑺𝒂𝒎𝒑𝒍𝒆"),
+    "sans": ("Sans Serif", "𝖲𝖺𝗆𝗉𝗅𝖾"),
+    "sans_bold": ("Sans Bold", "𝗦𝗮𝗺𝗽𝗹𝗲"),
+    "sans_italic": ("Sans Italic", "𝘚𝘢𝘮𝘱𝘭𝘦"),
+    "sans_bold_italic": ("Sans Bold Italic", "𝙎𝙖𝙢𝙥𝙡𝙚"),
+    "fraktur": ("Fraktur", "𝔖𝔞𝔪𝔭𝔩𝔢"),
+    "bold_fraktur": ("Bold Fraktur", "𝕾𝖆𝖒𝖕𝖑𝖊"),
+    "script": ("Script", "𝒮𝒶𝓂𝓅𝓁ℯ"),
+    "bold_script": ("Bold Script", "𝓢𝓪𝓶𝓹𝓵𝓮"),
+    "double_struck": ("Double-Struck", "𝕊𝕒𝕞𝕡𝕝𝕖"),
+    "monospace": ("Monospace", "𝙼𝚊𝚖𝚙𝚕𝚎"),
+    "circled": ("Circled", "Ⓢⓐⓜⓟⓛⓔ"),
+    "small_caps": ("Small Caps", "ꜱᴀᴍᴘʟᴇ"),
+    "fullwidth": ("Fullwidth", "Ｓａｍｐｌｅ"),
+}
+
+
+def _build_custom_role_palette() -> dict:
+    """5 hue families x 20 shades = 100 curated hex swatches for the
+    custom-role wizard's color step (Discord's own select-menu cap is 25
+    options, so the wizard asks for a hue family first, then shows a
+    20-option shade select for that family — see custom_role.py). Shades
+    run light -> dark within each family, generated from HSL so they stay
+    visually even rather than hand-picked/arbitrary."""
+    import colorsys
+
+    families = {
+        "Reds": 0, "Oranges/Yellows": 40, "Greens": 120,
+        "Blues/Cyans": 195, "Purples/Pinks": 290,
+    }
+    palette = {}
+    for name, hue in families.items():
+        shades = []
+        for i in range(20):
+            # Sweep lightness 85% -> 20%, fixed high-ish saturation so
+            # every shade reads as a clean, on-brand Discord role color
+            # rather than washed out or muddy.
+            lightness = 0.85 - (i * (0.65 / 19))
+            r, g, b = colorsys.hls_to_rgb(hue / 360, lightness, 0.65)
+            hexcode = "#{:02X}{:02X}{:02X}".format(round(r * 255), round(g * 255), round(b * 255))
+            shades.append(hexcode)
+        palette[name] = shades
+    return palette
+
+
+CUSTOM_ROLE_COLOR_PALETTE = _build_custom_role_palette()
 
 # Who's allowed to run /ownerbroadcast (DM every user across the main bot
 # and every Discord clone). Deliberately separate from DISCORD_CLONE_ADMIN_IDS
