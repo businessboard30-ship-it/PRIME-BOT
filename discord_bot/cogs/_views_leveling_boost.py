@@ -36,7 +36,7 @@ class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^level
         self.clone_id = clone_id
         clone_part = "-" if clone_id is None else str(clone_id)
         super().__init__(discord.ui.Button(
-            label=f"Boost XP — ${app_config.XP_BOOST_FEE_USD:g}", emoji="⚡",
+            label="Boost XP", emoji="⚡",
             style=discord.ButtonStyle.primary,
             custom_id=f"levelboost_xp:{guild_id}:{clone_part}",
         ))
