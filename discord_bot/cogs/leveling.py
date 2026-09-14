@@ -433,7 +433,7 @@ class LevelingCog(GuildOnlyCog):
             guild = self.bot.get_guild(cfg["guild_id"])
             if guild is None:
                 continue
-            channel = guild.get_channel(cfg["leaderboard_autopost_channel_id"])
+            channel = guild.get_channel(cfg["post_channel_id"])
             if channel is None:
                 continue
             try:
