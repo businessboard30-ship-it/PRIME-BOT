@@ -36,12 +36,20 @@ def render_status_lines(config: dict, role_rows: list) -> list:
     announce_id = config.get("announce_channel_id")
     card_label = CARD_STYLE_LABELS.get(config.get("card_style", "card"), CARD_STYLE_LABELS["card"])
     autopost_id = config.get("leaderboard_autopost_channel_id")
+    if autopost_id == -1:
+        autopost_line = "⬜ **Step 5: Daily leaderboard post** — *off*"
+    elif autopost_id:
+        autopost_line = f"✅ **Step 5: Daily leaderboard post** — <#{autopost_id}>, once every 24h"
+    elif announce_id:
+        autopost_line = f"✅ **Step 5: Daily leaderboard post** — <#{announce_id}> (same as announce channel), once every 24h"
+    else:
+        autopost_line = "✅ **Step 5: Daily leaderboard post** — on automatically once leveling starts posting somewhere"
     return [
         f"✅ **Step 1: XP rate** — {rate_label}",
         f"{'✅' if announce_id else '⬜'} **Step 2: Announce channel** — {f'<#{announce_id}>' if announce_id else '*posts in the channel that triggered it*'}",
         f"✅ **Step 3: Level-up announcement** — {card_label}",
         f"{'✅' if role_rows else '⬜'} **Step 4: Role rewards** — {len(role_rows)} configured" if role_rows else "⬜ **Step 4: Role rewards** — none configured",
-        f"{'✅' if autopost_id else '⬜'} **Step 5: Daily leaderboard post** — {f'<#{autopost_id}>, once every 24h' if autopost_id else '*off*'}",
+        autopost_line,
     ]
 
 
@@ -113,10 +121,18 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, role_ro
     autopost_select_row = discord.ui.ActionRow()
     autopost_select_row.add_item(LevelingLeaderboardAutopostChannelSelect(guild_id, clone_id, invoker_id, config))
     items.extend([discord.ui.Separator(), autopost_select_row])
-    if config.get("leaderboard_autopost_channel_id"):
+    # Shown whenever it's not already turned off — this is on by default
+    # (posts to the announce channel automatically, no setup required), so
+    # the disable option needs to be visible in the default state too, not
+    # only after a channel has been explicitly picked.
+    if config.get("leaderboard_autopost_channel_id") != -1:
         autopost_disable_row = discord.ui.ActionRow()
         autopost_disable_row.add_item(LevelingLeaderboardAutopostDisableButton(guild_id, clone_id, invoker_id))
         items.append(autopost_disable_row)
+    else:
+        autopost_enable_row = discord.ui.ActionRow()
+        autopost_enable_row.add_item(LevelingLeaderboardAutopostEnableButton(guild_id, clone_id, invoker_id))
+        items.append(autopost_enable_row)
 
     for item in items:
         container.add_item(item)
@@ -272,8 +288,15 @@ class LevelingLeaderboardAutopostChannelSelect(discord.ui.DynamicItem[discord.ui
         self.clone_id = clone_id
         self.invoker_id = invoker_id
         current = config.get("leaderboard_autopost_channel_id")
+        announce_id = config.get("announce_channel_id")
+        if current and current != -1:
+            placeholder = f"Step 5 — currently <#{current}>, pick to change"
+        elif announce_id:
+            placeholder = f"Step 5 — currently <#{announce_id}> (default), pick to override"
+        else:
+            placeholder = "Step 5 — post the leaderboard here daily"
         super().__init__(discord.ui.ChannelSelect(
-            placeholder="Step 5 — post the leaderboard here daily" if not current else f"Step 5 — currently <#{current}>, pick to change",
+            placeholder=placeholder,
             channel_types=[discord.ChannelType.text],
             min_values=1, max_values=1,
             custom_id=_encode("lbautopost", guild_id, clone_id, invoker_id),
@@ -320,6 +343,35 @@ class LevelingLeaderboardAutopostDisableButton(discord.ui.DynamicItem[discord.ui
     async def callback(self, interaction: discord.Interaction):
         if not await _check_access(interaction, self.invoker_id):
             return
+        # -1 is the explicit "off" sentinel, distinct from NULL/unset (which
+        # means "default on, post to the announce channel automatically").
+        # See get_due_leaderboard_autoposts's docstring in database.py.
+        await db.set_leveling_config(self.guild_id, clone_id=self.clone_id, leaderboard_autopost_channel_id=-1)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class LevelingLeaderboardAutopostEnableButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("lbautoposton")):
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        super().__init__(discord.ui.Button(
+            label="Turn daily leaderboard post back on", style=discord.ButtonStyle.secondary,
+            custom_id=_encode("lbautoposton", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        # Reset to NULL/unset, i.e. back to the default: auto-post to the
+        # announce channel. Doesn't restore a previously-picked override
+        # channel — if they want a specific channel again they can just
+        # pick it from the select above.
         await db.set_leveling_config(self.guild_id, clone_id=self.clone_id, leaderboard_autopost_channel_id=None)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
@@ -415,4 +467,5 @@ DYNAMIC_ITEMS = (
     LevelingXpRateSelect, LevelingAnnounceChannelSelect, LevelingCardStyleSelect,
     LevelingAddRewardButton, LevelingRewardRoleSelect,
     LevelingLeaderboardAutopostChannelSelect, LevelingLeaderboardAutopostDisableButton,
+    LevelingLeaderboardAutopostEnableButton,
 )
