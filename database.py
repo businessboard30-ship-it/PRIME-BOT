@@ -8818,14 +8818,30 @@ class Database:
         leaderboard auto-post is due — same shape as get_due_discord_
         autoposts. NULL leaderboard_last_posted_at (never posted) counts as
         due immediately. Scoped to this process's clone_id so the main bot
-        and clones don't double-post in a shared guild."""
+        and clones don't double-post in a shared guild.
+
+        leaderboard_autopost_channel_id's three states (no setup step
+        needed at all — this is opt-OUT, not opt-in):
+          - NULL (default): post to announce_channel_id automatically, as
+            long as leveling has actually produced one — announce_
+            channel_id gets auto-created the first time anyone levels up
+            (see _ensure_announce_channel), so "leveling is working" and
+            "there's a channel to post the daily leaderboard in" are the
+            same signal. No admin action required.
+          - -1: admin explicitly turned it off via the wizard's disable
+            button — never auto-post here, even though leveling works.
+          - a real channel id: admin picked a different channel via the
+            wizard's ChannelSelect than wherever level-ups themselves post.
+        """
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT guild_id, clone_id, leaderboard_autopost_channel_id
+                SELECT guild_id, clone_id,
+                       COALESCE(NULLIF(leaderboard_autopost_channel_id, -1), announce_channel_id) AS post_channel_id
                 FROM discord_leveling_config
-                WHERE leaderboard_autopost_channel_id IS NOT NULL
+                WHERE COALESCE(leaderboard_autopost_channel_id, -1) != -1
+                AND COALESCE(NULLIF(leaderboard_autopost_channel_id, -1), announce_channel_id) IS NOT NULL
                 AND COALESCE(clone_id, -1) = COALESCE($1, -1)
                 AND (
                     leaderboard_last_posted_at IS NULL
