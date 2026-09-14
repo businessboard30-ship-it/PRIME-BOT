@@ -392,22 +392,20 @@ class LevelingCog(GuildOnlyCog):
         view.add_item(discord.ui.Container(*container_children, accent_colour=discord.Color.blurple()))
         return view, file
 
-    # /leaderboard is a Group, not a plain command, specifically so the
-    # autopost setup/disable commands below can live as subcommands of it
-    # instead of as their own top-level command. Discord's 100-command cap
-    # is a GLOBAL top-level count — subcommands/subgroups inside an existing
-    # group are free (up to 25 each). This bot was already sitting at
-    # exactly 100 top-level commands, so adding "leaderboardpost" as a new
-    # top-level group (the previous version of this code) tipped it over
-    # the limit and crashed the bot on every boot with CommandLimitReached.
-    # Nesting under the existing "leaderboard" name adds zero net top-level
-    # commands. See discord_bot/bot.py's startup crash loop, 2026-09-14.
-    leaderboard_group = app_commands.guild_only()(
-        app_commands.Group(name="leaderboard", description="XP leaderboard")
-    )
-
-    @leaderboard_group.command(name="show", description="Show this server's top 10 XP earners")
-    async def leaderboard_show(self, interaction: discord.Interaction):
+    # Plain command — this used to briefly become a Group (show + autopost
+    # subcommands) so the daily-post config could live under it, but that
+    # changed its shape, and since this bot's DISCORD_DEV_GUILD_ID only
+    # syncs to a single dev guild (see bot.py), every other server kept
+    # Discord's old plain-command registration and crashed with
+    # CommandSignatureMismatch. Reverting to a plain command like this
+    # matches what's still globally registered everywhere, so no global
+    # resync is needed. The daily-post channel is now configured through
+    # the existing /leveling setup wizard instead (see
+    # _views_leveling_wizard.py's "Step 5" ChannelSelect) — no new command
+    # was added for it at all.
+    @app_commands.command(name="leaderboard", description="Show this server's top 10 XP earners")
+    @app_commands.guild_only()
+    async def leaderboard(self, interaction: discord.Interaction):
         await interaction.response.defer()
         clone_id = _clone_id_of(interaction)
         payload = await self._build_leaderboard_payload(interaction.guild, clone_id)
@@ -416,45 +414,6 @@ class LevelingCog(GuildOnlyCog):
             return
         view, file = payload
         await interaction.followup.send(view=view, file=file)
-
-    leaderboard_autopost_group = app_commands.Group(
-        name="autopost", description="Automatically post the XP leaderboard once a day",
-        parent=leaderboard_group,
-    )
-
-    @leaderboard_autopost_group.command(name="setup", description="Post the XP leaderboard automatically, once a day, in a channel")
-    @app_commands.describe(channel="Where to post the daily leaderboard")
-    async def leaderboardpost_setup(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        await interaction.response.defer(ephemeral=True)
-        if not _require_perm(interaction, "manage_guild"):
-            await _deny(interaction, "Manage Server")
-            return
-        perms = channel.permissions_for(interaction.guild.me)
-        if not (perms.send_messages and perms.attach_files):
-            await interaction.followup.send(
-                f"I need **Send Messages** and **Attach Files** permission in {channel.mention} first.",
-                ephemeral=True,
-            )
-            return
-        clone_id = _clone_id_of(interaction)
-        await db.set_leveling_config(interaction.guild_id, clone_id=clone_id, leaderboard_autopost_channel_id=channel.id)
-        await interaction.followup.send(
-            f"✅ I'll post the XP leaderboard in {channel.mention} once a day.", ephemeral=True
-        )
-
-    @leaderboard_autopost_group.command(name="disable", description="Turn off the daily automatic leaderboard post")
-    async def leaderboardpost_disable(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        if not _require_perm(interaction, "manage_guild"):
-            await _deny(interaction, "Manage Server")
-            return
-        clone_id = _clone_id_of(interaction)
-        config = await db.get_leveling_config(interaction.guild_id, clone_id=clone_id)
-        if not config.get("leaderboard_autopost_channel_id"):
-            await interaction.followup.send("The daily leaderboard post isn't set up in this server.", ephemeral=True)
-            return
-        await db.set_leveling_config(interaction.guild_id, clone_id=clone_id, leaderboard_autopost_channel_id=None)
-        await interaction.followup.send("✅ Daily leaderboard post turned off.", ephemeral=True)
 
     @tasks.loop(minutes=30)
     async def _leaderboard_autopost_loop(self):
