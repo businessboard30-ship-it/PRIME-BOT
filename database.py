@@ -6153,11 +6153,21 @@ class Database:
             return [dict(r) for r in rows]
 
     async def get_active_discord_clones(self) -> List[Dict]:
-        """Polled by clone_manager.py's supervisor loop to decide which
-        clone processes should be running right now."""
+        """Polled by clone_manager.py's supervisor loop (every
+        POLL_INTERVAL_SECONDS, forever) to decide which clone processes
+        should be running right now. The loop only ever reads clone_id and
+        bot_username from each row (see _reconcile), so this deliberately
+        selects just those two columns instead of `*` — the table also
+        carries bot_token_encrypted and a custom_data JSONB blob per row,
+        which would otherwise be re-transferred out of Postgres on every
+        poll for no reason and are the dominant contributor to this
+        query's egress."""
         pool = await get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM discord_cloned_bots WHERE status = 'active' ORDER BY clone_id ASC")
+            rows = await conn.fetch(
+                "SELECT clone_id, bot_username FROM discord_cloned_bots "
+                "WHERE status = 'active' ORDER BY clone_id ASC"
+            )
             return [dict(r) for r in rows]
 
     async def set_discord_clone_status(self, clone_id: int, status: str) -> None:
@@ -6172,10 +6182,16 @@ class Database:
             )
 
     async def list_active_discord_clones(self) -> List[Dict]:
-        """Discord equivalent of list_active_clones() — used by /admin clones."""
+        """Discord equivalent of list_active_clones() — used by /admin
+        clones and /ownerbroadcast. Callers only read clone_id,
+        bot_username, and owner_id, so those are the only columns
+        selected — same reasoning as get_active_discord_clones() above."""
         pool = await get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM discord_cloned_bots WHERE status = 'active' ORDER BY clone_id ASC")
+            rows = await conn.fetch(
+                "SELECT clone_id, bot_username, owner_id FROM discord_cloned_bots "
+                "WHERE status = 'active' ORDER BY clone_id ASC"
+            )
             return [dict(r) for r in rows]
 
     async def get_discord_clone_owner_ids(self) -> List[int]:
