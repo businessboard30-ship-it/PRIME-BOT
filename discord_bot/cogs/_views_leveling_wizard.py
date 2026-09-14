@@ -35,11 +35,13 @@ def render_status_lines(config: dict, role_rows: list) -> list:
     rate_label = XP_RATE_LABELS.get(config.get("xp_rate", "default"), "Default (10/min)")
     announce_id = config.get("announce_channel_id")
     card_label = CARD_STYLE_LABELS.get(config.get("card_style", "card"), CARD_STYLE_LABELS["card"])
+    autopost_id = config.get("leaderboard_autopost_channel_id")
     return [
         f"✅ **Step 1: XP rate** — {rate_label}",
         f"{'✅' if announce_id else '⬜'} **Step 2: Announce channel** — {f'<#{announce_id}>' if announce_id else '*posts in the channel that triggered it*'}",
         f"✅ **Step 3: Level-up announcement** — {card_label}",
         f"{'✅' if role_rows else '⬜'} **Step 4: Role rewards** — {len(role_rows)} configured" if role_rows else "⬜ **Step 4: Role rewards** — none configured",
+        f"{'✅' if autopost_id else '⬜'} **Step 5: Daily leaderboard post** — {f'<#{autopost_id}>, once every 24h' if autopost_id else '*off*'}",
     ]
 
 
@@ -101,6 +103,20 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, role_ro
     add_row = discord.ui.ActionRow()
     add_row.add_item(LevelingAddRewardButton(guild_id, clone_id, invoker_id))
     items.extend([discord.ui.Separator(), add_row])
+
+    # Step 5: daily automatic leaderboard post — a ChannelSelect (to pick
+    # where) plus a plain button (to turn it off) in their own rows (an
+    # ActionRow can't mix a select and a button), added directly to this
+    # existing wizard instead of as new slash commands (see leveling.py's
+    # /leaderboard command, which was reverted back to a plain command for
+    # that reason).
+    autopost_select_row = discord.ui.ActionRow()
+    autopost_select_row.add_item(LevelingLeaderboardAutopostChannelSelect(guild_id, clone_id, invoker_id, config))
+    items.extend([discord.ui.Separator(), autopost_select_row])
+    if config.get("leaderboard_autopost_channel_id"):
+        autopost_disable_row = discord.ui.ActionRow()
+        autopost_disable_row.add_item(LevelingLeaderboardAutopostDisableButton(guild_id, clone_id, invoker_id))
+        items.append(autopost_disable_row)
 
     for item in items:
         container.add_item(item)
@@ -250,6 +266,64 @@ class LevelingCardStyleSelect(discord.ui.DynamicItem[discord.ui.Select], templat
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+class LevelingLeaderboardAutopostChannelSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], template=_id_pattern("lbautopost")):
+    def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        current = config.get("leaderboard_autopost_channel_id")
+        super().__init__(discord.ui.ChannelSelect(
+            placeholder="Step 5 — post the leaderboard here daily" if not current else f"Step 5 — currently <#{current}>, pick to change",
+            channel_types=[discord.ChannelType.text],
+            min_values=1, max_values=1,
+            custom_id=_encode("lbautopost", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id, {})
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        channel = self.item.values[0]
+        perms = channel.permissions_for(interaction.guild.me)
+        await db.set_leveling_config(self.guild_id, clone_id=self.clone_id, leaderboard_autopost_channel_id=channel.id)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+        if not (perms.send_messages and perms.attach_files):
+            # Saved anyway (matches the announce-channel step's behavior),
+            # but the daily post will silently fail to send until this is
+            # fixed, so flag it rather than let it fail invisibly later.
+            await interaction.followup.send(
+                f"⚠️ Saved, but I need **Send Messages** and **Attach Files** permission in {channel.mention} "
+                "for the daily post to actually go through.",
+                ephemeral=True,
+            )
+
+
+class LevelingLeaderboardAutopostDisableButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("lbautopostoff")):
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        super().__init__(discord.ui.Button(
+            label="Turn off daily leaderboard post", style=discord.ButtonStyle.secondary,
+            custom_id=_encode("lbautopostoff", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        await db.set_leveling_config(self.guild_id, clone_id=self.clone_id, leaderboard_autopost_channel_id=None)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 class LevelingRewardLevelModal(discord.ui.Modal, title="Add a level-up role reward"):
     def __init__(self, guild_id: int, clone_id, invoker_id):
         super().__init__()
@@ -340,4 +414,5 @@ class LevelingAddRewardButton(discord.ui.DynamicItem[discord.ui.Button], templat
 DYNAMIC_ITEMS = (
     LevelingXpRateSelect, LevelingAnnounceChannelSelect, LevelingCardStyleSelect,
     LevelingAddRewardButton, LevelingRewardRoleSelect,
+    LevelingLeaderboardAutopostChannelSelect, LevelingLeaderboardAutopostDisableButton,
 )
