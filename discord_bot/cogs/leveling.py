@@ -392,9 +392,22 @@ class LevelingCog(GuildOnlyCog):
         view.add_item(discord.ui.Container(*container_children, accent_colour=discord.Color.blurple()))
         return view, file
 
-    @app_commands.command(name="leaderboard", description="Show this server's top 10 XP earners")
-    @app_commands.guild_only()
-    async def leaderboard(self, interaction: discord.Interaction):
+    # /leaderboard is a Group, not a plain command, specifically so the
+    # autopost setup/disable commands below can live as subcommands of it
+    # instead of as their own top-level command. Discord's 100-command cap
+    # is a GLOBAL top-level count — subcommands/subgroups inside an existing
+    # group are free (up to 25 each). This bot was already sitting at
+    # exactly 100 top-level commands, so adding "leaderboardpost" as a new
+    # top-level group (the previous version of this code) tipped it over
+    # the limit and crashed the bot on every boot with CommandLimitReached.
+    # Nesting under the existing "leaderboard" name adds zero net top-level
+    # commands. See discord_bot/bot.py's startup crash loop, 2026-09-14.
+    leaderboard_group = app_commands.guild_only()(
+        app_commands.Group(name="leaderboard", description="XP leaderboard")
+    )
+
+    @leaderboard_group.command(name="show", description="Show this server's top 10 XP earners")
+    async def leaderboard_show(self, interaction: discord.Interaction):
         await interaction.response.defer()
         clone_id = _clone_id_of(interaction)
         payload = await self._build_leaderboard_payload(interaction.guild, clone_id)
@@ -404,11 +417,12 @@ class LevelingCog(GuildOnlyCog):
         view, file = payload
         await interaction.followup.send(view=view, file=file)
 
-    leaderboardpost = app_commands.guild_only()(
-        app_commands.Group(name="leaderboardpost", description="Automatically post the XP leaderboard once a day")
+    leaderboard_autopost_group = app_commands.Group(
+        name="autopost", description="Automatically post the XP leaderboard once a day",
+        parent=leaderboard_group,
     )
 
-    @leaderboardpost.command(name="setup", description="Post the XP leaderboard automatically, once a day, in a channel")
+    @leaderboard_autopost_group.command(name="setup", description="Post the XP leaderboard automatically, once a day, in a channel")
     @app_commands.describe(channel="Where to post the daily leaderboard")
     async def leaderboardpost_setup(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await interaction.response.defer(ephemeral=True)
@@ -428,7 +442,7 @@ class LevelingCog(GuildOnlyCog):
             f"✅ I'll post the XP leaderboard in {channel.mention} once a day.", ephemeral=True
         )
 
-    @leaderboardpost.command(name="disable", description="Turn off the daily automatic leaderboard post")
+    @leaderboard_autopost_group.command(name="disable", description="Turn off the daily automatic leaderboard post")
     async def leaderboardpost_disable(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         if not _require_perm(interaction, "manage_guild"):
