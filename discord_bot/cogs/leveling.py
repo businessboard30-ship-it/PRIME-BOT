@@ -217,6 +217,9 @@ class LevelingCog(GuildOnlyCog):
         boost = await db.get_active_xp_boost(message.guild.id, message.author.id, clone_id=clone_id)
         if boost:
             multiplier *= float(boost["multiplier"])
+        guild_boost = await db.get_active_guild_xp_boost(message.guild.id, clone_id=clone_id)
+        if guild_boost:
+            multiplier *= float(guild_boost["multiplier"])
         if message.author.id in DISCORD_CLONE_ADMIN_IDS:
             multiplier *= OWNER_XP_MULTIPLIER
         gained = max(1, round(random.randint(XP_MIN, XP_MAX) * multiplier))
