@@ -152,7 +152,8 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 # Optional: restrict slash-command sync to one guild for instant propagation
 # during development. Leave blank for global sync (can take up to 1hr to
 # propagate on Discord's side, but works across every guild the bot is in).
-DISCORD_DEV_GUILD_ID = int(os.getenv("DISCORD_DEV_GUILD_ID", "0") or "0")
+# Hardcoded (was DISCORD_DEV_GUILD_ID env var) — not a secret, just your dev guild ID.
+DISCORD_DEV_GUILD_ID = 1534576875983339621
 
 # Base URL of the Next.js site (app/ dir) this repo also deploys — used to
 # build the /automod dashboard link. Defaults to the marketing site's own
@@ -272,9 +273,8 @@ IMAGE_HOST_CHANNEL_ID = int(os.getenv("IMAGE_HOST_CHANNEL_ID", "0") or "0")
 # main bot's ADMIN_ID is NOT automatically included here — Telegram and
 # Discord user IDs are different ID spaces, so add yours explicitly if you
 # want the bypass on Discord too.
-DISCORD_CLONE_ADMIN_IDS = {
-    int(uid) for uid in os.getenv("DISCORD_CLONE_ADMIN_IDS", "").split(",") if uid.strip().isdigit()
-}
+# Hardcoded (was DISCORD_CLONE_ADMIN_IDS env var) — not a secret, just your Discord user ID.
+DISCORD_CLONE_ADMIN_IDS = {1534574875274903562}
 
 # ─────────────────────────────────────────────────────────────────────
 # Manual payments (Selar + DM approval)
@@ -402,9 +402,8 @@ CUSTOM_ROLE_COLOR_PALETTE = _build_custom_role_palette()
 # even though it'll usually be the same person(s) — that set is about who
 # skips the clone registration fee, this one is about who can mass-DM every
 # user of every clone, and a deployment may want those to differ.
-DISCORD_OWNER_BROADCAST_IDS = {
-    int(uid) for uid in os.getenv("DISCORD_OWNER_BROADCAST_IDS", "").split(",") if uid.strip().isdigit()
-} or DISCORD_CLONE_ADMIN_IDS
+# Hardcoded (was DISCORD_OWNER_BROADCAST_IDS env var) — same ID as DISCORD_CLONE_ADMIN_IDS above.
+DISCORD_OWNER_BROADCAST_IDS = {1534574875274903562} or DISCORD_CLONE_ADMIN_IDS
 
 # How the owner broadcast signs itself, e.g. "Announcement from PrimeBot HQ".
 # Shown as a header line above the message body in every DM sent by
@@ -462,8 +461,10 @@ def music_pro_payment_url_for_guild(guild_id: int) -> str:
 # before. Does nothing on clone processes (clone_id is not None) — a clone
 # has its own separate guild(s) and owner, so this only applies to the main
 # bot. Leave both unset (0) to skip auto-enable entirely.
-OWNER_GUILD_ID = int(os.getenv("OWNER_GUILD_ID", "0") or "0")
-OWNER_BROADCAST_CHANNEL_ID = int(os.getenv("OWNER_BROADCAST_CHANNEL_ID", "0") or "0")
+# Hardcoded (was OWNER_GUILD_ID / OWNER_BROADCAST_CHANNEL_ID env vars) — not
+# secrets, just your own server's guild + channel ID.
+OWNER_GUILD_ID = 1534576875983339621
+OWNER_BROADCAST_CHANNEL_ID = 1535782838732066836
 # How often the owner server's auto-enabled autopost fires, in hours.
 # Hardcoded (was OWNER_BROADCAST_INTERVAL_HOURS env var) — tuning constant.
 OWNER_BROADCAST_INTERVAL_HOURS = 6
@@ -485,7 +486,8 @@ TOPGG_WEBHOOK_AUTH = os.getenv("TOPGG_WEBHOOK_AUTH", "")
 # clone_id. Find it under Discord Developer Portal -> your app -> General
 # Information -> Application ID. Clones are resolved automatically via
 # discord_cloned_bots.bot_user_id, no config needed per clone.
-DISCORD_BOT_USER_ID = int(os.getenv("DISCORD_BOT_USER_ID", "0") or "0")
+# Hardcoded (was DISCORD_BOT_USER_ID env var) — not a secret, publicly visible application ID.
+DISCORD_BOT_USER_ID = 1534579332528472246
 
 # --- Clone monetization gate --------------------------------------------------
 # A clone owner can (a) connect their own Paystack/Stripe key instead of
@@ -562,7 +564,8 @@ CLONE_APP_CACHE_SIZE = 20
 # carries a visible trace back to the main bot — a "Powered by" line plus a
 # deep-link button that lets clone users jump to the main bot and start their
 # own clone (growth loop). Leave unset to hide this entirely.
-MAIN_BOT_USERNAME = os.getenv("MAIN_BOT_USERNAME", "")
+# Hardcoded (was MAIN_BOT_USERNAME env var) — just the bot's public username.
+MAIN_BOT_USERNAME = "animeverse"
 
 # Features
 MAX_BUTTONS_PER_ROW = 2
