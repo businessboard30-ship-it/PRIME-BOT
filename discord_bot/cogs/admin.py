@@ -432,52 +432,104 @@ class AdminCog(commands.Cog):
         if not clones:
             await interaction.followup.send("No active Discord clones right now.", ephemeral=True)
             return
-        view = CloneManagementView(clones)
-        await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
+        view = CloneManagementView(self.bot, clones)
+        embed = await view.embed()
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 class CloneManagementView(discord.ui.View):
-    """Discord equivalent of admin_panel.py's show_clone_management +
-    handle_deactivate_clone — one Deactivate button per clone, refreshing
-    in place after each action instead of requiring the admin to re-run
-    /admin clones."""
+    """One-clone-at-a-time wizard for /admin clones — Discord equivalent of
+    admin_panel.py's show_clone_management + handle_deactivate_clone, but
+    paged instead of a flat list so each card has room for the clone's live
+    avatar/name (pulled fresh via fetch_user, since the row only has
+    bot_username as of whenever it last registered/relinked) plus its
+    current server count (get_discord_guild_count) — neither of which fit
+    in the old one-line-per-clone embed.
 
-    def __init__(self, clones: list):
+    Prev/Next just move the index and re-render; Deactivate removes the
+    current clone from the in-memory list (no re-query) and re-renders in
+    place, same "no need to re-run /admin clones" goal as before."""
+
+    def __init__(self, bot: commands.Bot, clones: list, index: int = 0):
         super().__init__(timeout=300)
+        self.bot = bot
         self.clones = clones
-        for c in clones[:20]:  # Discord caps a view at 25 components; leave room for future rows
-            self.add_item(DeactivateCloneButton(c["clone_id"], c.get("bot_username")))
+        self.index = index
+        self._update_buttons()
 
-    def embed(self) -> discord.Embed:
-        embed = discord.Embed(title=f"🤖 Manage Clones ({len(self.clones)} active)", color=discord.Color.blurple())
-        lines = []
-        for c in self.clones:
-            username = f"@{c['bot_username']}" if c.get("bot_username") else "(no username on file)"
-            lines.append(f"`#{c['clone_id']}` **{username}** — owner <@{c['owner_id']}>")
-        embed.description = "\n".join(lines)
+    @property
+    def current(self) -> dict:
+        return self.clones[self.index]
+
+    def _update_buttons(self):
+        self.prev_button.disabled = self.index <= 0
+        self.next_button.disabled = self.index >= len(self.clones) - 1
+        self.deactivate_button.label = f"🛑 Deactivate #{self.current['clone_id']}"
+
+    async def embed(self) -> discord.Embed:
+        c = self.current
+        embed = discord.Embed(
+            title=f"🤖 Manage Clones ({self.index + 1}/{len(self.clones)} active)",
+            color=discord.Color.blurple(),
+        )
+
+        # Live lookup rather than trusting the stored bot_username, so a
+        # clone owner who's since renamed/re-avatared their bot's Discord
+        # application shows up as it actually looks right now.
+        display_name = c.get("bot_username") or "(no username on file)"
+        avatar_url = None
+        bot_user_id = c.get("bot_user_id")
+        if bot_user_id:
+            try:
+                user = self.bot.get_user(bot_user_id) or await self.bot.fetch_user(bot_user_id)
+                display_name = str(user)
+                avatar_url = user.display_avatar.url
+            except discord.HTTPException:
+                pass  # fall back to the stored username, no avatar
+
+        server_count = await db.get_discord_guild_count(c["clone_id"])
+
+        embed.add_field(name="Clone", value=f"`#{c['clone_id']}`", inline=True)
+        embed.add_field(name="Current name", value=f"@{display_name}", inline=True)
+        embed.add_field(name="Servers", value=str(server_count), inline=True)
+        embed.add_field(name="Owner", value=f"<@{c['owner_id']}>", inline=False)
+        if avatar_url:
+            embed.set_thumbnail(url=avatar_url)
         return embed
 
-
-class DeactivateCloneButton(discord.ui.Button):
-    def __init__(self, clone_id: int, bot_username: str):
-        super().__init__(label=f"🛑 Deactivate #{clone_id}", style=discord.ButtonStyle.danger)
-        self.clone_id = clone_id
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not _is_bot_admin(interaction.user.id):
             await _deny(interaction)
             return
-        await db.set_discord_clone_status(self.clone_id, "inactive")
-        view: CloneManagementView = self.view
-        view.clones = [c for c in view.clones if c["clone_id"] != self.clone_id]
-        view.clear_items()
-        for c in view.clones[:20]:
-            view.add_item(DeactivateCloneButton(c["clone_id"], c.get("bot_username")))
-        if view.clones:
-            await interaction.edit_original_response(embed=view.embed(), view=view)
-        else:
+        self.index -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=await self.embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_bot_admin(interaction.user.id):
+            await _deny(interaction)
+            return
+        self.index += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=await self.embed(), view=self)
+
+    @discord.ui.button(label="🛑 Deactivate", style=discord.ButtonStyle.danger)
+    async def deactivate_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_bot_admin(interaction.user.id):
+            await _deny(interaction)
+            return
+        await interaction.response.defer()
+        await db.set_discord_clone_status(self.current["clone_id"], "inactive")
+        del self.clones[self.index]
+        if not self.clones:
             await interaction.edit_original_response(content="No active clones left.", embed=None, view=None)
+            return
+        if self.index >= len(self.clones):
+            self.index = len(self.clones) - 1
+        self._update_buttons()
+        await interaction.edit_original_response(embed=await self.embed(), view=self)
 
 
 async def setup(bot: commands.Bot):
