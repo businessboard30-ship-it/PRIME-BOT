@@ -1,3 +1,5 @@
+# FULL PATH: PRIME-BOT-main/discord_bot/cogs/clone_admin.py
+
 """
 Slash commands for the Discord bot-cloning growth loop — Discord equivalent
 of handlers/clone_bot.py, adapted for the fact that a Discord clone needs
@@ -724,6 +726,7 @@ class CloneAdminCog(commands.Cog):
         app_commands.Choice(name="Users — everyone across the main bot + clones", value="users"),
         app_commands.Choice(name="Admins — clone owners/operators only", value="admins"),
         app_commands.Choice(name="Server owners — owner of every server the bot/clones are in", value="servers"),
+        app_commands.Choice(name="Mod-log channels — post directly into each server's mod-log channel", value="modlogs"),
     ])
     async def ownerbroadcast(self, interaction: discord.Interaction, message: str,
                               target: Optional[app_commands.Choice[str]] = None,
@@ -799,6 +802,34 @@ class CloneAdminCog(commands.Cog):
                 await db.add_owner_broadcast_recipients(broadcast_id, clone["clone_id"], new_owner_ids)
 
             recipient_note = f"**{len(seen_owner_ids)}** server owner(s) across the main bot and {len(clones)} clone(s)"
+        elif target_value == "modlogs":
+            # Post straight into each server's own configured mod-log
+            # channel instead of DMing anyone — for announcements admins
+            # should see in-context (e.g. "logging categories X/Y changed
+            # behavior"), not buried in a personal DM. Spans the main bot
+            # plus every active clone, same as "servers"/"users" above,
+            # since each clone's guilds have their own independently-set
+            # log channels.
+            total_channels = 0
+
+            main_channels = await db.get_discord_modlog_channels(None)
+            if main_channels:
+                await db.add_owner_broadcast_channel_recipients(
+                    broadcast_id, None, [c["log_channel_id"] for c in main_channels]
+                )
+                total_channels += len(main_channels)
+
+            clones = await db.list_active_discord_clones()
+            for clone in clones:
+                clone_channels = await db.get_discord_modlog_channels(clone["clone_id"])
+                if not clone_channels:
+                    continue
+                await db.add_owner_broadcast_channel_recipients(
+                    broadcast_id, clone["clone_id"], [c["log_channel_id"] for c in clone_channels]
+                )
+                total_channels += len(clone_channels)
+
+            recipient_note = f"**{total_channels}** mod-log channel(s) across the main bot and {len(clones)} clone(s)"
         else:
             # Main bot's own users (clone_id=None), plus every currently-active
             # clone's users. An inactive/removed clone is skipped since there's
