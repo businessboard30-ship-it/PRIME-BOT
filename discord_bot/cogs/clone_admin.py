@@ -76,7 +76,22 @@ async def register_clone_token(interaction: discord.Interaction, token: str, own
     tracking/analytics; it never changes who gets paid or who approves
     (see payments_manual.py's discord_clone carve-out in
     _resolve_approvers — that revenue and approval right belongs solely
-    to the main project owner)."""
+    to the main project owner).
+
+    AUTO-RELINK: if this owner already has a clone on record (any
+    status — e.g. one we deactivated during a decommission), this
+    silently relinks that existing clone_id to the new token instead of
+    creating a brand new one. That's what makes handing out a new clone
+    link "just work" for returning owners without them needing to run
+    any extra command or know their old clone_id — their economy/
+    leveling/referral/premium history carries straight over. No payment
+    gate on this path either, same reasoning as relink_clone_token."""
+    existing = await db.get_discord_clones_by_owner(owner_id)
+    if existing:
+        target = existing[-1]  # most recently created row for this owner
+        await relink_clone_token(interaction, clone_id=target["clone_id"], token=token, owner_id=owner_id)
+        return
+
     result = await validate_bot_token(token)
     if not result["ok"]:
         await interaction.followup.send(f"❌ Couldn't validate that token: {result['error']}", ephemeral=True)
@@ -127,6 +142,55 @@ async def register_clone_token(interaction: discord.Interaction, token: str, own
         interaction, "discord_clone",
         amount_display=f"${DISCORD_CLONE_ACTIVATION_FEE_USD}",
         reference=reference,
+    )
+
+
+async def relink_clone_token(interaction: discord.Interaction, clone_id: int, token: str, owner_id: int) -> None:
+    """Shared by /relinkclone — re-points an EXISTING clone row at a new
+    bot token/application instead of registering a new clone. Use this
+    (not /registerclone) when handing an owner a fresh bot link so their
+    economy/leveling/referral/premium history — all keyed off clone_id,
+    never off the token — carries over instead of starting from zero.
+    No payment gate here: relinking isn't a new purchase, it's swapping
+    the key on something already paid for. Caller must already have
+    called interaction.response.defer(ephemeral=True, thinking=True)."""
+    result = await validate_bot_token(token)
+    if not result["ok"]:
+        await interaction.followup.send(f"❌ Couldn't validate that token: {result['error']}", ephemeral=True)
+        return
+
+    install_result = await set_default_install_params(token)
+    if not install_result.get("ok"):
+        logger.warning(
+            f"[v0] couldn't set default install params for application "
+            f"{result['application_id']}: {install_result.get('error')}"
+        )
+
+    encrypted = secret_manager.encrypt(token)
+    ok = await db.relink_discord_clone(
+        clone_id=clone_id,
+        owner_id=owner_id,
+        bot_token_encrypted=encrypted,
+        bot_user_id=result["bot_user_id"],
+        bot_username=result["bot_username"],
+        application_id=result["application_id"],
+    )
+    if not ok:
+        await interaction.followup.send(
+            f"❌ You don't own a clone with id `#{clone_id}` — check `/myclones` for your clone id, "
+            f"or use `/registerclone` if you want a brand new clone instead.",
+            ephemeral=True,
+        )
+        return
+
+    invite = build_invite_url(result["application_id"])
+    await interaction.followup.send(
+        f"✅ Clone `#{clone_id}` is now **{result['bot_username']}** — all its data (economy, "
+        f"leveling, referrals, premium groups) carried over, nothing was reset.\n\n"
+        f"It'll come online within about a minute. Invite the **new** bot to your server(s) here "
+        f"(old invite links for the previous bot won't work anymore, since it's a different "
+        f"Discord application):\n{invite}",
+        ephemeral=True,
     )
 
 
@@ -181,6 +245,28 @@ class CloneAdminCog(commands.Cog):
         await register_clone_token(
             interaction, token, owner_id=interaction.user.id, hosting_clone_id=hosting_clone_id,
         )
+
+    # ── /relinkclone ─────────────────────────────────────────────────────
+    @app_commands.command(
+        name="relinkclone",
+        description="Move one of your existing clones onto a new bot token, keeping all its data",
+    )
+    @app_commands.describe(
+        clone_id="The id shown by /myclones for the clone you want to keep",
+        token="The NEW bot's token, from the Discord Developer Portal (Bot tab)",
+    )
+    async def relinkclone(self, interaction: discord.Interaction, clone_id: int, token: str):
+        # Same DM-only reasoning as /registerclone — a pasted token should
+        # never touch a server channel's history.
+        if interaction.guild_id is not None:
+            await interaction.response.send_message(
+                "For your token's safety, please send me this command in a DM instead of a server channel.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await relink_clone_token(interaction, clone_id=clone_id, token=token, owner_id=interaction.user.id)
 
     # ── /myclones ─────────────────────────────────────────────────────────
     @app_commands.command(name="myclones", description="List the Discord bot clones you own")
