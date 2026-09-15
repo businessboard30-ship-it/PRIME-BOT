@@ -260,17 +260,24 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
 
 
 async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, mode: str, page: int):
+    # Ack the interaction FIRST, before any slow work — build_leaderboard_view
+    # does DB queries and can fall back to a member/user API fetch per
+    # unresolved entry (_resolve_display), which can easily blow past
+    # Discord's 3-second component-interaction ack window. Deferring
+    # up front means we always have the full 15-minute followup window to
+    # actually edit the message, instead of racing the build against the
+    # ack deadline and getting "404 Unknown interaction" when it loses.
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+
     guild = interaction.client.get_guild(guild_id) or interaction.guild
     view = await build_leaderboard_view(
         interaction.client, guild, clone_id, mode=mode, page=page, stats_for_user_id=interaction.user.id,
     )
     if view is None:
-        await interaction.response.edit_message(content="No XP earned yet.", view=None)
+        await interaction.edit_original_response(content="No XP earned yet.", view=None)
         return
-    if not interaction.response.is_done():
-        await interaction.response.edit_message(view=view)
-    else:
-        await interaction.edit_original_response(view=view)
+    await interaction.edit_original_response(view=view)
 
 
 class LeaderboardModeSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"^lvllb_mode:(\d+):(-|\d+)$"):
