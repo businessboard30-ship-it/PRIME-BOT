@@ -1,4 +1,4 @@
-# path: discord_bot/bot.py
+# FULL PATH: PRIME-BOT-main/discord_bot/bot.py
 
 """
 Entry point for the Discord port. Run with:
@@ -34,6 +34,7 @@ from discord_bot.cogs._views_join_dm import build_join_dm_view, DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_invites import DYNAMIC_ITEMS as INVITES_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_wizard import DYNAMIC_ITEMS as AUTOMOD_WIZARD_DYNAMIC_ITEMS
+from discord_bot.cogs._views_modlog_wizard import DYNAMIC_ITEMS as MODLOG_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_reminders import DYNAMIC_ITEMS as AUTOMOD_REMINDER_DYNAMIC_ITEMS
 from discord_bot.cogs._views_ticket_wizard import DYNAMIC_ITEMS as TICKET_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_community_wizard import DYNAMIC_ITEMS as COMMUNITY_WIZARD_DYNAMIC_ITEMS
@@ -139,6 +140,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*WELCOME_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*INVITES_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_WIZARD_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*MODLOG_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_REMINDER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*TICKET_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*COMMUNITY_WIZARD_DYNAMIC_ITEMS)
@@ -174,6 +176,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.premium")
         await self.load_extension("discord_bot.cogs.moderation")
         await self.load_extension("discord_bot.cogs.automod")
+        await self.load_extension("discord_bot.cogs.server_logs")
         await self.load_extension("discord_bot.cogs.reaction_roles")
         await self.load_extension("discord_bot.cogs.role_setup")
         await self.load_extension("discord_bot.cogs.custom_role")
