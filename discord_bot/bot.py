@@ -170,8 +170,9 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*LEVELING_BOOST_DYNAMIC_ITEMS)
 
         await self.load_extension("discord_bot.cogs.help")
-        await self.load_extension("discord_bot.cogs.archive")
-        await self.load_extension("discord_bot.cogs.archive_automation")
+        # archive / archive_automation dropped: feature retired to free up
+        # global slash-command slots (see CommandLimitReached in clone_admin
+        # setup). Cogs left in place; re-add these two lines to restore.
         await self.load_extension("discord_bot.cogs.language")
         await self.load_extension("discord_bot.cogs.premium")
         await self.load_extension("discord_bot.cogs.moderation")
@@ -195,8 +196,8 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.setup_channels")
         await self.load_extension("discord_bot.cogs.analytics")
         await self.load_extension("discord_bot.cogs.economy")
-        await self.load_extension("discord_bot.cogs.heist")
-        await self.load_extension("discord_bot.cogs.heist_inventory")
+        # heist / heist_inventory dropped: feature retired to free up global
+        # slash-command slots. Re-add these two lines to restore.
         await self.load_extension("discord_bot.cogs.cards")
         await self.load_extension("discord_bot.cogs.automation")
         await self.load_extension("discord_bot.cogs.discover")
@@ -213,7 +214,8 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.ads_marketplace")
         await self.load_extension("discord_bot.cogs.bump")
         await self.load_extension("discord_bot.cogs.referrals")
-        await self.load_extension("discord_bot.cogs.botstore")
+        # botstore dropped: feature retired to free up global slash-command
+        # slots. Re-add the line above (discord_bot.cogs.botstore) to restore.
         await self.load_extension("discord_bot.cogs.bot_manager")
         await self.load_extension("discord_bot.cogs.submissions")
         await self.load_extension("discord_bot.cogs.media_connect")
@@ -222,7 +224,8 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.link_buttons")
         await self.load_extension("discord_bot.cogs.autopost")
         await self.load_extension("discord_bot.cogs.feedback")
-        await self.load_extension("discord_bot.cogs.discover_players")
+        # discover_players dropped: feature retired to free up global
+        # slash-command slots. Re-add the line above to restore.
         await self.load_extension("discord_bot.cogs.admin")
         await self.load_extension("discord_bot.cogs.server_listing")
         await self.load_extension("discord_bot.cogs.listing_snapshots")
