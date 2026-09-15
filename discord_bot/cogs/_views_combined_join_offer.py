@@ -253,7 +253,7 @@ class CombinedAutoListingDescriptionModal(discord.ui.Modal, title="List this ser
 
         clone_id = _clone_id_of_bot(interaction.client)
         try:
-            from discord_bot.cogs.server_listing import _auto_generate_invite
+            from discord_bot.cogs._views_auto_listing_offer import _auto_generate_invite
             invite_url = await _auto_generate_invite(guild)
             row = await db.upsert_server_listing(
                 guild_id=guild.id,

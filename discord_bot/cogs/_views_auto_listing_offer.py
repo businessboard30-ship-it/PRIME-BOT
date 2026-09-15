@@ -32,7 +32,32 @@ import discord
 
 from config import DASHBOARD_BASE_URL
 from database import db
-from discord_bot.cogs.server_listing import _auto_generate_invite
+
+
+async def _auto_generate_invite(guild: discord.Guild) -> str | None:
+    """Best-effort permanent invite (max_age=0, max_uses=0) so admins don't
+    have to go find/paste one themselves. Tries the guild's configured
+    system/rules channel first (most likely to already be public-facing),
+    then falls back to the first text channel the bot can actually create
+    an invite in. Returns None on any permission/API failure. Inlined here
+    (was previously imported from the now-removed server_listing.py cog —
+    this is the one piece of that file another still-loaded module needed)."""
+    candidates = [c for c in (guild.system_channel, guild.rules_channel) if c is not None]
+    candidates += [c for c in guild.text_channels if c not in candidates]
+
+    for channel in candidates:
+        perms = channel.permissions_for(guild.me)
+        if not perms.create_instant_invite:
+            continue
+        try:
+            invite = await channel.create_invite(
+                max_age=0, max_uses=0, unique=False,
+                reason="Auto-generated for the public server directory listing",
+            )
+            return invite.url
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+    return None
 
 logger = logging.getLogger(__name__)
 
