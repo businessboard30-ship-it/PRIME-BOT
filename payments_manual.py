@@ -171,6 +171,54 @@ async def send_manual_payment_approval_dms(bot: discord.Client, payment_id: int,
             logger.warning(f"[manual-pay] couldn't DM approver {admin_id} for reference {reference}")
 
 
+class ManualPaymentResolution:
+    """Result of resolve_manual_payment_approval/_rejection — enough for a
+    caller (button callback or slash command) to report back to whoever
+    triggered it without needing to know the DB row shape itself."""
+
+    def __init__(self, ok: bool, message: str, row: Optional[dict] = None):
+        self.ok = ok
+        self.message = message
+        self.row = row
+
+
+async def resolve_manual_payment_approval(bot: discord.Client, payment_id: int) -> ManualPaymentResolution:
+    """Shared by _ManualPayApproveButton's click and the /approvepayment
+    slash command — same lookup, same UNLOCK_HANDLERS dispatch, same
+    buyer DM, so a payment approved from a command is applied identically
+    to one approved from the DM card. Does NOT touch the DM card's own
+    message/view (only the button callback does that, since a slash
+    command has no card message to edit) — callers that DO have a card
+    message handle disabling/editing it themselves after this returns ok.
+    """
+    row = await db.get_payment_row_by_id(payment_id)
+    if not row or row.get("status") != "awaiting_review":
+        return ManualPaymentResolution(False, "This payment's already been resolved or wasn't found.", row)
+
+    handler = UNLOCK_HANDLERS.get(row["payment_type"])
+    if handler is None:
+        return ManualPaymentResolution(
+            False, f"No unlock handler wired for `{row['payment_type']}` yet — approve manually in code.", row
+        )
+
+    await db.mark_payment_paid(row["paystack_reference"])
+    await handler(row["paystack_reference"], row["user_id"], row.get("chat_id"), row.get("group_id"))
+    await _notify_buyer(bot, row["user_id"], row["payment_type"], approved=True)
+    return ManualPaymentResolution(True, f"Approved and unlocked `{row['payment_type']}` for <@{row['user_id']}>.", row)
+
+
+async def resolve_manual_payment_rejection(bot: discord.Client, payment_id: int) -> ManualPaymentResolution:
+    """Reject counterpart to resolve_manual_payment_approval — see that
+    function's docstring for the shared-logic rationale."""
+    row = await db.get_payment_row_by_id(payment_id)
+    if not row or row.get("status") != "awaiting_review":
+        return ManualPaymentResolution(False, "This payment's already been resolved or wasn't found.", row)
+
+    await db.mark_manual_payment_rejected(payment_id)
+    await _notify_buyer(bot, row["user_id"], row["payment_type"], approved=False)
+    return ManualPaymentResolution(True, f"Rejected the `{row['payment_type']}` payment from <@{row['user_id']}>.", row)
+
+
 class _ManualPayApproveButton(discord.ui.DynamicItem[discord.ui.Button], template=rf"^manualpay_approve:{_APPROVAL_ID_RE}$"):
     """Approve half of the admin DM card. DynamicItem (not a plain View)
     because the DM is sent from api/selar_submit.py — a process with no
@@ -191,20 +239,10 @@ class _ManualPayApproveButton(discord.ui.DynamicItem[discord.ui.Button], templat
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        row = await db.get_payment_row_by_id(self.payment_id)
-        if not row or row.get("status") != "awaiting_review":
-            await interaction.followup.send("This payment's already been resolved or wasn't found.", ephemeral=True)
+        result = await resolve_manual_payment_approval(interaction.client, self.payment_id)
+        if not result.ok:
+            await interaction.followup.send(result.message, ephemeral=True)
             return
-
-        handler = UNLOCK_HANDLERS.get(row["payment_type"])
-        if handler is None:
-            await interaction.followup.send(
-                f"No unlock handler wired for `{row['payment_type']}` yet — approve manually in code.", ephemeral=True
-            )
-            return
-
-        await db.mark_payment_paid(row["paystack_reference"])
-        await handler(row["paystack_reference"], row["user_id"], row.get("chat_id"), row.get("group_id"))
 
         for child in self.view.children:
             child.disabled = True
@@ -212,7 +250,6 @@ class _ManualPayApproveButton(discord.ui.DynamicItem[discord.ui.Button], templat
             content=f"{interaction.message.content}\n\n✅ **Approved** by {interaction.user.mention}",
             view=self.view,
         )
-        await _notify_buyer(interaction.client, row["user_id"], row["payment_type"], approved=True)
 
 
 class _ManualPayRejectButton(discord.ui.DynamicItem[discord.ui.Button], template=rf"^manualpay_reject:{_APPROVAL_ID_RE}$"):
@@ -229,19 +266,17 @@ class _ManualPayRejectButton(discord.ui.DynamicItem[discord.ui.Button], template
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        row = await db.get_payment_row_by_id(self.payment_id)
-        if not row or row.get("status") != "awaiting_review":
-            await interaction.followup.send("This payment's already been resolved or wasn't found.", ephemeral=True)
+        result = await resolve_manual_payment_rejection(interaction.client, self.payment_id)
+        if not result.ok:
+            await interaction.followup.send(result.message, ephemeral=True)
             return
 
-        await db.mark_manual_payment_rejected(self.payment_id)
         for child in self.view.children:
             child.disabled = True
         await interaction.message.edit(
             content=f"{interaction.message.content}\n\n❌ **Rejected** by {interaction.user.mention}",
             view=self.view,
         )
-        await _notify_buyer(interaction.client, row["user_id"], row["payment_type"], approved=False)
 
 
 class ManualApprovalView(discord.ui.View):
