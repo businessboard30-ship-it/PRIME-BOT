@@ -1575,6 +1575,39 @@ class Database:
             "ALTER TABLE discord_automod_config ADD COLUMN IF NOT EXISTS wizard_invoker_id BIGINT"
         )
 
+        # log_server_enabled..log_invites_enabled: per-category toggles for
+        # the /modlog wizard (server_logs.py). All default FALSE — logging
+        # for a category stays silent until an admin opts in through the
+        # wizard, per the "off by default, wizard posted when a channel is
+        # chosen" design. These share discord_automod_config's existing
+        # log_channel_id (set via either /automod's or /modlog's wizard)
+        # rather than a separate channel column, so picking one channel in
+        # either wizard covers both automod's built-in logging and these
+        # extra category listeners.
+        for _col in (
+            "log_server_enabled", "log_channels_enabled", "log_roles_enabled",
+            "log_members_enabled", "log_moderation_enabled", "log_voice_enabled",
+            "log_invites_enabled",
+        ):
+            await conn.execute(
+                f"ALTER TABLE discord_automod_config ADD COLUMN IF NOT EXISTS {_col} BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        # modlog_wizard_*: same pointer pattern as wizard_channel_id/
+        # wizard_message_id/wizard_invoker_id above, but tracking the most
+        # recently posted /modlog wizard message specifically (which may be
+        # a different message than /automod setup's wizard — e.g. the one
+        # auto-posted into the mod-log channel the moment it's first set),
+        # so refreshing one doesn't stomp on or lose track of the other.
+        await conn.execute(
+            "ALTER TABLE discord_automod_config ADD COLUMN IF NOT EXISTS modlog_wizard_channel_id BIGINT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_automod_config ADD COLUMN IF NOT EXISTS modlog_wizard_message_id BIGINT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_automod_config ADD COLUMN IF NOT EXISTS modlog_wizard_invoker_id BIGINT"
+        )
+
         # discord_media_storage_config: one row per (guild, clone) pointing
         # at the single owner-designated channel that all downloaded/
         # uploaded media gets archived to. storage_channel_id is NULL until
@@ -3046,6 +3079,18 @@ class Database:
         # mid-batch) and becomes claimable again.
         await conn.execute("""
             ALTER TABLE discord_owner_broadcast_recipients ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ
+        """)
+        # recipient_kind: 'user' (default, unchanged behavior — user_id is a
+        # Discord user id, DMed by the cron sender) or 'channel' (added for
+        # /ownerbroadcast's "Mod-log channels" target — user_id column
+        # holds a CHANNEL id instead, and the cron sender posts straight
+        # into that channel rather than opening a DM). Reusing the same
+        # column for both rather than adding a separate channel_id column
+        # keeps every other query (batch claim, sent/failed counters,
+        # finalize) working unchanged — they only ever care about "this
+        # row's target id", not what kind of id it is.
+        await conn.execute("""
+            ALTER TABLE discord_owner_broadcast_recipients ADD COLUMN IF NOT EXISTS recipient_kind TEXT NOT NULL DEFAULT 'user'
         """)
         # A user can show up in both discord_xp and discord_economy_balances
         # for the same clone; dedupe at read time (see get_discord_bot_user_ids)
@@ -6588,6 +6633,10 @@ class Database:
         "log_channel_auto_created": False, "log_channel_notice_count": 0, "log_channel_last_notice_at": None,
         "wordfilter_notice_count": 0, "wordfilter_last_notice_at": None,
         "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
+        "log_server_enabled": False, "log_channels_enabled": False, "log_roles_enabled": False,
+        "log_members_enabled": False, "log_moderation_enabled": False, "log_voice_enabled": False,
+        "log_invites_enabled": False,
+        "modlog_wizard_channel_id": None, "modlog_wizard_message_id": None, "modlog_wizard_invoker_id": None,
     }
 
     # In-process cache for automod config: on_message/on_member_join/etc.
@@ -6662,8 +6711,13 @@ class Database:
                      min_account_age_hours, log_channel_auto_created,
                      log_channel_notice_count, log_channel_last_notice_at,
                      wordfilter_notice_count, wordfilter_last_notice_at,
-                     wizard_channel_id, wizard_message_id, wizard_invoker_id, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW())
+                     wizard_channel_id, wizard_message_id, wizard_invoker_id,
+                     log_server_enabled, log_channels_enabled, log_roles_enabled,
+                     log_members_enabled, log_moderation_enabled, log_voice_enabled,
+                     log_invites_enabled, modlog_wizard_channel_id, modlog_wizard_message_id,
+                     modlog_wizard_invoker_id, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+                        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, NOW())
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
                     action = $3, timeout_minutes = $4, log_channel_id = $5,
                     word_filter_enabled = $6, banned_words = $7, anti_invite_enabled = $8,
@@ -6673,6 +6727,10 @@ class Database:
                     log_channel_notice_count = $16, log_channel_last_notice_at = $17,
                     wordfilter_notice_count = $18, wordfilter_last_notice_at = $19,
                     wizard_channel_id = $20, wizard_message_id = $21, wizard_invoker_id = $22,
+                    log_server_enabled = $23, log_channels_enabled = $24, log_roles_enabled = $25,
+                    log_members_enabled = $26, log_moderation_enabled = $27, log_voice_enabled = $28,
+                    log_invites_enabled = $29, modlog_wizard_channel_id = $30, modlog_wizard_message_id = $31,
+                    modlog_wizard_invoker_id = $32,
                     updated_at = NOW()
                 """,
                 guild_id, clone_id, merged["action"], merged["timeout_minutes"], merged["log_channel_id"],
@@ -6683,6 +6741,10 @@ class Database:
                 merged["log_channel_notice_count"], merged["log_channel_last_notice_at"],
                 merged["wordfilter_notice_count"], merged["wordfilter_last_notice_at"],
                 merged["wizard_channel_id"], merged["wizard_message_id"], merged["wizard_invoker_id"],
+                merged["log_server_enabled"], merged["log_channels_enabled"], merged["log_roles_enabled"],
+                merged["log_members_enabled"], merged["log_moderation_enabled"], merged["log_voice_enabled"],
+                merged["log_invites_enabled"], merged["modlog_wizard_channel_id"], merged["modlog_wizard_message_id"],
+                merged["modlog_wizard_invoker_id"],
             )
         self._automod_config_cache.pop((guild_id, clone_id), None)
 
@@ -9806,13 +9868,46 @@ class Database:
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.executemany(
-                "INSERT INTO discord_owner_broadcast_recipients (broadcast_id, clone_id, user_id) VALUES ($1, $2, $3)",
+                "INSERT INTO discord_owner_broadcast_recipients (broadcast_id, clone_id, user_id, recipient_kind) VALUES ($1, $2, $3, 'user')",
                 [(broadcast_id, clone_id, uid) for uid in user_ids]
             )
             await conn.execute(
                 "UPDATE discord_owner_broadcasts SET total_recipients = total_recipients + $2 WHERE id = $1",
                 broadcast_id, len(user_ids)
             )
+
+    async def add_owner_broadcast_channel_recipients(self, broadcast_id: int, clone_id: Optional[int], channel_ids: List[int]) -> None:
+        """Same fan-out as add_owner_broadcast_recipients, but for
+        /ownerbroadcast's "Mod-log channels" target — each row's user_id
+        column holds a CHANNEL id and recipient_kind='channel', so the cron
+        sender posts directly into that channel instead of DMing a user."""
+        if not channel_ids:
+            return
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                "INSERT INTO discord_owner_broadcast_recipients (broadcast_id, clone_id, user_id, recipient_kind) VALUES ($1, $2, $3, 'channel')",
+                [(broadcast_id, clone_id, cid) for cid in channel_ids]
+            )
+            await conn.execute(
+                "UPDATE discord_owner_broadcasts SET total_recipients = total_recipients + $2 WHERE id = $1",
+                broadcast_id, len(channel_ids)
+            )
+
+    async def get_discord_modlog_channels(self, clone_id: Optional[int]) -> List[Dict]:
+        """Every (guild_id, log_channel_id) pair currently configured for
+        this bot/clone, used by /ownerbroadcast's "Mod-log channels" target
+        to fan a broadcast straight out into each server's own mod-log
+        channel instead of DMing individuals. Guilds with no log channel
+        set are simply absent from this list — nothing to post into."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT guild_id, log_channel_id FROM discord_automod_config "
+                "WHERE clone_id IS NOT DISTINCT FROM $1 AND log_channel_id IS NOT NULL",
+                clone_id
+            )
+            return [dict(r) for r in rows]
 
     async def get_owner_broadcast(self, broadcast_id: int) -> Optional[Dict]:
         pool = await get_pool()
