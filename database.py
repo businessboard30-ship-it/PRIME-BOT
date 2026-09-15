@@ -138,7 +138,19 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "19"
+SCHEMA_VERSION = "20"
+# "19" -> "20": discord_automod_config's log_server_enabled/log_channels_enabled/
+# log_roles_enabled/log_members_enabled/log_moderation_enabled/log_voice_enabled/
+# log_invites_enabled ALTER TABLE ADD COLUMN steps (added for the /modlog
+# category-logging feature) landed in _create_tables without a version bump —
+# same bump-or-it-never-runs trap as every entry in the History note below.
+# On any DB already stamped schema_version='19', init() skipped the DDL pass
+# forever, so those 7 columns were never created. get_automod_config() then
+# read existing rows without those keys, and set_automod_config()'s
+# merged["log_server_enabled"] (etc.) raised KeyError the first time the
+# automod reminder loop tried to write one back. This bump forces the next
+# cold start to re-run the (idempotent) DDL pass, including those 7
+# ALTER TABLE statements, then re-stamp schema_version='20'.
 # History (why this matters): "9" -> "10" fixed report_notify_config's
 # dm_user_id column and server_listing_votes' unique-index migration —
 # both had been sitting in _create_tables for a while but never actually
