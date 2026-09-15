@@ -6321,13 +6321,14 @@ class Database:
 
     async def list_active_discord_clones(self) -> List[Dict]:
         """Discord equivalent of list_active_clones() — used by /admin
-        clones and /ownerbroadcast. Callers only read clone_id,
-        bot_username, and owner_id, so those are the only columns
-        selected — same reasoning as get_active_discord_clones() above."""
+        clones and /ownerbroadcast. Callers read clone_id, bot_username,
+        owner_id, and (for /admin clones' avatar/name lookup) bot_user_id,
+        so those are the only columns selected — same reasoning as
+        get_active_discord_clones() above."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT clone_id, bot_username, owner_id FROM discord_cloned_bots "
+                "SELECT clone_id, bot_username, bot_user_id, owner_id FROM discord_cloned_bots "
                 "WHERE status = 'active' ORDER BY clone_id ASC"
             )
             return [dict(r) for r in rows]
