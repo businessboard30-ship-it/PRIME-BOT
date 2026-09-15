@@ -41,9 +41,12 @@ from discord_bot.cogs._views_community_wizard import DYNAMIC_ITEMS as COMMUNITY_
 from discord_bot.cogs._views_economy_wizard import DYNAMIC_ITEMS as ECONOMY_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_wizard import DYNAMIC_ITEMS as LEVELING_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_download_wizard import DYNAMIC_ITEMS as DOWNLOAD_WIZARD_DYNAMIC_ITEMS
-from discord_bot.cogs._views_leaderboard_links import DYNAMIC_ITEMS as LEADERBOARD_LINKS_DYNAMIC_ITEMS
+# DISABLED: server listing dropped — from discord_bot.cogs._views_leaderboard_links import DYNAMIC_ITEMS as LEADERBOARD_LINKS_DYNAMIC_ITEMS
+LEADERBOARD_LINKS_DYNAMIC_ITEMS = []
 from discord_bot.cogs._views_registry_invite_consent import DYNAMIC_ITEMS as REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS
-from discord_bot.cogs._views_auto_listing_offer import DYNAMIC_ITEMS as AUTO_LISTING_OFFER_DYNAMIC_ITEMS, offer_auto_listing
+# DISABLED: server listing dropped — from discord_bot.cogs._views_auto_listing_offer import DYNAMIC_ITEMS as AUTO_LISTING_OFFER_DYNAMIC_ITEMS, offer_auto_listing
+AUTO_LISTING_OFFER_DYNAMIC_ITEMS = []
+async def offer_auto_listing(*args, **kwargs): pass  # no-op stub
 # offer_combined_join_dm itself is no longer called — that flow is now
 # folded onto the combined join DM's last page (see _views_join_dm.py's
 # join_offer handling, wired from _send_combined_owner_join_dm below).
@@ -147,9 +150,9 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*ECONOMY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*LEVELING_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DOWNLOAD_WIZARD_DYNAMIC_ITEMS)
-        self.add_dynamic_items(*LEADERBOARD_LINKS_DYNAMIC_ITEMS)
+        # DISABLED: server listing dropped — self.add_dynamic_items(*LEADERBOARD_LINKS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS)
-        self.add_dynamic_items(*AUTO_LISTING_OFFER_DYNAMIC_ITEMS)
+        # DISABLED: server listing dropped — self.add_dynamic_items(*AUTO_LISTING_OFFER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*COMBINED_JOIN_OFFER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REPORT_CHANNEL_PICKER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*GIVEAWAY_WIZARD_DYNAMIC_ITEMS)
@@ -212,7 +215,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.external_tools")
         await self.load_extension("discord_bot.cogs.crypto_alerts")
         await self.load_extension("discord_bot.cogs.ads_marketplace")
-        await self.load_extension("discord_bot.cogs.bump")
+        # DISABLED: vote/listing dropped — await self.load_extension("discord_bot.cogs.bump")
         await self.load_extension("discord_bot.cogs.referrals")
         # botstore dropped: feature retired to free up global slash-command
         # slots. Re-add the line above (discord_bot.cogs.botstore) to restore.
@@ -227,8 +230,12 @@ class AnimeBotDiscord(commands.Bot):
         # discover_players dropped: feature retired to free up global
         # slash-command slots. Re-add the line above to restore.
         await self.load_extension("discord_bot.cogs.admin")
-        await self.load_extension("discord_bot.cogs.server_listing")
-        await self.load_extension("discord_bot.cogs.listing_snapshots")
+        # DISABLED: server listing dropped
+        # await self.load_extension("discord_bot.cogs.server_listing")
+        # await self.load_extension("discord_bot.cogs.listing_snapshots")
+        # One-shot cleanup: deletes vote panels + bump channels the bot created,
+        # clears DB rows, then self-unloads. Remove this line once confirmed clean.
+        await self.load_extension("discord_bot.cogs.vote_bump_cleanup")
         await self.load_extension("discord_bot.cogs.report_notifications")
         # Loaded on clones too now, not just the main bot: a clone can host
         # its own "Build Bot" wizard / /registerclone for sub-clones. Each
@@ -430,11 +437,12 @@ class AnimeBotDiscord(commands.Bot):
                 # no-ops on every subsequent restart. Skipped for guilds
                 # that already have a listing — no point offering to
                 # auto-list something an admin already listed manually.
-                try:
-                    if not await db.get_server_listing(guild.id):
-                        await offer_auto_listing(self, guild)
-                except Exception:
-                    logger.exception(f"[startup] auto-listing offer backfill failed for guild {guild.id}")
+                # DISABLED: server listing dropped
+                # try:
+                #     if not await db.get_server_listing(guild.id):
+                #         await offer_auto_listing(self, guild)
+                # except Exception:
+                #     logger.exception(f"[startup] auto-listing offer backfill failed for guild {guild.id}")
             else:
                 await self._handle_new_guild(guild)
 
