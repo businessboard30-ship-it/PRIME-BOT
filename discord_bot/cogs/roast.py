@@ -81,6 +81,17 @@ DEFAULT_RANDOM_CHECK_MINUTES = 30
 DEFAULT_RANDOM_CHANCE_PERCENT = 10
 BOT_CONCEDE_CHANCE_PERCENT = 5  # odds the bot "takes the L" instead of roasting back
 
+# An 'active' battle with nobody replying used to sit open forever (see
+# on_message's docstring — nothing but Quit Roast ever ended it), which also
+# permanently blocked that guild from getting a new roast proposal (busy_guild_ids
+# in _check_triggers treats 'active' as blocking). ACTIVE_BATTLE_IDLE_MINUTES
+# auto-quits any battle that's gone quiet this long. Checked by its own fast
+# poller (ACTIVE_BATTLE_POLL_SECONDS) rather than the main POLL_INTERVAL_SECONDS
+# loop — that one's intentionally slow (5 min, batched per-guild queries), far
+# too coarse to catch a 2-minute idle window without a multi-minute detection lag.
+ACTIVE_BATTLE_IDLE_MINUTES = 2
+ACTIVE_BATTLE_POLL_SECONDS = 30
+
 PUNCHLINE_BANK = [
     "You move through life like autocorrect — confident and always wrong.",
     "You're the reason we have warning labels on shampoo.",
@@ -1331,10 +1342,16 @@ class RoastCog(GuildOnlyCog):
         for b in battles:
             self._active_by_channel[b["channel_id"]] = b["id"]
         self._poller.start()
-        logger.info(f"[roast] cog loaded, {len(rows)} active battle(s) restored, poller running every {POLL_INTERVAL_SECONDS}s")
+        self._active_battle_poller.start()
+        logger.info(
+            f"[roast] cog loaded, {len(rows)} active battle(s) restored, "
+            f"main poller every {POLL_INTERVAL_SECONDS}s, "
+            f"active-battle idle poller every {ACTIVE_BATTLE_POLL_SECONDS}s"
+        )
 
     def cog_unload(self):
         self._poller.cancel()
+        self._active_battle_poller.cancel()
 
     # ---------- DB-backed helpers ----------
 
@@ -1445,7 +1462,15 @@ class RoastCog(GuildOnlyCog):
         if not battle or battle["status"] != "pending":
             logger.warning(f"[roast] accept_battle called on invalid battle_id={battle_id} status={battle['status'] if battle else 'missing'}")
             return False
-        await db.execute("UPDATE discord_roast_battles SET status = 'active' WHERE id = $1", battle_id)
+        # Reset the idle clock here too, not just on each reply — the battle
+        # was sitting 'pending' since creation (last_activity_at defaults to
+        # then), which could already be minutes ago by the time the target
+        # actually accepts, and the bot's first roast below is what starts
+        # the real back-and-forth.
+        await db.execute(
+            "UPDATE discord_roast_battles SET status = 'active', last_activity_at = NOW() WHERE id = $1",
+            battle_id,
+        )
         channel = self.bot.get_channel(battle["channel_id"])
         if channel is None:
             logger.warning(f"[roast] accept_battle: channel {battle['channel_id']} not found/cached, battle_id={battle_id}")
@@ -1601,6 +1626,12 @@ class RoastCog(GuildOnlyCog):
                 context=message.content,
                 pick_fresh=lambda bank: self._pick_fresh_line(battle_id, bank, self._used_punchlines),
             )
+        # A real reply just came in — this is what keeps the battle alive,
+        # so reset its idle clock (see ACTIVE_BATTLE_IDLE_MINUTES).
+        await db.execute(
+            "UPDATE discord_roast_battles SET last_activity_at = NOW() WHERE id = $1", battle_id,
+        )
+
         embed = discord.Embed(description=roast_text, color=discord.Color.red())
         try:
             # A human roast-battle comeback doesn't land in 0ms — show
@@ -1627,6 +1658,46 @@ class RoastCog(GuildOnlyCog):
     @_poller.before_loop
     async def _before_poller(self):
         await self.bot.wait_until_ready()
+
+    # A separate, faster loop from `_poller` on purpose — see
+    # ACTIVE_BATTLE_POLL_SECONDS' comment above. `_poller` batches
+    # per-guild queries every 5 minutes, which is fine for proposal
+    # triggers but far too coarse to catch a 2-minute idle window.
+    @tasks.loop(seconds=ACTIVE_BATTLE_POLL_SECONDS)
+    async def _active_battle_poller(self):
+        try:
+            await self._quit_idle_active_battles()
+        except Exception:
+            logger.exception("[roast] _quit_idle_active_battles failed")
+
+    @_active_battle_poller.before_loop
+    async def _before_active_battle_poller(self):
+        await self.bot.wait_until_ready()
+
+    async def _quit_idle_active_battles(self):
+        rows = await db.fetch(
+            """
+            SELECT id, channel_id FROM discord_roast_battles
+            WHERE status = 'active' AND last_activity_at <= NOW() - ($1 || ' minutes')::interval
+            """,
+            str(ACTIVE_BATTLE_IDLE_MINUTES),
+        )
+        for row in rows:
+            battle_id, channel_id = row["id"], row["channel_id"]
+            await self.end_battle(battle_id)
+            logger.info(
+                f"[roast] battle_id={battle_id} auto-quit after "
+                f"{ACTIVE_BATTLE_IDLE_MINUTES}min of inactivity"
+            )
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                continue
+            try:
+                await channel.send(
+                    f"😴 Nobody's replied in {ACTIVE_BATTLE_IDLE_MINUTES} minutes — roast battle called off due to inactivity."
+                )
+            except discord.HTTPException:
+                pass
 
     async def _expire_stale_challenges(self):
         if not self._expire_gate.should_run():
