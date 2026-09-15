@@ -16,7 +16,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 # invites.py to mention the site by name when a join is attributed to a
 # listing's tracked invite link (see check_ref_conversion in database.py
 # for the matching web-side conversion tracking).
-SITE_NAME = os.getenv("SITE_NAME", "PRIME-BOT")
+# Hardcoded (was SITE_NAME env var) — just a display name, not secret/per-env.
+SITE_NAME = "PRIME-BOT"
 SITE_URL = os.getenv("NEXT_PUBLIC_SITE_URL", "https://prime-bot.example.com")
 
 # Shared secret that protects the cron-triggered endpoints (api/cron_autopost.py,
@@ -409,12 +410,14 @@ DISCORD_OWNER_BROADCAST_IDS = {
 # Shown as a header line above the message body in every DM sent by
 # /ownerbroadcast (see discord_bot/cogs/clone_admin.py and
 # api/cron_discord_owner_broadcast.py).
-DISCORD_OWNER_BRAND_NAME = os.getenv("DISCORD_OWNER_BRAND_NAME", "the bot owner")
+# Hardcoded (was DISCORD_OWNER_BRAND_NAME env var) — static branding text.
+DISCORD_OWNER_BRAND_NAME = "the bot owner"
 
 # Invite link to your own support server, shown as a link button on the
 # owner join DM wizard (discord_bot/cogs/_views_join_dm.py). Empty string
 # means the button is simply omitted rather than sent broken.
-DISCORD_SUPPORT_SERVER_INVITE = os.getenv("DISCORD_SUPPORT_SERVER_INVITE", "https://discord.gg/DYfajXrP9B")
+# Hardcoded (was DISCORD_SUPPORT_SERVER_INVITE env var) — public invite link, same every deploy.
+DISCORD_SUPPORT_SERVER_INVITE = "https://discord.gg/DYfajXrP9B"
 # Frontend (dash-production) equivalent of the line above — Next.js only
 # inlines env vars prefixed NEXT_PUBLIC_ at build time, so this can't just
 # reuse DISCORD_SUPPORT_SERVER_INVITE from this (backend) process; set it
@@ -426,11 +429,12 @@ NEXT_PUBLIC_SUPPORT_SERVER_INVITE = os.getenv("NEXT_PUBLIC_SUPPORT_SERVER_INVITE
 # Music Pro upgrade — $4.99 one-time, per-SERVER (not per-member), via
 # Selar. No webhook wired up yet, so paying doesn't auto-activate — an
 # admin runs /activate-pro after confirming the payment.
-MUSIC_PRO_PRICE_LABEL = os.getenv("MUSIC_PRO_PRICE_LABEL", "$4.99")
-MUSIC_PRO_PAYMENT_URL = os.getenv("MUSIC_PRO_PAYMENT_URL", "https://selar.com/61l8115885")
-MUSIC_FREE_DAILY_LISTENS = int(os.getenv("MUSIC_FREE_DAILY_LISTENS", "10"))
-MUSIC_FREE_DAILY_UPLOADS = int(os.getenv("MUSIC_FREE_DAILY_UPLOADS", "3"))
-MUSIC_FREE_DAILY_DOWNLOADS = int(os.getenv("MUSIC_FREE_DAILY_DOWNLOADS", "3"))
+# Hardcoded (were env vars) — static pricing/display text and tuning constants.
+MUSIC_PRO_PRICE_LABEL = "$4.99"
+MUSIC_PRO_PAYMENT_URL = "https://selar.com/61l8115885"
+MUSIC_FREE_DAILY_LISTENS = 10
+MUSIC_FREE_DAILY_UPLOADS = 3
+MUSIC_FREE_DAILY_DOWNLOADS = 3
 
 
 def music_pro_payment_url_for_guild(guild_id: int) -> str:
@@ -461,7 +465,8 @@ def music_pro_payment_url_for_guild(guild_id: int) -> str:
 OWNER_GUILD_ID = int(os.getenv("OWNER_GUILD_ID", "0") or "0")
 OWNER_BROADCAST_CHANNEL_ID = int(os.getenv("OWNER_BROADCAST_CHANNEL_ID", "0") or "0")
 # How often the owner server's auto-enabled autopost fires, in hours.
-OWNER_BROADCAST_INTERVAL_HOURS = int(os.getenv("OWNER_BROADCAST_INTERVAL_HOURS", "6") or "6")
+# Hardcoded (was OWNER_BROADCAST_INTERVAL_HOURS env var) — tuning constant.
+OWNER_BROADCAST_INTERVAL_HOURS = 6
 
 # --- Vote-bonus webhook (economy.py /vote, spec §4 open question #1) --------
 # Real vote verification from top.gg / discordbotlist.com: both send a
@@ -537,7 +542,10 @@ PRICE_REGISTRY = {
 # Rollback flag (3.5): keep the OLD fake-token behavior available behind this
 # flag during rollout. Default is OFF (real system) once this ships — flip to
 # "false" instantly if the multi-tenant router ever misroutes a message.
-CLONE_BOT_REAL_ENABLED = os.getenv("CLONE_BOT_REAL_ENABLED", "true").lower() == "true"
+# Hardcoded (was CLONE_BOT_REAL_ENABLED env var) — rollout finished, real
+# system is permanently on now. Flip this literal back to False in code if
+# the multi-tenant router ever needs an emergency rollback.
+CLONE_BOT_REAL_ENABLED = True
 
 # The public HTTPS base URL this app is deployed at (e.g. your Vercel domain,
 # no trailing slash). Required to register per-clone webhooks
@@ -547,7 +555,8 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
 # Max number of per-clone Application instances kept warm in memory at once
 # (Part 3.1 "Per-clone Application instances" — bounded LRU, not unbounded).
-CLONE_APP_CACHE_SIZE = int(os.getenv("CLONE_APP_CACHE_SIZE", "20"))
+# Hardcoded (was CLONE_APP_CACHE_SIZE env var) — tuning constant.
+CLONE_APP_CACHE_SIZE = 20
 
 # Username (no @) of the MAIN bot, e.g. "AnimeCrunchBot". Used so every clone
 # carries a visible trace back to the main bot — a "Powered by" line plus a
