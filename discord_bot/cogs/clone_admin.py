@@ -712,12 +712,26 @@ class CloneAdminCog(commands.Cog):
     # same split as the Telegram broadcast_jobs flow and Discord's own
     # scheduled-announcements cron — a live interaction response has to
     # return in seconds, but DMing every user across every clone can't.
+    # "clone" restricts "users"/"servers"/"modlogs" to a single clone's pool
+    # instead of the main bot + every clone. Backed by an autocomplete
+    # rather than a fixed choices= list since the set of active clones
+    # changes at runtime (choices= is baked in at command-sync time).
+    async def _clone_autocomplete(self, interaction: discord.Interaction, current: str):
+        current = current.lower()
+        clones = await db.list_active_discord_clones()
+        return [
+            app_commands.Choice(name=f"#{c['clone_id']} — {c['bot_username']}", value=str(c["clone_id"]))
+            for c in clones
+            if current in str(c["clone_id"]) or current in c["bot_username"].lower()
+        ][:25]
+
     @app_commands.command(name="ownerbroadcast", description="[Owner] DM an announcement to bot users or clone admins")
     @app_commands.describe(
         message="The announcement text — sent as-is, signed with your configured brand name",
         target="Who receives this DM — regular bot users (default), clone admins/operators, or server owners",
         attachment="Optional file to attach — image, PDF, or any file type — sent alongside the text",
         payment_button="Optional — attach an 'I've Paid' button for this product (lets buyers claim straight from this DM)",
+        clone="Optional — restrict to one clone's users/servers/mod-logs only, instead of the main bot + every clone",
     )
     @app_commands.choices(payment_button=[
         app_commands.Choice(name=key.replace("_", " ").title(), value=key) for key in SELAR_PRODUCT_LINKS
@@ -728,10 +742,12 @@ class CloneAdminCog(commands.Cog):
         app_commands.Choice(name="Server owners — owner of every server the bot/clones are in", value="servers"),
         app_commands.Choice(name="Mod-log channels — post directly into each server's mod-log channel", value="modlogs"),
     ])
+    @app_commands.autocomplete(clone=_clone_autocomplete)
     async def ownerbroadcast(self, interaction: discord.Interaction, message: str,
                               target: Optional[app_commands.Choice[str]] = None,
                               attachment: Optional[discord.Attachment] = None,
-                              payment_button: Optional[app_commands.Choice[str]] = None):
+                              payment_button: Optional[app_commands.Choice[str]] = None,
+                              clone: Optional[str] = None):
         if interaction.user.id not in DISCORD_OWNER_BROADCAST_IDS:
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
             return
@@ -741,6 +757,28 @@ class CloneAdminCog(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        # "admins" ignores "clone" — every admin is reachable via the main
+        # bot's own token regardless of which clone(s) they own (see that
+        # branch's comment below), so there's no per-clone pool to narrow
+        # there the way there is for users/servers/modlogs.
+        clone_filter_id: Optional[int] = None
+        if clone is not None and (target is None or target.value != "admins"):
+            try:
+                clone_filter_id = int(clone)
+            except ValueError:
+                await interaction.response.send_message(
+                    "That clone selection didn't come from the autocomplete list — please pick one of the suggestions.",
+                    ephemeral=True,
+                )
+                return
+            clone_row = await db.get_discord_clone(clone_filter_id)
+            if not clone_row or clone_row.get("status") != "active":
+                await interaction.response.send_message(
+                    f"Clone `#{clone_filter_id}` isn't active (or doesn't exist) anymore — pick another from the autocomplete list.",
+                    ephemeral=True,
+                )
+                return
 
         # No content-type gate here on purpose — any file type (image, PDF,
         # etc.) is accepted. The cron sender re-uploads it as a real Discord
@@ -787,21 +825,30 @@ class CloneAdminCog(commands.Cog):
             # path, we can't assume everyone is reachable through the main
             # bot's token — same per-clone token requirement as "users"
             # below, so this mirrors that loop rather than the "admins" one.
+            #
+            # clone_filter_id, when set, skips the main bot's own owners
+            # entirely and only walks that one clone below — same shape as
+            # the "users" branch's filter.
             seen_owner_ids = set()
 
-            main_owner_ids = await db.get_discord_guild_owner_ids(None)
-            main_owner_ids = [uid for uid in main_owner_ids if uid != interaction.user.id]
-            seen_owner_ids.update(main_owner_ids)
-            await db.add_owner_broadcast_recipients(broadcast_id, None, main_owner_ids)
+            if clone_filter_id is None:
+                main_owner_ids = await db.get_discord_guild_owner_ids(None)
+                main_owner_ids = [uid for uid in main_owner_ids if uid != interaction.user.id]
+                seen_owner_ids.update(main_owner_ids)
+                await db.add_owner_broadcast_recipients(broadcast_id, None, main_owner_ids)
 
-            clones = await db.list_active_discord_clones()
-            for clone in clones:
-                clone_owner_ids = await db.get_discord_guild_owner_ids(clone["clone_id"])
+            clones = [clone_row] if clone_filter_id is not None else await db.list_active_discord_clones()
+            for c in clones:
+                clone_owner_ids = await db.get_discord_guild_owner_ids(c["clone_id"])
                 new_owner_ids = [uid for uid in clone_owner_ids if uid not in seen_owner_ids and uid != interaction.user.id]
                 seen_owner_ids.update(new_owner_ids)
-                await db.add_owner_broadcast_recipients(broadcast_id, clone["clone_id"], new_owner_ids)
+                await db.add_owner_broadcast_recipients(broadcast_id, c["clone_id"], new_owner_ids)
 
-            recipient_note = f"**{len(seen_owner_ids)}** server owner(s) across the main bot and {len(clones)} clone(s)"
+            recipient_note = (
+                f"**{len(seen_owner_ids)}** server owner(s) in clone `#{clone_filter_id}`"
+                if clone_filter_id is not None else
+                f"**{len(seen_owner_ids)}** server owner(s) across the main bot and {len(clones)} clone(s)"
+            )
         elif target_value == "modlogs":
             # Post straight into each server's own configured mod-log
             # channel instead of DMing anyone — for announcements admins
@@ -809,27 +856,32 @@ class CloneAdminCog(commands.Cog):
             # behavior"), not buried in a personal DM. Spans the main bot
             # plus every active clone, same as "servers"/"users" above,
             # since each clone's guilds have their own independently-set
-            # log channels.
+            # log channels. clone_filter_id narrows this the same way.
             total_channels = 0
 
-            main_channels = await db.get_discord_modlog_channels(None)
-            if main_channels:
-                await db.add_owner_broadcast_channel_recipients(
-                    broadcast_id, None, [c["log_channel_id"] for c in main_channels]
-                )
-                total_channels += len(main_channels)
+            if clone_filter_id is None:
+                main_channels = await db.get_discord_modlog_channels(None)
+                if main_channels:
+                    await db.add_owner_broadcast_channel_recipients(
+                        broadcast_id, None, [c["log_channel_id"] for c in main_channels]
+                    )
+                    total_channels += len(main_channels)
 
-            clones = await db.list_active_discord_clones()
-            for clone in clones:
-                clone_channels = await db.get_discord_modlog_channels(clone["clone_id"])
+            clones = [clone_row] if clone_filter_id is not None else await db.list_active_discord_clones()
+            for c in clones:
+                clone_channels = await db.get_discord_modlog_channels(c["clone_id"])
                 if not clone_channels:
                     continue
                 await db.add_owner_broadcast_channel_recipients(
-                    broadcast_id, clone["clone_id"], [c["log_channel_id"] for c in clone_channels]
+                    broadcast_id, c["clone_id"], [ch["log_channel_id"] for ch in clone_channels]
                 )
                 total_channels += len(clone_channels)
 
-            recipient_note = f"**{total_channels}** mod-log channel(s) across the main bot and {len(clones)} clone(s)"
+            recipient_note = (
+                f"**{total_channels}** mod-log channel(s) in clone `#{clone_filter_id}`"
+                if clone_filter_id is not None else
+                f"**{total_channels}** mod-log channel(s) across the main bot and {len(clones)} clone(s)"
+            )
         else:
             # Main bot's own users (clone_id=None), plus every currently-active
             # clone's users. An inactive/removed clone is skipped since there's
@@ -844,20 +896,29 @@ class CloneAdminCog(commands.Cog):
             # user_id is only ever queued once for this broadcast, via
             # whichever bot we saw them on first (main bot wins ties since
             # it's resolved before the clone loop).
+            #
+            # clone_filter_id, when set, skips the main bot's users entirely
+            # and queues only that one clone's users — the actual feature
+            # this parameter exists for.
             seen_user_ids = set()
 
-            main_user_ids = await db.get_discord_bot_user_ids(None)
-            seen_user_ids.update(main_user_ids)
-            await db.add_owner_broadcast_recipients(broadcast_id, None, main_user_ids)
+            if clone_filter_id is None:
+                main_user_ids = await db.get_discord_bot_user_ids(None)
+                seen_user_ids.update(main_user_ids)
+                await db.add_owner_broadcast_recipients(broadcast_id, None, main_user_ids)
 
-            clones = await db.list_active_discord_clones()
-            for clone in clones:
-                clone_user_ids = await db.get_discord_bot_user_ids(clone["clone_id"])
+            clones = [clone_row] if clone_filter_id is not None else await db.list_active_discord_clones()
+            for c in clones:
+                clone_user_ids = await db.get_discord_bot_user_ids(c["clone_id"])
                 new_user_ids = [uid for uid in clone_user_ids if uid not in seen_user_ids]
                 seen_user_ids.update(new_user_ids)
-                await db.add_owner_broadcast_recipients(broadcast_id, clone["clone_id"], new_user_ids)
+                await db.add_owner_broadcast_recipients(broadcast_id, c["clone_id"], new_user_ids)
 
-            recipient_note = f"**{len(seen_user_ids)}** recipient(s) across the main bot and {len(clones)} clone(s)"
+            recipient_note = (
+                f"**{len(seen_user_ids)}** user(s) of clone `#{clone_filter_id}` (**{clone_row['bot_username']}**)"
+                if clone_filter_id is not None else
+                f"**{len(seen_user_ids)}** recipient(s) across the main bot and {len(clones)} clone(s)"
+            )
 
         broadcast_row = await db.get_owner_broadcast(broadcast_id)
         total = broadcast_row["total_recipients"] if broadcast_row else None
