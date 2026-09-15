@@ -1,0 +1,85 @@
+/* PRIME-BOT public-site tokens — copied from the main app's globals.css
+   (only the subset app/unlock/unlock-status.tsx actually uses) so this
+   standalone GitHub Pages build matches the main site's look. Keep this
+   in sync by hand if the main app's design tokens change. */
+:root {
+  --pb-bg: #0b0c0f;
+  --pb-surface: #141519;
+  --pb-surface-raised: #1c1e24;
+  --pb-line: #26282e;
+  --pb-text: #eef0f3;
+  --pb-text-muted: #8b909a;
+  --pb-text-faint: #5b5f68;
+  --pb-accent: #3b82f6;
+  --pb-accent-strong: #2563eb;
+  --pb-positive: #34d399;
+  --pb-danger: #f87171;
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-body: 'Inter', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.pb-page {
+  background: var(--pb-bg);
+  color: var(--pb-text);
+  font-family: var(--font-body);
+  min-height: 100vh;
+}
+
+.pb-heading {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.pb-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--pb-accent);
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 500;
+  color: white;
+  border: none;
+  cursor: pointer;
+  text-decoration: none;
+  font-family: var(--font-body);
+  transition: background-color 0.15s ease;
+}
+.pb-btn-primary:hover {
+  background: var(--pb-accent-strong);
+}
+.pb-btn-primary:disabled {
+  background: var(--pb-surface-raised);
+  color: var(--pb-text-faint);
+  cursor: not-allowed;
+}
+
+.pb-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--pb-surface-raised);
+  border: 1px solid var(--pb-line);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 14px;
+  color: var(--pb-text);
+  cursor: pointer;
+  text-decoration: none;
+  font-family: var(--font-body);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.pb-btn-secondary:hover {
+  background: var(--pb-surface);
+  border-color: var(--pb-text-faint);
+}
