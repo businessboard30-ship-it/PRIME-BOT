@@ -4,4 +4,8 @@
 # PyNaCl (in requirements.txt) only covers voice *encryption*, not the
 # actual Opus codec. Without this, voice_client.play() either raises or
 # produces silent audio: the "bot joins/queues but no sound" symptom.
-nixPkgs = ["ffmpeg", "libopus"]
+#
+# libatomic is required by the Node 26 binary itself — without it, `node`
+# fails to start at all with "libatomic.so.1: cannot open shared object
+# file", since this base image doesn't ship it by default.
+nixPkgs = ["ffmpeg", "libopus", "libatomic"]
