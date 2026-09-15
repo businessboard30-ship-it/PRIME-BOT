@@ -162,7 +162,7 @@ DISCORD_DEV_GUILD_ID = 0
 # Base URL of the Next.js site (app/ dir) this repo also deploys — used to
 # build the /automod dashboard link. Defaults to the marketing site's own
 # domain convention; override if the dashboard is deployed separately.
-DASHBOARD_BASE_URL = "https://dash-production-c237.up.railway.app"
+DASHBOARD_BASE_URL = "https://prime-bot-sigma.vercel.app"
 
 # Separate, explicitly-whitelisted base for the /unlock page ONLY, used
 # when that page is hosted standalone on GitHub Pages instead of living
