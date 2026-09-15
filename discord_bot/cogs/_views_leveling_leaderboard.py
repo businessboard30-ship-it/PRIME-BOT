@@ -172,30 +172,54 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     container.add_item(rankings_section)
 
     link_row = discord.ui.ActionRow()
+    MAX_BOOST_BADGES = 2   # real Section+button entries; each costs 3 components
+    MAX_LEADER_LINKS = 3   # link_row costs 1 (row) + N (buttons)
+    badge_budget = MAX_BOOST_BADGES
+    chunk_lines = []
+
+    def _flush_chunk():
+        if chunk_lines:
+            container.add_item(discord.ui.TextDisplay("\n".join(chunk_lines)))
+            chunk_lines.clear()
+
     for i, row in enumerate(rows, start=offset + 1):
         name, avatar_url, role_name, _role_color = await _resolve_display(bot, guild, mode, row["user_id"])
         total_xp = row["total_xp"]
         level = row["level"] if mode == "local" else leveling.compute_level(total_xp)
         multiplier = boosts.get(row["user_id"])
-        if multiplier:
+        line = f"{_medal_or_rank(i)} {name}\nLvl `{level}` — {total_xp} xp"
+
+        if multiplier and badge_budget > 0:
+            # Real Section + disabled button ("own allocated button with the
+            # exact multiplier") — capped at MAX_BOOST_BADGES per page so a
+            # page that happens to be mostly-boosted users can never push
+            # this message over Discord's 40-component ceiling (see the
+            # ValueError this replaced). Any boosted entries past the cap
+            # still show their multiplier, just inline as text instead of a
+            # standalone button — flush whatever plain-text chunk is
+            # pending first so ordering on the page stays correct.
+            _flush_chunk()
+            badge_budget -= 1
             accessory = discord.ui.Button(
                 label=f"⚡ {multiplier:g}x active", style=discord.ButtonStyle.success,
                 disabled=True, custom_id=f"lvllb_badge:{row['user_id']}:{i}",
             )
-        elif avatar_url:
-            accessory = discord.ui.Thumbnail(avatar_url)
+            entry_section = discord.ui.Section(accessory=accessory)
+            entry_section.add_item(line)
+            container.add_item(entry_section)
         else:
-            accessory = discord.ui.Button(label=f"#{i}", disabled=True, custom_id=f"lvllb_badge:{row['user_id']}:{i}")
-        entry_section = discord.ui.Section(accessory=accessory)
-        entry_section.add_item(f"{_medal_or_rank(i)} {name}\nLvl `{level}` — {total_xp} xp")
-        container.add_item(entry_section)
+            if multiplier:
+                line += f" · ⚡ {multiplier:g}x active"
+            chunk_lines.append(line)
 
-        if mode == "local":
+        if mode == "local" and len(link_row.children) < MAX_LEADER_LINKS:
             link = await db.get_leader_link(guild.id, row["user_id"], clone_id=clone_id)
-            if link and link["status"] == "approved" and len(link_row.children) < 5:
+            if link and link["status"] == "approved":
                 link_row.add_item(discord.ui.Button(
                     label=f"#{i} · {name}'s server", style=discord.ButtonStyle.link, url=link["invite_url"]
                 ))
+
+    _flush_chunk()
 
     container.add_item(discord.ui.TextDisplay(f"-# Total players: {total}"))
     container.add_item(discord.ui.Separator())
