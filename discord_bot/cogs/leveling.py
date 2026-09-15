@@ -33,6 +33,7 @@ from modules import leveling
 from modules.level_card import render_level_card, render_level_card_evolved
 from discord_bot.cogs._views_shared import ActionButton, NavCardView
 from discord_bot.cogs._views_leveling_leaderboard import build_leaderboard_view
+from config import DISCORD_CLONE_ADMIN_IDS
 from discord_bot.cogs._views_leveling_wizard import (
     build_wizard_view as build_leveling_wizard_view,
     remember_wizard_message as remember_leveling_wizard_message,
@@ -46,6 +47,12 @@ XP_MAX = 25
 XP_COOLDOWN_SECONDS = 60
 
 XP_RATE_MULTIPLIERS = {"slow": 0.5, "default": 1.0, "fast": 1.5}
+
+# Bot owner gets this multiplier on message XP by default (stacks with
+# the guild's xp_rate setting and any paid per-user boost, same as those
+# stack with each other below). Bot owner = DISCORD_CLONE_ADMIN_IDS, same
+# convention as image_search.py's _is_owner — NOT the guild's own owner.
+OWNER_XP_MULTIPLIER = 5.0
 
 
 def _require_perm(interaction: discord.Interaction, perm: str) -> bool:
@@ -210,6 +217,8 @@ class LevelingCog(GuildOnlyCog):
         boost = await db.get_active_xp_boost(message.guild.id, message.author.id, clone_id=clone_id)
         if boost:
             multiplier *= float(boost["multiplier"])
+        if message.author.id in DISCORD_CLONE_ADMIN_IDS:
+            multiplier *= OWNER_XP_MULTIPLIER
         gained = max(1, round(random.randint(XP_MIN, XP_MAX) * multiplier))
         new_level_guess = leveling.compute_level(current["total_xp"] + gained)
         # cooldown_seconds makes this atomic across processes — see
@@ -393,6 +402,38 @@ class LevelingCog(GuildOnlyCog):
         await interaction.followup.send(view=view)
         sent = await interaction.original_response()
         await remember_leveling_wizard_message(interaction.guild_id, clone_id, interaction.user.id, sent.channel.id, sent.id)
+
+    @group.command(name="giftboost", description="[Bot owner] Gift a member a temporary XP boost")
+    @app_commands.describe(
+        member="Member to gift the boost to",
+        multiplier="XP multiplier (e.g. 2 = double XP)",
+        days="How many days the boost lasts",
+    )
+    async def giftboost(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        multiplier: app_commands.Range[float, 1.0, 100.0],
+        days: app_commands.Range[int, 1, 365],
+    ):
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user.id not in DISCORD_CLONE_ADMIN_IDS:
+            await interaction.followup.send("This command is restricted to the bot owner.", ephemeral=True)
+            return
+        # Reuses the same activate_xp_boost the paid-boost payment flow
+        # calls (payments_manual.py's UNLOCK_HANDLERS["xp_boost"]) — a
+        # gifted boost behaves identically to a purchased one, including
+        # ON CONFLICT re-activation replacing rather than stacking a prior
+        # boost for that member.
+        row = await db.activate_xp_boost(
+            interaction.guild_id, member.id, float(multiplier), days,
+            clone_id=_clone_id_of(interaction),
+        )
+        await interaction.followup.send(
+            f"🎁 Gifted **{member.display_name}** a **{row['multiplier']}x** XP boost "
+            f"for **{days}** day{'s' if days != 1 else ''} (expires <t:{int(row['expires_at'].timestamp())}:R>).",
+            ephemeral=True,
+        )
 
     @group.command(name="add", description="Grant a role automatically at a given level")
     async def add(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 1000], role: discord.Role):
