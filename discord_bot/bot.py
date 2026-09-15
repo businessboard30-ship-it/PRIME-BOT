@@ -484,6 +484,14 @@ class AnimeBotDiscord(commands.Bot):
         if not await db.claim_new_guild_handling(guild.id, self.clone_id):
             logger.info(f"[join] duplicate _handle_new_guild suppressed for guild {guild.id} (DB claim lost)")
             return
+        # If this guild previously had data under a NOW-INACTIVE clone
+        # (e.g. we decommissioned that bot and handed the owner a new
+        # clone link), silently carry that data over onto this clone_id
+        # before anything else runs — see migrate_guild_data_if_orphaned's
+        # docstring. Guild-triggered only, no owner action needed.
+        migrated_from = await db.migrate_guild_data_if_orphaned(guild.id, self.clone_id)
+        if migrated_from:
+            logger.info(f"[join] migrated guild {guild.id} data from dead clone #{migrated_from} to #{self.clone_id}")
         invite_url = await self._best_effort_invite(guild)
         await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id, invite_url,
                                        owner_id=guild.owner_id)
