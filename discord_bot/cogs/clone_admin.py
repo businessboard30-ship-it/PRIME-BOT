@@ -909,9 +909,22 @@ class CloneAdminCog(commands.Cog):
         # "admins" ignores "clone" — every admin is reachable via the main
         # bot's own token regardless of which clone(s) they own (see that
         # branch's comment below), so there's no per-clone pool to narrow
-        # there the way there is for users/servers/modlogs.
+        # there the way there is for users/servers/modlogs. Reject rather
+        # than silently broadcasting wider than the owner intended — this
+        # used to fall through and message EVERY clone's admins with no
+        # indication the clone filter had been dropped.
+        if clone is not None and target is not None and target.value == "admins":
+            await interaction.response.send_message(
+                "The `clone` filter doesn't apply to the **Admins** target — every clone admin is always "
+                "reachable via the main bot regardless of which clone they own, so there's nothing to "
+                "restrict it to. Re-run without `clone` if you meant to message every admin, or pick a "
+                "different target (`servers`/`modlogs`/`users`) if you meant to restrict to one clone.",
+                ephemeral=True,
+            )
+            return
+
         clone_filter_id: Optional[int] = None
-        if clone is not None and (target is None or target.value != "admins"):
+        if clone is not None:
             try:
                 clone_filter_id = int(clone)
             except ValueError:
