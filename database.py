@@ -6272,6 +6272,19 @@ class Database:
 
             async with conn.transaction():
                 for table in guild_scoped_tables:
+                    # A row for (guild_id, new_clone_id) can already exist in
+                    # some tables (e.g. discord_welcome_config) even though
+                    # this guild is "new" to new_clone_id overall — the
+                    # unique (guild_id, clone_id) constraint on these tables
+                    # would then reject a blind UPDATE with a
+                    # UniqueViolationError. Since new_clone_id's row is the
+                    # live one, drop the now-redundant orphaned row instead
+                    # of migrating it in that case.
+                    await conn.execute(
+                        f"DELETE FROM {table} WHERE guild_id = $1 AND clone_id = $2 "
+                        f"AND EXISTS (SELECT 1 FROM {table} WHERE guild_id = $1 AND clone_id = $3)",
+                        guild_id, old_clone_id, new_clone_id
+                    )
                     await conn.execute(
                         f"UPDATE {table} SET clone_id = $3 WHERE guild_id = $1 AND clone_id = $2",
                         guild_id, old_clone_id, new_clone_id
