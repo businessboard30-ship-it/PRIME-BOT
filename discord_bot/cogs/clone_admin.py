@@ -29,7 +29,10 @@ from discord.ext import commands
 from database import db
 from discord_clone_service import validate_bot_token, build_invite_url, set_default_install_params
 from utils.crypto import secret_manager
-from payments_manual import start_manual_payment
+from payments_manual import (
+    start_manual_payment, resolve_manual_payment_approval, resolve_manual_payment_rejection,
+    _resolve_approvers as _resolve_manual_payment_approvers,
+)
 from payments import paystack
 from config import (
     DISCORD_CLONE_ACTIVATION_FEE_USD, DISCORD_CLONE_FREE_EVERY_NTH, DISCORD_CLONE_ADMIN_IDS,
@@ -764,7 +767,66 @@ class CloneAdminCog(commands.Cog):
         await _notify_buyer(interaction.client, row["user_id"], row["payment_type"], approved=True)
         await interaction.followup.send(f"✅ Confirmed and unlocked for <@{row['user_id']}>.", ephemeral=True)
 
+    # ── /approvepayment, /rejectpayment — command form of the DM card ────
+    # Same review this admin would otherwise do by tapping Approve/Reject
+    # on the DM card payments_manual.py sends (see that module's
+    # send_manual_payment_approval_dms) — this just lets it be done by
+    # reference instead of hunting down that specific DM, e.g. if it
+    # scrolled away or the admin is on mobile. Feature-agnostic: works for
+    # ANY payment_type wired into UNLOCK_HANDLERS (welcome_card_pack,
+    # ultra_welcome_pack, discord_clone, discord_clone_monetization,
+    # custom_role, music_pro, xp_boost, and anything added later), unlike
+    # /verify (premium.py, premium groups only) or /ownermonetize (clone
+    # monetization only) — those stay as-is for their own narrower cases.
+    #
+    # Authorization mirrors payments_manual._resolve_approvers exactly —
+    # the same people who'd have received the DM card for this specific
+    # payment (main-bot admins, plus that clone's owner if it happened on
+    # a clone) are the only ones allowed to resolve it here, so this can't
+    # be used to approve a payment outside what you'd already be allowed
+    # to approve from the DM.
+    async def _authorized_approver_or_deny(self, interaction: discord.Interaction, row: dict) -> bool:
+        approver_ids = await _resolve_manual_payment_approvers(
+            interaction.client, row.get("chat_id"), payment_type=row.get("payment_type")
+        )
+        if interaction.user.id not in approver_ids:
+            await interaction.followup.send(
+                "You're not an approver for this payment.", ephemeral=True
+            )
+            return False
+        return True
 
+    @app_commands.command(name="approvepayment", description="[Admin] Approve a pending manual payment by reference — any paid feature")
+    @app_commands.describe(reference="The payment reference (buyer's or from the approval DM)")
+    async def approvepayment(self, interaction: discord.Interaction, reference: str):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        row = await db.get_payment_row_by_reference(reference)
+        if not row:
+            await interaction.followup.send("No payment found with that reference.", ephemeral=True)
+            return
+        if not await self._authorized_approver_or_deny(interaction, row):
+            return
+
+        result = await resolve_manual_payment_approval(interaction.client, row["payment_id"])
+        await interaction.followup.send(
+            f"✅ {result.message}" if result.ok else result.message, ephemeral=True
+        )
+
+    @app_commands.command(name="rejectpayment", description="[Admin] Reject a pending manual payment by reference")
+    @app_commands.describe(reference="The payment reference (buyer's or from the approval DM)")
+    async def rejectpayment(self, interaction: discord.Interaction, reference: str):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        row = await db.get_payment_row_by_reference(reference)
+        if not row:
+            await interaction.followup.send("No payment found with that reference.", ephemeral=True)
+            return
+        if not await self._authorized_approver_or_deny(interaction, row):
+            return
+
+        result = await resolve_manual_payment_rejection(interaction.client, row["payment_id"])
+        await interaction.followup.send(
+            f"❌ {result.message}" if result.ok else result.message, ephemeral=True
+        )
 
     # ── /ownermonetize — one-shot owner shortcut ─────────────────────────
     # Suggested as "/admin monetize <clone_id>" but the existing top-level
