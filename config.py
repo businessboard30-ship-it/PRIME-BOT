@@ -321,6 +321,13 @@ SELAR_PRODUCT_LINKS = {
     # Per-user XP boost (2x XP / 7 days) — see config.XP_BOOST_FEE_USD.
     # Real $3 "XP BOOST PAYMENT" product on Selar (unlisted, live).
     "xp_boost": "https://selar.com/910n9763c7",
+    # Boost Wallet tiers (flat, giftable XP) — see config.XP_WALLET_TIERS.
+    # Real products on Selar (unlisted, live).
+    "xp_wallet_small": "https://selar.com/188h56t8l8",
+    "xp_wallet_medium": "https://selar.com/215k2h3p52",
+    "xp_wallet_large": "https://selar.com/78p5k9asl5",
+    "xp_wallet_mega": "https://selar.com/501c935a69",
+    "xp_server_boost": "https://selar.com/05y7bv19d5",
 }
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):
@@ -340,6 +347,56 @@ CUSTOM_ROLE_FEE_USD = 3.99
 XP_BOOST_FEE_USD = 3
 XP_BOOST_MULTIPLIER = 2.0
 XP_BOOST_DURATION_DAYS = 7
+
+# ─────────────────────────────────────────────────────────────────────────
+# Boost Wallet — flat, giftable XP (separate mechanic from the multiplier
+# boost above). Buying a tier credits a personal wallet
+# (discord_xp_wallet); the ONLY way to spend it is gifting it to another
+# member, who receives it as real XP added straight to their total_xp.
+# See database/migrations/014_xp_wallet.sql and database.py's
+# get_xp_wallet() / add_wallet_xp() / gift_wallet_xp().
+#
+# Pricing is a genuine bulk discount — bigger tiers cost more total money
+# but a strictly lower price-per-XP than every smaller tier, so there's
+# never a reason to buy a smaller tier for the same or worse value:
+#   small:  5,000 XP / $3.00  -> $0.00060/XP
+#   medium: 12,000 XP / $6.00 -> $0.00050/XP
+#   large:  30,000 XP / $12.00 -> $0.00040/XP
+#   mega:   75,000 XP / $25.00 -> $0.00033/XP
+# (Raised from the original draft numbers per owner request — those had a
+# larger tier priced BELOW a smaller one, which is a pure bug: nobody would
+# ever buy the smaller tier.)
+XP_WALLET_TIERS = {
+    "xp_wallet_small":  {"xp": 5_000,  "fee_usd": 3.00,  "label": "Small — 5,000 XP"},
+    "xp_wallet_medium": {"xp": 12_000, "fee_usd": 6.00,  "label": "Medium — 12,000 XP"},
+    "xp_wallet_large":  {"xp": 30_000, "fee_usd": 12.00, "label": "Large — 30,000 XP"},
+    "xp_wallet_mega":   {"xp": 75_000, "fee_usd": 25.00, "label": "Mega — 75,000 XP"},
+}
+
+# Unspent wallet balance is forfeited if not gifted within this many days of
+# the member's LAST top-up (refreshed on every purchase, not a hard
+# per-batch expiry) — keeps this from becoming an unbounded, never-touched
+# liability sitting in the DB forever. Checked lazily whenever the wallet is
+# read/spent, not a background job.
+XP_WALLET_EXPIRY_DAYS = 30
+
+# Gifting rules (discord_bot/cogs/_views_leveling_wallet.py):
+#   - a member needs at least this much UN-expired balance in their wallet
+#     before the Gift flow is even offered to them (stops someone who just
+#     bought the smallest possible top-up from immediately draining it as
+#     a single gift with nothing left for themselves)
+#   - a single gift can never exceed this many XP, regardless of balance
+XP_WALLET_MIN_BALANCE_TO_GIFT = 100
+XP_WALLET_MAX_GIFT_XP = 20_000
+
+# Server-wide boost — a temporary XP-RATE MULTIPLIER for every member in the
+# guild (not a wallet credit — a flat XP amount doesn't mean much split
+# across an unknown number of members, so this reuses the multiplier+
+# duration shape instead, same tables/pattern as the per-user XP_BOOST_*
+# constants above, just guild-scoped instead of user-scoped).
+XP_SERVER_BOOST_FEE_USD = 8
+XP_SERVER_BOOST_MULTIPLIER = 2.0
+XP_SERVER_BOOST_DURATION_HOURS = 24
 
 # 20 Unicode "font style" transformations for the custom-role wizard's name
 # step (character substitution, not real fonts — renders in any Discord
