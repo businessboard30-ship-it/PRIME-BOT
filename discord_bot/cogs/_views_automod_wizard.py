@@ -1,4 +1,4 @@
-# path: discord_bot/cogs/_views_automod_wizard.py
+# FULL PATH: PRIME-BOT-main/discord_bot/cogs/_views_automod_wizard.py
 
 """
 Bumper-style multi-step setup wizard for /automod setup.
@@ -245,12 +245,23 @@ class AutomodLogChannelSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], 
         if not await _check_access(interaction, self.invoker_id):
             return
         channel = self.item.values[0]
+        old_config = await db.get_automod_config(self.guild_id, clone_id=self.clone_id)
+        old_channel_id = old_config.get("log_channel_id")
         await db.set_automod_config(
             self.guild_id, clone_id=self.clone_id,
             log_channel_id=channel.id, log_channel_auto_created=False,
             log_channel_notice_count=0, log_channel_last_notice_at=None,
         )
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+        # Setting/changing the mod-log channel here also drives the /modlog
+        # wizard's channel (same log_channel_id column) — auto-post that
+        # wizard into the new channel so categories can be turned on right
+        # away, same as picking the channel from /modlog itself.
+        from discord_bot.cogs._views_modlog_wizard import maybe_announce_new_log_channel
+        await maybe_announce_new_log_channel(
+            interaction.client, self.guild_id, self.clone_id, self.invoker_id,
+            old_channel_id, channel.id,
+        )
 
 
 class AutomodActionSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("action")):
