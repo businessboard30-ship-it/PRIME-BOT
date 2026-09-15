@@ -1812,9 +1812,22 @@ class Database:
                 resolved_at TIMESTAMPTZ
             )
         """)
+        # Tracks the last time anyone actually replied inside an 'active'
+        # battle, so the auto-quit-on-idle check (ACTIVE_BATTLE_IDLE_MINUTES
+        # in roast.py) has something to compare against — separate from
+        # expires_at, which only ever applied to pending/awaiting_approval
+        # rows, never to 'active' ones.
+        await conn.execute("""
+            ALTER TABLE discord_roast_battles
+            ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        """)
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS discord_roast_battles_status_idx
             ON discord_roast_battles (status, expires_at)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS discord_roast_battles_active_idle_idx
+            ON discord_roast_battles (status, last_activity_at)
         """)
         # Per-guild config for inactivity minutes + random-chance trigger,
         # stored generic key/value style like admin_config but scoped per
