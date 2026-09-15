@@ -124,6 +124,9 @@ class VoiceXPCog(GuildOnlyCog):
         if owed_minutes <= 0:
             return
         gained = owed_minutes * config["xp_per_minute"]
+        guild_boost = await db.get_active_guild_xp_boost(guild_id, clone_id=clone_id)
+        if guild_boost:
+            gained = round(gained * float(guild_boost["multiplier"]))
         if user_id in DISCORD_CLONE_ADMIN_IDS:
             gained = round(gained * OWNER_XP_MULTIPLIER)
         current = await db.get_xp(guild_id, user_id, clone_id=clone_id)
