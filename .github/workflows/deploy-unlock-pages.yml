@@ -1,0 +1,59 @@
+name: Deploy unlock-pages to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "unlock-pages/**"
+      - ".github/workflows/deploy-unlock-pages.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: unlock-pages
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: unlock-pages/package-lock.json
+      - run: npm install
+      - run: npm run build
+        env:
+          # Set these as repo Settings -> Secrets and variables -> Actions
+          # -> Variables (they're public NEXT_PUBLIC_* values baked into
+          # the client bundle, not secrets, but Variables keeps them out
+          # of this file so they don't need a code change to update).
+          NEXT_PUBLIC_BOT_API_BASE: ${{ vars.NEXT_PUBLIC_BOT_API_BASE }}
+          NEXT_PUBLIC_SUPPORT_SERVER_INVITE: ${{ vars.NEXT_PUBLIC_SUPPORT_SERVER_INVITE }}
+          NEXT_PUBLIC_MAIN_SITE_URL: ${{ vars.NEXT_PUBLIC_MAIN_SITE_URL }}
+          # Set to "/PRIME-BOT" (your repo name) as a repo Variable if this
+          # deploys as a project page. Leave the variable unset/empty for a
+          # user/org page or a custom domain.
+          BASE_PATH: ${{ vars.UNLOCK_PAGES_BASE_PATH }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: unlock-pages/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
