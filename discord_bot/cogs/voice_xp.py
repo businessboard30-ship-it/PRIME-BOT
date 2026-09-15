@@ -19,8 +19,10 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord_bot.cogs._dm_support import GuildOnlyCog
 
+from config import DISCORD_CLONE_ADMIN_IDS
 from database import db
 from modules import leveling
+from discord_bot.cogs.leveling import OWNER_XP_MULTIPLIER
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,8 @@ class VoiceXPCog(GuildOnlyCog):
         if owed_minutes <= 0:
             return
         gained = owed_minutes * config["xp_per_minute"]
+        if user_id in DISCORD_CLONE_ADMIN_IDS:
+            gained = round(gained * OWNER_XP_MULTIPLIER)
         current = await db.get_xp(guild_id, user_id, clone_id=clone_id)
         old_level = leveling.compute_level(current["total_xp"])
         new_total = current["total_xp"] + gained
