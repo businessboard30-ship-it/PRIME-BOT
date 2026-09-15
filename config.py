@@ -151,9 +151,13 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 
 # Optional: restrict slash-command sync to one guild for instant propagation
 # during development. Leave blank for global sync (can take up to 1hr to
-# propagate on Discord's side, but works across every guild the bot is in).
-# Hardcoded (was DISCORD_DEV_GUILD_ID env var) — not a secret, just your dev guild ID.
-DISCORD_DEV_GUILD_ID = 1534576875983339621
+# propagate on Discord's side, but works across every guild the bot is in,
+# and is required for DM-invokable commands like /ownerbroadcast to work at all).
+# Was an env var; hardcoded OFF (empty) for production — dev-guild-only sync
+# was silently limiting all new slash commands to guild 1534576875983339621
+# and breaking DM commands. Set to 1534576875983339621 locally if you need
+# fast iteration while developing, but never leave it set in production.
+DISCORD_DEV_GUILD_ID = 0
 
 # Base URL of the Next.js site (app/ dir) this repo also deploys — used to
 # build the /automod dashboard link. Defaults to the marketing site's own
