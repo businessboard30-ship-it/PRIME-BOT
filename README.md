@@ -1,6 +1,6 @@
 # PRIME-BOT — Discord Edition
 Production Discord bot: anime discovery, AI tools, moderation, leveling/economy,
-a self-service Bots Archive & Directory, Discord bot-cloning, and an ads/AI
+a self-service Bots Archive & Directory, Discord bot-cloning, and an ads/A
 marketplace — all wired into a single `discord.py` application.
 
 **Status:** Live | **Platform:** Discord (gateway) | **Host:** Railway (or any
