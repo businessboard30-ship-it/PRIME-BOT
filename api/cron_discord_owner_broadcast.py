@@ -1,3 +1,5 @@
+# FULL PATH: PRIME-BOT-main/api/cron_discord_owner_broadcast.py
+
 """
 OPTIONAL cron-triggered endpoint that DMs out pending owner broadcasts,
 queued by /ownerbroadcast in discord_bot/cogs/clone_admin.py.
@@ -197,6 +199,68 @@ async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, con
         return f"network_error:{e}"
 
 
+async def _post_to_channel(session: aiohttp.ClientSession, token: str, channel_id: int, content: str,
+                            image_url: Optional[str] = None, attachment_filename: Optional[str] = None) -> Optional[str]:
+    """Same shape/return convention as _dm_user, but posts straight into a
+    channel (no DM-channel-open step) — used for /ownerbroadcast's
+    "Mod-log channels" target, where the recipient row's user_id column
+    actually holds a channel id (see recipient_kind on
+    discord_owner_broadcast_recipients). A channel the bot no longer has
+    access to (deleted, kicked from the server, permission removed) is an
+    expected, non-noisy failure, same as a closed-DMs user above.
+
+    payment_button_type is deliberately not supported here — the "I've
+    Paid" flow is a personal claim tied to whoever received the DM, which
+    doesn't make sense for a channel post several people might see.
+    """
+    headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+
+    file_bytes = None
+    if image_url and attachment_filename:
+        try:
+            async with session.get(image_url) as resp:
+                if resp.status == 200:
+                    file_bytes = await resp.read()
+        except (aiohttp.ClientError, TimeoutError) as e:
+            logger.debug(f"[cron_discord_owner_broadcast] Attachment fetch error for channel {channel_id}: {e}")
+
+    payload = {"content": content}
+    if image_url and not file_bytes:
+        payload["embeds"] = [{"image": {"url": image_url}}]
+
+    try:
+        if file_bytes:
+            form = aiohttp.FormData()
+            form.add_field("payload_json", json.dumps({
+                **payload,
+                "attachments": [{"id": 0, "filename": attachment_filename}],
+            }), content_type="application/json")
+            form.add_field("files[0]", file_bytes, filename=attachment_filename,
+                            content_type="application/octet-stream")
+            send_headers = {"Authorization": f"Bot {token}"}
+            async with session.post(
+                f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
+                headers=send_headers, data=form
+            ) as resp:
+                if resp.status in (200, 201):
+                    return None
+                body = await resp.text()
+                logger.debug(f"[cron_discord_owner_broadcast] Couldn't post to channel {channel_id} (attachment): HTTP {resp.status} {body}")
+                return f"send_failed:{resp.status}"
+
+        async with session.post(
+            f"{DISCORD_API_BASE}/channels/{channel_id}/messages",
+            headers=headers, json=payload
+        ) as resp:
+            if resp.status in (200, 201):
+                return None
+            body = await resp.text()
+            logger.debug(f"[cron_discord_owner_broadcast] Couldn't post to channel {channel_id}: HTTP {resp.status} {body}")
+            return f"send_failed:{resp.status}"
+    except (aiohttp.ClientError, TimeoutError) as e:
+        return f"network_error:{e}"
+
+
 def _format_message(raw_message: str) -> str:
     return f"📢 **Announcement from {DISCORD_OWNER_BRAND_NAME}**\n\n{raw_message}"
 
@@ -255,6 +319,9 @@ async def run_pending_owner_broadcasts() -> dict:
                         session, token, r["user_id"], content,
                         broadcast.get("image_url"), broadcast.get("payment_button_type"),
                         broadcast.get("attachment_filename"),
+                    ) if r.get("recipient_kind", "user") != "channel" else await _post_to_channel(
+                        session, token, r["user_id"], content,
+                        broadcast.get("image_url"), broadcast.get("attachment_filename"),
                     )
                     await db.mark_owner_broadcast_recipient_sent(r["id"], error=error)
                     totals["sent" if error is None else "failed"] += 1
