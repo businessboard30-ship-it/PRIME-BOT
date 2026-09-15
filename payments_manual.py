@@ -440,6 +440,26 @@ async def _unlock_xp_boost(reference: str, buyer_id: int, guild_id: Optional[int
     await db.activate_xp_boost(guild_id, buyer_id, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS, clone_id=clone_id)
 
 
+def _make_unlock_xp_wallet_tier(tier_key: str):
+    """Returns an UNLOCK_HANDLERS-shaped function for one config.
+    XP_WALLET_TIERS entry — one handler per tier since each tier is its
+    own Selar product / payment_type, but they all just credit the
+    buyer's wallet with that tier's XP amount. guild_id is required, same
+    reasoning as xp_boost above: the wallet is per (guild, user, clone)."""
+    async def _handler(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+        from config import XP_WALLET_TIERS
+        xp_amount = XP_WALLET_TIERS[tier_key]["xp"]
+        await db.add_wallet_xp(guild_id, buyer_id, xp_amount, clone_id=clone_id)
+    return _handler
+
+
+async def _unlock_xp_server_boost(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """Server-wide temporary XP multiplier — buyer_id is whoever paid, but
+    the boost itself applies to every member of guild_id, not just them."""
+    from config import XP_SERVER_BOOST_MULTIPLIER, XP_SERVER_BOOST_DURATION_HOURS
+    await db.activate_guild_xp_boost(guild_id, XP_SERVER_BOOST_MULTIPLIER, XP_SERVER_BOOST_DURATION_HOURS, clone_id=clone_id)
+
+
 UNLOCK_HANDLERS = {
     "welcome_card_pack": _unlock_welcome_card_pack,
     "ultra_welcome_pack": _unlock_ultra_pack,
@@ -448,4 +468,9 @@ UNLOCK_HANDLERS = {
     "custom_role": _unlock_custom_role,
     "music_pro": _unlock_music_pro,
     "xp_boost": _unlock_xp_boost,
+    "xp_wallet_small": _make_unlock_xp_wallet_tier("xp_wallet_small"),
+    "xp_wallet_medium": _make_unlock_xp_wallet_tier("xp_wallet_medium"),
+    "xp_wallet_large": _make_unlock_xp_wallet_tier("xp_wallet_large"),
+    "xp_wallet_mega": _make_unlock_xp_wallet_tier("xp_wallet_mega"),
+    "xp_server_boost": _unlock_xp_server_boost,
 }
