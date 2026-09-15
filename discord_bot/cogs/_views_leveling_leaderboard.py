@@ -70,11 +70,25 @@ def _medal_or_rank(rank: int) -> str:
 async def _resolve_display(bot, guild, mode: str, user_id: int):
     """Returns (display_name, avatar_url, role_name, role_color) — role
     info only ever populated in local mode (global has no single guild's
-    roles to show). Falls back to a plain "User {id}" / no avatar when the
-    user isn't cache-resolvable (left the guild, or never cached for a
-    global entry from a guild this process isn't in)."""
+    roles to show). Falls back to an API fetch when the user isn't
+    cache-resolvable (guild.get_member/bot.get_user only check the local
+    cache, which doesn't hold every member of a large guild without member-
+    intent chunking) — this is why entries were showing raw "User 12345"
+    IDs instead of names. Only falls back to a bare "User {id}" if the
+    fetch itself fails (they left every mutual server, or the account no
+    longer exists)."""
     member = guild.get_member(user_id) if (mode == "local" and guild) else None
+    if member is None and mode == "local" and guild is not None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.HTTPException:
+            member = None
     user = member or bot.get_user(user_id)
+    if user is None:
+        try:
+            user = await bot.fetch_user(user_id)
+        except discord.HTTPException:
+            user = None
     if user is None:
         return f"User {user_id}", None, None, None
     name = member.display_name if member else user.display_name
@@ -174,12 +188,13 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     link_row = discord.ui.ActionRow()
     MAX_BOOST_BADGES = 2   # real Section+button entries; each costs 3 components
     MAX_LEADER_LINKS = 3   # link_row costs 1 (row) + N (buttons)
+    ENTRY_DIVIDER = "\n-# ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
     badge_budget = MAX_BOOST_BADGES
     chunk_lines = []
 
     def _flush_chunk():
         if chunk_lines:
-            container.add_item(discord.ui.TextDisplay("\n".join(chunk_lines)))
+            container.add_item(discord.ui.TextDisplay(ENTRY_DIVIDER.join(chunk_lines)))
             chunk_lines.clear()
 
     for i, row in enumerate(rows, start=offset + 1):
@@ -207,6 +222,7 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
             entry_section = discord.ui.Section(accessory=accessory)
             entry_section.add_item(line)
             container.add_item(entry_section)
+            container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
         else:
             if multiplier:
                 line += f" · ⚡ {multiplier:g}x active"
