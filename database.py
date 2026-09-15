@@ -6185,6 +6185,87 @@ class Database:
             )
             return row["clone_id"]
 
+    async def migrate_guild_data_if_orphaned(self, guild_id: int, new_clone_id: int) -> Optional[int]:
+        """Called from bot.py's _handle_new_guild every time ANY bot
+        process (main or clone) newly observes itself in a guild. Guild-
+        scoped tables (economy, xp/leveling, welcome config, reaction
+        roles, level roles, automod, premium groups) are all keyed by
+        (guild_id, clone_id) — see sql/discord_premium_groups.sql and
+        sql/discord_economy.sql — so if a guild's bot gets swapped for a
+        DIFFERENT bot application (new clone_id, e.g. after decommission-
+        ing the old one and handing out a fresh clone link), that guild's
+        rows would otherwise sit orphaned under the dead clone_id and the
+        guild would look brand new / empty under the new one.
+
+        This looks across every guild-scoped table for a row belonging
+        to this guild_id under some OTHER clone_id that is now inactive
+        (never touches a clone_id that's still active — that would be a
+        real conflict between two live bots in the same guild, not a
+        decommission-and-replace), and if found, re-tags every one of
+        that guild's rows onto new_clone_id in a single transaction.
+        Purely automatic — no owner action, no command, guild-triggered
+        only. Returns the old clone_id that was migrated from, or None
+        if this guild had nothing to carry over (genuinely new guild)."""
+        guild_scoped_tables = (
+            "discord_xp", "discord_level_roles", "discord_economy_balances",
+            "discord_economy_shop_items", "discord_economy_transactions",
+            "discord_economy_config", "discord_welcome_config",
+            "discord_reaction_roles", "discord_automod_config", "discord_premium_groups",
+        )
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            old_clone_id = None
+            for table in guild_scoped_tables:
+                old_clone_id = await conn.fetchval(
+                    f"""
+                    SELECT t.clone_id FROM {table} t
+                    JOIN discord_cloned_bots cb ON cb.clone_id = t.clone_id
+                    WHERE t.guild_id = $1 AND t.clone_id IS NOT NULL AND t.clone_id != $2
+                      AND cb.status = 'inactive'
+                    LIMIT 1
+                    """,
+                    guild_id, new_clone_id
+                )
+                if old_clone_id is not None:
+                    break
+            if old_clone_id is None:
+                return None
+
+            async with conn.transaction():
+                for table in guild_scoped_tables:
+                    await conn.execute(
+                        f"UPDATE {table} SET clone_id = $3 WHERE guild_id = $1 AND clone_id = $2",
+                        guild_id, old_clone_id, new_clone_id
+                    )
+            return old_clone_id
+
+    async def relink_discord_clone(self, clone_id: int, owner_id: int, bot_token_encrypted: str,
+                                    bot_user_id: int, bot_username: str, application_id: int) -> bool:
+        """Swaps the token/identity on an EXISTING clone row instead of
+        creating a new one — used by /relinkclone when an owner is moved
+        onto a new bot application/token (e.g. after the old one was
+        decommissioned) but should keep everything already tied to this
+        clone_id (economy, leveling, referrals, premium groups, etc, all
+        of which key off clone_id, never off the token or bot_user_id).
+        Only updates a row the caller actually owns — returns False (no
+        row touched) if clone_id doesn't belong to owner_id, so the
+        caller can tell "not yours" apart from a real failure. Also flips
+        status back to 'active' so a previously-deactivated clone comes
+        back online under its new token/process."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE discord_cloned_bots
+                SET bot_token_encrypted = $3, bot_user_id = $4, bot_username = $5,
+                    application_id = $6, status = 'active'
+                WHERE clone_id = $1 AND owner_id = $2
+                RETURNING clone_id
+                """,
+                clone_id, owner_id, bot_token_encrypted, bot_user_id, bot_username, application_id
+            )
+            return row is not None
+
     async def count_sub_clones(self, clone_id: int) -> int:
         """How many clones were registered through this clone's own wizard
         — used by /myclones' small addition to show sub-clone counts."""
