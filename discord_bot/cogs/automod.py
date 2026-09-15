@@ -1,3 +1,5 @@
+# FULL PATH: PRIME-BOT-main/discord_bot/cogs/automod.py
+
 """
 Auto-moderation — Discord equivalent of Dyno's automod, and the logging half
 of Carl-bot.
@@ -212,6 +214,11 @@ class AutomodCog(GuildOnlyCog):
             log_channel_id=channel.id, log_channel_auto_created=True,
             log_channel_notice_count=0, log_channel_last_notice_at=None,
         )
+        # Auto-creating the log channel counts as "chosen" for the /modlog
+        # wizard auto-post rule too — post it straight into the new channel
+        # so categories can be turned on immediately.
+        from discord_bot.cogs._views_modlog_wizard import maybe_announce_new_log_channel
+        await maybe_announce_new_log_channel(self.bot, guild.id, clone_id, None, None, channel.id)
         return channel, True
 
     # NOTE: the old _notify_owner_log_channel / _notify_owner_word_filter
@@ -298,6 +305,8 @@ class AutomodCog(GuildOnlyCog):
                     log_channel_id=existing.id, log_channel_auto_created=True,
                     log_channel_notice_count=0, log_channel_last_notice_at=None,
                 )
+                from discord_bot.cogs._views_modlog_wizard import maybe_announce_new_log_channel
+                await maybe_announce_new_log_channel(self.bot, guild.id, clone_id, None, None, existing.id)
                 return {
                     "type": "log_channel", "guild_id": guild.id, "guild_name": guild.name,
                     "channel_id": existing.id, "notice_number": 1, "max_notices": MAX_LOG_CHANNEL_NOTICES,
@@ -562,14 +571,18 @@ class AutomodCog(GuildOnlyCog):
         elif action == "timeout":
             minutes = int(config.get("timeout_minutes") or 10)
             try:
+                from discord_bot.cogs._automod_shared_state import mark_self_timeout, unmark_self_timeout
+                mark_self_timeout(message.guild.id, message.author.id)
                 await message.author.timeout(timedelta(minutes=minutes), reason=f"[automod] {reason}")
             except discord.Forbidden:
-                pass
+                unmark_self_timeout(message.guild.id, message.author.id)
         elif action == "kick":
             try:
+                from discord_bot.cogs._automod_shared_state import mark_self_kick, unmark_self_kick
+                mark_self_kick(message.guild.id, message.author.id)
                 await message.author.kick(reason=f"[automod] {reason}")
             except discord.Forbidden:
-                pass
+                unmark_self_kick(message.guild.id, message.author.id)
 
         await modx.log_action(message.guild.id, f"automod_{action}", self.bot.user.id,
                                target_user_id=message.author.id, reason=reason)
@@ -644,7 +657,9 @@ class AutomodCog(GuildOnlyCog):
             return
         age = datetime.now(timezone.utc) - member.created_at
         if age < timedelta(hours=min_hours):
+            from discord_bot.cogs._automod_shared_state import mark_self_kick, unmark_self_kick
             try:
+                mark_self_kick(member.guild.id, member.id)
                 await member.kick(reason=f"[automod] Account age {age.days}d below {min_hours}h minimum (raid protection)")
                 embed = discord.Embed(
                     title="🛡️ Auto-mod action",
@@ -654,7 +669,7 @@ class AutomodCog(GuildOnlyCog):
                 )
                 await self._send_log(member.guild, config, embed)
             except discord.Forbidden:
-                pass
+                unmark_self_kick(member.guild.id, member.id)
 
     # ── deleted/edited message + join/leave logging ─────────────────────
     @commands.Cog.listener()
@@ -840,12 +855,21 @@ class AutomodCog(GuildOnlyCog):
         # Picking a channel by hand (or explicitly clearing it) means the
         # admin is now driving — stop the auto-created-channel reminder
         # DMs to the owner regardless of which channel this is.
+        clone_id = _clone_id_of(interaction)
+        old_config = await db.get_automod_config(interaction.guild_id, clone_id=clone_id)
+        old_channel_id = old_config.get("log_channel_id")
         await db.set_automod_config(
-            interaction.guild_id, clone_id=_clone_id_of(interaction),
+            interaction.guild_id, clone_id=clone_id,
             log_channel_id=channel.id if channel else None,
             log_channel_auto_created=False, log_channel_notice_count=0, log_channel_last_notice_at=None,
         )
-        await refresh_automod_wizard(interaction.client, interaction.guild_id, clone_id=_clone_id_of(interaction))
+        await refresh_automod_wizard(interaction.client, interaction.guild_id, clone_id=clone_id)
+        if channel:
+            from discord_bot.cogs._views_modlog_wizard import maybe_announce_new_log_channel
+            await maybe_announce_new_log_channel(
+                interaction.client, interaction.guild_id, clone_id, interaction.user.id,
+                old_channel_id, channel.id,
+            )
         msg = (
             await tr("✅ Log channel set to {channel}.", lang, channel=channel.mention) if channel
             else await tr("✅ Log channel cleared.", lang)
