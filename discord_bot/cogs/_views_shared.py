@@ -105,20 +105,30 @@ class ActionButton(discord.ui.Button):
 
 class NavCardView(discord.ui.LayoutView):
     """Components V2 counterpart to NavView — a colored Container card
-    (header + body lines) with the same ActionButtons dropped into an
-    ActionRow instead of stacked below a plain-text message. Shared by
-    every cog that used NavView, so switching one over is a one-line
-    swap (NavView(...) -> NavCardView(header, lines, accent, ...))."""
+    (header + body lines) with the same ActionButtons dropped into one or
+    more ActionRows instead of stacked below a plain-text message. Shared
+    by every cog that used NavView, so switching one over is a one-line
+    swap (NavView(...) -> NavCardView(header, lines, accent, ...)).
+
+    Discord caps an ActionRow at 5 children — buttons are chunked into
+    groups of 5, one ActionRow per group, rather than all dropped into a
+    single row. Without this, any caller passing more than 5 buttons (e.g.
+    clone_admin.py's /myclones, one button per clone + a refresh button)
+    raised ValueError: maximum number of children exceeded the moment a
+    user crossed that threshold. A LayoutView's own Container can hold
+    several ActionRows, so this still renders as one card."""
 
     def __init__(self, header: str, lines: list, accent: discord.Color, buttons: list = None, timeout: int = 180):
         super().__init__(timeout=timeout)
         text = discord.ui.TextDisplay("\n".join([f"### {header}", *lines]))
         children = [text]
         if buttons:
-            row = discord.ui.ActionRow()
-            for b in buttons:
-                row.add_item(b)
-            children += [discord.ui.Separator(), row]
+            children.append(discord.ui.Separator())
+            for i in range(0, len(buttons), 5):
+                row = discord.ui.ActionRow()
+                for b in buttons[i:i + 5]:
+                    row.add_item(b)
+                children.append(row)
         self.add_item(discord.ui.Container(*children, accent_colour=accent))
 
 
