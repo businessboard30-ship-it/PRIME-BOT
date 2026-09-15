@@ -30,9 +30,9 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 
 from database import db
 from modules import leveling
-from modules.level_card import render_level_card, render_level_card_evolved, render_leaderboard_card
+from modules.level_card import render_level_card, render_level_card_evolved
 from discord_bot.cogs._views_shared import ActionButton, NavCardView
-from discord_bot.cogs._views_leveling_boost import BoostXPButton, build_boost_xp_view
+from discord_bot.cogs._views_leveling_leaderboard import build_leaderboard_view
 from discord_bot.cogs._views_leveling_wizard import (
     build_wizard_view as build_leveling_wizard_view,
     remember_wizard_message as remember_leveling_wizard_message,
@@ -313,85 +313,6 @@ class LevelingCog(GuildOnlyCog):
         card = NavCardView(f"{target.display_name} — level {p['level']}", [line], discord.Color.blurple(), buttons)
         await interaction.followup.send(view=card)
 
-    async def _build_leaderboard_payload(self, guild: discord.Guild, clone_id):
-        """Shared by the /leaderboard command and the daily auto-post loop
-        (_leaderboard_autopost_loop below) so there's exactly one place that
-        builds the card + framed view. Returns (view, file) or None if the
-        guild has no XP yet."""
-        rows = await db.get_xp_leaderboard(guild.id, limit=10, clone_id=clone_id)
-        if not rows:
-            return None
-
-        # Resolve member/role client-side, same as before — db.get_xp_
-        # leaderboard's row shape (user_id, level, total_xp) is untouched.
-        members = [guild.get_member(row["user_id"]) for row in rows]
-
-        async def _fetch_avatar(session, member):
-            if member is None:
-                return None
-            try:
-                async with session.get(
-                    str(member.display_avatar.replace(size=128).url), timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    return await resp.read()
-            except Exception as e:
-                logger.warning(f"[v0] Couldn't fetch leaderboard avatar for {member.id}: {e}")
-                return None
-
-        # Fetch all avatars concurrently — 10 members means 10 HTTP
-        # fetches, and doing them sequentially would make this noticeably
-        # slow for a full top-10.
-        async with aiohttp.ClientSession() as session:
-            avatar_results = await asyncio.gather(*(_fetch_avatar(session, m) for m in members))
-
-        entries = []
-        link_row = discord.ui.ActionRow()
-
-        for i, (row, member, avatar_bytes) in enumerate(zip(rows, members, avatar_results), start=1):
-            name = member.display_name if member else f"User {row['user_id']}"
-            role_name = role_color = None
-            if member is not None and member.top_role.name != "@everyone":
-                role_name = member.top_role.name
-                # discord.Colour.default() (no role color set) is 0/black —
-                # treat that the same as "no color", same fallback
-                # render_leaderboard_card itself applies for a "#000000" hex.
-                if member.top_role.color.value:
-                    role_color = str(member.top_role.color)
-            entries.append({
-                "avatar_bytes": avatar_bytes, "display_name": name,
-                "level": row["level"], "total_xp": row["total_xp"],
-                "role_name": role_name, "role_color": role_color,
-            })
-
-            link = await db.get_leader_link(guild.id, row["user_id"], clone_id=clone_id)
-            if link and link["status"] == "approved":
-                link_row.add_item(discord.ui.Button(
-                    label=f"#{i} · {name}'s server", style=discord.ButtonStyle.link, url=link["invite_url"]
-                ))
-
-        card_bytes = await asyncio.to_thread(render_leaderboard_card, entries, guild.name)
-        file = discord.File(fp=io.BytesIO(card_bytes), filename="leaderboard.png")
-
-        # Frame the image and the boost button inside one Container so the
-        # message reads as a single panel (see ai_tools.py's generated-image
-        # message for the same MediaGalleryItem(file) pattern) instead of a
-        # bare image attachment with a loose button floating underneath it.
-        # The Boost XP button lives ONLY here now — level-up cards no longer
-        # carry it (see _send_level_up_card).
-        gallery = discord.ui.MediaGallery(discord.MediaGalleryItem(file))
-        boost_row = discord.ui.ActionRow()
-        boost_row.add_item(BoostXPButton(guild.id, clone_id))
-
-        container_children = [gallery]
-        if len(link_row.children):
-            container_children.append(link_row)
-        container_children.append(discord.ui.Separator())
-        container_children.append(boost_row)
-
-        view = discord.ui.LayoutView(timeout=None)
-        view.add_item(discord.ui.Container(*container_children, accent_colour=discord.Color.blurple()))
-        return view, file
-
     # Plain command — this used to briefly become a Group (show + autopost
     # subcommands) so the daily-post config could live under it, but that
     # changed its shape, and since this bot's DISCORD_DEV_GUILD_ID only
@@ -403,17 +324,19 @@ class LevelingCog(GuildOnlyCog):
     # the existing /leveling setup wizard instead (see
     # _views_leveling_wizard.py's "Step 5" ChannelSelect) — no new command
     # was added for it at all.
-    @app_commands.command(name="leaderboard", description="Show this server's top 10 XP earners")
+    @app_commands.command(name="leaderboard", description="Show this server's XP leaderboard")
     @app_commands.guild_only()
     async def leaderboard(self, interaction: discord.Interaction):
         await interaction.response.defer()
         clone_id = _clone_id_of(interaction)
-        payload = await self._build_leaderboard_payload(interaction.guild, clone_id)
-        if payload is None:
+        view = await build_leaderboard_view(
+            interaction.client, interaction.guild, clone_id,
+            mode="local", page=0, stats_for_user_id=interaction.user.id,
+        )
+        if view is None:
             await interaction.followup.send("No XP earned yet.", ephemeral=True)
             return
-        view, file = payload
-        await interaction.followup.send(view=view, file=file)
+        await interaction.followup.send(view=view)
 
     @tasks.loop(minutes=30)
     async def _leaderboard_autopost_loop(self):
@@ -437,10 +360,9 @@ class LevelingCog(GuildOnlyCog):
             if channel is None:
                 continue
             try:
-                payload = await self._build_leaderboard_payload(guild, cfg["clone_id"])
-                if payload is not None:
-                    view, file = payload
-                    await channel.send(view=view, file=file)
+                view = await build_leaderboard_view(self.bot, guild, cfg["clone_id"], mode="local", page=0)
+                if view is not None:
+                    await channel.send(view=view)
             except discord.Forbidden:
                 pass
             except Exception as e:
