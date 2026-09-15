@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "21"
+SCHEMA_VERSION = "22"
 # "20" -> "21": discord_roast_battles.last_activity_at (idle-battle auto-quit
 # check, see roast.py's _quit_idle_active_battles) was added to
 # _create_tables without a version bump — same bump-or-it-never-runs trap as
@@ -215,6 +215,12 @@ SCHEMA_VERSION = "21"
 # the daily automatic /leaderboard post — see get_due_leaderboard_autoposts
 # and leveling.py's _leaderboard_autopost_loop. Same bump-or-it-never-runs
 # trap as above.
+# "21" -> "22" adds 014_xp_wallet.sql (discord_xp_wallet,
+# discord_xp_wallet_ledger, discord_guild_xp_boosts) for the Boost Wallet
+# feature — flat giftable XP + a server-wide temporary multiplier. See
+# config.XP_WALLET_TIERS / XP_SERVER_BOOST_* and payments_manual.py's
+# UNLOCK_HANDLERS["xp_wallet_*"] / ["xp_server_boost"]. Same
+# bump-or-it-never-runs trap as above.
 
 
 async def get_pool():
@@ -4477,6 +4483,16 @@ class Database:
         if xp_boost_migration.exists():
             await conn.execute(xp_boost_migration.read_text())
 
+        # Boost Wallet — discord_xp_wallet + discord_xp_wallet_ledger +
+        # discord_guild_xp_boosts. See config.XP_WALLET_TIERS,
+        # database.py's get_xp_wallet()/add_wallet_xp()/gift_wallet_xp(),
+        # and payments_manual.py's UNLOCK_HANDLERS["xp_wallet_*"] /
+        # ["xp_server_boost"]. Same additive-only, idempotent
+        # migration-file pattern as 001-013.
+        xp_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "014_xp_wallet.sql"
+        if xp_wallet_migration.exists():
+            await conn.execute(xp_wallet_migration.read_text())
+
         # Custom Role perk — panel channel/message tracking, additive on
         # top of 010 above (see discord_bot/cogs/_views_join_dm.py's
         # _enable_custom_role_panel).
@@ -7278,6 +7294,177 @@ class Database:
                 RETURNING *
                 """,
                 guild_id, user_id, clone_id, multiplier, duration_days
+            )
+            return dict(row)
+
+    # ─────────────────────────────────────────────────────────────────
+    # Boost Wallet — flat, giftable XP. See database/migrations/
+    # 014_xp_wallet.sql and config.XP_WALLET_TIERS / XP_WALLET_EXPIRY_DAYS.
+    # ─────────────────────────────────────────────────────────────────
+
+    async def get_xp_wallet(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Returns {balance, expires_at, ...}. Expiry is lazy: an expired
+        row is reported with balance=0 here WITHOUT writing anything —
+        the next add_wallet_xp() (or a future cleanup job) is what
+        actually zeroes it in the DB. Never returns None; a member with
+        no wallet row yet just has balance 0."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_xp_wallet WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
+                guild_id, user_id, clone_id
+            )
+            if row is None:
+                return {"guild_id": guild_id, "user_id": user_id, "clone_id": clone_id, "balance": 0, "expires_at": None}
+            data = dict(row)
+            if data["expires_at"] and data["expires_at"] <= datetime.now(timezone.utc):
+                data["balance"] = 0
+            return data
+
+    async def add_wallet_xp(self, guild_id: int, user_id: int, xp_amount: int,
+                             clone_id: Optional[int] = None, expiry_days: Optional[int] = None) -> Dict:
+        """Credits a purchase to the member's wallet. If the existing
+        balance had already expired, this starts fresh at xp_amount rather
+        than adding on top of a stale number (matches get_xp_wallet's lazy
+        read). Every top-up refreshes expires_at to NOW() + expiry_days —
+        buying more resets the clock on the WHOLE balance, not just the
+        new chunk, since we don't track per-purchase batches.
+        Called from payments_manual.py's UNLOCK_HANDLERS["xp_wallet_*"]
+        after an admin approves the manual payment."""
+        from config import XP_WALLET_EXPIRY_DAYS
+        expiry_days = expiry_days if expiry_days is not None else XP_WALLET_EXPIRY_DAYS
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT balance, expires_at FROM discord_xp_wallet "
+                    "WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3 FOR UPDATE",
+                    guild_id, user_id, clone_id
+                )
+                if row is None:
+                    new_balance = xp_amount
+                elif row["expires_at"] and row["expires_at"] <= datetime.now(timezone.utc):
+                    new_balance = xp_amount  # prior balance already forfeited
+                else:
+                    new_balance = row["balance"] + xp_amount
+                result = await conn.fetchrow(
+                    """
+                    INSERT INTO discord_xp_wallet (guild_id, user_id, clone_id, balance, expires_at, updated_at)
+                    VALUES ($1, $2, $3, $4, NOW() + ($5 * INTERVAL '1 day'), NOW())
+                    ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO UPDATE
+                        SET balance = $4, expires_at = NOW() + ($5 * INTERVAL '1 day'), updated_at = NOW()
+                    RETURNING *
+                    """,
+                    guild_id, user_id, clone_id, new_balance, expiry_days
+                )
+                await conn.execute(
+                    "INSERT INTO discord_xp_wallet_ledger (guild_id, clone_id, user_id, delta, reason) "
+                    "VALUES ($1, $2, $3, $4, 'purchase')",
+                    guild_id, clone_id, user_id, xp_amount
+                )
+                return dict(result)
+
+    async def gift_wallet_xp(self, guild_id: int, from_user_id: int, to_user_id: int, amount: int,
+                              clone_id: Optional[int] = None) -> Optional[Dict]:
+        """Atomically debits the sender's wallet and credits the SAME
+        amount as real XP straight onto the recipient's discord_xp.
+        total_xp (so it shows up immediately in /rank and the
+        leaderboard, exactly like message/voice XP does) — the recipient
+        never gets a wallet credit from this, only the sender's wallet
+        moves. Returns None (does nothing) if the sender doesn't actually
+        have `amount` of UN-expired balance; callers must have already
+        checked config.XP_WALLET_MIN_BALANCE_TO_GIFT /
+        XP_WALLET_MAX_GIFT_XP themselves — this only enforces "can't gift
+        more than you have"."""
+        from modules.leveling import compute_level
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                wallet = await conn.fetchrow(
+                    "SELECT balance, expires_at FROM discord_xp_wallet "
+                    "WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3 FOR UPDATE",
+                    guild_id, from_user_id, clone_id
+                )
+                if wallet is None:
+                    return None
+                usable_balance = 0 if (wallet["expires_at"] and wallet["expires_at"] <= datetime.now(timezone.utc)) else wallet["balance"]
+                if usable_balance < amount:
+                    return None
+
+                await conn.execute(
+                    "UPDATE discord_xp_wallet SET balance = $4, updated_at = NOW() "
+                    "WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
+                    guild_id, from_user_id, clone_id, usable_balance - amount
+                )
+                await conn.execute(
+                    "INSERT INTO discord_xp_wallet_ledger (guild_id, clone_id, user_id, delta, reason, counterparty_id) "
+                    "VALUES ($1, $2, $3, $4, 'gift_sent', $5)",
+                    guild_id, clone_id, from_user_id, -amount, to_user_id
+                )
+                await conn.execute(
+                    "INSERT INTO discord_xp_wallet_ledger (guild_id, clone_id, user_id, delta, reason, counterparty_id) "
+                    "VALUES ($1, $2, $3, $4, 'gift_received', $5)",
+                    guild_id, clone_id, to_user_id, amount, from_user_id
+                )
+
+                recipient_row = await conn.fetchrow(
+                    """
+                    INSERT INTO discord_xp (guild_id, clone_id, user_id, total_xp, level, last_xp_at)
+                    VALUES ($1, $2, $3, $4, 0, NOW())
+                    ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO UPDATE
+                        SET total_xp = discord_xp.total_xp + $4
+                    RETURNING *
+                    """,
+                    guild_id, clone_id, to_user_id, amount
+                )
+                old_level = compute_level(recipient_row["total_xp"] - amount)
+                new_level = compute_level(recipient_row["total_xp"])
+                if new_level != recipient_row["level"]:
+                    recipient_row = await conn.fetchrow(
+                        "UPDATE discord_xp SET level = $4 "
+                        "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3 "
+                        "RETURNING *",
+                        guild_id, clone_id, to_user_id, new_level
+                    )
+                return {
+                    "sender_new_balance": usable_balance - amount,
+                    "recipient_total_xp": recipient_row["total_xp"],
+                    "recipient_old_level": old_level,
+                    "recipient_new_level": new_level,
+                }
+
+    # ─────────────────────────────────────────────────────────────────
+    # Server-wide temporary XP multiplier ("boost whole server"). Same
+    # shape as get_active_xp_boost()/activate_xp_boost() above, just
+    # guild-scoped instead of user-scoped.
+    # ─────────────────────────────────────────────────────────────────
+
+    async def get_active_guild_xp_boost(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_guild_xp_boosts "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND expires_at > NOW()",
+                guild_id, clone_id
+            )
+            return dict(row) if row else None
+
+    async def activate_guild_xp_boost(self, guild_id: int, multiplier: float, duration_hours: int,
+                                       clone_id: Optional[int] = None) -> Dict:
+        """Called from payments_manual.py's UNLOCK_HANDLERS["xp_server_boost"].
+        Same re-activate-replaces-rather-than-stacks behavior as the
+        per-user activate_xp_boost()."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_guild_xp_boosts (guild_id, clone_id, multiplier, expires_at, activated_at)
+                VALUES ($1, $2, $3, NOW() + ($4 * INTERVAL '1 hour'), NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET multiplier = $3, expires_at = NOW() + ($4 * INTERVAL '1 hour'), activated_at = NOW()
+                RETURNING *
+                """,
+                guild_id, clone_id, multiplier, duration_hours
             )
             return dict(row)
 
