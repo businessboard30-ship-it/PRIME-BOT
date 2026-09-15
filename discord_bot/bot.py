@@ -41,12 +41,8 @@ from discord_bot.cogs._views_community_wizard import DYNAMIC_ITEMS as COMMUNITY_
 from discord_bot.cogs._views_economy_wizard import DYNAMIC_ITEMS as ECONOMY_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_wizard import DYNAMIC_ITEMS as LEVELING_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_download_wizard import DYNAMIC_ITEMS as DOWNLOAD_WIZARD_DYNAMIC_ITEMS
-# DISABLED: server listing dropped — from discord_bot.cogs._views_leaderboard_links import DYNAMIC_ITEMS as LEADERBOARD_LINKS_DYNAMIC_ITEMS
-LEADERBOARD_LINKS_DYNAMIC_ITEMS = []
 from discord_bot.cogs._views_registry_invite_consent import DYNAMIC_ITEMS as REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS
-# DISABLED: server listing dropped — from discord_bot.cogs._views_auto_listing_offer import DYNAMIC_ITEMS as AUTO_LISTING_OFFER_DYNAMIC_ITEMS, offer_auto_listing
-AUTO_LISTING_OFFER_DYNAMIC_ITEMS = []
-async def offer_auto_listing(*args, **kwargs): pass  # no-op stub
+async def offer_auto_listing(*args, **kwargs): pass  # no-op stub — server listing removed, kept as a harmless call target
 # offer_combined_join_dm itself is no longer called — that flow is now
 # folded onto the combined join DM's last page (see _views_join_dm.py's
 # join_offer handling, wired from _send_combined_owner_join_dm below).
@@ -55,7 +51,6 @@ async def offer_auto_listing(*args, **kwargs): pass  # no-op stub
 from discord_bot.cogs._views_combined_join_offer import DYNAMIC_ITEMS as COMBINED_JOIN_OFFER_DYNAMIC_ITEMS
 from discord_bot.cogs._views_report_channel_picker import DYNAMIC_ITEMS as REPORT_CHANNEL_PICKER_DYNAMIC_ITEMS
 from discord_bot.cogs._views_giveaway_wizard import DYNAMIC_ITEMS as GIVEAWAY_WIZARD_DYNAMIC_ITEMS
-from discord_bot.cogs.discover_players import DYNAMIC_ITEMS as DISCOVER_PLAYERS_DYNAMIC_ITEMS
 from discord_bot.cogs.roast import ROAST_DYNAMIC_ITEMS
 from discord_bot.cogs._views_roast_arena_consent import DYNAMIC_ITEMS as ROAST_ARENA_CONSENT_DYNAMIC_ITEMS
 from discord_bot.cogs._views_roast_arena_challenge import DYNAMIC_ITEMS as ROAST_ARENA_CHALLENGE_DYNAMIC_ITEMS
@@ -152,16 +147,13 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*ECONOMY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*LEVELING_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DOWNLOAD_WIZARD_DYNAMIC_ITEMS)
-        # DISABLED: server listing dropped — self.add_dynamic_items(*LEADERBOARD_LINKS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS)
-        # DISABLED: server listing dropped — self.add_dynamic_items(*AUTO_LISTING_OFFER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*COMBINED_JOIN_OFFER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REPORT_CHANNEL_PICKER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*GIVEAWAY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DIRECT_PAID_DYNAMIC_ITEMS)
         self.add_dynamic_items(*VERIFICATION_DYNAMIC_ITEMS)
         self.add_dynamic_items(*CUSTOM_ROLE_DYNAMIC_ITEMS)
-        self.add_dynamic_items(*DISCOVER_PLAYERS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ROAST_DYNAMIC_ITEMS)
         # Roast Arena disabled (see roast_arena load_extension comment
         # above) — its buttons won't be interacted with if the cog never

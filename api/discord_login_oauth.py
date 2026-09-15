@@ -56,6 +56,7 @@ from config import (
     DISCORD_OAUTH_CLIENT_SECRET,
     DISCORD_LOGIN_OAUTH_REDIRECT_URI,
     DASHBOARD_BASE_URL,
+    UNLOCK_PAGES_BASE_URL,
 )
 from database import db
 
@@ -140,10 +141,20 @@ async def _handle(query: dict) -> tuple[int, str]:
     return_to = popped_state.get("return_to")
 
     def _session_redirect(session_id: str) -> str:
+        # return_to is already restricted (above, at state-creation time)
+        # to an in-app-relative path — never an arbitrary external origin.
+        # /unlock specifically is additionally allowed to resolve against
+        # UNLOCK_PAGES_BASE_URL instead of DASHBOARD_BASE_URL, since it may
+        # be hosted standalone (e.g. on GitHub Pages). This is still not a
+        # general open redirect: the base is one fixed, server-configured
+        # value, never anything derived from the request itself.
+        base = DASHBOARD_BASE_URL
+        if return_to and return_to.startswith("/unlock") and UNLOCK_PAGES_BASE_URL:
+            base = UNLOCK_PAGES_BASE_URL
         if return_to:
             sep = "&" if "?" in return_to else "?"
-            return f"{DASHBOARD_BASE_URL}{return_to}{sep}session={session_id}"
-        return f"{DASHBOARD_BASE_URL}/login/servers?session={session_id}"
+            return f"{base}{return_to}{sep}session={session_id}"
+        return f"{base}/login/servers?session={session_id}"
 
     try:
         timeout = aiohttp.ClientTimeout(total=10)

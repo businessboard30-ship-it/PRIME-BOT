@@ -164,6 +164,16 @@ DISCORD_DEV_GUILD_ID = 0
 # domain convention; override if the dashboard is deployed separately.
 DASHBOARD_BASE_URL = "https://dash-production-c237.up.railway.app"
 
+# Separate, explicitly-whitelisted base for the /unlock page ONLY, used
+# when that page is hosted standalone on GitHub Pages instead of living
+# inside the main Next.js dashboard. discord_login_oauth.py checks
+# return_to against this (in addition to its normal relative-path check)
+# so the OAuth callback can redirect back to GitHub Pages for /unlock
+# without turning return_to into a general open redirect to anywhere the
+# caller names. Leave blank to disable (return_to is then only ever
+# treated as relative to DASHBOARD_BASE_URL, same as before this existed).
+UNLOCK_PAGES_BASE_URL = os.getenv("UNLOCK_PAGES_BASE_URL", "")
+
 # --- Discover Players: category cap upgrade tiers -----------------------
 # (member_cap_from, member_cap_to, price_usd) — checked in order, so the
 # first tier whose member_cap_from matches the category's current cap is

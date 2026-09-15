@@ -1,11 +1,11 @@
 // path: app/page.tsx
 
-'use client'
+// Server-listing directory removed from this site (see git history for
+// the old ServerDirectory/_ServerDirectory-based version). What's left:
+// hero + links into the two flows that remain — /unlock and the
+// dashboard sign-in (api/discord_login_oauth.py).
 
-import { Suspense } from 'react'
 import Image from 'next/image'
-import { useSearchParams } from 'next/navigation'
-import ServerDirectory from './servers/_ServerDirectory'
 
 export default function Page() {
   return (
@@ -13,27 +13,19 @@ export default function Page() {
       <Hero />
 
       <div className="max-w-2xl mx-auto">
-        <Suspense fallback={null}>
-          <ListingBanner />
-        </Suspense>
-
-        <ServerDirectory />
-
-        <section className="mt-16 pt-8 border-t" style={{ borderColor: 'var(--pb-line)' }}>
-          <h2 className="pb-heading text-base font-medium">About this site</h2>
-          <p className="mt-2 text-sm leading-relaxed max-w-lg" style={{ color: 'var(--pb-text-muted)' }}>
-            This is a directory of public Discord servers running PRIME-BOT — a moderation,
-            leveling, and community-management bot. Every server here is admin-verified
-            automatically, since a listing can only be created from inside a server the bot
-            is already in.
-          </p>
+        <section className="flex flex-wrap gap-4">
+          <a href="/unlock" className="pb-btn-primary">
+            Unlock
+          </a>
+          <a href="/api/discord_login_oauth" className="pb-btn-secondary">
+            Sign in with Discord
+          </a>
         </section>
       </div>
     </main>
   )
 }
 
-// Hero banner above the directory — 5 metallic angels art, PRIME LISTING badge.
 function Hero() {
   return (
     <div className="relative -mx-6 -mt-12 mb-12 overflow-hidden" style={{ height: '52vh', minHeight: 360, maxHeight: 620 }}>
@@ -47,7 +39,6 @@ function Hero() {
         style={{ objectPosition: '30% center' }}
       />
 
-      {/* darken left->right subtly + fade into page background so text on the right stays legible */}
       <div
         className="absolute inset-0"
         style={{
@@ -65,11 +56,8 @@ function Hero() {
             boxShadow: '0 0 18px rgba(59,130,246,0.45)',
           }}
         >
-          <span
-            className="text-[10px] font-bold tracking-widest uppercase"
-            style={{ color: 'var(--pb-accent)' }}
-          >
-            ⚔ Prime Listing
+          <span className="text-[10px] font-bold tracking-widest uppercase" style={{ color: 'var(--pb-accent)' }}>
+            ⚔ PRIME BOT
           </span>
         </div>
 
@@ -80,44 +68,15 @@ function Hero() {
             textShadow: '0 0 24px rgba(59,130,246,0.55), 0 2px 12px rgba(0,0,0,0.8)',
           }}
         >
-          Find your next Discord server
+          PRIME BOT
         </h1>
         <p
           className="mt-2 text-sm sm:text-base max-w-md"
           style={{ color: 'rgba(229,231,235,0.85)', textShadow: '0 1px 6px rgba(0,0,0,0.9)' }}
         >
-          A directory of communities running PRIME-BOT — admin-verified, ranked by votes.
+          Moderation, leveling, and community management for your Discord server.
         </p>
       </div>
-    </div>
-  )
-}
-
-// Shown when /setup servers sent someone here with listing params attached
-// (see discord_bot/cogs/server_listing.py) — lets an admin who just ran that
-// command jump straight to finishing their listing, above the directory.
-function ListingBanner() {
-  const params = useSearchParams()
-  const guildId = params.get('guild_id')
-  const token = params.get('token')
-  if (!guildId || !token) return null
-
-  const submitUrl = `/servers/submit?${params.toString()}`
-
-  return (
-    <div
-      className="mb-8 flex flex-wrap items-center justify-between gap-4 rounded-lg border p-4"
-      style={{ borderColor: 'var(--pb-accent)', background: 'var(--pb-surface)' }}
-    >
-      <div>
-        <p className="text-sm font-medium">Your server's ready to list.</p>
-        <p className="mt-1 text-xs" style={{ color: 'var(--pb-text-faint)' }}>
-          This link is private to your server — continue to finish your listing.
-        </p>
-      </div>
-      <a href={submitUrl} className="pb-btn-primary shrink-0">
-        Continue to your listing
-      </a>
     </div>
   )
 }

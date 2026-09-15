@@ -177,17 +177,10 @@ function LoginServersPageInner() {
               <span className="font-medium truncate block">{g.guild_name}</span>
               {!g.bot_present && (
                 <span className="text-xs" style={{ color: 'var(--pb-text-faint)' }}>
-                  PRIME-BOT not added — listing still works, just no dashboard or live member count yet
+                  PRIME-BOT not added to this server yet
                 </span>
               )}
             </div>
-            <a
-              href={`/servers/submit?token=${encodeURIComponent(g.listing_token)}&guild_id=${g.guild_id}`}
-              className="text-sm px-3 py-1.5 rounded-md font-medium shrink-0"
-              style={{ border: '1px solid var(--pb-accent)', color: 'var(--pb-accent)' }}
-            >
-              List this server
-            </a>
             {g.bot_present && g.token ? (
               <a
                 href={`/dashboard/${g.guild_id}?token=${encodeURIComponent(g.token)}${g.clone_id != null ? `&clone_id=${g.clone_id}` : ''}`}
