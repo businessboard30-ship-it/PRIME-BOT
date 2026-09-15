@@ -66,6 +66,7 @@ from discord_bot.cogs._views_direct_paid import DYNAMIC_ITEMS as DIRECT_PAID_DYN
 from discord_bot.cogs._views_verification import DYNAMIC_ITEMS as VERIFICATION_DYNAMIC_ITEMS
 from discord_bot.cogs._views_custom_role import DYNAMIC_ITEMS as CUSTOM_ROLE_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_boost import DYNAMIC_ITEMS as LEVELING_BOOST_DYNAMIC_ITEMS
+from discord_bot.cogs._views_leveling_leaderboard import DYNAMIC_ITEMS as LEVELING_LEADERBOARD_DYNAMIC_ITEMS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -171,6 +172,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*MUSIC_PANEL_DYNAMIC_ITEMS)
         self.add_dynamic_items(*MANUAL_PAYMENT_DYNAMIC_ITEMS)
         self.add_dynamic_items(*LEVELING_BOOST_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*LEVELING_LEADERBOARD_DYNAMIC_ITEMS)
 
         await self.load_extension("discord_bot.cogs.help")
         # archive / archive_automation dropped: feature retired to free up
