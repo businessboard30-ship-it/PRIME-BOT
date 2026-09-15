@@ -138,7 +138,17 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "20"
+SCHEMA_VERSION = "21"
+# "20" -> "21": discord_roast_battles.last_activity_at (idle-battle auto-quit
+# check, see roast.py's _quit_idle_active_battles) was added to
+# _create_tables without a version bump — same bump-or-it-never-runs trap as
+# every entry in the History note below. Any DB already stamped
+# schema_version='20' skipped the DDL pass forever, so that column was never
+# created, and _quit_idle_active_battles has been failing every poll tick
+# with asyncpg.exceptions.UndefinedColumnError: column "last_activity_at"
+# does not exist. This bump forces the next cold start to re-run the
+# (idempotent) DDL pass, including that ALTER TABLE, then re-stamp
+# schema_version='21'.
 # "19" -> "20": discord_automod_config's log_server_enabled/log_channels_enabled/
 # log_roles_enabled/log_members_enabled/log_moderation_enabled/log_voice_enabled/
 # log_invites_enabled ALTER TABLE ADD COLUMN steps (added for the /modlog
@@ -7726,14 +7736,140 @@ class Database:
             )
             return dict(row) if row else None
 
-    async def get_xp_leaderboard(self, guild_id: int, limit: int = 10, clone_id: Optional[int] = None) -> List[Dict]:
+    async def get_xp_leaderboard(self, guild_id: int, limit: int = 10, clone_id: Optional[int] = None,
+                                  offset: int = 0) -> List[Dict]:
+        """offset added for the paginated Components-v2 /leaderboard (see
+        _views_leveling_leaderboard.py) — defaults to 0 so every existing
+        caller (there were none passing a 4th positional arg) is unaffected."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 ORDER BY total_xp DESC LIMIT $3",
-                guild_id, clone_id, limit
+                "SELECT * FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "ORDER BY total_xp DESC LIMIT $3 OFFSET $4",
+                guild_id, clone_id, limit, offset
             )
             return [dict(r) for r in rows]
+
+    async def get_xp_leaderboard_count(self, guild_id: int, clone_id: Optional[int] = None) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+
+    async def get_xp_rank(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        """Local (per-guild) rank for the "Your Current Stats" panel. Rank is
+        1 + how many rows in this guild/clone outrank this user's total_xp —
+        same ordering /leaderboard itself sorts by (total_xp DESC), so a
+        rank computed here always matches where the user would actually
+        land in the paginated list. Returns None if the user has no
+        discord_xp row yet (hasn't earned any XP in this guild/clone)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                WITH me AS (
+                    SELECT total_xp FROM discord_xp
+                    WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3
+                )
+                SELECT me.total_xp AS total_xp,
+                       (SELECT COUNT(*) FROM discord_xp d
+                        WHERE d.guild_id = $1 AND d.clone_id IS NOT DISTINCT FROM $3
+                          AND d.total_xp > me.total_xp) + 1 AS rank,
+                       (SELECT COUNT(*) FROM discord_xp d
+                        WHERE d.guild_id = $1 AND d.clone_id IS NOT DISTINCT FROM $3) AS total_players
+                FROM me
+                """,
+                guild_id, user_id, clone_id
+            )
+            return dict(row) if row else None
+
+    async def get_global_xp_leaderboard(self, limit: int = 10, offset: int = 0) -> List[Dict]:
+        """Global leaderboard: total_xp summed per user_id across every
+        guild AND every clone (deliberately ignores clone_id — "global"
+        means account-wide across the whole bot family, not just this
+        clone's guilds). Returns rows shaped like {"user_id", "total_xp"}
+        — no `level` column (a cross-guild sum has no single guild's level
+        curve to derive from at the DB layer); callers should run it
+        through modules.leveling.compute_level themselves if they want a
+        displayed level, same as the per-guild leaderboard does."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, SUM(total_xp)::BIGINT AS total_xp
+                FROM discord_xp
+                GROUP BY user_id
+                ORDER BY total_xp DESC
+                LIMIT $1 OFFSET $2
+                """,
+                limit, offset
+            )
+            return [dict(r) for r in rows]
+
+    async def get_global_xp_leaderboard_count(self) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM (SELECT user_id FROM discord_xp GROUP BY user_id) t"
+            )
+
+    async def get_global_xp_rank(self, user_id: int) -> Optional[Dict]:
+        """Same shape/semantics as get_xp_rank but summed across every
+        guild/clone — backs the "Global" tab of "Your Current Stats"."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                WITH totals AS (
+                    SELECT user_id, SUM(total_xp) AS total_xp FROM discord_xp GROUP BY user_id
+                ), me AS (
+                    SELECT total_xp FROM totals WHERE user_id = $1
+                )
+                SELECT me.total_xp AS total_xp,
+                       (SELECT COUNT(*) FROM totals t WHERE t.total_xp > me.total_xp) + 1 AS rank,
+                       (SELECT COUNT(*) FROM totals) AS total_players
+                FROM me
+                """,
+                user_id
+            )
+            return dict(row) if row else None
+
+    async def get_active_xp_boosts_for_users(self, guild_id: int, user_ids: list,
+                                              clone_id: Optional[int] = None) -> Dict[int, float]:
+        """Bulk lookup for one page of the LOCAL leaderboard (one query for
+        up to 10 rows instead of 10 separate get_active_xp_boost calls).
+        Returns {user_id: multiplier} for whichever of user_ids currently
+        have a non-expired boost in this guild/clone."""
+        if not user_ids:
+            return {}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, multiplier FROM discord_xp_boosts "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "AND user_id = ANY($3::bigint[]) AND expires_at > NOW()",
+                guild_id, clone_id, user_ids
+            )
+            return {r["user_id"]: float(r["multiplier"]) for r in rows}
+
+    async def get_active_global_boosts_for_users(self, user_ids: list) -> Dict[int, float]:
+        """Same as get_active_xp_boosts_for_users but for the GLOBAL
+        leaderboard tab — boosts are guild-scoped (discord_xp_boosts has no
+        cross-guild concept), so "does this user have an active boost
+        anywhere" takes the highest multiplier across any guild/clone they
+        currently have one active in, rather than picking one arbitrarily."""
+        if not user_ids:
+            return {}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, MAX(multiplier) AS multiplier FROM discord_xp_boosts "
+                "WHERE user_id = ANY($1::bigint[]) AND expires_at > NOW() GROUP BY user_id",
+                user_ids
+            )
+            return {r["user_id"]: float(r["multiplier"]) for r in rows}
 
     async def get_leader_link(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
         pool = await get_pool()
