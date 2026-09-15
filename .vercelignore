@@ -1,0 +1,26 @@
+# This repo is a monorepo: the Next.js dashboard (deployed here on Vercel)
+# lives alongside the Python Discord bot + API backend (deployed
+# separately on Railway, as one long-running process via api_server.py).
+#
+# Without this file, Vercel's zero-config detection treats every file in
+# api/*.py as its own Python serverless function and rebuilds the entire
+# backend dependency stack (discord.py, aiohttp, asyncpg, etc, ~340MB)
+# once per file — slow, wasteful, and pointless since none of it is
+# actually served from Vercel; api_server.py already serves these same
+# handlers as plain functions from one persistent Railway process.
+api/
+*.py
+requirements.txt
+pyproject.toml
+uv.lock
+.python-version
+discord_bot/
+sql/
+
+# unlock-pages/ is its own separate Next.js app deployed to GitHub Pages,
+# not part of this Vercel project.
+unlock-pages/
+
+# Misc backend-only assets not needed for the frontend build.
+*.ttf
+*.sql
