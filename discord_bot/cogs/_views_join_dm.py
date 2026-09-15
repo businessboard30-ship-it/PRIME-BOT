@@ -35,13 +35,6 @@ from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, CUSTOM_ROL
 # below) — same functions the standalone _views_auto_listing_offer.py /
 # _views_registry_invite_consent.py / _views_combined_join_offer.py use,
 # so there's exactly one place each of those actions is actually performed.
-from discord_bot.cogs._views_auto_listing_offer import (
-    MAX_DESCRIPTION_LEN,
-    MAX_LONG_DESCRIPTION_LEN,
-    MAX_TAGS,
-    _build_listing_from_guild,
-    _parse_tags,
-)
 from discord_bot.cogs._views_registry_invite_consent import _create_invite_for_registry
 
 logger = logging.getLogger(__name__)
@@ -204,22 +197,9 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         # relevant question still needs asking.
         name = guild_name or "your server"
         if join_offer and is_last_page:
-            show_listing = join_offer.get("show_listing")
             show_invite = join_offer.get("show_invite")
-            if show_listing or show_invite:
+            if show_invite:
                 container.add_item(discord.ui.Separator())
-            if show_listing:
-                container.add_item(discord.ui.TextDisplay(
-                    f"📋 Want me to list **{name}** on the public server directory right now? "
-                    "No form to fill in — I'll pull the name, icon, member count, and a permanent "
-                    "invite straight from Discord and it goes live immediately. You can add tags or "
-                    "edit anything later.\n\nThis is a one-time ask — tap **Deny** and I won't bring "
-                    "it up again (you can still list manually anytime with `/setup servers`)."
-                ))
-                container.add_item(discord.ui.ActionRow(
-                    _JoinOfferListingButton("agree", guild_id, clone_id),
-                    _JoinOfferListingButton("deny", guild_id, clone_id),
-                ))
             if show_invite:
                 container.add_item(discord.ui.TextDisplay(
                     f"One more thing about **{name}** — I keep a private admin registry of servers "
@@ -250,28 +230,6 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             container.add_item(discord.ui.ActionRow(*nav_children))
 
         bottom_children = [_RemindLaterButton(guild_id, clone_id), _DontAskAgainButton(guild_id, clone_id)]
-        # Support-server link and manual link — shown on every page (not
-        # just the last) so neither is hidden behind pagination the owner
-        # may never click through. Plain link buttons — no custom_id, so
-        # they need no DynamicItem registration and are unaffected by
-        # timeouts or restarts on their own.
-        # One at the front of the row and one at the back, so at least
-        # one is visible no matter which end of the row the owner's eye
-        # lands on first. (Previously this was the support-server link
-        # shown twice; the manual link now takes the second slot instead
-        # of a duplicate.)
-        # "List your server" link — points at the same public directory
-        # /setup servers hands owners a personal link into (see
-        # discord_bot/cogs/server_listing.py). Plain link button like the
-        # two below: no custom_id, so it needs no DynamicItem registration
-        # and _RebuiltCopyView carries it over unchanged on every rebuild
-        # (Remind/Dismiss/feature-toggle clicks) since it matches
-        # component.style == link there already.
-        listing_button = discord.ui.Button(
-            label="List your server", style=discord.ButtonStyle.link,
-            emoji="🌐", url=f"{DASHBOARD_BASE_URL}/servers",
-        )
-        bottom_children = [*bottom_children, listing_button]
 
         if DISCORD_SUPPORT_SERVER_INVITE:
             support_button = discord.ui.Button(
@@ -1438,128 +1396,6 @@ def _drop_answered_pair(prefix: str):
     return _patch
 
 
-class _JoinOfferListingDescriptionModal(discord.ui.Modal, title="List this server"):
-    """Shown from _JoinOfferListingButton's Agree click when the guild has
-    no Community-mode description to auto-fill from — same fields/shape
-    as _views_auto_listing_offer.py's AutoListingDescriptionModal, kept
-    as its own copy here since it finishes by patching THIS message's
-    Components V2 tree (join_dm_offer buttons) rather than editing a
-    plain content+view message."""
-
-    short_description = discord.ui.TextInput(
-        label=f"Short description (max {MAX_DESCRIPTION_LEN} chars)",
-        placeholder="Shows on the directory card",
-        max_length=MAX_DESCRIPTION_LEN, required=True,
-    )
-    long_description = discord.ui.TextInput(
-        label="Long description (optional)", style=discord.TextStyle.paragraph,
-        placeholder="Shown on the full listing page — write as much as you like",
-        max_length=MAX_LONG_DESCRIPTION_LEN, required=False,
-    )
-    tags = discord.ui.TextInput(
-        label=f"Tags, comma-separated (up to {MAX_TAGS})",
-        placeholder="gaming, anime, chill", required=False,
-    )
-
-    def __init__(self, guild_id: int, clone_id):
-        super().__init__()
-        self.guild_id = guild_id
-        self.clone_id = clone_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.client.get_guild(self.guild_id)
-        if guild is None:
-            await interaction.followup.send("I'm not in that server anymore, so I couldn't list it.", ephemeral=True)
-            return
-        try:
-            from discord_bot.cogs.server_listing import _auto_generate_invite
-            invite_url = await _auto_generate_invite(guild)
-            await db.upsert_server_listing(
-                guild_id=guild.id, clone_id=None, guild_name=guild.name,
-                guild_icon_url=guild.icon.url if guild.icon else None,
-                member_count=guild.member_count or 0, invite_url=invite_url or "",
-                description=str(self.short_description), tags=_parse_tags(str(self.tags)),
-                long_description=str(self.long_description) or None,
-            )
-        except Exception:
-            logger.exception("join_dm listing offer modal build failed for guild %s", self.guild_id)
-            await interaction.followup.send(
-                "Something went wrong creating the listing — try `/setup servers` instead.", ephemeral=True,
-            )
-            return
-        await db.set_auto_listing_offer_status(self.guild_id, "agreed", self.clone_id)
-        rebuilt = _RebuiltCopyView(interaction.message.components, _drop_answered_pair("join_dm_offer:listing:"))
-        await interaction.edit_original_response(view=rebuilt)
-        await interaction.followup.send(
-            f"✅ **{guild.name}** is live on the directory: {DASHBOARD_BASE_URL}/servers/{guild.id}", ephemeral=True,
-        )
-
-
-class _JoinOfferListingButton(discord.ui.DynamicItem[discord.ui.Button],
-                               template=re.compile(r"^join_dm_offer:listing:(agree|deny):(\d+):(-|\d+)$").pattern):
-    """Agree/Deny for the "list this server?" ask, folded onto the join
-    DM's last page — see JoinDMLayoutView. Business logic shared with
-    _views_auto_listing_offer.py's Agree/Deny buttons (_build_listing_
-    from_guild, db.set_auto_listing_offer_status); the only real
-    difference is that answering here patches this message's Components
-    V2 tree in place instead of editing a plain content+view message."""
-
-    def __init__(self, action: str, guild_id: int, clone_id=None):
-        self.action = action
-        self.guild_id = guild_id
-        self.clone_id = clone_id
-        is_agree = action == "agree"
-        super().__init__(discord.ui.Button(
-            label="Agree" if is_agree else "Deny",
-            style=discord.ButtonStyle.success if is_agree else discord.ButtonStyle.secondary,
-            emoji="✅" if is_agree else None,
-            custom_id=f"join_dm_offer:listing:{action}:{guild_id}:{'-' if clone_id is None else clone_id}",
-        ))
-
-    @classmethod
-    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
-        action = match.group(1)
-        guild_id = int(match.group(2))
-        clone_part = match.group(3)
-        clone_id = None if clone_part == "-" else int(clone_part)
-        return cls(action, guild_id, clone_id)
-
-    async def callback(self, interaction: discord.Interaction):
-        if self.action == "agree":
-            guild = interaction.client.get_guild(self.guild_id)
-            if guild is None:
-                await interaction.response.send_message(
-                    "I'm not in that server anymore, so I can't list it.", ephemeral=True,
-                )
-                return
-            # Description check MUST happen before any response.defer()/
-            # send() — discord.py requires send_modal() to be the
-            # interaction's first response.
-            if not guild.description:
-                await interaction.response.send_modal(_JoinOfferListingDescriptionModal(self.guild_id, self.clone_id))
-                return
-            await interaction.response.defer(ephemeral=True)
-            try:
-                await _build_listing_from_guild(guild)
-            except Exception:
-                logger.exception("join_dm listing offer build failed for guild %s", self.guild_id)
-                await interaction.followup.send(
-                    "Something went wrong creating the listing — try `/setup servers` instead.", ephemeral=True,
-                )
-                return
-            await db.set_auto_listing_offer_status(self.guild_id, "agreed", self.clone_id)
-            result_msg = f"✅ **{guild.name}** is live on the directory: {DASHBOARD_BASE_URL}/servers/{guild.id}"
-        else:
-            await interaction.response.defer(ephemeral=True)
-            await db.set_auto_listing_offer_status(self.guild_id, "declined", self.clone_id)
-            result_msg = "No problem — I won't ask again. `/setup servers` works anytime."
-
-        rebuilt = _RebuiltCopyView(interaction.message.components, _drop_answered_pair("join_dm_offer:listing:"))
-        await interaction.edit_original_response(view=rebuilt)
-        await interaction.followup.send(result_msg, ephemeral=True)
-
-
 class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
                               template=re.compile(r"^join_dm_offer:invite:(allow|decline):(\d+):(-|\d+)$").pattern):
     """Allow/No-thanks for the private-registry invite-creation consent
@@ -1619,5 +1455,5 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 DYNAMIC_ITEMS = (
     _RemindLaterButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
-    _JoinOfferListingButton, _JoinOfferInviteButton, _BuildBotPasteButton,
+    _JoinOfferInviteButton, _BuildBotPasteButton,
 )
