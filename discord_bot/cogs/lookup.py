@@ -1,24 +1,25 @@
 # path: discord_bot/cogs/lookup.py
 
-"""/find — admin-only wizard: start typing a server name, get live
-autocomplete suggestions searched across the main bot AND every clone
-(discord_guilds is the shared cross-process registry all of them write
-to — see clone_manager.py's docstring for why clones can't be searched
-in-memory: each one is a separate OS process with its own gateway
-connection, so Postgres is the only thing they all actually share).
+"""/find — admin-only wizard: start typing a server name OR a person's
+name, get live autocomplete suggestions searched across the main bot AND
+every clone (discord_guilds is the shared cross-process registry all of
+them write to — see clone_manager.py's docstring for why clones can't be
+searched in-memory: each one is a separate OS process with its own
+gateway connection, so Postgres is the only thing they all actually
+share).
 
-Picking a suggestion shows the full row: guild_id, which bot manages it,
-member count, when it joined, and the server owner's resolved username.
+Person-name search is backed by discord_username_cache, a small table
+that fills in opportunistically rather than from a one-off backfill:
+every time this cog (or clone_admin.py's /allservers) resolves a user_id
+to a name, it also writes it here, and on_member_join below caches
+everyone as they join. That means there's no search history for anyone
+who joined before this shipped and hasn't been resolved by anything
+since — coverage grows over time, it doesn't start complete.
 
-Person-name search (buyer name / Discord username instead of server
-name) is NOT included here — there's no persistent username cache table
-anywhere in this codebase yet (clone_admin.py's _resolve_username does a
-live bot.fetch_user() per command, fine for one-off lookups but far too
-slow to run on every autocomplete keystroke across potentially hundreds
-of guilds). Adding that would need a small cache table populated
-incrementally (e.g. on_member_join, or whenever a name is resolved
-elsewhere) rather than something that can search historical data from
-day one.
+Picking a suggestion shows either: the full guild row (id, which bot
+manages it, member count, join date, resolved owner name), or, for a
+person, their resolved name plus every currently-joined guild they own
+across the whole main-bot+clones roster.
 """
 
 import logging
@@ -41,19 +42,13 @@ class LookupCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def _guild_autocomplete(self, interaction: discord.Interaction, current: str):
-        if not _is_clone_admin(interaction.user.id):
-            return []
-        if not current:
-            return []
-        rows = await db.search_discord_guilds(current, limit=25)
-        choices = []
-        for r in rows:
-            bot_label = "Main bot" if r["clone_id"] is None else f"Clone #{r['clone_id']} ({r['bot_username'] or 'unknown'})"
-            label = f"{r['guild_name'] or 'Unknown'} — {bot_label} ({r['member_count'] or '?'} members)"
-            # Discord caps autocomplete choice labels at 100 chars.
-            choices.append(app_commands.Choice(name=label[:100], value=str(r["guild_id"])))
-        return choices
+    # ── opportunistic username-cache population ─────────────────────────
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        try:
+            await db.cache_username(member.id, str(member))
+        except Exception:
+            logger.exception("Failed to cache username for member %s on join", member.id)
 
     async def _resolve_username(self, user_id: int) -> str:
         if not user_id:
@@ -64,32 +59,38 @@ class LookupCog(commands.Cog):
                 user = await self.bot.fetch_user(user_id)
             except discord.HTTPException:
                 user = None
-        return f"{user.name} ({user_id})" if user else f"unknown ({user_id})"
-
-    @app_commands.command(
-        name="find",
-        description="[Admin] Start typing a server name to search across the main bot and every clone",
-    )
-    @app_commands.describe(server="Start typing — suggestions search live across all bots")
-    async def find(self, interaction: discord.Interaction, server: str):
-        if not _is_clone_admin(interaction.user.id):
-            await interaction.response.send_message("You're not authorized to use this.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-
+        if user is None:
+            return f"unknown ({user_id})"
+        name = f"{user.name} ({user_id})"
         try:
-            guild_id = int(server)
-        except ValueError:
-            # They typed free text instead of picking a suggestion — do
-            # the same search one more time and just take the top hit.
-            rows = await db.search_discord_guilds(server, limit=1)
-            if not rows:
-                await interaction.followup.send(f"No server matching **{server}** found.", ephemeral=True)
-                return
-            guild_id = rows[0]["guild_id"]
+            await db.cache_username(user_id, str(user))
+        except Exception:
+            logger.exception("Failed to cache resolved username for %s", user_id)
+        return name
 
-        # Re-fetch the specific row by id rather than trusting the earlier
-        # search result's staleness (guild could've been left in between).
+    # ── autocomplete: merges guild-name and username-cache hits ─────────
+    async def _find_autocomplete(self, interaction: discord.Interaction, current: str):
+        if not _is_clone_admin(interaction.user.id):
+            return []
+        if not current:
+            return []
+
+        guild_rows = await db.search_discord_guilds(current, limit=15)
+        user_rows = await db.search_cached_usernames(current, limit=10)
+
+        choices = []
+        for r in guild_rows:
+            bot_label = "Main bot" if r["clone_id"] is None else f"Clone #{r['clone_id']} ({r['bot_username'] or 'unknown'})"
+            label = f"🏠 {r['guild_name'] or 'Unknown'} — {bot_label} ({r['member_count'] or '?'} members)"
+            choices.append(app_commands.Choice(name=label[:100], value=f"g:{r['guild_id']}"))
+        for r in user_rows:
+            label = f"🧑 {r['username']} ({r['user_id']})"
+            choices.append(app_commands.Choice(name=label[:100], value=f"u:{r['user_id']}"))
+
+        return choices[:25]
+
+    # ── result views ──────────────────────────────────────────────────
+    async def _show_guild(self, interaction: discord.Interaction, guild_id: int):
         all_rows = await db.get_all_guilds_with_managers(include_left=True)
         row = next((r for r in all_rows if r["guild_id"] == guild_id), None)
         if row is None:
@@ -113,9 +114,58 @@ class LookupCog(commands.Cog):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @find.autocomplete("server")
-    async def find_server_autocomplete(self, interaction: discord.Interaction, current: str):
-        return await self._guild_autocomplete(interaction, current)
+    async def _show_person(self, interaction: discord.Interaction, user_id: int):
+        name = await self._resolve_username(user_id)
+        owned = await db.get_guilds_owned_by(user_id)
+
+        embed = discord.Embed(title=name, color=discord.Color.green())
+        embed.add_field(name="User ID", value=str(user_id), inline=False)
+        if owned:
+            lines = []
+            for g in owned:
+                bot_label = "Main bot" if g["clone_id"] is None else f"Clone #{g['clone_id']} ({g['bot_username'] or 'unknown'})"
+                lines.append(f"**{g['guild_name'] or 'Unknown'}** — {bot_label} ({g['member_count'] or '?'} members)")
+            embed.add_field(name=f"Owns {len(owned)} server(s)", value="\n".join(lines)[:1024], inline=False)
+        else:
+            embed.add_field(name="Owns", value="No servers on record", inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # ── the command itself ────────────────────────────────────────────
+    @app_commands.command(
+        name="find",
+        description="[Admin] Start typing a server name or a person's name — searches across the main bot and every clone",
+    )
+    @app_commands.describe(query="Start typing — suggestions search live across all bots")
+    async def find(self, interaction: discord.Interaction, query: str):
+        if not _is_clone_admin(interaction.user.id):
+            await interaction.response.send_message("You're not authorized to use this.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        if query.startswith("g:"):
+            await self._show_guild(interaction, int(query[2:]))
+            return
+        if query.startswith("u:"):
+            await self._show_person(interaction, int(query[2:]))
+            return
+
+        # They typed free text instead of picking a suggestion — search
+        # both one more time and take the top hit, preferring an exact
+        # guild-name match over a username match if both exist.
+        guild_rows = await db.search_discord_guilds(query, limit=1)
+        if guild_rows:
+            await self._show_guild(interaction, guild_rows[0]["guild_id"])
+            return
+        user_rows = await db.search_cached_usernames(query, limit=1)
+        if user_rows:
+            await self._show_person(interaction, user_rows[0]["user_id"])
+            return
+        await interaction.followup.send(f"Nothing matching **{query}** found.", ephemeral=True)
+
+    @find.autocomplete("query")
+    async def find_query_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._find_autocomplete(interaction, current)
 
 
 async def setup(bot: commands.Bot):

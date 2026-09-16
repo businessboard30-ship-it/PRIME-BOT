@@ -433,6 +433,11 @@ class CloneAdminCog(commands.Cog):
                 user = None
         name = f"{user.name} ({user_id})" if user else f"unknown ({user_id})"
         cache[user_id] = name
+        if user:
+            try:
+                await db.cache_username(user_id, str(user))
+            except Exception:
+                pass
         return name
 
     # ── /clonemonetize — Discord equivalent of handlers/clone_bot.py's ────

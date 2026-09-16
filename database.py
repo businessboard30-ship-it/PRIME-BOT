@@ -1792,6 +1792,25 @@ class Database:
             ON discord_guilds (guild_id, COALESCE(clone_id, -1))
         """)
 
+        # Cross-clone + main-bot username cache for /find's person-name
+        # search (discord_bot/cogs/lookup.py). Populated opportunistically
+        # — whenever any code path already resolves a user_id to a name
+        # (clone_admin.py's /allservers, lookup.py's /find itself, member
+        # join events) it also writes here, so this fills in over time
+        # rather than needing a one-off backfill. No history before this
+        # table existed, by nature of "opportunistic" — that's expected.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_username_cache (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS discord_username_cache_username_idx
+            ON discord_username_cache (username)
+        """)
+
         # roast.py: auto-triggered roast battles. Two tables —
         # discord_roast_activity tracks last-message time per (guild_id,
         # clone_id) so the inactivity poller can compute idle duration
@@ -6652,6 +6671,47 @@ class Database:
                     FROM discord_guilds WHERE COALESCE(clone_id, -1) = COALESCE($1, -1) AND left_at IS NULL
                     ORDER BY joined_at DESC
                 """, clone_id)
+            return [dict(r) for r in rows]
+
+    async def get_guilds_owned_by(self, user_id: int) -> list:
+        """Every currently-joined guild (across main bot + all clones)
+        this user_id owns — used by /find's person-result view."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT g.guild_id, g.guild_name, g.member_count, g.clone_id, c.bot_username
+                FROM discord_guilds g
+                LEFT JOIN discord_cloned_bots c ON c.clone_id = g.clone_id
+                WHERE g.left_at IS NULL AND g.owner_id = $1
+                ORDER BY g.guild_name ASC
+            """, user_id)
+            return [dict(r) for r in rows]
+
+    async def cache_username(self, user_id: int, username: str) -> None:
+        """Opportunistic write — called wherever a user_id is already
+        being resolved to a name for some other reason (see lookup.py and
+        clone_admin.py's resolver helpers). Cheap fire-and-forget UPSERT;
+        callers don't await failure here mattering to their own result."""
+        if not user_id or not username:
+            return
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO discord_username_cache (user_id, username, updated_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (user_id) DO UPDATE
+                SET username = EXCLUDED.username, updated_at = NOW()
+            """, user_id, username)
+
+    async def search_cached_usernames(self, query: str, limit: int = 25) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT user_id, username FROM discord_username_cache
+                WHERE username ILIKE '%' || $1 || '%'
+                ORDER BY username ASC
+                LIMIT $2
+            """, query, limit)
             return [dict(r) for r in rows]
 
     async def search_discord_guilds(self, query: str, limit: int = 25) -> list:
