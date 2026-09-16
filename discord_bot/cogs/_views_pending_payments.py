@@ -48,13 +48,20 @@ the rest of this codebase (e.g. the leaderboard's nav-button re-render).
 
 import math
 import re
+import logging
+from datetime import datetime, timezone, timedelta
 
+import aiohttp
 import discord
 
 from database import db
 from payments_manual import (
     _resolve_approvers, resolve_manual_payment_approval, resolve_manual_payment_rejection,
 )
+
+logger = logging.getLogger(__name__)
+
+_PENDING_MAX_AGE_HOURS = 72  # payments older than this are auto-expired (status → 'expired')
 
 PAGE_SIZE = 5  # denser rows than the leaderboard's 10 (buyer/location/type/reference
                 # text + its own Approve/Reject ActionRow per entry costs more
@@ -64,19 +71,83 @@ _RAW_FETCH_LIMIT = 200  # bound on how much of the raw awaiting_review queue we 
                          # before per-row authorization filtering; see module docstring.
 
 
-def _location_line(row: dict, bot: discord.Client) -> str:
-    """Same "guild name if guild_id is set, else Clone #{clone_id}" shape
-    as send_manual_payment_approval_dms's location_line."""
+async def _resolve_guild_name_api(guild_id: int, bot_token: str) -> str:
+    """Fetch guild name via Discord REST — works even when the guild isn't
+    in the bot's local cache (e.g. cloned-bot guilds on a different shard)."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as session:
+            async with session.get(
+                f"https://discord.com/api/v10/guilds/{guild_id}",
+                headers={"Authorization": f"Bot {bot_token}"},
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("name") or str(guild_id)
+    except Exception as e:
+        logger.warning(f"[pendingpayments] couldn't resolve guild name for {guild_id}: {e}")
+    return str(guild_id)
+
+
+async def _location_line(row: dict, bot: discord.Client) -> str:
+    """Resolve guild name — tries bot cache first (free), falls back to
+    Discord REST so clone-bot guilds not in this shard's cache still show
+    a real name instead of a raw ID."""
     guild_id = row.get("chat_id")
     if guild_id:
         guild = bot.get_guild(guild_id)
-        return guild.name if guild else f"Guild `{guild_id}`"
+        if guild:
+            return guild.name
+        # Not in cache — fetch via REST using whichever token is available
+        bot_token = getattr(bot, "http", None) and bot.http.token
+        if bot_token:
+            name = await _resolve_guild_name_api(guild_id, bot_token)
+            return name  # returns the real name or falls back to str(guild_id)
+        return f"Guild `{guild_id}`"
     clone_id = row.get("clone_id")
     return f"Clone #{clone_id}" if clone_id else "Main bot"
 
 
+def _is_expired(row: dict) -> bool:
+    """True if this awaiting_review payment is older than 72 hours."""
+    created = row.get("created_date")
+    if not created:
+        return False
+    if isinstance(created, str):
+        try:
+            created = datetime.fromisoformat(created)
+        except ValueError:
+            return False
+    # Make timezone-aware if naive (DB stores UTC)
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - created > timedelta(hours=_PENDING_MAX_AGE_HOURS)
+
+
+async def _expire_stale_payments(rows: list[dict]) -> list[dict]:
+    """Auto-expire any awaiting_review rows older than 72 hrs, returning
+    only the still-fresh ones. Expiry is fire-and-forget — a DB error
+    just logs and the stale row is silently filtered from the view."""
+    fresh = []
+    for row in rows:
+        if _is_expired(row):
+            try:
+                await db.expire_pending_manual_payment(row["payment_id"])
+                logger.info(
+                    f"[pendingpayments] auto-expired stale payment "
+                    f"payment_id={row['payment_id']} reference={row.get('paystack_reference')}"
+                )
+            except Exception as e:
+                logger.warning(f"[pendingpayments] failed to expire payment_id={row['payment_id']}: {e}")
+            # Either way, don't show it
+        else:
+            fresh.append(row)
+    return fresh
+
+
 async def _authorized_rows(bot: discord.Client, invoker_id: int) -> list[dict]:
     rows = await db.get_pending_manual_payments(limit=_RAW_FETCH_LIMIT, offset=0)
+    # Auto-expire stale rows before filtering — keeps the queue clean
+    rows = await _expire_stale_payments(rows)
     authorized = []
     for row in rows:
         approvers = await _resolve_approvers(bot, row.get("chat_id"), payment_type=row.get("payment_type"))
@@ -112,7 +183,7 @@ async def build_pending_payments_view(bot: discord.Client, invoker_id: int, page
 
     for row in page_rows:
         buyer_id = row["user_id"]
-        location = _location_line(row, bot)
+        location = await _location_line(row, bot)
         text = (
             f"<@{buyer_id}> (`{buyer_id}`)\n"
             f"{location} · `{row['payment_type']}`\n"
