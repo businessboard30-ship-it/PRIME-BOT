@@ -1,13 +1,13 @@
 // path: app/page.tsx
 
 // Server-listing directory removed from this site (see git history for
-// the old ServerDirectory/_ServerDirectory-based version). What's left:
-// hero + links into the two flows that remain — /unlock and the
-// dashboard sign-in (api/discord_login_oauth.py).
+// the old ServerDirectory/_ServerDirectory-based version). The old
+// /login/servers picker is gone too — sign-in only makes sense in the
+// context of a specific flow (e.g. /unlock, which does its own Discord
+// sign-in inline) so there's nothing standalone to link to here anymore.
+// What's left: hero + the one flow that remains, /unlock.
 
 import Image from 'next/image'
-
-const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
 
 export default function Page() {
   return (
@@ -18,9 +18,6 @@ export default function Page() {
         <section className="flex flex-wrap gap-4">
           <a href="/unlock" className="pb-btn-primary">
             Unlock
-          </a>
-          <a href={`${API_BASE}/api/discord_login_oauth`} className="pb-btn-secondary">
-            Sign in with Discord
           </a>
         </section>
       </div>
