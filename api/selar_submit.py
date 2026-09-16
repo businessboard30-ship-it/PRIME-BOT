@@ -38,7 +38,7 @@ from database import db
 from config import (
     DISCORD_CLONE_ADMIN_IDS, DISCORD_BOT_TOKEN, DISCORD_SUPPORT_SERVER_INVITE,
     WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, CLONE_MONETIZATION_FEE_USD, DISCORD_CLONE_ACTIVATION_FEE_USD,
-    MUSIC_PRO_PRICE_LABEL, XP_BOOST_FEE_USD, XP_WALLET_TIERS, XP_SERVER_BOOST_FEE_USD,
+    MUSIC_PRO_PRICE_LABEL, XP_BOOST_FEE_USD, XP_WALLET_TIERS, XP_SERVER_BOOST_TIERS,
 )
 from discord_bot.dm_send import dm_user_with_buttons
 
@@ -66,7 +66,8 @@ _AMOUNT_DISPLAY = {
     "xp_wallet_medium": f"${XP_WALLET_TIERS['xp_wallet_medium']['fee_usd']:g} USD ({XP_WALLET_TIERS['xp_wallet_medium']['xp']:,} XP)",
     "xp_wallet_large": f"${XP_WALLET_TIERS['xp_wallet_large']['fee_usd']:g} USD ({XP_WALLET_TIERS['xp_wallet_large']['xp']:,} XP)",
     "xp_wallet_mega": f"${XP_WALLET_TIERS['xp_wallet_mega']['fee_usd']:g} USD ({XP_WALLET_TIERS['xp_wallet_mega']['xp']:,} XP)",
-    "xp_server_boost": f"${XP_SERVER_BOOST_FEE_USD:g} USD",
+    "xp_server_boost": f"${XP_SERVER_BOOST_TIERS['xp_server_boost']['fee_usd']:g} USD",
+    "xp_server_boost_month": f"${XP_SERVER_BOOST_TIERS['xp_server_boost_month']['fee_usd']:g} USD",
 }
 
 

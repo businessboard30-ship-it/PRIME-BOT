@@ -498,11 +498,17 @@ def _make_unlock_xp_wallet_tier(tier_key: str):
     return _handler
 
 
-async def _unlock_xp_server_boost(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
-    """Server-wide temporary XP multiplier — buyer_id is whoever paid, but
-    the boost itself applies to every member of guild_id, not just them."""
-    from config import XP_SERVER_BOOST_MULTIPLIER, XP_SERVER_BOOST_DURATION_HOURS
-    await db.activate_guild_xp_boost(guild_id, XP_SERVER_BOOST_MULTIPLIER, XP_SERVER_BOOST_DURATION_HOURS, clone_id=clone_id)
+def _make_unlock_xp_server_boost_tier(tier_key: str):
+    """Same one-handler-per-Selar-product shape as
+    _make_unlock_xp_wallet_tier above — each server-boost tier is its own
+    payment_type, but they all just activate a guild-wide multiplier for
+    that tier's duration. buyer_id is whoever paid, but the boost itself
+    applies to every member of guild_id, not just them."""
+    async def _handler(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+        from config import XP_SERVER_BOOST_TIERS
+        tier = XP_SERVER_BOOST_TIERS[tier_key]
+        await db.activate_guild_xp_boost(guild_id, tier["multiplier"], tier["duration_hours"], clone_id=clone_id)
+    return _handler
 
 
 UNLOCK_HANDLERS = {
@@ -517,5 +523,6 @@ UNLOCK_HANDLERS = {
     "xp_wallet_medium": _make_unlock_xp_wallet_tier("xp_wallet_medium"),
     "xp_wallet_large": _make_unlock_xp_wallet_tier("xp_wallet_large"),
     "xp_wallet_mega": _make_unlock_xp_wallet_tier("xp_wallet_mega"),
-    "xp_server_boost": _unlock_xp_server_boost,
+    "xp_server_boost": _make_unlock_xp_server_boost_tier("xp_server_boost"),
+    "xp_server_boost_month": _make_unlock_xp_server_boost_tier("xp_server_boost_month"),
 }

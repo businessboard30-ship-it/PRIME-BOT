@@ -7585,7 +7585,9 @@ class Database:
 
     async def activate_guild_xp_boost(self, guild_id: int, multiplier: float, duration_hours: int,
                                        clone_id: Optional[int] = None) -> Dict:
-        """Called from payments_manual.py's UNLOCK_HANDLERS["xp_server_boost"].
+        """Called from payments_manual.py's UNLOCK_HANDLERS["xp_server_boost"]
+        and ["xp_server_boost_month"] — each server-boost tier shares this
+        same activation call, just with that tier's own multiplier/duration.
         Same re-activate-replaces-rather-than-stacks behavior as the
         per-user activate_xp_boost()."""
         pool = await get_pool()

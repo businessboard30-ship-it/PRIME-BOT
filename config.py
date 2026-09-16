@@ -337,7 +337,14 @@ SELAR_PRODUCT_LINKS = {
     "xp_wallet_medium": "https://selar.com/215k2h3p52",
     "xp_wallet_large": "https://selar.com/78p5k9asl5",
     "xp_wallet_mega": "https://selar.com/501c935a69",
+    # Server-wide boost tiers — see config.XP_SERVER_BOOST_TIERS.
+    # Real products on Selar (unlisted, live).
     "xp_server_boost": "https://selar.com/05y7bv19d5",
+    # TODO: create the $50/1-month product on Selar (unlisted store item,
+    # same as the others above) and replace this placeholder with its real
+    # checkout URL before this tier goes live — start_manual_payment can't
+    # send buyers anywhere real until this is a working Selar link.
+    "xp_server_boost_month": "https://selar.com/REPLACE_ME_xp_server_boost_month",
 }
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):
@@ -404,9 +411,26 @@ XP_WALLET_MAX_GIFT_XP = 20_000
 # across an unknown number of members, so this reuses the multiplier+
 # duration shape instead, same tables/pattern as the per-user XP_BOOST_*
 # constants above, just guild-scoped instead of user-scoped).
-XP_SERVER_BOOST_FEE_USD = 8
-XP_SERVER_BOOST_MULTIPLIER = 2.0
-XP_SERVER_BOOST_DURATION_HOURS = 24
+#
+# Two tiers now, same "each tier is its own Selar product/payment_type"
+# shape as XP_WALLET_TIERS above (see PAYMENT_URLS / payments_manual.py's
+# _make_unlock_xp_server_boost_tier). The month tier is a genuine bulk
+# discount, not a straight-line scale-up of the 24h tier's $/hour rate —
+# a sustained 2.0x for 30 days would flood the leaderboard and make the
+# 24h tier a bad deal by comparison, so it's priced lower (1.5x) instead
+# of proportionally cheaper at the same multiplier:
+#   24h:    $8  / 2.0x / 24h
+#   1 month: $50 / 1.5x / 720h  (30 days)
+XP_SERVER_BOOST_TIERS = {
+    "xp_server_boost": {
+        "fee_usd": 8, "multiplier": 2.0, "duration_hours": 24,
+        "label": "24 Hours — 2.0x server XP",
+    },
+    "xp_server_boost_month": {
+        "fee_usd": 50, "multiplier": 1.5, "duration_hours": 24 * 30,
+        "label": "1 Month — 1.5x server XP",
+    },
+}
 
 # 20 Unicode "font style" transformations for the custom-role wizard's name
 # step (character substitution, not real fonts — renders in any Discord

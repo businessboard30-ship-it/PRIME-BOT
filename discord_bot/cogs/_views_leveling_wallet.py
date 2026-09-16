@@ -25,6 +25,7 @@ from database import db
 from payments_manual import start_manual_payment
 
 _TIER_ORDER = ("xp_wallet_small", "xp_wallet_medium", "xp_wallet_large", "xp_wallet_mega")
+_SERVER_BOOST_TIER_ORDER = ("xp_server_boost", "xp_server_boost_month")
 
 
 def _clone_part(clone_id) -> str:
@@ -50,13 +51,14 @@ class BuyBoostSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"^buyb
             )
             for key in _TIER_ORDER
         ]
-        options.append(discord.SelectOption(
-            label="Boost the whole server",
-            description=f"${app_config.XP_SERVER_BOOST_FEE_USD:g} USD — "
-                        f"{app_config.XP_SERVER_BOOST_MULTIPLIER:g}x XP for everyone, "
-                        f"{app_config.XP_SERVER_BOOST_DURATION_HOURS}h",
-            value="xp_server_boost",
-        ))
+        for key in _SERVER_BOOST_TIER_ORDER:
+            tier = app_config.XP_SERVER_BOOST_TIERS[key]
+            options.append(discord.SelectOption(
+                label=f"Boost the whole server — {tier['label']}",
+                description=f"${tier['fee_usd']:g} USD — {tier['multiplier']:g}x XP for everyone, "
+                            f"{tier['duration_hours']}h",
+                value=key,
+            ))
         super().__init__(discord.ui.Select(
             placeholder="💰 Buy Boost — pick a tier",
             options=options,
@@ -70,8 +72,8 @@ class BuyBoostSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"^buyb
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         payment_type = self.item.values[0]
-        if payment_type == "xp_server_boost":
-            amount_display = f"${app_config.XP_SERVER_BOOST_FEE_USD:g}"
+        if payment_type in app_config.XP_SERVER_BOOST_TIERS:
+            amount_display = f"${app_config.XP_SERVER_BOOST_TIERS[payment_type]['fee_usd']:g}"
         else:
             tier = app_config.XP_WALLET_TIERS[payment_type]
             amount_display = f"${tier['fee_usd']:g} ({tier['xp']:,} XP)"

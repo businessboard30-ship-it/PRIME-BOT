@@ -332,7 +332,8 @@ class AdminCog(commands.Cog):
         "xp_wallet_medium": "XP wallet (medium)",
         "xp_wallet_large": "XP wallet (large)",
         "xp_wallet_mega": "XP wallet (mega)",
-        "xp_server_boost": "XP server boost",
+        "xp_server_boost": "XP server boost (24h)",
+        "xp_server_boost_month": "XP server boost (1 month)",
     }
 
     @admin.command(name="revenue", description="[Owner] Revenue dashboard across all paid features")
