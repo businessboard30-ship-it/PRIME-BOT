@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.railpack.com",
   "provider": "node",
-  "aptPackages": ["libatomic1"],
   "steps": {
     "install": {
       "inputs": ["...", { "local": true, "include": ["."] }],
@@ -13,6 +12,7 @@
     }
   },
   "deploy": {
-    "startCommand": "pnpm start"
+    "startCommand": "pnpm start",
+    "aptPackages": ["libatomic1"]
   }
 }

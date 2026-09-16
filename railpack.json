@@ -1,5 +1,7 @@
 {
   "$schema": "https://schema.railpack.com",
   "provider": "python",
-  "aptPackages": ["ffmpeg", "libopus0", "libatomic1"]
+  "deploy": {
+    "aptPackages": ["ffmpeg", "libopus0", "libatomic1"]
+  }
 }
