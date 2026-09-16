@@ -6086,6 +6086,25 @@ class Database:
             )
             return [dict(r) for r in rows]
 
+    async def expire_pending_manual_payment(self, payment_id: int) -> bool:
+        """Flip a stale awaiting_review row to 'expired' — called by
+        _views_pending_payments when a payment has been sitting in the
+        queue for more than 72 hours without being approved or rejected.
+        Only transitions from awaiting_review (not already-resolved rows)
+        so a race between an admin clicking Approve and the expiry trigger
+        firing at the same time always lets the human action win.
+        Returns True if the row was actually updated, False if it was
+        already resolved by someone else."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE payment_logs SET status = 'expired' "
+                "WHERE payment_id = $1 AND status = 'awaiting_review'",
+                payment_id,
+            )
+            # asyncpg returns 'UPDATE N' — extract the count
+            return result.split()[-1] == "1"
+
     async def get_pending_payments(self, payment_types: List[str], limit: int = 15) -> List[Dict]:
         """Actual pending payment_logs rows (not just the count get_revenue_
         by_type gives) — used by /admin pending. Newest first."""
