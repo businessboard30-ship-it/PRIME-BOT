@@ -4,9 +4,14 @@
 Components-v2 replacement for the old Pillow-rendered leaderboard image
 (see discord_bot/cogs/leveling.py's old _build_leaderboard_payload, which
 did an aiohttp avatar fetch per member + a PIL render on every single
-/leaderboard call and every autopost tick). This builds a live
-LayoutView/Container instead — avatars, names, and role colors are read
-straight from Discord's own cache, no network fetch, no image render.
+/leaderboard call and every autopost tick). This builds a live LayoutView/Container instead — no image render.
+Avatars/names/role colors come from Discord's local cache when a member
+is already resolvable there; when they're not (a large guild without
+member-intent chunking, mainly) _resolve_display falls back to a real
+fetch_member/fetch_user API call. build_leaderboard_view fires all of a
+page's row lookups concurrently (asyncio.gather) rather than one at a
+time specifically because of that fallback — see the comment at its
+call site for the slow-/leaderboard bug this fixed.
 
 Two tabs, switched with a dropdown (StringSelect can't be a Section
 accessory in Components v2, so it lives in its own ActionRow — same
@@ -42,6 +47,7 @@ resolvable, or a plain disabled rank-number button as a last-resort
 accessory (a Section always needs exactly one).
 """
 
+import asyncio
 import math
 import re
 
@@ -177,8 +183,25 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     container.add_item(discord.ui.Separator())
 
     stats_text = None
+    stats_task = None
     if stats_for_user_id is not None:
-        stats_text = await _stats_lines(bot, guild, clone_id, mode, stats_for_user_id)
+        stats_task = asyncio.create_task(_stats_lines(bot, guild, clone_id, mode, stats_for_user_id))
+
+    # _resolve_display can fall back to a real fetch_member/fetch_user API
+    # call per row when a member isn't already in the bot's local cache
+    # (large guilds without member-intent chunking, mainly). Awaiting
+    # those one at a time in the loop below used to mean up to PAGE_SIZE
+    # sequential Discord API round-trips before the leaderboard could even
+    # render — this is what people were reporting as "/leaderboard is
+    # slow". Firing them all at once with gather cuts that to the time of
+    # the single slowest lookup instead of the sum of all of them.
+    display_results = await asyncio.gather(
+        *[_resolve_display(bot, guild, mode, r["user_id"]) for r in rows]
+    )
+    display_by_user_id = {r["user_id"]: d for r, d in zip(rows, display_results)}
+
+    if stats_task is not None:
+        stats_text = await stats_task
     stats_section = discord.ui.Section(accessory=LeaderboardMyRankButton(guild.id, clone_id, mode, page))
     stats_section.add_item(stats_text or "**Your Current Stats**\nTap *My Rank* to see where you stand.")
     container.add_item(stats_section)
@@ -201,7 +224,7 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
             chunk_lines.clear()
 
     for i, row in enumerate(rows, start=offset + 1):
-        name, avatar_url, role_name, _role_color = await _resolve_display(bot, guild, mode, row["user_id"])
+        name, avatar_url, role_name, _role_color = display_by_user_id[row["user_id"]]
         total_xp = row["total_xp"]
         level = row["level"] if mode == "local" else leveling.compute_level(total_xp)
         multiplier = boosts.get(row["user_id"])
