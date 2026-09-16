@@ -6124,6 +6124,21 @@ class Database:
                 reference
             )
 
+    async def mark_payment_paid_with_amount(self, reference: str, amount: float):
+        """Same as mark_payment_paid, but also corrects `amount` — for the
+        manual/Selar approval path, where log_payment originally wrote a
+        0.0 placeholder (Selar's static checkout redirect carries no price
+        data, so the real amount isn't known until an admin checks Selar's
+        dashboard at approval time and confirms it). Without this, every
+        manually-approved payment stayed logged at GHS 0 forever, even
+        after being marked completed — see resolve_manual_payment_approval."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE payment_logs SET status = 'completed', amount = $2 WHERE paystack_reference = $1",
+                reference, amount
+            )
+
     # ────────────────────────────────────────────────────────────────────��
     # Discord: multiple premium groups per guild (per clone)
     # ─────────────────────────────────────────────────────────────────────

@@ -802,8 +802,11 @@ class CloneAdminCog(commands.Cog):
         return True
 
     @app_commands.command(name="approvepayment", description="[Admin] Approve a pending manual payment by reference — any paid feature")
-    @app_commands.describe(reference="The payment reference (buyer's or from the approval DM)")
-    async def approvepayment(self, interaction: discord.Interaction, reference: str):
+    @app_commands.describe(
+        reference="The payment reference (buyer's or from the approval DM)",
+        amount="Real amount paid in GHS, confirmed against Selar's dashboard (not the buyer's claim)",
+    )
+    async def approvepayment(self, interaction: discord.Interaction, reference: str, amount: float):
         await interaction.response.defer(ephemeral=True, thinking=True)
         row = await db.get_payment_row_by_reference(reference)
         if not row:
@@ -812,7 +815,7 @@ class CloneAdminCog(commands.Cog):
         if not await self._authorized_approver_or_deny(interaction, row):
             return
 
-        result = await resolve_manual_payment_approval(interaction.client, row["payment_id"])
+        result = await resolve_manual_payment_approval(interaction.client, row["payment_id"], amount=amount)
         await interaction.followup.send(
             f"✅ {result.message}" if result.ok else result.message, ephemeral=True
         )

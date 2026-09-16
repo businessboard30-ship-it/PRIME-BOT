@@ -182,7 +182,7 @@ class ManualPaymentResolution:
         self.row = row
 
 
-async def resolve_manual_payment_approval(bot: discord.Client, payment_id: int) -> ManualPaymentResolution:
+async def resolve_manual_payment_approval(bot: discord.Client, payment_id: int, amount: Optional[float] = None) -> ManualPaymentResolution:
     """Shared by _ManualPayApproveButton's click and the /approvepayment
     slash command — same lookup, same UNLOCK_HANDLERS dispatch, same
     buyer DM, so a payment approved from a command is applied identically
@@ -190,7 +190,16 @@ async def resolve_manual_payment_approval(bot: discord.Client, payment_id: int) 
     message/view (only the button callback does that, since a slash
     command has no card message to edit) — callers that DO have a card
     message handle disabling/editing it themselves after this returns ok.
-    """
+
+    amount: the real GHS amount, confirmed by the approving admin against
+    Selar's dashboard (start_manual_payment logs every manual/Selar
+    payment at a 0.0 placeholder, since Selar's static checkout redirect
+    carries no price data — nothing ever corrected that placeholder before
+    this parameter existed, so every manually-approved payment showed as
+    GHS 0 in /admin revenue forever, even completed ones). Pass None only
+    for a caller that genuinely can't ask (there is currently none) — the
+    payment still gets approved/unlocked, just with the old amount-blind
+    behavior."""
     row = await db.get_payment_row_by_id(payment_id)
     if not row or row.get("status") != "awaiting_review":
         return ManualPaymentResolution(False, "This payment's already been resolved or wasn't found.", row)
@@ -201,7 +210,10 @@ async def resolve_manual_payment_approval(bot: discord.Client, payment_id: int) 
             False, f"No unlock handler wired for `{row['payment_type']}` yet — approve manually in code.", row
         )
 
-    await db.mark_payment_paid(row["paystack_reference"])
+    if amount is not None:
+        await db.mark_payment_paid_with_amount(row["paystack_reference"], amount)
+    else:
+        await db.mark_payment_paid(row["paystack_reference"])
     await handler(row["paystack_reference"], row["user_id"], row.get("chat_id"), row.get("group_id"))
     await _notify_buyer(bot, row["user_id"], row["payment_type"], approved=True)
     return ManualPaymentResolution(True, f"Approved and unlocked `{row['payment_type']}` for <@{row['user_id']}>.", row)
@@ -217,6 +229,48 @@ async def resolve_manual_payment_rejection(bot: discord.Client, payment_id: int)
     await db.mark_manual_payment_rejected(payment_id)
     await _notify_buyer(bot, row["user_id"], row["payment_type"], approved=False)
     return ManualPaymentResolution(True, f"Rejected the `{row['payment_type']}` payment from <@{row['user_id']}>.", row)
+
+
+class _ManualPayApproveAmountModal(discord.ui.Modal, title="Confirm amount paid"):
+    """Shown when Approve is tapped — the admin is already told to check
+    Selar's dashboard for a matching sale before approving (see the DM
+    card's own text), so this just asks them to also copy the real amount
+    from there instead of the payment staying logged at its 0.0
+    placeholder forever. See resolve_manual_payment_approval's docstring
+    for why that placeholder exists and why nothing used to correct it."""
+
+    amount = discord.ui.TextInput(
+        label="Amount paid, in GHS (from Selar's dashboard)",
+        placeholder="e.g. 35.00",
+        required=True, max_length=12,
+    )
+
+    def __init__(self, payment_id: int, view: "ManualApprovalView"):
+        super().__init__()
+        self.payment_id = payment_id
+        self._approval_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount_value = float(str(self.amount).strip())
+        except ValueError:
+            await interaction.response.send_message(
+                "That doesn't look like a number — tap Approve again and enter e.g. `35.00`.", ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+
+        result = await resolve_manual_payment_approval(interaction.client, self.payment_id, amount=amount_value)
+        if not result.ok:
+            await interaction.followup.send(result.message, ephemeral=True)
+            return
+
+        for child in self._approval_view.children:
+            child.disabled = True
+        await interaction.message.edit(
+            content=f"{interaction.message.content}\n\n✅ **Approved** by {interaction.user.mention} — GHS {amount_value:g}",
+            view=self._approval_view,
+        )
 
 
 class _ManualPayApproveButton(discord.ui.DynamicItem[discord.ui.Button], template=rf"^manualpay_approve:{_APPROVAL_ID_RE}$"):
@@ -238,18 +292,9 @@ class _ManualPayApproveButton(discord.ui.DynamicItem[discord.ui.Button], templat
         return cls(int(match.group(1)))
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        result = await resolve_manual_payment_approval(interaction.client, self.payment_id)
-        if not result.ok:
-            await interaction.followup.send(result.message, ephemeral=True)
-            return
-
-        for child in self.view.children:
-            child.disabled = True
-        await interaction.message.edit(
-            content=f"{interaction.message.content}\n\n✅ **Approved** by {interaction.user.mention}",
-            view=self.view,
-        )
+        # Modal must be the FIRST response to this interaction — can't
+        # defer() first and send one after, unlike Reject below.
+        await interaction.response.send_modal(_ManualPayApproveAmountModal(self.payment_id, self.view))
 
 
 class _ManualPayRejectButton(discord.ui.DynamicItem[discord.ui.Button], template=rf"^manualpay_reject:{_APPROVAL_ID_RE}$"):
