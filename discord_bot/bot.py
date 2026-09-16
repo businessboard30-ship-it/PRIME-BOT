@@ -241,6 +241,7 @@ class AnimeBotDiscord(commands.Bot):
         # solely to the main project owner (see payments_manual.py's
         # discord_clone carve-out in _resolve_approvers).
         await self.load_extension("discord_bot.cogs.clone_admin")
+        await self.load_extension("discord_bot.cogs.lookup")
 
         self.join_dm_reminder_loop.start()
 

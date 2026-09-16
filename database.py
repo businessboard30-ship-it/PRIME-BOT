@@ -6654,6 +6654,24 @@ class Database:
                 """, clone_id)
             return [dict(r) for r in rows]
 
+    async def search_discord_guilds(self, query: str, limit: int = 25) -> list:
+        """Cross-clone + main-bot guild-name search (ILIKE, currently-joined
+        only) for /find's autocomplete — kept as its own indexed query
+        instead of reusing get_all_guilds_with_managers() so a keystroke
+        doesn't pull every guild row on every call."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT g.guild_id, g.guild_name, g.member_count, g.owner_id AS server_owner_id,
+                       g.joined_at, g.clone_id, c.bot_username
+                FROM discord_guilds g
+                LEFT JOIN discord_cloned_bots c ON c.clone_id = g.clone_id
+                WHERE g.left_at IS NULL AND g.guild_name ILIKE '%' || $1 || '%'
+                ORDER BY g.guild_name ASC
+                LIMIT $2
+            """, query, limit)
+            return [dict(r) for r in rows]
+
     async def get_all_guilds_with_managers(self, include_left: bool = False) -> list:
         """Every server the main bot AND every clone are currently in (or
         have been in, if include_left), one row each, joined against
