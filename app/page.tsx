@@ -7,6 +7,8 @@
 
 import Image from 'next/image'
 
+const API_BASE = process.env.NEXT_PUBLIC_BOT_API_BASE || ''
+
 export default function Page() {
   return (
     <main className="pb-page px-6 py-12">
@@ -17,7 +19,7 @@ export default function Page() {
           <a href="/unlock" className="pb-btn-primary">
             Unlock
           </a>
-          <a href="/api/discord_login_oauth" className="pb-btn-secondary">
+          <a href={`${API_BASE}/api/discord_login_oauth`} className="pb-btn-secondary">
             Sign in with Discord
           </a>
         </section>
