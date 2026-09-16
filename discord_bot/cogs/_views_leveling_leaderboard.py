@@ -7,11 +7,11 @@ did an aiohttp avatar fetch per member + a PIL render on every single
 /leaderboard call and every autopost tick). This builds a live LayoutView/Container instead — no image render.
 Avatars/names/role colors come from Discord's local cache when a member
 is already resolvable there; when they're not (a large guild without
-member-intent chunking, mainly) _resolve_display falls back to a real
-fetch_member/fetch_user API call. build_leaderboard_view fires all of a
-page's row lookups concurrently (asyncio.gather) rather than one at a
-time specifically because of that fallback — see the comment at its
-call site for the slow-/leaderboard bug this fixed.
+member-intent chunking, mainly) build_leaderboard_view batch-resolves the
+whole page in one gateway query_members round-trip before rendering
+(_bulk_cache_members) — see its docstring for why an earlier
+asyncio.gather-only fix here wasn't enough on its own (gather doesn't
+escape Discord's per-guild REST rate limit on fetch_member).
 
 Two tabs, switched with a dropdown (StringSelect can't be a Section
 accessory in Components v2, so it lives in its own ActionRow — same
@@ -79,13 +79,11 @@ def _medal_or_rank(rank: int) -> str:
 async def _resolve_display(bot, guild, mode: str, user_id: int):
     """Returns (display_name, avatar_url, role_name, role_color) — role
     info only ever populated in local mode (global has no single guild's
-    roles to show). Falls back to an API fetch when the user isn't
-    cache-resolvable (guild.get_member/bot.get_user only check the local
-    cache, which doesn't hold every member of a large guild without member-
-    intent chunking) — this is why entries were showing raw "User 12345"
-    IDs instead of names. Only falls back to a bare "User {id}" if the
-    fetch itself fails (they left every mutual server, or the account no
-    longer exists)."""
+    roles to show). Assumes the caller has already batch-resolved
+    uncached members for the whole page via _bulk_cache_members below —
+    this only hits the REST fetch_member/fetch_user fallback for a user
+    that batch resolution itself couldn't find (they left every mutual
+    server, or the account no longer exists), which should be rare."""
     member = guild.get_member(user_id) if (mode == "local" and guild) else None
     if member is None and mode == "local" and guild is not None:
         try:
@@ -108,6 +106,42 @@ async def _resolve_display(bot, guild, mode: str, user_id: int):
         if member.top_role.color.value:
             role_color = str(member.top_role.color)
     return name, avatar_url, role_name, role_color
+
+
+async def _bulk_cache_members(bot, guild, mode: str, user_ids: list[int]):
+    """Resolves every not-yet-cached member of the page in ONE gateway
+    round-trip instead of leaving _resolve_display to hit fetch_member
+    per row.
+
+    The earlier fix (asyncio.gather over the per-row _resolve_display
+    calls) cut the WALL-CLOCK wait to the slowest single lookup, but it
+    didn't touch the actual bottleneck: fetch_member is a REST call, and
+    Discord rate-limits that route to roughly 1 request/second PER GUILD
+    regardless of how many the bot fires "concurrently" — discord.py's
+    own rate limiter queues them on the same bucket. A page with most of
+    its 10 rows uncached (typical on a large guild without member-intent
+    chunking) still took several seconds, just hidden behind gather
+    instead of a visible loop. That's the "still slow" people kept
+    hitting.
+
+    guild.query_members(user_ids=...) asks for specific members over the
+    gateway (needs the privileged members intent, already enabled in
+    bot.py) and returns all of them in a single round-trip, caching them
+    as it goes — so guild.get_member() picks them up afterward and
+    _resolve_display's fetch_member fallback is only ever hit for a user
+    batch-resolution itself couldn't find (they left, etc.), not for
+    every merely-uncached row."""
+    if mode != "local" or guild is None:
+        return
+    uncached = [uid for uid in user_ids if guild.get_member(uid) is None]
+    if not uncached:
+        return
+    try:
+        await guild.query_members(user_ids=uncached, cache=True)
+    except discord.HTTPException:
+        # Best-effort — _resolve_display's per-row fetch_member fallback
+        # still covers anyone this didn't manage to resolve.
+        pass
 
 
 async def _stats_lines(bot, guild, clone_id, mode: str, user_id: int):
@@ -187,14 +221,18 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     if stats_for_user_id is not None:
         stats_task = asyncio.create_task(_stats_lines(bot, guild, clone_id, mode, stats_for_user_id))
 
-    # _resolve_display can fall back to a real fetch_member/fetch_user API
-    # call per row when a member isn't already in the bot's local cache
-    # (large guilds without member-intent chunking, mainly). Awaiting
-    # those one at a time in the loop below used to mean up to PAGE_SIZE
-    # sequential Discord API round-trips before the leaderboard could even
-    # render — this is what people were reporting as "/leaderboard is
-    # slow". Firing them all at once with gather cuts that to the time of
-    # the single slowest lookup instead of the sum of all of them.
+    # One gateway round-trip resolves every uncached row (+ the stats-line
+    # user) at once — see _bulk_cache_members' docstring for why the
+    # earlier asyncio.gather-only fix wasn't enough on its own.
+    bulk_ids = [r["user_id"] for r in rows]
+    if stats_for_user_id is not None:
+        bulk_ids.append(stats_for_user_id)
+    await _bulk_cache_members(bot, guild, mode, bulk_ids)
+
+    # _resolve_display only hits a REST fetch_member/fetch_user fallback
+    # now for whatever _bulk_cache_members above didn't resolve (left the
+    # guild, etc.) — firing those via gather still helps for that
+    # remainder, it's just no longer doing the heavy lifting.
     display_results = await asyncio.gather(
         *[_resolve_display(bot, guild, mode, r["user_id"]) for r in rows]
     )
