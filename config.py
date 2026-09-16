@@ -340,11 +340,8 @@ SELAR_PRODUCT_LINKS = {
     # Server-wide boost tiers — see config.XP_SERVER_BOOST_TIERS.
     # Real products on Selar (unlisted, live).
     "xp_server_boost": "https://selar.com/05y7bv19d5",
-    # TODO: create the $50/1-month product on Selar (unlisted store item,
-    # same as the others above) and replace this placeholder with its real
-    # checkout URL before this tier goes live — start_manual_payment can't
-    # send buyers anywhere real until this is a working Selar link.
-    "xp_server_boost_month": "https://selar.com/REPLACE_ME_xp_server_boost_month",
+    # $50/1-month server boost tier — see config.XP_SERVER_BOOST_TIERS.
+    "xp_server_boost_month": "https://selar.com/525i51m108",
 }
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):
