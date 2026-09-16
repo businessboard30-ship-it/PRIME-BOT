@@ -1,4 +1,10 @@
 # path: nixpacks.toml
+#
+# Used when this service's Railway builder is set to Nixpacks. If it's on
+# Railpack instead (see railpack-dashboard.json — at least one service in
+# this project already is), this file is silently ignored and railpack.json
+# (repo root) is what actually needs the system packages below. Keep both
+# in sync — see railpack.json's aptPackages.
 [phases.setup]
 # libopus is required for discord.py to encode/play voice audio at all —
 # PyNaCl (in requirements.txt) only covers voice *encryption*, not the
