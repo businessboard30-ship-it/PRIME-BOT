@@ -52,7 +52,7 @@ are keyed on a bare user_id int with no platform column.
 import csv
 import io
 import logging
-from datetime import date
+from datetime import date, timezone
 
 import discord
 from discord import app_commands
@@ -318,6 +318,21 @@ class AdminCog(commands.Cog):
         "premium_group_join": "Premium group joins",
         "ai_store_topup": "AI Store credit top-ups",
         "ai_store_boost": "AI Store listing boosts",
+        # These 7 were missing entirely — every one of them is a real
+        # payment_type logged via UNLOCK_HANDLERS (payments_manual.py) but
+        # never added here, so /admin revenue was silently undercounting:
+        # completed_total/completed_count never included a single one of
+        # these payments.
+        "welcome_card_pack": "Welcome card pack",
+        "ultra_welcome_pack": "Ultra welcome pack",
+        "custom_role": "Custom role",
+        "music_pro": "Music Pro activations",
+        "xp_boost": "XP boosts",
+        "xp_wallet_small": "XP wallet (small)",
+        "xp_wallet_medium": "XP wallet (medium)",
+        "xp_wallet_large": "XP wallet (large)",
+        "xp_wallet_mega": "XP wallet (mega)",
+        "xp_server_boost": "XP server boost",
     }
 
     @admin.command(name="revenue", description="[Owner] Revenue dashboard across all paid features")
@@ -353,7 +368,35 @@ class AdminCog(commands.Cog):
             value="\n".join(breakdown_lines) if breakdown_lines else "No payments logged yet.",
             inline=False,
         )
-        embed.set_footer(text="Excludes commission splits — see /admin commissions for that breakdown.")
+        embed.set_footer(text="Excludes commission splits — see /admin commissions for that breakdown. Use /admin pending for per-checkout detail.")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @admin.command(name="pending", description="[Owner] List individual pending checkouts, not just the count")
+    async def pending(self, interaction: discord.Interaction):
+        if not _is_bot_admin(interaction.user.id):
+            await _deny(interaction)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        rows = await db.get_pending_payments(list(self._DISCORD_PAYMENT_TYPES.keys()), limit=15)
+        if not rows:
+            await interaction.followup.send("No pending checkouts.", ephemeral=True)
+            return
+
+        lines = []
+        for r in rows:
+            label = self._DISCORD_PAYMENT_TYPES.get(r["payment_type"], r["payment_type"])
+            age = discord.utils.format_dt(r["created_date"].replace(tzinfo=timezone.utc), style="R") \
+                if r["created_date"] else "unknown"
+            guild_part = f" in <#{r['chat_id']}>" if r["chat_id"] else ""
+            lines.append(f"• **{label}** — GHS {r['amount']:g} — <@{r['user_id']}>{guild_part} — {age}")
+
+        embed = discord.Embed(
+            title="⏳ Pending Checkouts",
+            description="\n".join(lines),
+            color=discord.Color.orange(),
+        )
+        embed.set_footer(text=f"Showing up to 15 most recent. Total pending count is in /admin revenue.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @admin.command(name="subscribers", description="[Owner] List active Media Connect + premium-group subscribers")

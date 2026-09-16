@@ -6040,6 +6040,25 @@ class Database:
             )
             return dict(row) if row else None
 
+    async def get_pending_payments(self, payment_types: List[str], limit: int = 15) -> List[Dict]:
+        """Actual pending payment_logs rows (not just the count get_revenue_
+        by_type gives) — used by /admin pending. Newest first."""
+        if not payment_types:
+            return []
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT payment_id, user_id, amount, payment_type, chat_id, created_date
+                FROM payment_logs
+                WHERE payment_type = ANY($1::text[]) AND status = 'pending'
+                ORDER BY created_date DESC
+                LIMIT $2
+                """,
+                payment_types, limit,
+            )
+            return [dict(r) for r in rows]
+
     async def get_revenue_by_type(self, payment_types: List[str]) -> List[Dict]:
         """Real revenue aggregation off payment_logs (the same table every
         Discord + Telegram paywall already writes to via log_payment) —
