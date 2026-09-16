@@ -6049,6 +6049,43 @@ class Database:
             )
             return dict(row) if row else None
 
+    async def get_pending_manual_payments_count(self) -> int:
+        """Count counterpart to get_pending_manual_payments — same
+        count-query-plus-paged-fetch shape as get_xp_leaderboard_count/
+        get_xp_leaderboard, used by /pendingpayments to size its pager."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM payment_logs WHERE status = 'awaiting_review'"
+            )
+
+    async def get_pending_manual_payments(self, limit: int = 100, offset: int = 0) -> List[Dict]:
+        """Every payment_logs row currently sitting in the manual-review
+        queue, across the whole bot (every guild and every clone) — used
+        by /pendingpayments' admin/owner-facing global view, NOT scoped to
+        one guild like get_xp_leaderboard is. Oldest first (created_date
+        ASC) — same "First In" priority as other queue-style listings in
+        this codebase, so the payment that's been waiting longest surfaces
+        first instead of getting buried under newer ones.
+
+        Per-row authorization (who's actually allowed to see/act on a
+        given row — a clone owner should not see another clone's or the
+        main bot's payments) is NOT done here: it depends on
+        payments_manual._resolve_approvers, which needs a live bot/clone
+        lookup this DB layer doesn't have. Callers filter the returned
+        rows themselves. limit/offset paginate the raw queue, ahead of
+        that per-caller authorization filter — see
+        discord_bot/cogs/_views_pending_payments.py for how the two are
+        combined."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM payment_logs WHERE status = 'awaiting_review' "
+                "ORDER BY created_date ASC LIMIT $1 OFFSET $2",
+                limit, offset,
+            )
+            return [dict(r) for r in rows]
+
     async def get_pending_payments(self, payment_types: List[str], limit: int = 15) -> List[Dict]:
         """Actual pending payment_logs rows (not just the count get_revenue_
         by_type gives) — used by /admin pending. Newest first."""
