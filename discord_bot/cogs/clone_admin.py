@@ -40,6 +40,7 @@ from config import (
     DISCORD_OWNER_BROADCAST_IDS, SELAR_PRODUCT_LINKS, PAYMENT_MODE,
 )
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
+from discord_bot.cogs._views_pending_payments import build_pending_payments_view
 
 logger = logging.getLogger(__name__)
 
@@ -835,6 +836,23 @@ class CloneAdminCog(commands.Cog):
         await interaction.followup.send(
             f"❌ {result.message}" if result.ok else result.message, ephemeral=True
         )
+
+    # ── /pendingpayments — browse the whole manual-review queue ──────────
+    # Companion to /approvepayment and /rejectpayment above: those need a
+    # reference already in hand (from the buyer, or from a DM card that
+    # might have scrolled away); this browses every payment_logs row
+    # currently `awaiting_review`, globally, without needing one. Same
+    # authorization scope as the two commands above — see
+    # _views_pending_payments.py's module docstring for how a clone
+    # owner's view is filtered down to only their own clone's rows.
+    @app_commands.command(name="pendingpayments", description="[Admin] List all payments awaiting review")
+    async def pendingpayments(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        view = await build_pending_payments_view(interaction.client, interaction.user.id, page=0)
+        if view is None:
+            await interaction.followup.send("No pending payments awaiting your review.", ephemeral=True)
+            return
+        await interaction.followup.send(view=view, ephemeral=True)
 
     # ── /ownermonetize — one-shot owner shortcut ─────────────────────────
     # Suggested as "/admin monetize <clone_id>" but the existing top-level
