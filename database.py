@@ -138,7 +138,16 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "22"
+SCHEMA_VERSION = "23"
+# "22" -> "23": discord_username_cache (CREATE TABLE + its username index) —
+# the cross-clone /find person-name search cache — landed in _create_tables
+# without a version bump, same bump-or-it-never-runs trap as every entry in
+# the History note below. Any DB already stamped schema_version='22' skipped
+# the DDL pass forever, so the table was never created, and /find's
+# autocomplete has been failing every keystroke with asyncpg.exceptions.
+# UndefinedTableError: relation "discord_username_cache" does not exist. This
+# bump forces the next cold start to re-run the (idempotent) DDL pass,
+# including that CREATE TABLE, then re-stamp schema_version='23'.
 # "20" -> "21": discord_roast_battles.last_activity_at (idle-battle auto-quit
 # check, see roast.py's _quit_idle_active_battles) was added to
 # _create_tables without a version bump — same bump-or-it-never-runs trap as
