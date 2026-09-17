@@ -6105,6 +6105,25 @@ class Database:
             # asyncpg returns 'UPDATE N' — extract the count
             return result.split()[-1] == "1"
 
+    async def expire_old_pending_payments(self, hours: int = 72) -> int:
+        """Sweeps payment_logs for 'pending' rows older than `hours` and
+        marks them 'expired' — an abandoned checkout (user opened a
+        payment link and never finished it) should stop being counted in
+        /admin revenue's pending total forever, not just fall off a
+        recency window. Returns how many rows were flipped, for logging.
+        Deliberately only touches 'pending' — 'awaiting_review' (manual
+        payment proof submitted, waiting on an admin) is a different state
+        with its own resolution path (resolve_awaiting_review_payment
+        above) and should never be silently expired by this sweep."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE payment_logs SET status = 'expired' "
+                "WHERE status = 'pending' AND created_date < NOW() - ($1 || ' hours')::INTERVAL",
+                str(hours),
+            )
+            return int(result.split()[-1])
+
     async def get_pending_payments(self, payment_types: List[str], limit: int = 15) -> List[Dict]:
         """Actual pending payment_logs rows (not just the count get_revenue_
         by_type gives) — used by /admin pending. Newest first."""
