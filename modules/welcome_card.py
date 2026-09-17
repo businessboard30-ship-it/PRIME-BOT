@@ -75,6 +75,7 @@ THEME_BACKGROUNDS: dict[str, str] = {
     "shadow": os.path.join(_MODULE_DIR, "..", "assets", "images", "welcome_bg_shadow.png"),
     "sorcerer": os.path.join(_MODULE_DIR, "..", "assets", "images", "welcome_bg_sorcerer.png"),
     "spider": os.path.join(_MODULE_DIR, "..", "welcome_bg_spider.png"),
+    "spider_pro": os.path.join(_MODULE_DIR, "..", "welcome_bg_spider_pro.png"),
 }
 # Themes that require the card pack purchase — everything except the
 # original free 'wolf' template.
@@ -95,6 +96,7 @@ THEME_AVATAR_BOX = {
     "shadow": TEMPLATE_AVATAR_BOX,
     "sorcerer": TEMPLATE_AVATAR_BOX,
     "spider": (85, 399, 268, 581),
+    "spider_pro": (713, 431, 954, 671),
 }
 
 # Text block cleared and redrawn each render: "MEMBER #N" + display name.
@@ -107,6 +109,10 @@ THEME_MEMBER_TEXT_BOX = {
     "shadow": (270, 408, 690, 545),
     "sorcerer": (270, 408, 690, 545),
     "spider": (301, 414, 782, 544),
+    # No left avatar cutout in this panel — the avatar sits out in the
+    # artwork instead (see THEME_AVATAR_BOX["spider_pro"]) — so the text
+    # gets the box's full width rather than starting after a circle.
+    "spider_pro": (90, 414, 695, 544),
 }
 TEMPLATE_MEMBER_TEXT_BOX = THEME_MEMBER_TEXT_BOX["wolf"]
 TEMPLATE_MEMBER_TEXT_BG = (5, 5, 5)  # sampled from the artwork's near-black panel
@@ -119,6 +125,7 @@ TEMPLATE_MEMBER_TEXT_BG = (5, 5, 5)  # sampled from the artwork's near-black pan
 # mockup had baked in.
 THEME_GREETING_BOX = {
     "spider": (100, 592, 762, 729),
+    "spider_pro": (90, 564, 695, 769),
 }
 TEMPLATE_GREETING_LINES = ("Glad to have you here!", "We hope you have an amazing time with us.")
 
@@ -136,6 +143,7 @@ THEME_HEADER_LABEL_BOX = {
     "shadow": (75, 50, 420, 95),
     "sorcerer": (75, 70, 420, 115),
     "spider": (65, 55, 411, 95),
+    "spider_pro": (65, 55, 411, 95),
 }
 THEME_SUBTITLE_BOX = {
     "wolf": (170, 325, 900, 368),
@@ -143,6 +151,7 @@ THEME_SUBTITLE_BOX = {
     "shadow": (120, 290, 900, 345),
     "sorcerer": (80, 280, 900, 340),
     "spider": (100, 309, 701, 349),
+    "spider_pro": (100, 309, 701, 349),
 }
 TEMPLATE_HEADER_LABEL_BOX = THEME_HEADER_LABEL_BOX["wolf"]
 TEMPLATE_SUBTITLE_BOX = THEME_SUBTITLE_BOX["wolf"]
@@ -151,10 +160,11 @@ TEMPLATE_TEXT_BG = (5, 5, 5)
 # "WELCOME" wordmark box — optional, per-theme. wolf/reaper/shadow/
 # sorcerer all have this baked permanently into their artwork (it doesn't
 # vary per-server, so there was never a reason to draw it in code). The
-# spider artwork's clean template has that whole area intentionally left
-# blank, so it's the one theme that needs it actually drawn here.
+# spider artworks' clean templates both have that whole area intentionally
+# left blank, so those are the ones that need it actually drawn here.
 THEME_TITLE_BOX = {
     "spider": (65, 110, 902, 289),
+    "spider_pro": (65, 110, 902, 289),
 }
 
 # Sticker box: mirrors the avatar on the opposite side of the card (the
