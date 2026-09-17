@@ -111,6 +111,17 @@ THEME_MEMBER_TEXT_BOX = {
 TEMPLATE_MEMBER_TEXT_BOX = THEME_MEMBER_TEXT_BOX["wolf"]
 TEMPLATE_MEMBER_TEXT_BG = (5, 5, 5)  # sampled from the artwork's near-black panel
 
+# Optional second line of static flavor text under the member-info box —
+# only "spider" has room for it (its clean template left that whole lower
+# panel blank; the other 3 themes either have no equivalent space or
+# already bake their own text in). Same two lines every render — not
+# per-member, not per-guild, just a fixed friendly line like the original
+# mockup had baked in.
+THEME_GREETING_BOX = {
+    "spider": (100, 592, 762, 729),
+}
+TEMPLATE_GREETING_LINES = ("Glad to have you here!", "We hope you have an amazing time with us.")
+
 # Header label ("BOT ARCHIVES") and the "TO <server>!" subtitle line under
 # the WELCOME wordmark — both optional: only redrawn when guild_name is
 # passed in, otherwise the artwork's own baked-in text shows through.
@@ -365,6 +376,17 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     # spill out of the clear-box and over the character artwork.
     username_font, username_text = _fit_text_to_box(draw, username, member_box_width, max_font_size=56, min_font_size=22)
     draw.text((mx + 10, my + 45), username_text, font=username_font, fill=(255, 255, 255))
+
+    # Static two-line greeting under the member box, themes that have room
+    # for it (see THEME_GREETING_BOX above).
+    greeting_box = THEME_GREETING_BOX.get(theme)
+    if greeting_box:
+        gx0, gy0, gx1, gy1 = greeting_box
+        greeting_width = gx1 - gx0
+        line1_font, line1_text = _fit_text_to_box(draw, TEMPLATE_GREETING_LINES[0], greeting_width, max_font_size=32, min_font_size=18)
+        draw.text((gx0, gy0), line1_text, font=line1_font, fill=(120, 190, 255))
+        line2_font, line2_text = _fit_text_to_box(draw, TEMPLATE_GREETING_LINES[1], greeting_width, max_font_size=26, min_font_size=14)
+        draw.text((gx0, gy0 + line1_font.size + 14), line2_text, font=line2_font, fill=(190, 195, 205))
 
     # "WELCOME" wordmark — only for themes listed in THEME_TITLE_BOX (see
     # its definition above); other themes have this baked into their own
