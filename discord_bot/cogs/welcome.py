@@ -1332,6 +1332,7 @@ class WelcomeCog(GuildOnlyCog):
         app_commands.Choice(name="Shadow Monarch (premium)", value="shadow"),
         app_commands.Choice(name="Emerald Sorcerer (premium)", value="sorcerer"),
         app_commands.Choice(name="Spider Realm (premium)", value="spider"),
+        app_commands.Choice(name="Spider Realm Pro (premium)", value="spider_pro"),
     ])
     async def theme(self, interaction: discord.Interaction, look: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
