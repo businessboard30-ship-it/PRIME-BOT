@@ -2811,6 +2811,28 @@ class Database:
             ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS onboarding_dm_sent BOOLEAN NOT NULL DEFAULT FALSE
         """)
 
+        # card_pack_trial_*: a one-time, guild-wide 3-day free trial of any
+        # premium theme (currently used to let a guild try the new
+        # "spider" look before buying) — see start_welcome_card_trial and
+        # WelcomeCog's _expire_card_trials loop below.
+        #   trial_started_at: when the trial began; NULL = no trial active.
+        #     Cleared back to NULL once expired (see _expire_card_trials)
+        #     so it's also the "is a trial currently running" flag.
+        #   trial_used: TRUE forever once a guild has ever started a trial
+        #     — prevents re-triggering by switching themes back and forth,
+        #     since trial_started_at itself gets cleared on expiry.
+        #   trial_admin_id: whoever ran /welcome theme to start it, so the
+        #     expiry DM goes to the right person.
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS card_pack_trial_started_at TIMESTAMPTZ
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS card_pack_trial_used BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS card_pack_trial_admin_id BIGINT
+        """)
+
         # --- bot_global_settings (simple key/value store, bot-wide) --------
         # Currently used for "image_host_channel_id": the channel (in the
         # owner's support server) that /welcome custombg re-uploads images
@@ -9135,6 +9157,8 @@ class Database:
                 "ultra_pack_unlocked": False, "custom_background_url": None,
                 "custom_bg_channel_id": None, "custom_bg_message_id": None,
                 "onboarding_dm_sent": False,
+                "card_pack_trial_started_at": None, "card_pack_trial_used": False,
+                "card_pack_trial_admin_id": None,
             }
 
     async def set_welcome_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
@@ -9213,6 +9237,60 @@ class Database:
             await conn.execute(
                 "UPDATE discord_welcome_config SET card_pack_unlocked = TRUE, updated_at = NOW() "
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+
+    async def start_welcome_card_trial(self, guild_id: int, admin_id: int, clone_id: Optional[int] = None) -> None:
+        """Starts this guild's one-and-only 3-day free trial of the
+        premium card pack. Caller (welcome.py's `theme` command) must
+        already have checked card_pack_trial_used is False — this doesn't
+        re-check, so it's also reusable to simply record who started it if
+        ever called again (it won't be, in practice)."""
+        await self.set_welcome_config(guild_id, clone_id)  # ensure a row exists
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_welcome_config SET card_pack_trial_started_at = NOW(), "
+                "card_pack_trial_used = TRUE, card_pack_trial_admin_id = $3, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id, admin_id,
+            )
+
+    async def get_due_card_trial_expirations(self, clone_id: Optional[int], hours: int = 72) -> List[Dict]:
+        """Guilds whose premium-theme trial has run its `hours` and hasn't
+        been converted to a real purchase — used by WelcomeCog's
+        _expire_card_trials daily loop to auto-revert them to the free
+        'wolf' theme. Only matches guilds still actually ON a premium
+        theme and still NOT card_pack_unlocked — a guild that already
+        bought the pack, or manually switched back to wolf itself, has
+        nothing to revert even if trial_started_at is still set."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT guild_id, clone_id, card_theme, card_pack_trial_admin_id
+                FROM discord_welcome_config
+                WHERE card_pack_trial_started_at IS NOT NULL
+                AND NOW() - card_pack_trial_started_at >= ($3 || ' hours')::INTERVAL
+                AND card_pack_unlocked = FALSE
+                AND card_theme <> 'wolf'
+                AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                LIMIT $2
+                """,
+                clone_id, 50, str(hours),
+            )
+            return [dict(r) for r in rows]
+
+    async def clear_expired_card_trial(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        """Reverts guild_id back to the free 'wolf' theme and clears
+        trial_started_at (so it's never matched by get_due_card_trial_
+        expirations again — card_pack_trial_used staying TRUE is what
+        actually blocks a second trial, not this column)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_welcome_config SET card_theme = 'wolf', card_pack_trial_started_at = NULL, "
+                "updated_at = NOW() WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id,
             )
 
