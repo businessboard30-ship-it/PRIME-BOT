@@ -30,7 +30,10 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 
 from database import db
 from modules import leveling
-from modules.level_card import render_level_card, render_level_card_evolved
+from modules.level_card import (
+    render_level_card, render_level_card_evolved,
+    render_level_card_tiered, get_tier_image_for_level,
+)
 from discord_bot.cogs._views_shared import ActionButton, NavCardView
 from discord_bot.cogs._views_leveling_leaderboard import build_leaderboard_view
 from config import DISCORD_CLONE_ADMIN_IDS
@@ -283,7 +286,16 @@ class LevelingCog(GuildOnlyCog):
             # build-prompt.md §1). This only decides which image renderer
             # runs; card_style ("card"/"text"/"off") semantics above are
             # untouched.
-            if new_level >= 10:
+            tier_image = get_tier_image_for_level(new_level)
+            if tier_image is not None:
+                tier_filename, tier_label = tier_image
+                card_bytes = await asyncio.to_thread(
+                    render_level_card_tiered,
+                    avatar_bytes, member.display_name, new_level,
+                    p["current_xp_in_level"], p["xp_needed_for_next_level"],
+                    tier_filename, tier_label,
+                )
+            elif new_level >= 10:
                 progress_fraction = min(1.0, (new_level - 10) / 10)
                 card_bytes = await asyncio.to_thread(
                     render_level_card_evolved,
