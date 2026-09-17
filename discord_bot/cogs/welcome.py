@@ -485,10 +485,12 @@ class WelcomeCog(GuildOnlyCog):
     async def cog_load(self):
         self._nudge_owners.start()
         self._announce_card_features.start()
+        self._expire_card_trials.start()
 
     async def cog_unload(self):
         self._nudge_owners.cancel()
         self._announce_card_features.cancel()
+        self._expire_card_trials.cancel()
 
     def _is_duplicate_join(self, member: discord.Member) -> bool:
         """Check if this join event was already processed recently (within 3 seconds).
@@ -751,6 +753,75 @@ class WelcomeCog(GuildOnlyCog):
     @_announce_card_features.before_loop
     async def _before_announce_card_features(self):
         await self.bot.wait_until_ready()
+
+    @tasks.loop(hours=24)
+    async def _expire_card_trials(self):
+        """Once a day, reverts any guild whose free 3-day premium-theme
+        trial (see /welcome theme's `theme` command) has run out and
+        hasn't been converted into an actual purchase — back to the free
+        'wolf' look — and lets whoever started the trial know. A guild
+        that bought the pack, or switched back to wolf itself, is simply
+        never returned by get_due_card_trial_expirations, so this only
+        ever touches guilds that genuinely need the revert."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        try:
+            due = await db.get_due_card_trial_expirations(clone_id)
+        except Exception as e:
+            logger.error(f"[v0] Failed to fetch due card-trial expirations: {e}")
+            return
+        for row in due:
+            self.bot.loop.create_task(self._expire_one_card_trial(row, clone_id))
+
+    @_expire_card_trials.before_loop
+    async def _before_expire_card_trials(self):
+        await self.bot.wait_until_ready()
+
+    async def _expire_one_card_trial(self, row: dict, clone_id: int | None):
+        """Reverts one guild's expired trial and notifies whoever started
+        it — DM first, falling back to the guild's #mod-logs channel
+        (discord_automod_config.log_channel_id, same lookup _send_nudge
+        uses) if the DM fails for any reason (DMs closed, not in a mutual
+        server, etc). Stays completely quiet (but still reverts the theme)
+        if neither is available — the revert itself is the part that
+        matters; the notification is a courtesy on top."""
+        guild_id = row["guild_id"]
+        try:
+            await db.clear_expired_card_trial(guild_id, clone_id)
+        except Exception as e:
+            logger.error(f"[v0] Failed to clear expired card trial for guild {guild_id}: {e}")
+            return
+
+        guild = self.bot.get_guild(guild_id)
+        theme_name = (row.get("card_theme") or "premium").replace("_", " ").title()
+        admin_id = row.get("card_pack_trial_admin_id")
+        message = (
+            f"👋 Your **{theme_name}** welcome-card trial in **{guild.name if guild else 'your server'}** "
+            f"just ended after 3 days, so it's back to the free Wolf look. "
+            f"Run `/welcome buypack` in the server anytime to unlock **{theme_name}** (and every other "
+            f"premium look) for good."
+        )
+
+        dm_sent = False
+        if admin_id:
+            try:
+                admin_user = self.bot.get_user(admin_id) or await self.bot.fetch_user(admin_id)
+                await admin_user.send(message)
+                dm_sent = True
+            except Exception as e:
+                logger.info(f"[v0] Card-trial expiry DM failed for user {admin_id} (guild {guild_id}), falling back to mod-logs: {e}")
+
+        if not dm_sent and guild is not None:
+            try:
+                automod_config = await db.get_automod_config(guild_id, clone_id=clone_id)
+                log_channel_id = automod_config.get("log_channel_id")
+                log_channel = guild.get_channel(int(log_channel_id)) if log_channel_id else None
+                if log_channel is not None:
+                    mention = f"<@{admin_id}> " if admin_id else ""
+                    await log_channel.send(f"{mention}{message}")
+            except Exception as e:
+                logger.error(f"[v0] Card-trial expiry mod-logs fallback failed for guild {guild_id}: {e}")
+
+        await refresh_posted_wizard(self.bot, guild_id, clone_id)
 
     async def _send_card_features_post(self, guild: discord.Guild, config: dict, clone_id: int | None,
                                         sticker_needed: bool, template_needed: bool):
@@ -1260,6 +1331,7 @@ class WelcomeCog(GuildOnlyCog):
         app_commands.Choice(name="Metallic Reaper (premium)", value="reaper"),
         app_commands.Choice(name="Shadow Monarch (premium)", value="shadow"),
         app_commands.Choice(name="Emerald Sorcerer (premium)", value="sorcerer"),
+        app_commands.Choice(name="Spider Realm (premium)", value="spider"),
     ])
     async def theme(self, interaction: discord.Interaction, look: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
@@ -1271,8 +1343,21 @@ class WelcomeCog(GuildOnlyCog):
         if look.value in PREMIUM_THEMES:
             config = await db.get_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction))
             if not config.get("card_pack_unlocked"):
+                if not config.get("card_pack_trial_used"):
+                    # First-ever premium theme pick for this guild — start
+                    # its one free 3-day trial instead of blocking outright.
+                    await db.start_welcome_card_trial(interaction.guild_id, interaction.user.id, clone_id=_clone_id_of(interaction))
+                    await db.set_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction), card_theme=look.value, use_template=True)
+                    await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
+                    await interaction.followup.send(
+                        f"✅ **{look.name}** is now active — free for **3 days** as a one-time trial. "
+                        f"Run `/welcome buypack` anytime before then to keep every premium look for good, "
+                        f"or it'll automatically switch back to the free Wolf look after 3 days.",
+                        ephemeral=True,
+                    )
+                    return
                 await interaction.followup.send(
-                    f"**{look.name}** is part of the premium card pack — this server hasn't bought it yet. "
+                    f"**{look.name}** is part of the premium card pack — this server's already used its free trial. "
                     f"Run `/welcome buypack` to unlock every premium look for good.",
                     ephemeral=True,
                 )
