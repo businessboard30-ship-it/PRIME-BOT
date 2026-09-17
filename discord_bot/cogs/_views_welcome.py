@@ -153,7 +153,7 @@ def render_status_lines(config: dict) -> list:
 
     if use_template:
         card_look_name = {"wolf": "Wolf", "reaper": "Metallic Reaper", "shadow": "Shadow Monarch",
-                           "sorcerer": "Emerald Sorcerer"}.get(config.get("card_theme", "wolf"), "Wolf")
+                           "sorcerer": "Emerald Sorcerer", "spider": "Spider Realm"}.get(config.get("card_theme", "wolf"), "Wolf")
         lines.append(f"✅ **Step 4: Card look** — {card_look_name}")
         lines.append(f"✅ **Step 7: Avatar shape** — {shape_label}")
         lines.append("-# ~~Colors~~ ~~Style~~ ~~Sticker~~ — only in animated mode (switch below)")
@@ -587,6 +587,7 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
         ("reaper", "Metallic Reaper (premium)"),
         ("shadow", "Shadow Monarch (premium)"),
         ("sorcerer", "Emerald Sorcerer (premium)"),
+        ("spider", "Spider Realm (premium)"),
     ]
 
     def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
@@ -596,13 +597,22 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
         from modules.welcome_card import PREMIUM_THEMES
         current = config.get("card_theme", "wolf")
         unlocked = bool(config.get("card_pack_unlocked"))
+        trial_used = bool(config.get("card_pack_trial_used"))
         options = []
         for value, label in self._LOOKS:
-            locked = value in PREMIUM_THEMES and not unlocked
+            is_premium = value in PREMIUM_THEMES and not unlocked
+            trial_available = is_premium and not trial_used
+            locked = is_premium and not trial_available
+            if trial_available:
+                desc = "Free 3-day trial available"
+            elif locked:
+                desc = "Locked — preview only, /welcome buypack to use"
+            else:
+                desc = None
             options.append(discord.SelectOption(
                 label=f"🔒 {label}" if locked else label,
                 value=value,
-                description=("Locked — preview only, /welcome buypack to use" if locked else None),
+                description=desc,
                 default=(value == current),
             ))
         super().__init__(discord.ui.Select(
@@ -625,11 +635,23 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
         unlocked = bool(config.get("card_pack_unlocked"))
 
         if chosen in PREMIUM_THEMES and not unlocked:
-            # Locked: show a preview-only render of this look, but leave
-            # the stored card_theme (and the wizard's own selection state)
-            # untouched — re-rendering the wizard here puts the select back
-            # on whatever look is actually applied, not the locked one just
-            # previewed, so nothing looks half-applied.
+            if not config.get("card_pack_trial_used"):
+                # First-ever premium pick for this guild, from the wizard —
+                # same one-time 3-day trial as picking it via the standalone
+                # /welcome theme command (see that command's docstring).
+                # Actually applies the look this time, rather than just
+                # showing a locked preview.
+                await db.start_welcome_card_trial(self.guild_id, interaction.user.id, clone_id=self.clone_id)
+                await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, card_theme=chosen, use_template=True)
+                await interaction.followup.send(
+                    f"✅ This look is now active — free for **3 days** as a one-time trial. "
+                    f"Run `/welcome buypack` before then to keep it (and every premium look) for good.",
+                    ephemeral=True,
+                )
+                await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+                return
+            # Trial already used previously: locked, preview only — same
+            # as before this trial system existed.
             await self._send_locked_preview(interaction, chosen, config)
             await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
             return
