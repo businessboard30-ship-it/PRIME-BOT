@@ -792,15 +792,22 @@ def render_level_card_tiered(avatar_bytes: bytes, username: str, new_level: int,
     draw = ImageDraw.Draw(bg)
     accent_rgb = _hex_to_rgb(accent_color)
 
-    text_x = int(cx + r + 40)
-    draw.text((text_x, 30), tier_label, font=_load_font(24), fill=accent_rgb)
-    draw_text_fallback(draw, (text_x, 62), username, 36, (255, 255, 255))
-    draw.text((text_x, 112), f"Level {new_level}", font=_load_font(28), fill=(255, 255, 255))
+    text_x = int(cx + r + 60)
 
-    bar_x, bar_y = text_x, 165
+    def _shadow_text(xy, text, font, fill):
+        x, y = xy
+        draw.text((x + 2, y + 2), text, font=font, fill=(0, 0, 0, 190))
+        draw.text(xy, text, font=font, fill=fill)
+
+    _shadow_text((text_x, 28), tier_label, _load_font(24), accent_rgb)
+    draw.text((text_x + 2, 64), username, font=_load_font(36), fill=(0, 0, 0, 190))
+    draw_text_fallback(draw, (text_x, 62), username, 36, (255, 255, 255))
+    _shadow_text((text_x, 114), f"Level {new_level}", _load_font(28), (255, 255, 255))
+
+    bar_x, bar_y = text_x, 172
     bar_w, bar_h = CARD_WIDTH - text_x - 30, 22
     draw.rounded_rectangle(
-        (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h), radius=bar_h // 2, fill=(0, 0, 0, 140),
+        (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h), radius=bar_h // 2, fill=(0, 0, 0, 170),
     )
     if xp_needed_for_next_level > 0:
         fraction = max(0.0, min(1.0, current_xp_in_level / xp_needed_for_next_level))
@@ -811,8 +818,17 @@ def render_level_card_tiered(avatar_bytes: bytes, username: str, new_level: int,
         draw.rounded_rectangle(
             (bar_x, bar_y, bar_x + fill_w, bar_y + bar_h), radius=bar_h // 2, fill=accent_rgb,
         )
-    draw.text((bar_x, bar_y + bar_h + 6), f"{current_xp_in_level}/{xp_needed_for_next_level} XP",
-               font=_load_font(16), fill=(230, 230, 230))
+    _shadow_text((bar_x, bar_y + bar_h + 12), f"{current_xp_in_level}/{xp_needed_for_next_level} XP",
+                 _load_font(16), (230, 230, 230))
+
+    # These source PNGs carry garbage-colored RGB data underneath their
+    # near-fully-transparent edge pixels (leftover from however they were
+    # exported). A plain .convert("RGB") drops alpha and exposes that
+    # garbage at full strength as a thin noisy line around the card's
+    # border. Flatten against an opaque black backdrop first so alpha
+    # weighting genuinely suppresses it instead of just revealing it.
+    flattened = Image.new("RGBA", bg.size, (0, 0, 0, 255))
+    bg = Image.alpha_composite(flattened, bg)
 
     out = io.BytesIO()
     bg.convert("RGB").save(out, format="PNG")
