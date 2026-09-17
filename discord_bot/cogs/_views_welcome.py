@@ -153,7 +153,8 @@ def render_status_lines(config: dict) -> list:
 
     if use_template:
         card_look_name = {"wolf": "Wolf", "reaper": "Metallic Reaper", "shadow": "Shadow Monarch",
-                           "sorcerer": "Emerald Sorcerer", "spider": "Spider Realm"}.get(config.get("card_theme", "wolf"), "Wolf")
+                           "sorcerer": "Emerald Sorcerer", "spider": "Spider Realm",
+                           "spider_pro": "Spider Realm Pro"}.get(config.get("card_theme", "wolf"), "Wolf")
         lines.append(f"✅ **Step 4: Card look** — {card_look_name}")
         lines.append(f"✅ **Step 7: Avatar shape** — {shape_label}")
         lines.append("-# ~~Colors~~ ~~Style~~ ~~Sticker~~ — only in animated mode (switch below)")
@@ -588,6 +589,7 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
         ("shadow", "Shadow Monarch (premium)"),
         ("sorcerer", "Emerald Sorcerer (premium)"),
         ("spider", "Spider Realm (premium)"),
+        ("spider_pro", "Spider Realm Pro (premium)"),
     ]
 
     def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
