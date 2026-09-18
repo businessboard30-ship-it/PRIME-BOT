@@ -2811,6 +2811,28 @@ class Database:
             ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS onboarding_dm_sent BOOLEAN NOT NULL DEFAULT FALSE
         """)
 
+        # card_pack_trial_*: a one-time, guild-wide 3-day free trial of any
+        # premium theme (currently used to let a guild try the new
+        # "spider" look before buying) — see start_welcome_card_trial and
+        # WelcomeCog's _expire_card_trials loop below.
+        #   trial_started_at: when the trial began; NULL = no trial active.
+        #     Cleared back to NULL once expired (see _expire_card_trials)
+        #     so it's also the "is a trial currently running" flag.
+        #   trial_used: TRUE forever once a guild has ever started a trial
+        #     — prevents re-triggering by switching themes back and forth,
+        #     since trial_started_at itself gets cleared on expiry.
+        #   trial_admin_id: whoever ran /welcome theme to start it, so the
+        #     expiry DM goes to the right person.
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS card_pack_trial_started_at TIMESTAMPTZ
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS card_pack_trial_used BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS card_pack_trial_admin_id BIGINT
+        """)
+
         # --- bot_global_settings (simple key/value store, bot-wide) --------
         # Currently used for "image_host_channel_id": the channel (in the
         # owner's support server) that /welcome custombg re-uploads images
@@ -3898,6 +3920,17 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_discord_premium_groups_guild
             ON discord_premium_groups (guild_id, clone_id)
         """)
+
+        # channel_id: the group's "home" channel — the bot grants the
+        # group's role an explicit view+send overwrite on this channel the
+        # moment the group is created (see /createpremium), so the channel
+        # is actually usable by new members the instant they pay instead of
+        # relying on the admin to remember to configure permissions by hand
+        # afterward. Nullable only so pre-existing groups (created before
+        # this column existed) aren't broken — every group created going
+        # forward always has one, since /createpremium requires it.
+        await conn.execute("ALTER TABLE discord_premium_groups ADD COLUMN IF NOT EXISTS channel_id BIGINT")
+
 
         # payment_logs needs to know WHICH premium group a payment was for,
         # now that a single (user, payment_type, chat_id) triple is no
@@ -6049,6 +6082,81 @@ class Database:
             )
             return dict(row) if row else None
 
+    async def get_pending_manual_payments_count(self) -> int:
+        """Count counterpart to get_pending_manual_payments — same
+        count-query-plus-paged-fetch shape as get_xp_leaderboard_count/
+        get_xp_leaderboard, used by /pendingpayments to size its pager."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM payment_logs WHERE status = 'awaiting_review'"
+            )
+
+    async def get_pending_manual_payments(self, limit: int = 100, offset: int = 0) -> List[Dict]:
+        """Every payment_logs row currently sitting in the manual-review
+        queue, across the whole bot (every guild and every clone) — used
+        by /pendingpayments' admin/owner-facing global view, NOT scoped to
+        one guild like get_xp_leaderboard is. Oldest first (created_date
+        ASC) — same "First In" priority as other queue-style listings in
+        this codebase, so the payment that's been waiting longest surfaces
+        first instead of getting buried under newer ones.
+
+        Per-row authorization (who's actually allowed to see/act on a
+        given row — a clone owner should not see another clone's or the
+        main bot's payments) is NOT done here: it depends on
+        payments_manual._resolve_approvers, which needs a live bot/clone
+        lookup this DB layer doesn't have. Callers filter the returned
+        rows themselves. limit/offset paginate the raw queue, ahead of
+        that per-caller authorization filter — see
+        discord_bot/cogs/_views_pending_payments.py for how the two are
+        combined."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM payment_logs WHERE status = 'awaiting_review' "
+                "ORDER BY created_date ASC LIMIT $1 OFFSET $2",
+                limit, offset,
+            )
+            return [dict(r) for r in rows]
+
+    async def expire_pending_manual_payment(self, payment_id: int) -> bool:
+        """Flip a stale awaiting_review row to 'expired' — called by
+        _views_pending_payments when a payment has been sitting in the
+        queue for more than 72 hours without being approved or rejected.
+        Only transitions from awaiting_review (not already-resolved rows)
+        so a race between an admin clicking Approve and the expiry trigger
+        firing at the same time always lets the human action win.
+        Returns True if the row was actually updated, False if it was
+        already resolved by someone else."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE payment_logs SET status = 'expired' "
+                "WHERE payment_id = $1 AND status = 'awaiting_review'",
+                payment_id,
+            )
+            # asyncpg returns 'UPDATE N' — extract the count
+            return result.split()[-1] == "1"
+
+    async def expire_old_pending_payments(self, hours: int = 72) -> int:
+        """Sweeps payment_logs for 'pending' rows older than `hours` and
+        marks them 'expired' — an abandoned checkout (user opened a
+        payment link and never finished it) should stop being counted in
+        /admin revenue's pending total forever, not just fall off a
+        recency window. Returns how many rows were flipped, for logging.
+        Deliberately only touches 'pending' — 'awaiting_review' (manual
+        payment proof submitted, waiting on an admin) is a different state
+        with its own resolution path (resolve_awaiting_review_payment
+        above) and should never be silently expired by this sweep."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE payment_logs SET status = 'expired' "
+                "WHERE status = 'pending' AND created_date < NOW() - ($1 || ' hours')::INTERVAL",
+                str(hours),
+            )
+            return int(result.split()[-1])
+
     async def get_pending_payments(self, payment_types: List[str], limit: int = 15) -> List[Dict]:
         """Actual pending payment_logs rows (not just the count get_revenue_
         by_type gives) — used by /admin pending. Newest first."""
@@ -6156,16 +6264,17 @@ class Database:
     # they want, and a member can buy any subset of them.
 
     async def create_premium_group(self, guild_id: int, name: str, role_id: int, fee_ghs: float,
-                                    created_by: int, clone_id: Optional[int] = None) -> int:
+                                    created_by: int, clone_id: Optional[int] = None,
+                                    channel_id: Optional[int] = None) -> int:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO discord_premium_groups (guild_id, clone_id, name, role_id, fee_ghs, created_by)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO discord_premium_groups (guild_id, clone_id, name, role_id, fee_ghs, created_by, channel_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 RETURNING group_id
                 """,
-                guild_id, clone_id, name, role_id, fee_ghs, created_by
+                guild_id, clone_id, name, role_id, fee_ghs, created_by, channel_id
             )
             return row["group_id"]
 
@@ -6192,7 +6301,7 @@ class Database:
             return dict(row) if row else None
 
     async def update_premium_group(self, group_id: int, name: str = None, role_id: int = None,
-                                    fee_ghs: float = None, active: bool = None) -> None:
+                                    fee_ghs: float = None, active: bool = None, channel_id: int = None) -> None:
         """Partial update — pass only the fields you want to change.
         Existing values are preserved via COALESCE, except `active`, which
         needs its own branch since COALESCE(NULL-meaning-"leave alone",
@@ -6205,10 +6314,11 @@ class Database:
                     name = COALESCE($2, name),
                     role_id = COALESCE($3, role_id),
                     fee_ghs = COALESCE($4, fee_ghs),
-                    active = CASE WHEN $5::boolean IS NULL THEN active ELSE $5 END
+                    active = CASE WHEN $5::boolean IS NULL THEN active ELSE $5 END,
+                    channel_id = COALESCE($6, channel_id)
                 WHERE group_id = $1
                 """,
-                group_id, name, role_id, fee_ghs, active
+                group_id, name, role_id, fee_ghs, active, channel_id
             )
 
     # ─────────────────────────────────────────────────────────────────────
@@ -9030,6 +9140,26 @@ class Database:
                 key, value,
             )
 
+    async def get_payment_mode(self, clone_id: Optional[int] = None) -> str:
+        """'auto' (Paystack/Stripe gateway checkout) or 'manual' (Selar
+        link + admin-approved 'I've Paid'). Defaults to config.PAYMENT_MODE
+        (the env var, same as before this override existed) — this only
+        returns something different once /paymentmode has actually been
+        run. Scoped per clone_id (NULL = main bot) via bot_global_settings'
+        key/value store, same as image_host_channel_id above, so a clone
+        can run in a different mode than the main bot or another clone
+        without needing its own env var."""
+        from config import PAYMENT_MODE as _default_mode
+        key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
+        value = await self.get_global_setting(key)
+        return value if value in ("auto", "manual") else _default_mode
+
+    async def set_payment_mode(self, mode: str, clone_id: Optional[int] = None) -> None:
+        if mode not in ("auto", "manual"):
+            raise ValueError(f"mode must be 'auto' or 'manual', got {mode!r}")
+        key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
+        await self.set_global_setting(key, mode)
+
     async def get_welcome_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -9060,6 +9190,8 @@ class Database:
                 "ultra_pack_unlocked": False, "custom_background_url": None,
                 "custom_bg_channel_id": None, "custom_bg_message_id": None,
                 "onboarding_dm_sent": False,
+                "card_pack_trial_started_at": None, "card_pack_trial_used": False,
+                "card_pack_trial_admin_id": None,
             }
 
     async def set_welcome_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
@@ -9138,6 +9270,60 @@ class Database:
             await conn.execute(
                 "UPDATE discord_welcome_config SET card_pack_unlocked = TRUE, updated_at = NOW() "
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+
+    async def start_welcome_card_trial(self, guild_id: int, admin_id: int, clone_id: Optional[int] = None) -> None:
+        """Starts this guild's one-and-only 3-day free trial of the
+        premium card pack. Caller (welcome.py's `theme` command) must
+        already have checked card_pack_trial_used is False — this doesn't
+        re-check, so it's also reusable to simply record who started it if
+        ever called again (it won't be, in practice)."""
+        await self.set_welcome_config(guild_id, clone_id)  # ensure a row exists
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_welcome_config SET card_pack_trial_started_at = NOW(), "
+                "card_pack_trial_used = TRUE, card_pack_trial_admin_id = $3, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id, admin_id,
+            )
+
+    async def get_due_card_trial_expirations(self, clone_id: Optional[int], hours: int = 72) -> List[Dict]:
+        """Guilds whose premium-theme trial has run its `hours` and hasn't
+        been converted to a real purchase — used by WelcomeCog's
+        _expire_card_trials daily loop to auto-revert them to the free
+        'wolf' theme. Only matches guilds still actually ON a premium
+        theme and still NOT card_pack_unlocked — a guild that already
+        bought the pack, or manually switched back to wolf itself, has
+        nothing to revert even if trial_started_at is still set."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT guild_id, clone_id, card_theme, card_pack_trial_admin_id
+                FROM discord_welcome_config
+                WHERE card_pack_trial_started_at IS NOT NULL
+                AND NOW() - card_pack_trial_started_at >= ($3 || ' hours')::INTERVAL
+                AND card_pack_unlocked = FALSE
+                AND card_theme <> 'wolf'
+                AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                LIMIT $2
+                """,
+                clone_id, 50, str(hours),
+            )
+            return [dict(r) for r in rows]
+
+    async def clear_expired_card_trial(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        """Reverts guild_id back to the free 'wolf' theme and clears
+        trial_started_at (so it's never matched by get_due_card_trial_
+        expirations again — card_pack_trial_used staying TRUE is what
+        actually blocks a second trial, not this column)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_welcome_config SET card_theme = 'wolf', card_pack_trial_started_at = NULL, "
+                "updated_at = NOW() WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id,
             )
 

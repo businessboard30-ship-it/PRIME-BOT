@@ -72,15 +72,15 @@ async def start_card_pack_payment(interaction: discord.Interaction):
         )
         return
 
-    from config import PAYMENT_MODE
-    if PAYMENT_MODE == "manual":
+    mode = await db.get_payment_mode(_clone_id_of(interaction))
+    if mode == "manual":
         from payments_manual import start_manual_payment
         await start_manual_payment(
             interaction, "welcome_card_pack", f"${WELCOME_CARD_PACK_FEE_USD:g} USD", guild_id=guild_id
         )
         return
     logger.warning(
-        f"[card-pack] PAYMENT_MODE={PAYMENT_MODE!r} (not 'manual') — "
+        f"[card-pack] payment mode={mode!r} (not 'manual') — "
         f"routing user {user.id} guild {guild_id} through the auto gateway instead of Selar."
     )
 
@@ -177,15 +177,15 @@ async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: i
         )
         return
 
-    from config import PAYMENT_MODE
-    if PAYMENT_MODE == "manual":
+    mode = await db.get_payment_mode(_clone_id_of(interaction))
+    if mode == "manual":
         from payments_manual import start_manual_payment
         await start_manual_payment(
             interaction, "ultra_welcome_pack", f"${ULTRA_PACK_FEE_USD:g} USD", guild_id=guild_id
         )
         return
     logger.warning(
-        f"[ultra-pack] PAYMENT_MODE={PAYMENT_MODE!r} (not 'manual') — "
+        f"[ultra-pack] payment mode={mode!r} (not 'manual') — "
         f"routing user {user.id} guild {guild_id} through the auto gateway instead of Selar."
     )
 

@@ -30,7 +30,10 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 
 from database import db
 from modules import leveling
-from modules.level_card import render_level_card, render_level_card_evolved
+from modules.level_card import (
+    render_level_card, render_level_card_evolved,
+    render_level_card_tiered, get_tier_image_for_level,
+)
 from discord_bot.cogs._views_shared import ActionButton, NavCardView
 from discord_bot.cogs._views_leveling_leaderboard import build_leaderboard_view
 from config import DISCORD_CLONE_ADMIN_IDS
@@ -104,7 +107,8 @@ class LevelingCog(GuildOnlyCog):
         # holds across every process, not just this one. See add_xp's
         # docstring for why an in-memory dict caused double level-up
         # messages whenever two bot processes briefly overlapped.
-        self._leaderboard_autopost_loop.start()
+        if not self._leaderboard_autopost_loop.is_running():
+            self._leaderboard_autopost_loop.start()
 
     def cog_unload(self):
         self._leaderboard_autopost_loop.cancel()
@@ -283,7 +287,16 @@ class LevelingCog(GuildOnlyCog):
             # build-prompt.md §1). This only decides which image renderer
             # runs; card_style ("card"/"text"/"off") semantics above are
             # untouched.
-            if new_level >= 10:
+            tier_image = get_tier_image_for_level(new_level)
+            if tier_image is not None:
+                tier_filename, tier_label = tier_image
+                card_bytes = await asyncio.to_thread(
+                    render_level_card_tiered,
+                    avatar_bytes, member.display_name, new_level,
+                    p["current_xp_in_level"], p["xp_needed_for_next_level"],
+                    tier_filename, tier_label,
+                )
+            elif new_level >= 10:
                 progress_fraction = min(1.0, (new_level - 10) / 10)
                 card_bytes = await asyncio.to_thread(
                     render_level_card_evolved,
@@ -357,13 +370,28 @@ class LevelingCog(GuildOnlyCog):
         autoposts — never a per-guild query in a loop), so this stays cheap
         even with many guilds configured. A 30-min check interval against a
         24h post interval means posts land within ~30 min of "once a day",
-        which is close enough — it doesn't need to be exact to the minute."""
-        clone_id = getattr(self.bot, "clone_id", None)
+        which is close enough — it doesn't need to be exact to the minute.
+
+        This stays a live in-process loop rather than an external cron
+        endpoint (like api/cron_expire_monetization.py) because posting
+        needs build_leaderboard_view's Components-v2 view, which needs a
+        connected discord.py Client with a populated member/guild cache —
+        that only exists inside the running bot process, not a stateless
+        serverless function."""
         try:
-            due = await db.get_due_leaderboard_autoposts(clone_id, limit=10)
+            await self._run_due_leaderboard_autoposts()
         except Exception as e:
-            logger.error(f"[v0] Failed to fetch due leaderboard autoposts: {e}")
-            return
+            # Anything escaping here would otherwise hit tasks.loop's
+            # default error handling, which just logs once and lets the
+            # loop DIE PERMANENTLY — no auto-retry, no restart, and nothing
+            # visibly wrong until someone asks "why has this never posted".
+            # See the .error handler below for what actually restarts it.
+            logger.error(f"[v0] _leaderboard_autopost_loop iteration failed: {e}")
+            raise
+
+    async def _run_due_leaderboard_autoposts(self):
+        clone_id = getattr(self.bot, "clone_id", None)
+        due = await db.get_due_leaderboard_autoposts(clone_id, limit=10)
         for cfg in due:
             guild = self.bot.get_guild(cfg["guild_id"])
             if guild is None:
@@ -385,6 +413,20 @@ class LevelingCog(GuildOnlyCog):
                 # 30 minutes forever — same reasoning as autopost's
                 # failure-count pattern, just simplified to "try once a day".
                 await db.mark_leaderboard_posted(cfg["guild_id"], cfg["clone_id"])
+
+    @_leaderboard_autopost_loop.error
+    async def _leaderboard_autopost_loop_error(self, error: Exception):
+        """discord.ext.tasks silently stops a loop forever the first time
+        an iteration raises — no built-in retry. That's almost certainly
+        why this has never visibly autoposted: one transient failure
+        (a DB hiccup, a bad channel lookup, anything) and it went quiet
+        with nothing louder than a log line buried in startup noise.
+        Log it loudly and restart the loop so a one-off failure costs at
+        most one missed cycle instead of the feature dying silently for
+        the rest of the process's life."""
+        logger.error(f"[v0] _leaderboard_autopost_loop crashed, restarting it: {error}")
+        if not self._leaderboard_autopost_loop.is_running():
+            self._leaderboard_autopost_loop.start()
 
     @_leaderboard_autopost_loop.before_loop
     async def _before_leaderboard_autopost_loop(self):

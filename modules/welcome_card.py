@@ -74,6 +74,8 @@ THEME_BACKGROUNDS: dict[str, str] = {
     "reaper": os.path.join(_MODULE_DIR, "..", "assets", "images", "welcome_bg_reaper.png"),
     "shadow": os.path.join(_MODULE_DIR, "..", "assets", "images", "welcome_bg_shadow.png"),
     "sorcerer": os.path.join(_MODULE_DIR, "..", "assets", "images", "welcome_bg_sorcerer.png"),
+    "spider": os.path.join(_MODULE_DIR, "..", "welcome_bg_spider.png"),
+    "spider_pro": os.path.join(_MODULE_DIR, "..", "welcome_bg_spider_pro.png"),
 }
 # Themes that require the card pack purchase — everything except the
 # original free 'wolf' template.
@@ -82,8 +84,20 @@ PREMIUM_THEMES: frozenset[str] = frozenset(k for k in THEME_BACKGROUNDS if k != 
 TEMPLATE_WIDTH = 1536
 TEMPLATE_HEIGHT = 1024
 
-# Circular avatar slot (top-left "member card" box in the artwork).
+# Circular avatar slot (top-left "member card" box in the artwork) —
+# per-theme since spider's hand-drawn ring sits at a different size/spot
+# than the shared box the original 3 themes happen to share. Falls back to
+# TEMPLATE_AVATAR_BOX (the historical single constant) for any theme not
+# listed here, so wolf/reaper/shadow/sorcerer's behavior is unchanged.
 TEMPLATE_AVATAR_BOX = (100, 398, 248, 546)
+THEME_AVATAR_BOX = {
+    "wolf": TEMPLATE_AVATAR_BOX,
+    "reaper": TEMPLATE_AVATAR_BOX,
+    "shadow": TEMPLATE_AVATAR_BOX,
+    "sorcerer": TEMPLATE_AVATAR_BOX,
+    "spider": (85, 399, 268, 581),
+    "spider_pro": (713, 431, 954, 671),
+}
 
 # Text block cleared and redrawn each render: "MEMBER #N" + display name.
 # Per-theme override since the baked-in text sits a bit higher on the 3
@@ -94,9 +108,26 @@ THEME_MEMBER_TEXT_BOX = {
     "reaper": (270, 408, 690, 545),
     "shadow": (270, 408, 690, 545),
     "sorcerer": (270, 408, 690, 545),
+    "spider": (301, 414, 782, 544),
+    # No left avatar cutout in this panel — the avatar sits out in the
+    # artwork instead (see THEME_AVATAR_BOX["spider_pro"]) — so the text
+    # gets the box's full width rather than starting after a circle.
+    "spider_pro": (90, 414, 695, 544),
 }
 TEMPLATE_MEMBER_TEXT_BOX = THEME_MEMBER_TEXT_BOX["wolf"]
 TEMPLATE_MEMBER_TEXT_BG = (5, 5, 5)  # sampled from the artwork's near-black panel
+
+# Optional second line of static flavor text under the member-info box —
+# only "spider" has room for it (its clean template left that whole lower
+# panel blank; the other 3 themes either have no equivalent space or
+# already bake their own text in). Same two lines every render — not
+# per-member, not per-guild, just a fixed friendly line like the original
+# mockup had baked in.
+THEME_GREETING_BOX = {
+    "spider": (100, 592, 762, 729),
+    "spider_pro": (90, 564, 695, 769),
+}
+TEMPLATE_GREETING_LINES = ("Glad to have you here!", "We hope you have an amazing time with us.")
 
 # Header label ("BOT ARCHIVES") and the "TO <server>!" subtitle line under
 # the WELCOME wordmark — both optional: only redrawn when guild_name is
@@ -111,16 +142,30 @@ THEME_HEADER_LABEL_BOX = {
     "reaper": (85, 68, 420, 110),
     "shadow": (75, 50, 420, 95),
     "sorcerer": (75, 70, 420, 115),
+    "spider": (65, 55, 411, 95),
+    "spider_pro": (65, 55, 411, 95),
 }
 THEME_SUBTITLE_BOX = {
     "wolf": (170, 325, 900, 368),
     "reaper": (150, 295, 900, 345),
     "shadow": (120, 290, 900, 345),
     "sorcerer": (80, 280, 900, 340),
+    "spider": (100, 309, 701, 349),
+    "spider_pro": (100, 309, 701, 349),
 }
 TEMPLATE_HEADER_LABEL_BOX = THEME_HEADER_LABEL_BOX["wolf"]
 TEMPLATE_SUBTITLE_BOX = THEME_SUBTITLE_BOX["wolf"]
 TEMPLATE_TEXT_BG = (5, 5, 5)
+
+# "WELCOME" wordmark box — optional, per-theme. wolf/reaper/shadow/
+# sorcerer all have this baked permanently into their artwork (it doesn't
+# vary per-server, so there was never a reason to draw it in code). The
+# spider artworks' clean templates both have that whole area intentionally
+# left blank, so those are the ones that need it actually drawn here.
+THEME_TITLE_BOX = {
+    "spider": (65, 110, 902, 289),
+    "spider_pro": (65, 110, 902, 289),
+}
 
 # Sticker box: mirrors the avatar on the opposite side of the card (the
 # empty space to the right of the name/subtitle text).
@@ -322,7 +367,7 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
         logger.warning(f"[v0] Couldn't decode avatar image, using a blank frame instead: {e}")
         avatar = Image.new("RGBA", (200, 200), (88, 101, 242, 255))
 
-    ax0, ay0, ax1, ay1 = TEMPLATE_AVATAR_BOX
+    ax0, ay0, ax1, ay1 = THEME_AVATAR_BOX.get(theme, TEMPLATE_AVATAR_BOX)
     avatar_size = (ax1 - ax0, ay1 - ay0)
     avatar = avatar.resize(avatar_size)
     mask = Image.new("L", avatar_size, 0)
@@ -341,6 +386,26 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     # spill out of the clear-box and over the character artwork.
     username_font, username_text = _fit_text_to_box(draw, username, member_box_width, max_font_size=56, min_font_size=22)
     draw.text((mx + 10, my + 45), username_text, font=username_font, fill=(255, 255, 255))
+
+    # Static two-line greeting under the member box, themes that have room
+    # for it (see THEME_GREETING_BOX above).
+    greeting_box = THEME_GREETING_BOX.get(theme)
+    if greeting_box:
+        gx0, gy0, gx1, gy1 = greeting_box
+        greeting_width = gx1 - gx0
+        line1_font, line1_text = _fit_text_to_box(draw, TEMPLATE_GREETING_LINES[0], greeting_width, max_font_size=32, min_font_size=18)
+        draw.text((gx0, gy0), line1_text, font=line1_font, fill=(120, 190, 255))
+        line2_font, line2_text = _fit_text_to_box(draw, TEMPLATE_GREETING_LINES[1], greeting_width, max_font_size=26, min_font_size=14)
+        draw.text((gx0, gy0 + line1_font.size + 14), line2_text, font=line2_font, fill=(190, 195, 205))
+
+    # "WELCOME" wordmark — only for themes listed in THEME_TITLE_BOX (see
+    # its definition above); other themes have this baked into their own
+    # artwork already and are left untouched.
+    title_box = THEME_TITLE_BOX.get(theme)
+    if title_box:
+        tx0, ty0, tx1, ty1 = title_box
+        title_font, title_text = _fit_text_to_box(draw, "WELCOME", tx1 - tx0, max_font_size=150, min_font_size=60)
+        draw.text((tx0, ty0), title_text, font=title_font, fill=(225, 240, 255))
 
     # Server name, if the caller wants it swapped in (otherwise the
     # artwork's own baked-in header/subtitle text is left alone).

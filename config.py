@@ -522,6 +522,7 @@ NEXT_PUBLIC_SUPPORT_SERVER_INVITE = os.getenv("NEXT_PUBLIC_SUPPORT_SERVER_INVITE
 # admin runs /activate-pro after confirming the payment.
 # Hardcoded (were env vars) — static pricing/display text and tuning constants.
 MUSIC_PRO_PRICE_LABEL = "$4.99"
+MUSIC_PRO_FEE_USD = 4.99
 MUSIC_PRO_PAYMENT_URL = "https://selar.com/61l8115885"
 MUSIC_FREE_DAILY_LISTENS = 10
 MUSIC_FREE_DAILY_UPLOADS = 3

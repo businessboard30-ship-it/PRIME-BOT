@@ -674,3 +674,163 @@ def render_leaderboard_card(entries: list, guild_name: str = "",
     bg.save(out, format="PNG")
     out.seek(0)
     return out.read()
+
+
+# ---------------------------------------------------------------------------
+# Image-tier level-up cards (level 21+) — hand-drawn artwork banners rather
+# than the procedurally-drawn evolved card above. Each tier is a pre-made
+# PNG (assets/images/level_tiers/tierNN_name.png) that already contains the
+# full illustration (wings/fire/etc.) PLUS a fully transparent circular
+# "hole" punched into it — we paste the member's avatar underneath that
+# hole, then composite the artwork on top, so the avatar shows through the
+# ring exactly where the artist placed it. No procedural glow/particle
+# generation is needed for these — the art supplies all of that.
+#
+# Tier -> level range mapping is a placeholder assumption (5 levels per
+# tier, starting where the procedural "evolved" card tops out at level 20):
+#   tier05 21-25   tier06 26-30   tier07 31-35   tier08 36-40   tier09 41-45
+#   tier10 46-50   tier11 51-55   tier12 56-60   tier13 61-65   tier14 66+
+# There's no tier01-04 image (those levels, 10-20, keep using the
+# procedural render_level_card_evolved() above) — adjust _TIER_IMAGE_LEVELS
+# freely if the intended level thresholds differ.
+# ---------------------------------------------------------------------------
+
+_TIER_IMAGE_DIR = os.path.join(os.path.dirname(__file__), "..")  # repo root — tier PNGs live next to bot.py
+
+# (min_level, filename, display label). Sorted ascending; a level maps to
+# the last entry whose min_level it meets or exceeds.
+_TIER_IMAGE_LEVELS = [
+    (21, "tier05_transcendent.png", "TRANSCENDENT"),
+    (26, "tier06_celestial.png", "CELESTIAL"),
+    (31, "tier07_divine_spark.png", "DIVINE SPARK"),
+    (36, "tier08_hallowed.png", "HALLOWED"),
+    (41, "tier09_ethereal.png", "ETHEREAL"),
+    (46, "tier10_astral.png", "ASTRAL"),
+    (51, "tier11_overlord.png", "OVERLORD"),
+    (56, "tier12_mythic.png", "MYTHIC"),
+    (61, "tier13_primordial.png", "PRIMORDIAL"),
+    (66, "tier14_godlike.png", "GODLIKE"),
+]
+
+# Each artwork's transparent avatar-hole, hand-measured (center x/y, radius)
+# in the ORIGINAL png's own pixel space (before any scaling). Two families
+# share near-identical geometry (w~1002 vs w~1004 originals) but heights
+# differ per tier, so each is listed explicitly rather than assumed shared.
+_TIER_IMAGE_HOLES = {
+    "tier05_transcendent.png": (221, 94, 42),
+    "tier06_celestial.png": (198, 95, 42),
+    "tier07_divine_spark.png": (220, 87, 42),
+    "tier08_hallowed.png": (198, 88, 42),
+    "tier09_ethereal.png": (220, 88, 42),
+    "tier10_astral.png": (198, 90, 42),
+    "tier11_overlord.png": (218, 69, 42),
+    "tier12_mythic.png": (196, 69, 40),
+    "tier13_primordial.png": (218, 72, 42),
+    "tier14_godlike.png": (197, 72, 41),
+}
+
+
+def get_tier_image_for_level(new_level: int):
+    """Returns (filename, label) for the highest tier whose min_level is
+    <= new_level, or None if new_level is below the first image tier
+    (caller should fall back to render_level_card_evolved in that case)."""
+    match = None
+    for min_level, filename, label in _TIER_IMAGE_LEVELS:
+        if new_level >= min_level:
+            match = (filename, label)
+        else:
+            break
+    return match
+
+
+@lru_cache(maxsize=None)
+def _load_tier_artwork(filename: str):
+    """Loads+decodes a tier PNG once and caches it — these are only ever
+    read from disk (bundled assets, not user-controlled), so caching the
+    decoded Image is safe and avoids re-reading/re-decoding a ~400KB file
+    on every single level-up in a busy server."""
+    path = os.path.join(_TIER_IMAGE_DIR, filename)
+    return Image.open(path).convert("RGBA")
+
+
+def render_level_card_tiered(avatar_bytes: bytes, username: str, new_level: int,
+                              current_xp_in_level: int, xp_needed_for_next_level: int,
+                              tier_filename: str, tier_label: str,
+                              accent_color: str = "#FFC85A") -> bytes:
+    """Renders a level-up card using one of the illustrated tier banners
+    instead of the procedural glow/particle card. Layout: artwork is
+    scaled to CARD_HEIGHT then left-cropped to CARD_WIDTH (the avatar hole
+    sits in the artwork's left ~25%, so this keeps it on-canvas across
+    every tier); the member's avatar is composited into that hole; name /
+    level / XP bar are drawn in the darker area to the hole's right, same
+    as render_level_card_evolved's right-hand badge column."""
+    art = _load_tier_artwork(tier_filename)
+    orig_w, orig_h = art.size
+    scale = CARD_HEIGHT / orig_h
+    scaled_w = max(CARD_WIDTH, round(orig_w * scale))
+    art_scaled = art.resize((scaled_w, CARD_HEIGHT), Image.LANCZOS)
+    canvas = art_scaled.crop((0, 0, CARD_WIDTH, CARD_HEIGHT))  # left-anchored crop keeps the hole on-canvas
+
+    hole_cx, hole_cy, hole_r = _TIER_IMAGE_HOLES.get(tier_filename, (orig_w * 0.22, orig_h * 0.5, orig_h * 0.24))
+    cx, cy, r = hole_cx * scale, hole_cy * scale, hole_r * scale
+
+    # Avatar layer: same size as the canvas, avatar circle centered under
+    # the hole, drawn BELOW the artwork so it only shows through the hole.
+    avatar_layer = Image.new("RGBA", (CARD_WIDTH, CARD_HEIGHT), (0, 0, 0, 0))
+    try:
+        avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
+    except Exception as e:
+        logger.warning(f"[v0] Couldn't decode avatar image for tiered card, using a blank circle instead: {e}")
+        avatar = Image.new("RGBA", (256, 256), _hex_to_rgb(accent_color) + (255,))
+    diameter = int(r * 2)
+    avatar = avatar.resize((diameter, diameter), Image.LANCZOS)
+    mask = Image.new("L", (diameter, diameter), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, diameter, diameter), fill=255)
+    avatar_layer.paste(avatar, (int(cx - r), int(cy - r)), mask)
+
+    bg = Image.alpha_composite(avatar_layer, canvas)
+    draw = ImageDraw.Draw(bg)
+    accent_rgb = _hex_to_rgb(accent_color)
+
+    text_x = int(cx + r + 60)
+
+    def _shadow_text(xy, text, font, fill):
+        x, y = xy
+        draw.text((x + 2, y + 2), text, font=font, fill=(0, 0, 0, 190))
+        draw.text(xy, text, font=font, fill=fill)
+
+    _shadow_text((text_x, 28), tier_label, _load_font(24), accent_rgb)
+    draw.text((text_x + 2, 64), username, font=_load_font(36), fill=(0, 0, 0, 190))
+    draw_text_fallback(draw, (text_x, 62), username, 36, (255, 255, 255))
+    _shadow_text((text_x, 114), f"Level {new_level}", _load_font(28), (255, 255, 255))
+
+    bar_x, bar_y = text_x, 172
+    bar_w, bar_h = CARD_WIDTH - text_x - 30, 22
+    draw.rounded_rectangle(
+        (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h), radius=bar_h // 2, fill=(0, 0, 0, 170),
+    )
+    if xp_needed_for_next_level > 0:
+        fraction = max(0.0, min(1.0, current_xp_in_level / xp_needed_for_next_level))
+    else:
+        fraction = 1.0
+    fill_w = max(bar_h, int(bar_w * fraction)) if fraction > 0 else 0
+    if fill_w > 0:
+        draw.rounded_rectangle(
+            (bar_x, bar_y, bar_x + fill_w, bar_y + bar_h), radius=bar_h // 2, fill=accent_rgb,
+        )
+    _shadow_text((bar_x, bar_y + bar_h + 12), f"{current_xp_in_level}/{xp_needed_for_next_level} XP",
+                 _load_font(16), (230, 230, 230))
+
+    # These source PNGs carry garbage-colored RGB data underneath their
+    # near-fully-transparent edge pixels (leftover from however they were
+    # exported). A plain .convert("RGB") drops alpha and exposes that
+    # garbage at full strength as a thin noisy line around the card's
+    # border. Flatten against an opaque black backdrop first so alpha
+    # weighting genuinely suppresses it instead of just revealing it.
+    flattened = Image.new("RGBA", bg.size, (0, 0, 0, 255))
+    bg = Image.alpha_composite(flattened, bg)
+
+    out = io.BytesIO()
+    bg.convert("RGB").save(out, format="PNG")
+    out.seek(0)
+    return out.read()

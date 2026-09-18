@@ -37,9 +37,10 @@ from payments import paystack
 from config import (
     DISCORD_CLONE_ACTIVATION_FEE_USD, DISCORD_CLONE_FREE_EVERY_NTH, DISCORD_CLONE_ADMIN_IDS,
     CLONE_MONETIZATION_FEE_GHS, CLONE_MONETIZATION_FEE_USD, CLONE_MONETIZATION_DAYS, PRICE_REGISTRY,
-    DISCORD_OWNER_BROADCAST_IDS, SELAR_PRODUCT_LINKS, PAYMENT_MODE,
+    DISCORD_OWNER_BROADCAST_IDS, SELAR_PRODUCT_LINKS,
 )
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
+from discord_bot.cogs._views_pending_payments import build_pending_payments_view
 
 logger = logging.getLogger(__name__)
 
@@ -475,9 +476,10 @@ class CloneAdminCog(commands.Cog):
                 ephemeral=True,
             )
         else:
+            mode = await db.get_payment_mode(clone_id)
             await interaction.followup.send(
                 f"💰 Monetization is **not active** on clone `#{clone_id}`.\n\n"
-                f"Activating ({'$' + str(CLONE_MONETIZATION_FEE_USD) if PAYMENT_MODE == 'manual' else f'GHS {CLONE_MONETIZATION_FEE_GHS}/month'}) unlocks:\n"
+                f"Activating ({'$' + str(CLONE_MONETIZATION_FEE_USD) if mode == 'manual' else f'GHS {CLONE_MONETIZATION_FEE_GHS}/month'}) unlocks:\n"
                 f"• Connecting your own Stripe key, or a plain payment link, so purchases pay you directly\n"
                 f"• Setting your own prices for this bot's paid features\n\n"
                 f"Until activated, this clone's payments go through the main bot's account at default prices — "
@@ -537,8 +539,8 @@ class CloneAdminCog(commands.Cog):
         if await self._owned_clone_or_deny(interaction, clone_id) is None:
             return
 
-        from config import PAYMENT_MODE
-        if PAYMENT_MODE == "manual":
+        mode = await db.get_payment_mode(clone_id)
+        if mode == "manual":
             from payments_manual import _reference_for, _prefilled_selar_link
             reference = _reference_for("discord_clone_monetization", interaction.user.id)
             await db.start_discord_monetization_payment(clone_id, interaction.user.id, reference)
@@ -836,6 +838,23 @@ class CloneAdminCog(commands.Cog):
             f"❌ {result.message}" if result.ok else result.message, ephemeral=True
         )
 
+    # ── /pendingpayments — browse the whole manual-review queue ──────────
+    # Companion to /approvepayment and /rejectpayment above: those need a
+    # reference already in hand (from the buyer, or from a DM card that
+    # might have scrolled away); this browses every payment_logs row
+    # currently `awaiting_review`, globally, without needing one. Same
+    # authorization scope as the two commands above — see
+    # _views_pending_payments.py's module docstring for how a clone
+    # owner's view is filtered down to only their own clone's rows.
+    @app_commands.command(name="pendingpayments", description="[Admin] List all payments awaiting review")
+    async def pendingpayments(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        view = await build_pending_payments_view(interaction.client, interaction.user.id, page=0)
+        if view is None:
+            await interaction.followup.send("No pending payments awaiting your review.", ephemeral=True)
+            return
+        await interaction.followup.send(view=view, ephemeral=True)
+
     # ── /ownermonetize — one-shot owner shortcut ─────────────────────────
     # Suggested as "/admin monetize <clone_id>" but the existing top-level
     # "admin" group lives in discord_bot/cogs/admin.py (a separate cog) and
@@ -857,6 +876,41 @@ class CloneAdminCog(commands.Cog):
         await interaction.followup.send(
             f"✅ Force-activated monetization on clone `#{clone_id}` (**{clone['bot_username']}**) for "
             f"{CLONE_MONETIZATION_DAYS} days — no payment taken.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="paymentmode", description="[Owner] Switch every paid feature between automatic checkout and manual Selar links")
+    @app_commands.describe(
+        mode="'auto' = Paystack/Stripe checkout in Discord. 'manual' = Selar link + admin-approved 'I've Paid'.",
+        clone_id="Restrict the switch to one clone (see /myclones) — omit to change the main bot",
+    )
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Auto — Paystack/Stripe checkout", value="auto"),
+        app_commands.Choice(name="Manual — Selar link + admin approval", value="manual"),
+    ])
+    async def paymentmode(self, interaction: discord.Interaction, mode: app_commands.Choice[str], clone_id: int = None):
+        """Flips db.get_payment_mode's override for every dual-mode paid
+        feature in the bot (welcome card pack, ultra pack, clone
+        monetization, custom role, XP wallet/server boosts, music pro) —
+        each of those reads db.get_payment_mode(clone_id) fresh on every
+        purchase attempt rather than caching it, so this takes effect
+        immediately, no restart needed. Owner-only: this isn't a per-guild
+        setting an individual server admin should be able to flip — it
+        changes how EVERY guild on this bot (or one whole clone) pays."""
+        await interaction.response.defer(ephemeral=True)
+        if not _is_clone_admin(interaction.user.id):
+            await interaction.followup.send("This command is restricted to bot owners.", ephemeral=True)
+            return
+        if clone_id is not None:
+            clone = await db.get_discord_clone(clone_id)
+            if not clone:
+                await interaction.followup.send(f"No clone found with id `#{clone_id}`.", ephemeral=True)
+                return
+        await db.set_payment_mode(mode.value, clone_id=clone_id)
+        scope = f"clone `#{clone_id}`" if clone_id is not None else "the main bot"
+        await interaction.followup.send(
+            f"✅ Payment mode for {scope} is now **{mode.name}**. Takes effect immediately — "
+            f"every purchase attempt reads this fresh, no restart needed.",
             ephemeral=True,
         )
 

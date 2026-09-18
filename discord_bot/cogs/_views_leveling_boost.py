@@ -22,7 +22,6 @@ import re
 import discord
 
 import config as app_config
-from payments_manual import start_manual_payment
 
 
 class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^levelboost_xp:(\d+):(-?\d+|-)$"):
@@ -50,9 +49,12 @@ class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^level
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await start_manual_payment(
-            interaction, "xp_boost", f"${app_config.XP_BOOST_FEE_USD:g}",
-            guild_id=self.guild_id,
+        from payments_manual import start_dual_mode_payment
+        await start_dual_mode_payment(
+            interaction, payment_type="xp_boost", price_usd=float(app_config.XP_BOOST_FEE_USD),
+            product_title="⚡ XP Boost",
+            product_description=f"{app_config.XP_BOOST_MULTIPLIER:g}x XP for you, for {app_config.XP_BOOST_DURATION_DAYS} days.",
+            amount_display_manual=f"${app_config.XP_BOOST_FEE_USD:g}", guild_id=self.guild_id,
         )
 
 
