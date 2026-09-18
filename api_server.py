@@ -68,19 +68,64 @@ _shared_loop_thread.start()
 
 
 _ROOT_PAGE_HTML = b"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Prime Bot</title>
-<style>body{font-family:sans-serif;max-width:640px;margin:3rem auto;
-padding:0 1.5rem;line-height:1.6;color:#1a1a1a}
-a{color:#5865F2}nav a{margin-right:1.25rem}</style></head><body>
+<style>
+:root{--bg:#0b0d14;--bg2:#12162080;--accent:#5865F2;--accent2:#7289DA;
+--text:#e8e9ee;--muted:#9aa0ae}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+background:radial-gradient(1200px 600px at 50% -10%,#1b2140 0%,var(--bg) 60%);
+color:var(--text);min-height:100vh}
+.wrap{max-width:760px;margin:0 auto;padding:5rem 1.5rem 4rem;text-align:center}
+.badge{display:inline-block;font-size:.8rem;letter-spacing:.08em;
+color:var(--accent2);border:1px solid #2a2f45;background:var(--bg2);
+padding:.35rem .9rem;border-radius:999px;margin-bottom:1.5rem;
+animation:fadeUp .6s ease both}
+h1{font-size:clamp(2.2rem,6vw,3.4rem);margin:0 0 .75rem;
+background:linear-gradient(135deg,#fff,var(--accent2) 70%);
+-webkit-background-clip:text;background-clip:text;color:transparent;
+animation:fadeUp .6s ease both .08s}
+p.lead{color:var(--muted);font-size:1.1rem;max-width:520px;margin:0 auto 2.5rem;
+animation:fadeUp .6s ease both .16s}
+.pills{display:flex;flex-wrap:wrap;gap:.6rem;justify-content:center;margin-bottom:3rem;
+animation:fadeUp .6s ease both .24s}
+.pill{font-size:.85rem;color:var(--muted);border:1px solid #262c42;
+background:#131728;padding:.4rem .85rem;border-radius:999px}
+nav{display:flex;flex-wrap:wrap;gap:.75rem;justify-content:center;
+animation:fadeUp .6s ease both .32s}
+nav a{color:var(--text);text-decoration:none;font-weight:600;font-size:.95rem;
+padding:.7rem 1.4rem;border-radius:10px;border:1px solid #2a2f45;
+background:linear-gradient(180deg,#171b2c,#12152224);transition:transform .15s ease,border-color .15s ease}
+nav a:hover{transform:translateY(-2px);border-color:var(--accent)}
+nav a.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));
+border-color:transparent}
+.glow{position:fixed;inset:0;pointer-events:none;
+background:radial-gradient(500px 300px at 20% 20%,#5865F220,transparent 60%),
+radial-gradient(500px 300px at 80% 0%,#7289DA1a,transparent 60%);
+animation:drift 10s ease-in-out infinite alternate}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes drift{from{transform:translate(0,0)}to{transform:translate(20px,30px)}}
+</style></head><body>
+<div class="glow"></div>
+<div class="wrap">
+<span class="badge">DISCORD BOT</span>
 <h1>Prime Bot</h1>
-<p>Moderation, leveling, economy, welcome cards, tickets, giveaways, AI
-chat, music, and more for your Discord server.</p>
+<p class="lead">Moderation, leveling, economy, welcome cards, tickets,
+giveaways, AI chat, and music &mdash; one bot for your whole server.</p>
+<div class="pills">
+<span class="pill">Automod</span><span class="pill">Leveling &amp; XP</span>
+<span class="pill">Economy</span><span class="pill">Welcome cards</span>
+<span class="pill">Tickets</span><span class="pill">Giveaways</span>
+<span class="pill">AI chat</span><span class="pill">Music</span>
+</div>
 <nav>
-<a href="/pricing">Pricing</a>
+<a class="primary" href="/pricing">Pricing</a>
 <a href="/terms">Terms of Service</a>
 <a href="/privacy">Privacy Policy</a>
 <a href="/refund">Refund Policy</a>
 </nav>
+</div>
 </body></html>"""
 
 
