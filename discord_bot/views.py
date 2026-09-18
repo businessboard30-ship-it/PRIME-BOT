@@ -62,6 +62,33 @@ async def grant_premium_role(member: discord.Member, role_id: int, reason: str) 
         return False
 
 
+async def ensure_premium_group_channel_access(guild: discord.Guild, role_id: int, channel_id: int) -> bool:
+    """Grants the group's role an explicit view_channel + send_messages
+    ALLOW overwrite on the group's home channel — called once right when
+    the group is created (and again if /editpremium changes the channel).
+    Deliberately additive-only: this never touches @everyone or any other
+    role's permissions on the channel, so whatever access the admin has
+    already set up for other roles is left completely alone. Returns False
+    (logged, non-fatal — the group itself is still created either way) if
+    the bot lacks permission to edit that channel's overwrites."""
+    role = guild.get_role(role_id)
+    channel = guild.get_channel(channel_id)
+    if role is None or channel is None:
+        return False
+    try:
+        await channel.set_permissions(
+            role, view_channel=True, send_messages=True,
+            reason=f"Premium group home channel for role {role.name}",
+        )
+        return True
+    except discord.Forbidden:
+        logger.error(f"[discord] Missing permission to set overwrites on channel {channel_id} in guild {guild.id}")
+        return False
+    except discord.HTTPException as e:
+        logger.error(f"[discord] Failed to set overwrites on channel {channel_id} in guild {guild.id}: {e}")
+        return False
+
+
 async def _start_payment_for_group(interaction: discord.Interaction, group: dict):
     """Shared by PremiumPayView's button and the multi-group Select menu:
     kicks off a Paystack transaction for one specific premium group and
@@ -247,8 +274,9 @@ class VerifyPaymentView(discord.ui.View):
             )
             return
         ok = await grant_premium_role(member, group["role_id"], reason=f"{PAYMENT_TYPE} payment verified: {group['name']}")
+        channel_note = f" Check out <#{group['channel_id']}>!" if group.get("channel_id") else ""
         if ok:
-            await interaction.followup.send(f"✅ Payment confirmed — **{group['name']}** role granted!", ephemeral=True)
+            await interaction.followup.send(f"✅ Payment confirmed — **{group['name']}** role granted!{channel_note}", ephemeral=True)
         else:
             await interaction.followup.send(
                 f"✅ Payment confirmed for **{group['name']}**, but I couldn't grant the role automatically — an admin will sort it out shortly.",
