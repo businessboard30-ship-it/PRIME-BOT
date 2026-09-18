@@ -67,6 +67,23 @@ _shared_loop_thread = threading.Thread(
 _shared_loop_thread.start()
 
 
+_ROOT_PAGE_HTML = b"""<!doctype html><html><head><meta charset="utf-8">
+<title>Prime Bot</title>
+<style>body{font-family:sans-serif;max-width:640px;margin:3rem auto;
+padding:0 1.5rem;line-height:1.6;color:#1a1a1a}
+a{color:#5865F2}nav a{margin-right:1.25rem}</style></head><body>
+<h1>Prime Bot</h1>
+<p>Moderation, leveling, economy, welcome cards, tickets, giveaways, AI
+chat, music, and more for your Discord server.</p>
+<nav>
+<a href="/pricing">Pricing</a>
+<a href="/terms">Terms of Service</a>
+<a href="/privacy">Privacy Policy</a>
+<a href="/refund">Refund Policy</a>
+</nav>
+</body></html>"""
+
+
 def _run_on_shared_loop(coro, *, debug=None):
     """Drop-in replacement for asyncio.run(), submitting to the one
     persistent loop above instead of creating/destroying a new one."""
@@ -123,10 +140,24 @@ def _get_handler_class(path):
 class Dispatcher(BaseHTTPRequestHandler):
     def _dispatch(self, method):
         path = urlparse(self.path).path
-        if path == "/" or path == "/health":
+        if path == "/health":
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"ok")
+            return
+        if path == "/":
+            # A bare "ok" here (this used to double as the health check
+            # response) is exactly what an automated site-verification
+            # scanner reads as "not a real website" — Paddle's domain
+            # review flagged this site as "offline or under construction"
+            # for that reason. Real health checks now hit /health instead
+            # (Railway's own healthcheckPath, if configured, should also
+            # point there); "/" serves an actual landing page so a human
+            # or a scanner sees a real product with real links.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(_ROOT_PAGE_HTML)
             return
         try:
             cls = _get_handler_class(path)
