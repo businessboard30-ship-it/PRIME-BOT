@@ -9140,6 +9140,26 @@ class Database:
                 key, value,
             )
 
+    async def get_payment_mode(self, clone_id: Optional[int] = None) -> str:
+        """'auto' (Paystack/Stripe gateway checkout) or 'manual' (Selar
+        link + admin-approved 'I've Paid'). Defaults to config.PAYMENT_MODE
+        (the env var, same as before this override existed) — this only
+        returns something different once /paymentmode has actually been
+        run. Scoped per clone_id (NULL = main bot) via bot_global_settings'
+        key/value store, same as image_host_channel_id above, so a clone
+        can run in a different mode than the main bot or another clone
+        without needing its own env var."""
+        from config import PAYMENT_MODE as _default_mode
+        key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
+        value = await self.get_global_setting(key)
+        return value if value in ("auto", "manual") else _default_mode
+
+    async def set_payment_mode(self, mode: str, clone_id: Optional[int] = None) -> None:
+        if mode not in ("auto", "manual"):
+            raise ValueError(f"mode must be 'auto' or 'manual', got {mode!r}")
+        key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
+        await self.set_global_setting(key, mode)
+
     async def get_welcome_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
