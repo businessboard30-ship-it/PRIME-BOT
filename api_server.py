@@ -101,6 +101,8 @@ ROUTES = {
     # `handler` convention above), so they were unreachable until now.
     "/terms": "api.legal_pages:TermsHandler",
     "/privacy": "api.legal_pages:PrivacyHandler",
+    "/pricing": "api.legal_pages:PricingHandler",
+    "/refund": "api.legal_pages:RefundHandler",
 }
 
 _handler_classes = {}

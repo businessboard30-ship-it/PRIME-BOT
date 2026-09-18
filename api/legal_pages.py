@@ -18,6 +18,17 @@ from http.server import BaseHTTPRequestHandler
 BOT_NAME = "Prime Bot"
 CONTACT_EMAIL = "maxwelldumenya5@outlook.com"
 
+# Pricing table below is generated from these — edit config.py's own
+# constants (WELCOME_CARD_PACK_FEE_USD, XP_WALLET_TIERS, etc.), not the
+# numbers here directly, so this page can't silently drift from what
+# payments_manual.py actually charges.
+from config import (
+    WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, DISCORD_CLONE_ACTIVATION_FEE_USD,
+    CLONE_MONETIZATION_FEE_USD, CUSTOM_ROLE_FEE_USD, MUSIC_PRO_PRICE_LABEL,
+    XP_BOOST_FEE_USD, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS,
+    XP_WALLET_TIERS, XP_SERVER_BOOST_TIERS,
+)
+
 _PAGE_CSS = """
 body{font-family:sans-serif;max-width:720px;margin:2rem auto;padding:0 1.5rem;
      line-height:1.6;color:#1a1a1a}
@@ -134,12 +145,94 @@ change means you accept the updated policy.</p>
 """
 
 
+PRICING_HTML = f"""
+<h1>Pricing</h1>
+<p class="updated">{BOT_NAME}</p>
+<p>{BOT_NAME} is free to add and use. Paid features are optional
+per-server or per-user unlocks — nothing here is a recurring
+subscription. All prices in USD.</p>
+
+<h2>One-time unlocks</h2>
+<ul>
+<li>Welcome Card Pack — ${WELCOME_CARD_PACK_FEE_USD:g}</li>
+<li>Ultra Welcome Pack — ${ULTRA_PACK_FEE_USD:g}</li>
+<li>Custom Role — ${CUSTOM_ROLE_FEE_USD:g}</li>
+<li>Music Pro — {MUSIC_PRO_PRICE_LABEL}</li>
+<li>Discord Clone (deploy your own instance) — ${DISCORD_CLONE_ACTIVATION_FEE_USD:g}</li>
+<li>Discord Clone Monetization (let your clone sell its own unlocks) —
+${CLONE_MONETIZATION_FEE_USD:g}</li>
+</ul>
+
+<h2>XP Boost (personal)</h2>
+<ul>
+<li>${XP_BOOST_FEE_USD:g} — {XP_BOOST_MULTIPLIER:g}x XP for {XP_BOOST_DURATION_DAYS} days,
+just for you</li>
+</ul>
+
+<h2>XP Wallet (flat top-up, giftable)</h2>
+<ul>
+{"".join(f'<li>{t["label"]} — ${t["fee_usd"]:g}</li>' for t in XP_WALLET_TIERS.values())}
+</ul>
+
+<h2>XP Server Boost (whole-server multiplier)</h2>
+<ul>
+{"".join(f'<li>{t["label"]} — ${t["fee_usd"]:g}</li>' for t in XP_SERVER_BOOST_TIERS.values())}
+</ul>
+
+<p>Exact checkout amounts may be shown in a local currency equivalent at
+payment time. See our <a href="/refund">Refund Policy</a> for how refunds
+work.</p>
+
+<h2>Contact</h2>
+<p>Questions about pricing: {CONTACT_EMAIL}, or use the bot's /feedback
+command.</p>
+"""
+
+REFUND_HTML = f"""
+<h1>Refund Policy</h1>
+<p class="updated">{BOT_NAME}</p>
+<p>All purchases are digital, one-time unlocks — see our <a
+href="/pricing">Pricing</a> page for what's available.</p>
+
+<h2>How refunds work</h2>
+<ul>
+<li>If a purchase hasn't been delivered/activated yet (e.g. still pending
+manual approval), you can request a full refund at any time before it's
+approved.</li>
+<li>If a purchase was delivered/activated but doesn't work as described
+due to a fault on our end, contact us and we'll fix it or refund it.</li>
+<li>Digital unlocks that have already been delivered and are working as
+described (e.g. a server-wide XP boost that already ran its full
+duration, or XP wallet credit that's already been spent/gifted) are
+generally not refundable, since the value has already been received —
+but reach out if something looks wrong and we'll look into it.</li>
+</ul>
+
+<h2>How to request one</h2>
+<p>Email {CONTACT_EMAIL} with your Discord user ID, the server ID (for
+server-wide purchases), and your payment reference. We aim to respond
+within a few business days.</p>
+
+<h2>Changes</h2>
+<p>This policy may be updated from time to time; continued use after a
+change means you accept the updated policy.</p>
+"""
+
+
 async def _handle_terms():
     return 200, _page("Terms of Service", TERMS_HTML)
 
 
 async def _handle_privacy():
     return 200, _page("Privacy Policy", PRIVACY_HTML)
+
+
+async def _handle_pricing():
+    return 200, _page("Pricing", PRICING_HTML)
+
+
+async def _handle_refund():
+    return 200, _page("Refund Policy", REFUND_HTML)
 
 
 class TermsHandler(BaseHTTPRequestHandler):
@@ -154,6 +247,24 @@ class TermsHandler(BaseHTTPRequestHandler):
 class PrivacyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         status, body = asyncio.run(_handle_privacy())
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class PricingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        status, body = asyncio.run(_handle_pricing())
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class RefundHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        status, body = asyncio.run(_handle_refund())
         self.send_response(status)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
