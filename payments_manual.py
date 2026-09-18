@@ -70,6 +70,7 @@ place rather than deleted; safe to remove in a follow-up.
 import logging
 import re
 import secrets
+import asyncio
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -526,3 +527,130 @@ UNLOCK_HANDLERS = {
     "xp_server_boost": _make_unlock_xp_server_boost_tier("xp_server_boost"),
     "xp_server_boost_month": _make_unlock_xp_server_boost_tier("xp_server_boost_month"),
 }
+
+
+async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_type: str,
+                                   price_usd: float, product_title: str, product_description: str,
+                                   amount_display_manual: str, guild_id: Optional[int] = None) -> None:
+    """Single entry point for a one-time paid feature that should support
+    BOTH the Selar (manual) and Paystack/Stripe (automatic) paths,
+    switched live via /paymentmode instead of a hardcoded choice — call
+    this instead of calling start_manual_payment directly, so a feature
+    never has to hand-roll the automatic-gateway half itself (that used to
+    mean copy-pasting ~40 lines per feature — see views_card_pack.py's
+    start_card_pack_payment/start_ultra_pack_payment, written before this
+    helper existed, which is why those two still have their own copies).
+
+    payment_type MUST already have an UNLOCK_HANDLERS entry above — that
+    same function fires on a successful purchase in EITHER mode: the
+    manual path's admin-approval dispatch already used it (see
+    process_manual_payment_decision below), and _GenericVerifyPaymentView
+    below reuses it for the automatic path's Verify button too, so the
+    actual unlock logic is never duplicated per mode.
+
+    Call after interaction.response.defer(ephemeral=True, thinking=True).
+    guild_id: pass the guild this purchase is FOR when it's a whole-guild
+    or per-guild-effect unlock — None for account-level purchases. Same
+    convention start_manual_payment already uses."""
+    clone_id = getattr(interaction.client, "clone_id", None)
+    mode = await db.get_payment_mode(clone_id)
+    if mode == "manual":
+        await start_manual_payment(interaction, payment_type, amount_display_manual, guild_id=guild_id)
+        return
+
+    from payments import resolve_gateway
+    import utils.currency as fx
+    user = interaction.user
+    gateway, api_key, provider = await resolve_gateway(clone_id or 0, platform="discord")
+    email = f"user_{user.id}@animebot.com"
+
+    if provider == "stripe":
+        amount_minor_units = round(price_usd * 100)
+        charge_currency = "usd"
+    else:
+        stored_currency = await db.get_user_currency(user.id)
+        target_currency = stored_currency or (fx.currency_from_locale(getattr(interaction, "locale", None)) or "USD")
+        amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, target_currency)
+
+    payment_result = await asyncio.to_thread(
+        gateway.initialize_payment,
+        email, amount_minor_units, user.id,
+        f"{payment_type}_{user.id}_{guild_id or 0}",
+        payment_type=payment_type, extra_metadata={"guild_id": guild_id, "provider": "discord"},
+        api_key=api_key, currency=charge_currency,
+    )
+    if not payment_result or payment_result.get("status") != "success":
+        logger.error(
+            f"[dual-payment:{payment_type}] gateway.initialize_payment failed for user {user.id} "
+            f"guild {guild_id} provider={provider!r} api_key_set={bool(api_key)} result={payment_result!r}"
+        )
+        await interaction.followup.send("Couldn't start a payment right now — please try again shortly.", ephemeral=True)
+        return
+
+    reference = payment_result["reference"]
+    payment_link = payment_result["authorization_url"]
+    await db.log_payment(
+        user.id, price_usd, reference, status="pending",
+        payment_type=payment_type, chat_id=guild_id, provider=provider,
+    )
+
+    charged_amount_display = (
+        f"${price_usd:g} USD" if charge_currency.upper() == "USD"
+        else f"{amount_minor_units / fx.MINOR_UNIT_MULTIPLIER.get(charge_currency, 100):.2f} {charge_currency.upper()} (≈ ${price_usd:g} USD)"
+    )
+    embed = discord.Embed(
+        title=product_title,
+        description=(
+            f"**Amount:** {charged_amount_display}\n\n{product_description}\n\n"
+            f"Tap **Pay** below, complete checkout, then come back and tap **Verify**."
+        ),
+        color=discord.Color.gold(),
+    )
+    view = _GenericVerifyPaymentView(payment_type, guild_id)
+    view.add_item(discord.ui.Button(label="💳 Pay Now", url=payment_link, style=discord.ButtonStyle.link))
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+class _GenericVerifyPaymentView(discord.ui.View):
+    """Ephemeral 'I've Paid — Verify' button for start_dual_mode_payment's
+    automatic-gateway half. Generic across every payment_type — unlike
+    views_card_pack.py's VerifyCardPackPaymentView (which hardcodes
+    db.unlock_welcome_card_pack), this always dispatches through
+    UNLOCK_HANDLERS, so adding a new dual-mode feature never means writing
+    a new Verify view too. Not persistent (no fixed custom_id), same
+    reasoning as VerifyCardPackPaymentView — only ever handed to the
+    specific buyer who just triggered this specific purchase."""
+
+    def __init__(self, payment_type: str, guild_id: Optional[int]):
+        super().__init__(timeout=600)
+        self.payment_type = payment_type
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="✅ I've Paid — Verify", style=discord.ButtonStyle.success)
+    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        user = interaction.user
+
+        pending = await db.get_latest_pending_payment(user.id, self.payment_type, self.guild_id)
+        if not pending:
+            await interaction.followup.send(
+                "I don't see a pending payment for you here — start the purchase again.", ephemeral=True,
+            )
+            return
+
+        reference = pending["paystack_reference"]
+        clone_id = getattr(interaction.client, "clone_id", None)
+        from payments import resolve_gateway_for_provider
+        gateway, api_key = await resolve_gateway_for_provider(clone_id or 0, pending.get("provider") or "paystack", platform="discord")
+        result = await asyncio.to_thread(gateway.verify_payment, reference, api_key=api_key)
+
+        if result and result.get("status") == "success":
+            await db.mark_payment_paid(reference)
+            handler = UNLOCK_HANDLERS.get(self.payment_type)
+            if handler:
+                await handler(reference, user.id, self.guild_id, clone_id)
+            await interaction.followup.send("✅ Payment confirmed and unlocked!", ephemeral=True)
+        else:
+            await interaction.followup.send(
+                "Payment not confirmed yet. If you just paid, wait a few seconds and tap Verify again.", ephemeral=True,
+            )
