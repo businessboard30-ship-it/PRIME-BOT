@@ -3921,6 +3921,17 @@ class Database:
             ON discord_premium_groups (guild_id, clone_id)
         """)
 
+        # channel_id: the group's "home" channel — the bot grants the
+        # group's role an explicit view+send overwrite on this channel the
+        # moment the group is created (see /createpremium), so the channel
+        # is actually usable by new members the instant they pay instead of
+        # relying on the admin to remember to configure permissions by hand
+        # afterward. Nullable only so pre-existing groups (created before
+        # this column existed) aren't broken — every group created going
+        # forward always has one, since /createpremium requires it.
+        await conn.execute("ALTER TABLE discord_premium_groups ADD COLUMN IF NOT EXISTS channel_id BIGINT")
+
+
         # payment_logs needs to know WHICH premium group a payment was for,
         # now that a single (user, payment_type, chat_id) triple is no
         # longer unique — a guild can have several groups sharing the same
@@ -6253,16 +6264,17 @@ class Database:
     # they want, and a member can buy any subset of them.
 
     async def create_premium_group(self, guild_id: int, name: str, role_id: int, fee_ghs: float,
-                                    created_by: int, clone_id: Optional[int] = None) -> int:
+                                    created_by: int, clone_id: Optional[int] = None,
+                                    channel_id: Optional[int] = None) -> int:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO discord_premium_groups (guild_id, clone_id, name, role_id, fee_ghs, created_by)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO discord_premium_groups (guild_id, clone_id, name, role_id, fee_ghs, created_by, channel_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 RETURNING group_id
                 """,
-                guild_id, clone_id, name, role_id, fee_ghs, created_by
+                guild_id, clone_id, name, role_id, fee_ghs, created_by, channel_id
             )
             return row["group_id"]
 
@@ -6289,7 +6301,7 @@ class Database:
             return dict(row) if row else None
 
     async def update_premium_group(self, group_id: int, name: str = None, role_id: int = None,
-                                    fee_ghs: float = None, active: bool = None) -> None:
+                                    fee_ghs: float = None, active: bool = None, channel_id: int = None) -> None:
         """Partial update — pass only the fields you want to change.
         Existing values are preserved via COALESCE, except `active`, which
         needs its own branch since COALESCE(NULL-meaning-"leave alone",
@@ -6302,10 +6314,11 @@ class Database:
                     name = COALESCE($2, name),
                     role_id = COALESCE($3, role_id),
                     fee_ghs = COALESCE($4, fee_ghs),
-                    active = CASE WHEN $5::boolean IS NULL THEN active ELSE $5 END
+                    active = CASE WHEN $5::boolean IS NULL THEN active ELSE $5 END,
+                    channel_id = COALESCE($6, channel_id)
                 WHERE group_id = $1
                 """,
-                group_id, name, role_id, fee_ghs, active
+                group_id, name, role_id, fee_ghs, active, channel_id
             )
 
     # ─────────────────────────────────────────────────────────────────────
