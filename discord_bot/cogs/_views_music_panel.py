@@ -33,7 +33,6 @@ import re
 import discord
 
 import config as app_config
-from payments_manual import start_manual_payment
 
 LOOP_LABELS = {"off": "loop off", "track": "loop track", "queue": "loop queue"}
 LOOP_ORDER = ["off", "track", "queue"]
@@ -389,9 +388,12 @@ class MusicProUpgradeButton(discord.ui.DynamicItem[discord.ui.Button], template=
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await start_manual_payment(
-            interaction, "music_pro", app_config.MUSIC_PRO_PRICE_LABEL,
-            guild_id=self.guild_id,
+        from payments_manual import start_dual_mode_payment
+        await start_dual_mode_payment(
+            interaction, payment_type="music_pro", price_usd=app_config.MUSIC_PRO_FEE_USD,
+            product_title="🎵 Music Pro",
+            product_description="One-time unlock for this server's music features upgrade.",
+            amount_display_manual=app_config.MUSIC_PRO_PRICE_LABEL, guild_id=self.guild_id,
         )
 
 
