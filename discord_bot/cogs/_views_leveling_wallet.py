@@ -22,7 +22,6 @@ import discord
 
 import config as app_config
 from database import db
-from payments_manual import start_manual_payment
 
 _TIER_ORDER = ("xp_wallet_small", "xp_wallet_medium", "xp_wallet_large", "xp_wallet_mega")
 _SERVER_BOOST_TIER_ORDER = ("xp_server_boost", "xp_server_boost_month")
@@ -71,15 +70,24 @@ class BuyBoostSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"^buyb
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        from payments_manual import start_dual_mode_payment
         payment_type = self.item.values[0]
         if payment_type in app_config.XP_SERVER_BOOST_TIERS:
-            amount_display = f"${app_config.XP_SERVER_BOOST_TIERS[payment_type]['fee_usd']:g}"
+            tier = app_config.XP_SERVER_BOOST_TIERS[payment_type]
+            price_usd = float(tier["fee_usd"])
+            amount_display = f"${tier['fee_usd']:g}"
+            title = "⚡ Server XP Boost"
+            description = f"Boosts XP for everyone in this server — {tier['multiplier']:g}x for {tier['duration_hours']}h."
         else:
             tier = app_config.XP_WALLET_TIERS[payment_type]
+            price_usd = float(tier["fee_usd"])
             amount_display = f"${tier['fee_usd']:g} ({tier['xp']:,} XP)"
-        await start_manual_payment(
-            interaction, payment_type, amount_display,
-            guild_id=self.guild_id,
+            title = "🎒 XP Wallet Top-Up"
+            description = f"Adds {tier['xp']:,} XP to your personal wallet — gift it to any member anytime."
+        await start_dual_mode_payment(
+            interaction, payment_type=payment_type, price_usd=price_usd,
+            product_title=title, product_description=description,
+            amount_display_manual=amount_display, guild_id=self.guild_id,
         )
 
 
