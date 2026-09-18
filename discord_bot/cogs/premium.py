@@ -108,8 +108,10 @@ class PremiumCog(GuildOnlyCog):
     @app_commands.command(name="createpremium", description="[Admin] Create a new premium group in this server")
     @app_commands.guild_only()
     @app_commands.describe(name="Display name for this group (e.g. 'VIP', 'Founders')",
-                            price="Price in GHS, e.g. 20", role="Role to grant on payment")
-    async def createpremium(self, interaction: discord.Interaction, name: str, price: float, role: discord.Role):
+                            price="Price in GHS, e.g. 20", role="Role to grant on payment",
+                            channel="This group's home channel — the role gets automatic access to it")
+    async def createpremium(self, interaction: discord.Interaction, name: str, price: float, role: discord.Role,
+                             channel: discord.TextChannel):
         await interaction.response.defer(ephemeral=True)
         lang = await get_lang(interaction)
         if not _is_admin(interaction):
@@ -121,12 +123,21 @@ class PremiumCog(GuildOnlyCog):
             return
         group_id = await db.create_premium_group(
             guild_id=interaction.guild_id, name=name, role_id=role.id, fee_ghs=price,
-            created_by=interaction.user.id, clone_id=_clone_id_of(interaction),
+            created_by=interaction.user.id, clone_id=_clone_id_of(interaction), channel_id=channel.id,
         )
+        from discord_bot.views import ensure_premium_group_channel_access
+        access_ok = await ensure_premium_group_channel_access(interaction.guild, role.id, channel.id)
         msg = await tr(
-            "✅ Created premium group **{name}** (id `{group_id}`) — GHS {price:g} for {role}.", lang,
-            name=name, group_id=group_id, price=price, role=role.mention
+            "✅ Created premium group **{name}** (id `{group_id}`) — GHS {price:g} for {role}, unlocking {channel}.",
+            lang, name=name, group_id=group_id, price=price, role=role.mention, channel=channel.mention
         )
+        if not access_ok:
+            deny_note = await tr(
+                "\n⚠️ Couldn't grant {role} access to {channel} automatically — check my permissions there "
+                "and add it manually, or it'll retry next time this group is edited.",
+                lang, role=role.mention, channel=channel.mention,
+            )
+            msg += deny_note
         await interaction.followup.send(msg, ephemeral=True)
 
     # ── /listpremium ──────────────────────────────────────────────────────
@@ -147,7 +158,8 @@ class PremiumCog(GuildOnlyCog):
             role = interaction.guild.get_role(g["role_id"]) if interaction.guild else None
             role_label = role.mention if role else await tr("(role {role_id} not found)", lang, role_id=g["role_id"])
             status = active_word if g["active"] else disabled_word
-            lines.append(f"**#{g['group_id']} — {g['name']}**\nGHS {float(g['fee_ghs']):g} · {role_label} · {status}")
+            channel_note = f" · <#{g['channel_id']}>" if g.get("channel_id") else ""
+            lines.append(f"**#{g['group_id']} — {g['name']}**\nGHS {float(g['fee_ghs']):g} · {role_label} · {status}{channel_note}")
         buttons = [refresh_button(self, "listpremium")]
         card = NavCardView("Premium groups", lines, discord.Color.blurple(), buttons)
         await interaction.followup.send(view=card, ephemeral=True)
@@ -173,9 +185,10 @@ class PremiumCog(GuildOnlyCog):
     @app_commands.command(name="editpremium", description="[Admin] Edit one of this server's premium groups")
     @app_commands.guild_only()
     @app_commands.describe(group_id="The id shown by /listpremium", name="New display name (optional)",
-                            price="New price in GHS (optional)", role="New role to grant (optional)")
+                            price="New price in GHS (optional)", role="New role to grant (optional)",
+                            channel="New home channel (optional) — role access is added there too")
     async def editpremium(self, interaction: discord.Interaction, group_id: int, name: str = None,
-                           price: float = None, role: discord.Role = None):
+                           price: float = None, role: discord.Role = None, channel: discord.TextChannel = None):
         await interaction.response.defer(ephemeral=True)
         lang = await get_lang(interaction)
         if not _is_admin(interaction):
@@ -190,8 +203,26 @@ class PremiumCog(GuildOnlyCog):
             msg = await tr("Price must be greater than 0.", lang)
             await interaction.followup.send(msg, ephemeral=True)
             return
-        await db.update_premium_group(group_id, name=name, role_id=(role.id if role else None), fee_ghs=price)
+        await db.update_premium_group(
+            group_id, name=name, role_id=(role.id if role else None), fee_ghs=price,
+            channel_id=(channel.id if channel else None),
+        )
         msg = await tr("✅ Updated premium group `#{group_id}`.", lang, group_id=group_id)
+        # If either the role or the channel changed, (re)apply the access
+        # overwrite so the group's home channel is always in sync with
+        # whichever role/channel it currently points to — covers both
+        # "moved to a new channel" and "changed which role this group
+        # grants" without the admin having to fix permissions by hand.
+        effective_role_id = role.id if role else group["role_id"]
+        effective_channel_id = channel.id if channel else group.get("channel_id")
+        if (role is not None or channel is not None) and effective_channel_id:
+            from discord_bot.views import ensure_premium_group_channel_access
+            access_ok = await ensure_premium_group_channel_access(interaction.guild, effective_role_id, effective_channel_id)
+            if not access_ok:
+                msg += await tr(
+                    "\n⚠️ Couldn't confirm channel access automatically — check my permissions on <#{channel_id}>.",
+                    lang, channel_id=effective_channel_id,
+                )
         await interaction.followup.send(msg, ephemeral=True)
 
     # ── /togglepremium (admin-only) ─────────────────────────────────────────
