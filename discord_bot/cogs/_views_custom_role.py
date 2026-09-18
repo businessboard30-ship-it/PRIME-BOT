@@ -182,11 +182,13 @@ class _BuyCustomRoleView(discord.ui.View):
 
     @discord.ui.button(label=f"💳 Unlock Custom Role — ${CUSTOM_ROLE_FEE_USD}", style=discord.ButtonStyle.success)
     async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from payments_manual import start_manual_payment
+        from payments_manual import start_dual_mode_payment
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await start_manual_payment(
-            interaction, payment_type="custom_role",
-            amount_display=f"${CUSTOM_ROLE_FEE_USD}", guild_id=self.guild_id,
+        await start_dual_mode_payment(
+            interaction, payment_type="custom_role", price_usd=CUSTOM_ROLE_FEE_USD,
+            product_title="🎨 Custom Role",
+            product_description="One-time unlock — style your own role (name, font, color, optional icon) anytime after, unlimited edits.",
+            amount_display_manual=f"${CUSTOM_ROLE_FEE_USD}", guild_id=self.guild_id,
         )
 
 
