@@ -258,10 +258,25 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
     )
 
 
+_REGION_KEY = "pay_region:{}"
+
+
+async def _saved_region(user_id: int) -> Optional[str]:
+    """'ghana' / 'international' if we already know, else None. Order:
+    remembered earlier choice, then a /currency the buyer set to GHS."""
+    saved = await db.get_global_setting(_REGION_KEY.format(user_id))
+    if saved in ("ghana", "international"):
+        return saved
+    try:
+        if (await db.get_user_currency(user_id) or "").upper() == "GHS":
+            return "ghana"
+    except Exception:
+        pass
+    return None
+
+
 class _RegionChoiceView(discord.ui.View):
-    """Ephemeral 'where are you paying from?' picker used in split mode.
-    on_ghana / on_international are async callables taking the button's
-    fresh interaction (already deferred)."""
+    """Shown only the FIRST time a buyer pays; the answer is remembered."""
 
     def __init__(self, user_id: int, on_ghana, on_international):
         super().__init__(timeout=600)
@@ -275,21 +290,31 @@ class _RegionChoiceView(discord.ui.View):
     @discord.ui.button(label="Ghana — Paystack", emoji="🇬🇭", style=discord.ButtonStyle.success)
     async def ghana(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        await db.set_global_setting(_REGION_KEY.format(self._user_id), "ghana")
         await self._on_ghana(interaction)
 
     @discord.ui.button(label="International — Gumroad", emoji="🌍", style=discord.ButtonStyle.primary)
     async def international(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        await db.set_global_setting(_REGION_KEY.format(self._user_id), "international")
         await self._on_international(interaction)
 
 
 async def offer_region_choice(interaction: discord.Interaction, *, on_ghana, on_international) -> None:
-    """Call after interaction.response.defer(...). Ghana buyers pay with
-    Paystack (Mobile Money / local cards); everyone else pays with Gumroad."""
+    """Call after interaction.response.defer(...). Discord never tells a bot
+    where a user is, so: use what we already know (remembered choice or a
+    GHS currency) and go straight to checkout; ask once only if unknown."""
+    region = await _saved_region(interaction.user.id)
+    if region == "ghana":
+        await on_ghana(interaction)
+        return
+    if region == "international":
+        await on_international(interaction)
+        return
     await interaction.followup.send(
-        "Where are you paying from?\n"
-        "🇬🇭 **Ghana** — pay with Paystack (Mobile Money / local cards)\n"
-        "🌍 **Anywhere else** — pay with Gumroad (international cards / PayPal)",
+        "Where are you paying from? (asked once, then remembered)\n"
+        "🇬🇭 **Ghana** — Paystack (Mobile Money / local cards)\n"
+        "🌍 **Anywhere else** — Gumroad (international cards / PayPal)",
         view=_RegionChoiceView(interaction.user.id, on_ghana, on_international),
         ephemeral=True,
     )
