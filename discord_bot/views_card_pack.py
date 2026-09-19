@@ -75,18 +75,10 @@ async def start_card_pack_payment(interaction: discord.Interaction, force_mode: 
 
     mode = force_mode or await db.get_payment_mode(_clone_id_of(interaction))
     if mode == "split":
-        from payments_manual import _public_base_url, start_geo_payment
-        if _public_base_url():
-            await start_geo_payment(
-                interaction, payment_type="welcome_card_pack", price_usd=float(WELCOME_CARD_PACK_FEE_USD), product_title="Premium Welcome Card Pack",
-                product_description="Unlocks every premium welcome-card look for this server.", amount_display=f"${WELCOME_CARD_PACK_FEE_USD:g} USD", guild_id=guild_id,
-            )
-            return
-        from payments_manual import offer_region_choice
-        await offer_region_choice(
-            interaction,
-            on_ghana=lambda i: start_card_pack_payment(i, force_mode="auto", currency_override="GHS"),
-            on_international=lambda i: start_card_pack_payment(i, force_mode="gumroad"),
+        from payments_manual import start_geo_payment
+        await start_geo_payment(
+            interaction, payment_type="welcome_card_pack", price_usd=float(WELCOME_CARD_PACK_FEE_USD), product_title="Premium Welcome Card Pack",
+            product_description="Unlocks every premium welcome-card look for this server.", amount_display=f"${WELCOME_CARD_PACK_FEE_USD:g} USD", guild_id=guild_id,
         )
         return
     if mode == "gumroad":
@@ -192,18 +184,10 @@ async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: i
 
     mode = force_mode or await db.get_payment_mode(_clone_id_of(interaction))
     if mode == "split":
-        from payments_manual import _public_base_url, start_geo_payment
-        if _public_base_url():
-            await start_geo_payment(
-                interaction, payment_type="ultra_welcome_pack", price_usd=float(ULTRA_PACK_FEE_USD), product_title="Customize Card",
-                product_description="Unlocks /welcome custombg (your own background) for this server.", amount_display=f"${ULTRA_PACK_FEE_USD:g} USD", guild_id=guild_id,
-            )
-            return
-        from payments_manual import offer_region_choice
-        await offer_region_choice(
-            interaction,
-            on_ghana=lambda i: start_ultra_pack_payment(i, guild_id=guild_id, force_mode="auto", currency_override="GHS"),
-            on_international=lambda i: start_ultra_pack_payment(i, guild_id=guild_id, force_mode="gumroad"),
+        from payments_manual import start_geo_payment
+        await start_geo_payment(
+            interaction, payment_type="ultra_welcome_pack", price_usd=float(ULTRA_PACK_FEE_USD), product_title="Customize Card",
+            product_description="Unlocks /welcome custombg (your own background) for this server.", amount_display=f"${ULTRA_PACK_FEE_USD:g} USD", guild_id=guild_id,
         )
         return
     if mode == "gumroad":

@@ -349,7 +349,12 @@ async def _unlock_discord_clone_monetization(reference: str, buyer_id: int, guil
     db.start_discord_monetization_payment before payment) instead of
     needing the target clone_id passed in here."""
     from config import CLONE_MONETIZATION_DAYS
-    await db.activate_discord_monetization_subscription_by_reference(reference, days=CLONE_MONETIZATION_DAYS)
+    activated = await db.activate_discord_monetization_subscription_by_reference(reference, days=CLONE_MONETIZATION_DAYS)
+    if not activated and clone_id:
+        # Both checkouts (Paystack + Gumroad) were created up front and the
+        # subscription row only remembers one reference; the payment row's
+        # clone_id is the clone being activated, so use that.
+        await db.activate_discord_monetization_subscription(int(clone_id), days=CLONE_MONETIZATION_DAYS)
 
 
 async def _unlock_custom_role(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
@@ -414,48 +419,54 @@ UNLOCK_HANDLERS = {
 }
 
 
-def _public_base_url() -> str:
-    import os
-    url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
-    if url and not url.startswith(("http://", "https://")):
-        url = "https://" + url  # tolerate a value set without the scheme
-    return url
-
-
-_INTENT_KEY = "payintent:{}"
-_INTENT_TTL_SECONDS = 3600
-
-
 async def start_geo_payment(interaction: discord.Interaction, *, payment_type: str, price_usd: float,
                             product_title: str, product_description: str, amount_display: str,
                             guild_id: Optional[int] = None, extra: Optional[dict] = None) -> None:
-    """One 'Pay' button, no questions. It opens <PUBLIC_BASE_URL>/pay?t=<token>,
-    which looks up the visitor's country from their IP and redirects to
-    Paystack (Ghana) or Gumroad (everywhere else) — see api/pay_redirect.py.
-    Call after interaction.response.defer(ephemeral=True, thinking=True)."""
-    import json
-    import time
+    """Show BOTH checkout buttons with a line saying who each is for:
+    Paystack (Ghana, paid in GHS) and Gumroad (everyone else). Both
+    checkouts are created up front; whichever one the buyer pays is the one
+    that unlocks the purchase. Call after interaction.response.defer(ephemeral=True, ...)."""
     clone_id = getattr(interaction.client, "clone_id", None)
-    token = secrets.token_urlsafe(12)
-    await db.set_global_setting(_INTENT_KEY.format(token), json.dumps({
+    intent = {
         "payment_type": payment_type, "user_id": interaction.user.id, "guild_id": guild_id,
-        "clone_id": clone_id, "price_usd": price_usd, "amount_display": amount_display,
-        "locale": str(getattr(interaction, "locale", "") or ""), "created": time.time(),
-        "extra": extra or {},
-    }))
-    embed = discord.Embed(
-        title=product_title,
-        description=(
-            f"**Price:** {amount_display}\n\n{product_description}\n\n"
-            f"Tap **Pay** — you'll be sent to the right checkout automatically. "
-            f"Gumroad purchases unlock by themselves; if you paid with Paystack, come back and tap **Verify**."
-        ),
-        color=discord.Color.gold(),
-    )
+        "clone_id": clone_id, "price_usd": price_usd, "extra": extra or {},
+    }
+    # Gumroad first, Paystack second: the Verify button looks up the LATEST
+    # pending payment, which should be the Paystack one (Gumroad confirms itself).
+    gumroad_url = paystack_url = None
+    try:
+        gumroad_url = await create_checkout_for_intent(intent, "XX")
+    except Exception:
+        logger.exception("[pay] Gumroad checkout creation failed")
+    try:
+        paystack_url = await create_checkout_for_intent(intent, "GH")
+    except Exception:
+        logger.exception("[pay] Paystack checkout creation failed")
+
+    if not gumroad_url and not paystack_url:
+        await interaction.followup.send("Couldn't start checkout right now — please try again shortly.", ephemeral=True)
+        return
+
+    lines = [f"**Price:** {amount_display}", "", product_description, ""]
+    if paystack_url:
+        lines.append("🇬🇭 **Pay with Paystack** — for buyers in **Ghana** (Mobile Money / local cards, charged in GHS). "
+                     "After paying, come back here and tap **Verify**.")
+    if gumroad_url:
+        lines.append("🌍 **Pay with Gumroad** — for buyers **outside Ghana** (international cards / PayPal, charged in USD). "
+                     "It unlocks automatically within seconds — no Verify needed.")
+    if not paystack_url:
+        lines.append("_Paystack is unavailable right now._")
+    if not gumroad_url:
+        lines.append("_Gumroad is unavailable right now._")
+    embed = discord.Embed(title=product_title, description="\n".join(lines), color=discord.Color.gold())
+
     view = _GenericVerifyPaymentView(payment_type, guild_id)
-    view.add_item(discord.ui.Button(
-        label="💳 Pay", url=f"{_public_base_url()}/pay?t={token}", style=discord.ButtonStyle.link,
-    ))
+    if paystack_url:
+        view.add_item(discord.ui.Button(label="Paystack — Ghana", emoji="🇬🇭", url=paystack_url, style=discord.ButtonStyle.link))
+    if gumroad_url:
+        view.add_item(discord.ui.Button(label="Gumroad — International", emoji="🌍", url=gumroad_url, style=discord.ButtonStyle.link))
+    if not paystack_url:
+        view.remove_item(view.verify)
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -555,7 +566,7 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
     convention start_manual_payment already uses."""
     clone_id = getattr(interaction.client, "clone_id", None)
     mode = force_mode or await db.get_payment_mode(clone_id)
-    if mode == "split" and _public_base_url():
+    if mode == "split":
         await start_geo_payment(
             interaction, payment_type=payment_type, price_usd=price_usd, product_title=product_title,
             product_description=product_description, amount_display=amount_display_manual, guild_id=guild_id,
