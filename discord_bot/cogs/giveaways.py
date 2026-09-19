@@ -208,13 +208,17 @@ class GiveawayCog(GuildOnlyCog):
         # /ticket setup and the others use for their wizard_message_id
         # pointer (just persisted a message earlier here, since this
         # wizard's whole state lives in that row).
-        await interaction.response.send_message(view=build_giveaway_wizard_view(0, {}))
+        try:
+            premium = bool(await db.is_guild_premium_active(interaction.guild_id, _clone_id_of(interaction)))
+        except Exception:
+            premium = False
+        await interaction.response.send_message(view=build_giveaway_wizard_view(0, {}, premium))
         sent = await interaction.original_response()
         await db.upsert_giveaway_draft(
             sent.id, interaction.guild_id, sent.channel.id, interaction.user.id,
             clone_id=_clone_id_of(interaction),
         )
-        view = build_giveaway_wizard_view(sent.id, await db.get_giveaway_draft(sent.id))
+        view = build_giveaway_wizard_view(sent.id, await db.get_giveaway_draft(sent.id), premium)
         await sent.edit(view=view)
 
     @group.command(name="start", description="Start a giveaway")
