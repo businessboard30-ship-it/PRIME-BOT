@@ -369,6 +369,73 @@ class VerifiedRoleSelect(discord.ui.RoleSelect):
         await self.wizard.refresh(interaction)
 
 
+class AutoCreateVerifiedButton(discord.ui.Button):
+    """One-tap Verified role (the optional role members get on passing
+    verification). Same reuse/double-tap guards as AutoCreateUnverifiedButton."""
+
+    def __init__(self, wizard: "WizardView"):
+        self.wizard = wizard
+        super().__init__(label="✨ Auto-create Verified role", style=discord.ButtonStyle.primary, row=4)
+
+    async def callback(self, interaction: discord.Interaction):
+        wizard = self.wizard
+        if wizard._creating_role:
+            await interaction.response.send_message("Already creating a role — one sec, don't tap again.", ephemeral=True)
+            return
+        guild = interaction.guild
+        existing = discord.utils.find(lambda r: r.name.casefold() == "verified", guild.roles)
+        if existing is not None:
+            wizard.verified_role_id = existing.id
+            wizard.verified_role_select.default_values = [existing]
+            await wizard.refresh(interaction)
+            await interaction.followup.send(
+                f"A role called {existing.mention} already exists — reusing it instead of creating a duplicate.",
+                ephemeral=True,
+            )
+            return
+
+        wizard._creating_role = True
+        try:
+            role = await guild.create_role(
+                name="Verified", permissions=discord.Permissions.none(),
+                reason=f"Verification setup by {interaction.user} (auto-created)",
+            )
+        except discord.Forbidden:
+            wizard._creating_role = False
+            await interaction.response.send_message(
+                "I don't have permission to create roles here — grant me **Manage Roles**, "
+                "or pick an existing role from the dropdown instead.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as e:
+            wizard._creating_role = False
+            await interaction.response.send_message(f"Couldn't create the role: {e}", ephemeral=True)
+            return
+
+        bot_member = guild.me
+        if bot_member.top_role.position > 1:
+            try:
+                await guild.edit_role_positions(positions={role: bot_member.top_role.position - 1})
+            except discord.HTTPException:
+                logger.warning("verification: auto-created Verified role %s in guild %s but failed to reposition it", role.id, guild.id)
+
+        wizard.verified_role_id = role.id
+        wizard.verified_role_select.default_values = [role]
+        wizard._creating_role = False
+        await wizard.refresh(interaction)
+
+        moved = guild.get_role(role.id) or role
+        if moved.position >= bot_member.top_role.position:
+            await interaction.followup.send(
+                f"⚠️ Created {role.mention}, but it's at or above my highest role, so I can't hand it out. "
+                "Drag my role above it in **Server Settings → Roles**.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(f"✅ Created {role.mention} and selected it as your Verified role.", ephemeral=True)
+
+
 class FinishButton(discord.ui.Button):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
@@ -471,8 +538,10 @@ class WizardView(discord.ui.View):
         self.add_item(ModeSelect(self))
         self.add_item(self.channel_select)
         self.add_item(self.unverified_role_select)
-        self.add_item(VerifiedRoleSelect(self))
+        self.verified_role_select = VerifiedRoleSelect(self)
+        self.add_item(self.verified_role_select)
         self.add_item(AutoCreateUnverifiedButton(self))
+        self.add_item(AutoCreateVerifiedButton(self))
         self.add_item(AutoCreateVerifyChannelButton(self))
         self.add_item(FinishButton(self))
         self.add_item(CancelButton(self))
