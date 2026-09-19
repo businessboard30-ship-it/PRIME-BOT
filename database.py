@@ -138,7 +138,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "27"
+SCHEMA_VERSION = "28"
 # "26" -> "27": premium giveaway extras (scheduled_start, embed_color,
 # bonus_entries_json, auto_reroll_hours) + premium ticket extras
 # (categories_json, custom_buttons_json, auto_close_hours,
@@ -2882,6 +2882,13 @@ class Database:
         """)
         await conn.execute("""
             ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS custom_bg_message_id BIGINT
+        """)
+        # ultra_card_json: layout options for the Customize Card (ultra pack)
+        # welcome card — banner position/darkness, avatar side, text color,
+        # heading, member-number toggle. JSON text; NULL = classic layout.
+        # Parsed/validated by modules/welcome_card.parse_ultra_options.
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS ultra_card_json TEXT
         """)
         # onboarding_dm_sent: same one-time-ever pattern as
         # discord_ship_config.onboarding_dm_sent — guards WelcomeCog's
@@ -9406,6 +9413,7 @@ class Database:
                 "card_theme": "wolf", "card_pack_unlocked": False,
                 "ultra_pack_unlocked": False, "custom_background_url": None,
                 "custom_bg_channel_id": None, "custom_bg_message_id": None,
+                "ultra_card_json": None,
                 "onboarding_dm_sent": False,
                 "card_pack_trial_started_at": None, "card_pack_trial_used": False,
                 "card_pack_trial_admin_id": None,
@@ -9460,13 +9468,14 @@ class Database:
             await conn.execute(
                 """
                 INSERT INTO discord_welcome_config
-                    (guild_id, clone_id, enabled, channel_id, message_template, background_color, accent_color, sticker_url, card_style, avatar_shape, use_template, delivery_mode, card_theme, custom_background_url, custom_bg_channel_id, custom_bg_message_id, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+                    (guild_id, clone_id, enabled, channel_id, message_template, background_color, accent_color, sticker_url, card_style, avatar_shape, use_template, delivery_mode, card_theme, custom_background_url, custom_bg_channel_id, custom_bg_message_id, ultra_card_json, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
                     enabled = $3, channel_id = $4, message_template = $5,
                     background_color = $6, accent_color = $7, sticker_url = $8, card_style = $9,
                     avatar_shape = $10, use_template = $11, delivery_mode = $12, card_theme = $13,
                     custom_background_url = $14, custom_bg_channel_id = $15, custom_bg_message_id = $16,
+                    ultra_card_json = $17,
                     updated_at = NOW()
                 """,
                 guild_id, clone_id, merged["enabled"], merged["channel_id"], merged["message_template"],
@@ -9474,6 +9483,7 @@ class Database:
                 merged["avatar_shape"], merged["use_template"], merged.get("delivery_mode", "channel"),
                 merged.get("card_theme", "wolf"), merged.get("custom_background_url"),
                 merged.get("custom_bg_channel_id"), merged.get("custom_bg_message_id"),
+                merged.get("ultra_card_json"),
             )
 
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:

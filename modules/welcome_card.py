@@ -427,23 +427,81 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     return bg
 
 
+# ── Ultra card ("Customize Card") layout options ─────────────────────────
+# Stored per guild as JSON in discord_welcome_config.ultra_card_json and
+# edited by the Customize Card wizard (discord_bot/cogs/_views_card_customize.py).
+# Anything missing/invalid falls back to these defaults, so an untouched
+# guild renders exactly the classic layout.
+ULTRA_DEFAULTS = {
+    "banner": "bottom",        # bottom | top | none
+    "dim": "medium",           # light | medium | heavy  (banner darkness)
+    "avatar_side": "left",     # left | right
+    "text_color": "white",     # key of ULTRA_TEXT_COLORS
+    "heading": "",             # custom line; blank = "Welcome to {guild}!"
+    "show_number": True,       # the "MEMBER #N" line
+}
+ULTRA_BANNERS = ("bottom", "top", "none")
+ULTRA_DIM_ALPHA = {"light": 100, "medium": 165, "heavy": 225}
+ULTRA_AVATAR_SIDES = ("left", "right")
+ULTRA_TEXT_COLORS = {
+    "white": (255, 255, 255),
+    "gold": (255, 215, 90),
+    "cyan": (110, 220, 255),
+    "pink": (255, 130, 190),
+    "green": (120, 235, 150),
+    "red": (255, 110, 110),
+}
+ULTRA_HEADING_MAX = 60
+
+
+def parse_ultra_options(raw) -> dict:
+    """Accepts a dict, a JSON string (as stored in the DB) or None and
+    returns a fully-populated, validated options dict."""
+    import json
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    opts = dict(ULTRA_DEFAULTS)
+    if raw.get("banner") in ULTRA_BANNERS:
+        opts["banner"] = raw["banner"]
+    if raw.get("dim") in ULTRA_DIM_ALPHA:
+        opts["dim"] = raw["dim"]
+    if raw.get("avatar_side") in ULTRA_AVATAR_SIDES:
+        opts["avatar_side"] = raw["avatar_side"]
+    if raw.get("text_color") in ULTRA_TEXT_COLORS:
+        opts["text_color"] = raw["text_color"]
+    if isinstance(raw.get("heading"), str):
+        opts["heading"] = raw["heading"].strip()[:ULTRA_HEADING_MAX]
+    if isinstance(raw.get("show_number"), bool):
+        opts["show_number"] = raw["show_number"]
+    return opts
+
+
 def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
                           background_bytes: bytes,
                           guild_name: Optional[str] = None,
-                          avatar_shape: str = DEFAULT_AVATAR_SHAPE) -> Optional[Image.Image]:
+                          avatar_shape: str = DEFAULT_AVATAR_SHAPE,
+                          ultra_options=None) -> Optional[Image.Image]:
     """Renders the template-card layout over an ADMIN-SUPPLIED background
-    (the ultra-pack /welcome custombg feature) instead of one of the fixed
+    (the ultra-pack / Customize Card feature) instead of one of the fixed
     THEME_BACKGROUNDS artworks. Returns None if background_bytes doesn't
     decode as an image, so the caller can fall back to a stock theme.
 
     Unlike _draw_template_card, there's no hand-designed "member card" box
     baked into this artwork — we don't know where it's safe to put text.
-    So this draws a generic, always-safe layout instead: the image is
-    cover-cropped to fill the card, the avatar sits left-of-center, and a
-    semi-transparent dark banner runs along the bottom holding the member
-    number/username (and server name, if given) — legible over any
-    background rather than assuming specific empty space exists.
+    So this draws a generic, always-safe layout: the image is cover-cropped
+    to fill the card, and a semi-transparent dark banner holds the avatar,
+    member number, username and heading — legible over any background.
+    ultra_options (see ULTRA_DEFAULTS / parse_ultra_options) lets the admin
+    move the banner (bottom/top/none), change its darkness, put the avatar
+    on the left or right, recolor the text, replace the heading line and
+    hide the member number.
     """
+    opts = parse_ultra_options(ultra_options)
     try:
         bg = Image.open(io.BytesIO(background_bytes)).convert("RGBA")
     except Exception as e:
@@ -469,47 +527,70 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         bg = bg.crop((0, top, src_w, top + new_h))
     bg = bg.resize((TEMPLATE_WIDTH, TEMPLATE_HEIGHT))
 
-    # Darken slightly overall so white text stays legible on bright
-    # uploads, then lay a stronger gradient-free banner across the bottom
-    # third for the text itself.
-    overlay = Image.new("RGBA", bg.size, (0, 0, 0, 40))
-    bg = Image.alpha_composite(bg, overlay)
+    # Slight overall darkening so white text stays legible on bright uploads.
+    bg = Image.alpha_composite(bg, Image.new("RGBA", bg.size, (0, 0, 0, 40)))
+
+    if opts["banner"] == "top":
+        band_top, band_bottom = 0, int(TEMPLATE_HEIGHT * 0.28)
+    else:  # "bottom", and "none" (no banner drawn, but same text placement)
+        band_top, band_bottom = int(TEMPLATE_HEIGHT * 0.72), TEMPLATE_HEIGHT
+    band_h = band_bottom - band_top
+
+    if opts["banner"] != "none":
+        # Real alpha blend (drawing an RGBA rectangle straight onto an RGBA
+        # image overwrites pixels, which came out fully opaque black).
+        banner = Image.new("RGBA", bg.size, (0, 0, 0, 0))
+        ImageDraw.Draw(banner).rectangle(
+            (0, band_top, TEMPLATE_WIDTH, band_bottom), fill=(0, 0, 0, ULTRA_DIM_ALPHA[opts["dim"]])
+        )
+        bg = Image.alpha_composite(bg, banner)
     draw = ImageDraw.Draw(bg)
 
-    banner_top = int(TEMPLATE_HEIGHT * 0.72)
-    draw.rectangle((0, banner_top, TEMPLATE_WIDTH, TEMPLATE_HEIGHT), fill=(0, 0, 0, 165))
+    # Without a solid banner (or with a light one) add a thin dark outline
+    # so text stays readable on busy images.
+    stroke = 2 if (opts["banner"] == "none" or opts["dim"] == "light") else 0
 
-    # Avatar, cropped to the configured shape, centered vertically in the
-    # banner near the left edge.
     try:
         avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
     except Exception as e:
         logger.warning(f"[v0] Couldn't decode avatar image, using a blank frame instead: {e}")
         avatar = Image.new("RGBA", (200, 200), (88, 101, 242, 255))
 
-    avatar_dim = TEMPLATE_HEIGHT - banner_top - 40
+    avatar_dim = band_h - 40
     avatar = avatar.resize((avatar_dim, avatar_dim))
     mask = Image.new("L", (avatar_dim, avatar_dim), 0)
     shape_fn = AVATAR_SHAPES.get(avatar_shape, _mask_circle)
     shape_fn(ImageDraw.Draw(mask), (0, 0, avatar_dim, avatar_dim), 255)
-    avatar_x, avatar_y = 60, banner_top + 20
+    avatar_y = band_top + 20
+    if opts["avatar_side"] == "right":
+        avatar_x = TEMPLATE_WIDTH - 60 - avatar_dim
+        text_x = 60
+        text_box_width = avatar_x - 40 - text_x
+    else:
+        avatar_x = 60
+        text_x = avatar_x + avatar_dim + 40
+        text_box_width = TEMPLATE_WIDTH - text_x - 60
     bg.paste(avatar, (avatar_x, avatar_y), mask)
 
-    text_x = avatar_x + avatar_dim + 40
-    text_box_width = TEMPLATE_WIDTH - text_x - 60
-
-    draw.text((text_x, banner_top + 24), _extract_member_number(subtitle),
-               font=_load_font(26), fill=(190, 190, 190))
+    color = ULTRA_TEXT_COLORS[opts["text_color"]]
+    if opts["show_number"]:
+        draw.text((text_x, band_top + 24), _extract_member_number(subtitle),
+                   font=_load_font(26), fill=(190, 190, 190), stroke_width=stroke, stroke_fill=(0, 0, 0))
     username_font, username_text = _fit_text_to_box(
         draw, username, text_box_width, max_font_size=52, min_font_size=22
     )
-    draw.text((text_x, banner_top + 62), username_text, font=username_font, fill=(255, 255, 255))
+    draw.text((text_x, band_top + 62), username_text, font=username_font, fill=color,
+               stroke_width=stroke, stroke_fill=(0, 0, 0))
 
-    if guild_name:
-        guild_font, guild_text = _fit_text_to_box(
-            draw, f"Welcome to {guild_name}!", text_box_width, max_font_size=28, min_font_size=14
-        )
-        draw.text((text_x, TEMPLATE_HEIGHT - 50), guild_text, font=guild_font, fill=(200, 200, 200))
+    heading = opts["heading"]
+    if heading:
+        heading = heading.replace("{guild}", guild_name or "").replace("{member}", username)
+    elif guild_name:
+        heading = f"Welcome to {guild_name}!"
+    if heading:
+        guild_font, guild_text = _fit_text_to_box(draw, heading, text_box_width, max_font_size=28, min_font_size=14)
+        draw.text((text_x, band_bottom - 50), guild_text, font=guild_font, fill=color,
+                   stroke_width=stroke, stroke_fill=(0, 0, 0))
 
     return bg
 
@@ -521,7 +602,8 @@ def render_welcome_card(avatar_bytes: bytes, username: str, subtitle: str,
                          guild_name: Optional[str] = None,
                          use_template: bool = True,
                          theme: str = "wolf",
-                         custom_background_bytes: Optional[bytes] = None) -> tuple[bytes, str]:
+                         custom_background_bytes: Optional[bytes] = None,
+                         ultra_options=None) -> tuple[bytes, str]:
     """Returns (image_bytes, image_format) where image_format is 'GIF' or
     'PNG'. subtitle is typically 'Member #N' or similar.
 
@@ -571,7 +653,8 @@ def render_welcome_card(avatar_bytes: bytes, username: str, subtitle: str,
         if custom_background_bytes:
             templated = _draw_custom_bg_card(username, subtitle, avatar_bytes,
                                               custom_background_bytes,
-                                              guild_name=guild_name, avatar_shape=avatar_shape)
+                                              guild_name=guild_name, avatar_shape=avatar_shape,
+                                              ultra_options=ultra_options)
         if templated is None:
             templated = _draw_template_card(username, subtitle, avatar_bytes,
                                              guild_name=guild_name, avatar_shape=avatar_shape,

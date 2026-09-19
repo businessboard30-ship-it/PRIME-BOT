@@ -857,6 +857,7 @@ class WelcomeCog(GuildOnlyCog):
                             sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                             guild_name=guild.name, use_template=config.get("use_template", True),
                             theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
+                            ultra_options=config.get("ultra_card_json"),
                         )
                     else:
                         # Template-only: PREVIEW of the new template card,
@@ -1010,6 +1011,7 @@ class WelcomeCog(GuildOnlyCog):
                     sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                     guild_name=guild.name, use_template=config.get("use_template", True),
                     theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
+                    ultra_options=config.get("ultra_card_json"),
                 )
                 ext = "gif" if image_format == "GIF" else "png"
                 file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
@@ -1070,6 +1072,7 @@ class WelcomeCog(GuildOnlyCog):
                 sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                 guild_name=member.guild.name, use_template=config.get("use_template", True),
                 theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
+                ultra_options=config.get("ultra_card_json"),
             )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=__import__("io").BytesIO(card_bytes), filename=f"welcome.{ext}")
@@ -1422,6 +1425,7 @@ class WelcomeCog(GuildOnlyCog):
                 sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                 guild_name=interaction.guild.name, use_template=config.get("use_template", True),
                 theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
+                ultra_options=config.get("ultra_card_json"),
             )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=__import__("io").BytesIO(card_bytes), filename=f"preview.{ext}")
