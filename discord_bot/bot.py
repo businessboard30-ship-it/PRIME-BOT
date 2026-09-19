@@ -315,6 +315,19 @@ class AnimeBotDiscord(commands.Bot):
                 f"{error!r} (value={getattr(error, 'value', None)!r})",
                 exc_info=error,
             )
+            picked = getattr(error, "value", None)
+            if isinstance(picked, app_commands.AppCommandChannel):
+                # A real dropdown pick that still failed to convert: the bot
+                # can't see that channel (missing View Channel / wrong type),
+                # so it isn't in the bot's cache. Typing was NOT the problem.
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        f"I can't access <#{picked.id}>. Give me **View Channel**, **Send Messages**, "
+                        "**Embed Links** and **Attach Files** there (check the channel's permission "
+                        "overrides and my role), then run the command again.",
+                        ephemeral=True,
+                    )
+                return
             if not interaction.response.is_done():
                 await interaction.response.send_message(
                     "That didn't look like a real channel selection. When filling in a channel field, "
