@@ -456,10 +456,6 @@ class LeaderboardMyRankButton(discord.ui.DynamicItem[discord.ui.Button],
         await _rerender(interaction, self.guild_id, self.clone_id, self.mode, target_page)
 
 
-DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton,
-                 _LeaderboardGoPremiumButton)
-
-
 class _LeaderboardGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
                                    template=r"^lvllb_goprem:(\d+):(-|\d+)$"):
     def __init__(self, guild_id: int, clone_id):
