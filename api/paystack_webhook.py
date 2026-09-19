@@ -292,6 +292,25 @@ class handler(BaseHTTPRequestHandler):
                 else:
                     logger.warning(f"[v0] image_search_yandex payment {reference} confirmed but no matching pending row found")
 
+            elif payment_type == 'hardcore_roast':
+                # Challenger paid for a per-battle hardcore roast activation.
+                # Find the pending row by pending_id in metadata, mark it paid,
+                # then tell RoastCog to DM the target for consent.
+                pending_id_str = (metadata or {}).get('pending_id')
+                if pending_id_str:
+                    try:
+                        pending_id = int(pending_id_str)
+                        roast_cog = bot.get_cog("RoastCog") if bot else None
+                        if roast_cog:
+                            await roast_cog.hardcore_payment_confirmed(pending_id)
+                            logger.info(f"[v0] hardcore_roast payment {reference} confirmed — pending_id={pending_id}")
+                        else:
+                            logger.warning(f"[v0] hardcore_roast payment {reference}: RoastCog not available")
+                    except Exception:
+                        logger.exception(f"[v0] hardcore_roast payment {reference} handler failed")
+                else:
+                    logger.warning(f"[v0] hardcore_roast payment {reference}: no pending_id in metadata")
+
             elif payment_type == 'listing_boost':
                 # Backstop for the server-listing site's Boost modal
                 # (app/servers/_BoostModal.tsx via api/apply_boost.py) —

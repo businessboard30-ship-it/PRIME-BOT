@@ -466,6 +466,103 @@ PUNCHLINE_BANK = [
     "You didn't log off — you just gave everyone else a reason to.",
 ]
 
+# ── Hardcore punchline bank ───────────────────────────────────────────────
+# Only used when both challenger AND target have consented to hardcore mode
+# and the challenger has paid the per-battle activation fee.
+# No AI involved — pure wordbank, zero API calls, zero Groq policy risk.
+HARDCORE_PUNCHLINE_BANK = [
+    "I've been called worse things by better men.",
+    "Yo mama is so old that when God said 'Let there be light,' she was there to flick the switch.",
+    "I didn't mean to push your buttons, I was just looking for mute.",
+    "I forgot the world revolves around you. My apologies! How silly of me.",
+    "I'd rather treat a baby's diaper rash than have lunch with you.",
+    "I would smack you, but I'm against animal abuse.",
+    "I gave out all my trophies a while ago, but here's a participation award.",
+    "It's all about balance… you start talking, I stop listening.",
+    "If you were any more inbred, you'd be a sandwich.",
+    "I would call you an idiot, but it would be an insult to stupid people.",
+    "Are you at a loss for words, or did you exhaust your entire vocabulary?",
+    "Accidents happen; the proof is sitting right there.",
+    "You bring everyone so much joy… when you leave the room.",
+    "You're like a gray sprinkle on a rainbow cupcake.",
+    "Beauty is only skin deep, but ugly goes clean to the bone.",
+    "No, that's fine. You're certainly entitled to your incorrect opinion.",
+    "You are more disappointing than an unsalted pretzel.",
+    "I can't wait to spend my whole life without you.",
+    "Rolling your eyes isn't going to help you find your brain.",
+    "Why do you look like an envelope with no address on it?",
+    "If I wanted to hurt myself, I would simply jump from your ego to your IQ.",
+    "Do yourself a favor and ignore anyone who tells you to be yourself. It's a bad idea in your case.",
+    "I don't hate you, but if you were drowning, I would give you a high five.",
+    "Everyone has a purpose in this life, and yours is to become an organ donor.",
+    "It is better to keep your mouth shut and let people think you're stupid than open it and remove all doubt.",
+    "Did you know your incubator had tinted windows? It was the only way to get your parents to take you home.",
+    "Just remember, if anyone ever tells you that you're beautiful… they're lying.",
+    "You can be anything you want. Except good-looking.",
+    "You're the reason God created amnesia.",
+    "I'd take a photo of you, but I don't want a virus on my phone.",
+    "You should carry a plant around with you to replace the oxygen you waste.",
+    "A glow stick has a brighter future than you. Lasts longer, too.",
+    "If you ever need to find higher ground, you can always try climbing up your own ego.",
+    "Have you ever tried not being an idiot?",
+    "You're like a cloud. When you disappear, it suddenly becomes a beautiful day.",
+    "You're about as useful as a screen door on a submarine.",
+    "If laughter really is the best medicine, your face might just cure the world's deadliest diseases.",
+    "You look like something that came out of a slow cooker.",
+    "I was thinking about you today. It reminded me to take out the trash.",
+    "You have so many gaps in your teeth it looks like your tongue is in jail.",
+    "I was going to make a joke about your life, but I see life beat me to the punch.",
+    "Oops, my bad. I could've sworn I was dealing with an adult.",
+    "It would be a great day if you accidentally used a glue stick instead of a Chapstick.",
+    "It's the parent's job to raise their children right. So, looking at you, it's obvious that they quit after just one day.",
+    "I believe you can achieve anything. Look around; there are plenty of dumb people out there who you could aspire to be.",
+    "If ignorance is bliss, you must be the happiest person on the planet.",
+    "I bet I could remove 90 percent of your good looks with a moist towelette.",
+    "You're like the human version of athlete's foot—annoying and hard to get rid of.",
+    "It must be fun to wake up each morning knowing that you are that much closer to achieving your dreams of complete and utter mediocrity.",
+    "You have the perfect face for radio.",
+    "You were so happy about testing negative for COVID… we didn't have the heart to tell you it was actually an IQ test.",
+    "Tell me something… if I didn't answer you the first time, what makes you think the next 25 attempts will work?",
+    "I am jealous of people who have never met you.",
+    "Oh, you're talking to me? I thought you only did that behind my back.",
+    "Most mistakes can be corrected. You are the exception to the rule.",
+    "It is hilarious how you are trying to fit your entire vocabulary into one sentence.",
+    "I suggest you do a little soul-searching. You might actually find one.",
+    "I know I make a lot of stupid choices, but hanging out with you was the worst one of all.",
+    "We were going to roast you, but apparently, burning trash is an environmental hazard.",
+    "Isn't it dangerous to use your whole vocabulary in one sentence?",
+    "Please shut your mouth when you're talking to me.",
+    "Well, the jerk store called. They're running out of you.",
+    "I'm not saying I hate you, what I'm saying is that you are literally the Monday of my life.",
+    "Oh, I'm sorry. Did the middle of my sentence interrupt the beginning of yours?",
+    "So as an outsider, what do you think of the human race?",
+    "We were happily married for one month, but unfortunately, we've been married for 10 years.",
+    "Calling you an idiot would be an insult to all stupid people.",
+    "If I said anything to offend you, it was purely intentional.",
+    "I've seen people like you before. Of course, I had to pay admission to get access.",
+    "Were you born on the highway? That is where most accidents happen.",
+    "You fear success, but you really have nothing to worry about.",
+    "You are so ugly that when your mom dropped you off at school, she got a ticket for littering.",
+    "If genius skips a generation, your children will be brilliant.",
+    "Don't be ashamed of who you are. That's your parents' job.",
+    "Don't you get tired of putting makeup on your two faces every morning?",
+    "Your family tree must be a cactus 'cause you're all a bunch of pricks.",
+    "I could've sworn I was dealing with an adult, but I guess I was wrong.",
+    "I love what you've done with your hair. How do you get it to come out of your nostrils like that?",
+    "You have an entire life to be an idiot. Why not take today off?",
+    "You're everything I want in someone I don't want anymore.",
+    "I don't know what your problem is, but I'm guessing it's hard to pronounce.",
+    "You bring everyone so much joy! You know, when you leave the room. But still.",
+    "I'm busy right now, can I ignore you another time?",
+    "I'm glad to see you're not letting education get in the way of your ignorance.",
+    "The only way you would ever get hurt during an activity is if the TV exploded.",
+    "Good story, but in what chapter do you shut up?",
+    "Wow, your maker really didn't waste time giving you a personality, huh?",
+    "I'd say you're 'dumb as a rock,' but at least a rock can hold a door open.",
+    "I'm just glad that you're stringing words into sentences now.",
+    "You're my favorite person… besides every other person I've ever met.",
+]
+
 CONCEDE_LINES = [
     "Okay okay, you got me with that one. 😭",
     "I have no comeback for that. You win this round.",
@@ -1207,10 +1304,88 @@ class RoastCancelPendingView(discord.ui.View):
         await interaction.followup.send("🛑 Cancelled — you can start a new roast now.", ephemeral=True)
 
 
+# ── Hardcore roast — consent + payment ───────────────────────────────────
+#
+# Flow:
+#   1. Challenger picks a target and clicks "Hardcore Mode 🔥" in the
+#      target picker (or during a /setup roastme flow).
+#   2. Bot sends challenger a payment link (Paystack, HARDCORE_ROAST_FEE_GHS).
+#      Payment reference stored in discord_hardcore_roast_pending table.
+#   3. Paystack webhook fires payment_type='hardcore_roast' → marks pending
+#      row paid and DMs the TARGET a consent request
+#      (_HardcoreConsentView).
+#   4a. Target accepts  → battle starts with HARDCORE_PUNCHLINE_BANK.
+#   4b. Target declines → pending row cancelled, challenger notified.
+#      (No refund — they paid for the activation, not a guaranteed roast.)
+
+
+class _HardcoreConsentAcceptButton(discord.ui.DynamicItem[discord.ui.Button],
+                                    template=r"^hc_consent_accept:(\d+)$"):
+    def __init__(self, pending_id: int):
+        self.pending_id = pending_id
+        super().__init__(discord.ui.Button(
+            label="Yeah, roast me 🔥", style=discord.ButtonStyle.danger,
+            custom_id=f"hc_consent_accept:{pending_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        cog = interaction.client.get_cog("RoastCog")
+        if cog is None:
+            await interaction.edit_original_response(content="⚠️ Roast system is offline right now.", view=None)
+            return
+        try:
+            await cog.hardcore_consent_accepted(self.pending_id, interaction)
+        except Exception:
+            logger.exception(f"[roast-hc] consent accept failed pending_id={self.pending_id}")
+            await interaction.edit_original_response(content="⚠️ Something went wrong — check Railway logs.", view=None)
+
+
+class _HardcoreConsentDeclineButton(discord.ui.DynamicItem[discord.ui.Button],
+                                     template=r"^hc_consent_decline:(\d+)$"):
+    def __init__(self, pending_id: int):
+        self.pending_id = pending_id
+        super().__init__(discord.ui.Button(
+            label="Nah, pass", style=discord.ButtonStyle.secondary,
+            custom_id=f"hc_consent_decline:{pending_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        cog = interaction.client.get_cog("RoastCog")
+        if cog is None:
+            await interaction.edit_original_response(content="⚠️ Roast system is offline right now.", view=None)
+            return
+        try:
+            await cog.hardcore_consent_declined(self.pending_id, interaction)
+        except Exception:
+            logger.exception(f"[roast-hc] consent decline failed pending_id={self.pending_id}")
+            await interaction.edit_original_response(content="⚠️ Something went wrong — check Railway logs.", view=None)
+
+
+class HardcoreConsentView(discord.ui.View):
+    """DMed to the target after the challenger's payment clears.
+    DynamicItem buttons — survives bot restarts, never times out."""
+
+    def __init__(self, pending_id: int):
+        super().__init__(timeout=None)
+        self.add_item(_HardcoreConsentAcceptButton(pending_id))
+        self.add_item(_HardcoreConsentDeclineButton(pending_id))
+
+
 ROAST_DYNAMIC_ITEMS = (
     _RoastApproveButton, _RoastDenyButton, _RoastAcceptButton, _RoastDeclineButton,
     _RoastPickTargetSelect, _RoastPickChannelSelect, _RoastPickConfirmButton,
     _RoastPickRemindButton, _RoastPickDontAskButton,
+    _HardcoreConsentAcceptButton, _HardcoreConsentDeclineButton,
 )
 
 
@@ -1613,13 +1788,13 @@ class RoastCog(GuildOnlyCog):
             await self.join_battle(battle_id, message.author.id)
             logger.info(f"[roast] user={message.author.id} auto-joined battle_id={battle_id} via reply")
 
+        is_hardcore = bool(battle.get("hardcore"))
+
         if random.randint(1, 100) <= BOT_CONCEDE_CHANCE_PERCENT:
-            # Bot "roasted back" by the member — occasionally take the L
-            # instead of always firing another roast, so it feels like a
-            # real back-and-forth instead of the bot being unbeatable.
-            # Skips the Groq call entirely in this branch — no point
-            # generating a roast just to throw it away.
             roast_text = self._pick_fresh_line(battle_id, CONCEDE_LINES, self._used_concedes)
+        elif is_hardcore:
+            # Hardcore mode: pure wordbank, no Groq call, no API risk.
+            roast_text = self._pick_fresh_line(battle_id, HARDCORE_PUNCHLINE_BANK, self._used_punchlines)
         else:
             roast_text = await _generate_roast(
                 message.author.display_name,
@@ -1632,7 +1807,8 @@ class RoastCog(GuildOnlyCog):
             "UPDATE discord_roast_battles SET last_activity_at = NOW() WHERE id = $1", battle_id,
         )
 
-        embed = discord.Embed(description=roast_text, color=discord.Color.red())
+        embed_color = discord.Color.dark_red() if is_hardcore else discord.Color.red()
+        embed = discord.Embed(description=roast_text, color=embed_color)
         try:
             # A human roast-battle comeback doesn't land in 0ms — show
             # typing and hold for a beat so it doesn't feel instant/robotic.
@@ -2092,6 +2268,248 @@ class RoastCog(GuildOnlyCog):
             f"random chance: {new_chance}%, enabled: {new_enabled}",
             ephemeral=True,
         )
+
+
+    # ── Hardcore roast methods ──────────────────────────────────────────
+
+    async def hardcore_initiate(
+        self, interaction: discord.Interaction,
+        target: discord.Member, channel: discord.TextChannel,
+    ):
+        """Called when a challenger picks Hardcore Mode. Creates a pending
+        row and sends them a Paystack payment link. The battle only starts
+        after (a) payment clears and (b) the target consents."""
+        from config import HARDCORE_ROAST_FEE_GHS
+        from payments import paystack as _paystack
+
+        clone_id = _clone_id_of(self.bot)
+
+        # One pending hardcore request per user at a time.
+        existing = await db.fetchrow(
+            "SELECT id FROM discord_hardcore_roast_pending "
+            "WHERE challenger_id = $1 AND status = 'awaiting_payment'",
+            interaction.user.id,
+        )
+        if existing:
+            await interaction.followup.send(
+                "You already have a pending hardcore roast payment. "
+                "Complete it or wait for it to expire before starting a new one.",
+                ephemeral=True,
+            )
+            return
+
+        row = await db.fetchrow(
+            """
+            INSERT INTO discord_hardcore_roast_pending
+                (guild_id, clone_id, challenger_id, target_id, channel_id, status)
+            VALUES ($1, $2, $3, $4, $5, 'awaiting_payment')
+            RETURNING id
+            """,
+            interaction.guild.id, clone_id,
+            interaction.user.id, target.id, channel.id,
+        )
+        pending_id = row["id"]
+
+        # Build Paystack link — amount in pesewas (GHS * 100).
+        amount_pesewas = HARDCORE_ROAST_FEE_GHS * 100
+        email = f"discord_{interaction.user.id}@primebot.app"
+        reference = f"hc_roast_{pending_id}_{interaction.user.id}"
+        pay_result = _paystack.initialize_payment(
+            email=email,
+            amount=amount_pesewas,
+            user_id=interaction.user.id,
+            bot_name="PRIME-BOT",
+            payment_type="hardcore_roast",
+            extra_metadata={"pending_id": str(pending_id)},
+            reference=reference,
+        )
+        pay_url = pay_result.get("data", {}).get("authorization_url") if pay_result else None
+
+        if not pay_url:
+            await db.execute(
+                "DELETE FROM discord_hardcore_roast_pending WHERE id = $1", pending_id,
+            )
+            await interaction.followup.send(
+                "⚠️ Couldn't generate a payment link right now — try again in a moment.",
+                ephemeral=True,
+            )
+            logger.error(f"[roast-hc] Paystack init failed pending_id={pending_id}: {pay_result!r}")
+            return
+
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            label=f"Pay GHS {HARDCORE_ROAST_FEE_GHS} — Unlock Hardcore Roast 🔥",
+            style=discord.ButtonStyle.link,
+            url=pay_url,
+        ))
+        await interaction.followup.send(
+            f"**Hardcore Roast** targets **{target.display_name}** in **#{channel.name}**.\n\n"
+            f"Pay **GHS {HARDCORE_ROAST_FEE_GHS}** to unlock. Once payment clears, "
+            f"{target.display_name} will be asked for consent — the roast only starts if they agree.\n\n"
+            "⚠️ No refunds if they decline — you're paying for the activation, not a guaranteed roast.",
+            view=view,
+            ephemeral=True,
+        )
+        logger.info(
+            f"[roast-hc] pending_id={pending_id} created challenger={interaction.user.id} "
+            f"target={target.id} guild={interaction.guild.id}"
+        )
+
+    async def hardcore_payment_confirmed(self, pending_id: int):
+        """Called by the Paystack webhook (payment_type='hardcore_roast').
+        Marks the pending row paid and DMs the target their consent request."""
+        row = await db.fetchrow(
+            "UPDATE discord_hardcore_roast_pending SET status = 'awaiting_consent' "
+            "WHERE id = $1 AND status = 'awaiting_payment' RETURNING *",
+            pending_id,
+        )
+        if not row:
+            logger.warning(f"[roast-hc] payment_confirmed: no awaiting_payment row for pending_id={pending_id}")
+            return
+
+        guild = self.bot.get_guild(row["guild_id"])
+        target = guild.get_member(row["target_id"]) if guild else None
+        challenger = guild.get_member(row["challenger_id"]) if guild else None
+        channel = self.bot.get_channel(row["channel_id"])
+
+        if not target or not guild or not channel:
+            logger.warning(f"[roast-hc] payment_confirmed: missing guild/target/channel pending_id={pending_id}")
+            await db.execute(
+                "UPDATE discord_hardcore_roast_pending SET status = 'cancelled' WHERE id = $1", pending_id,
+            )
+            return
+
+        challenger_name = challenger.display_name if challenger else "Someone"
+        try:
+            embed = discord.Embed(
+                title="🔥 Hardcore Roast Request",
+                description=(
+                    f"**{challenger_name}** has paid to roast you in **#{channel.name}** "
+                    f"on **{guild.name}** — and they went HARDCORE.\n\n"
+                    "This will be unfiltered, no-holds-barred roasting. "
+                    "If you're good with that, accept. Otherwise, decline — "
+                    "no hard feelings, no consequences."
+                ),
+                color=discord.Color.red(),
+            )
+            await target.send(embed=embed, view=HardcoreConsentView(pending_id))
+            logger.info(f"[roast-hc] consent DM sent pending_id={pending_id} target={target.id}")
+        except discord.Forbidden:
+            # Target has DMs closed — cancel and notify challenger.
+            await db.execute(
+                "UPDATE discord_hardcore_roast_pending SET status = 'cancelled' WHERE id = $1", pending_id,
+            )
+            if challenger:
+                try:
+                    await challenger.send(
+                        f"⚠️ Hardcore roast against **{target.display_name}** couldn't go through — "
+                        "their DMs are closed so I couldn't ask for consent. The session has been cancelled."
+                    )
+                except discord.Forbidden:
+                    pass
+            logger.info(f"[roast-hc] consent DM failed (DMs closed) pending_id={pending_id} target={target.id}")
+
+    async def hardcore_consent_accepted(self, pending_id: int, interaction: discord.Interaction):
+        """Target accepted — start the battle using the hardcore punchline bank."""
+        row = await db.fetchrow(
+            "UPDATE discord_hardcore_roast_pending SET status = 'accepted' "
+            "WHERE id = $1 AND status = 'awaiting_consent' RETURNING *",
+            pending_id,
+        )
+        if not row:
+            await interaction.edit_original_response(
+                content="⏰ This consent request already expired or was resolved.", view=None,
+            )
+            return
+
+        guild = self.bot.get_guild(row["guild_id"])
+        channel = self.bot.get_channel(row["channel_id"])
+        target = guild.get_member(row["target_id"]) if guild else None
+        challenger = guild.get_member(row["challenger_id"]) if guild else None
+
+        if not guild or not channel or not target:
+            await interaction.edit_original_response(
+                content="⚠️ The server or channel is no longer available.", view=None,
+            )
+            return
+
+        await interaction.edit_original_response(
+            content="🔥 Challenge accepted. Get in there — it's on.", view=None,
+        )
+
+        # Start the battle — but mark it as hardcore in the DB so on_message
+        # knows to use HARDCORE_PUNCHLINE_BANK instead of PUNCHLINE_BANK.
+        clone_id = _clone_id_of(self.bot)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=CHALLENGE_EXPIRY_MINUTES)
+        battle_row = await db.fetchrow(
+            """
+            INSERT INTO discord_roast_battles
+                (guild_id, clone_id, channel_id, target_id, proposed_by_admin_id,
+                 status, expires_at, hardcore)
+            VALUES ($1, $2, $3, $4, $5, 'active', $6, TRUE)
+            RETURNING id
+            """,
+            guild.id, clone_id, channel.id, target.id,
+            row["challenger_id"], expires_at,
+        )
+        battle_id = battle_row["id"]
+        self._active_by_channel[channel.id] = battle_id
+
+        roast_text = self._pick_fresh_line(battle_id, HARDCORE_PUNCHLINE_BANK, self._used_punchlines)
+        embed = discord.Embed(
+            title="🔥 HARDCORE Roast Battle — LIVE",
+            description=roast_text,
+            color=discord.Color.dark_red(),
+        )
+        embed.set_footer(text="Reply to fire back. This is HARDCORE mode — gloves are off.")
+        view = RoastBattleView(self, battle_id)
+        self.bot.add_view(view)
+        try:
+            await channel.send(content=target.mention, embed=embed, view=view)
+        except discord.HTTPException as e:
+            logger.error(f"[roast-hc] failed to post opening roast pending_id={pending_id}: {e!r}")
+
+        if challenger:
+            try:
+                await challenger.send(
+                    f"🔥 **{target.display_name}** accepted the hardcore roast in **#{channel.name}**. It's on."
+                )
+            except discord.Forbidden:
+                pass
+
+        logger.info(f"[roast-hc] battle_id={battle_id} started (hardcore) pending_id={pending_id}")
+
+    async def hardcore_consent_declined(self, pending_id: int, interaction: discord.Interaction):
+        """Target declined — cancel and notify the challenger."""
+        row = await db.fetchrow(
+            "UPDATE discord_hardcore_roast_pending SET status = 'declined' "
+            "WHERE id = $1 AND status = 'awaiting_consent' RETURNING *",
+            pending_id,
+        )
+        if not row:
+            await interaction.edit_original_response(
+                content="⏰ This consent request already expired or was resolved.", view=None,
+            )
+            return
+
+        await interaction.edit_original_response(
+            content="😌 Declined. No roast today — good call.", view=None,
+        )
+
+        guild = self.bot.get_guild(row["guild_id"])
+        challenger = guild.get_member(row["challenger_id"]) if guild else None
+        target_name = interaction.user.display_name
+
+        if challenger:
+            try:
+                await challenger.send(
+                    f"😬 **{target_name}** declined the hardcore roast. No battle today.\n"
+                    "Remember: no refunds on declined roasts — they paid for the activation, not a guaranteed yes."
+                )
+            except discord.Forbidden:
+                pass
+
+        logger.info(f"[roast-hc] pending_id={pending_id} declined by target={interaction.user.id}")
 
 
 async def setup(bot: commands.Bot):
