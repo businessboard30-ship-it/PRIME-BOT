@@ -81,6 +81,35 @@ logger = logging.getLogger(__name__)
 
 INVITE_RE = re.compile(r"(discord\.gg/|discordapp\.com/invite/|discord\.com/invite/)", re.IGNORECASE)
 
+# Word-filter matching. Whole-word only: a banned "hell" must NOT fire on
+# "hello"/"shell", "ass" must not fire on "class"/"pass"/"assist". A small set
+# of common inflections is allowed so "fuck" still catches fucking/fucked/
+# fucker/fucks. Compiled once per distinct word list and cached.
+_WORD_SUFFIX = r"(?:s|es|ed|ing|er|ers)?"
+_banned_re_cache: dict = {}
+
+
+def _compile_banned_re(words):
+    key = tuple(words)
+    cached = _banned_re_cache.get(key)
+    if cached is not None:
+        return cached
+    parts = sorted({re.escape(w.strip().lower()) for w in words if w and w.strip()}, key=len, reverse=True)
+    rx = re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")" + _WORD_SUFFIX + r"(?!\w)", re.IGNORECASE) if parts else None
+    if len(_banned_re_cache) > 256:
+        _banned_re_cache.clear()
+    _banned_re_cache[key] = rx
+    return rx
+
+
+def find_banned_word(content: str, words):
+    """Return the matched banned word/phrase in content, or None."""
+    rx = _compile_banned_re(words)
+    if rx is None or not content:
+        return None
+    m = rx.search(content)
+    return m.group(0).lower() if m else None
+
 VALID_ACTIONS = {"delete", "warn", "timeout", "kick"}
 VALID_FILTERS = {"word_filter", "anti_invite", "anti_mention", "spam"}
 
@@ -628,8 +657,7 @@ class AutomodCog(GuildOnlyCog):
                 return
 
         if config.get("word_filter_enabled"):
-            content = (message.content or "").lower()
-            matched = next((w for w in config.get("banned_words", []) if w in content), None)
+            matched = find_banned_word(message.content or "", config.get("banned_words", []))
             if matched:
                 await self._enforce(message, config, f"Used a blocked word/phrase (\"{matched}\")")
                 return
@@ -918,7 +946,10 @@ class AutomodCog(GuildOnlyCog):
         await interaction.response.defer(ephemeral=True)
         try:
             with open(PRESET_BANNED_WORDS_PATH, encoding="utf-8") as f:
-                preset_words = [line.strip() for line in f if line.strip()]
+                preset_words = [
+                    line.strip() for line in f
+                    if len(line.strip()) >= 3 and "*" not in line and re.fullmatch(r"[\w' \-]+", line.strip())
+                ]
         except OSError:
             msg = await tr("❌ Preset list file is missing on the bot host.", lang)
             await interaction.followup.send(msg, ephemeral=True)
