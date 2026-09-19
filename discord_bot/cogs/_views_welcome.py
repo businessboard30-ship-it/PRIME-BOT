@@ -1016,6 +1016,8 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
                 async with session.get(str(interaction.user.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
+                from discord_bot.cogs.welcome import _custom_bg_bytes_for_render
+                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, interaction.client)
             # Off-loaded to a thread: this is synchronous PIL work (can take
             # real time, especially compositing an animated GIF sticker) and
             # would otherwise block the bot's single event loop entirely —
@@ -1030,6 +1032,7 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
                 avatar_shape=config.get("avatar_shape", "circle"),
                 use_template=config.get("use_template", True),
                 theme=config.get("card_theme", "wolf"),
+                custom_background_bytes=custom_bg_bytes,
             )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
@@ -1044,18 +1047,14 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
 
 
 class WelcomeUltraPackButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("ultra")):
-    """Surfaces the ultra pack (own png/jpg welcome-card background, see
-    discord_bot/views_card_pack.py) inside the wizard itself — previously
-    this was only reachable via the standalone `/welcome buyultra` slash
-    command, with nothing in the wizard even mentioning it existed.
-
-    Locked: kicks off the same payment flow `/welcome buyultra` does
-    (start_ultra_pack_payment, including its own free bot-owner bypass),
-    then re-renders the wizard in place so the button flips to unlocked
-    as soon as payment is verified — no need to close and reopen /welcome
-    setup. Unlocked: just points the admin at `/welcome custombg`, since
-    setting the actual background is its own upload/URL step, not
-    something a wizard button can collect input for."""
+    """The wizard's "Customize Card" button. Opens the Customize Card
+    wizard (discord_bot/cogs/_views_card_customize.py) as an ephemeral
+    message: card look, avatar shape, custom png/jpg background, preview.
+    The custom-background step is part of the one-time ultra pack, so when
+    the server hasn't bought it the wizard shows an "Unlock background"
+    button that starts the same payment flow as `/welcome buyultra`
+    (including its free bot-owner bypass). The ✅ on this button's label
+    just reflects whether the pack is already owned."""
 
     def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
         self.guild_id = guild_id
@@ -1077,23 +1076,13 @@ class WelcomeUltraPackButton(discord.ui.DynamicItem[discord.ui.Button], template
     async def callback(self, interaction: discord.Interaction):
         if not await _check_access(interaction, self.invoker_id):
             return
-        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
-        if config.get("ultra_pack_unlocked"):
-            await interaction.response.send_message(
-                "This server already owns Customize Card — set your background with `/welcome custombg`.",
-                ephemeral=True,
-            )
-            return
-        # ephemeral+thinking here (not the plain defer() every other button
-        # in this wizard uses) because start_ultra_pack_payment posts its
-        # own separate ephemeral embed via followup.send — it does not
-        # edit the wizard message itself, so there's nothing to
-        # _rerender() until the purchase is actually verified. That
-        # refresh happens over in views_card_pack.py's verify callback via
-        # refresh_posted_wizard, same as every other out-of-band write.
+        # Opens the Customize Card wizard (look, avatar shape, custom
+        # background, preview). Buying is now a step INSIDE that wizard
+        # (its "Unlock background" button) rather than what this button
+        # does directly. Ephemeral: only the admin who tapped sees it.
         await interaction.response.defer(ephemeral=True, thinking=True)
-        from discord_bot.views_card_pack import start_ultra_pack_payment
-        await start_ultra_pack_payment(interaction)
+        from discord_bot.cogs._views_card_customize import open_customize_wizard
+        await open_customize_wizard(interaction, self.guild_id, self.clone_id)
 
 
 # Registered once in discord_bot/bot.py's setup_hook via
