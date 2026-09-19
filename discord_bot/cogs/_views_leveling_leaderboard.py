@@ -318,6 +318,21 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     container.add_item(boost_row)
     container.add_item(build_boost_wallet_row(guild.id, clone_id))
 
+    # Go Premium footer — only show if guild isn't already premium
+    try:
+        is_prem = await db.is_guild_premium_active(guild.id, clone_id)
+    except Exception:
+        is_prem = False
+    if not is_prem:
+        import config as _config
+        prem_row = discord.ui.ActionRow()
+        prem_row.add_item(_LeaderboardGoPremiumButton(guild.id, clone_id))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            f"-# 💎 **Go Premium** — ${_config.PREMIUM_FEE_USD:g}/month unlocks every feature for this server."
+        ))
+        container.add_item(prem_row)
+
     view.add_item(container)
     return view
 
@@ -441,4 +456,33 @@ class LeaderboardMyRankButton(discord.ui.DynamicItem[discord.ui.Button],
         await _rerender(interaction, self.guild_id, self.clone_id, self.mode, target_page)
 
 
-DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton)
+DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton,
+                 _LeaderboardGoPremiumButton)
+
+
+class _LeaderboardGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
+                                   template=r"^lvllb_goprem:(\d+):(-|\d+)$"):
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        import config as _config
+        super().__init__(discord.ui.Button(
+            label=f"Go Premium 💎 — ${_config.PREMIUM_FEE_USD:g}/month",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"lvllb_goprem:{guild_id}:{_clone_part(clone_id)}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        clone_part = match.group(2)
+        clone_id = None if clone_part == "-" else int(clone_part)
+        return cls(int(match.group(1)), clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_premium import send_premium_pitch
+        await interaction.response.defer(ephemeral=True)
+        await send_premium_pitch(interaction, self.guild_id, self.clone_id)
+
+
+DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton,
+                 _LeaderboardGoPremiumButton)

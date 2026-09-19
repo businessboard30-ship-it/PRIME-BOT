@@ -239,15 +239,33 @@ class HelpView(discord.ui.View):
         super().__init__(timeout=180)
         self.add_item(CategorySelect())
         self.add_item(SearchButton())
-        # Plain link button — no custom_id needed, so it needs no
-        # DynamicItem registration and isn't affected by restarts/timeouts
-        # on its own. Same "empty means omit rather than send broken" rule
-        # as the join DM's version (discord_bot/cogs/_views_join_dm.py).
+        self.add_item(_HelpGoPremiumButton())
         if DISCORD_SUPPORT_SERVER_INVITE:
             self.add_item(discord.ui.Button(
                 label="Join our support server", style=discord.ButtonStyle.link,
                 emoji="🆘", url=DISCORD_SUPPORT_SERVER_INVITE, row=1,
             ))
+
+
+class _HelpGoPremiumButton(discord.ui.Button):
+    def __init__(self):
+        import config as _config
+        super().__init__(
+            label=f"Go Premium 💎 — ${_config.PREMIUM_FEE_USD:g}/month",
+            style=discord.ButtonStyle.primary, row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        guild_id = interaction.guild_id
+        clone_id = getattr(interaction.client, "clone_id", None)
+        if not guild_id:
+            await interaction.response.send_message(
+                "Premium is per-server — run this command inside a server.", ephemeral=True
+            )
+            return
+        from discord_bot.cogs._views_premium import send_premium_pitch
+        await interaction.response.defer(ephemeral=True)
+        await send_premium_pitch(interaction, guild_id, clone_id)
 
 
 class HelpCog(commands.Cog):

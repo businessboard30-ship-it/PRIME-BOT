@@ -138,7 +138,11 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "26"
+SCHEMA_VERSION = "27"
+# "26" -> "27": premium giveaway extras (scheduled_start, embed_color,
+# bonus_entries_json, auto_reroll_hours) + premium ticket extras
+# (categories_json, custom_buttons_json, auto_close_hours,
+# transcript_channel_id, custom_close_message) on both config tables.
 # "25" -> "26": 016_hardcore_roast — discord_hardcore_roast_pending table +
 # discord_roast_battles.hardcore column for per-battle paid hardcore mode.
 # discord_custom_roles.via_premium) for the $5/month per-server Premium tier.
@@ -2454,6 +2458,27 @@ class Database:
         await conn.execute(
             "ALTER TABLE discord_ticket_config ADD COLUMN IF NOT EXISTS wizard_invoker_id BIGINT"
         )
+        # Premium ticket extras — only applied when guild is premium.
+        # categories_json: [{"label":"Support","emoji":"🎫","description":"..."},...]
+        # custom_buttons_json: [{"label":"...","emoji":"...","url":"..."},...]
+        # auto_close_hours: close inactive tickets after N hours
+        # transcript_channel_id: post full message log here on close
+        # custom_close_message: what the bot says when closing a ticket
+        await conn.execute(
+            "ALTER TABLE discord_ticket_config ADD COLUMN IF NOT EXISTS categories_json TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_ticket_config ADD COLUMN IF NOT EXISTS custom_buttons_json TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_ticket_config ADD COLUMN IF NOT EXISTS auto_close_hours INTEGER"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_ticket_config ADD COLUMN IF NOT EXISTS transcript_channel_id BIGINT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_ticket_config ADD COLUMN IF NOT EXISTS custom_close_message TEXT"
+        )
 
         # --- Discord port: join verification / anti-raid gate ------------------
         # discord_verification_config: one row per guild (+clone). mode is
@@ -2546,6 +2571,35 @@ class Database:
         # mockup's optional "Role requirement" step, added for real here.
         await conn.execute(
             "ALTER TABLE discord_giveaways ADD COLUMN IF NOT EXISTS role_requirement_id BIGINT"
+        )
+        # Premium giveaway extras — only applied when guild is premium.
+        # bonus_entries_json: [{"role_id": 123, "extra_entries": 2}, ...]
+        # auto_reroll_hours: if set, auto-pick a new winner if the original
+        # doesn't claim/react within N hours.
+        await conn.execute(
+            "ALTER TABLE discord_giveaways ADD COLUMN IF NOT EXISTS scheduled_start_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_giveaways ADD COLUMN IF NOT EXISTS embed_color TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_giveaways ADD COLUMN IF NOT EXISTS bonus_entries_json TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_giveaways ADD COLUMN IF NOT EXISTS auto_reroll_hours INTEGER"
+        )
+        # Same extras on the draft so they survive the wizard flow.
+        await conn.execute(
+            "ALTER TABLE discord_giveaway_drafts ADD COLUMN IF NOT EXISTS scheduled_start_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_giveaway_drafts ADD COLUMN IF NOT EXISTS embed_color TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_giveaway_drafts ADD COLUMN IF NOT EXISTS bonus_entries_json TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_giveaway_drafts ADD COLUMN IF NOT EXISTS auto_reroll_hours INTEGER"
         )
 
         # discord_giveaway_drafts: transient state for the /giveaway setup
