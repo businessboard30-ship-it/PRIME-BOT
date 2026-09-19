@@ -900,13 +900,15 @@ class CloneAdminCog(commands.Cog):
     @app_commands.describe(
         mode="split = Ghana pays via Paystack, others via Gumroad. Or force one provider for everyone.",
         clone_id="Restrict the switch to one clone (see /myclones) — omit to change the main bot",
+        all_clones="Set this mode on EVERY clone at once (ignores clone_id)",
     )
     @app_commands.choices(mode=[
         app_commands.Choice(name="Split — Ghana pays via Paystack, everyone else via Gumroad", value="split"),
         app_commands.Choice(name="Paystack only", value="auto"),
         app_commands.Choice(name="Gumroad only", value="gumroad"),
     ])
-    async def paymentmode(self, interaction: discord.Interaction, mode: app_commands.Choice[str], clone_id: int = None):
+    async def paymentmode(self, interaction: discord.Interaction, mode: app_commands.Choice[str], clone_id: int = None,
+                          all_clones: bool = False):
         """Flips db.get_payment_mode's override for every dual-mode paid
         feature in the bot (welcome card pack, ultra pack, clone
         monetization, custom role, XP wallet/server boosts, music pro) —
@@ -918,6 +920,15 @@ class CloneAdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         if not _is_clone_admin(interaction.user.id):
             await interaction.followup.send("This command is restricted to bot owners.", ephemeral=True)
+            return
+        if all_clones:
+            clones = await db.list_active_discord_clones()
+            for c in clones:
+                await db.set_payment_mode(mode.value, clone_id=c["clone_id"])
+            await interaction.followup.send(
+                f"✅ Payment mode is now **{mode.name}** on all {len(clones)} active clone(s). "
+                f"The main bot was not changed.", ephemeral=True,
+            )
             return
         if clone_id is not None:
             clone = await db.get_discord_clone(clone_id)
