@@ -19,8 +19,13 @@ designed — one ephemeral message (only the admin who tapped sees it):
   - preview      renders the real card (a sample backdrop is used until a
                  background is set); reset puts the layout back to default
 
-Servers that haven't bought Customize Card see a short pitch + an Unlock
-button (same payment flow as /welcome buyultra) instead.
+Try-before-buy: the editor opens for EVERY server. Servers that haven't
+bought Customize Card edit an in-memory DRAFT (never written to the DB, never
+uploaded to the hosting channel) and get watermarked, rate-limited previews;
+saving/applying needs the purchase (Unlock button, same payment flow as
+/welcome buyultra, with the free bot-owner bypass). Every DB write is still
+gated server-side: unpaid servers only ever touch the in-memory draft. Premium servers arrive already
+unlocked via get_welcome_config.
 
 Layout options are stored as JSON in discord_welcome_config.ultra_card_json
 and validated by modules.welcome_card.parse_ultra_options.
@@ -37,6 +42,7 @@ import io
 import json
 import logging
 import re
+import time
 
 import aiohttp
 import discord
@@ -77,10 +83,84 @@ async def _check_access(interaction: discord.Interaction, invoker_id) -> bool:
     return await check_wizard_access(interaction, invoker_id, "welcome", "manage_guild", "Manage Server")
 
 
+# ── drafts (unpaid servers only; memory only) ─────────────────────────────
+
+_DRAFT_TTL = 30 * 60
+_DRAFT_MAX = 100
+_DRAFTS: dict = {}          # (guild_id, clone_id, user_id) -> draft dict
+_LAST_PREVIEW: dict = {}    # user_id -> monotonic time of last render
+_PREVIEW_COOLDOWN = 8.0
+
+
+def _draft_key(guild_id: int, clone_id, user_id):
+    return (guild_id, clone_id, user_id)
+
+
+def _get_draft(guild_id: int, clone_id, user_id, create: bool = False):
+    now = time.monotonic()
+    for k in [k for k, d in _DRAFTS.items() if now - d["ts"] > _DRAFT_TTL]:
+        _DRAFTS.pop(k, None)
+    key = _draft_key(guild_id, clone_id, user_id)
+    d = _DRAFTS.get(key)
+    if d is None and create:
+        while len(_DRAFTS) >= _DRAFT_MAX:
+            _DRAFTS.pop(min(_DRAFTS, key=lambda k: _DRAFTS[k]["ts"]), None)
+        d = _DRAFTS[key] = {"opts": parse_ultra_options(None), "shape": "circle", "bg": None, "ts": now}
+    if d is not None:
+        d["ts"] = now
+    return d
+
+
+def _effective_config(config: dict, guild_id: int, clone_id, user_id) -> dict:
+    """Config as the editor should display/preview it: the DB row for
+    unlocked servers, DB row overlaid with the user's draft otherwise."""
+    if config.get("ultra_pack_unlocked"):
+        return config
+    d = _get_draft(guild_id, clone_id, user_id)
+    if d is None:
+        return dict(config, custom_background_url=None)
+    return dict(
+        config, ultra_card_json=json.dumps(d["opts"]), avatar_shape=d["shape"],
+        custom_background_url="draft" if d["bg"] else None,
+    )
+
+
+def _shrink_bg(data: bytes):
+    """Downscale a draft background so memory stays small. None if not an image."""
+    try:
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        img.thumbnail((1600, 1600))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=88)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def _watermark(card_bytes: bytes) -> bytes:
+    try:
+        img = Image.open(io.BytesIO(card_bytes)).convert("RGBA")
+        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        step = max(90, img.size[0] // 6)
+        for y in range(-step, img.size[1] + step, step):
+            for x in range(-step, img.size[0] + step, step * 2):
+                d.text((x + (y // step % 2) * step, y), "PREVIEW", fill=(255, 255, 255, 70))
+        out = io.BytesIO()
+        Image.alpha_composite(img, layer).convert("RGB").save(out, format="PNG")
+        return out.getvalue()
+    except Exception:
+        return card_bytes
+
+
 # ── option storage ────────────────────────────────────────────────────────
 
-async def _save_option(guild_id: int, clone_id, **changes) -> None:
+async def _save_option(guild_id: int, clone_id, user_id=None, **changes) -> None:
     cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    if not cfg.get("ultra_pack_unlocked"):
+        d = _get_draft(guild_id, clone_id, user_id, create=True)
+        d["opts"].update(changes)
+        return
     opts = parse_ultra_options(cfg.get("ultra_card_json"))
     opts.update(changes)
     await db.set_welcome_config(guild_id, clone_id=clone_id, ultra_card_json=json.dumps(opts))
@@ -94,30 +174,17 @@ _SIDE_LABELS = {"left": "Avatar on the left (classic)", "right": "Avatar on the 
 _COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red"}
 
 
-def _locked_view(guild_id: int, clone_id, invoker_id) -> discord.ui.LayoutView:
-    view = discord.ui.LayoutView(timeout=None)
-    container = discord.ui.Container(accent_colour=discord.Color.gold())
-    container.add_item(discord.ui.TextDisplay("\n".join([
-        "### 🖼️ Customize Card",
-        "Design your own welcome card: use **your own background image** and choose where the banner "
-        "goes, how dark it is, which side the avatar sits on, the text color, and your own heading text.",
-        f"One-time **${bot_config.ULTRA_PACK_FEE_USD:g}**, whole server, applies to every future join.",
-    ])))
-    container.add_item(discord.ui.Separator())
-    row = discord.ui.ActionRow()
-    row.add_item(CardUnlockButton(guild_id, clone_id, invoker_id))
-    row.add_item(CardDoneButton(guild_id, clone_id, invoker_id))
-    container.add_item(row)
-    view.add_item(container)
-    return view
-
-
-def _status_lines(config: dict, opts: dict) -> list:
+def _status_lines(config: dict, opts: dict, unlocked: bool = True) -> list:
     has_bg = bool(config.get("custom_background_url"))
     shape = config.get("avatar_shape", "circle")
     heading = opts["heading"] or "Welcome to {server}! (default)"
-    return [
-        "### 🖼️ Customize your welcome card",
+    head = ["### 🖼️ Customize your welcome card"]
+    if not unlocked:
+        head.append(
+            f"🔒 **Preview mode** — play with everything and tap Preview. To **save** it (and use your "
+            f"own background on every join) unlock Customize Card: one-time **${bot_config.ULTRA_PACK_FEE_USD:g}**, whole server."
+        )
+    return head + [
         ("✅ **Background:** your image" if has_bg
          else "▫️ **Background:** none yet — tap **Set background** (the preview uses a sample backdrop)"),
         f"📐 **Banner:** {opts['banner']} · darkness {opts['dim']}",
@@ -130,15 +197,15 @@ def _status_lines(config: dict, opts: dict) -> list:
 
 
 def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict) -> discord.ui.LayoutView:
-    if not config.get("ultra_pack_unlocked"):
-        return _locked_view(guild_id, clone_id, invoker_id)
+    unlocked = bool(config.get("ultra_pack_unlocked"))
+    config = _effective_config(config, guild_id, clone_id, invoker_id)
 
     opts = parse_ultra_options(config.get("ultra_card_json"))
     has_bg = bool(config.get("custom_background_url"))
 
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
-    container.add_item(discord.ui.TextDisplay("\n".join(_status_lines(config, opts))))
+    container.add_item(discord.ui.TextDisplay("\n".join(_status_lines(config, opts, unlocked))))
     container.add_item(discord.ui.Separator())
 
     for select_cls in (CardBannerSelect, CardDimSelect, CardSideSelect, CardShapeSelect, CardColorSelect):
@@ -158,7 +225,10 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict) -> d
     act_row = discord.ui.ActionRow()
     act_row.add_item(CardPreviewButton(guild_id, clone_id, invoker_id))
     act_row.add_item(CardResetButton(guild_id, clone_id, invoker_id))
-    act_row.add_item(CardDoneButton(guild_id, clone_id, invoker_id))
+    if unlocked:
+        act_row.add_item(CardDoneButton(guild_id, clone_id, invoker_id))
+    else:
+        act_row.add_item(CardUnlockButton(guild_id, clone_id, invoker_id))
     container.add_item(act_row)
 
     view.add_item(container)
@@ -169,6 +239,16 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
     """Called by the setup wizard's Customize Card button. The caller has
     already deferred (ephemeral) — this just posts the wizard as a followup."""
     config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    if config.get("ultra_pack_unlocked"):
+        # Bought after designing in preview mode: carry the draft's layout
+        # over (the draft background is never stored — set it again).
+        d = _DRAFTS.pop(_draft_key(guild_id, clone_id, interaction.user.id), None)
+        if d is not None:
+            await db.set_welcome_config(
+                guild_id, clone_id=clone_id,
+                ultra_card_json=json.dumps(d["opts"]), avatar_shape=d["shape"],
+            )
+            config = await db.get_welcome_config(guild_id, clone_id=clone_id)
     view = build_customize_view(guild_id, clone_id, interaction.user.id, config)
     await interaction.followup.send(view=view, ephemeral=True)
 
@@ -224,16 +304,14 @@ class _OptionSelectMixin:
         g, c, i = _decode(match)
         return cls(g, c, i, {})
 
-    async def _save(self, value: str):
-        await _save_option(self.guild_id, self.clone_id, **{self.FIELD: value})
+    async def _save(self, value: str, user_id=None):
+        await _save_option(self.guild_id, self.clone_id, user_id, **{self.FIELD: value})
 
     async def callback(self, interaction: discord.Interaction):
         if not await _check_access(interaction, self.invoker_id):
             return
         await interaction.response.defer()
-        if not await _require_unlocked(interaction, self.guild_id, self.clone_id):
-            return
-        await self._save(self.item.values[0])
+        await self._save(self.item.values[0], interaction.user.id)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
@@ -261,7 +339,11 @@ class CardShapeSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Sele
     def _current(self, config: dict):
         return config.get("avatar_shape", "circle")
 
-    async def _save(self, value: str):
+    async def _save(self, value: str, user_id=None):
+        cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        if not cfg.get("ultra_pack_unlocked"):
+            _get_draft(self.guild_id, self.clone_id, user_id, create=True)["shape"] = value
+            return
         await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, avatar_shape=value)
 
 
@@ -289,8 +371,8 @@ class CardBackgroundModal(discord.ui.Modal, title="Custom card background"):
         await interaction.response.defer()
         from discord_bot.cogs.welcome import _upload_custom_bg, _fetch_custom_bg_bytes
 
-        if not await _require_unlocked(interaction, self.guild_id, self.clone_id):
-            return
+        cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        unlocked = bool(cfg.get("ultra_pack_unlocked"))
         files = list(self.upload.values or [])
         url = str(self.url.value or "").strip()
         if files and url:
@@ -298,6 +380,29 @@ class CardBackgroundModal(discord.ui.Modal, title="Custom card background"):
             return
         if not files and not url:
             await interaction.followup.send("⚠️ Upload an image or paste a link first.", ephemeral=True)
+            return
+
+        if not unlocked:
+            # Preview only: hold the image in memory, never host or store it.
+            from discord_bot.cogs.welcome import CUSTOM_BG_ALLOWED_CONTENT_TYPES, CUSTOM_BG_MAX_BYTES
+            if files:
+                ct = (files[0].content_type or "").split(";")[0].strip().lower()
+                if ct not in CUSTOM_BG_ALLOWED_CONTENT_TYPES or files[0].size > CUSTOM_BG_MAX_BYTES:
+                    await interaction.followup.send("⚠️ Use a png/jpg under 8MB.", ephemeral=True)
+                    return
+                data = await files[0].read()
+            else:
+                async with aiohttp.ClientSession() as session:
+                    data, reason = await _fetch_custom_bg_bytes(session, url)
+                if data is None:
+                    await interaction.followup.send(f"⚠️ Couldn't use that image — {reason}.", ephemeral=True)
+                    return
+            small = await asyncio.to_thread(_shrink_bg, data)
+            if small is None:
+                await interaction.followup.send("⚠️ Couldn't read that image.", ephemeral=True)
+                return
+            _get_draft(self.guild_id, self.clone_id, interaction.user.id, create=True)["bg"] = small
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
             return
 
         if files:
@@ -371,7 +476,12 @@ class CardClearBackgroundButton(_Btn, discord.ui.DynamicItem[discord.ui.Button],
         if not await _check_access(interaction, self.invoker_id):
             return
         await interaction.response.defer()
-        if not await _require_unlocked(interaction, self.guild_id, self.clone_id):
+        cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        if not cfg.get("ultra_pack_unlocked"):
+            d = _get_draft(self.guild_id, self.clone_id, interaction.user.id)
+            if d:
+                d["bg"] = None
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
             return
         await db.set_welcome_config(
             self.guild_id, clone_id=self.clone_id,
@@ -415,9 +525,7 @@ class CardHeadingModal(discord.ui.Modal, title="Card heading text"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        if not await _require_unlocked(interaction, self.guild_id, self.clone_id):
-            return
-        await _save_option(self.guild_id, self.clone_id, heading=str(self.heading.value or "").strip())
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, heading=str(self.heading.value or "").strip())
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
@@ -428,6 +536,7 @@ class CardHeadingButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templat
         if not await _check_access(interaction, self.invoker_id):
             return
         cfg = await vw._get_config_for_modal(self.guild_id, self.clone_id)
+        cfg = _effective_config(cfg, self.guild_id, self.clone_id, interaction.user.id)
         current = parse_ultra_options(cfg.get("ultra_card_json"))["heading"]
         try:
             await interaction.response.send_modal(CardHeadingModal(self.guild_id, self.clone_id, self.invoker_id, current))
@@ -450,11 +559,10 @@ class CardNumberToggleButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], te
         if not await _check_access(interaction, self.invoker_id):
             return
         await interaction.response.defer()
-        if not await _require_unlocked(interaction, self.guild_id, self.clone_id):
-            return
         cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        cfg = _effective_config(cfg, self.guild_id, self.clone_id, interaction.user.id)
         current = parse_ultra_options(cfg.get("ultra_card_json"))["show_number"]
-        await _save_option(self.guild_id, self.clone_id, show_number=not current)
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, show_number=not current)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
@@ -465,7 +573,10 @@ class CardResetButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=
         if not await _check_access(interaction, self.invoker_id):
             return
         await interaction.response.defer()
-        if not await _require_unlocked(interaction, self.guild_id, self.clone_id):
+        cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        if not cfg.get("ultra_pack_unlocked"):
+            _DRAFTS.pop(_draft_key(self.guild_id, self.clone_id, interaction.user.id), None)
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
             return
         await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, ultra_card_json=None)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
@@ -492,16 +603,31 @@ class CardPreviewButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templat
         if not await _check_access(interaction, self.invoker_id):
             return
         await interaction.response.defer(ephemeral=True)
+        now = time.monotonic()
+        wait = _PREVIEW_COOLDOWN - (now - _LAST_PREVIEW.get(interaction.user.id, 0.0))
+        if wait > 0:
+            await interaction.followup.send(f"⏳ Give it {int(wait) + 1}s before the next preview.", ephemeral=True)
+            return
+        _LAST_PREVIEW[interaction.user.id] = now
+        if len(_LAST_PREVIEW) > 2000:
+            for k in [k for k, t in _LAST_PREVIEW.items() if now - t > 60]:
+                _LAST_PREVIEW.pop(k, None)
         try:
             from discord_bot.cogs.welcome import _custom_bg_bytes_for_render
-            cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+            real_cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+            unlocked = bool(real_cfg.get("ultra_pack_unlocked"))
+            cfg = _effective_config(real_cfg, self.guild_id, self.clone_id, interaction.user.id)
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     str(interaction.user.display_avatar.replace(size=256).url),
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     avatar_bytes = await resp.read()
-                bg_bytes = await _custom_bg_bytes_for_render(session, cfg, interaction.client)
+                if unlocked:
+                    bg_bytes = await _custom_bg_bytes_for_render(session, cfg, interaction.client)
+                else:
+                    d = _get_draft(self.guild_id, self.clone_id, interaction.user.id)
+                    bg_bytes = d["bg"] if d else None
             using_sample = bg_bytes is None
             if using_sample:
                 bg_bytes = _sample_backdrop()
@@ -513,9 +639,11 @@ class CardPreviewButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templat
                 custom_background_bytes=bg_bytes,
                 ultra_options=cfg.get("ultra_card_json"),
             )
+            if not unlocked:
+                card_bytes = await asyncio.to_thread(_watermark, card_bytes)
             note = "sample backdrop — set a background to use your own image" if using_sample else "your background"
             await interaction.followup.send(
-                content=f"**Preview** ({note}) — only visible to you",
+                content=f"**Preview** ({note}) — only visible to you" + ("" if unlocked else " · unlock to save & remove the watermark"),
                 file=discord.File(fp=io.BytesIO(card_bytes), filename="preview.png"),
                 ephemeral=True,
             )
