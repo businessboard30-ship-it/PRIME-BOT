@@ -68,18 +68,41 @@ def _fetch_rate(currency: str) -> Optional[float]:
     if cached and (now - cached[1]) < RATE_CACHE_SECONDS:
         return cached[0]
 
+    # 1) exchangerate.host (now often needs an API key), 2) open.er-api.com
+    # (free, no key). First one that answers wins.
+    rate = None
     try:
         resp = requests.get(FX_API_URL, params={"base": "USD", "symbols": currency}, timeout=8)
         resp.raise_for_status()
         rate = resp.json()["rates"][currency]
+    except (requests.RequestException, KeyError, ValueError, TypeError):
+        logger.warning("FX rate fetch failed for USD->%s (exchangerate.host)", currency)
+    if not rate:
+        try:
+            resp = requests.get("https://open.er-api.com/v6/latest/USD", timeout=8)
+            resp.raise_for_status()
+            rate = resp.json()["rates"][currency]
+        except (requests.RequestException, KeyError, ValueError, TypeError):
+            logger.warning("FX rate fetch failed for USD->%s (open.er-api.com)", currency)
+    if rate:
         _rate_cache[currency] = (rate, now)
         return rate
-    except (requests.RequestException, KeyError, ValueError):
-        logger.warning("FX rate fetch failed for USD->%s", currency)
-        if cached:
-            logger.info("Falling back to stale cached rate for %s (age %.0fs)", currency, now - cached[1])
-            return cached[0]
-        return None
+
+    if cached:
+        logger.info("Falling back to stale cached rate for %s (age %.0fs)", currency, now - cached[1])
+        return cached[0]
+    # Last resort: a fixed rate from the environment so a Paystack (GHS-only)
+    # checkout still works when both FX APIs are down. Set USD_GHS_FALLBACK_RATE
+    # on Railway to your current rate; only used when live rates are unavailable.
+    if currency == "GHS":
+        import os
+        try:
+            fallback = float(os.getenv("USD_GHS_FALLBACK_RATE", "11.0"))
+        except ValueError:
+            fallback = 11.0
+        logger.warning("Using fixed fallback USD->GHS rate %s", fallback)
+        return fallback
+    return None
 
 
 def convert_from_usd(usd_amount: float, currency: str) -> tuple[float, str]:
