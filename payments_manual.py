@@ -418,6 +418,23 @@ def _make_unlock_xp_server_boost_tier(tier_key: str):
     return _handler
 
 
+async def _unlock_hardcore_roast(reference: str, user_id: int, chat_id, clone_id):
+    """Hardcore roast per-battle unlock. Marks the pending row as
+    'awaiting_consent' — RoastCog's _hardcore_consent_poller picks it up
+    within 30s and fires the target's consent DM. No direct bot reference
+    needed here (webhook process has no live discord.py client)."""
+    from database import db as _db
+    row = await _db.fetchrow(
+        "UPDATE discord_hardcore_roast_pending SET status = 'awaiting_consent' "
+        "WHERE challenger_id = $1 AND status = 'awaiting_payment' RETURNING id",
+        user_id,
+    )
+    if not row:
+        logger.warning(f"[unlock-hc] no awaiting_payment row for user {user_id} ref={reference}")
+        return
+    logger.info(f"[unlock-hc] pending_id={row['id']} marked awaiting_consent — poller will DM target")
+
+
 UNLOCK_HANDLERS = {
     "welcome_card_pack": _unlock_welcome_card_pack,
     "ultra_welcome_pack": _unlock_ultra_pack,
@@ -429,6 +446,7 @@ UNLOCK_HANDLERS = {
     "xp_boost": _unlock_xp_boost,
     "xp_server_boost": _make_unlock_xp_server_boost_tier("xp_server_boost"),
     "xp_server_boost_month": _make_unlock_xp_server_boost_tier("xp_server_boost_month"),
+    "hardcore_roast": _unlock_hardcore_roast,
 }
 
 

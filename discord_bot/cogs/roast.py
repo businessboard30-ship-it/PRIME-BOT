@@ -667,7 +667,7 @@ def _picker_status_embed(guild: discord.Guild, target: discord.Member | None, ch
     return embed
 
 
-def build_target_picker_view(guild: discord.Guild, admin_id: int, target_id: int = 0, channel_id: int = 0) -> discord.ui.View:
+def build_target_picker_view(guild: discord.Guild, admin_id: int, target_id: int = 0, channel_id: int = 0, hardcore: bool = False) -> discord.ui.View:
     """Restart-safe replacement for the old RoastTargetPickerView: every
     child is a DynamicItem (see ROAST_DYNAMIC_ITEMS below) whose custom_id
     carries guild_id/admin_id and the picks made SO FAR, so a fresh view
@@ -683,6 +683,7 @@ def build_target_picker_view(guild: discord.Guild, admin_id: int, target_id: int
     view.add_item(_RoastPickTargetSelect(guild.id, admin_id, channel_id, _target_options(guild)))
     view.add_item(_RoastPickChannelSelect(guild.id, admin_id, target_id, _channel_options(guild)))
     view.add_item(_RoastPickConfirmButton(guild.id, admin_id, target_id, channel_id))
+    view.add_item(_RoastPickHardcoreButton(guild.id, admin_id, target_id, channel_id))
     view.add_item(_RoastPickRemindButton(guild.id, admin_id))
     view.add_item(_RoastPickDontAskButton(guild.id, admin_id))
     return view
@@ -831,6 +832,53 @@ class _RoastPickConfirmButton(discord.ui.DynamicItem[discord.ui.Button], templat
                 await interaction.followup.send(f"⚠️ Failed to send the challenge — check Railway logs. ({e!r})", ephemeral=True)
             except discord.HTTPException:
                 pass
+
+
+class _RoastPickHardcoreButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^roastpick_hardcore:(\d+):(\d+):(\d+):(\d+)$"):
+    """Hardcore Mode button on the target picker. Only fires if both a
+    target AND a channel have been selected; otherwise asks the user to
+    pick both first. DynamicItem — survives restarts, no timeout."""
+
+    def __init__(self, guild_id: int, admin_id: int, target_id: int, channel_id: int):
+        self.guild_id = guild_id
+        self.admin_id = admin_id
+        self.target_id = target_id
+        self.channel_id = channel_id
+        super().__init__(discord.ui.Button(
+            label="Hardcore Mode 🔥 ($1)",
+            style=discord.ButtonStyle.danger,
+            disabled=not (target_id and channel_id),
+            custom_id=f"roastpick_hardcore:{guild_id}:{admin_id}:{target_id}:{channel_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match[1]), int(match[2]), int(match[3]), int(match[4]))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.admin_id:
+            await interaction.response.send_message("This picker isn't yours.", ephemeral=True)
+            return
+        if not self.target_id or not self.channel_id:
+            await interaction.response.send_message("Pick both a target and a channel first.", ephemeral=True)
+            return
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.response.send_message("Can't reach that server anymore.", ephemeral=True)
+            return
+        target = guild.get_member(self.target_id)
+        channel = guild.get_channel(self.channel_id)
+        if not target or not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "That target or channel isn't available anymore — pick again.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        cog = interaction.client.get_cog("RoastCog")
+        if cog is None:
+            await interaction.followup.send("Roast arena is offline right now — try again shortly.", ephemeral=True)
+            return
+        await cog.hardcore_initiate(interaction, target, channel)
 
 
 class _RoastPickRemindButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^roastpick_remind:(\d+):(\d+)$"):
@@ -1384,7 +1432,7 @@ class HardcoreConsentView(discord.ui.View):
 ROAST_DYNAMIC_ITEMS = (
     _RoastApproveButton, _RoastDenyButton, _RoastAcceptButton, _RoastDeclineButton,
     _RoastPickTargetSelect, _RoastPickChannelSelect, _RoastPickConfirmButton,
-    _RoastPickRemindButton, _RoastPickDontAskButton,
+    _RoastPickHardcoreButton, _RoastPickRemindButton, _RoastPickDontAskButton,
     _HardcoreConsentAcceptButton, _HardcoreConsentDeclineButton,
 )
 
@@ -1509,6 +1557,27 @@ class RoastCog(GuildOnlyCog):
             except Exception:
                 logger.exception(f"[roast] failed resolving sibling proposal guild={guild_id}")
 
+    @tasks.loop(seconds=30)
+    async def _hardcore_consent_poller(self):
+        """Picks up newly-paid hardcore roast rows (status='awaiting_consent')
+        and fires the target consent DM. Runs every 30s so the delay between
+        Gumroad webhook → consent DM is at most ~30 seconds."""
+        try:
+            rows = await db.fetch(
+                "SELECT * FROM discord_hardcore_roast_pending WHERE status = 'awaiting_consent'"
+            )
+            for row in rows:
+                try:
+                    await self.hardcore_payment_confirmed(row["id"])
+                except Exception:
+                    logger.exception(f"[roast-hc] consent poller failed for pending_id={row['id']}")
+        except Exception:
+            logger.exception("[roast-hc] consent poller query failed")
+
+    @_hardcore_consent_poller.before_loop
+    async def _before_hardcore_consent_poller(self):
+        await self.bot.wait_until_ready()
+
     async def cog_load(self):
         rows = await db.fetch("SELECT id FROM discord_roast_battles WHERE status = 'active'")
         for row in rows:
@@ -1518,6 +1587,7 @@ class RoastCog(GuildOnlyCog):
             self._active_by_channel[b["channel_id"]] = b["id"]
         self._poller.start()
         self._active_battle_poller.start()
+        self._hardcore_consent_poller.start()
         logger.info(
             f"[roast] cog loaded, {len(rows)} active battle(s) restored, "
             f"main poller every {POLL_INTERVAL_SECONDS}s, "
@@ -1527,6 +1597,7 @@ class RoastCog(GuildOnlyCog):
     def cog_unload(self):
         self._poller.cancel()
         self._active_battle_poller.cancel()
+        self._hardcore_consent_poller.cancel()
 
     # ---------- DB-backed helpers ----------
 
@@ -2277,15 +2348,24 @@ class RoastCog(GuildOnlyCog):
         target: discord.Member, channel: discord.TextChannel,
     ):
         """Called when a challenger picks Hardcore Mode. Creates a pending
-        row and sends them a Paystack payment link. The battle only starts
-        after (a) payment clears and (b) the target consents."""
-        from config import HARDCORE_ROAST_FEE_GHS
-        from payments import paystack as _paystack
+        row and sends them a Gumroad payment link. The battle only starts
+        after (a) payment clears and (b) the target consents via DM."""
+        from config import HARDCORE_ROAST_FEE_USD, GUMROAD_PRODUCT_LINKS
+        from gumroad_payments import new_reference, build_link, expected_price_usd
+        from database import db as _db
 
         clone_id = _clone_id_of(self.bot)
 
+        # Gumroad product must be configured.
+        if not GUMROAD_PRODUCT_LINKS.get("hardcore_roast"):
+            await interaction.followup.send(
+                "⚠️ Hardcore roast isn't available yet — set the `GUMROAD_HARDCORE_ROAST_LINK` env var.",
+                ephemeral=True,
+            )
+            return
+
         # One pending hardcore request per user at a time.
-        existing = await db.fetchrow(
+        existing = await _db.fetchrow(
             "SELECT id FROM discord_hardcore_roast_pending "
             "WHERE challenger_id = $1 AND status = 'awaiting_payment'",
             interaction.user.id,
@@ -2298,7 +2378,8 @@ class RoastCog(GuildOnlyCog):
             )
             return
 
-        row = await db.fetchrow(
+        # Insert pending row first so the reference can carry the user_id.
+        row = await _db.fetchrow(
             """
             INSERT INTO discord_hardcore_roast_pending
                 (guild_id, clone_id, challenger_id, target_id, channel_id, status)
@@ -2310,49 +2391,49 @@ class RoastCog(GuildOnlyCog):
         )
         pending_id = row["id"]
 
-        # Build Paystack link — amount in pesewas (GHS * 100).
-        amount_pesewas = HARDCORE_ROAST_FEE_GHS * 100
-        email = f"discord_{interaction.user.id}@primebot.app"
-        reference = f"hc_roast_{pending_id}_{interaction.user.id}"
-        pay_result = _paystack.initialize_payment(
-            email=email,
-            amount=amount_pesewas,
-            user_id=interaction.user.id,
-            bot_name="PRIME-BOT",
-            payment_type="hardcore_roast",
-            extra_metadata={"pending_id": str(pending_id)},
-            reference=reference,
-        )
-        pay_url = pay_result.get("data", {}).get("authorization_url") if pay_result else None
+        reference = new_reference("hardcore_roast", interaction.user.id)
+        pay_url = build_link("hardcore_roast", interaction.user.id, reference)
 
         if not pay_url:
-            await db.execute(
+            await _db.execute(
                 "DELETE FROM discord_hardcore_roast_pending WHERE id = $1", pending_id,
             )
             await interaction.followup.send(
-                "⚠️ Couldn't generate a payment link right now — try again in a moment.",
+                "⚠️ Couldn't generate a payment link — set `GUMROAD_HARDCORE_ROAST_LINK` and try again.",
                 ephemeral=True,
             )
-            logger.error(f"[roast-hc] Paystack init failed pending_id={pending_id}: {pay_result!r}")
             return
+
+        # Log in payment_logs so Gumroad webhook can claim it.
+        await _db.log_payment(
+            interaction.user.id,
+            expected_price_usd("hardcore_roast") or HARDCORE_ROAST_FEE_USD,
+            reference,
+            status="pending",
+            payment_type="hardcore_roast",
+            chat_id=interaction.guild.id,
+            provider="gumroad",
+            clone_id=clone_id,
+        )
 
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(
-            label=f"Pay GHS {HARDCORE_ROAST_FEE_GHS} — Unlock Hardcore Roast 🔥",
+            label=f"Pay ${HARDCORE_ROAST_FEE_USD:.0f} — Unlock Hardcore Roast 🔥",
             style=discord.ButtonStyle.link,
             url=pay_url,
         ))
         await interaction.followup.send(
-            f"**Hardcore Roast** targets **{target.display_name}** in **#{channel.name}**.\n\n"
-            f"Pay **GHS {HARDCORE_ROAST_FEE_GHS}** to unlock. Once payment clears, "
-            f"{target.display_name} will be asked for consent — the roast only starts if they agree.\n\n"
+            f"**Hardcore Roast** — targeting **{target.display_name}** in **#{channel.name}**.\n\n"
+            f"Pay **${HARDCORE_ROAST_FEE_USD:.0f}** via Gumroad to unlock. "
+            f"Once payment clears, {target.display_name} gets a consent DM — "
+            "the roast only fires if they agree.\n\n"
             "⚠️ No refunds if they decline — you're paying for the activation, not a guaranteed roast.",
             view=view,
             ephemeral=True,
         )
         logger.info(
             f"[roast-hc] pending_id={pending_id} created challenger={interaction.user.id} "
-            f"target={target.id} guild={interaction.guild.id}"
+            f"target={target.id} guild={interaction.guild.id} ref={reference}"
         )
 
     async def hardcore_payment_confirmed(self, pending_id: int):

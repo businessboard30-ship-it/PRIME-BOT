@@ -42,6 +42,7 @@ _PRICE_ATTRS = {
     "discord_clone_monetization": "CLONE_MONETIZATION_FEE_USD",
     "xp_boost": "XP_BOOST_FEE_USD",
     "premium": "PREMIUM_FEE_USD",
+    "hardcore_roast": "HARDCORE_ROAST_FEE_USD",
 }
 
 

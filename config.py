@@ -318,6 +318,10 @@ GUMROAD_PRODUCT_LINKS = {
     # Gumroad dashboard (the API can't create memberships) — paste its link
     # / product id via these env vars (or edit here) once it exists.
     "premium": os.getenv("GUMROAD_PREMIUM_LINK", "https://boardmaster87.gumroad.com/l/naceb"),
+    # Hardcore roast — per-battle activation ($1). Create this product in
+    # the Gumroad dashboard (one-time, $1) and paste its link/id here or
+    # set GUMROAD_HARDCORE_ROAST_LINK / GUMROAD_HARDCORE_ROAST_ID env vars.
+    "hardcore_roast": os.getenv("GUMROAD_HARDCORE_ROAST_LINK", ""),
 }
 GUMROAD_PRODUCT_IDS = {
     "welcome_card_pack": "dE2cyP0dOzPPAqn2wZerqw==",
@@ -330,6 +334,7 @@ GUMROAD_PRODUCT_IDS = {
     "xp_server_boost": "Wnvy9M0rXGlqZwVjUltlRQ==",
     "xp_server_boost_month": "Otjay_g0whBiQhfwXCnJIQ==",
     "premium": os.getenv("GUMROAD_PREMIUM_PRODUCT_ID", ""),
+    "hardcore_roast": os.getenv("GUMROAD_HARDCORE_ROAST_ID", ""),
 }
 
 # ─────────────────────────────────────────────────────────────────────
