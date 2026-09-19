@@ -896,9 +896,9 @@ class CloneAdminCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="paymentmode", description="[Owner] Choose how every paid feature is routed: Ghana/international split, Paystack-only or Gumroad-only")
+    @app_commands.command(name="paymentmode", description="[Owner] Set payment routing: auto-split by country, Paystack only, or Gumroad only")
     @app_commands.describe(
-        mode="'split' = buyer picks Ghana (Paystack) or International (Gumroad). 'auto' = Paystack only. 'gumroad' = Gumroad only.",
+        mode="split = Ghana pays via Paystack, others via Gumroad. Or force one provider for everyone.",
         clone_id="Restrict the switch to one clone (see /myclones) — omit to change the main bot",
     )
     @app_commands.choices(mode=[
