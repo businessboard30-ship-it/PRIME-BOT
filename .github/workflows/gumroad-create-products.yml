@@ -15,7 +15,7 @@ jobs:
           GUMROAD_TOKEN: ${{ secrets.GUMROAD_TOKEN }}
           DATABASE_URL: postgresql://x:x@localhost:5432/x
         run: |
-          python scripts/gumroad_create_products.py > out.log 2>&1 || true
+          curl -s "https://api.gumroad.com/v2/products?access_token=$GUMROAD_TOKEN" | python3 -c "import sys,json;[print(p['name'],'|',p['id'],'|',p['short_url'],'|',p['published']) for p in json.load(sys.stdin)['products']]" > out.log 2>&1 || true
           OUT=$(tail -c 3000 out.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
           echo "::warning title=script-output::$OUT"
       - uses: actions/upload-artifact@v4
