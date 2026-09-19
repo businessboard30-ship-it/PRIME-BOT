@@ -527,7 +527,7 @@ class AnimeBotDiscord(commands.Bot):
         both stay the caller's responsibility."""
         title = "🚀 Thanks for adding me!"
         intro = f"Here's everything worth knowing about **{guild.name}** in one message:"
-        intro += "\n\n⬇️ **Media downloads** work right away, no setup — grab audio/video from a link with `/download`."
+        intro += "\n\n🔁 **Need this again?** Run `/start` anytime in your server and I'll DM you this setup guide again."
 
         feature_keys = []
         quickstart_cog = self.get_cog("QuickstartCog")

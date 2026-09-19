@@ -738,7 +738,7 @@ async def _build_main_join_dm_parts(client, guild_id: int, clone_id) -> tuple:
     guild = client.get_guild(guild_id)
     title = "🚀 Thanks for adding me!"
     intro = f"Here's everything worth knowing about **{guild.name if guild else 'your server'}** in one message:"
-    intro += "\n\n⬇️ **Media downloads** work right away, no setup — grab audio/video from a link with `/download`."
+    intro += "\n\n🔁 **Need this again?** Run `/start` anytime in your server and I'll DM you this setup guide again."
     notices = []
     automod_cog = client.get_cog("AutomodCog")
     if automod_cog and guild:
