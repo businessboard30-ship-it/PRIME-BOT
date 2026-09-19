@@ -156,6 +156,7 @@ ROUTES = {
     "/api/site_visits": "api.site_visits",
     "/api/apply_boost": "api.apply_boost",
     "/api/gumroad_webhook": "api.gumroad_webhook",
+    "/pay": "api.pay_redirect",
     # Discord app-verification requires real, permanently reachable ToS/
     # Privacy URLs — these were written in api/legal_pages.py but never
     # wired into the dispatcher (and its class names don't match the

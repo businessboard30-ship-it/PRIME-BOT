@@ -414,6 +414,93 @@ UNLOCK_HANDLERS = {
 }
 
 
+def _public_base_url() -> str:
+    import os
+    return os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+
+
+_INTENT_KEY = "payintent:{}"
+_INTENT_TTL_SECONDS = 3600
+
+
+async def start_geo_payment(interaction: discord.Interaction, *, payment_type: str, price_usd: float,
+                            product_title: str, product_description: str, amount_display: str,
+                            guild_id: Optional[int] = None) -> None:
+    """One 'Pay' button, no questions. It opens <PUBLIC_BASE_URL>/pay?t=<token>,
+    which looks up the visitor's country from their IP and redirects to
+    Paystack (Ghana) or Gumroad (everywhere else) — see api/pay_redirect.py.
+    Call after interaction.response.defer(ephemeral=True, thinking=True)."""
+    import json
+    import time
+    clone_id = getattr(interaction.client, "clone_id", None)
+    token = secrets.token_urlsafe(12)
+    await db.set_global_setting(_INTENT_KEY.format(token), json.dumps({
+        "payment_type": payment_type, "user_id": interaction.user.id, "guild_id": guild_id,
+        "clone_id": clone_id, "price_usd": price_usd, "amount_display": amount_display,
+        "locale": str(getattr(interaction, "locale", "") or ""), "created": time.time(),
+    }))
+    embed = discord.Embed(
+        title=product_title,
+        description=(
+            f"**Price:** {amount_display}\n\n{product_description}\n\n"
+            f"Tap **Pay** — you'll be sent to the right checkout automatically. "
+            f"Gumroad purchases unlock by themselves; if you paid with Paystack, come back and tap **Verify**."
+        ),
+        color=discord.Color.gold(),
+    )
+    view = _GenericVerifyPaymentView(payment_type, guild_id)
+    view.add_item(discord.ui.Button(
+        label="💳 Pay", url=f"{_public_base_url()}/pay?t={token}", style=discord.ButtonStyle.link,
+    ))
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+async def create_checkout_for_intent(intent: dict, country: Optional[str]) -> Optional[str]:
+    """Called by api/pay_redirect.py. Ghana (country 'GH') -> Paystack in GHS;
+    anything else -> Gumroad. Logs the pending payment row and returns the
+    checkout URL, or None if the provider couldn't start a checkout."""
+    payment_type = intent["payment_type"]
+    user_id = int(intent["user_id"])
+    guild_id = intent.get("guild_id")
+    clone_id = intent.get("clone_id")
+    price_usd = float(intent["price_usd"])
+
+    if (country or "").upper() != "GH":
+        import gumroad_payments as gp
+        reference = gp.new_reference(payment_type, user_id)
+        link = gp.build_link(payment_type, user_id, reference)
+        if not link:
+            return None
+        await db.log_payment(
+            user_id, gp.expected_price_usd(payment_type) or price_usd, reference, status="pending",
+            payment_type=payment_type, chat_id=guild_id, provider="gumroad", clone_id=clone_id,
+        )
+        return link
+
+    from payments import resolve_gateway
+    import utils.currency as fx
+    gateway, api_key, provider = await resolve_gateway(clone_id or 0, platform="discord")
+    if provider == "stripe":
+        amount_minor_units, charge_currency = round(price_usd * 100), "usd"
+    else:
+        amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, "GHS")
+    result = await asyncio.to_thread(
+        gateway.initialize_payment,
+        f"user_{user_id}@animebot.com", amount_minor_units, user_id,
+        f"{payment_type}_{user_id}_{guild_id or 0}",
+        payment_type=payment_type, extra_metadata={"guild_id": guild_id, "provider": "discord"},
+        api_key=api_key, currency=charge_currency,
+    )
+    if not result or result.get("status") != "success":
+        logger.error(f"[geo-pay:{payment_type}] initialize_payment failed for user {user_id}: {result!r}")
+        return None
+    await db.log_payment(
+        user_id, price_usd, result["reference"], status="pending",
+        payment_type=payment_type, chat_id=guild_id, provider=provider, clone_id=clone_id,
+    )
+    return result["authorization_url"]
+
+
 async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_type: str,
                                    price_usd: float, product_title: str, product_description: str,
                                    amount_display_manual: str, guild_id: Optional[int] = None,
@@ -441,6 +528,12 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
     convention start_manual_payment already uses."""
     clone_id = getattr(interaction.client, "clone_id", None)
     mode = force_mode or await db.get_payment_mode(clone_id)
+    if mode == "split" and _public_base_url():
+        await start_geo_payment(
+            interaction, payment_type=payment_type, price_usd=price_usd, product_title=product_title,
+            product_description=product_description, amount_display=amount_display_manual, guild_id=guild_id,
+        )
+        return
     if mode == "split":
         def _again(m, cur=None):
             async def _run(i: discord.Interaction):
@@ -533,6 +626,13 @@ class _GenericVerifyPaymentView(discord.ui.View):
         if not pending:
             await interaction.followup.send(
                 "I don't see a pending payment for you here — start the purchase again.", ephemeral=True,
+            )
+            return
+
+        if (pending.get("provider") or "") == "gumroad":
+            await interaction.followup.send(
+                "Gumroad purchases unlock automatically within a few seconds of paying — "
+                "you'll get a DM when it's done. Nothing to verify here.", ephemeral=True,
             )
             return
 
