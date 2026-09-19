@@ -317,7 +317,7 @@ GUMROAD_PRODUCT_LINKS = {
     # Premium is a Gumroad MEMBERSHIP ($5/month) created by hand in the
     # Gumroad dashboard (the API can't create memberships) — paste its link
     # / product id via these env vars (or edit here) once it exists.
-    "premium": os.getenv("GUMROAD_PREMIUM_LINK", ""),
+    "premium": os.getenv("GUMROAD_PREMIUM_LINK", "https://boardmaster87.gumroad.com/l/naceb"),
 }
 GUMROAD_PRODUCT_IDS = {
     "welcome_card_pack": "dE2cyP0dOzPPAqn2wZerqw==",
