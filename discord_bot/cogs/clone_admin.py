@@ -544,6 +544,16 @@ class CloneAdminCog(commands.Cog):
         """Route a monetization purchase: 'split' asks Ghana (Paystack) vs
         International (Gumroad); 'gumroad' and 'auto' go straight there."""
         if mode == "split":
+            from payments_manual import _public_base_url, start_geo_payment
+            if _public_base_url():
+                await start_geo_payment(
+                    interaction, payment_type="discord_clone_monetization",
+                    price_usd=float(CLONE_MONETIZATION_FEE_USD), product_title="Activate Monetization",
+                    product_description=f"Unlocks custom prices and your own payment link for clone #{clone_id}.",
+                    amount_display=f"${CLONE_MONETIZATION_FEE_USD} (GHS {CLONE_MONETIZATION_FEE_GHS} in Ghana)",
+                    extra={"monetize_clone_id": clone_id},
+                )
+                return
             from payments_manual import offer_region_choice
             await offer_region_choice(
                 interaction,

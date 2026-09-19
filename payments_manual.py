@@ -425,7 +425,7 @@ _INTENT_TTL_SECONDS = 3600
 
 async def start_geo_payment(interaction: discord.Interaction, *, payment_type: str, price_usd: float,
                             product_title: str, product_description: str, amount_display: str,
-                            guild_id: Optional[int] = None) -> None:
+                            guild_id: Optional[int] = None, extra: Optional[dict] = None) -> None:
     """One 'Pay' button, no questions. It opens <PUBLIC_BASE_URL>/pay?t=<token>,
     which looks up the visitor's country from their IP and redirects to
     Paystack (Ghana) or Gumroad (everywhere else) — see api/pay_redirect.py.
@@ -438,6 +438,7 @@ async def start_geo_payment(interaction: discord.Interaction, *, payment_type: s
         "payment_type": payment_type, "user_id": interaction.user.id, "guild_id": guild_id,
         "clone_id": clone_id, "price_usd": price_usd, "amount_display": amount_display,
         "locale": str(getattr(interaction, "locale", "") or ""), "created": time.time(),
+        "extra": extra or {},
     }))
     embed = discord.Embed(
         title=product_title,
@@ -464,6 +465,27 @@ async def create_checkout_for_intent(intent: dict, country: Optional[str]) -> Op
     guild_id = intent.get("guild_id")
     clone_id = intent.get("clone_id")
     price_usd = float(intent["price_usd"])
+    mon_clone = (intent.get("extra") or {}).get("monetize_clone_id")
+
+    if (country or "").upper() == "GH" and mon_clone:
+        # Clone monetization is priced in GHS on Paystack, with its own pending row.
+        from payments import paystack
+        from config import CLONE_MONETIZATION_FEE_GHS
+        result = await asyncio.to_thread(
+            paystack.initialize_payment,
+            f"discorduser_{user_id}@animebot.com", CLONE_MONETIZATION_FEE_GHS * 100, user_id,
+            f"DiscordCloneMonetize_{mon_clone}",
+            payment_type="discord_clone_monetization", extra_metadata={"clone_id": int(mon_clone)},
+        )
+        if not result or result.get("status") != "success":
+            logger.error(f"[geo-pay:monetize] initialize_payment failed for user {user_id}: {result!r}")
+            return None
+        await db.start_discord_monetization_payment(int(mon_clone), user_id, result["reference"])
+        await db.log_payment(
+            user_id, float(CLONE_MONETIZATION_FEE_GHS), result["reference"], status="pending",
+            payment_type=payment_type, chat_id=None, provider="paystack", clone_id=int(mon_clone),
+        )
+        return result["authorization_url"]
 
     if (country or "").upper() != "GH":
         import gumroad_payments as gp
@@ -471,9 +493,11 @@ async def create_checkout_for_intent(intent: dict, country: Optional[str]) -> Op
         link = gp.build_link(payment_type, user_id, reference)
         if not link:
             return None
+        if mon_clone:
+            await db.start_discord_monetization_payment(int(mon_clone), user_id, reference)
         await db.log_payment(
             user_id, gp.expected_price_usd(payment_type) or price_usd, reference, status="pending",
-            payment_type=payment_type, chat_id=guild_id, provider="gumroad", clone_id=clone_id,
+            payment_type=payment_type, chat_id=guild_id, provider="gumroad", clone_id=mon_clone or clone_id,
         )
         return link
 
