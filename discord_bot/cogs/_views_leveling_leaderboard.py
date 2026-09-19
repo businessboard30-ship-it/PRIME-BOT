@@ -56,9 +56,7 @@ import discord
 from database import db
 from modules import leveling
 from discord_bot.cogs._views_leveling_boost import BoostXPButton
-from discord_bot.cogs._views_leveling_wallet import (
-    WalletBalanceButton, GiftBoostButton, build_boost_wallet_row,
-)
+from discord_bot.cogs._views_leveling_wallet import build_boost_wallet_row
 
 PAGE_SIZE = 10
 MODES = ("local", "global")
@@ -317,8 +315,6 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     container.add_item(discord.ui.Separator())
     boost_row = discord.ui.ActionRow()
     boost_row.add_item(BoostXPButton(guild.id, clone_id))
-    boost_row.add_item(WalletBalanceButton(guild.id, clone_id))
-    boost_row.add_item(GiftBoostButton(guild.id, clone_id))
     container.add_item(boost_row)
     container.add_item(build_boost_wallet_row(guild.id, clone_id))
 

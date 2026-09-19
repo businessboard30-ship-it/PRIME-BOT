@@ -328,10 +328,6 @@ class AdminCog(commands.Cog):
         "custom_role": "Custom role",
         "music_pro": "Music Pro activations",
         "xp_boost": "XP boosts",
-        "xp_wallet_small": "XP wallet (small)",
-        "xp_wallet_medium": "XP wallet (medium)",
-        "xp_wallet_large": "XP wallet (large)",
-        "xp_wallet_mega": "XP wallet (mega)",
         "xp_server_boost": "XP server boost (24h)",
         "xp_server_boost_month": "XP server boost (1 month)",
     }

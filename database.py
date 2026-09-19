@@ -7547,7 +7547,12 @@ class Database:
     # ─────────────────────────────────────────────────────────────────
 
     async def get_xp_wallet(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> Dict:
-        """Returns {balance, expires_at, ...}. Expiry is lazy: an expired
+        """DEAD CODE as of the XP Wallet product's removal (see config.py's
+        XP_WALLET removal note) — nothing calls this anymore. Left in place
+        rather than deleted to avoid a risky edit to this file; harmless
+        either way since it's unreachable.
+
+        Returns {balance, expires_at, ...}. Expiry is lazy: an expired
         row is reported with balance=0 here WITHOUT writing anything —
         the next add_wallet_xp() (or a future cleanup job) is what
         actually zeroes it in the DB. Never returns None; a member with

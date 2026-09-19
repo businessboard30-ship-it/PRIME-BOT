@@ -27,14 +27,14 @@ OPERATOR_NAME = "Maxwell Dumenya"
 OPERATOR_LOCATION = "Ghana"
 
 # Pricing table below is generated from these — edit config.py's own
-# constants (WELCOME_CARD_PACK_FEE_USD, XP_WALLET_TIERS, etc.), not the
+# constants (WELCOME_CARD_PACK_FEE_USD, XP_SERVER_BOOST_TIERS, etc.), not the
 # numbers here directly, so this page can't silently drift from what
 # payments_manual.py actually charges.
 from config import (
     WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, DISCORD_CLONE_ACTIVATION_FEE_USD,
     CLONE_MONETIZATION_FEE_USD, CUSTOM_ROLE_FEE_USD, MUSIC_PRO_PRICE_LABEL,
     XP_BOOST_FEE_USD, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS,
-    XP_WALLET_TIERS, XP_SERVER_BOOST_TIERS,
+    XP_SERVER_BOOST_TIERS,
 )
 
 _PAGE_CSS = """
@@ -185,11 +185,6 @@ ${CLONE_MONETIZATION_FEE_USD:g}</li>
 <ul>
 <li>${XP_BOOST_FEE_USD:g} — {XP_BOOST_MULTIPLIER:g}x XP for {XP_BOOST_DURATION_DAYS} days,
 just for you</li>
-</ul>
-
-<h2>XP Wallet (flat top-up, giftable)</h2>
-<ul>
-{"".join(f'<li>{t["label"]} — ${t["fee_usd"]:g}</li>' for t in XP_WALLET_TIERS.values())}
 </ul>
 
 <h2>XP Server Boost (whole-server multiplier)</h2>
