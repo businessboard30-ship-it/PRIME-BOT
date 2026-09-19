@@ -138,7 +138,9 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "24"
+SCHEMA_VERSION = "25"
+# "24" -> "25": 015_guild_premium.sql (discord_guild_subscriptions table +
+# discord_custom_roles.via_premium) for the $5/month per-server Premium tier.
 # "23" -> "24": discord_welcome_config.card_pack_trial_admin_id column was added
 # to _create_tables() without a bump, so the ALTER never ran on existing DBs
 # ("column card_pack_trial_admin_id does not exist" in the trial-expiry loop).
@@ -4564,6 +4566,13 @@ class Database:
         if custom_role_panel_migration.exists():
             await conn.execute(custom_role_panel_migration.read_text())
 
+        # Per-server Premium subscription — discord_guild_subscriptions +
+        # discord_custom_roles.via_premium. Runs AFTER 010 above (it ALTERs
+        # discord_custom_roles). Additive/idempotent like 001-014.
+        guild_premium_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "015_guild_premium.sql"
+        if guild_premium_migration.exists():
+            await conn.execute(guild_premium_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -7181,6 +7190,8 @@ class Database:
     # --- Pro upgrade ($4.99/server, one-time, via Selar) -------------------
 
     async def is_guild_pro(self, guild_id: int, clone_id: Optional[int] = None) -> bool:
+        if await self.is_guild_premium_active(guild_id, clone_id):
+            return True
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -7205,6 +7216,115 @@ class Database:
                     is_pro = $3, activated_by = $4, activated_at = NOW()
                 """,
                 guild_id, clone_id, is_pro, activated_by,
+            )
+
+    # --- Premium subscription ($5/month per server) ------------------------
+    # See database/migrations/015_guild_premium.sql and config.PREMIUM_*.
+    # Premium is an OVERLAY: it never flips the individual one-time flags
+    # (card_pack_unlocked, discord_pro_guilds, ...), the readers below just
+    # treat them as on while Premium is active — so when Premium lapses,
+    # anything the server bought separately is still exactly as it was.
+
+    async def get_guild_premium(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_guild_subscriptions WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
+            return dict(row) if row else None
+
+    async def is_guild_premium_active(self, guild_id: int, clone_id: Optional[int] = None) -> bool:
+        """True until config.PREMIUM_GRACE_DAYS after expires_at."""
+        if not guild_id:
+            return False
+        from config import PREMIUM_GRACE_DAYS
+        try:
+            row = await self.get_guild_premium(guild_id, clone_id)
+        except Exception:
+            logger.exception("[premium] status lookup failed for guild %s", guild_id)
+            return False
+        if not row:
+            return False
+        return row["expires_at"] + timedelta(days=PREMIUM_GRACE_DAYS) > datetime.now(timezone.utc)
+
+    async def activate_guild_premium(self, guild_id: int, activated_by: int, days: int,
+                                      clone_id: Optional[int] = None) -> datetime:
+        """One-time (Paystack) or first (Gumroad) payment. Adds `days` on top
+        of whatever time is left (or from now if lapsed), so paying early
+        never wastes days. Returns the new expires_at."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                """
+                INSERT INTO discord_guild_subscriptions (guild_id, clone_id, expires_at, activated_by)
+                VALUES ($1, $2, NOW() + make_interval(days => $4), $3)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
+                    expires_at = GREATEST(discord_guild_subscriptions.expires_at, NOW()) + make_interval(days => $4),
+                    activated_by = $3, reminded_for = NULL, updated_at = NOW()
+                RETURNING expires_at
+                """,
+                guild_id, clone_id, activated_by, days,
+            )
+
+    async def set_premium_subscription_id(self, guild_id: int, clone_id: Optional[int], subscription_id: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_guild_subscriptions SET subscription_id = $3, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id, subscription_id,
+            )
+
+    async def get_guild_premium_by_subscription(self, subscription_id: str) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_guild_subscriptions WHERE subscription_id = $1", subscription_id,
+            )
+            return dict(row) if row else None
+
+    async def renew_guild_premium_subscription(self, subscription_id: str, days: int) -> Optional[Dict]:
+        """Gumroad renewal charge: access runs `days` from now (not stacked,
+        so it can't drift behind the billing date). Returns the row, or None
+        if the subscription id is unknown."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE discord_guild_subscriptions SET
+                    expires_at = GREATEST(expires_at, NOW() + make_interval(days => $2)),
+                    reminded_for = NULL, updated_at = NOW()
+                WHERE subscription_id = $1 RETURNING *
+                """,
+                subscription_id, days,
+            )
+            return dict(row) if row else None
+
+    async def get_premium_needing_reminder(self, clone_id: Optional[int], within_days: int) -> List[Dict]:
+        """Non-auto-renewing (Paystack) premiums expiring soon that we haven't
+        reminded for this expiry yet. Gumroad memberships (subscription_id
+        set) renew themselves, so they're excluded."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM discord_guild_subscriptions
+                WHERE clone_id IS NOT DISTINCT FROM $1 AND subscription_id IS NULL
+                  AND expires_at > NOW() AND expires_at <= NOW() + make_interval(days => $2)
+                  AND reminded_for IS DISTINCT FROM expires_at
+                """,
+                clone_id, within_days,
+            )
+            return [dict(r) for r in rows]
+
+    async def mark_premium_reminded(self, guild_id: int, clone_id: Optional[int], expires_at: datetime) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_guild_subscriptions SET reminded_for = $3 "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id, expires_at,
             )
 
     # --- Free-tier daily usage caps -----------------------------------------
@@ -9171,6 +9291,17 @@ class Database:
         await self.set_global_setting(key, mode)
 
     async def get_welcome_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Raw config plus the Premium overlay: while the guild's Premium is
+        active, card_pack_unlocked / ultra_pack_unlocked read as True (the
+        stored flags are never touched, so a lapse restores the real state).
+        Only queries Premium when at least one flag is still False."""
+        cfg = await self._get_welcome_config_raw(guild_id, clone_id)
+        if not (cfg.get("card_pack_unlocked") and cfg.get("ultra_pack_unlocked")):
+            if await self.is_guild_premium_active(guild_id, clone_id):
+                cfg = dict(cfg, card_pack_unlocked=True, ultra_pack_unlocked=True)
+        return cfg
+
+    async def _get_welcome_config_raw(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -9371,7 +9502,7 @@ class Database:
                 """
                 INSERT INTO discord_custom_roles (guild_id, clone_id, user_id, unlocked_at, updated_at)
                 VALUES ($1, $2, $3, NOW(), NOW())
-                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO NOTHING
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO UPDATE SET via_premium = FALSE
                 """,
                 guild_id, clone_id, user_id,
             )
@@ -9379,12 +9510,33 @@ class Database:
     async def get_custom_role_entitlement(self, guild_id: int, user_id: int,
                                            clone_id: Optional[int] = None) -> Optional[dict]:
         """Returns the buyer's row (entitlement + whatever role state is
-        saved so far), or None if they've never paid in this guild."""
+        saved so far), or None if they've never paid in this guild.
+
+        Premium: while the guild has active Premium every member counts as
+        entitled — the row is created on first use with via_premium=TRUE, and
+        such a row stops counting once Premium lapses (a row from an actual
+        custom_role purchase has via_premium=FALSE and never lapses)."""
         pool = await get_pool()
+        premium = await self.is_guild_premium_active(guild_id, clone_id)
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM discord_custom_roles WHERE guild_id = $1 "
                 "AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3",
+                guild_id, clone_id, user_id,
+            )
+            if row:
+                if row["via_premium"] and not premium:
+                    return None
+                return dict(row)
+            if not premium:
+                return None
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_custom_roles (guild_id, clone_id, user_id, unlocked_at, updated_at, via_premium)
+                VALUES ($1, $2, $3, NOW(), NOW(), TRUE)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO UPDATE SET updated_at = NOW()
+                RETURNING *
+                """,
                 guild_id, clone_id, user_id,
             )
             return dict(row) if row else None

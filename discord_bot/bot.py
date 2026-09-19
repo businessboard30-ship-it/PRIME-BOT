@@ -59,6 +59,7 @@ from discord_bot.cogs._views_music_panel import DYNAMIC_ITEMS as MUSIC_PANEL_DYN
 from payments_manual import MANUAL_PAYMENT_DYNAMIC_ITEMS
 from discord_bot.cogs._views_verification import DYNAMIC_ITEMS as VERIFICATION_DYNAMIC_ITEMS
 from discord_bot.cogs._views_custom_role import DYNAMIC_ITEMS as CUSTOM_ROLE_DYNAMIC_ITEMS
+from discord_bot.cogs._views_premium import DYNAMIC_ITEMS as GUILD_PREMIUM_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_boost import DYNAMIC_ITEMS as LEVELING_BOOST_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_wallet import DYNAMIC_ITEMS as LEVELING_WALLET_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_leaderboard import DYNAMIC_ITEMS as LEVELING_LEADERBOARD_DYNAMIC_ITEMS
@@ -153,6 +154,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*GIVEAWAY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*VERIFICATION_DYNAMIC_ITEMS)
         self.add_dynamic_items(*CUSTOM_ROLE_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*GUILD_PREMIUM_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ROAST_DYNAMIC_ITEMS)
         # Roast Arena disabled (see roast_arena load_extension comment
         # above) — its buttons won't be interacted with if the cog never
@@ -180,6 +182,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.reaction_roles")
         await self.load_extension("discord_bot.cogs.role_setup")
         await self.load_extension("discord_bot.cogs.custom_role")
+        await self.load_extension("discord_bot.cogs.guild_premium")
         await self.load_extension("discord_bot.cogs.leveling")
         await self.load_extension("discord_bot.cogs.music")
         await self.load_extension("discord_bot.cogs.voice_xp")

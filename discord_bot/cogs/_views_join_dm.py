@@ -1219,6 +1219,16 @@ async def _start_build_bot_wizard(interaction: discord.Interaction, guild: disco
     return None, None
 
 
+async def _open_premium_pitch(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """"Go Premium" — not a toggle: explains the $5/month per-server tier and
+    offers the Subscribe button (see _views_premium.py). Already deferred by
+    _FeatureToggleButton; returns None/None so the button never flips to
+    "On:" and can be tapped again to renew."""
+    from discord_bot.cogs._views_premium import send_premium_pitch
+    await send_premium_pitch(interaction, guild.id, clone_id)
+    return None, None
+
+
 # key -> (label, emoji, handler, options_view_builder | None, blurb). Handler
 # returns (success: bool | None, message: str | None); None/None means it
 # already responded itself. options_view_builder(guild_id, clone_id) -> View
@@ -1230,8 +1240,9 @@ async def _start_build_bot_wizard(interaction: discord.Interaction, guild: disco
 # can never drift out of sync or out of order the way two separately
 # maintained lists (embed fields vs. button keys) used to.
 FEATURE_TOGGLES = {
-    "build_bot": ("Build Bot", "🤖", _start_build_bot_wizard, None,
-                  "Run your own copy of this bot under your own name — takes about 2 minutes, no coding needed."),
+    "go_premium": ("Go Premium", "💎", _open_premium_pitch, None,
+                   "Unlock EVERY package — welcome cards, custom roles, Music Pro — plus all future features, "
+                   "for just $5/month per server. Tap to see everything you get."),
     "welcome": ("Welcome messages", "👋", _enable_welcome, None,
                 "Greet new members automatically in a channel of your choice."),
     "channels": ("Create suggested channels", "📁", _enable_channels, None,
@@ -1260,6 +1271,8 @@ FEATURE_TOGGLES = {
                      "Let members submit ideas for staff and members to vote on."),
     "automod": ("Auto-moderation", "🛡️", _enable_automod, _AutomodOptionsView,
                 "Filter spam, invite links, and mass-mention raids."),
+    "build_bot": ("Build Bot", "🤖", _start_build_bot_wizard, None,
+                  "Run your own copy of this bot under your own name — takes about 2 minutes, no coding needed."),
 }
 
 # How many feature buttons show per page. Each feature is a
@@ -1285,9 +1298,12 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         self.guild_id = guild_id
         self.clone_id = clone_id
         label, emoji, _, _, _ = FEATURE_TOGGLES[feature_key]
+        # Go Premium isn't a "Turn on" toggle — plain label, blue button.
+        is_premium = feature_key == "go_premium"
         super().__init__(
             discord.ui.Button(
-                label=f"Turn on: {label}", style=discord.ButtonStyle.success,
+                label=label if is_premium else f"Turn on: {label}",
+                style=discord.ButtonStyle.primary if is_premium else discord.ButtonStyle.success,
                 emoji=emoji, custom_id=f"join_dm_feat:{feature_key}:{guild_id}:{'-' if clone_id is None else clone_id}",
                 row=row,
             )

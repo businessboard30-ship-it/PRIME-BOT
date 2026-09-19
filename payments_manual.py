@@ -389,6 +389,18 @@ async def _unlock_xp_boost(reference: str, buyer_id: int, guild_id: Optional[int
     await db.activate_xp_boost(guild_id, buyer_id, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS, clone_id=clone_id)
 
 
+async def _unlock_premium(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """$5/month per-server Premium (see config.PREMIUM_* and
+    db.activate_guild_premium). guild_id is required. Fires for a Paystack
+    payment (30 days each time, renewed by paying again), and for the FIRST
+    Gumroad membership charge; Gumroad's later renewal charges are handled in
+    gumroad_payments.process_gumroad_ping instead (they carry no reference)."""
+    from config import PREMIUM_DAYS
+    if not guild_id:
+        raise RuntimeError("premium payment has no guild_id")
+    await db.activate_guild_premium(guild_id, buyer_id, PREMIUM_DAYS, clone_id=clone_id)
+
+
 def _make_unlock_xp_server_boost_tier(tier_key: str):
     """One handler per config.XP_SERVER_BOOST_TIERS entry — each tier is
     its own product/payment_type, but they all just activate a
@@ -413,6 +425,7 @@ UNLOCK_HANDLERS = {
     "discord_clone_monetization": _unlock_discord_clone_monetization,
     "custom_role": _unlock_custom_role,
     "music_pro": _unlock_music_pro,
+    "premium": _unlock_premium,
     "xp_boost": _unlock_xp_boost,
     "xp_server_boost": _make_unlock_xp_server_boost_tier("xp_server_boost"),
     "xp_server_boost_month": _make_unlock_xp_server_boost_tier("xp_server_boost_month"),

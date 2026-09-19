@@ -314,6 +314,10 @@ GUMROAD_PRODUCT_LINKS = {
     "xp_boost": "https://boardmaster87.gumroad.com/l/nmgkns",
     "xp_server_boost": "https://boardmaster87.gumroad.com/l/slwtmv",
     "xp_server_boost_month": "https://boardmaster87.gumroad.com/l/abnbyt",
+    # Premium is a Gumroad MEMBERSHIP ($5/month) created by hand in the
+    # Gumroad dashboard (the API can't create memberships) — paste its link
+    # / product id via these env vars (or edit here) once it exists.
+    "premium": os.getenv("GUMROAD_PREMIUM_LINK", ""),
 }
 GUMROAD_PRODUCT_IDS = {
     "welcome_card_pack": "dE2cyP0dOzPPAqn2wZerqw==",
@@ -325,7 +329,25 @@ GUMROAD_PRODUCT_IDS = {
     "xp_boost": "da0vEe8BMQWcxPSAJG5Jzg==",
     "xp_server_boost": "Wnvy9M0rXGlqZwVjUltlRQ==",
     "xp_server_boost_month": "Otjay_g0whBiQhfwXCnJIQ==",
+    "premium": os.getenv("GUMROAD_PREMIUM_PRODUCT_ID", ""),
 }
+
+# ─────────────────────────────────────────────────────────────────────
+# Premium: $5/month PER SERVER, unlocks every current and future package
+# (welcome card pack, ultra welcome pack, custom roles, Music Pro, ...).
+# Deliberately NOT included: Discord Clone activation / clone monetization
+# (they cost real hosting) and the temporary XP boosts (consumables).
+# Gumroad = auto-renewing membership; Paystack (Ghana) = 30 days per
+# payment, renewed by paying again. PREMIUM_SUB_DAYS is the access window
+# granted per Gumroad renewal charge — a bit over a month so months with
+# 31 days never cause a gap. PREMIUM_GRACE_DAYS keeps features on briefly
+# after expiry so a slow renewal doesn't cut anyone off mid-payment.
+# ─────────────────────────────────────────────────────────────────────
+PREMIUM_FEE_USD = 5
+PREMIUM_DAYS = 30
+PREMIUM_SUB_DAYS = 33
+PREMIUM_GRACE_DAYS = 3
+PREMIUM_REMINDER_DAYS = 3
 
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):

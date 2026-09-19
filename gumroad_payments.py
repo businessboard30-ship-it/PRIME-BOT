@@ -41,6 +41,7 @@ _PRICE_ATTRS = {
     "discord_clone": "DISCORD_CLONE_ACTIVATION_FEE_USD",
     "discord_clone_monetization": "CLONE_MONETIZATION_FEE_USD",
     "xp_boost": "XP_BOOST_FEE_USD",
+    "premium": "PREMIUM_FEE_USD",
 }
 
 
@@ -139,6 +140,49 @@ async def _dm(user_id: int, clone_id, text: str) -> None:
         logger.exception("[gumroad] buyer DM failed (payment already applied)")
 
 
+async def _process_premium_renewal(fields: dict, subscription_id: str, accept_test: bool) -> tuple:
+    """A recurring Premium charge. Same safety layers as a first purchase
+    (product match, price >= $5, sale re-verified via the API), plus
+    idempotency keyed on the sale id so a retried ping can't double-extend."""
+    import config
+    sub = await db.get_guild_premium_by_subscription(subscription_id)
+    if not sub:
+        logger.warning(f"[gumroad] renewal for unknown subscription {subscription_id!r}")
+        return 200, "unknown subscription"
+    if not _matches_product("premium", fields):
+        logger.warning(f"[gumroad] renewal product mismatch for subscription {subscription_id!r}")
+        return 200, "product mismatch"
+    try:
+        paid_cents = int(float(fields.get("price", 0)))
+    except (TypeError, ValueError):
+        paid_cents = 0
+    if paid_cents < round(config.PREMIUM_FEE_USD * 100):
+        logger.warning(f"[gumroad] premium renewal underpaid: {paid_cents}c")
+        return 200, "underpaid"
+    sale_id = fields.get("sale_id", "")
+    if not accept_test and not await _sale_is_valid(sale_id, "premium"):
+        logger.warning(f"[gumroad] premium renewal sale verification failed ({sale_id})")
+        return 200, "sale not verified"
+
+    reference = f"gum_renew_{sale_id}" if sale_id else f"gum_renew_{subscription_id}_{secrets.token_hex(4)}"
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        claimed = await conn.fetchval(
+            "INSERT INTO payment_logs (user_id, amount, status, paystack_reference, payment_type, chat_id, provider, clone_id) "
+            "VALUES ($1, $2, 'completed', $3, 'premium', $4, $5, $6) "
+            "ON CONFLICT (paystack_reference) DO NOTHING RETURNING paystack_reference",
+            sub["activated_by"], paid_cents / 100.0, reference, sub["guild_id"], PROVIDER, sub["clone_id"],
+        )
+    if not claimed:
+        return 200, "already processed"
+    row = await db.renew_guild_premium_subscription(subscription_id, config.PREMIUM_SUB_DAYS)
+    logger.info(f"[gumroad] premium renewed for guild {sub['guild_id']} (subscription {subscription_id})")
+    if row and row.get("activated_by"):
+        await _dm(row["activated_by"], row.get("clone_id"),
+                  "✅ Your **Premium** subscription just renewed — thanks for supporting the bot!")
+    return 200, "ok"
+
+
 async def process_gumroad_ping(fields: dict) -> tuple:
     """Returns (http_status, message). 200 = handled/ignored (don't retry);
     500 = unlock failed after claim (claim reverted, Gumroad may retry)."""
@@ -153,6 +197,14 @@ async def process_gumroad_ping(fields: dict) -> tuple:
         return 200, "refund/dispute noted"
 
     reference = fields.get("url_params[reference]") or fields.get("reference")
+
+    # Premium membership renewal charges: Gumroad only repeats the URL params
+    # on the first charge, so later ones arrive with a subscription_id and no
+    # order reference. Match them to the guild via that id.
+    subscription_id = fields.get("subscription_id")
+    if subscription_id and (str(fields.get("is_recurring_charge", "")).lower() == "true" or not reference):
+        return await _process_premium_renewal(fields, subscription_id, is_test and accept_test)
+
     if not reference:
         logger.warning(f"[gumroad] sale {fields.get('sale_id')} has no reference (bought without the bot's link?)")
         return 200, "no reference"
@@ -203,6 +255,12 @@ async def process_gumroad_ping(fields: dict) -> tuple:
         async with pool.acquire() as conn:
             await conn.execute("UPDATE payment_logs SET status = 'pending' WHERE paystack_reference = $1", reference)
         return 500, "unlock failed"
+
+    if payment_type == "premium" and subscription_id and row.get("chat_id"):
+        try:
+            await db.set_premium_subscription_id(int(row["chat_id"]), row.get("clone_id"), subscription_id)
+        except Exception:
+            logger.exception(f"[gumroad] couldn't store subscription id for {reference}")
 
     logger.info(f"[gumroad] {reference} confirmed and unlocked ({payment_type}, user {row['user_id']})")
     await _dm(row["user_id"], row.get("clone_id"),
