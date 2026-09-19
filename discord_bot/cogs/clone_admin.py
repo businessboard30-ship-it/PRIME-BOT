@@ -958,7 +958,7 @@ class CloneAdminCog(commands.Cog):
         message="The announcement text — sent as-is, signed with your configured brand name",
         target="Who receives this DM — regular bot users (default), clone admins/operators, or server owners",
         attachment="Optional file to attach — image, PDF, or any file type — sent alongside the text",
-        clone="Optional — restrict to one clone's users/servers/mod-logs only, instead of the main bot + every clone",
+        clone="Optional — restrict to one clone's users/servers/mod-logs only, instead of main bot + all clones",
     )
     @app_commands.choices(target=[
         app_commands.Choice(name="Users — everyone across the main bot + clones", value="users"),
