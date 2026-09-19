@@ -142,7 +142,11 @@ async def _dm(user_id: int, clone_id, text: str) -> None:
 async def process_gumroad_ping(fields: dict) -> tuple:
     """Returns (http_status, message). 200 = handled/ignored (don't retry);
     500 = unlock failed after claim (claim reverted, Gumroad may retry)."""
-    if str(fields.get("test", "")).lower() == "true":
+    import os
+    is_test = str(fields.get("test", "")).lower() == "true"
+    accept_test = os.getenv("GUMROAD_ACCEPT_TEST_PINGS", "").strip().lower() in ("1", "true", "yes")
+    if is_test and not accept_test:
+        logger.info("[gumroad] test ping ignored (set GUMROAD_ACCEPT_TEST_PINGS=1 to unlock on your own test purchases)")
         return 200, "test ping ignored"
     if str(fields.get("refunded", "")).lower() == "true" or str(fields.get("disputed", "")).lower() == "true":
         logger.warning(f"[gumroad] refund/dispute ping for sale {fields.get('sale_id')} — manual review needed")
@@ -174,7 +178,7 @@ async def process_gumroad_ping(fields: dict) -> tuple:
         logger.warning(f"[gumroad] underpaid {reference}: {paid_cents}c < {round(expected * 100)}c")
         return 200, "underpaid"
 
-    if not await _sale_is_valid(fields.get("sale_id", ""), payment_type):
+    if not (is_test and accept_test) and not await _sale_is_valid(fields.get("sale_id", ""), payment_type):
         logger.warning(f"[gumroad] sale verification failed for {reference}")
         return 200, "sale not verified"
 
