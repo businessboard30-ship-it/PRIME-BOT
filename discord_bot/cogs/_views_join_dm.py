@@ -229,7 +229,9 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         if nav_children:
             container.add_item(discord.ui.ActionRow(*nav_children))
 
-        bottom_children = [_RemindLaterButton(guild_id, clone_id), _DontAskAgainButton(guild_id, clone_id)]
+        # "Don't ask again" intentionally no longer rendered (_DontAskAgainButton stays
+        # registered below so buttons on already-sent DMs keep working).
+        bottom_children = [_RemindLaterButton(guild_id, clone_id)]
 
         if DISCORD_SUPPORT_SERVER_INVITE:
             support_button = discord.ui.Button(
