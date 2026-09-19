@@ -393,8 +393,11 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
     is a plain "I've Paid" button.
     """
     user = interaction.user
-    reference = reference or _reference_for(payment_type, user.id)
     clone_id = getattr(interaction.client, "clone_id", None)
+    if await db.get_payment_mode(clone_id) == "gumroad":
+        from gumroad_payments import start_gumroad_payment
+        return await start_gumroad_payment(interaction, payment_type, amount_display, guild_id=guild_id, reference=reference)
+    reference = reference or _reference_for(payment_type, user.id)
     link = _prefilled_selar_link(payment_type, user.id, guild_id, clone_id, reference)
     if not link:
         await interaction.followup.send(
@@ -541,7 +544,7 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
     convention start_manual_payment already uses."""
     clone_id = getattr(interaction.client, "clone_id", None)
     mode = await db.get_payment_mode(clone_id)
-    if mode == "manual":
+    if mode in ("manual", "gumroad"):
         await start_manual_payment(interaction, payment_type, amount_display_manual, guild_id=guild_id)
         return
 

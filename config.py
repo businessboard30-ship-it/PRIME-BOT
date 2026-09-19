@@ -299,7 +299,35 @@ DISCORD_CLONE_ADMIN_IDS = {1534574875274903562}
 # are confirmed by an admin tapping Approve on a DM instead of a gateway
 # webhook/verify call. Intentionally a single global env var, not
 # per-clone — see payments_manual.py for the approval flow itself.
-PAYMENT_MODE = os.getenv("PAYMENT_MODE", "auto").strip().lower()
+PAYMENT_MODE = os.getenv("PAYMENT_MODE", "gumroad").strip().lower()
+
+# Gumroad (payment mode "gumroad": automatic confirmation via Ping webhook —
+# see gumroad_payments.py). Product links/ids created by
+# scripts/gumroad_create_products.py.
+GUMROAD_WEBHOOK_SECRET = os.getenv("GUMROAD_WEBHOOK_SECRET", "")
+GUMROAD_ACCESS_TOKEN = os.getenv("GUMROAD_ACCESS_TOKEN", "")
+GUMROAD_PRODUCT_LINKS = {
+    "welcome_card_pack": "https://boardmaster87.gumroad.com/l/xpoyf",
+    "ultra_welcome_pack": "https://boardmaster87.gumroad.com/l/gegyeh",
+    "custom_role": "https://boardmaster87.gumroad.com/l/bohzp",
+    "music_pro": "https://boardmaster87.gumroad.com/l/rwfgr",
+    "discord_clone": "https://boardmaster87.gumroad.com/l/xflgg",
+    "discord_clone_monetization": "https://boardmaster87.gumroad.com/l/qvnjx",
+    "xp_boost": "https://boardmaster87.gumroad.com/l/nmgkns",
+    "xp_server_boost": "https://boardmaster87.gumroad.com/l/slwtmv",
+    "xp_server_boost_month": "https://boardmaster87.gumroad.com/l/abnbyt",
+}
+GUMROAD_PRODUCT_IDS = {
+    "welcome_card_pack": "dE2cyP0dOzPPAqn2wZerqw==",
+    "ultra_welcome_pack": "0wS7tdMhBIxxswcgweeYHA==",
+    "custom_role": "o-dkVnx9ma7zWk3e4WxdmQ==",
+    "music_pro": "xf3P6Qcg5SO-lPMCUkfjqw==",
+    "discord_clone": "QkcS5nOux44_S7E6dAJzMA==",
+    "discord_clone_monetization": "KMgdTObX25DHkJ2lXgxyHQ==",
+    "xp_boost": "da0vEe8BMQWcxPSAJG5Jzg==",
+    "xp_server_boost": "Wnvy9M0rXGlqZwVjUltlRQ==",
+    "xp_server_boost_month": "Otjay_g0whBiQhfwXCnJIQ==",
+}
 
 # One Selar product checkout URL per payment_type this covers. Each is a
 # real product created on Selar at the matching price (Selar products are

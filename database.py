@@ -9157,11 +9157,11 @@ class Database:
         from config import PAYMENT_MODE as _default_mode
         key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
         value = await self.get_global_setting(key)
-        return value if value in ("auto", "manual") else _default_mode
+        return value if value in ("auto", "manual", "gumroad") else _default_mode
 
     async def set_payment_mode(self, mode: str, clone_id: Optional[int] = None) -> None:
-        if mode not in ("auto", "manual"):
-            raise ValueError(f"mode must be 'auto' or 'manual', got {mode!r}")
+        if mode not in ("auto", "manual", "gumroad"):
+            raise ValueError(f"mode must be 'auto', 'manual' or 'gumroad', got {mode!r}")
         key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
         await self.set_global_setting(key, mode)
 

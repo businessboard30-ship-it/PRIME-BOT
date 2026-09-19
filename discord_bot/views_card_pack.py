@@ -73,7 +73,7 @@ async def start_card_pack_payment(interaction: discord.Interaction):
         return
 
     mode = await db.get_payment_mode(_clone_id_of(interaction))
-    if mode == "manual":
+    if mode in ("manual", "gumroad"):
         from payments_manual import start_manual_payment
         await start_manual_payment(
             interaction, "welcome_card_pack", f"${WELCOME_CARD_PACK_FEE_USD:g} USD", guild_id=guild_id
@@ -178,7 +178,7 @@ async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: i
         return
 
     mode = await db.get_payment_mode(_clone_id_of(interaction))
-    if mode == "manual":
+    if mode in ("manual", "gumroad"):
         from payments_manual import start_manual_payment
         await start_manual_payment(
             interaction, "ultra_welcome_pack", f"${ULTRA_PACK_FEE_USD:g} USD", guild_id=guild_id

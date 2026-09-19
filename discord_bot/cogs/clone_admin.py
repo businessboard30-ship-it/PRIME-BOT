@@ -479,7 +479,7 @@ class CloneAdminCog(commands.Cog):
             mode = await db.get_payment_mode(clone_id)
             await interaction.followup.send(
                 f"💰 Monetization is **not active** on clone `#{clone_id}`.\n\n"
-                f"Activating ({'$' + str(CLONE_MONETIZATION_FEE_USD) if mode == 'manual' else f'GHS {CLONE_MONETIZATION_FEE_GHS}/month'}) unlocks:\n"
+                f"Activating ({'$' + str(CLONE_MONETIZATION_FEE_USD) if mode in ('manual', 'gumroad') else f'GHS {CLONE_MONETIZATION_FEE_GHS}/month'}) unlocks:\n"
                 f"• Connecting your own Stripe key, or a plain payment link, so purchases pay you directly\n"
                 f"• Setting your own prices for this bot's paid features\n\n"
                 f"Until activated, this clone's payments go through the main bot's account at default prices — "
@@ -540,19 +540,19 @@ class CloneAdminCog(commands.Cog):
             return
 
         mode = await db.get_payment_mode(clone_id)
-        if mode == "manual":
+        if mode in ("manual", "gumroad"):
             from payments_manual import _reference_for, _prefilled_selar_link
-            reference = _reference_for("discord_clone_monetization", interaction.user.id)
+            import gumroad_payments as gp
+            is_gum = mode == "gumroad"
+            reference = (gp.new_reference if is_gum else _reference_for)("discord_clone_monetization", interaction.user.id)
             await db.start_discord_monetization_payment(clone_id, interaction.user.id, reference)
             await db.log_payment(
-                interaction.user.id, 0.0, reference, status="pending",
-                payment_type="discord_clone_monetization", provider="selar",
+                interaction.user.id, float(CLONE_MONETIZATION_FEE_USD) if is_gum else 0.0, reference, status="pending",
+                payment_type="discord_clone_monetization", provider="gumroad" if is_gum else "selar",
                 clone_id=clone_id,
             )
-            # No guild_id (account-level purchase) — clone_id IS passed so
-            # the eventual admin DM and web /unlock branding can scope to
-            # this specific clone, same as views_card_pack.py's calls.
-            link = _prefilled_selar_link("discord_clone_monetization", interaction.user.id, None, clone_id, reference)
+            link = (gp.build_link("discord_clone_monetization", interaction.user.id, reference) if is_gum
+                    else _prefilled_selar_link("discord_clone_monetization", interaction.user.id, None, clone_id, reference))
             if not link:
                 await interaction.followup.send(
                     "❌ Manual payments aren't set up for monetization yet — please try again later.",
@@ -561,11 +561,13 @@ class CloneAdminCog(commands.Cog):
                 return
 
             pay_view = discord.ui.View(timeout=None)
-            pay_view.add_item(discord.ui.Button(label="💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
+            pay_view.add_item(discord.ui.Button(label="💳 Pay on Gumroad" if is_gum else "💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
             await interaction.followup.send(
                 f"**Activate Monetization — ${CLONE_MONETIZATION_FEE_USD}** for clone `#{clone_id}`.\n\n"
-                f"Tap **Pay on Selar** and complete checkout — you'll be redirected to a confirmation "
-                f"page where tapping **I've Paid** sends it for review.",
+                + (f"Tap **Pay on Gumroad** and complete checkout — it activates automatically within seconds."
+                 if is_gum else
+                 f"Tap **Pay on Selar** and complete checkout — you'll be redirected to a confirmation "
+                 f"page where tapping **I've Paid** sends it for review."),
                 view=pay_view, ephemeral=True,
             )
             return
@@ -887,6 +889,7 @@ class CloneAdminCog(commands.Cog):
     @app_commands.choices(mode=[
         app_commands.Choice(name="Auto — Paystack/Stripe checkout", value="auto"),
         app_commands.Choice(name="Manual — Selar link + admin approval", value="manual"),
+        app_commands.Choice(name="Gumroad — automatic confirmation", value="gumroad"),
     ])
     async def paymentmode(self, interaction: discord.Interaction, mode: app_commands.Choice[str], clone_id: int = None):
         """Flips db.get_payment_mode's override for every dual-mode paid

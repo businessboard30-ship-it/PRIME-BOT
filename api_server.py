@@ -155,6 +155,7 @@ ROUTES = {
     "/api/discord_login_oauth": "api.discord_login_oauth",
     "/api/site_visits": "api.site_visits",
     "/api/apply_boost": "api.apply_boost",
+    "/api/gumroad_webhook": "api.gumroad_webhook",
     "/api/selar_redirect": "api.selar_redirect",
     "/api/selar_submit": "api.selar_submit",
     "/api/selar_status": "api.selar_status",
