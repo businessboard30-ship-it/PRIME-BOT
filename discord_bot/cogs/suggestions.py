@@ -9,6 +9,7 @@ same pattern as starboard.py, so it works even on messages not in cache.
 import logging
 
 import discord
+from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands
 from discord_bot.cogs._dm_support import GuildOnlyCog
@@ -163,7 +164,11 @@ class SuggestionCog(GuildOnlyCog):
                                 author, updated["content"], "approved", updated["upvotes"], updated["downvotes"]
                             ))
                         except discord.Forbidden:
-                            pass
+                            perm_check.flag(
+                                guild.id, self._clone_id(), "suggestion_log",
+                                "Approved suggestions can't be logged — "
+                                + (perm_check.channel_problem(log_channel, guild.me) or "check my permissions in the log channel."),
+                            )
 
     group = app_commands.guild_only()(app_commands.Group(name="suggestions", description="Configure the suggestion box"))
 

@@ -16,6 +16,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import discord
+from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord_bot.cogs._dm_support import GuildOnlyCog
@@ -170,7 +171,13 @@ class GiveawayCog(GuildOnlyCog):
         try:
             await channel.send(f"🎉 Congratulations {mentions}! You won **{giveaway['prize']}**!")
         except discord.HTTPException:
-            pass
+            g = getattr(channel, "guild", None)
+            if g is not None:
+                perm_check.flag(
+                    g.id, getattr(self.bot, "clone_id", None), "giveaway_announce",
+                    f"Couldn't announce the winners of **{giveaway['prize']}** — "
+                    + (perm_check.channel_problem(channel, g.me) or "check my permissions in that channel."),
+                )
 
     @tasks.loop(seconds=60)
     async def _poller(self):

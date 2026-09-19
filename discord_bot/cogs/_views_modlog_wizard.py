@@ -25,6 +25,7 @@ path, and this file's own channel select below.
 import re
 
 import discord
+from discord_bot import perm_check
 
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
@@ -127,6 +128,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> disc
     text = discord.ui.TextDisplay(
         "\n".join([
             "### 📋 Set up server logging",
+            *perm_check.lines(guild_id, clone_id),
             *render_status_lines(config),
             "",
             "-# Pick a category above to start logging it here. Reopen this panel anytime with `/modlog` — "

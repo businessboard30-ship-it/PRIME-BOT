@@ -16,6 +16,7 @@ component's own custom_id.
 import re
 
 import discord
+from discord_bot import perm_check
 
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
@@ -101,7 +102,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, role_ro
     card_row = discord.ui.ActionRow()
     card_row.add_item(LevelingCardStyleSelect(guild_id, clone_id, invoker_id, config))
 
-    text = discord.ui.TextDisplay("\n".join(["### 📈 Set up leveling", *render_status_lines(config, role_rows)]))
+    text = discord.ui.TextDisplay("\n".join(["### 📈 Set up leveling", *perm_check.lines(guild_id, clone_id), *render_status_lines(config, role_rows)]))
     items = [text, discord.ui.Separator(), rate_row, announce_row, card_row]
 
     if role_rows:

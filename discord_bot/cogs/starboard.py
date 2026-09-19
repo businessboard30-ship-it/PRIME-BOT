@@ -14,6 +14,7 @@ import logging
 import re
 
 import discord
+from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands
 from discord_bot.cogs._dm_support import GuildOnlyCog
@@ -207,6 +208,12 @@ class StarboardCog(GuildOnlyCog):
                     )
                 except discord.Forbidden:
                     logger.warning(f"[v0] Missing permissions to post to starboard channel in guild {payload.guild_id}")
+                    perm_check.flag(
+                        payload.guild_id, self._clone_id(), "starboard_post",
+                        "Starboard can't post — "
+                        + (perm_check.channel_problem(starboard_channel, starboard_channel.guild.me)
+                           or "check my permissions in the starboard channel."),
+                    )
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):

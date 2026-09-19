@@ -15,6 +15,7 @@ import json
 import re
 
 import discord
+from discord_bot import perm_check
 
 import config
 from database import db
@@ -171,7 +172,7 @@ def build_wizard_view(guild: discord.Guild, config_row: dict, premium: bool) -> 
     closemsg_row.add_item(TicketCloseMessageButton(guild_id, clone_id, invoker_id, premium))
 
     text = discord.ui.TextDisplay(
-        "\n".join(["### 🎫 Ticket Setup", *render_status_lines(config_row, premium)])
+        "\n".join(["### 🎫 Ticket Setup", *perm_check.lines(guild_id, clone_id), *render_status_lines(config_row, premium)])
     )
     for item in (
         text, discord.ui.Separator(),

@@ -20,6 +20,7 @@ restart mid-flow, unlike the persistent verify button which does.
 import logging
 
 import discord
+from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands
 
@@ -545,6 +546,11 @@ class VerificationCog(GuildOnlyCog):
             except discord.HTTPException:
                 if attempt == 2:
                     logger.warning("verification: failed to apply unverified role to %s in guild %s", member.id, member.guild.id)
+                    perm_check.flag(
+                        member.guild.id, clone_id, "verification_role",
+                        "New members aren't getting the Unverified role — "
+                        + (perm_check.role_problem(member.guild, role) or "check my permissions."),
+                    )
                 else:
                     continue
 

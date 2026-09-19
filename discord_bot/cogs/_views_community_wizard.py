@@ -15,6 +15,7 @@ since one pointer is enough to find the single combined message again.
 import re
 
 import discord
+from discord_bot import perm_check
 
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
@@ -86,7 +87,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, starboard_config: dic
     sug_ctrl_row = discord.ui.ActionRow()
     sug_ctrl_row.add_item(SuggestionToggleButton(guild_id, clone_id, invoker_id, suggestion_config))
 
-    text = discord.ui.TextDisplay("\n".join(["### ⭐ Set up community features", *render_status_lines(starboard_config, suggestion_config)]))
+    text = discord.ui.TextDisplay("\n".join(["### ⭐ Set up community features", *perm_check.lines(guild_id, clone_id), *render_status_lines(starboard_config, suggestion_config)]))
     for item in (text, discord.ui.Separator(), sb_chan_row, sb_ctrl_row, discord.ui.Separator(), sug_chan_row, sug_ctrl_row):
         container.add_item(item)
 

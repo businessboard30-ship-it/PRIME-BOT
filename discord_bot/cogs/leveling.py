@@ -24,6 +24,7 @@ import random
 
 import aiohttp
 import discord
+from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord_bot.cogs._dm_support import GuildOnlyCog
@@ -203,6 +204,10 @@ class LevelingCog(GuildOnlyCog):
                     await member.add_roles(role, reason=f"Reached level {new_level}")
                 except discord.Forbidden:
                     logger.warning(f"[v0] Couldn't grant level role {role.id} in guild {member.guild.id} — check role hierarchy")
+                    perm_check.flag(
+                        member.guild.id, clone_id, f"level_role_{role.id}",
+                        "Can't hand out a level reward — " + (perm_check.role_problem(member.guild, role) or "check my role hierarchy."),
+                    )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):

@@ -17,6 +17,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import discord
+from discord_bot import perm_check
 
 import config
 from database import db
@@ -145,7 +146,7 @@ def build_wizard_view(wizard_message_id: int, draft: dict, premium: bool) -> dis
     if not premium:
         start_row.add_item(GiveawayGoPremiumButton(wizard_message_id))
 
-    text = discord.ui.TextDisplay("\n".join(["### 🎉 Create a giveaway", *render_status_lines(draft, premium)]))
+    text = discord.ui.TextDisplay("\n".join(["### 🎉 Create a giveaway", *perm_check.lines(draft.get("guild_id"), draft.get("clone_id")), *render_status_lines(draft, premium)]))
     for item in (
         text, discord.ui.Separator(),
         prize_row, duration_row, channel_row, winners_row, role_row,

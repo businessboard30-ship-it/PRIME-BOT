@@ -20,6 +20,7 @@ alongside everything else on one message.)
 import re
 
 import discord
+from discord_bot import perm_check
 
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
@@ -79,7 +80,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> disc
     rob_row = discord.ui.ActionRow()
     rob_row.add_item(EconomyRobOddsSelect(guild_id, clone_id, invoker_id, config))
 
-    text = discord.ui.TextDisplay("\n".join(["### 💰 Set up economy", *render_status_lines(config)]))
+    text = discord.ui.TextDisplay("\n".join(["### 💰 Set up economy", *perm_check.lines(guild_id, clone_id), *render_status_lines(config)]))
     for item in (text, discord.ui.Separator(), edit_row, rob_row):
         container.add_item(item)
 
