@@ -9146,22 +9146,21 @@ class Database:
             )
 
     async def get_payment_mode(self, clone_id: Optional[int] = None) -> str:
-        """'auto' (Paystack/Stripe gateway checkout) or 'manual' (Selar
-        link + admin-approved 'I've Paid'). Defaults to config.PAYMENT_MODE
-        (the env var, same as before this override existed) — this only
-        returns something different once /paymentmode has actually been
-        run. Scoped per clone_id (NULL = main bot) via bot_global_settings'
-        key/value store, same as image_host_channel_id above, so a clone
-        can run in a different mode than the main bot or another clone
-        without needing its own env var."""
+        """'split' (buyer picks Ghana/Paystack or International/Gumroad),
+        'auto' (Paystack/Stripe only) or 'gumroad' (Gumroad only).
+        Defaults to config.PAYMENT_MODE until /paymentmode has been run.
+        A legacy stored/env value of 'manual' (the removed Selar flow) is
+        treated as 'split'. Scoped per clone_id (NULL = main bot) via
+        bot_global_settings, so a clone can run in a different mode."""
         from config import PAYMENT_MODE as _default_mode
         key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
         value = await self.get_global_setting(key)
-        return value if value in ("auto", "manual", "gumroad") else _default_mode
+        mode = value if value in ("auto", "manual", "gumroad", "split") else _default_mode
+        return "split" if mode == "manual" else mode
 
     async def set_payment_mode(self, mode: str, clone_id: Optional[int] = None) -> None:
-        if mode not in ("auto", "manual", "gumroad"):
-            raise ValueError(f"mode must be 'auto', 'manual' or 'gumroad', got {mode!r}")
+        if mode not in ("auto", "gumroad", "split"):
+            raise ValueError(f"mode must be 'split', 'auto' or 'gumroad', got {mode!r}")
         key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
         await self.set_global_setting(key, mode)
 

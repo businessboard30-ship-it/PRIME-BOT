@@ -37,7 +37,7 @@ from payments import paystack
 from config import (
     DISCORD_CLONE_ACTIVATION_FEE_USD, DISCORD_CLONE_FREE_EVERY_NTH, DISCORD_CLONE_ADMIN_IDS,
     CLONE_MONETIZATION_FEE_GHS, CLONE_MONETIZATION_FEE_USD, CLONE_MONETIZATION_DAYS, PRICE_REGISTRY,
-    DISCORD_OWNER_BROADCAST_IDS, SELAR_PRODUCT_LINKS,
+    DISCORD_OWNER_BROADCAST_IDS,
 )
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 from discord_bot.cogs._views_pending_payments import build_pending_payments_view
@@ -128,10 +128,9 @@ async def register_clone_token(interaction: discord.Interaction, token: str, own
         return
 
     # Paid path: don't create the clone yet — stash the validated token and
-    # bot info, then hand off to the manual Selar payment flow. Nothing
-    # goes live until the project owner approves the manual "I've Paid"
-    # submission (see payments_manual.py's _unlock_discord_clone, which
-    # calls db.complete_discord_clone_pending_payment once approved) — this
+    # bot info, then hand off to Gumroad checkout. Nothing
+    # goes live until the payment is confirmed (see payments_manual.py's
+    # _unlock_discord_clone, which calls db.complete_discord_clone_pending_payment) — this
     # is "don't finish registering it until paid," not "let it come online
     # and refuse commands until paid."
     reference = await db.store_discord_clone_pending_payment(
@@ -479,7 +478,7 @@ class CloneAdminCog(commands.Cog):
             mode = await db.get_payment_mode(clone_id)
             await interaction.followup.send(
                 f"💰 Monetization is **not active** on clone `#{clone_id}`.\n\n"
-                f"Activating ({'$' + str(CLONE_MONETIZATION_FEE_USD) if mode in ('manual', 'gumroad') else f'GHS {CLONE_MONETIZATION_FEE_GHS}/month'}) unlocks:\n"
+                f"Activating ({'$' + str(CLONE_MONETIZATION_FEE_USD) if mode == 'gumroad' else f'GHS {CLONE_MONETIZATION_FEE_GHS}/month' if mode == 'auto' else f'GHS {CLONE_MONETIZATION_FEE_GHS} (Ghana) / ${CLONE_MONETIZATION_FEE_USD} (international)'}) unlocks:\n"
                 f"• Connecting your own Stripe key, or a plain payment link, so purchases pay you directly\n"
                 f"• Setting your own prices for this bot's paid features\n\n"
                 f"Until activated, this clone's payments go through the main bot's account at default prices — "
@@ -539,35 +538,41 @@ class CloneAdminCog(commands.Cog):
         if await self._owned_clone_or_deny(interaction, clone_id) is None:
             return
 
-        mode = await db.get_payment_mode(clone_id)
-        if mode in ("manual", "gumroad"):
-            from payments_manual import _reference_for, _prefilled_selar_link
+        await self._monetize_pay(interaction, clone_id, await db.get_payment_mode(clone_id))
+
+    async def _monetize_pay(self, interaction: discord.Interaction, clone_id: int, mode: str):
+        """Route a monetization purchase: 'split' asks Ghana (Paystack) vs
+        International (Gumroad); 'gumroad' and 'auto' go straight there."""
+        if mode == "split":
+            from payments_manual import offer_region_choice
+            await offer_region_choice(
+                interaction,
+                on_ghana=lambda i: self._monetize_pay(i, clone_id, "auto"),
+                on_international=lambda i: self._monetize_pay(i, clone_id, "gumroad"),
+            )
+            return
+
+        if mode == "gumroad":
             import gumroad_payments as gp
-            is_gum = mode == "gumroad"
-            reference = (gp.new_reference if is_gum else _reference_for)("discord_clone_monetization", interaction.user.id)
+            reference = gp.new_reference("discord_clone_monetization", interaction.user.id)
             await db.start_discord_monetization_payment(clone_id, interaction.user.id, reference)
             await db.log_payment(
-                interaction.user.id, float(CLONE_MONETIZATION_FEE_USD) if is_gum else 0.0, reference, status="pending",
-                payment_type="discord_clone_monetization", provider="gumroad" if is_gum else "selar",
-                clone_id=clone_id,
+                interaction.user.id, float(CLONE_MONETIZATION_FEE_USD), reference, status="pending",
+                payment_type="discord_clone_monetization", provider="gumroad", clone_id=clone_id,
             )
-            link = (gp.build_link("discord_clone_monetization", interaction.user.id, reference) if is_gum
-                    else _prefilled_selar_link("discord_clone_monetization", interaction.user.id, None, clone_id, reference))
+            link = gp.build_link("discord_clone_monetization", interaction.user.id, reference)
             if not link:
                 await interaction.followup.send(
-                    "❌ Manual payments aren't set up for monetization yet — please try again later.",
+                    "❌ Gumroad payments aren't set up for monetization yet — please try again later.",
                     ephemeral=True,
                 )
                 return
 
             pay_view = discord.ui.View(timeout=None)
-            pay_view.add_item(discord.ui.Button(label="💳 Pay on Gumroad" if is_gum else "💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
+            pay_view.add_item(discord.ui.Button(label="💳 Pay on Gumroad", url=link, style=discord.ButtonStyle.link))
             await interaction.followup.send(
                 f"**Activate Monetization — ${CLONE_MONETIZATION_FEE_USD}** for clone `#{clone_id}`.\n\n"
-                + (f"Tap **Pay on Gumroad** and complete checkout — it activates automatically within seconds."
-                 if is_gum else
-                 f"Tap **Pay on Selar** and complete checkout — you'll be redirected to a confirmation "
-                 f"page where tapping **I've Paid** sends it for review."),
+                f"Tap **Pay on Gumroad** and complete checkout — it activates automatically within seconds.",
                 view=pay_view, ephemeral=True,
             )
             return
@@ -808,7 +813,7 @@ class CloneAdminCog(commands.Cog):
     @app_commands.command(name="approvepayment", description="[Admin] Approve a pending manual payment by reference — any paid feature")
     @app_commands.describe(
         reference="The payment reference (buyer's or from the approval DM)",
-        amount="Real amount paid in GHS, confirmed against Selar's dashboard (not the buyer's claim)",
+        amount="Real amount paid in GHS, confirmed against the payment provider's dashboard (not the buyer's claim)",
     )
     async def approvepayment(self, interaction: discord.Interaction, reference: str, amount: float):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -881,15 +886,15 @@ class CloneAdminCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="paymentmode", description="[Owner] Switch every paid feature between automatic checkout and manual Selar links")
+    @app_commands.command(name="paymentmode", description="[Owner] Choose how every paid feature is routed: Ghana/international split, Paystack-only or Gumroad-only")
     @app_commands.describe(
-        mode="'auto' = Paystack/Stripe checkout in Discord. 'manual' = Selar link + admin-approved 'I've Paid'.",
+        mode="'split' = buyer picks Ghana (Paystack) or International (Gumroad). 'auto' = Paystack only. 'gumroad' = Gumroad only.",
         clone_id="Restrict the switch to one clone (see /myclones) — omit to change the main bot",
     )
     @app_commands.choices(mode=[
-        app_commands.Choice(name="Auto — Paystack/Stripe checkout", value="auto"),
-        app_commands.Choice(name="Manual — Selar link + admin approval", value="manual"),
-        app_commands.Choice(name="Gumroad — automatic confirmation", value="gumroad"),
+        app_commands.Choice(name="Split — Ghana pays via Paystack, everyone else via Gumroad", value="split"),
+        app_commands.Choice(name="Paystack only", value="auto"),
+        app_commands.Choice(name="Gumroad only", value="gumroad"),
     ])
     async def paymentmode(self, interaction: discord.Interaction, mode: app_commands.Choice[str], clone_id: int = None):
         """Flips db.get_payment_mode's override for every dual-mode paid
@@ -943,12 +948,8 @@ class CloneAdminCog(commands.Cog):
         message="The announcement text — sent as-is, signed with your configured brand name",
         target="Who receives this DM — regular bot users (default), clone admins/operators, or server owners",
         attachment="Optional file to attach — image, PDF, or any file type — sent alongside the text",
-        payment_button="Optional — attach an 'I've Paid' button for this product (lets buyers claim straight from this DM)",
         clone="Optional — restrict to one clone's users/servers/mod-logs only, instead of the main bot + every clone",
     )
-    @app_commands.choices(payment_button=[
-        app_commands.Choice(name=key.replace("_", " ").title(), value=key) for key in SELAR_PRODUCT_LINKS
-    ])
     @app_commands.choices(target=[
         app_commands.Choice(name="Users — everyone across the main bot + clones", value="users"),
         app_commands.Choice(name="Admins — clone owners/operators only", value="admins"),
@@ -959,7 +960,6 @@ class CloneAdminCog(commands.Cog):
     async def ownerbroadcast(self, interaction: discord.Interaction, message: str,
                               target: Optional[app_commands.Choice[str]] = None,
                               attachment: Optional[discord.Attachment] = None,
-                              payment_button: Optional[app_commands.Choice[str]] = None,
                               clone: Optional[str] = None):
         if interaction.user.id not in DISCORD_OWNER_BROADCAST_IDS:
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
@@ -1025,7 +1025,6 @@ class CloneAdminCog(commands.Cog):
 
         broadcast_id = await db.create_owner_broadcast(
             interaction.user.id, message, image_url,
-            payment_button_type=payment_button.value if payment_button else None,
             attachment_filename=attachment_filename,
         )
 
@@ -1149,12 +1148,11 @@ class CloneAdminCog(commands.Cog):
         broadcast_row = await db.get_owner_broadcast(broadcast_id)
         total = broadcast_row["total_recipients"] if broadcast_row else None
 
-        button_note = f" with an I've Paid button for `{payment_button.value}`" if payment_button else ""
         await interaction.followup.send(
             f"📢 Broadcast `#{broadcast_id}` queued for {recipient_note}"
             f"{' (' + str(total) + ' total)' if total is not None else ''}"
             f"{' with an image attached' if image_url else ''}"
-            f"{button_note}.\n"
+            f".\n"
             f"It'll go out shortly via the broadcast sender — DMs trickle out gradually to stay well under "
             f"Discord's rate limits, so a large broadcast can take a while to fully land.\n"
             f"Check progress any time with `/broadcaststatus id:{broadcast_id}`.",

@@ -49,7 +49,8 @@ async def _resolve_currency(interaction: discord.Interaction) -> str:
     return guessed or "USD"
 
 
-async def start_card_pack_payment(interaction: discord.Interaction):
+async def start_card_pack_payment(interaction: discord.Interaction, force_mode: str = None,
+                                   currency_override: str = None):
     """Kicks off a transaction for this guild's card pack.
     Call after interaction.response.defer(ephemeral=True, thinking=True)."""
     guild_id = interaction.guild_id
@@ -72,17 +73,21 @@ async def start_card_pack_payment(interaction: discord.Interaction):
         )
         return
 
-    mode = await db.get_payment_mode(_clone_id_of(interaction))
-    if mode in ("manual", "gumroad"):
+    mode = force_mode or await db.get_payment_mode(_clone_id_of(interaction))
+    if mode == "split":
+        from payments_manual import offer_region_choice
+        await offer_region_choice(
+            interaction,
+            on_ghana=lambda i: start_card_pack_payment(i, force_mode="auto", currency_override="GHS"),
+            on_international=lambda i: start_card_pack_payment(i, force_mode="gumroad"),
+        )
+        return
+    if mode == "gumroad":
         from payments_manual import start_manual_payment
         await start_manual_payment(
             interaction, "welcome_card_pack", f"${WELCOME_CARD_PACK_FEE_USD:g} USD", guild_id=guild_id
         )
         return
-    logger.warning(
-        f"[card-pack] payment mode={mode!r} (not 'manual') — "
-        f"routing user {user.id} guild {guild_id} through the auto gateway instead of Selar."
-    )
 
     price_usd = float(WELCOME_CARD_PACK_FEE_USD)
     clone_id = _clone_id_of(interaction) or 0
@@ -95,7 +100,7 @@ async def start_card_pack_payment(interaction: discord.Interaction):
         amount_minor_units = round(price_usd * 100)
         charge_currency = "usd"
     else:
-        target_currency = await _resolve_currency(interaction)
+        target_currency = currency_override or await _resolve_currency(interaction)
         amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, target_currency)
 
     payment_result = await asyncio.to_thread(
@@ -145,7 +150,8 @@ async def start_card_pack_payment(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: int = None):
+async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: int = None,
+                                    force_mode: str = None, currency_override: str = None):
     """Same shape as start_card_pack_payment above, for the SEPARATE ultra
     pack — this one unlocks /welcome custombg (own png/jpeg background)
     rather than the fixed artist themes, so it's gated on
@@ -177,17 +183,21 @@ async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: i
         )
         return
 
-    mode = await db.get_payment_mode(_clone_id_of(interaction))
-    if mode in ("manual", "gumroad"):
+    mode = force_mode or await db.get_payment_mode(_clone_id_of(interaction))
+    if mode == "split":
+        from payments_manual import offer_region_choice
+        await offer_region_choice(
+            interaction,
+            on_ghana=lambda i: start_ultra_pack_payment(i, guild_id=guild_id, force_mode="auto", currency_override="GHS"),
+            on_international=lambda i: start_ultra_pack_payment(i, guild_id=guild_id, force_mode="gumroad"),
+        )
+        return
+    if mode == "gumroad":
         from payments_manual import start_manual_payment
         await start_manual_payment(
             interaction, "ultra_welcome_pack", f"${ULTRA_PACK_FEE_USD:g} USD", guild_id=guild_id
         )
         return
-    logger.warning(
-        f"[ultra-pack] payment mode={mode!r} (not 'manual') — "
-        f"routing user {user.id} guild {guild_id} through the auto gateway instead of Selar."
-    )
 
     price_usd = float(ULTRA_PACK_FEE_USD)
     clone_id = _clone_id_of(interaction) or 0
@@ -198,7 +208,7 @@ async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: i
         amount_minor_units = round(price_usd * 100)
         charge_currency = "usd"
     else:
-        target_currency = await _resolve_currency(interaction)
+        target_currency = currency_override or await _resolve_currency(interaction)
         amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, target_currency)
 
     payment_result = await asyncio.to_thread(

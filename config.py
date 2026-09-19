@@ -291,15 +291,13 @@ IMAGE_HOST_CHANNEL_ID = int(os.getenv("IMAGE_HOST_CHANNEL_ID", "0") or "0")
 DISCORD_CLONE_ADMIN_IDS = {1534574875274903562}
 
 # ─────────────────────────────────────────────────────────────────────
-# Manual payments (Selar + DM approval)
+# Payment routing
 # ─────────────────────────────────────────────────────────────────────
-# Global kill switch for Paystack/Stripe. "auto" (default) = unchanged
-# behavior, resolve_gateway() as before. "manual" = every checkout flow
-# skips Paystack/Stripe entirely, shows only a Selar link, and payments
-# are confirmed by an admin tapping Approve on a DM instead of a gateway
-# webhook/verify call. Intentionally a single global env var, not
-# per-clone — see payments_manual.py for the approval flow itself.
-PAYMENT_MODE = os.getenv("PAYMENT_MODE", "gumroad").strip().lower()
+# How paid features are routed (changeable live with /paymentmode).
+# "split" (default) = buyer picks Ghana (Paystack) or International
+# (Gumroad). "auto" = Paystack/Stripe only. "gumroad" = Gumroad only.
+# A legacy "manual" value is treated as "split".
+PAYMENT_MODE = os.getenv("PAYMENT_MODE", "split").strip().lower()
 
 # Gumroad (payment mode "gumroad": automatic confirmation via Ping webhook —
 # see gumroad_payments.py). Product links/ids created by
@@ -329,42 +327,6 @@ GUMROAD_PRODUCT_IDS = {
     "xp_server_boost_month": "Otjay_g0whBiQhfwXCnJIQ==",
 }
 
-# One Selar product checkout URL per payment_type this covers. Each is a
-# real product created on Selar at the matching price (Selar products are
-# fixed-price, so a payment_type with variable amounts, e.g.
-# ai_store_topup, can't be routed through this dict as-is). Selar
-# supports prefilling checkout via query params (add_to_cart=1 +
-# email=...) — payments_manual.py appends those, it does not belong here.
-SELAR_PRODUCT_LINKS = {
-    "welcome_card_pack": "https://selar.com/t3417c1292",
-    "ultra_welcome_pack": "https://selar.com/147d44d7fw",
-    "discord_clone_monetization": "https://selar.com/3ic91865s1",
-    # Real $3.99 Custom Role product on Selar.
-    "custom_role": "https://selar.com/25619x5078",
-    # Music Pro ($4.99/server, one-time) — previously its own bespoke link
-    # button (music_pro_payment_url_for_guild) with no pending-payment
-    # record and a manual /activate-pro command. Folded into the same
-    # start_manual_payment/OAuth-confirmation flow as everything else here
-    # — see discord_bot/cogs/_views_music_panel.py's Upgrade-to-Pro button
-    # and payments_manual.py's UNLOCK_HANDLERS["music_pro"]. Same literal
-    # URL as MUSIC_PRO_PAYMENT_URL below (that one is defined further down
-    # this file, so it can't be referenced here directly without a forward-
-    # reference NameError at import time).
-    "music_pro": "https://selar.com/61l8115885",
-    # "CLONE ACTIVATION FEE" — unlisted (not shown on Selar store home),
-    # live. Backs clone_admin.py's register_clone_token() paid path
-    # (DISCORD_CLONE_FEE_GHS) — NOT the unused CLONE_BOT_FEE_GHS constant
-    # elsewhere in this file, which nothing actually charges.
-    "discord_clone": "https://selar.com/274bo7m038",
-    # Per-user XP boost (2x XP / 7 days) — see config.XP_BOOST_FEE_USD.
-    # Real $3 "XP BOOST PAYMENT" product on Selar (unlisted, live).
-    "xp_boost": "https://selar.com/910n9763c7",
-    # Server-wide boost tiers — see config.XP_SERVER_BOOST_TIERS.
-    # Real products on Selar (unlisted, live).
-    "xp_server_boost": "https://selar.com/05y7bv19d5",
-    # $50/1-month server boost tier — see config.XP_SERVER_BOOST_TIERS.
-    "xp_server_boost_month": "https://selar.com/525i51m108",
-}
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):
 # one-time, per-user unlock — buyer pays once, then can (re)style a
@@ -510,35 +472,16 @@ DISCORD_SUPPORT_SERVER_INVITE = "https://discord.gg/DYfajXrP9B"
 # reuse DISCORD_SUPPORT_SERVER_INVITE from this (backend) process; set it
 # separately on the frontend Railway service. Read by
 # app/unlock/unlock-status.tsx as the default support-server link shown
-# before a clone-specific one (if any) comes back from api/selar_submit.
+# before a clone-specific one (if any) is known.
 NEXT_PUBLIC_SUPPORT_SERVER_INVITE = os.getenv("NEXT_PUBLIC_SUPPORT_SERVER_INVITE", DISCORD_SUPPORT_SERVER_INVITE)
 
-# Music Pro upgrade — $4.99 one-time, per-SERVER (not per-member), via
-# Selar. No webhook wired up yet, so paying doesn't auto-activate — an
-# admin runs /activate-pro after confirming the payment.
+# Music Pro upgrade — $4.99 one-time, per-SERVER (not per-member).
 # Hardcoded (were env vars) — static pricing/display text and tuning constants.
 MUSIC_PRO_PRICE_LABEL = "$4.99"
 MUSIC_PRO_FEE_USD = 4.99
-MUSIC_PRO_PAYMENT_URL = "https://selar.com/61l8115885"
 MUSIC_FREE_DAILY_LISTENS = 10
 MUSIC_FREE_DAILY_UPLOADS = 3
 MUSIC_FREE_DAILY_DOWNLOADS = 3
-
-
-def music_pro_payment_url_for_guild(guild_id: int) -> str:
-    """Selar has no generic "reference"/"metadata" checkout field — the
-    only prefillable fields it documents are email/fullname/mobile/
-    address (https://selar.co/... ?email=...&fullname=...). This
-    previously stuffed the guild ID into `fullname` as a lookup key
-    ("Server-<guild_id>") so a payment on the Selar dashboard could be
-    matched back to a server. Selar's checkout validates fullname as a
-    real first+last name and REJECTS that synthetic value outright,
-    blocking checkout entirely — worse than not prefilling anything, so
-    this no longer prefills fullname. The guild ID is instead appended
-    as a visible URL fragment the buyer can see and copy into the name
-    field themselves if they want to help you match the payment; it
-    isn't submitted as form data so Selar can't reject it."""
-    return f"{MUSIC_PRO_PAYMENT_URL}#server-{guild_id}"
 
 
 

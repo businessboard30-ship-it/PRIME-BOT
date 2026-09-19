@@ -1,70 +1,20 @@
 # path: payments_manual.py
 
-"""Manual payment path (Selar + web confirmation + DM approval), used
-whenever config.PAYMENT_MODE == "manual" instead of the Paystack/Stripe
-flow in payments.py/resolve_gateway().
+"""Payment routing helpers.
 
-Shape: a caller (views_card_pack.py's ultra/card-pack flow, clone_admin.py's
-/registerclone flow, etc.) calls start_manual_payment() instead of
-resolve_gateway()+initialize_payment(). That logs a pending payment the
-same way the automatic path does (db.log_payment, provider="selar") and
-sends the buyer a DM with a plain "Pay on Selar" link — nothing else.
-Confirmation happens entirely on the web, not in Discord:
+Buyers in Ghana pay through Paystack (the automatic gateway path in
+payments.py/resolve_gateway()); everyone else pays through Gumroad
+(gumroad_payments.py, confirmed automatically by its ping webhook).
 
-  1. Buyer taps "Pay on Selar" in the DM. This is a bare Selar checkout
-     link — Selar's product-level "redirect after purchase" is a single
-     STATIC url per product (confirmed: nothing is appended to it, no
-     per-buyer query params), so unlike the old design there is nothing
-     dynamic to bake into the link itself. Each Selar product's own Custom
-     Checkout Form asks the buyer to type their Discord username and
-     server name — that's the human-readable evidence an admin cross-checks
-     against the Selar dashboard later; see _prefilled_selar_link.
-  2. The moment the button is shown (before the buyer ever leaves Discord),
-     this module already wrote a 'pending' payment_logs row keyed by
-     (user_id, payment_type[, chat_id=guild_id][, clone_id]) via
-     db.log_payment — that row is what the web step below matches against.
-  3. Selar redirects EVERY buyer of that product to the same static
-     .../unlock?payment_type=<type> page on the Next.js frontend
-     (app/unlock/unlock-status.tsx). That page asks the buyer to sign in
-     with Discord (reusing api/discord_login_oauth.py) — this is the only
-     identity check the web step has, since Selar's redirect carries none.
-  4. Once signed in, the buyer taps "I've Paid". That posts to
-     api/selar_submit.py with their OAuth session id + payment_type.
-     selar_submit resolves the real Discord user_id from the session
-     server-side (never trusts anything the browser sent directly), looks
-     up db.get_latest_pending_selar_payment(user_id, payment_type) — the
-     row from step 2 — and atomically claims it for review
-     (db.claim_manual_payment_for_review; a second tap/reload is a no-op
-     instead of a second admin DM), then DMs every approver.
-  5. Tapping Approve/Reject in that DM calls this payment_type's entry in
-     UNLOCK_HANDLERS — the SAME unlock functions the automatic path
-     already calls after a gateway confirms — so nothing about what "paid"
-     means diverges between the two modes; only how a payment gets
-     *confirmed* differs. The admin still double-checks against the Selar
-     dashboard's buyer-typed username/server name before approving —
-     that's the actual fraud check; the OAuth match only proves WHICH
-     Discord account is tapping "I've Paid", not that they actually paid.
+/paymentmode picks how a purchase is routed:
+  - "split"   (default) the buyer chooses Ghana (Paystack) or International (Gumroad)
+  - "auto"    everyone goes through Paystack/Stripe
+  - "gumroad" everyone goes through Gumroad
 
-Approve/Reject are discord.ui.DynamicItems (not a plain View), so they
-survive a bot restart: the DM itself is sent over plain REST from
-api/selar_submit.py (that process has no live gateway connection to build
-a discord.ui.View on — see discord_bot/dm_send.py), and whichever process
-IS connected to the gateway when a button is actually clicked reconstructs
-the item from its custom_id alone, matching every other persistent-button
-pattern in this codebase (see discord_bot/cogs/roast.py's
-_RoastApproveButton for the closest precedent).
-
-Not wired to a Selar webhook — Selar currently provides no webhook
-delivery, so confirmation is always a human tapping Approve after checking
-the Selar dashboard. The web step's job is narrower than in the old
-signed-redirect design: it no longer proves a specific checkout completed
-(Selar's static redirect can't tell us that), it only identifies WHO is
-claiming to have paid, cheaply, instead of trusting whatever the buyer's
-Discord client sends with zero verification at all.
-
-utils/selar_signing.py and api/selar_redirect.py implement the OLD
-signed-redirect design and are no longer part of this live path — left in
-place rather than deleted; safe to remove in a follow-up.
+Every path ends in the same UNLOCK_HANDLERS entry for the payment_type, so
+what "paid" means never diverges between providers. The admin
+Approve/Reject buttons and /approvepayment, /rejectpayment stay as a
+provider-agnostic manual override.
 """
 
 import logging
@@ -72,49 +22,17 @@ import re
 import secrets
 import asyncio
 from typing import Optional
-from urllib.parse import urlencode
 
 import discord
 
 from database import db
-from config import SELAR_PRODUCT_LINKS, DISCORD_CLONE_ADMIN_IDS
+from config import DISCORD_CLONE_ADMIN_IDS
 
 logger = logging.getLogger(__name__)
 
-PROVIDER = "selar"
+PROVIDER = "gumroad"
 
 _APPROVAL_ID_RE = r"(\d+)"
-
-
-def _reference_for(payment_type: str, user_id: int) -> str:
-    """Same spirit as the gateway references elsewhere (unique, traceable
-    to the user) but generated locally since Selar never hands one back."""
-    return f"selar_{payment_type}_{user_id}_{secrets.token_hex(4)}"
-
-
-def _prefilled_selar_link(payment_type: str, user_id: int, guild_id: Optional[int],
-                           clone_id: Optional[int], reference: str) -> Optional[str]:
-    """Appends add_to_cart=1 + a synthetic email carrying the Discord user
-    id, same trick views_card_pack.py already uses for Paystack
-    (f"user_{user.id}@animebot.com") — whatever shows in the Selar
-    dashboard's buyer email is the Discord id, for an admin eyeballing the
-    dashboard directly.
-
-    No redirect_url param anymore: Selar's product-level "redirect after
-    purchase" is a single static URL per product (set once, in the Selar
-    dashboard itself — see 011_selar_static_redirect_flow.sql), so there is
-    nothing dynamic left to append here. guild_id/clone_id/reference are
-    unused by the link itself now — they're only needed by the caller to
-    write the matching db.log_payment row (see start_manual_payment)."""
-    base = SELAR_PRODUCT_LINKS.get(payment_type)
-    if not base:
-        return None
-    params = {
-        "add_to_cart": "1",
-        "email": f"user_{user_id}@animebot.com",
-    }
-    sep = "&" if "?" in base else "?"
-    return f"{base}{sep}{urlencode(params)}"
 
 
 async def _resolve_approvers(bot: discord.Client, guild_id: Optional[int],
@@ -141,37 +59,6 @@ async def _resolve_approvers(bot: discord.Client, guild_id: Optional[int],
     return list(approvers)
 
 
-async def send_manual_payment_approval_dms(bot: discord.Client, payment_id: int, reference: str,
-                                            payment_type: str, buyer_id: int, guild_id: Optional[int],
-                                            clone_id: Optional[int], amount_display: str) -> None:
-    """Called from api/selar_submit.py once the buyer's web "I've Paid"
-    submission has been atomically claimed (db.claim_manual_payment_for_review
-    already returned True for this reference — this function assumes that
-    already happened and does not re-check it, so callers must not invoke
-    it speculatively). DMs every approver a persistent Approve/Reject card
-    keyed by payment_id, the payment_logs primary key, since DynamicItem
-    custom_ids need something short and numeric rather than the full
-    reference string."""
-    approver_ids = await _resolve_approvers(bot, guild_id, payment_type=payment_type)
-    location_line = f"Guild: `{guild_id}`" if guild_id is not None else f"Clone: `#{clone_id}`"
-    msg = (
-        f"💰 **Manual payment — buyer confirmed on the web**\n"
-        f"Buyer: <@{buyer_id}> (`{buyer_id}`)\n"
-        f"Type: `{payment_type}` — {amount_display}\n"
-        f"Reference: `{reference}`\n"
-        f"{location_line}\n\n"
-        f"Check Selar for a matching sale (buyer email `user_{buyer_id}@animebot.com`), "
-        f"then Approve or Reject below."
-    )
-    view = ManualApprovalView(payment_id)
-    for admin_id in approver_ids:
-        try:
-            admin_user = await bot.fetch_user(admin_id)
-            await admin_user.send(msg, view=view)
-        except discord.HTTPException:
-            logger.warning(f"[manual-pay] couldn't DM approver {admin_id} for reference {reference}")
-
-
 class ManualPaymentResolution:
     """Result of resolve_manual_payment_approval/_rejection — enough for a
     caller (button callback or slash command) to report back to whoever
@@ -193,11 +80,8 @@ async def resolve_manual_payment_approval(bot: discord.Client, payment_id: int, 
     message handle disabling/editing it themselves after this returns ok.
 
     amount: the real GHS amount, confirmed by the approving admin against
-    Selar's dashboard (start_manual_payment logs every manual/Selar
-    payment at a 0.0 placeholder, since Selar's static checkout redirect
-    carries no price data — nothing ever corrected that placeholder before
-    this parameter existed, so every manually-approved payment showed as
-    GHS 0 in /admin revenue forever, even completed ones). Pass None only
+    the payment dashboard (manually logged payments carry a 0.0
+    placeholder amount until an admin supplies the real one). Pass None only
     for a caller that genuinely can't ask (there is currently none) — the
     payment still gets approved/unlocked, just with the old amount-blind
     behavior."""
@@ -234,14 +118,14 @@ async def resolve_manual_payment_rejection(bot: discord.Client, payment_id: int)
 
 class _ManualPayApproveAmountModal(discord.ui.Modal, title="Confirm amount paid"):
     """Shown when Approve is tapped — the admin is already told to check
-    Selar's dashboard for a matching sale before approving (see the DM
+    the payment dashboard for a matching sale before approving (see the DM
     card's own text), so this just asks them to also copy the real amount
     from there instead of the payment staying logged at its 0.0
     placeholder forever. See resolve_manual_payment_approval's docstring
     for why that placeholder exists and why nothing used to correct it."""
 
     amount = discord.ui.TextInput(
-        label="Amount paid, in GHS (from Selar's dashboard)",
+        label="Amount paid, in GHS (from the payment dashboard)",
         placeholder="e.g. 35.00",
         required=True, max_length=12,
     )
@@ -276,8 +160,7 @@ class _ManualPayApproveAmountModal(discord.ui.Modal, title="Confirm amount paid"
 
 class _ManualPayApproveButton(discord.ui.DynamicItem[discord.ui.Button], template=rf"^manualpay_approve:{_APPROVAL_ID_RE}$"):
     """Approve half of the admin DM card. DynamicItem (not a plain View)
-    because the DM is sent from api/selar_submit.py — a process with no
-    live gateway connection — so nothing about this button can rely on
+    so it survives restarts: nothing about this button can rely on
     in-memory state; everything it needs is re-derived from payment_id at
     click time via a fresh DB lookup."""
 
@@ -360,69 +243,56 @@ async def _notify_buyer(bot: discord.Client, buyer_id: int, payment_type: str, a
 async def start_manual_payment(interaction: discord.Interaction, payment_type: str,
                                 amount_display: str, guild_id: Optional[int] = None,
                                 reference: Optional[str] = None) -> str:
-    """Call after interaction.response.defer(ephemeral=True, thinking=True) —
-    mirrors start_card_pack_payment's calling convention in views_card_pack.py.
+    """Start a Gumroad checkout for payment_type (the international path).
+    Kept under this name so existing callers don't change. Call after
+    interaction.response.defer(ephemeral=True, thinking=True).
 
-    reference: pass a pre-generated reference when the caller needs to
-    stash payment-type-specific data (e.g. clone_admin.py's
-    store_discord_clone_pending_payment) under the exact same reference
-    this function logs and Selar's redirect later reports back — that
-    write has to happen before this call anyway (so the pending row
-    exists the moment a webhook/redirect fires), which means it can't
-    wait for this function to generate one internally. Defaults to
-    generating one as before when the caller doesn't need to. Returns the
-    reference either way, in case the caller wants to log/store it after
-    the fact instead.
-
-    guild_id: pass the guild this purchase is FOR when it's a whole-guild
-    unlock (card pack, ultra pack) — None for account-level purchases
-    (discord_clone). Matches how log_payment's chat_id is already used
-    elsewhere, so has_paid()/get_latest_pending_payment() scoping stays
-    consistent between the manual and automatic paths.
-
-    Buyer identification no longer depends on Selar's redirect carrying
-    any dynamic data — Selar's product-level "redirect after purchase" is
-    a single static URL, same for every buyer, with nothing appended
-    (confirmed). Instead: the Selar product's own Custom Checkout Form
-    (Selar dashboard feature) collects the buyer's Discord username and
-    server name as compulsory checkout questions, visible per-sale in the
-    Selar dashboard for manual cross-checking — same idea as the
-    synthetic buyer email, just via Selar's own form fields instead of a
-    URL param a buyer could silently overwrite. The web /unlock page
-    itself stays generic (no prefill, no per-buyer state) — its only job
-    is a plain "I've Paid" button.
-    """
-    user = interaction.user
-    clone_id = getattr(interaction.client, "clone_id", None)
-    if await db.get_payment_mode(clone_id) == "gumroad":
-        from gumroad_payments import start_gumroad_payment
-        return await start_gumroad_payment(interaction, payment_type, amount_display, guild_id=guild_id, reference=reference)
-    reference = reference or _reference_for(payment_type, user.id)
-    link = _prefilled_selar_link(payment_type, user.id, guild_id, clone_id, reference)
-    if not link:
-        await interaction.followup.send(
-            "Manual payments aren't set up for this yet — please try again later.", ephemeral=True
-        )
-        logger.error(f"[manual-pay] no SELAR_PRODUCT_LINKS entry for payment_type={payment_type}")
-        return reference
-
-    await db.log_payment(
-        user.id, 0.0, reference, status="pending",
-        payment_type=payment_type, chat_id=guild_id, provider=PROVIDER,
-        clone_id=clone_id,
+    reference: pass a pre-generated reference when the caller stashed
+    payment-type-specific data (e.g. clone_admin.py's
+    store_discord_clone_pending_payment) under it beforehand.
+    guild_id: the guild this purchase is FOR for whole-guild unlocks,
+    None for account-level purchases."""
+    from gumroad_payments import start_gumroad_payment
+    return await start_gumroad_payment(
+        interaction, payment_type, amount_display, guild_id=guild_id, reference=reference
     )
 
-    pay_view = discord.ui.View(timeout=None)
-    pay_view.add_item(discord.ui.Button(label="💳 Pay on Selar", url=link, style=discord.ButtonStyle.link))
+
+class _RegionChoiceView(discord.ui.View):
+    """Ephemeral 'where are you paying from?' picker used in split mode.
+    on_ghana / on_international are async callables taking the button's
+    fresh interaction (already deferred)."""
+
+    def __init__(self, user_id: int, on_ghana, on_international):
+        super().__init__(timeout=600)
+        self._user_id = user_id
+        self._on_ghana = on_ghana
+        self._on_international = on_international
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self._user_id
+
+    @discord.ui.button(label="Ghana — Paystack", emoji="🇬🇭", style=discord.ButtonStyle.success)
+    async def ghana(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self._on_ghana(interaction)
+
+    @discord.ui.button(label="International — Gumroad", emoji="🌍", style=discord.ButtonStyle.primary)
+    async def international(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self._on_international(interaction)
+
+
+async def offer_region_choice(interaction: discord.Interaction, *, on_ghana, on_international) -> None:
+    """Call after interaction.response.defer(...). Ghana buyers pay with
+    Paystack (Mobile Money / local cards); everyone else pays with Gumroad."""
     await interaction.followup.send(
-        f"Pay **{amount_display}** on Selar using the button below. "
-        f"You'll be asked for your Discord username and server name at checkout — "
-        f"enter them exactly as they appear so an admin can match your payment. "
-        f"Once checkout completes, Selar will send you to a confirmation page — "
-        f"tap **I've Paid** there and it'll be reviewed shortly.",
-        view=pay_view, ephemeral=True,
+        "Where are you paying from?\n"
+        "🇬🇭 **Ghana** — pay with Paystack (Mobile Money / local cards)\n"
+        "🌍 **Anywhere else** — pay with Gumroad (international cards / PayPal)",
+        view=_RegionChoiceView(interaction.user.id, on_ghana, on_international),
+        ephemeral=True,
     )
-    return reference
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -491,7 +361,7 @@ async def _unlock_xp_boost(reference: str, buyer_id: int, guild_id: Optional[int
 
 def _make_unlock_xp_server_boost_tier(tier_key: str):
     """One handler per config.XP_SERVER_BOOST_TIERS entry — each tier is
-    its own Selar product/payment_type, but they all just activate a
+    its own product/payment_type, but they all just activate a
     guild-wide multiplier for that tier's duration. buyer_id is whoever
     paid, but the boost itself applies to every member of guild_id, not
     just them.
@@ -521,9 +391,11 @@ UNLOCK_HANDLERS = {
 
 async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_type: str,
                                    price_usd: float, product_title: str, product_description: str,
-                                   amount_display_manual: str, guild_id: Optional[int] = None) -> None:
-    """Single entry point for a one-time paid feature that should support
-    BOTH the Selar (manual) and Paystack/Stripe (automatic) paths,
+                                   amount_display_manual: str, guild_id: Optional[int] = None,
+                                   force_mode: Optional[str] = None,
+                                   currency_override: Optional[str] = None) -> None:
+    """Single entry point for a one-time paid feature that supports BOTH
+    the Gumroad (international) and Paystack (Ghana) paths,
     switched live via /paymentmode instead of a hardcoded choice — call
     this instead of calling start_manual_payment directly, so a feature
     never has to hand-roll the automatic-gateway half itself (that used to
@@ -543,8 +415,19 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
     or per-guild-effect unlock — None for account-level purchases. Same
     convention start_manual_payment already uses."""
     clone_id = getattr(interaction.client, "clone_id", None)
-    mode = await db.get_payment_mode(clone_id)
-    if mode in ("manual", "gumroad"):
+    mode = force_mode or await db.get_payment_mode(clone_id)
+    if mode == "split":
+        def _again(m, cur=None):
+            async def _run(i: discord.Interaction):
+                await start_dual_mode_payment(
+                    i, payment_type=payment_type, price_usd=price_usd, product_title=product_title,
+                    product_description=product_description, amount_display_manual=amount_display_manual,
+                    guild_id=guild_id, force_mode=m, currency_override=cur,
+                )
+            return _run
+        await offer_region_choice(interaction, on_ghana=_again("auto", "GHS"), on_international=_again("gumroad"))
+        return
+    if mode == "gumroad":
         await start_manual_payment(interaction, payment_type, amount_display_manual, guild_id=guild_id)
         return
 
@@ -559,7 +442,7 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
         charge_currency = "usd"
     else:
         stored_currency = await db.get_user_currency(user.id)
-        target_currency = stored_currency or (fx.currency_from_locale(getattr(interaction, "locale", None)) or "USD")
+        target_currency = currency_override or stored_currency or (fx.currency_from_locale(getattr(interaction, "locale", None)) or "USD")
         amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, target_currency)
 
     payment_result = await asyncio.to_thread(

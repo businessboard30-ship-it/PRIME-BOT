@@ -57,7 +57,6 @@ from discord_bot.cogs._views_roast_arena_challenge import DYNAMIC_ITEMS as ROAST
 from discord_bot.cogs._views_roast_arena_host_wizard import DYNAMIC_ITEMS as ROAST_ARENA_HOST_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_music_panel import DYNAMIC_ITEMS as MUSIC_PANEL_DYNAMIC_ITEMS
 from payments_manual import MANUAL_PAYMENT_DYNAMIC_ITEMS
-from discord_bot.cogs._views_direct_paid import DYNAMIC_ITEMS as DIRECT_PAID_DYNAMIC_ITEMS
 from discord_bot.cogs._views_verification import DYNAMIC_ITEMS as VERIFICATION_DYNAMIC_ITEMS
 from discord_bot.cogs._views_custom_role import DYNAMIC_ITEMS as CUSTOM_ROLE_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_boost import DYNAMIC_ITEMS as LEVELING_BOOST_DYNAMIC_ITEMS
@@ -152,7 +151,6 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*COMBINED_JOIN_OFFER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REPORT_CHANNEL_PICKER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*GIVEAWAY_WIZARD_DYNAMIC_ITEMS)
-        self.add_dynamic_items(*DIRECT_PAID_DYNAMIC_ITEMS)
         self.add_dynamic_items(*VERIFICATION_DYNAMIC_ITEMS)
         self.add_dynamic_items(*CUSTOM_ROLE_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ROAST_DYNAMIC_ITEMS)

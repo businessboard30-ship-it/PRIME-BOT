@@ -35,22 +35,6 @@ from config import CRON_SECRET, DISCORD_BOT_TOKEN, DISCORD_OWNER_BRAND_NAME
 from database import db
 from utils.crypto import secret_manager
 
-# Deliberately NOT importing discord_bot.cogs._views_direct_paid here — this
-# serverless function talks to Discord over raw REST (see module docstring)
-# and every other api/ handler avoids pulling in the discord.py package for
-# that reason. Duplicating just the custom_id string shape instead; it MUST
-# stay identical to direct_paid_custom_id() in _views_direct_paid.py, which
-# is what the gateway process's persistent DynamicItem actually matches
-# against on click.
-
-
-def _direct_paid_custom_id(payment_type: str) -> str:
-    return f"direct_pay:{payment_type}"
-
-
-def _pay_now_custom_id(payment_type: str) -> str:
-    return f"pay_now:{payment_type}"
-
 logger = logging.getLogger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
@@ -90,7 +74,7 @@ async def _token_for(clone_id):
 
 
 async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, content: str,
-                    image_url: Optional[str] = None, payment_button_type: Optional[str] = None,
+                    image_url: Optional[str] = None,
                     attachment_filename: Optional[str] = None) -> Optional[str]:
     """Returns None on success, or an error string on failure. A closed-DMs
     user (403) or a user who's left every mutual server (404 on channel
@@ -138,29 +122,6 @@ async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, con
             # for images only, and silently shows nothing for a PDF/other
             # file), but it's the best we can do without a filename or bytes.
             payload["embeds"] = [{"image": {"url": image_url}}]
-        if payment_button_type:
-            # type 1 = action row, type 2 = button. style 1 = blurple
-            # (Pay Now), style 3 = success/green (I've Paid).
-            # "I've Paid" is sent disabled — it only becomes clickable once
-            # the buyer taps "Pay Now", which the gateway process's
-            # persistent _PayNowButton DynamicItem enables by editing this
-            # message (discord_bot/cogs/_views_direct_paid.py). Both
-            # buttons are caught by that same file's DynamicItems; this raw
-            # REST send never needs its own interaction handling.
-            payload["components"] = [{
-                "type": 1,
-                "components": [
-                    {
-                        "type": 2, "style": 1, "label": "💳 Pay Now",
-                        "custom_id": _pay_now_custom_id(payment_button_type),
-                    },
-                    {
-                        "type": 2, "style": 3, "label": "✅ I've Paid", "disabled": True,
-                        "custom_id": _direct_paid_custom_id(payment_button_type),
-                    },
-                ],
-            }]
-
         if file_bytes:
             # Real file attachment: multipart body with the file bytes plus
             # a "payload_json" part carrying everything else, per Discord's
@@ -317,7 +278,7 @@ async def run_pending_owner_broadcasts() -> dict:
                         break
                     error = await _dm_user(
                         session, token, r["user_id"], content,
-                        broadcast.get("image_url"), broadcast.get("payment_button_type"),
+                        broadcast.get("image_url"),
                         broadcast.get("attachment_filename"),
                     ) if r.get("recipient_kind", "user") != "channel" else await _post_to_channel(
                         session, token, r["user_id"], content,
