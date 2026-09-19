@@ -28,6 +28,7 @@ import config as bot_config
 from database import db
 from modules.welcome_card import render_welcome_card
 from discord_bot.cogs._views_shared import refresh_button
+from discord_bot import perm_check
 from discord_bot.cogs._views_welcome import build_wizard_view, refresh_posted_wizard
 
 logger = logging.getLogger(__name__)
@@ -1098,6 +1099,7 @@ class WelcomeCog(GuildOnlyCog):
             else:
                 await channel.send(content=content, file=file)
                 sent = True
+                perm_check.clear(member.guild.id, getattr(self.bot, "clone_id", None), "welcome_post")
         except discord.Forbidden as e:
             # Missing Access/Permissions in the target channel — this is a
             # standing configuration problem (bot lost View/Send perms, or
@@ -1107,6 +1109,13 @@ class WelcomeCog(GuildOnlyCog):
             # the fallback plain-text retry below since it would just hit
             # the exact same permission wall a second time.
             logger.info(f"[v0] Welcome card skipped for guild {member.guild.id} (missing access): {e}")
+            if channel is not None:
+                perm_check.flag(
+                    member.guild.id, getattr(self.bot, "clone_id", None), "welcome_post",
+                    "Welcome cards aren't posting. "
+                    + (perm_check.channel_problem(channel, member.guild.me)
+                       or f"I can't post in {channel.mention} — check that channel's permission overrides for me."),
+                )
         except Exception as e:
             logger.error(f"[v0] Failed to render/send welcome card for guild {member.guild.id}: {e}")
             if sent:
@@ -1132,6 +1141,11 @@ class WelcomeCog(GuildOnlyCog):
         if not _require_perm(interaction, "manage_guild"):
             await _deny(interaction, "Manage Server")
             return
+        problem = perm_check.channel_problem(channel, interaction.guild.me)
+        if problem:
+            await interaction.followup.send(f"⚠️ Welcome cards not enabled. {problem}", ephemeral=True)
+            return
+        perm_check.clear(interaction.guild_id, _clone_id_of(interaction), "welcome_post")
         await db.set_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction), enabled=True, channel_id=channel.id)
         await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
         await interaction.followup.send(f"✅ Welcome cards enabled in {channel.mention}.", ephemeral=True)

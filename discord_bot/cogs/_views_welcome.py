@@ -37,6 +37,8 @@ import re
 import aiohttp
 import discord
 
+from discord_bot import perm_check
+
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from modules.welcome_card import render_welcome_card
@@ -296,7 +298,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, gree
     mode_row = discord.ui.ActionRow()
     mode_row.add_item(WelcomeModeToggleButton(guild_id, clone_id, invoker_id, config))
 
-    header_lines = ["### 🚩 Set up welcome cards", *render_status_lines(config)]
+    header_lines = ["### 🚩 Set up welcome cards", *perm_check.lines(guild_id, clone_id), *render_status_lines(config)]
     if greeting:
         header_lines = [greeting, "", *header_lines]
     text = discord.ui.TextDisplay("\n".join(header_lines))

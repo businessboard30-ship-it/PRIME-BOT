@@ -54,6 +54,7 @@ from config import DASHBOARD_BASE_URL, DISCORD_CLONE_ADMIN_IDS
 from discord_bot.i18n_helpers import get_lang, tr
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 from discord_bot.cogs._views_automod import AutomodPanelView
+from discord_bot import perm_check
 from discord_bot.cogs._views_automod_wizard import (
     build_wizard_view as build_automod_wizard_view,
     remember_wizard_message as remember_automod_wizard_message,
@@ -467,6 +468,12 @@ class AutomodCog(GuildOnlyCog):
         except (discord.HTTPException, discord.Forbidden, discord.NotFound):
             # Known, final outcome — nothing will ever back this batch row.
             logger.info(f"Could not post combined automod reminder in guild {guild.id}'s log channel")
+            perm_check.flag(
+                guild.id, clone_id, "automod_log",
+                "Moderation logs and reminders can't be posted. "
+                + (perm_check.channel_problem(channel, guild.me)
+                   or "The log channel is missing or I can't post there — pick one with `/automod setlogchannel`."),
+            )
             await db.delete_automod_reminder_batch(batch_id)
             return
         except Exception:
@@ -880,6 +887,12 @@ class AutomodCog(GuildOnlyCog):
         if not _require_perm(interaction, "manage_guild"):
             await _deny(interaction, "Manage Server", lang)
             return
+        if channel is not None:
+            problem = perm_check.channel_problem(channel, interaction.guild.me)
+            if problem:
+                await interaction.followup.send(f"⚠️ Log channel not changed. {problem}", ephemeral=True)
+                return
+            perm_check.clear(interaction.guild_id, _clone_id_of(interaction), "automod_log")
         # Picking a channel by hand (or explicitly clearing it) means the
         # admin is now driving — stop the auto-created-channel reminder
         # DMs to the owner regardless of which channel this is.

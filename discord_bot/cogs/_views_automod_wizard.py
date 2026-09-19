@@ -28,6 +28,8 @@ import re
 
 import discord
 
+from discord_bot import perm_check
+
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 
@@ -132,7 +134,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> disc
     button_row.add_item(AutomodPresetWordsButton(guild_id, clone_id, invoker_id))
     button_row.add_item(AutomodListWordsButton(guild_id, clone_id, invoker_id))
 
-    text = discord.ui.TextDisplay("\n".join(["### 🛡️ Set up moderation", *render_status_lines(config)]))
+    text = discord.ui.TextDisplay("\n".join(["### 🛡️ Set up moderation", *perm_check.lines(guild_id, clone_id), *render_status_lines(config)]))
     for item in (text, discord.ui.Separator(), chan_row, action_row, timeout_row, mention_row, filters_row, discord.ui.Separator(), button_row):
         container.add_item(item)
 
