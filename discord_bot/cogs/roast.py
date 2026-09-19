@@ -1557,7 +1557,7 @@ class RoastCog(GuildOnlyCog):
             except Exception:
                 logger.exception(f"[roast] failed resolving sibling proposal guild={guild_id}")
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=120)
     async def _hardcore_consent_poller(self):
         """Picks up newly-paid hardcore roast rows (status='awaiting_consent')
         and fires the target consent DM. Runs every 30s so the delay between

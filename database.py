@@ -138,8 +138,9 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "25"
-# "24" -> "25": 015_guild_premium.sql (discord_guild_subscriptions table +
+SCHEMA_VERSION = "26"
+# "25" -> "26": 016_hardcore_roast — discord_hardcore_roast_pending table +
+# discord_roast_battles.hardcore column for per-battle paid hardcore mode.
 # discord_custom_roles.via_premium) for the $5/month per-server Premium tier.
 # "23" -> "24": discord_welcome_config.card_pack_trial_admin_id column was added
 # to _create_tables() without a bump, so the ALTER never ran on existing DBs
@@ -1869,6 +1870,27 @@ class Database:
         await conn.execute("""
             ALTER TABLE discord_roast_battles
             ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_roast_battles
+            ADD COLUMN IF NOT EXISTS hardcore BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_hardcore_roast_pending (
+                id              BIGSERIAL PRIMARY KEY,
+                guild_id        BIGINT NOT NULL,
+                clone_id        BIGINT,
+                challenger_id   BIGINT NOT NULL,
+                target_id       BIGINT NOT NULL,
+                channel_id      BIGINT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'awaiting_payment',
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_hc_roast_pending_challenger
+            ON discord_hardcore_roast_pending (challenger_id, status)
         """)
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS discord_roast_battles_status_idx
