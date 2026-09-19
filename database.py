@@ -138,7 +138,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "23"
+SCHEMA_VERSION = "24"
+# "23" -> "24": discord_welcome_config.card_pack_trial_admin_id column was added
+# to _create_tables() without a bump, so the ALTER never ran on existing DBs
+# ("column card_pack_trial_admin_id does not exist" in the trial-expiry loop).
 # "22" -> "23": discord_username_cache (CREATE TABLE + its username index) —
 # the cross-clone /find person-name search cache — landed in _create_tables
 # without a version bump, same bump-or-it-never-runs trap as every entry in

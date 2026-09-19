@@ -584,7 +584,9 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
         charge_currency = "usd"
     else:
         stored_currency = await db.get_user_currency(user.id)
-        target_currency = currency_override or stored_currency or (fx.currency_from_locale(getattr(interaction, "locale", None)) or "USD")
+        # The Paystack account only has GHS enabled ("Currency not supported by merchant"
+        # for USD etc.), so the Paystack path always charges in GHS.
+        target_currency = "GHS"
         amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, target_currency)
 
     payment_result = await asyncio.to_thread(

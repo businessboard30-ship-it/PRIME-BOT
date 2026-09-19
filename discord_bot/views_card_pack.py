@@ -107,7 +107,7 @@ async def start_card_pack_payment(interaction: discord.Interaction, force_mode: 
         amount_minor_units = round(price_usd * 100)
         charge_currency = "usd"
     else:
-        target_currency = currency_override or await _resolve_currency(interaction)
+        target_currency = "GHS"  # Paystack account only supports GHS
         amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, target_currency)
 
     payment_result = await asyncio.to_thread(
@@ -222,7 +222,7 @@ async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: i
         amount_minor_units = round(price_usd * 100)
         charge_currency = "usd"
     else:
-        target_currency = currency_override or await _resolve_currency(interaction)
+        target_currency = "GHS"  # Paystack account only supports GHS
         amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, target_currency)
 
     payment_result = await asyncio.to_thread(
