@@ -9149,21 +9149,24 @@ class Database:
             )
 
     async def get_payment_mode(self, clone_id: Optional[int] = None) -> str:
-        """'split' (buyer picks Ghana/Paystack or International/Gumroad),
+        """'split' (country auto-routing: Ghana/Paystack, others/Gumroad),
         'auto' (Paystack/Stripe only) or 'gumroad' (Gumroad only).
-        Defaults to config.PAYMENT_MODE until /paymentmode has been run.
-        A legacy stored/env value of 'manual' (the removed Selar flow) is
-        treated as 'split'. Scoped per clone_id (NULL = main bot) via
-        bot_global_settings, so a clone can run in a different mode."""
+
+        Resolution order: this clone's own saved choice -> the MAIN bot's
+        saved choice (clones follow the main bot by default) -> config.PAYMENT_MODE.
+        A clone stores 'inherit' (or nothing) to follow the main bot. A legacy
+        'manual' value (the removed Selar flow) is treated as 'split'."""
         from config import PAYMENT_MODE as _default_mode
-        key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
-        value = await self.get_global_setting(key)
-        mode = value if value in ("auto", "manual", "gumroad", "split") else _default_mode
+        valid = ("auto", "manual", "gumroad", "split")
+        value = await self.get_global_setting(f"payment_mode:{clone_id if clone_id is not None else 'main'}")
+        if value not in valid and clone_id is not None:
+            value = await self.get_global_setting("payment_mode:main")
+        mode = value if value in valid else _default_mode
         return "split" if mode == "manual" else mode
 
     async def set_payment_mode(self, mode: str, clone_id: Optional[int] = None) -> None:
-        if mode not in ("auto", "gumroad", "split"):
-            raise ValueError(f"mode must be 'split', 'auto' or 'gumroad', got {mode!r}")
+        if mode not in ("auto", "gumroad", "split", "inherit"):
+            raise ValueError(f"mode must be 'split', 'auto', 'gumroad' or 'inherit', got {mode!r}")
         key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
         await self.set_global_setting(key, mode)
 

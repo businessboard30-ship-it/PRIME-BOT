@@ -906,6 +906,7 @@ class CloneAdminCog(commands.Cog):
         app_commands.Choice(name="Split — Ghana pays via Paystack, everyone else via Gumroad", value="split"),
         app_commands.Choice(name="Paystack only", value="auto"),
         app_commands.Choice(name="Gumroad only", value="gumroad"),
+        app_commands.Choice(name="Follow main bot (clones only)", value="inherit"),
     ])
     async def paymentmode(self, interaction: discord.Interaction, mode: app_commands.Choice[str], clone_id: int = None,
                           all_clones: bool = False):
