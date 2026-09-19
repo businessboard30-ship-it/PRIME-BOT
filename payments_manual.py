@@ -416,7 +416,10 @@ UNLOCK_HANDLERS = {
 
 def _public_base_url() -> str:
     import os
-    return os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if url and not url.startswith(("http://", "https://")):
+        url = "https://" + url  # tolerate a value set without the scheme
+    return url
 
 
 _INTENT_KEY = "payintent:{}"
