@@ -1,0 +1,25 @@
+name: Gumroad create products
+on:
+  workflow_dispatch:
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Run
+        env:
+          GUMROAD_TOKEN: ${{ secrets.GUMROAD_TOKEN }}
+          DATABASE_URL: postgresql://x:x@localhost:5432/x
+        run: python scripts/gumroad_create_products.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gumroad-output
+          path: |
+            gumroad_products.json
+            gumroad_products_checklist.md
+          if-no-files-found: ignore
