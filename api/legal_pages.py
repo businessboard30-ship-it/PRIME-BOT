@@ -17,6 +17,14 @@ from http.server import BaseHTTPRequestHandler
 
 BOT_NAME = "Prime Bot"
 CONTACT_EMAIL = "maxwelldumenya5@outlook.com"
+# Paddle's domain-review checklist requires the company name or sole
+# proprietor's legal name to appear IN the Terms & Conditions specifically
+# (a product/brand name like BOT_NAME above doesn't satisfy this on its
+# own) — https://www.paddle.com help center, "Domain Review". Inferred
+# from the contact email pending confirmation; correct this if the exact
+# legal name/spelling is wrong.
+OPERATOR_NAME = "Maxwell Dumenya"
+OPERATOR_LOCATION = "Ghana"
 
 # Pricing table below is generated from these — edit config.py's own
 # constants (WELCOME_CARD_PACK_FEE_USD, XP_WALLET_TIERS, etc.), not the
@@ -39,16 +47,27 @@ h2{margin-top:2rem}
 
 
 def _page(title: str, body_html: str) -> bytes:
+    nav = (
+        '<nav style="margin-top:2.5rem;padding-top:1rem;border-top:1px solid #ddd">'
+        '<a href="/">Home</a> &middot; '
+        '<a href="/pricing">Pricing</a> &middot; '
+        '<a href="/terms">Terms of Service</a> &middot; '
+        '<a href="/privacy">Privacy Policy</a> &middot; '
+        '<a href="/refund">Refund Policy</a>'
+        '</nav>'
+    )
     return (
         f"<!doctype html><html><head><meta charset='utf-8'>"
         f"<title>{title} — {BOT_NAME}</title><style>{_PAGE_CSS}</style></head>"
-        f"<body>{body_html}</body></html>"
+        f"<body>{body_html}{nav}</body></html>"
     ).encode()
 
 
 TERMS_HTML = f"""
 <h1>Terms of Service</h1>
 <p class="updated">{BOT_NAME}</p>
+<p>{BOT_NAME} is operated by {OPERATOR_NAME}, a sole proprietor based in
+{OPERATOR_LOCATION}. Contact: {CONTACT_EMAIL}.</p>
 <p>By adding or using {BOT_NAME} ("the bot") in a Discord server, or by
 installing it to your own account, you agree to these terms.</p>
 
@@ -61,11 +80,10 @@ while using it.</p>
 
 <h2>Paid features</h2>
 <p>Some features (premium roles, AI Store credits, bot-clone registration)
-involve real payment. Prices and what they unlock are set by the server
-admin or bot owner and are shown to you before you pay. Payments are
-processed by a third-party payment provider; refunds, where offered, are
-described in-product at the time of purchase (see /aistore flagbad and
-/aistore refundqueue for the AI Store's refund flow).</p>
+involve real payment. See our <a href="/pricing">Pricing</a> page for a
+full list of paid features and current prices. Payments are processed by
+a third-party payment provider; see our <a href="/refund">Refund
+Policy</a> for how refunds work.</p>
 
 <h2>No warranty</h2>
 <p>The bot is provided "as is," without warranty of any kind. Features may
