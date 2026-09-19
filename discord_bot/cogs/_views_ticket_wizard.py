@@ -187,6 +187,13 @@ def build_wizard_view(guild: discord.Guild, config_row: dict, premium: bool) -> 
     return view
 
 
+async def remember_wizard_message(guild_id: int, clone_id, invoker_id, channel_id: int, message_id: int) -> None:
+    await db.set_ticket_config(
+        guild_id, clone_id=clone_id,
+        wizard_channel_id=channel_id, wizard_message_id=message_id, wizard_invoker_id=invoker_id,
+    )
+
+
 async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id):
     if not interaction.response.is_done():
         await interaction.response.defer()
@@ -356,8 +363,12 @@ class TicketPostPanelButton(discord.ui.DynamicItem[discord.ui.Button],
 
         # Build panel buttons — default + any custom premium buttons
         panel_view = discord.ui.View(timeout=None)
-        from discord_bot.cogs.ticket import TicketOpenButton
-        panel_view.add_item(TicketOpenButton(self.guild_id, self.clone_id))
+        # Same custom_id as TicketPanelView's persistent button in ticket.py,
+        # so the existing handler services clicks.
+        panel_view.add_item(discord.ui.Button(
+            label="Open Ticket", style=discord.ButtonStyle.primary,
+            emoji="🎫", custom_id="ticket:open",
+        ))
         try:
             custom_btns = json.loads(cfg.get("custom_buttons_json") or "[]")
             for btn in custom_btns[:MAX_CUSTOM_BUTTONS]:

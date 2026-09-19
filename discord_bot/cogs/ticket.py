@@ -210,8 +210,14 @@ class TicketCog(GuildOnlyCog):
             return
 
         clone_id = _clone_id_of(interaction)
-        config = await db.get_ticket_config(interaction.guild_id, clone_id=clone_id)
-        view = build_ticket_wizard_view(interaction.guild_id, clone_id, interaction.user.id, config)
+        await db.set_ticket_config(interaction.guild_id, clone_id=clone_id, wizard_invoker_id=interaction.user.id)
+        config = dict(await db.get_ticket_config(interaction.guild_id, clone_id=clone_id))
+        config["clone_id"] = clone_id
+        try:
+            premium = bool(await db.is_guild_premium_active(interaction.guild_id, clone_id))
+        except Exception:
+            premium = False
+        view = build_ticket_wizard_view(interaction.guild, config, premium)
         await interaction.followup.send(view=view)
         sent = await interaction.original_response()
         await remember_ticket_wizard_message(interaction.guild_id, clone_id, interaction.user.id, sent.channel.id, sent.id)
