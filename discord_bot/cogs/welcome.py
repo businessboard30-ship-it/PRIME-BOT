@@ -319,6 +319,7 @@ def _suggested_channel(guild: discord.Guild) -> discord.TextChannel | None:
 
 STICKER_PREFIX = "sticker_announce_"
 TEMPLATE_PREFIX = "template_announce_"
+SPIDER_PREFIX = "spider_announce_"
 
 
 class StickerAnnounceView(discord.ui.View):
@@ -484,13 +485,16 @@ class WelcomeCog(GuildOnlyCog):
         self._recent_joins = {}  # Track recent joins to prevent duplicate welcome messages
 
     async def cog_load(self):
+        await self._ensure_spider_table()
         self._nudge_owners.start()
         self._announce_card_features.start()
+        self._announce_spider_pro.start()
         self._expire_card_trials.start()
 
     async def cog_unload(self):
         self._nudge_owners.cancel()
         self._announce_card_features.cancel()
+        self._announce_spider_pro.cancel()
         self._expire_card_trials.cancel()
 
     def _is_duplicate_join(self, member: discord.Member) -> bool:
@@ -667,6 +671,8 @@ class WelcomeCog(GuildOnlyCog):
                 "🚫 Turned off — your welcome card is back to the plain version. "
                 "Re-enable anytime with `/welcome sticker <url>`.",
             )
+        elif custom_id.startswith(SPIDER_PREFIX):
+            await self._handle_spider_button(interaction, custom_id)
         elif custom_id.startswith(f"{TEMPLATE_PREFIX}try:"):
             guild_id = int(custom_id.split(":", 1)[1])
             clone_id = getattr(self.bot, "clone_id", None)
@@ -739,10 +745,9 @@ class WelcomeCog(GuildOnlyCog):
                     not config.get("sticker_announce_status")
                     and not config.get("sticker_announced_at")
                 )
-                template_needed = (
-                    not config.get("template_announce_status")
-                    and not config.get("template_announced_at")
-                )
+                # The old "try the new designed (wolf) card" offer is retired --
+                # Spider Realm Pro (see _announce_spider_pro) replaces it.
+                template_needed = False
                 if not sticker_needed and not template_needed:
                     continue
                 self.bot.loop.create_task(
@@ -754,6 +759,178 @@ class WelcomeCog(GuildOnlyCog):
     @_announce_card_features.before_loop
     async def _before_announce_card_features(self):
         await self.bot.wait_until_ready()
+
+    # ── Spider Realm Pro announcement ─────────────────────────────────────
+    # Automatic, once per server: posts a preview of the Spider Realm Pro card
+    # in the server's #mod-logs with Try / No thanks buttons. Tracked in its
+    # own small table (created here, so no schema-version bump is needed).
+
+    async def _ensure_spider_table(self):
+        from database import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS welcome_spider_announce (
+                    guild_id BIGINT NOT NULL,
+                    clone_id BIGINT,
+                    sent_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    status   TEXT
+                )
+            """)
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS welcome_spider_announce_uq
+                ON welcome_spider_announce (guild_id, (COALESCE(clone_id, -1)))
+            """)
+
+    async def _spider_announced_ids(self, clone_id) -> set:
+        from database import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT guild_id FROM welcome_spider_announce WHERE clone_id IS NOT DISTINCT FROM $1", clone_id,
+            )
+        return {r["guild_id"] for r in rows}
+
+    async def _mark_spider(self, guild_id: int, clone_id, status: str | None = None):
+        from database import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO welcome_spider_announce (guild_id, clone_id, status) VALUES ($1, $2, $3)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)))
+                DO UPDATE SET status = COALESCE($3, welcome_spider_announce.status)
+                """,
+                guild_id, clone_id, status,
+            )
+
+    @tasks.loop(hours=24)
+    async def _announce_spider_pro(self):
+        clone_id = getattr(self.bot, "clone_id", None)
+        try:
+            done = await self._spider_announced_ids(clone_id)
+        except Exception as e:
+            logger.error(f"[v0] spider announce: couldn't load sent list: {e}")
+            return
+        for guild in list(self.bot.guilds):
+            if guild.id in done:
+                continue
+            try:
+                config = await db.get_welcome_config(guild.id, clone_id=clone_id)
+                if not config.get("enabled") or config.get("card_theme") == "spider_pro":
+                    continue
+                if await self._send_spider_post(guild, config, clone_id):
+                    await asyncio.sleep(2)   # gentle pacing between servers
+            except Exception as e:
+                logger.error(f"[v0] spider announce failed for guild {guild.id}: {e}")
+
+    @_announce_spider_pro.before_loop
+    async def _before_announce_spider_pro(self):
+        await self.bot.wait_until_ready()
+
+    async def _send_spider_post(self, guild: discord.Guild, config: dict, clone_id) -> bool:
+        """Returns True if a post was actually sent. Servers without a usable
+        #mod-logs channel are skipped without being marked, so they still get it
+        once they set one up."""
+        automod_config = await db.get_automod_config(guild.id, clone_id=clone_id)
+        log_channel_id = automod_config.get("log_channel_id")
+        log_channel = guild.get_channel(int(log_channel_id)) if log_channel_id else None
+        if log_channel is None or not log_channel.permissions_for(guild.me).send_messages:
+            return False
+
+        unlocked = bool(config.get("card_pack_unlocked"))
+        trial_available = not unlocked and not config.get("card_pack_trial_used")
+        if unlocked:
+            offer, button = "It's included in your Card Pack, so you can switch to it for free.", "Use Spider Realm Pro"
+        elif trial_available:
+            offer, button = "Try it **free for 3 days**, no payment needed.", "Try it free (3 days)"
+        else:
+            offer, button = "Unlock it, and every other premium look, with the Welcome Card Pack.", "How to unlock"
+
+        file = None
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(str(guild.me.display_avatar.replace(size=256).url),
+                                       timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    avatar_bytes = await resp.read()
+            card_bytes, image_format = await asyncio.to_thread(
+                render_welcome_card, avatar_bytes, guild.me.display_name, f"Member #{guild.member_count}",
+                guild_name=guild.name, use_template=True, theme="spider_pro",
+            )
+            ext = "gif" if image_format == "GIF" else "png"
+            file = discord.File(fp=io.BytesIO(card_bytes), filename=f"spider_pro.{ext}")
+        except Exception as e:
+            logger.warning(f"[v0] spider announce: preview render failed for guild {guild.id}: {e}")
+
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            label=button, style=discord.ButtonStyle.success, emoji="✨",
+            custom_id=f"{SPIDER_PREFIX}try:{guild.id}",
+        ))
+        view.add_item(discord.ui.Button(
+            label="No thanks", style=discord.ButtonStyle.secondary, emoji="🚫",
+            custom_id=f"{SPIDER_PREFIX}no:{guild.id}",
+        ))
+        content = (
+            f"🕷️ New welcome card for **{guild.name}**: **Spider Realm Pro**. {offer} "
+            f"Your current card stays exactly as it is unless you switch.\n\nHere's what it looks like:"
+        )
+        try:
+            if file:
+                await log_channel.send(content=content, file=file, view=view)
+            else:
+                await log_channel.send(content=content, view=view)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.info(f"[v0] spider announce post failed in guild={guild.id}: {e}")
+            await self._mark_spider(guild.id, clone_id, "failed")
+            return False
+        await self._mark_spider(guild.id, clone_id, "sent")
+        return True
+
+    async def _handle_spider_button(self, interaction: discord.Interaction, custom_id: str):
+        action, guild_id_s = custom_id[len(SPIDER_PREFIX):].split(":", 1)
+        guild_id = int(guild_id_s)
+        clone_id = getattr(self.bot, "clone_id", None)
+        if interaction.guild is None or interaction.guild.id != guild_id:
+            await interaction.response.send_message("This button belongs to a different server.", ephemeral=True)
+            return
+        if not interaction.permissions.manage_guild:
+            await interaction.response.send_message("Only someone with **Manage Server** can answer this.", ephemeral=True)
+            return
+        await interaction.response.defer()
+
+        async def finish(note: str):
+            await interaction.edit_original_response(
+                content=interaction.message.content + f"\n> {note}", view=None,
+                attachments=interaction.message.attachments,
+            )
+
+        if action == "no":
+            await self._mark_spider(guild_id, clone_id, "declined")
+            await finish("Got it. Your card stays exactly as it is.")
+            return
+
+        config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+        if config.get("card_pack_unlocked"):
+            await db.set_welcome_config(guild_id, clone_id=clone_id, card_theme="spider_pro", use_template=True)
+            note = "✅ Switched to Spider Realm Pro. Change it anytime with `/welcome theme`."
+            status = "switched"
+        elif not config.get("card_pack_trial_used"):
+            await db.start_welcome_card_trial(guild_id, interaction.user.id, clone_id=clone_id)
+            await db.set_welcome_config(guild_id, clone_id=clone_id, card_theme="spider_pro", use_template=True)
+            note = ("✅ Spider Realm Pro is live for **3 days**. Run `/welcome buypack` to keep it for good, "
+                    "or it switches back to the free Wolf look.")
+            status = "trial"
+        else:
+            await interaction.followup.send(
+                "This server already used its free trial. Run `/welcome buypack` to unlock Spider Realm Pro "
+                "and every other premium look.", ephemeral=True,
+            )
+            await self._mark_spider(guild_id, clone_id, "info")
+            return
+        await self._mark_spider(guild_id, clone_id, status)
+        await refresh_posted_wizard(self.bot, guild_id, clone_id)
+        await finish(note)
 
     @tasks.loop(hours=24)
     async def _expire_card_trials(self):
