@@ -30,6 +30,7 @@ import discord
 
 from database import db
 from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, CUSTOM_ROLE_FEE_USD
+import config as _cfg
 # Reused business logic for the listing/registry-invite offer now embedded
 # on the join DM's last page (see JoinDMLayoutView's join_offer handling
 # below) — same functions the standalone _views_auto_listing_offer.py /
@@ -231,7 +232,9 @@ class JoinDMLayoutView(discord.ui.LayoutView):
 
         # "Don't ask again" intentionally no longer rendered (_DontAskAgainButton stays
         # registered below so buttons on already-sent DMs keep working).
-        bottom_children = [_RemindLaterButton(guild_id, clone_id)]
+        # "Remind me later" no longer rendered (_RemindLaterButton stays registered
+        # below so buttons on already-sent DMs keep working).
+        bottom_children = [_AdvertiseButton(guild_id, clone_id)]
 
         if DISCORD_SUPPORT_SERVER_INVITE:
             support_button = discord.ui.Button(
@@ -459,6 +462,80 @@ class _RemindLaterButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
         await db.set_join_dm_remind_later(self.guild_id, clone_id=self.clone_id, hours=24)
         await interaction.edit_original_response(view=_disabled_view(interaction))
         await interaction.followup.send("Got it — I'll send this again in a day.", ephemeral=True)
+
+
+class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
+    what = discord.ui.TextInput(label="What do you want to advertise?", max_length=200)
+    link = discord.ui.TextInput(label="Link (server invite, website, store)", max_length=300, required=False)
+    details = discord.ui.TextInput(
+        label="Details: audience, duration, budget", style=discord.TextStyle.paragraph, max_length=1000, required=False,
+    )
+    contact = discord.ui.TextInput(label="Best way to reach you (Discord tag, email)", max_length=100, required=False)
+
+    def __init__(self, guild_id: int, clone_id=None):
+        super().__init__()
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.client.get_guild(self.guild_id)
+        embed = discord.Embed(title="📣 New advertising request", colour=discord.Colour.gold())
+        embed.add_field(name="Advertising", value=str(self.what)[:1024], inline=False)
+        if str(self.link):
+            embed.add_field(name="Link", value=str(self.link)[:1024], inline=False)
+        if str(self.details):
+            embed.add_field(name="Details", value=str(self.details)[:1024], inline=False)
+        if str(self.contact):
+            embed.add_field(name="Contact", value=str(self.contact)[:1024], inline=False)
+        embed.set_footer(text=f"From {interaction.user} ({interaction.user.id}) • server: {guild.name if guild else self.guild_id}")
+
+        delivered = False
+        channel_id = getattr(_cfg, "ADVERTISE_CHANNEL_ID", 0) or _cfg.OWNER_BROADCAST_CHANNEL_ID
+        try:
+            channel = interaction.client.get_channel(channel_id) or await interaction.client.fetch_channel(channel_id)
+            await channel.send(embed=embed)
+            delivered = True
+        except Exception:
+            logger.warning("advertise: couldn't post to channel %s, falling back to owner DM", channel_id)
+        if not delivered:
+            for owner_id in getattr(_cfg, "DISCORD_OWNER_BROADCAST_IDS", ()):
+                try:
+                    user = interaction.client.get_user(owner_id) or await interaction.client.fetch_user(owner_id)
+                    await user.send(embed=embed)
+                    delivered = True
+                except Exception:
+                    continue
+        if not delivered:
+            await interaction.response.send_message(
+                f"Sorry, I couldn't send that. Please reach us in the support server instead: {DISCORD_SUPPORT_SERVER_INVITE}",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "✅ Thanks! Your request was sent. Join our support server to talk about pricing: "
+            f"{DISCORD_SUPPORT_SERVER_INVITE}",
+            ephemeral=True,
+        )
+
+
+class _AdvertiseButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_advertise:(\d+):(-|\d+)$"):
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(
+            discord.ui.Button(
+                label="Advertise with us", style=discord.ButtonStyle.success,
+                emoji="📣", custom_id=_encode("advertise", guild_id, clone_id), row=4,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(_AdvertiseModal(self.guild_id, self.clone_id))
 
 
 class _DontAskAgainButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_dismiss:(\d+):(-|\d+)$"):
@@ -1471,7 +1548,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 
 # Registered in discord_bot/bot.py's setup_hook via bot.add_dynamic_items(...).
 DYNAMIC_ITEMS = (
-    _RemindLaterButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
+    _RemindLaterButton, _AdvertiseButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton,
 )
