@@ -101,7 +101,7 @@ class QuickstartCog(commands.Cog):
         except Exception as e:
             logger.error(f"[v0] Channel-suggestions follow-up failed for guild {guild.id}: {e}")
 
-    @app_commands.command(name="start", description="Get the bot's setup quickstart sent to your DMs again")
+    @app_commands.command(name="start", description="Show the bot's setup quickstart")
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -127,16 +127,9 @@ class QuickstartCog(commands.Cog):
         clone_id = getattr(self.bot, "clone_id", None)
         content = await self.bot._build_join_dm_content(interaction.guild, clone_id)
         view = await self.bot._build_join_dm_view(interaction.guild, clone_id, content)
-        try:
-            await interaction.user.send(view=view)
-        except (discord.Forbidden, discord.HTTPException):
-            await interaction.followup.send(
-                "I couldn't DM you — check that this server allows direct messages from server members "
-                "(Privacy Settings), then try again.",
-                ephemeral=True,
-            )
-            return
-        await interaction.followup.send("Sent! Check your DMs. 📬", ephemeral=True)
+        # Answer where it was asked: /start in a server replies in that server
+        # (ephemeral, so only the person who ran it sees it) instead of DMing.
+        await interaction.followup.send(view=view, ephemeral=True)
 
     def _build_embed(self, guild: discord.Guild, intro: str) -> discord.Embed:
         embed = discord.Embed(
