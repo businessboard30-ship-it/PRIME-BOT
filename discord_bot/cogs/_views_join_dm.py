@@ -76,7 +76,6 @@ async def _enabled_feature_keys(guild_id: int, clone_id) -> set:
         ("welcome", lambda: db.get_welcome_config(guild_id, clone_id=clone_id), "enabled"),
         ("automod", lambda: db.get_automod_config(guild_id, clone_id=clone_id), "word_filter_enabled"),
         ("leveling", lambda: db.get_voice_xp_config(guild_id, clone_id=clone_id), "enabled"),
-        ("bump", lambda: db.bump_get_guild_config(guild_id, clone_id), "receives_bumps"),
         ("tickets", lambda: db.get_ticket_config(guild_id, clone_id=clone_id), "panel_channel_id"),
         ("starboard", lambda: db.get_starboard_config(guild_id, clone_id=clone_id), "channel_id"),
         ("suggestions", lambda: db.get_suggestion_config(guild_id, clone_id=clone_id), "approved_log_channel_id"),
@@ -1390,8 +1389,8 @@ async def _open_premium_pitch(interaction: discord.Interaction, guild: discord.G
 # maintained lists (embed fields vs. button keys) used to.
 FEATURE_TOGGLES = {
     "go_premium": ("Go Premium", "💎", _open_premium_pitch, None,
-                   "Unlock EVERY package — welcome cards, custom roles, Music Pro — plus all future features, "
-                   "for just $5/month per server. Tap to see everything you get."),
+                   "Unlock EVERY package — welcome cards, custom roles, Music Pro, Hardcore Roast, Roblox alerts, "
+                   "custom bot branding — plus all future features, for just $5/month per server. Tap to see everything you get."),
     "welcome": ("Welcome messages", "👋", _enable_welcome, None,
                 "Greet new members automatically in a channel of your choice."),
     "tickets": ("Support tickets", "🎫", _enable_tickets, None,
@@ -1408,8 +1407,6 @@ FEATURE_TOGGLES = {
                  "Reward active members with levels and roles over time."),
     "analytics": ("Server analytics", "📊", _enable_analytics, None,
                   "See member/activity stats and where to find more members."),
-    "bump": ("Bump network", "📣", _enable_bump, None,
-             "List your server for growth — I can even create the channel for you."),
     "channels": ("Create suggested channels", "📁", _enable_channels, None,
                  "Create commonly-useful channels for this server in one tap."),
     "starboard": ("Starboard", "⭐", _enable_starboard, None,
