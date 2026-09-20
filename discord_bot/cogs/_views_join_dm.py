@@ -240,9 +240,9 @@ class JoinDMLayoutView(discord.ui.LayoutView):
 
         # Manual + support are masked text links (not buttons), so the row below
         # only holds the action buttons (Connect / Advertise).
-        link_bits = ["[📖 Read bot manual](https://prime-bot-sigma.vercel.app/manual#moderation)"]
+        link_bits = ["📖 [Read bot manual](https://prime-bot-sigma.vercel.app/manual#moderation)"]
         if DISCORD_SUPPORT_SERVER_INVITE:
-            link_bits.append(f"[🆘 Join our support server]({DISCORD_SUPPORT_SERVER_INVITE})")
+            link_bits.append(f"🆘 [Join our support server]({DISCORD_SUPPORT_SERVER_INVITE})")
         container.add_item(discord.ui.TextDisplay("  •  ".join(link_bits)))
         container.add_item(discord.ui.ActionRow(*bottom_children))
 
