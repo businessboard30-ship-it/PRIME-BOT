@@ -238,16 +238,12 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         if page == 0:
             bottom_children.insert(0, _ConnectButton(guild_id, clone_id))
 
+        # Manual + support are masked text links (not buttons), so the row below
+        # only holds the action buttons (Connect / Advertise).
+        link_bits = ["[📖 Read bot manual](https://prime-bot-sigma.vercel.app/manual#moderation)"]
         if DISCORD_SUPPORT_SERVER_INVITE:
-            support_button = discord.ui.Button(
-                label="Join our support server", style=discord.ButtonStyle.link,
-                emoji="🆘", url=DISCORD_SUPPORT_SERVER_INVITE,
-            )
-            manual_button = discord.ui.Button(
-                label="Read bot manual", style=discord.ButtonStyle.link,
-                emoji="📖", url="https://prime-bot-sigma.vercel.app/manual#moderation",
-            )
-            bottom_children = [manual_button, *bottom_children, support_button]
+            link_bits.append(f"[🆘 Join our support server]({DISCORD_SUPPORT_SERVER_INVITE})")
+        container.add_item(discord.ui.TextDisplay("  •  ".join(link_bits)))
         container.add_item(discord.ui.ActionRow(*bottom_children))
 
         self.add_item(container)
