@@ -9509,6 +9509,26 @@ class Database:
         await self.set_welcome_config(guild_id, clone_id)  # ensure a row exists
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # Remember which card the server had before the trial (flat card with
+            # its animated sticker/colors vs. a designed template card), so
+            # clear_expired_card_trial can put it back instead of dropping the
+            # server onto Wolf. Premium/template cards ignore stickers and colors.
+            await conn.execute(
+                "CREATE TABLE IF NOT EXISTS welcome_trial_restore ("
+                "guild_id BIGINT NOT NULL, clone_id BIGINT, prev_use_template BOOLEAN NOT NULL)"
+            )
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS welcome_trial_restore_uq "
+                "ON welcome_trial_restore (guild_id, (COALESCE(clone_id, -1)))"
+            )
+            await conn.execute(
+                "INSERT INTO welcome_trial_restore (guild_id, clone_id, prev_use_template) "
+                "SELECT guild_id, clone_id, COALESCE(use_template, TRUE) FROM discord_welcome_config "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE "
+                "SET prev_use_template = EXCLUDED.prev_use_template",
+                guild_id, clone_id,
+            )
             await conn.execute(
                 "UPDATE discord_welcome_config SET card_pack_trial_started_at = NOW(), "
                 "card_pack_trial_used = TRUE, card_pack_trial_admin_id = $3, updated_at = NOW() "
@@ -9541,18 +9561,42 @@ class Database:
             )
             return [dict(r) for r in rows]
 
-    async def clear_expired_card_trial(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+    async def clear_expired_card_trial(self, guild_id: int, clone_id: Optional[int] = None) -> bool:
         """Reverts guild_id back to the free 'wolf' theme and clears
         trial_started_at (so it's never matched by get_due_card_trial_
-        expirations again — card_pack_trial_used staying TRUE is what
-        actually blocks a second trial, not this column)."""
+        expirations again -- card_pack_trial_used staying TRUE is what
+        actually blocks a second trial, not this column).
+
+        If the server was on the flat card (animated sticker / custom colors)
+        before the trial, that mode is restored too. Returns True when the
+        flat card was restored."""
         pool = await get_pool()
         async with pool.acquire() as conn:
+            restored_flat = False
+            try:
+                row = await conn.fetchrow(
+                    "SELECT prev_use_template FROM welcome_trial_restore "
+                    "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", guild_id, clone_id,
+                )
+            except Exception:
+                row = None   # table doesn't exist yet: no trial was started with restore tracking
+            if row is not None and row["prev_use_template"] is False:
+                await conn.execute(
+                    "UPDATE discord_welcome_config SET use_template = FALSE "
+                    "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", guild_id, clone_id,
+                )
+                restored_flat = True
             await conn.execute(
                 "UPDATE discord_welcome_config SET card_theme = 'wolf', card_pack_trial_started_at = NULL, "
                 "updated_at = NOW() WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id,
             )
+            if row is not None:
+                await conn.execute(
+                    "DELETE FROM welcome_trial_restore WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                    guild_id, clone_id,
+                )
+            return restored_flat
 
     async def unlock_ultra_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Marks the ultra welcome pack (custom background via /welcome

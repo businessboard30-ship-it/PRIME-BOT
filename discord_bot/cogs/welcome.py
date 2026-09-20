@@ -871,9 +871,13 @@ class WelcomeCog(GuildOnlyCog):
             label="No thanks", style=discord.ButtonStyle.secondary, emoji="🚫",
             custom_id=f"{SPIDER_PREFIX}no:{guild.id}",
         ))
+        flat_note = ""
+        if not config.get("use_template", True):
+            flat_note = (" Heads up: premium cards don't show the animated sticker or custom colors, "
+                         "so they pause while it's active" + (" and come back on their own if the trial ends." if trial_available else "."))
         content = (
             f"🕷️ New welcome card for **{guild.name}**: **Spider Realm Pro**. {offer} "
-            f"Your current card stays exactly as it is unless you switch.\n\nHere's what it looks like:"
+            f"Your current card stays exactly as it is unless you switch.{flat_note}\n\nHere's what it looks like:"
         )
         try:
             if file:
@@ -902,7 +906,6 @@ class WelcomeCog(GuildOnlyCog):
         async def finish(note: str):
             await interaction.edit_original_response(
                 content=interaction.message.content + f"\n> {note}", view=None,
-                attachments=interaction.message.attachments,
             )
 
         if action == "no":
@@ -918,8 +921,9 @@ class WelcomeCog(GuildOnlyCog):
         elif not config.get("card_pack_trial_used"):
             await db.start_welcome_card_trial(guild_id, interaction.user.id, clone_id=clone_id)
             await db.set_welcome_config(guild_id, clone_id=clone_id, card_theme="spider_pro", use_template=True)
-            note = ("✅ Spider Realm Pro is live for **3 days**. Run `/welcome buypack` to keep it for good, "
-                    "or it switches back to the free Wolf look.")
+            note = ("✅ Spider Realm Pro is live for **3 days**. Run `/welcome buypack` to keep it for good. "
+                    + ("Otherwise your previous card, with its sticker and colors, comes back on its own."
+                       if not config.get("use_template", True) else "Otherwise it switches back to the free Wolf look."))
             status = "trial"
         else:
             await interaction.followup.send(
@@ -964,7 +968,7 @@ class WelcomeCog(GuildOnlyCog):
         matters; the notification is a courtesy on top."""
         guild_id = row["guild_id"]
         try:
-            await db.clear_expired_card_trial(guild_id, clone_id)
+            restored_flat = await db.clear_expired_card_trial(guild_id, clone_id)
         except Exception as e:
             logger.error(f"[v0] Failed to clear expired card trial for guild {guild_id}: {e}")
             return
@@ -974,7 +978,8 @@ class WelcomeCog(GuildOnlyCog):
         admin_id = row.get("card_pack_trial_admin_id")
         message = (
             f"👋 Your **{theme_name}** welcome-card trial in **{guild.name if guild else 'your server'}** "
-            f"just ended after 3 days, so it's back to the free Wolf look. "
+            + ("just ended after 3 days, so your previous card (with its animated sticker and colors) is back. "
+               if restored_flat else "just ended after 3 days, so it's back to the free Wolf look. ") +
             f"Run `/welcome buypack` in the server anytime to unlock **{theme_name}** (and every other "
             f"premium look) for good."
         )
