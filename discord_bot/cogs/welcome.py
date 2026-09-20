@@ -871,13 +871,9 @@ class WelcomeCog(GuildOnlyCog):
             label="No thanks", style=discord.ButtonStyle.secondary, emoji="🚫",
             custom_id=f"{SPIDER_PREFIX}no:{guild.id}",
         ))
-        flat_note = ""
-        if not config.get("use_template", True):
-            flat_note = (" Heads up: premium cards don't show the animated sticker or custom colors, "
-                         "so they pause while it's active" + (" and come back on their own if the trial ends." if trial_available else "."))
         content = (
             f"🕷️ New welcome card for **{guild.name}**: **Spider Realm Pro**. {offer} "
-            f"Your current card stays exactly as it is unless you switch.{flat_note}\n\nHere's what it looks like:"
+            f"Your current card stays exactly as it is unless you switch.\n\nHere's what it looks like:"
         )
         try:
             if file:
