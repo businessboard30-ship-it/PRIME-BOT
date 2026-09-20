@@ -235,6 +235,8 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         # "Remind me later" no longer rendered (_RemindLaterButton stays registered
         # below so buttons on already-sent DMs keep working).
         bottom_children = [_AdvertiseButton(guild_id, clone_id)]
+        if page == 0:
+            bottom_children.insert(0, _ConnectButton(guild_id, clone_id))
 
         if DISCORD_SUPPORT_SERVER_INVITE:
             support_button = discord.ui.Button(
@@ -462,6 +464,31 @@ class _RemindLaterButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
         await db.set_join_dm_remind_later(self.guild_id, clone_id=self.clone_id, hours=24)
         await interaction.edit_original_response(view=_disabled_view(interaction))
         await interaction.followup.send("Got it — I'll send this again in a day.", ephemeral=True)
+
+
+class _ConnectButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_connect:(\d+):(-|\d+)$"):
+    """Opens the /connections hub (YouTube + Roblox). Blue = Discord's primary
+    style (Discord has no yellow button colour)."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(
+            discord.ui.Button(
+                label="Connect", style=discord.ButtonStyle.primary,
+                emoji="🔗", custom_id=_encode("connect", guild_id, clone_id), row=4,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_connect import Ctx, build_hub
+        ctx = Ctx(interaction.user.id, interaction.guild, getattr(interaction.client, "clone_id", None))
+        await interaction.response.send_message(view=build_hub(ctx), ephemeral=interaction.guild is not None)
 
 
 class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
@@ -1540,7 +1567,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 
 # Registered in discord_bot/bot.py's setup_hook via bot.add_dynamic_items(...).
 DYNAMIC_ITEMS = (
-    _RemindLaterButton, _AdvertiseButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
+    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton,
 )

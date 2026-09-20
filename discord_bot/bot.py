@@ -183,6 +183,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.server_logs")
         await self.load_extension("discord_bot.cogs.reaction_roles")
         await self.load_extension("discord_bot.cogs.role_setup")
+        await self.load_extension("discord_bot.cogs.connect")
         await self.load_extension("discord_bot.cogs.custom_role")
         await self.load_extension("discord_bot.cogs.guild_premium")
         await self.load_extension("discord_bot.cogs.leveling")

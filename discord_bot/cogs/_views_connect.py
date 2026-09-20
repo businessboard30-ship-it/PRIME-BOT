@@ -530,6 +530,19 @@ class _AddFeedModal(discord.ui.Modal):
             await interaction.followup.send("You need **Manage Server**.", ephemeral=True)
             return
         try:
+            try:
+                from database import db as _db
+                premium = bool(await _db.is_guild_premium_active(guild.id, self.ctx.clone_id))
+            except Exception:
+                premium = False
+            if not premium:
+                await interaction.followup.send(
+                    "🔔 **Notification feeds are a Premium feature.** Upgrade this server to unlock them.",
+                    ephemeral=True,
+                )
+                from discord_bot.cogs._views_premium import send_premium_pitch
+                await send_premium_pitch(interaction, guild.id, self.ctx.clone_id)
+                return
             chan = guild.get_channel(self.channel.values[0].id)
             perms = chan.permissions_for(guild.me) if chan else None
             if chan is None or not (perms.view_channel and perms.send_messages and perms.embed_links):

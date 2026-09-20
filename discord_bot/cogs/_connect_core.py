@@ -175,6 +175,7 @@ async def add_feed(guild_id, clone_id, kind, external_id, external_name, channel
         )
         if n >= MAX_FEEDS_PER_GUILD:
             raise ValueError(f"limit: {MAX_FEEDS_PER_GUILD}")
+        _invalidate_feed_cache()
         return await conn.fetchval("""
             INSERT INTO connect_feeds
                 (guild_id, clone_id, kind, external_id, external_name, channel_id, role_id, state, created_by)
@@ -192,21 +193,47 @@ async def remove_feed(feed_id: int, guild_id: int) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM connect_feeds WHERE id = $1 AND guild_id = $2", feed_id, guild_id)
+    _invalidate_feed_cache()
+
+
+# In-memory copy of the feed list per (kind, clone) so the poll loops don't hit
+# the database every cycle (Supabase egress). It is dropped whenever a feed is
+# added/removed, updated in place when a feed's state changes, and force-refreshed
+# every FEED_CACHE_TTL seconds as a safety net.
+FEED_CACHE_TTL = 6 * 3600
+_FEED_CACHE: dict = {}          # (kind, clone_key) -> (loaded_at_monotonic, rows)
+_FEED_COLUMNS = "id, guild_id, clone_id, kind, external_id, external_name, channel_id, role_id, state"
+
+
+def _invalidate_feed_cache() -> None:
+    _FEED_CACHE.clear()
 
 
 async def feeds_of_kind(kind: str, clone_id) -> list:
+    import time
+    key = (kind, clone_key(clone_id))
+    hit = _FEED_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < FEED_CACHE_TTL:
+        return hit[1]
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT * FROM connect_feeds WHERE kind = $1 AND clone_id = $2", kind, clone_key(clone_id)
+            f"SELECT {_FEED_COLUMNS} FROM connect_feeds WHERE kind = $1 AND clone_id = $2", kind, key[1]
         )
-    return [dict(r) for r in rows]
+    data = [dict(r) for r in rows]
+    _FEED_CACHE[key] = (time.monotonic(), data)
+    return data
 
 
 async def set_feed_state(feed_id: int, state: dict) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("UPDATE connect_feeds SET state = $2 WHERE id = $1", feed_id, json.dumps(state))
+    encoded = json.dumps(state)
+    for _, rows in _FEED_CACHE.values():
+        for row in rows:
+            if row["id"] == feed_id:
+                row["state"] = encoded
 
 
 def feed_state(row: dict) -> dict:
