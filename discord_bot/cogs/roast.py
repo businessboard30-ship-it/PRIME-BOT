@@ -845,7 +845,7 @@ class _RoastPickHardcoreButton(discord.ui.DynamicItem[discord.ui.Button], templa
         self.target_id = target_id
         self.channel_id = channel_id
         super().__init__(discord.ui.Button(
-            label="Hardcore Mode 🔥 ($1)",
+            label="Hardcore Mode 🔥 (Premium)",
             style=discord.ButtonStyle.danger,
             disabled=not (target_id and channel_id),
             custom_id=f"roastpick_hardcore:{guild_id}:{admin_id}:{target_id}:{channel_id}",
@@ -1587,7 +1587,8 @@ class RoastCog(GuildOnlyCog):
             self._active_by_channel[b["channel_id"]] = b["id"]
         self._poller.start()
         self._active_battle_poller.start()
-        self._hardcore_consent_poller.start()
+        # Hardcore is Premium-gated now (no payment step), so the paid-row consent
+        # poller is no longer started; the method stays for old rows.
         logger.info(
             f"[roast] cog loaded, {len(rows)} active battle(s) restored, "
             f"main poller every {POLL_INTERVAL_SECONDS}s, "
@@ -1597,7 +1598,6 @@ class RoastCog(GuildOnlyCog):
     def cog_unload(self):
         self._poller.cancel()
         self._active_battle_poller.cancel()
-        self._hardcore_consent_poller.cancel()
 
     # ---------- DB-backed helpers ----------
 
@@ -2347,38 +2347,42 @@ class RoastCog(GuildOnlyCog):
         self, interaction: discord.Interaction,
         target: discord.Member, channel: discord.TextChannel,
     ):
-        """Called when a challenger picks Hardcore Mode. Creates a pending
-        row and sends them a Gumroad payment link. The battle only starts
-        after (a) payment clears and (b) the target consents via DM."""
-        from config import HARDCORE_ROAST_FEE_USD, GUMROAD_PRODUCT_LINKS
-        from gumroad_payments import new_reference, build_link, expected_price_usd
+        """Called when a challenger picks Hardcore Mode. Hardcore is a
+        Premium feature: non-premium servers get the Go Premium pitch,
+        premium servers skip straight to the target's consent DM (the
+        battle only starts if the target agrees)."""
         from database import db as _db
 
         clone_id = _clone_id_of(self.bot)
 
-        # Gumroad product must be configured.
-        if not GUMROAD_PRODUCT_LINKS.get("hardcore_roast"):
+        try:
+            premium = bool(await _db.is_guild_premium_active(interaction.guild.id, clone_id))
+        except Exception:
+            premium = False
+        if not premium:
+            from discord_bot.cogs._views_premium import send_premium_pitch
             await interaction.followup.send(
-                "⚠️ Hardcore roast isn't available yet — set the `GUMROAD_HARDCORE_ROAST_LINK` env var.",
+                "🔥 **Hardcore Roast is a Premium feature.** Upgrade this server to unlock it.",
                 ephemeral=True,
             )
+            await send_premium_pitch(interaction, interaction.guild.id, clone_id)
             return
 
-        # One pending hardcore request per user at a time.
+        # One open hardcore request per user at a time.
         existing = await _db.fetchrow(
             "SELECT id FROM discord_hardcore_roast_pending "
-            "WHERE challenger_id = $1 AND status = 'awaiting_payment'",
+            "WHERE challenger_id = $1 AND status = 'awaiting_consent' "
+            "AND created_at > NOW() - INTERVAL '24 hours'",
             interaction.user.id,
         )
         if existing:
             await interaction.followup.send(
-                "You already have a pending hardcore roast payment. "
-                "Complete it or wait for it to expire before starting a new one.",
+                "You already have a hardcore roast waiting on a reply. "
+                "Wait for them to answer before starting another one.",
                 ephemeral=True,
             )
             return
 
-        # Insert pending row first so the reference can carry the user_id.
         row = await _db.fetchrow(
             """
             INSERT INTO discord_hardcore_roast_pending
@@ -2390,50 +2394,15 @@ class RoastCog(GuildOnlyCog):
             interaction.user.id, target.id, channel.id,
         )
         pending_id = row["id"]
-
-        reference = new_reference("hardcore_roast", interaction.user.id)
-        pay_url = build_link("hardcore_roast", interaction.user.id, reference)
-
-        if not pay_url:
-            await _db.execute(
-                "DELETE FROM discord_hardcore_roast_pending WHERE id = $1", pending_id,
-            )
-            await interaction.followup.send(
-                "⚠️ Couldn't generate a payment link — set `GUMROAD_HARDCORE_ROAST_LINK` and try again.",
-                ephemeral=True,
-            )
-            return
-
-        # Log in payment_logs so Gumroad webhook can claim it.
-        await _db.log_payment(
-            interaction.user.id,
-            expected_price_usd("hardcore_roast") or HARDCORE_ROAST_FEE_USD,
-            reference,
-            status="pending",
-            payment_type="hardcore_roast",
-            chat_id=interaction.guild.id,
-            provider="gumroad",
-            clone_id=clone_id,
-        )
-
-        view = discord.ui.View(timeout=None)
-        view.add_item(discord.ui.Button(
-            label=f"Pay ${HARDCORE_ROAST_FEE_USD:.0f} — Unlock Hardcore Roast 🔥",
-            style=discord.ButtonStyle.link,
-            url=pay_url,
-        ))
+        await self.hardcore_payment_confirmed(pending_id)
         await interaction.followup.send(
-            f"**Hardcore Roast** — targeting **{target.display_name}** in **#{channel.name}**.\n\n"
-            f"Pay **${HARDCORE_ROAST_FEE_USD:.0f}** via Gumroad to unlock. "
-            f"Once payment clears, {target.display_name} gets a consent DM — "
-            "the roast only fires if they agree.\n\n"
-            "⚠️ No refunds if they decline — you're paying for the activation, not a guaranteed roast.",
-            view=view,
+            f"🔥 Hardcore request sent to **{target.display_name}**. "
+            "The roast only fires if they agree.",
             ephemeral=True,
         )
         logger.info(
-            f"[roast-hc] pending_id={pending_id} created challenger={interaction.user.id} "
-            f"target={target.id} guild={interaction.guild.id} ref={reference}"
+            f"[roast-hc] premium pending_id={pending_id} challenger={interaction.user.id} "
+            f"target={target.id} guild={interaction.guild.id}"
         )
 
     async def hardcore_payment_confirmed(self, pending_id: int):
@@ -2465,7 +2434,7 @@ class RoastCog(GuildOnlyCog):
             embed = discord.Embed(
                 title="🔥 Hardcore Roast Request",
                 description=(
-                    f"**{challenger_name}** has paid to roast you in **#{channel.name}** "
+                    f"**{challenger_name}** wants to roast you in **#{channel.name}** "
                     f"on **{guild.name}** — and they went HARDCORE.\n\n"
                     "This will be unfiltered, no-holds-barred roasting. "
                     "If you're good with that, accept. Otherwise, decline — "
