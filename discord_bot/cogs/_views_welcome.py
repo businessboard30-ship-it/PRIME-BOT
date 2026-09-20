@@ -456,7 +456,7 @@ class WelcomeCreateChannelButton(discord.ui.DynamicItem[discord.ui.Button], temp
     async def callback(self, interaction: discord.Interaction):
         if not await _check_access(interaction, self.invoker_id):
             return
-        guild = interaction.guild
+        guild = (interaction.guild or interaction.client.get_guild(self.guild_id))
         if guild is None:
             await interaction.response.send_message("Couldn't find this server.", ephemeral=True)
             return
@@ -674,10 +674,10 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
             card_bytes, image_format = await asyncio.to_thread(
                 render_welcome_card,
-                avatar_bytes, interaction.user.display_name, f"Member #{interaction.guild.member_count}",
+                avatar_bytes, interaction.user.display_name, f"Member #{(interaction.guild or interaction.client.get_guild(self.guild_id)).member_count}",
                 background_color=config.get("background_color"), accent_color=config.get("accent_color"),
                 sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
-                guild_name=interaction.guild.name, use_template=True,
+                guild_name=(interaction.guild or interaction.client.get_guild(self.guild_id)).name, use_template=True,
                 avatar_shape=config.get("avatar_shape", "circle"),
                 theme=theme,
             )
@@ -1027,7 +1027,7 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
             # for however long it takes to render.
             card_bytes, image_format = await asyncio.to_thread(
                 render_welcome_card,
-                avatar_bytes, interaction.user.display_name, f"Member #{interaction.guild.member_count}",
+                avatar_bytes, interaction.user.display_name, f"Member #{(interaction.guild or interaction.client.get_guild(self.guild_id)).member_count}",
                 background_color=config.get("background_color", "#2b2d31"),
                 accent_color=config.get("accent_color", "#5865F2"),
                 sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),

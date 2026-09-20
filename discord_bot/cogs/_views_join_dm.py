@@ -790,6 +790,56 @@ class _WelcomeDeliveryButton(discord.ui.DynamicItem[discord.ui.Button], template
         await interaction.edit_original_response(view=sub_view, attachments=[file])
 
 
+class _WelcomeCardOptionsButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_wsub_cards:(\d+):(-|\d+)$"):
+    """Opens the full welcome-card wizard (themes/looks, avatar shape, sticker,
+    Preview, Customize Card) as its own message."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Card options", style=discord.ButtonStyle.primary, emoji="🎨",
+            custom_id=f"join_dm_wsub_cards:{guild_id}:{'-' if clone_id is None else clone_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        clone_part = match.group(2)
+        return cls(int(match.group(1)), None if clone_part == "-" else int(clone_part))
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_welcome import build_wizard_view
+        await interaction.response.defer(ephemeral=interaction.guild is not None)
+        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        view = build_wizard_view(self.guild_id, self.clone_id, interaction.user.id, config)
+        await interaction.followup.send(view=view, ephemeral=interaction.guild is not None)
+
+
+class _WelcomePreviewRefreshButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_wsub_prev:(\d+):(-|\d+)$"):
+    """Re-renders the card preview on this screen (use after changing card options)."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Preview", style=discord.ButtonStyle.success, emoji="👁️",
+            custom_id=f"join_dm_wsub_prev:{guild_id}:{'-' if clone_id is None else clone_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        clone_part = match.group(2)
+        return cls(int(match.group(1)), None if clone_part == "-" else int(clone_part))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        guild = interaction.client.get_guild(self.guild_id)
+        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        container, file = await _welcome_preview_container(guild, config, interaction.user)
+        sub_view = build_welcome_sub_view(self.guild_id, self.clone_id, container, delivery_mode=config.get("delivery_mode") or "channel")
+        await interaction.edit_original_response(view=sub_view, attachments=[file])
+
+
 def build_welcome_sub_view(guild_id: int, clone_id, welcome_container: discord.ui.Container, delivery_mode: str = "channel") -> "WelcomeSubLayoutView":
     """Wraps the already-built welcome-preview Container (see
     _welcome_preview_container) together with its action buttons into one
@@ -814,8 +864,13 @@ class WelcomeSubLayoutView(discord.ui.LayoutView):
         # the rest of the sub-screen's action-button phrasing.
         delivery_btn.item.label = "Switch to channel delivery" if delivery_mode == "dm" else "Switch to DM delivery"
         row.add_item(delivery_btn)
-        row.add_item(_WelcomeBackButton(guild_id, clone_id))
         welcome_container.add_item(row)
+        row2 = discord.ui.ActionRow(
+            _WelcomeCardOptionsButton(guild_id, clone_id),
+            _WelcomePreviewRefreshButton(guild_id, clone_id),
+            _WelcomeBackButton(guild_id, clone_id),
+        )
+        welcome_container.add_item(row2)
         self.add_item(welcome_container)
 
 
@@ -1563,7 +1618,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 
 # Registered in discord_bot/bot.py's setup_hook via bot.add_dynamic_items(...).
 DYNAMIC_ITEMS = (
-    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
+    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton,
 )
