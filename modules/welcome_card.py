@@ -138,7 +138,7 @@ TEMPLATE_GREETING_LINES = ("Glad to have you here!", "We hope you have an amazin
 # 'wolf' entry for any theme not listed here (e.g. a future addition) so a
 # missing override never crashes a render, just reuses wolf's box.
 THEME_HEADER_LABEL_BOX = {
-    "wolf": (85, 80, 400, 112),
+    "wolf": (72, 80, 400, 112),
     "reaper": (85, 68, 420, 110),
     "shadow": (75, 50, 420, 95),
     "sorcerer": (75, 70, 420, 115),
