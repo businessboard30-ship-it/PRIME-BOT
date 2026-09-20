@@ -1023,22 +1023,17 @@ class RoastMemberRequestView(discord.ui.View):
         self.chosen_target: discord.Member | None = None
         self.chosen_channel: discord.TextChannel | None = None
 
-        members = [m for m in guild.members if not m.bot][:25]
-        self.target_select = discord.ui.Select(
-            placeholder=f"Pick who you want the bot to roast in {guild.name}...",
-            options=[discord.SelectOption(label=m.display_name, value=str(m.id)) for m in members] or
-                    [discord.SelectOption(label="No eligible members", value="none")],
-            row=0,
+        # Native user/channel pickers: searchable across the whole server
+        # (the old dropdowns only listed the first 25 members/channels).
+        self.target_select = discord.ui.UserSelect(
+            placeholder=f"Pick who you want the bot to roast in {guild.name}...", row=0,
         )
         self.target_select.callback = self._on_target
         self.add_item(self.target_select)
 
-        channels = [c for c in guild.text_channels if c.permissions_for(guild.me).send_messages][:25]
-        self.channel_select = discord.ui.Select(
+        self.channel_select = discord.ui.ChannelSelect(
             placeholder=f"Pick a channel in {guild.name}...",
-            options=[discord.SelectOption(label=f"#{c.name}"[:100], value=str(c.id)) for c in channels] or
-                    [discord.SelectOption(label="No eligible channels", value="none")],
-            row=1,
+            channel_types=[discord.ChannelType.text], row=1,
         )
         self.channel_select.callback = self._on_channel
         self.add_item(self.channel_select)
@@ -1053,17 +1048,18 @@ class RoastMemberRequestView(discord.ui.View):
             description="Pick who you want roasted and where. An admin has to approve before it goes out.",
             color=discord.Color.gold(),
         )
-        embed.add_field(name="Target", value=self.chosen_target.mention if self.chosen_target else "*not picked yet*", inline=True)
+        embed.add_field(name="Target", value=self.chosen_target.display_name if self.chosen_target else "*not picked yet*", inline=True)
         embed.add_field(name="Channel", value=f"#{self.chosen_channel.name}" if self.chosen_channel else "*not picked yet*", inline=True)
         return embed
 
     async def _on_target(self, interaction: discord.Interaction):
         try:
-            val = self.target_select.values[0]
-            if val == "none":
-                await interaction.response.send_message("No eligible members.", ephemeral=True)
+            picked = self.target_select.values[0]
+            member = self.guild.get_member(picked.id)
+            if member is None or member.bot:
+                await interaction.response.send_message("Pick a real member of this server (not a bot).", ephemeral=True)
                 return
-            self.chosen_target = self.guild.get_member(int(val))
+            self.chosen_target = member
             self.confirm_btn.disabled = not (self.chosen_target and self.chosen_channel)
             await interaction.response.edit_message(embed=self._status_embed(), view=self)
         except Exception as e:
@@ -1073,11 +1069,12 @@ class RoastMemberRequestView(discord.ui.View):
 
     async def _on_channel(self, interaction: discord.Interaction):
         try:
-            val = self.channel_select.values[0]
-            if val == "none":
-                await interaction.response.send_message("No eligible channels.", ephemeral=True)
+            picked = self.channel_select.values[0]
+            channel = self.guild.get_channel(picked.id)
+            if not isinstance(channel, discord.TextChannel) or not channel.permissions_for(self.guild.me).send_messages:
+                await interaction.response.send_message("I can't post in that channel — pick another.", ephemeral=True)
                 return
-            self.chosen_channel = self.guild.get_channel(int(val))
+            self.chosen_channel = channel
             self.confirm_btn.disabled = not (self.chosen_target and self.chosen_channel)
             await interaction.response.edit_message(embed=self._status_embed(), view=self)
         except Exception as e:
