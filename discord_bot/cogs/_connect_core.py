@@ -188,6 +188,10 @@ async def add_feed(guild_id, clone_id, kind, external_id, external_name, channel
 
 MAX_FEEDS_PER_GUILD = 10
 
+# YouTube is switched off for now (Roblox only). Flip to True to bring every
+# YouTube surface (hub button, account linking, feeds, polling) back.
+YOUTUBE_ENABLED = False
+
 
 async def remove_feed(feed_id: int, guild_id: int) -> None:
     pool = await get_pool()

@@ -35,11 +35,13 @@ class ConnectCog(commands.Cog):
 
     async def cog_load(self):
         await core.ensure_tables()
-        self._poll_youtube.start()
+        if core.YOUTUBE_ENABLED:
+            self._poll_youtube.start()
         self._poll_roblox.start()
 
     def cog_unload(self):
-        self._poll_youtube.cancel()
+        if self._poll_youtube.is_running():
+            self._poll_youtube.cancel()
         self._poll_roblox.cancel()
 
     @property
