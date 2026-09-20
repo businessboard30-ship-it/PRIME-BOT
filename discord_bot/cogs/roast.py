@@ -1042,6 +1042,12 @@ class RoastMemberRequestView(discord.ui.View):
         self.confirm_btn.callback = self._on_confirm
         self.add_item(self.confirm_btn)
 
+        self.hardcore_btn = discord.ui.Button(
+            label="Request Hardcore 💀 (Premium)", style=discord.ButtonStyle.danger, row=2, disabled=True,
+        )
+        self.hardcore_btn.callback = self._on_confirm_hardcore
+        self.add_item(self.hardcore_btn)
+
     def _status_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title=f"🔥 Request a Roast — {self.guild.name}",
@@ -1061,6 +1067,7 @@ class RoastMemberRequestView(discord.ui.View):
                 return
             self.chosen_target = member
             self.confirm_btn.disabled = not (self.chosen_target and self.chosen_channel)
+            self.hardcore_btn.disabled = self.confirm_btn.disabled
             await interaction.response.edit_message(embed=self._status_embed(), view=self)
         except Exception as e:
             logger.exception(f"[roast] member request target picker failed guild={self.guild.id}: {e!r}")
@@ -1076,13 +1083,33 @@ class RoastMemberRequestView(discord.ui.View):
                 return
             self.chosen_channel = channel
             self.confirm_btn.disabled = not (self.chosen_target and self.chosen_channel)
+            self.hardcore_btn.disabled = self.confirm_btn.disabled
             await interaction.response.edit_message(embed=self._status_embed(), view=self)
         except Exception as e:
             logger.exception(f"[roast] member request channel picker failed guild={self.guild.id}: {e!r}")
             if not interaction.response.is_done():
                 await interaction.response.send_message(f"⚠️ Something went wrong — check Railway logs. ({e!r})", ephemeral=True)
 
-    async def _on_confirm(self, interaction: discord.Interaction):
+    async def _on_confirm_hardcore(self, interaction: discord.Interaction):
+        if not self.chosen_target or not self.chosen_channel:
+            await interaction.response.send_message("Pick both a target and a channel first.", ephemeral=True)
+            return
+        clone_id = getattr(self.cog.bot, "clone_id", None)
+        try:
+            premium = bool(await db.is_guild_premium_active(self.guild.id, clone_id))
+        except Exception:
+            premium = False
+        if not premium:
+            from discord_bot.cogs._views_premium import send_premium_pitch
+            await interaction.response.defer(ephemeral=True)
+            await interaction.followup.send(
+                "💀 **Hardcore Roast is a Premium feature.** Upgrade this server to unlock it.", ephemeral=True,
+            )
+            await send_premium_pitch(interaction, self.guild.id, clone_id)
+            return
+        await self._on_confirm(interaction, hardcore=True)
+
+    async def _on_confirm(self, interaction: discord.Interaction, hardcore: bool = False):
         try:
             if not self.chosen_target or not self.chosen_channel:
                 await interaction.response.send_message("Pick both a target and a channel first.", ephemeral=True)
@@ -1097,6 +1124,7 @@ class RoastMemberRequestView(discord.ui.View):
                 target=self.chosen_target,
                 channel=self.chosen_channel,
                 requester_id=interaction.user.id,
+                hardcore=hardcore,
             )
         except Exception as e:
             logger.exception(f"[roast] member roast request failed guild={self.guild.id}: {e!r}")
@@ -2154,18 +2182,18 @@ class RoastCog(GuildOnlyCog):
         await interaction.followup.send(embed=view._status_embed(), view=view, ephemeral=True)
         logger.info(f"[roast] member request flow opened by user={interaction.user.id} guild={interaction.guild.id}")
 
-    async def create_member_request(self, guild, target, channel, requester_id):
+    async def create_member_request(self, guild, target, channel, requester_id, hardcore: bool = False):
         clone_id = _clone_id_of(self.bot)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=CHALLENGE_EXPIRY_MINUTES)
         try:
             row = await db.fetchrow(
                 """
                 INSERT INTO discord_roast_battles
-                    (guild_id, clone_id, channel_id, target_id, proposed_by_admin_id, status, expires_at)
-                VALUES ($1, $2, $3, $4, $5, 'awaiting_approval', $6)
+                    (guild_id, clone_id, channel_id, target_id, proposed_by_admin_id, status, expires_at, hardcore)
+                VALUES ($1, $2, $3, $4, $5, 'awaiting_approval', $6, $7)
                 RETURNING id
                 """,
-                guild.id, clone_id, channel.id, target.id, requester_id, expires_at,
+                guild.id, clone_id, channel.id, target.id, requester_id, expires_at, hardcore,
             )
         except Exception:
             logger.exception(f"[roast] failed to insert member-request row guild={guild.id}")
@@ -2185,7 +2213,9 @@ class RoastCog(GuildOnlyCog):
                     title=f"🔥 Roast Request — {guild.name}",
                     description=(
                         f"{requester_name} wants the bot to roast {target.display_name} "
-                        f"in #{channel.name}. Approve to send the challenge."
+                        f"in #{channel.name}"
+                        + (" in **HARDCORE** mode \U0001F480 (unfiltered; the target must also agree)." if hardcore else ".")
+                        + " Approve to send the challenge."
                     ),
                     color=discord.Color.gold(),
                 )
@@ -2234,9 +2264,28 @@ class RoastCog(GuildOnlyCog):
             return False
 
         logger.info(f"[roast] member request battle_id={battle_id} approved by admin={admin_id}")
-        new_battle_id = await self.start_challenge(
-            guild=guild, target=target, channel=channel, proposed_by_admin_id=admin_id
-        )
+        if battle.get("hardcore"):
+            # Hardcore: no normal challenge. Hand off to the target's consent DM;
+            # the battle only starts if they accept.
+            try:
+                row = await db.fetchrow(
+                    """
+                    INSERT INTO discord_hardcore_roast_pending
+                        (guild_id, clone_id, challenger_id, target_id, channel_id, status)
+                    VALUES ($1, $2, $3, $4, $5, 'awaiting_payment')
+                    RETURNING id
+                    """,
+                    guild.id, battle["clone_id"], battle["proposed_by_admin_id"], target.id, channel.id,
+                )
+                await self.hardcore_payment_confirmed(row["id"])
+                new_battle_id = row["id"]
+            except Exception:
+                logger.exception(f"[roast] hardcore hand-off failed battle_id={battle_id}")
+                new_battle_id = None
+        else:
+            new_battle_id = await self.start_challenge(
+                guild=guild, target=target, channel=channel, proposed_by_admin_id=admin_id
+            )
         if new_battle_id is None:
             # Keep the request available if creating/sending the real challenge
             # failed, rather than deleting the only source of truth.
