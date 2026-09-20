@@ -1344,12 +1344,12 @@ class WelcomeCog(GuildOnlyCog):
 
     @group.command(name="theme", description="Pick which welcome-card look this server uses")
     @app_commands.choices(look=[
+        app_commands.Choice(name="⭐ Spider Realm Pro (premium)", value="spider_pro"),
         app_commands.Choice(name="Wolf (free, default)", value="wolf"),
         app_commands.Choice(name="Metallic Reaper (premium)", value="reaper"),
         app_commands.Choice(name="Shadow Monarch (premium)", value="shadow"),
         app_commands.Choice(name="Emerald Sorcerer (premium)", value="sorcerer"),
         app_commands.Choice(name="Spider Realm (premium)", value="spider"),
-        app_commands.Choice(name="Spider Realm Pro (premium)", value="spider_pro"),
     ])
     async def theme(self, interaction: discord.Interaction, look: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)

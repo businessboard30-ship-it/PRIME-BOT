@@ -586,12 +586,12 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
     'wolf' look is picked), mirroring /welcome theme's own gate exactly."""
 
     _LOOKS = [
+        ("spider_pro", "⭐ Spider Realm Pro (premium)"),
         ("wolf", "Wolf (free, default)"),
         ("reaper", "Metallic Reaper (premium)"),
         ("shadow", "Shadow Monarch (premium)"),
         ("sorcerer", "Emerald Sorcerer (premium)"),
         ("spider", "Spider Realm (premium)"),
-        ("spider_pro", "Spider Realm Pro (premium)"),
     ]
 
     def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
