@@ -490,21 +490,13 @@ class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
         embed.set_footer(text=f"From {interaction.user} ({interaction.user.id}) • server: {guild.name if guild else self.guild_id}")
 
         delivered = False
-        channel_id = getattr(_cfg, "ADVERTISE_CHANNEL_ID", 0) or _cfg.OWNER_BROADCAST_CHANNEL_ID
-        try:
-            channel = interaction.client.get_channel(channel_id) or await interaction.client.fetch_channel(channel_id)
-            await channel.send(embed=embed)
-            delivered = True
-        except Exception:
-            logger.warning("advertise: couldn't post to channel %s, falling back to owner DM", channel_id)
-        if not delivered:
-            for owner_id in getattr(_cfg, "DISCORD_OWNER_BROADCAST_IDS", ()):
-                try:
-                    user = interaction.client.get_user(owner_id) or await interaction.client.fetch_user(owner_id)
-                    await user.send(embed=embed)
-                    delivered = True
-                except Exception:
-                    continue
+        for owner_id in getattr(_cfg, "DISCORD_OWNER_BROADCAST_IDS", ()):
+            try:
+                user = interaction.client.get_user(owner_id) or await interaction.client.fetch_user(owner_id)
+                await user.send(embed=embed)
+                delivered = True
+            except Exception:
+                continue
         if not delivered:
             await interaction.response.send_message(
                 f"Sorry, I couldn't send that. Please reach us in the support server instead: {DISCORD_SUPPORT_SERVER_INVITE}",

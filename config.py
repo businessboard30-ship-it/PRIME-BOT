@@ -531,9 +531,6 @@ MUSIC_FREE_DAILY_DOWNLOADS = 3
 # secrets, just your own server's guild + channel ID.
 OWNER_GUILD_ID = 1534576875983339621
 OWNER_BROADCAST_CHANNEL_ID = 1535782838732066836
-# Where "Advertise with us" requests land. Set ADVERTISE_CHANNEL_ID to a channel in the support
-# server; 0 falls back to OWNER_BROADCAST_CHANNEL_ID, then to a DM to the bot owner.
-ADVERTISE_CHANNEL_ID = int(os.getenv("ADVERTISE_CHANNEL_ID", "0") or "0")
 # How often the owner server's auto-enabled autopost fires, in hours.
 # Hardcoded (was OWNER_BROADCAST_INTERVAL_HOURS env var) — tuning constant.
 OWNER_BROADCAST_INTERVAL_HOURS = 6
