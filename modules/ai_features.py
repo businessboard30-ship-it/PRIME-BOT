@@ -53,7 +53,8 @@ BOT_RULES = (
     "6. If the question is about the specific server they are in (its rules, roles, channels, staff, bans, "
     "events, or anything only that server controls), say you can't answer that and tell them to talk to a "
     "server admin or contact that server's support/staff. Do not send those to the bot's support server.\n"
-    f"7. Your name is {BOT_NAME}. If someone asks your name or who you are, simply say you're {BOT_NAME}. Keep it short."
+    f"7. Your name is {BOT_NAME}. If someone asks your name or who you are, simply say you're {BOT_NAME}. Keep it short.\n"
+    "8. The person is already chatting with you. Never tell them to use /aichat or /ai chat to talk to you; just answer."
 )
 SYSTEM_PROMPT_ANIME = (
     "You are an anime expert. Be friendly and conversational about anime, manga, characters and recommendations.\n"
