@@ -198,14 +198,11 @@ async def _do_rbx_group(interaction, text):
 def build_hub(ctx: Ctx) -> discord.ui.LayoutView:
     lines = [
         "Link your accounts, look things up, and get notified — all from here.",
-        "👤 **My accounts** — verify your YouTube channel and Roblox account",
-        "▶️ **YouTube** — video, channel & playlist info · trending by country · random video",
+        "👤 **My accounts** — verify your Roblox account",
         "🎮 **Roblox** — user, game & group info",
     ]
     if ctx.guild:
-        lines.append("🔔 **Notifications** — new-upload and game-update feeds *(Manage Server)*")
-    if not api.youtube_configured():
-        lines.append("-# ⚠️ YouTube lookups are off until the bot owner sets `YOUTUBE_API_KEY`.")
+        lines.append("🔔 **Notifications** — Roblox game-update feeds *(Manage Server)*")
 
     async def close(interaction):
         await interaction.response.defer()
@@ -213,7 +210,6 @@ def build_hub(ctx: Ctx) -> discord.ui.LayoutView:
 
     row1 = [
         _button("My accounts", lambda i: _goto(i, ctx, build_accounts), discord.ButtonStyle.primary, "👤"),
-        _button("YouTube", lambda i: _goto(i, ctx, build_youtube), discord.ButtonStyle.secondary, "▶️"),
         _button("Roblox", lambda i: _goto(i, ctx, build_roblox), discord.ButtonStyle.secondary, "🎮"),
     ]
     row2 = []
@@ -298,6 +294,8 @@ async def build_accounts(ctx: Ctx) -> discord.ui.LayoutView:
     lines = ["Prove an account is yours by placing a one-time code in its public description. No passwords, no logins."]
     r1, r2 = [], []
     for key, meta in PLATFORMS.items():
+        if key == "youtube" and not core.YOUTUBE_ENABLED:
+            continue
         link = links.get(key)
         if link:
             url = (f"https://www.youtube.com/channel/{link['external_id']}" if key == "youtube"
@@ -425,8 +423,10 @@ FEED_LABEL = {"yt": ("▶️", "YouTube uploads"), "rbx_game": ("🎮", "Roblox 
 async def build_notifications(ctx: Ctx) -> discord.ui.LayoutView:
     guild = ctx.guild
     feeds = await core.list_feeds(guild.id, ctx.clone_id)
+    if not core.YOUTUBE_ENABLED:
+        feeds = [f for f in feeds if f["kind"] != "yt"]
     rid = await core.get_roblox_role(guild.id, ctx.clone_id)
-    lines = ["New uploads and game updates get posted to a channel of your choice (checked every ~10 minutes)."]
+    lines = ["Roblox game updates get posted to a channel of your choice (checked every ~30 minutes)."]
     if feeds:
         for f in feeds:
             emoji, kind = FEED_LABEL.get(f["kind"], ("🔔", f["kind"]))
@@ -495,7 +495,6 @@ async def build_notifications(ctx: Ctx) -> discord.ui.LayoutView:
         await interaction.response.send_modal(_AddFeedModal(ctx, kind))
 
     rows.append([
-        _button("Add YouTube channel", lambda i: open_add(i, "yt"), discord.ButtonStyle.success, "➕"),
         _button("Add Roblox game", lambda i: open_add(i, "rbx_game"), discord.ButtonStyle.success, "➕"),
         _button("Clear role", clear_role, discord.ButtonStyle.secondary, "🧹"),
         _back(ctx),
@@ -530,6 +529,19 @@ class _AddFeedModal(discord.ui.Modal):
             await interaction.followup.send("You need **Manage Server**.", ephemeral=True)
             return
         try:
+            try:
+                from database import db as _db
+                premium = bool(await _db.is_guild_premium_active(guild.id, self.ctx.clone_id))
+            except Exception:
+                premium = False
+            if not premium:
+                await interaction.followup.send(
+                    "🔔 **Notification feeds are a Premium feature.** Upgrade this server to unlock them.",
+                    ephemeral=True,
+                )
+                from discord_bot.cogs._views_premium import send_premium_pitch
+                await send_premium_pitch(interaction, guild.id, self.ctx.clone_id)
+                return
             chan = guild.get_channel(self.channel.values[0].id)
             perms = chan.permissions_for(guild.me) if chan else None
             if chan is None or not (perms.view_channel and perms.send_messages and perms.embed_links):

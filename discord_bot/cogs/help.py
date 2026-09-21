@@ -105,6 +105,7 @@ CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
         (["schedule"], "schedule messages to a channel"),
         (["linkbutton"], "custom labeled link buttons for this server"),
         (["starboard"], "configure the starboard"),
+        (["botprofile"], "Premium: custom bot name, avatar and banner in this server"),
         (["ticket"], "configure a ticket system"),
         (["invites"], "invite tracker setup"),
         (["start"], "resend the setup quickstart DM (feature toggles, one tap each) to yourself"),

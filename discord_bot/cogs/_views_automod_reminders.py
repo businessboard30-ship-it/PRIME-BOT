@@ -43,6 +43,7 @@ from config import DASHBOARD_BASE_URL
 
 _LATER_RE = re.compile(r"^automod_rem_later:(\d+)$")
 _STOP_RE = re.compile(r"^automod_rem_stop:(\d+)$")
+_PREMIUM_RE = re.compile(r"^automod_rem_premium:(\d+)$")
 
 
 def _disabled_view(interaction: discord.Interaction) -> discord.ui.View:
@@ -76,17 +77,8 @@ def build_reminder_view(batch_id: int) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     view.add_item(_ReminderLaterButton(batch_id))
     view.add_item(_ReminderDismissButton(batch_id))
-    # Same "List your server" link added to the combined join DM
-    # (see _views_join_dm.py's JoinDMLayoutView) — plain link button, no
-    # custom_id, so it needs no DynamicItem registration and _disabled_view
-    # above already carries any button over unchanged since it just copies
-    # label/style/emoji/custom_id from whatever's on the clicked message
-    # (a None custom_id here just means it's skipped as non-actionable,
-    # not touched, on Remind/Dismiss clicks).
-    view.add_item(discord.ui.Button(
-        label="List your server", style=discord.ButtonStyle.link,
-        emoji="🌐", url=f"{DASHBOARD_BASE_URL}/servers",
-    ))
+    # Go Premium replaced the old "List your server" link (the server directory is gone).
+    view.add_item(_ReminderGoPremiumButton(batch_id))
     return view
 
 
@@ -179,7 +171,42 @@ class _ReminderDismissButton(discord.ui.DynamicItem[discord.ui.Button], template
         await interaction.followup.send("Understood — I won't message you about these again.", ephemeral=True)
 
 
+class _ReminderGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button], template=_PREMIUM_RE.pattern):
+    """Replaces the old "List your server" link. Opens the Go Premium pitch for
+    the server(s) this reminder is about."""
+
+    def __init__(self, batch_id: int):
+        self.batch_id = batch_id
+        super().__init__(discord.ui.Button(
+            label="Go Premium", style=discord.ButtonStyle.success,
+            emoji="💎", custom_id=f"automod_rem_premium:{batch_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_premium import send_premium_pitch
+        await interaction.response.defer(ephemeral=True)
+        batch = await db.get_automod_reminder_batch(self.batch_id)
+        guild_ids = []
+        if batch is not None:
+            for item in batch["items"]:
+                gid = item.get("guild_id")
+                if gid and gid not in guild_ids:
+                    guild_ids.append(gid)
+        if not guild_ids:
+            await interaction.followup.send("I couldn't find the server for this reminder. Run `/start` in your server and tap **Go Premium** there.", ephemeral=True)
+            return
+        for gid in guild_ids[:5]:
+            guild = interaction.client.get_guild(gid)
+            if len(guild_ids) > 1 and guild is not None:
+                await interaction.followup.send(f"👇 **{guild.name}**", ephemeral=True)
+            await send_premium_pitch(interaction, gid, batch["clone_id"])
+
+
 # Registered once in discord_bot/bot.py's setup_hook via
 # bot.add_dynamic_items(*DYNAMIC_ITEMS), same mechanism as every other
 # wizard's DYNAMIC_ITEMS.
-DYNAMIC_ITEMS = (_ReminderLaterButton, _ReminderDismissButton)
+DYNAMIC_ITEMS = (_ReminderLaterButton, _ReminderDismissButton, _ReminderGoPremiumButton)

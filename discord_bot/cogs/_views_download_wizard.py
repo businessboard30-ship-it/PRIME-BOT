@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 import discord
+from discord_bot import perm_check
 
 import config as app_config
 from database import db
@@ -220,7 +221,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> disc
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
 
-    text = discord.ui.TextDisplay("\n".join(["### 📥 Set up the downloads channel", *render_status_lines(config)]))
+    text = discord.ui.TextDisplay("\n".join(["### 📥 Set up the downloads channel", *perm_check.lines(guild_id, clone_id), *render_status_lines(config)]))
     container.add_item(text)
     container.add_item(discord.ui.Separator())
 

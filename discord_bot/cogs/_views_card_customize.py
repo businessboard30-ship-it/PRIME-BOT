@@ -407,7 +407,7 @@ class CardBackgroundModal(discord.ui.Modal, title="Custom card background"):
 
         if files:
             host_channel_id, host_message_id, cdn_url, reason = await _upload_custom_bg(
-                interaction.client, files[0], interaction.guild
+                interaction.client, files[0], (interaction.guild or interaction.client.get_guild(self.guild_id))
             )
             if reason:
                 await interaction.followup.send(f"⚠️ Couldn't use that image — {reason}.", ephemeral=True)
@@ -633,9 +633,9 @@ class CardPreviewButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templat
                 bg_bytes = _sample_backdrop()
             card_bytes, _fmt = await asyncio.to_thread(
                 render_welcome_card,
-                avatar_bytes, interaction.user.display_name, f"Member #{interaction.guild.member_count}",
+                avatar_bytes, interaction.user.display_name, f"Member #{(interaction.guild or interaction.client.get_guild(self.guild_id)).member_count}",
                 avatar_shape=cfg.get("avatar_shape", "circle"),
-                guild_name=interaction.guild.name, use_template=True,
+                guild_name=(interaction.guild or interaction.client.get_guild(self.guild_id)).name, use_template=True,
                 custom_background_bytes=bg_bytes,
                 ultra_options=cfg.get("ultra_card_json"),
             )

@@ -6,8 +6,8 @@ _views_connect.py (account linking, rich lookups, notification feeds).
 
 Background work in this cog (each process — main bot or clone — only touches
 feed rows carrying its own clone_id, so nothing is ever posted twice):
-  - YouTube upload feeds  (public RSS, no API key)   every 10 min
-  - Roblox game updates   (public games API)         every 10 min
+  - YouTube upload feeds  (public RSS, no API key)   every 30 min
+  - Roblox game updates   (public games API)         every 30 min
   - on_member_join: re-grant the Roblox-verified role to already-linked members
 """
 
@@ -25,7 +25,7 @@ from modules.connections_api import ConnectError
 
 logger = logging.getLogger(__name__)
 
-POLL_MINUTES = 10
+POLL_MINUTES = 30
 MAX_POSTS_PER_SWEEP = 3        # per feed, so a burst of uploads can't flood a channel
 
 
@@ -35,11 +35,13 @@ class ConnectCog(commands.Cog):
 
     async def cog_load(self):
         await core.ensure_tables()
-        self._poll_youtube.start()
+        if core.YOUTUBE_ENABLED:
+            self._poll_youtube.start()
         self._poll_roblox.start()
 
     def cog_unload(self):
-        self._poll_youtube.cancel()
+        if self._poll_youtube.is_running():
+            self._poll_youtube.cancel()
         self._poll_roblox.cancel()
 
     @property

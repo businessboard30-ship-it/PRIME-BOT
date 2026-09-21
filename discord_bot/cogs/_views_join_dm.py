@@ -30,6 +30,7 @@ import discord
 
 from database import db
 from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, CUSTOM_ROLE_FEE_USD
+import config as _cfg
 # Reused business logic for the listing/registry-invite offer now embedded
 # on the join DM's last page (see JoinDMLayoutView's join_offer handling
 # below) — same functions the standalone _views_auto_listing_offer.py /
@@ -75,7 +76,6 @@ async def _enabled_feature_keys(guild_id: int, clone_id) -> set:
         ("welcome", lambda: db.get_welcome_config(guild_id, clone_id=clone_id), "enabled"),
         ("automod", lambda: db.get_automod_config(guild_id, clone_id=clone_id), "word_filter_enabled"),
         ("leveling", lambda: db.get_voice_xp_config(guild_id, clone_id=clone_id), "enabled"),
-        ("bump", lambda: db.bump_get_guild_config(guild_id, clone_id), "receives_bumps"),
         ("tickets", lambda: db.get_ticket_config(guild_id, clone_id=clone_id), "panel_channel_id"),
         ("starboard", lambda: db.get_starboard_config(guild_id, clone_id=clone_id), "channel_id"),
         ("suggestions", lambda: db.get_suggestion_config(guild_id, clone_id=clone_id), "approved_log_channel_id"),
@@ -231,18 +231,18 @@ class JoinDMLayoutView(discord.ui.LayoutView):
 
         # "Don't ask again" intentionally no longer rendered (_DontAskAgainButton stays
         # registered below so buttons on already-sent DMs keep working).
-        bottom_children = [_RemindLaterButton(guild_id, clone_id)]
+        # "Remind me later" no longer rendered (_RemindLaterButton stays registered
+        # below so buttons on already-sent DMs keep working).
+        bottom_children = [_AdvertiseButton(guild_id, clone_id)]
+        if page == 0:
+            bottom_children.insert(0, _ConnectButton(guild_id, clone_id))
 
+        # Manual + support are masked text links (not buttons), so the row below
+        # only holds the action buttons (Connect / Advertise).
+        link_bits = ["📖 [Read bot manual](https://prime-bot-sigma.vercel.app/manual#moderation)"]
         if DISCORD_SUPPORT_SERVER_INVITE:
-            support_button = discord.ui.Button(
-                label="Join our support server", style=discord.ButtonStyle.link,
-                emoji="🆘", url=DISCORD_SUPPORT_SERVER_INVITE,
-            )
-            manual_button = discord.ui.Button(
-                label="Read bot manual", style=discord.ButtonStyle.link,
-                emoji="📖", url="https://prime-bot-sigma.vercel.app/manual#moderation",
-            )
-            bottom_children = [manual_button, *bottom_children, support_button]
+            link_bits.append(f"🆘 [Join our support server]({DISCORD_SUPPORT_SERVER_INVITE})")
+        container.add_item(discord.ui.TextDisplay("  •  ".join(link_bits)))
         container.add_item(discord.ui.ActionRow(*bottom_children))
 
         self.add_item(container)
@@ -459,6 +459,97 @@ class _RemindLaterButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
         await db.set_join_dm_remind_later(self.guild_id, clone_id=self.clone_id, hours=24)
         await interaction.edit_original_response(view=_disabled_view(interaction))
         await interaction.followup.send("Got it — I'll send this again in a day.", ephemeral=True)
+
+
+class _ConnectButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_connect:(\d+):(-|\d+)$"):
+    """Opens the /connections hub (YouTube + Roblox). Blue = Discord's primary
+    style (Discord has no yellow button colour)."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(
+            discord.ui.Button(
+                label="Connect", style=discord.ButtonStyle.primary,
+                emoji="🔗", custom_id=_encode("connect", guild_id, clone_id), row=4,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_connect import Ctx, build_hub
+        ctx = Ctx(interaction.user.id, interaction.guild, getattr(interaction.client, "clone_id", None))
+        await interaction.response.send_message(view=build_hub(ctx), ephemeral=interaction.guild is not None)
+
+
+class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
+    what = discord.ui.TextInput(label="What do you want to advertise?", max_length=200)
+    link = discord.ui.TextInput(label="Link (server invite, website, store)", max_length=300, required=False)
+    details = discord.ui.TextInput(
+        label="Details: audience, duration, budget", style=discord.TextStyle.paragraph, max_length=1000, required=False,
+    )
+    contact = discord.ui.TextInput(label="Best way to reach you (Discord tag, email)", max_length=100, required=False)
+
+    def __init__(self, guild_id: int, clone_id=None):
+        super().__init__()
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.client.get_guild(self.guild_id)
+        embed = discord.Embed(title="📣 New advertising request", colour=discord.Colour.gold())
+        embed.add_field(name="Advertising", value=str(self.what)[:1024], inline=False)
+        if str(self.link):
+            embed.add_field(name="Link", value=str(self.link)[:1024], inline=False)
+        if str(self.details):
+            embed.add_field(name="Details", value=str(self.details)[:1024], inline=False)
+        if str(self.contact):
+            embed.add_field(name="Contact", value=str(self.contact)[:1024], inline=False)
+        embed.set_footer(text=f"From {interaction.user} ({interaction.user.id}) • server: {guild.name if guild else self.guild_id}")
+
+        delivered = False
+        for owner_id in getattr(_cfg, "DISCORD_OWNER_BROADCAST_IDS", ()):
+            try:
+                user = interaction.client.get_user(owner_id) or await interaction.client.fetch_user(owner_id)
+                await user.send(embed=embed)
+                delivered = True
+            except Exception:
+                continue
+        if not delivered:
+            await interaction.response.send_message(
+                f"Sorry, I couldn't send that. Please reach us in the support server instead: {DISCORD_SUPPORT_SERVER_INVITE}",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            "✅ Thanks! Your request was sent. Join our support server to talk about pricing: "
+            f"{DISCORD_SUPPORT_SERVER_INVITE}",
+            ephemeral=True,
+        )
+
+
+class _AdvertiseButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_advertise:(\d+):(-|\d+)$"):
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(
+            discord.ui.Button(
+                label="Advertise with us", style=discord.ButtonStyle.success,
+                emoji="📣", custom_id=_encode("advertise", guild_id, clone_id), row=4,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(_AdvertiseModal(self.guild_id, self.clone_id))
 
 
 class _DontAskAgainButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_dismiss:(\d+):(-|\d+)$"):
@@ -698,6 +789,56 @@ class _WelcomeDeliveryButton(discord.ui.DynamicItem[discord.ui.Button], template
         await interaction.edit_original_response(view=sub_view, attachments=[file])
 
 
+class _WelcomeCardOptionsButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_wsub_cards:(\d+):(-|\d+)$"):
+    """Opens the full welcome-card wizard (themes/looks, avatar shape, sticker,
+    Preview, Customize Card) as its own message."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Card options", style=discord.ButtonStyle.primary, emoji="🎨",
+            custom_id=f"join_dm_wsub_cards:{guild_id}:{'-' if clone_id is None else clone_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        clone_part = match.group(2)
+        return cls(int(match.group(1)), None if clone_part == "-" else int(clone_part))
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_welcome import build_wizard_view
+        await interaction.response.defer(ephemeral=interaction.guild is not None)
+        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        view = build_wizard_view(self.guild_id, self.clone_id, interaction.user.id, config)
+        await interaction.followup.send(view=view, ephemeral=interaction.guild is not None)
+
+
+class _WelcomePreviewRefreshButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_wsub_prev:(\d+):(-|\d+)$"):
+    """Re-renders the card preview on this screen (use after changing card options)."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Preview", style=discord.ButtonStyle.success, emoji="👁️",
+            custom_id=f"join_dm_wsub_prev:{guild_id}:{'-' if clone_id is None else clone_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        clone_part = match.group(2)
+        return cls(int(match.group(1)), None if clone_part == "-" else int(clone_part))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        guild = interaction.client.get_guild(self.guild_id)
+        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        container, file = await _welcome_preview_container(guild, config, interaction.user)
+        sub_view = build_welcome_sub_view(self.guild_id, self.clone_id, container, delivery_mode=config.get("delivery_mode") or "channel")
+        await interaction.edit_original_response(view=sub_view, attachments=[file])
+
+
 def build_welcome_sub_view(guild_id: int, clone_id, welcome_container: discord.ui.Container, delivery_mode: str = "channel") -> "WelcomeSubLayoutView":
     """Wraps the already-built welcome-preview Container (see
     _welcome_preview_container) together with its action buttons into one
@@ -722,8 +863,13 @@ class WelcomeSubLayoutView(discord.ui.LayoutView):
         # the rest of the sub-screen's action-button phrasing.
         delivery_btn.item.label = "Switch to channel delivery" if delivery_mode == "dm" else "Switch to DM delivery"
         row.add_item(delivery_btn)
-        row.add_item(_WelcomeBackButton(guild_id, clone_id))
         welcome_container.add_item(row)
+        row2 = discord.ui.ActionRow(
+            _WelcomeCardOptionsButton(guild_id, clone_id),
+            _WelcomePreviewRefreshButton(guild_id, clone_id),
+            _WelcomeBackButton(guild_id, clone_id),
+        )
+        welcome_container.add_item(row2)
         self.add_item(welcome_container)
 
 
@@ -1243,8 +1389,8 @@ async def _open_premium_pitch(interaction: discord.Interaction, guild: discord.G
 # maintained lists (embed fields vs. button keys) used to.
 FEATURE_TOGGLES = {
     "go_premium": ("Go Premium", "💎", _open_premium_pitch, None,
-                   "Unlock EVERY package — welcome cards, custom roles, Music Pro — plus all future features, "
-                   "for just $5/month per server. Tap to see everything you get."),
+                   "Unlock EVERY package — welcome cards, custom roles, Music Pro, Hardcore Roast, Roblox alerts, "
+                   "custom bot branding — plus all future features, for just $5/month per server. Tap to see everything you get."),
     "welcome": ("Welcome messages", "👋", _enable_welcome, None,
                 "Greet new members automatically in a channel of your choice."),
     "tickets": ("Support tickets", "🎫", _enable_tickets, None,
@@ -1261,8 +1407,6 @@ FEATURE_TOGGLES = {
                  "Reward active members with levels and roles over time."),
     "analytics": ("Server analytics", "📊", _enable_analytics, None,
                   "See member/activity stats and where to find more members."),
-    "bump": ("Bump network", "📣", _enable_bump, None,
-             "List your server for growth — I can even create the channel for you."),
     "channels": ("Create suggested channels", "📁", _enable_channels, None,
                  "Create commonly-useful channels for this server in one tap."),
     "starboard": ("Starboard", "⭐", _enable_starboard, None,
@@ -1471,7 +1615,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 
 # Registered in discord_bot/bot.py's setup_hook via bot.add_dynamic_items(...).
 DYNAMIC_ITEMS = (
-    _RemindLaterButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
+    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton,
 )

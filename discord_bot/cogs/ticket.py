@@ -21,6 +21,7 @@ import io
 import logging
 
 import discord
+from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands
 from discord_bot.cogs._dm_support import GuildOnlyCog
@@ -113,6 +114,10 @@ class TicketCog(GuildOnlyCog):
                 reason=f"Ticket opened by {interaction.user}",
             )
         except (discord.Forbidden, discord.HTTPException):
+            perm_check.flag(
+                guild.id, clone_id, "ticket_create",
+                "Members can't open tickets — I'm missing **Manage Channels** (on my role or the ticket category).",
+            )
             await interaction.followup.send("I don't have permission to create ticket channels here.", ephemeral=True)
             return
 
