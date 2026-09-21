@@ -115,7 +115,7 @@ class AIToolsCog(commands.Cog):
             app_id = getattr(self.bot, "application_id", None)
             if app_id is None:
                 return "I couldn't work out my invite link just now. Try `/invite` in a moment.", None
-            return f"➕ Tap [here]({build_invite_url(app_id)}) to add me to your server.", None
+            return f"➕ Tap [here](<{build_invite_url(app_id)}>) to add me to your server.", None
         return None
 
     @staticmethod

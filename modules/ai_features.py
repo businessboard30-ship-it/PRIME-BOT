@@ -105,7 +105,8 @@ def render_support_link(text: str) -> str:
     except Exception:
         invite = ""
     if invite:
-        return _SUPPORT_TOKEN_RE.sub(f"[here]({invite})", text)
+        # <...> around the URL stops Discord from adding the big server preview card
+        return _SUPPORT_TOKEN_RE.sub(f"[here](<{invite}>)", text)
     return _SUPPORT_TOKEN_RE.sub("in our support server", text)
 
 
