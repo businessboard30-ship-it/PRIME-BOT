@@ -30,6 +30,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # The model writes this token instead of a URL; render_support_link() turns it into a
 # short blue markdown link ("here") so no long invite URL is ever shown in chat.
 SUPPORT_TOKEN = "[[SUPPORT]]"
+BOT_NAME = "Maxwell"  # what the AI says when asked its name
 
 AI_CHAT_MODEL = "openai/gpt-oss-120b"  # Groq's current recommended general-purpose model
 # Shared rules appended to every prompt. Length is enforced three ways —
@@ -51,7 +52,8 @@ BOT_RULES = (
     f"Never write a URL or invite link yourself, only {SUPPORT_TOKEN}.\n"
     "6. If the question is about the specific server they are in (its rules, roles, channels, staff, bans, "
     "events, or anything only that server controls), say you can't answer that and tell them to talk to a "
-    "server admin or contact that server's support/staff. Do not send those to the bot's support server."
+    "server admin or contact that server's support/staff. Do not send those to the bot's support server.\n"
+    f"7. Your name is {BOT_NAME}. If someone asks your name or who you are, simply say you're {BOT_NAME}. Keep it short."
 )
 SYSTEM_PROMPT_ANIME = (
     "You are an anime expert. Be friendly and conversational about anime, manga, characters and recommendations.\n"
