@@ -259,7 +259,6 @@ export const MANUAL_SECTIONS: Section[] = [
         title: 'AI Store \u2014 /aistore (paid AI personas)',
         rows: [
           { cmd: '/aistore credits', syntax: '/aistore credits', desc: 'Checks your AI Store credit balance', perm: 'Anyone' },
-          { cmd: '/aistore topup', syntax: '/aistore topup', desc: 'Buys AI Store credits with GHS', perm: 'Anyone' },
           { cmd: '/aistore newchat', syntax: '/aistore newchat provider:<name>', desc: 'Starts a new AI Store conversation with a chosen provider/persona', perm: 'Anyone' },
           { cmd: '/aistore ask', syntax: '/aistore ask message:<text>', desc: 'Sends a message in your active AI Store conversation', perm: 'Anyone' },
           { cmd: '/aistore endchat', syntax: '/aistore endchat', desc: 'Ends your active AI Store conversation', perm: 'Anyone' },
