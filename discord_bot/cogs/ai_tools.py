@@ -353,7 +353,7 @@ class AIToolsCog(commands.Cog):
     async def on_bot_chat(self, message: discord.Message):
         """Chat without /aichat: reply to any message from this bot (or its
         clone) in a server, or just DM the bot. Stays silent in a channel with
-        a live roast battle (the roast cog owns replies there) and where a
+        a live roast battle (the roast cog owns replies there) and when
         the per-server switch is off. Answers are short (see
         BOT_RULES / trim_reply in modules/ai_features.py)."""
         if message.author.bot:
