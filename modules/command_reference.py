@@ -154,7 +154,41 @@ def is_command_question(message: str) -> bool:
     return any(hint in lowered for hint in _COMMAND_QUESTION_HINTS)
 
 
-def build_context(user_perms: Optional[set] = None) -> str:
+def _live_lines(bot) -> list:
+    """Command list generated from the bot's REAL command tree, so it can't
+    go stale when commands are added/renamed. The hand-written COMMANDS
+    table above is only used for the permission label when a command has
+    no default_permissions of its own, and as a fallback if the tree is
+    unavailable/empty."""
+    try:
+        import discord
+        from discord import app_commands
+        hand_perm = {c.split()[0].lstrip("/"): perm for c, _u, _d, perm in COMMANDS}
+        lines = []
+        for cmd in sorted(bot.tree.get_commands(type=discord.AppCommandType.chat_input), key=lambda c: c.name):
+            dp = getattr(cmd, "default_permissions", None)
+            needs = None
+            if dp is not None:
+                needs = ", ".join(n for n, v in dp if v) or None
+            elif hand_perm.get(cmd.name):
+                needs = hand_perm[cmd.name]
+            tag = " [bot owner only]" if needs == "owner_only" else (f" [needs {needs}]" if needs else "")
+            desc = (cmd.description or "").strip()[:90]
+            if isinstance(cmd, app_commands.Group):
+                subs = [c.qualified_name.split(" ", 1)[1] for c in cmd.walk_commands()
+                        if isinstance(c, app_commands.Command)]
+                lines.append(f"/{cmd.name} <{'|'.join(subs)[:200]}> — {desc}{tag}")
+            else:
+                args = " ".join(
+                    (f"{p.name}:<..>" if p.required else f"[{p.name}:<..>]") for p in cmd.parameters
+                )
+                lines.append(f"/{cmd.name}{(' ' + args) if args else ''} — {desc}{tag}")
+        return lines
+    except Exception:
+        return []
+
+
+def build_context(user_perms: Optional[set] = None, bot=None) -> str:
     """Returns a system-prompt snippet listing every command the bot has.
     Every command is visible to every asker — the bot doesn't hide its own
     command list, and Discord's permission system is what actually blocks
@@ -162,8 +196,8 @@ def build_context(user_perms: Optional[set] = None) -> str:
     about. Commands that need a permission just say so, same as /help
     would show. `user_perms` is accepted but unused (kept so callers don't
     need changes if per-user filtering is ever wanted again)."""
-    lines = []
-    for cmd, usage, desc, perm in COMMANDS:
+    lines = _live_lines(bot) if bot is not None else []
+    for cmd, usage, desc, perm in ([] if lines else COMMANDS):
         if perm == "owner_only":
             lines.append(f"{usage} — {desc} [only the bot's owner can use this]")
         elif perm:
@@ -181,5 +215,6 @@ def build_context(user_perms: Optional[set] = None) -> str:
         "like \"I don't see a command for that — try /help and scroll through the "
         "categories, there may be something close to what you need.\"\n"
         "- You can only tell someone what to type — you cannot run commands yourself.\n"
+        "- Keep answers to 1-3 short sentences; give just the command and what it does.\n"
         f"{joined}"
     )

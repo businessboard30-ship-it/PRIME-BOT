@@ -7,8 +7,9 @@ Gated behind premium tier system (superbot_adapter.get_user_tier)
 
 import aiohttp
 import logging
+import re
 from typing import Optional, List, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 from database import get_pool
 
 logger = logging.getLogger(__name__)
@@ -27,14 +28,66 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # ═══════════════════════════════════════════════════════════════════════════
 
 AI_CHAT_MODEL = "openai/gpt-oss-120b"  # Groq's current recommended general-purpose model
+# Shared rules appended to every prompt. Length is enforced three ways —
+# this prompt, a low max_completion_tokens, and trim_reply() — because a
+# prompt-only length limit isn't reliable.
+BOT_RULES = (
+    "You are the assistant of THIS Discord bot and its branded clones, chatting inside Discord. Rules:\n"
+    "1. Answer in 1-3 short sentences, under 300 characters. Plain text, no headings, no bullet lists "
+    "(exception: a how-to may use up to 4 very short lines). Never ramble.\n"
+    "2. Only talk about this bot, its commands and features, or light general/anime chat. Never recommend, "
+    "compare, explain or mention other Discord bots (MEE6, Dyno, Carl-bot, etc.). If asked about another "
+    "bot, say you only help with this bot.\n"
+    "3. Never invent commands or features. Only use commands you were explicitly given; otherwise say you "
+    "don't see one and point to /help.\n"
+    "4. AI chat has no paid credits or top-ups. If asked about buying AI credits, say that isn't a thing."
+)
 SYSTEM_PROMPT_ANIME = (
-    "You are an anime expert and helpful assistant. Provide friendly, concise responses about anime, manga, characters, and recommendations. "
-    "Keep answers under 500 characters when possible. Be conversational and engaging."
+    "You are an anime expert. Be friendly and conversational about anime, manga, characters and recommendations.\n"
+    + BOT_RULES
 )
 SYSTEM_PROMPT_GENERAL = (
-    "You are a helpful, friendly assistant. Provide concise, accurate responses to questions. "
-    "Keep answers under 500 characters when possible."
+    "You are a helpful, friendly assistant.\n" + BOT_RULES
 )
+
+OTHER_BOT_REFUSAL = "I can only help with this bot and its features — try /help to see what I can do."
+
+# Names that come up in practice. Deliberately excludes bot names that are
+# also ordinary words (Arcane, Wick, Groovy) to avoid false positives.
+_OTHER_BOTS = re.compile(
+    r"\b(mee6|dyno(?:bot)?|carl[\s-]?bot|probot|dank\s?memer|mudae|ticket\s?tool|yagpdb|statbot|fredboat|"
+    r"rythm|tatsu(?:maki)?|unbelievaboat|poke\s?two|pok[eé]two|midjourney\s+bot|giveawaybot|vexera|"
+    r"sesh\s?bot|mimu|mee\s?six)\b",
+    re.IGNORECASE,
+)
+
+
+def mentions_other_bot(text: str) -> bool:
+    return bool(text and _OTHER_BOTS.search(text))
+
+
+def trim_reply(text: str, limit: int = 600) -> str:
+    """Hard backstop for brevity: collapse blank runs and cut at the last
+    sentence end (or word) under `limit`."""
+    text = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    m = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "), cut.rfind(".\n"))
+    if m >= limit // 2:
+        return cut[: m + 1]
+    return cut.rsplit(" ", 1)[0].rstrip(",;:") + "…"
+
+
+def until_reset_text() -> str:
+    """'5h 12m' until the next midnight UTC (when daily caps reset)."""
+    now = datetime.now(timezone.utc)
+    nxt = (now.replace(hour=0, minute=0, second=0, microsecond=0)).replace(tzinfo=timezone.utc)
+    from datetime import timedelta
+    secs = int((nxt + timedelta(days=1) - now).total_seconds())
+    h, m = divmod(secs // 60, 60)
+    return f"{h}h {m}m" if h else f"{m}m"
+
 
 # User AI usage caps (per tier)
 AI_USAGE_CAPS = {
@@ -65,12 +118,11 @@ async def get_user_ai_usage(user_id: int, usage_type: str = "messages") -> int:
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            today = datetime.now().date()
-            
             table = "ai_chat_usage" if usage_type == "messages" else "ai_image_usage"
             count = await conn.fetchval(
-                f"SELECT COUNT(*) FROM {table} WHERE user_id = $1 AND DATE(created_at) = $2",
-                user_id, today
+                f"SELECT COUNT(*) FROM {table} WHERE user_id = $1 "
+                f"AND DATE(created_at) = (NOW() AT TIME ZONE 'UTC')::date",
+                user_id
             )
         return count or 0
     except Exception as e:
@@ -213,7 +265,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                 "model": AI_CHAT_MODEL,
                 "messages": messages,
                 "temperature": 0.7,
-                "max_completion_tokens": 600,
+                "max_completion_tokens": 400,
                 "reasoning_effort": "low",
                 "top_p": 1.0
             }
@@ -228,6 +280,9 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                     data = await resp.json()
                     response_text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
                     
+                    response_text = trim_reply(response_text)
+                    if mentions_other_bot(response_text):
+                        response_text = OTHER_BOT_REFUSAL
                     if response_text:
                         # Log usage — store both sides of the turn plus the
                         # session so this exchange can be replayed as real
@@ -473,8 +528,14 @@ async def check_ai_usage_limit(user_id: int, tier: str, usage_type: str = "messa
         usage = await get_user_ai_usage(user_id, usage_type)
         
         if usage >= cap:
-            cap_name = "messages" if usage_type == "messages" else "image"
-            return (False, f"Daily {cap_name} limit reached ({usage}/{cap}). Upgrade your tier or try tomorrow.")
+            if usage_type == "messages":
+                return (False, (
+                    f"You've used all {cap} of today's free AI chats. They reset in {until_reset_text()} "
+                    f"(midnight UTC). Nobody is paying for AI credits here — there's nothing to top up."
+                ))
+            return (False, (
+                f"You've used all {cap} of today's AI images. They reset in {until_reset_text()} (midnight UTC)."
+            ))
         
         # Warn if near limit
         if usage >= cap * 0.8:

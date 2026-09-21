@@ -31,9 +31,12 @@ from discord import app_commands
 from discord.ext import commands
 
 from database import db
+import re
+
+from modules import leveling
 from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
-    get_or_create_active_session,
+    get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
@@ -69,7 +72,8 @@ class QuitChatButton(discord.ui.Button):
 
 
 def ai_reply_view(cog, owner_id: int) -> NavView:
-    return NavView([QuitChatButton(owner_id), ActionButton("Usage", discord.ButtonStyle.secondary, cog, "aistatus", emoji="📊")])
+    # Quit Chat button removed from replies (chat clutter); /endchat still works.
+    return NavView([ActionButton("Usage", discord.ButtonStyle.secondary, cog, "aistatus", emoji="📊")])
 
 
 class AIToolsCog(commands.Cog):
@@ -90,13 +94,56 @@ class AIToolsCog(commands.Cog):
             return set()
         return {name for name, value in perms if value}
 
+    _XP_WORDS = re.compile(r"\b(xp|level|levels|rank|ranking|exp)\b", re.IGNORECASE)
+
+    async def _xp_facts(self, message: str, user_id: int, guild: Optional[discord.Guild]) -> Optional[str]:
+        """Real leveling numbers for the asker (and anyone they @mention)
+        when the message is about XP / level / rank, so the AI quotes the
+        database instead of guessing. Leaderboards are public, so
+        mentioned members are fine to include."""
+        if not self._XP_WORDS.search(message):
+            return None
+        if guild is None:
+            return "FACT: XP and levels are per-server, so tell the user to ask this in a server (or use /rank there)."
+        clone_id = getattr(self.bot, "clone_id", None)
+        ids = [user_id] + [int(i) for i in re.findall(r"<@!?(\d+)>", message)]
+        seen, lines = set(), []
+        for uid in ids[:4]:
+            if uid in seen:
+                continue
+            seen.add(uid)
+            try:
+                row = await db.get_xp(guild.id, uid, clone_id=clone_id)
+                p = leveling.xp_progress(row["total_xp"])
+                rk = await db.get_xp_rank(guild.id, uid, clone_id=clone_id)
+            except Exception:
+                logger.debug("[aichat] xp lookup failed", exc_info=True)
+                continue
+            member = guild.get_member(uid)
+            who = "the person asking" if uid == user_id else (member.display_name if member else f"user {uid}")
+            rank_txt = f", rank #{rk['rank']} of {rk['total_players']}" if rk else ", not ranked yet"
+            lines.append(
+                f"- {who}: level {p['level']}, {p['total_xp']} total XP "
+                f"({p['current_xp_in_level']}/{p['xp_needed_for_next_level']} toward next level){rank_txt}"
+            )
+        if not lines:
+            return None
+        return (
+            "FACTS from this server's leveling data — quote these numbers exactly, share only these people's "
+            "stats, and tell them /rank shows the full card:\n" + "\n".join(lines)
+        )
+
     async def _run_chat_turn(self, user_id: int, message: str,
-                              perms: Optional[discord.Permissions] = None) -> tuple[str, str, Optional[int]]:
+                              perms: Optional[discord.Permissions] = None,
+                              guild: Optional[discord.Guild] = None) -> tuple[str, str, Optional[int]]:
         """Shared by /aichat and the reply-to-continue listener. Returns
         (reply_text, warning, session_id). session_id is None only if
         usage was denied (caller should stop before sending anything).
         `perms` scopes which commands the AI is even told about — see
         modules/command_reference.py."""
+        if mentions_other_bot(message):
+            # Refused before any AI call, so it doesn't spend the user's daily cap.
+            return OTHER_BOT_REFUSAL, "", None
         tier = await self._tier(user_id)
         allowed, warning = await check_ai_usage_limit(user_id, tier, "messages")
         if not allowed:
@@ -111,13 +158,14 @@ class AIToolsCog(commands.Cog):
         # like it's asking about the bot's commands — otherwise it drowns
         # out the normal chat system prompt and the AI answers like a
         # command-lookup tool for every message, including plain chat.
-        command_context = build_context(self._perm_set(perms)) if is_command_question(message) else None
+        command_context = build_context(self._perm_set(perms), self.bot) if is_command_question(message) else None
+        xp_facts = await self._xp_facts(message, user_id, guild)
+        if xp_facts:
+            command_context = f"{command_context}\n\n{xp_facts}" if command_context else xp_facts
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
                                   session_id=session_id, command_context=command_context)
         if not response:
             return "AI service error. Try again later.", warning, session_id
-        if len(response) > 1900:
-            response = response[:1900] + "..."
 
         prefix = f"⚠️ {warning}\n\n" if warning else ""
         return f"{prefix}{response}", warning, session_id
@@ -159,7 +207,7 @@ class AIToolsCog(commands.Cog):
         # even for user-installed contexts where guild_permissions is
         # unreachable.
         perms = interaction.permissions if interaction.guild else None
-        text, _warning, session_id = await self._run_chat_turn(user_id, message, perms=perms)
+        text, _warning, session_id = await self._run_chat_turn(user_id, message, perms=perms, guild=interaction.guild)
         view = ai_reply_view(self, user_id)
         sent = await interaction.followup.send(text, view=view, wait=True)
 
@@ -209,7 +257,7 @@ class AIToolsCog(commands.Cog):
 
         perms = message.channel.permissions_for(message.author) if message.guild else None
         async with message.channel.typing():
-            text, _warning, session_id = await self._run_chat_turn(message.author.id, content, perms=perms)
+            text, _warning, session_id = await self._run_chat_turn(message.author.id, content, perms=perms, guild=message.guild)
         sent = await message.reply(text, mention_author=False, view=ai_reply_view(self, message.author.id))
         if session_id:
             await db.set_ai_chat_session_last_bot_message(session_id, sent.id)
