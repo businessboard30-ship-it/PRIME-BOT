@@ -408,15 +408,15 @@ XP_BOOST_DURATION_DAYS = 14
 # a sustained 2.0x for 30 days would flood the leaderboard and make the
 # 24h tier a bad deal by comparison, so it's priced lower (1.5x) instead
 # of proportionally cheaper at the same multiplier:
-#   24h:    $8  / 2.0x / 24h
-#   1 month: $50 / 1.5x / 720h  (30 days)
+#   24h:    $3  / 2.0x / 24h
+#   1 month: $10 / 1.5x / 720h  (30 days)
 XP_SERVER_BOOST_TIERS = {
     "xp_server_boost": {
-        "fee_usd": 8, "multiplier": 2.0, "duration_hours": 24,
+        "fee_usd": 3, "multiplier": 2.0, "duration_hours": 24,
         "label": "24 Hours — 2.0x server XP",
     },
     "xp_server_boost_month": {
-        "fee_usd": 50, "multiplier": 1.5, "duration_hours": 24 * 30,
+        "fee_usd": 10, "multiplier": 1.5, "duration_hours": 24 * 30,
         "label": "1 Month — 1.5x server XP",
     },
 }
