@@ -223,7 +223,7 @@ class AIToolsCog(commands.Cog):
         if quick:
             quick_text, quick_view = quick
             kwargs = {"view": quick_view} if quick_view else {}
-            await interaction.response.send_message(quick_text, **kwargs)
+            await interaction.response.send_message(quick_text, suppress_embeds=True, **kwargs)
             return
 
         user_id = interaction.user.id
@@ -257,7 +257,7 @@ class AIToolsCog(commands.Cog):
         perms = interaction.permissions if interaction.guild else None
         text, _warning, session_id = await self._run_chat_turn(user_id, message, perms=perms, guild=interaction.guild)
         view = ai_reply_view(self, user_id)
-        sent = await interaction.followup.send(text, view=view, wait=True)
+        sent = await interaction.followup.send(text, view=view, wait=True, suppress_embeds=True)
 
         # Remember this message's id so a reply to it continues the same
         # session without the user having to retype /aichat.
@@ -455,9 +455,9 @@ class AIToolsCog(commands.Cog):
             none = discord.AllowedMentions.none()
             extra = {"view": view} if view else {}
             if message.guild is None:
-                await message.channel.send(text, allowed_mentions=none, **extra)
+                await message.channel.send(text, allowed_mentions=none, suppress_embeds=True, **extra)
             else:
-                await message.reply(text, mention_author=False, allowed_mentions=none, **extra)
+                await message.reply(text, mention_author=False, allowed_mentions=none, suppress_embeds=True, **extra)
         except Exception:
             logger.exception("[aichat] reply/DM chat failed")
 
