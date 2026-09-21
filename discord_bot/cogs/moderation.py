@@ -17,6 +17,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from discord_bot.cogs._dm_support import GuildOnlyCog
+from discord_bot import perm_check
 
 from modules import moderation_adapter as mod
 from modules import moderation_extra as modx
@@ -70,7 +71,7 @@ class ModerationCog(GuildOnlyCog):
                 await member.kick(reason=reason)
             except discord.Forbidden:
                 await confirm_interaction.response.edit_message(
-                    content="I don't have permission to kick that member (check role hierarchy).", view=None
+                    content="⚠️ " + (perm_check.member_problem(interaction.guild, member, "kick_members", "kick") or "I can't kick that member (check role hierarchy)."), view=None
                 )
                 return
             await modx.log_action(interaction.guild_id, "kick", interaction.user.id, target_user_id=member.id, reason=reason)
@@ -97,7 +98,7 @@ class ModerationCog(GuildOnlyCog):
                 await member.ban(reason=reason, delete_message_days=delete_days)
             except discord.Forbidden:
                 await confirm_interaction.response.edit_message(
-                    content="I don't have permission to ban that member (check role hierarchy).", view=None
+                    content="⚠️ " + (perm_check.member_problem(interaction.guild, member, "ban_members", "ban") or "I can't ban that member (check role hierarchy)."), view=None
                 )
                 return
             await modx.log_action(interaction.guild_id, "ban", interaction.user.id, target_user_id=member.id, reason=reason)
@@ -128,7 +129,7 @@ class ModerationCog(GuildOnlyCog):
             await interaction.response.send_message("That user isn't banned here.", ephemeral=True)
             return
         except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to unban.", ephemeral=True)
+            await interaction.response.send_message("⚠️ " + perm_check.forbidden_hint(interaction.guild, "ban_members"), ephemeral=True)
             return
         await modx.log_action(interaction.guild_id, "unban", interaction.user.id, target_user_id=int(user_id), reason="")
         await interaction.response.send_message(f"✅ Unbanned user {user_id}.", view=ModActionView(int(user_id)))
@@ -145,7 +146,7 @@ class ModerationCog(GuildOnlyCog):
             await member.timeout(timedelta(minutes=minutes), reason=reason)
         except discord.Forbidden:
             await interaction.response.send_message(
-                "I don't have permission to timeout that member (check role hierarchy).", ephemeral=True
+                "⚠️ " + (perm_check.member_problem(interaction.guild, member, "moderate_members", "time out") or "I can't time out that member (check role hierarchy)."), ephemeral=True
             )
             return
         await modx.log_action(interaction.guild_id, "timeout", interaction.user.id, target_user_id=member.id, reason=f"{minutes}min: {reason}")
@@ -162,7 +163,7 @@ class ModerationCog(GuildOnlyCog):
         try:
             await member.timeout(None, reason=f"Timeout removed by {interaction.user.id}")
         except discord.Forbidden:
-            await interaction.response.send_message("I don't have permission to do that.", ephemeral=True)
+            await interaction.response.send_message("⚠️ " + (perm_check.member_problem(interaction.guild, member, "moderate_members", "change the timeout of") or perm_check.forbidden_hint(interaction.guild, "moderate_members")), ephemeral=True)
             return
         await modx.log_action(interaction.guild_id, "untimeout", interaction.user.id, target_user_id=member.id, reason="")
         await interaction.response.send_message(f"🔊 {member.mention} timeout removed.", view=ModActionView(member.id))
@@ -189,7 +190,7 @@ class ModerationCog(GuildOnlyCog):
             except discord.Forbidden:
                 await interaction.response.send_message(
                     f"⚠️ {member.mention} warned ({count}/{WARN_LIMIT_BEFORE_TIMEOUT}) but I couldn't time them out "
-                    f"— check my role hierarchy.\nReason: {reason}",
+                    f"— {perm_check.member_problem(interaction.guild, member, 'moderate_members', 'time out') or 'check my role hierarchy'}\nReason: {reason}",
                     view=WarnActionView(member)
                 )
             return

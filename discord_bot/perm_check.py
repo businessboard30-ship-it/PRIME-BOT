@@ -83,3 +83,29 @@ def lines(guild_id: int, clone_id) -> list:
     for k in [k for k, (_, t) in d.items() if now - t > _TTL]:
         d.pop(k, None)
     return [f"⚠️ **Needs attention:** {m}" for m, _ in d.values()]
+
+
+# ── member actions (kick / ban / timeout) and generic Forbidden text ──────
+
+def member_problem(guild: discord.Guild, member, perm: str, verb: str):
+    """Why the bot can't `verb` this member, or None if it can't tell
+    (caller then falls back to its generic message)."""
+    me = guild.me
+    if member is not None and getattr(member, "id", None) == guild.owner_id:
+        return f"I can't {verb} the server owner."
+    if me is not None and not getattr(me.guild_permissions, perm, False):
+        return f"I'm missing the **{LABELS.get(perm, perm)}** permission. Enable it on my role, then try again."
+    top = getattr(member, "top_role", None)
+    if me is not None and top is not None and top >= me.top_role:
+        return (f"{member.mention}'s highest role ({top.mention}) is at or above mine, so I can't {verb} them. "
+                f"Drag my role **above** it in Server Settings → Roles.")
+    return None
+
+
+def forbidden_hint(guild: discord.Guild, *perms: str) -> str:
+    """One line naming the guild-level permissions the bot lacks among `perms`."""
+    me = guild.me if guild else None
+    miss = [LABELS.get(p, p) for p in perms if me is not None and not getattr(me.guild_permissions, p, False)]
+    if miss:
+        return f"I'm missing **{', '.join(miss)}**. Enable it on my role, then try again."
+    return "Discord blocked that — check my role position and this channel's permission overrides."
