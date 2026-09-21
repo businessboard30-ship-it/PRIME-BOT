@@ -1,19 +1,20 @@
 """
 AI Store — Discord commands.
 
-Buyers spend credits (bought with GHS via Paystack) chatting with Claude,
-GPT, or Gemini — always on the PLATFORM'S OWN API keys, never a personal
-subscription. Sellers list "personas" for placement/discovery only; there
+Buyers spend credits chatting with Claude, GPT, or Gemini — always on the
+PLATFORM'S OWN API keys, never a personal subscription. Credit TOP-UPS WERE
+REMOVED (no way to buy credits any more); existing balances are still
+honored and spendable, and _verify_topup/VerifyCreditsView are kept only so a
+payment started before the removal can still be verified and credited. Sellers list "personas" for placement/discovery only; there
 is no revenue share (see config.py) — sellers get exposure/traffic from a
 listing, not a cut of buyer spend, so no payout/cashout system exists here.
 
-Persistent views (TopupPayView, BoostPayView, VerifyCreditsView,
+Persistent views (BoostPayView, VerifyCreditsView,
 VerifyBoostView) use fixed custom_ids and are registered once on bot
 startup in discord_bot/bot.py, matching the pattern in discord_bot/views.py.
 
 Flow:
   /aistore credits            — check wallet balance
-  /aistore topup               — buy credits with GHS (Paystack)
   /aistore newchat provider — start a fresh AI Store conversation
   /aistore ask message          — talk in your active conversation
   /aistore endchat          — end active AI Store conversation
@@ -75,7 +76,7 @@ async def _verify_topup(interaction: discord.Interaction):
 
     pending = await db.get_latest_pending_payment(user.id, TOPUP_PAYMENT_TYPE)
     if not pending:
-        await interaction.followup.send("No pending top-up found — tap **Top Up** first.", ephemeral=True)
+        await interaction.followup.send("No pending payment found. AI credits can no longer be bought.", ephemeral=True)
         return
 
     reference = pending["paystack_reference"]
@@ -132,24 +133,6 @@ class VerifyCreditsView(discord.ui.View):
         await _verify_topup(interaction)
 
 
-class VerifyCreditsButton(discord.ui.Button):
-    """Non-persistent twin used on the ephemeral pay message (which already
-    has its own timeout) — same underlying logic as VerifyCreditsView."""
-
-    def __init__(self):
-        super().__init__(label="✅ I've Paid — Verify", style=discord.ButtonStyle.success)
-
-    async def callback(self, interaction: discord.Interaction):
-        await _verify_topup(interaction)
-
-
-class TopupPayView(discord.ui.View):
-    def __init__(self, payment_link: str):
-        super().__init__(timeout=300)
-        self.add_item(discord.ui.Button(label="💳 Pay Now", url=payment_link, style=discord.ButtonStyle.link))
-        self.add_item(VerifyCreditsButton())
-
-
 class VerifyBoostView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -187,12 +170,6 @@ class AIStoreMenuView(discord.ui.View):
         embed = discord.Embed(color=discord.Color.blue(), title="Your Balance",
                                description=f"**{balance:.2f} credits**\n≈ GHS {ghs:.2f}")
         await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="💳 Top Up", style=discord.ButtonStyle.primary, custom_id="ai_store_menu_topup")
-    async def topup_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
-            f"Choose an amount (min GHS {config.AI_STORE_MIN_TOPUP_GHS}):", view=TopupChoiceView(), ephemeral=True
-        )
 
     @discord.ui.button(label="🏪 Browse Store", style=discord.ButtonStyle.primary, custom_id="ai_store_menu_browse")
     async def browse_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -283,62 +260,6 @@ class ListingButton(discord.ui.Button):
         )
 
 
-class TopupChoiceView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-
-    @discord.ui.button(label="GHS 10", style=discord.ButtonStyle.primary)
-    async def ghs10(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _start_topup(interaction, 10)
-
-    @discord.ui.button(label="GHS 20", style=discord.ButtonStyle.primary)
-    async def ghs20(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _start_topup(interaction, 20)
-
-    @discord.ui.button(label="GHS 50", style=discord.ButtonStyle.primary)
-    async def ghs50(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _start_topup(interaction, 50)
-
-
-async def _start_topup(interaction: discord.Interaction, amount_ghs: float):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    user = interaction.user
-    clone_id = _clone_id_of(interaction) or 0
-    gateway, api_key, _provider = await resolve_gateway(clone_id, platform="discord")
-    email = f"user_{user.id}@animebot.com"
-
-    charge = gateway_charge_amount(_provider, amount_ghs)
-    if charge.get("error"):
-        await interaction.followup.send(charge_error_message(charge), ephemeral=True)
-        return
-
-    payment_result = await asyncio.to_thread(
-        gateway.initialize_payment,
-        email, charge["amount_minor_units"], user.id, f"AIStoreTopup_{user.id}",
-        payment_type=TOPUP_PAYMENT_TYPE, extra_metadata={"provider": "discord"}, api_key=api_key,
-        currency=charge["currency"],
-    )
-    if not payment_result or payment_result.get("status") != "success":
-        await interaction.followup.send("Couldn't start a payment right now — try again shortly.", ephemeral=True)
-        return
-
-    reference = payment_result["reference"]
-    await db.log_payment(user.id, amount_ghs, reference, status="pending", payment_type=TOPUP_PAYMENT_TYPE, provider=_provider)
-
-    credits = amount_ghs * config.AI_STORE_CREDIT_RATE_PER_GHS
-    charged_amount_display = (
-        f"GHS {amount_ghs:g}" if charge["currency"] == "GHS"
-        else f"{charge['amount_minor_units'] / 100:.2f} {charge['currency'].upper()} (converted from GHS {amount_ghs:g})"
-    )
-    embed = discord.Embed(
-        title="💳 Top Up Credits",
-        description=f"**{charged_amount_display}** → **{credits:.0f} credits**\n\nTap **Pay Now**, complete checkout, then tap **Verify**.",
-        color=discord.Color.blue(),
-    )
-    view = TopupPayView(payment_result["authorization_url"])
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-
 # ─────────────────────────────────────────────────────────────────────
 # The cog
 # ─────────────────────────────────────────────────────────────────────
@@ -362,12 +283,6 @@ class AIStoreCog(commands.Cog):
         embed = discord.Embed(color=discord.Color.blue(), title="Your Balance",
                                description=f"**{balance:.2f} credits**\n≈ GHS {ghs:.2f}")
         await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @aistore.command(name="topup", description="Buy AI Store credits with GHS")
-    async def topup_cmd(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            f"Choose an amount (min GHS {config.AI_STORE_MIN_TOPUP_GHS}):", view=TopupChoiceView(), ephemeral=True
-        )
 
     @aistore.command(name="newchat", description="Start a new AI Store conversation")
     @app_commands.describe(provider="Which AI provider")
@@ -407,7 +322,7 @@ class AIStoreCog(commands.Cog):
             await interaction.followup.send(embed=embed)
         except InsufficientCreditsError as e:
             await interaction.followup.send(
-                f"Not enough credits (needs ~{e.needed:.2f}, you have {e.have:.2f}). Use `/aistore topup`."
+                f"Not enough credits (needs ~{e.needed:.2f}, you have {e.have:.2f}). AI credits can no longer be bought."
             )
         except Exception as e:
             logger.error(f"[ai_store] /ask failed: {e}")

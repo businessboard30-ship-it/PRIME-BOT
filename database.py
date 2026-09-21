@@ -138,7 +138,11 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "28"
+SCHEMA_VERSION = "29"
+# "28" -> "29": AI reply-chat caps — ai_chat_usage.guild_id + .kind columns
+# (per-user-per-server daily cap for reply/DM chat; /aichat rows stay
+# kind IS NULL and keep their tier limits) and discord_ai_reply_config
+# (per-server on/off switch for reply-chat). Same bump-or-it-never-runs rule.
 # "26" -> "27": premium giveaway extras (scheduled_start, embed_color,
 # bonus_entries_json, auto_reroll_hours) + premium ticket extras
 # (categories_json, custom_buttons_json, auto_close_hours,
@@ -1122,6 +1126,24 @@ class Database:
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ai_chat_usage_session_id ON ai_chat_usage(session_id)"
         )
+        # AI reply-chat caps: which server a reply/DM chat happened in
+        # (NULL = DM) and what kind of usage it was ('reply' for the
+        # reply-to-bot / DM chat; NULL/'command' for /aichat, which keeps
+        # its own per-tier daily limit).
+        await conn.execute("ALTER TABLE ai_chat_usage ADD COLUMN IF NOT EXISTS guild_id BIGINT")
+        await conn.execute("ALTER TABLE ai_chat_usage ADD COLUMN IF NOT EXISTS kind TEXT")
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_chat_usage_reply_cap "
+            "ON ai_chat_usage(user_id, guild_id, created_at) WHERE kind = 'reply'"
+        )
+        # Per-server on/off switch for reply-chat (default on when no row).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_ai_reply_config (
+                guild_id BIGINT PRIMARY KEY,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
 
         # AI Image Generation Usage
         await conn.execute("""

@@ -40,7 +40,8 @@ BOT_RULES = (
     "bot, say you only help with this bot.\n"
     "3. Never invent commands or features. Only use commands you were explicitly given; otherwise say you "
     "don't see one and point to /help.\n"
-    "4. AI chat has no paid credits or top-ups. If asked about buying AI credits, say that isn't a thing."
+    "4. AI chat has no paid credits or top-ups. If asked about buying AI credits, say that isn't a thing. "
+    "Premium is a per-server subscription that raises the daily AI chat limit; it is not AI credits."
 )
 SYSTEM_PROMPT_ANIME = (
     "You are an anime expert. Be friendly and conversational about anime, manga, characters and recommendations.\n"
@@ -119,9 +120,12 @@ async def get_user_ai_usage(user_id: int, usage_type: str = "messages") -> int:
         pool = await get_pool()
         async with pool.acquire() as conn:
             table = "ai_chat_usage" if usage_type == "messages" else "ai_image_usage"
+            # Reply/DM chat has its own per-server cap (get_reply_usage), so
+            # it must not eat into the /aichat tier limit.
+            extra = " AND COALESCE(kind, 'command') <> 'reply'" if usage_type == "messages" else ""
             count = await conn.fetchval(
                 f"SELECT COUNT(*) FROM {table} WHERE user_id = $1 "
-                f"AND DATE(created_at) = (NOW() AT TIME ZONE 'UTC')::date",
+                f"AND DATE(created_at) = (NOW() AT TIME ZONE 'UTC')::date{extra}",
                 user_id
             )
         return count or 0
@@ -131,7 +135,8 @@ async def get_user_ai_usage(user_id: int, usage_type: str = "messages") -> int:
 
 
 async def log_ai_usage(user_id: int, usage_type: str = "messages", prompt_text: str = "",
-                        response_text: str = None, session_id: int = None) -> bool:
+                        response_text: str = None, session_id: int = None,
+                        guild_id: Optional[int] = None, kind: Optional[str] = None) -> bool:
     """Log AI feature usage for rate limiting. For chat messages, also
     stores the bot's response (and the session it belongs to, if any) so
     get_ai_conversation_history can replay real back-and-forth turns
@@ -152,11 +157,11 @@ async def log_ai_usage(user_id: int, usage_type: str = "messages", prompt_text: 
                 )
                 if usage_type == "messages":
                     await conn.execute(
-                        "INSERT INTO ai_chat_usage (user_id, prompt, response, session_id, created_at) "
-                        "VALUES ($1, $2, $3, $4, NOW())",
+                        "INSERT INTO ai_chat_usage (user_id, prompt, response, session_id, guild_id, kind, created_at) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, NOW())",
                         user_id, prompt_text[:MAX_STORED_TEXT],
                         response_text[:MAX_STORED_TEXT] if response_text else None,
-                        session_id,
+                        session_id, guild_id, kind,
                     )
                 else:
                     await conn.execute(
@@ -204,7 +209,10 @@ async def get_or_create_active_session(user_id: int) -> int:
 
 async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                    tier: str = "basic", session_id: int = None,
-                   command_context: Optional[str] = None) -> Optional[str]:
+                   command_context: Optional[str] = None,
+                   history_override: Optional[List[Dict]] = None,
+                   guild_id: Optional[int] = None,
+                   kind: Optional[str] = None) -> Optional[str]:
     """
     Send message to Groq API and get response.
     Returns response text on success. On failure, returns None (caller shows
@@ -228,7 +236,9 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
         # Get conversation history for this specific session, both sides of
         # each turn (not just past user prompts), oldest first.
         turn_limit = AI_HISTORY_TURNS.get(tier, AI_HISTORY_TURNS["basic"])
-        history = await get_ai_conversation_history(session_id, limit_turns=turn_limit)
+        # Reply/DM chat passes its own context (the reply chain) as ready-made
+        # {"role", "content"} messages instead of a per-user session.
+        history = [] if history_override is not None else await get_ai_conversation_history(session_id, limit_turns=turn_limit)
 
         # Build conversation with context
         system_content = SYSTEM_PROMPT_ANIME if is_anime_question else SYSTEM_PROMPT_GENERAL
@@ -250,6 +260,9 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                 messages.append({"role": "user", "content": hist['prompt']})
             if hist.get('response'):
                 messages.append({"role": "assistant", "content": hist['response']})
+
+        if history_override:
+            messages.extend(history_override)
 
         # Add current message
         messages.append({"role": "user", "content": message})
@@ -287,7 +300,8 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                         # Log usage — store both sides of the turn plus the
                         # session so this exchange can be replayed as real
                         # history next time, not just remembered as a prompt.
-                        await log_ai_usage(user_id, "messages", message, response_text=response_text, session_id=session_id)
+                        await log_ai_usage(user_id, "messages", message, response_text=response_text,
+                                           session_id=session_id, guild_id=guild_id, kind=kind)
                         return response_text
                 else:
                     error = await resp.text()
@@ -547,3 +561,88 @@ async def check_ai_usage_limit(user_id: int, tier: str, usage_type: str = "messa
     except Exception as e:
         logger.error(f"[v0] Error checking AI usage: {e}")
         return (True, "")  # Allow by default if error
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REPLY / DM CHAT — per-user-per-server daily cap (separate from the /aichat
+# tier limits above). Counted by user id + server, across every channel in
+# that server; DMs are counted on their own (guild_id IS NULL).
+# ═══════════════════════════════════════════════════════════════════════════
+
+REPLY_CAP_NORMAL = 10
+REPLY_CAP_PREMIUM = 30
+DM_CAP = 10
+
+
+async def get_reply_usage(user_id: int, guild_id: Optional[int]) -> int:
+    """Today's (UTC) reply-chat messages for this user in this server (or in DMs)."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM ai_chat_usage WHERE user_id = $1 AND kind = 'reply' "
+                "AND guild_id IS NOT DISTINCT FROM $2 "
+                "AND DATE(created_at) = (NOW() AT TIME ZONE 'UTC')::date",
+                user_id, guild_id,
+            )
+        return count or 0
+    except Exception as e:
+        logger.error(f"[ai] Error getting reply usage: {e}")
+        return 0
+
+
+def reply_cap_for(guild_id: Optional[int], is_premium: bool) -> int:
+    if guild_id is None:
+        return DM_CAP
+    return REPLY_CAP_PREMIUM if is_premium else REPLY_CAP_NORMAL
+
+
+async def check_reply_limit(user_id: int, guild_id: Optional[int], is_premium: bool) -> tuple[bool, str]:
+    """(allowed, cap-hit message). The message states plainly that Premium is a
+    server subscription and nobody is paying for AI credits."""
+    try:
+        from config import DISCORD_CLONE_ADMIN_IDS
+        if user_id in DISCORD_CLONE_ADMIN_IDS:
+            return (True, "")
+        cap = reply_cap_for(guild_id, is_premium)
+        if await get_reply_usage(user_id, guild_id) < cap:
+            return (True, "")
+        reset = until_reset_text()
+        if guild_id is None:
+            return (False, (
+                f"You've used your {cap} free AI chats for today in DMs (resets in {reset}). "
+                f"Chatting in a Premium server gives 30/day. Premium is a server subscription — "
+                f"nobody is paying for AI credits."
+            ))
+        if is_premium:
+            return (False, f"You've used your {cap} AI chats for today in this server (resets in {reset}).")
+        return (False, (
+            f"You've used your {cap} free AI chats for today in this server (resets in {reset}). "
+            f"Server Premium raises it to {REPLY_CAP_PREMIUM}/day — it's a server subscription, not AI credits "
+            f"(nobody is paying for credits). Ask a server admin about Premium."
+        ))
+    except Exception as e:
+        logger.error(f"[ai] Error checking reply limit: {e}")
+        return (True, "")
+
+
+async def is_reply_chat_enabled(guild_id: int) -> bool:
+    """Per-server switch; on by default (no row = enabled)."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            val = await conn.fetchval("SELECT enabled FROM discord_ai_reply_config WHERE guild_id = $1", guild_id)
+        return True if val is None else bool(val)
+    except Exception as e:
+        logger.error(f"[ai] Error reading reply-chat switch: {e}")
+        return True
+
+
+async def set_reply_chat_enabled(guild_id: int, enabled: bool) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO discord_ai_reply_config (guild_id, enabled, updated_at) VALUES ($1, $2, NOW()) "
+            "ON CONFLICT (guild_id) DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = NOW()",
+            guild_id, enabled,
+        )

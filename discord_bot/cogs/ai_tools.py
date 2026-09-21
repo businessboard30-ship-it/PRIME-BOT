@@ -19,6 +19,12 @@ Discord too, that's a real product decision (new premium-group perk? a
 separate Paystack flow? tier granted some other way?) — happy to wire it
 up once you pick a direction, rather than guessing.
 
+UPDATE: chat no longer needs /aichat. Replying to any message from this bot
+(or its clone) starts/continues a chat, and DMs to the bot chat with no
+command at all — see AIToolsCog.on_bot_chat. That path has its own daily cap
+per user per server (10, or 30 in a Premium server; DMs 10) tracked in
+ai_chat_usage.guild_id/kind, separate from the /aichat tier limits above.
+
 i18n: bot-authored strings go through discord_bot.i18n_helpers.tr().
 """
 
@@ -37,6 +43,8 @@ from modules import leveling
 from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
+    check_reply_limit, get_reply_usage, reply_cap_for,
+    is_reply_chat_enabled, set_reply_chat_enabled,
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
@@ -133,6 +141,20 @@ class AIToolsCog(commands.Cog):
             "stats, and tell them /rank shows the full card:\n" + "\n".join(lines)
         )
 
+    async def _command_context(self, message: str, user_id: int,
+                                perms: Optional[discord.Permissions],
+                                guild: Optional[discord.Guild]) -> Optional[str]:
+        """Only inject the full command list when the message actually looks
+        like it's asking about the bot's commands — otherwise it drowns
+        out the normal chat system prompt and the AI answers like a
+        command-lookup tool for every message, including plain chat. XP
+        facts (real leveling numbers) are appended when relevant."""
+        command_context = build_context(self._perm_set(perms), self.bot) if is_command_question(message) else None
+        xp_facts = await self._xp_facts(message, user_id, guild)
+        if xp_facts:
+            command_context = f"{command_context}\n\n{xp_facts}" if command_context else xp_facts
+        return command_context
+
     async def _run_chat_turn(self, user_id: int, message: str,
                               perms: Optional[discord.Permissions] = None,
                               guild: Optional[discord.Guild] = None) -> tuple[str, str, Optional[int]]:
@@ -154,14 +176,7 @@ class AIToolsCog(commands.Cog):
         anime_keywords = ("anime", "manga", "character", "episode", "series", "watch", "recommend")
         is_anime = any(kw in message.lower() for kw in anime_keywords)
 
-        # Only inject the full command list when the message actually looks
-        # like it's asking about the bot's commands — otherwise it drowns
-        # out the normal chat system prompt and the AI answers like a
-        # command-lookup tool for every message, including plain chat.
-        command_context = build_context(self._perm_set(perms), self.bot) if is_command_question(message) else None
-        xp_facts = await self._xp_facts(message, user_id, guild)
-        if xp_facts:
-            command_context = f"{command_context}\n\n{xp_facts}" if command_context else xp_facts
+        command_context = await self._command_context(message, user_id, perms, guild)
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
                                   session_id=session_id, command_context=command_context)
         if not response:
@@ -221,7 +236,7 @@ class AIToolsCog(commands.Cog):
         session_id = await db.start_ai_chat_session(interaction.user.id)
         await interaction.response.send_message(
             "🆕 Started a new conversation — I won't recall anything before this. "
-            "Use `/aichat` (or just reply to my messages) to keep chatting, `/endchat` when you're done.",
+            "Use `/aichat` to keep chatting, `/endchat` when you're done. (Replying to my messages works too, with its own daily cap.)",
             ephemeral=True,
         )
 
@@ -233,34 +248,177 @@ class AIToolsCog(commands.Cog):
         else:
             await interaction.response.send_message("You don't have an active conversation right now.", ephemeral=True)
 
+    # ── Reply / DM chat ──────────────────────────────────────────────────
+    REPLY_CHAIN_MAX = 4      # messages of reply-chain context (incl. the one replied to)
+    DM_CONTEXT_MAX = 6       # recent DM messages used as context
+
+    async def _is_premium(self, guild_id: int) -> bool:
+        """Premium is bought per server AND per bot (main vs. clone), so count
+        the server as premium if this bot OR the main bot has it active."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        try:
+            if await db.is_guild_premium_active(guild_id, clone_id):
+                return True
+            if clone_id is not None:
+                return await db.is_guild_premium_active(guild_id, None)
+        except Exception:
+            logger.debug("[aichat] premium lookup failed", exc_info=True)
+        return False
+
+    async def _roast_active_in(self, channel: discord.abc.GuildChannel) -> bool:
+        """True while a roast battle is live in THIS channel — the roast cog
+        answers there, so the AI stays silent to avoid answering twice."""
+        roast = self.bot.get_cog("RoastCog")
+        if roast is not None and channel.id in getattr(roast, "_active_by_channel", {}):
+            return True
+        try:
+            return bool(await db.fetchval(
+                "SELECT 1 FROM discord_roast_arena_challenges "
+                "WHERE status = 'active' AND battleground_channel_id = $1 LIMIT 1",
+                channel.id,
+            ))
+        except Exception:
+            logger.debug("[aichat] arena channel lookup failed", exc_info=True)
+            return False
+
+    @staticmethod
+    def _msg_text(m: discord.Message) -> str:
+        text = (m.content or "").strip()
+        if not text and m.embeds:
+            e = m.embeds[0]
+            text = " — ".join(x for x in (e.title, e.description) if x)
+        return text[:500]
+
+    def _as_chat_message(self, m: discord.Message) -> Optional[dict]:
+        text = self._msg_text(m)
+        if not text:
+            return None
+        role = "assistant" if m.author.id == self.bot.user.id else "user"
+        return {"role": role, "content": text}
+
+    async def _reply_chain(self, replied: discord.Message) -> list:
+        """The conversation is the reply chain itself (oldest first, up to
+        REPLY_CHAIN_MAX messages) — not a per-user session — so separate
+        topics in one channel never bleed into each other."""
+        chain, cur = [], replied
+        for _ in range(self.REPLY_CHAIN_MAX):
+            chain.append(cur)
+            ref = cur.reference
+            if not ref or not ref.message_id:
+                break
+            nxt = ref.resolved if isinstance(ref.resolved, discord.Message) else None
+            if nxt is None:
+                try:
+                    nxt = await cur.channel.fetch_message(ref.message_id)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    break
+            cur = nxt
+        chain.reverse()
+        return [c for c in (self._as_chat_message(m) for m in chain) if c]
+
+    async def _dm_context(self, message: discord.Message) -> list:
+        out = []
+        try:
+            async for m in message.channel.history(limit=self.DM_CONTEXT_MAX, before=message):
+                c = self._as_chat_message(m)
+                if c:
+                    out.append(c)
+        except (discord.Forbidden, discord.HTTPException):
+            return []
+        out.reverse()
+        return out
+
+    async def _run_reply_turn(self, message: discord.Message, content: str, history: list) -> Optional[str]:
+        if mentions_other_bot(content):
+            return OTHER_BOT_REFUSAL  # refused before any AI call, costs no cap
+        user_id = message.author.id
+        guild = message.guild
+        guild_id = guild.id if guild else None
+        premium = await self._is_premium(guild_id) if guild_id else False
+        allowed, cap_msg = await check_reply_limit(user_id, guild_id, premium)
+        if not allowed:
+            return cap_msg
+
+        is_anime = any(kw in content.lower() for kw in ("anime", "manga", "character", "episode", "series", "watch", "recommend"))
+        perms = message.channel.permissions_for(message.author) if guild else None
+        command_context = await self._command_context(content, user_id, perms, guild)
+        response = await ai_chat(
+            user_id, content, is_anime_question=is_anime, tier="basic", session_id=None,
+            command_context=command_context, history_override=history,
+            guild_id=guild_id, kind="reply",
+        )
+        return response or "AI service error. Try again later."
+
     @commands.Cog.listener("on_message")
-    async def on_reply_continue(self, message: discord.Message):
-        """Reply-to-continue: slash commands can't be "typed into" like a
-        normal chat, so replying to the bot's own last /aichat message
-        continues that same session — no need to re-invoke /aichat and
-        retype context. Ignores bots, DMs from the bot itself, and any
-        message that isn't a direct reply to a tracked bot message."""
+    async def on_bot_chat(self, message: discord.Message):
+        """Chat without /aichat: reply to any message from this bot (or its
+        clone) in a server, or just DM the bot. Stays silent in a channel with
+        a live roast battle (the roast cog owns replies there) and where a
+        server admin turned it off with /aireply. Answers are short (see
+        BOT_RULES / trim_reply in modules/ai_features.py)."""
         if message.author.bot:
             return
-        if not message.reference or not message.reference.message_id:
+        content = (message.content or "").strip()
+        if not content or len(content) > 1000 or content.startswith(("!", "/")):
             return
-        if message.reference.resolved and getattr(message.reference.resolved, "author", None) != self.bot.user:
-            return
+        try:
+            if message.guild is None:
+                history = await self._dm_context(message)
+            else:
+                ref = message.reference
+                if not ref or not ref.message_id:
+                    return
+                replied = ref.resolved if isinstance(ref.resolved, discord.Message) else None
+                if replied is None:
+                    try:
+                        replied = await message.channel.fetch_message(ref.message_id)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        return
+                # Only THIS bot's own messages: each clone is its own process
+                # and answers replies to itself, so nothing answers twice.
+                if replied.author.id != self.bot.user.id:
+                    return
+                if await self._roast_active_in(message.channel):
+                    return
+                if not await is_reply_chat_enabled(message.guild.id):
+                    return
+                history = await self._reply_chain(replied)
 
-        session = await db.get_ai_chat_session_by_last_bot_message(message.reference.message_id)
-        if not session or session["user_id"] != message.author.id:
-            return
+            async with message.channel.typing():
+                text = await self._run_reply_turn(message, content, history)
+            if not text:
+                return
+            none = discord.AllowedMentions.none()
+            if message.guild is None:
+                await message.channel.send(text, allowed_mentions=none)
+            else:
+                await message.reply(text, mention_author=False, allowed_mentions=none)
+        except Exception:
+            logger.exception("[aichat] reply/DM chat failed")
 
-        content = message.content.strip()
-        if not content or len(content) > 1000:
+    @app_commands.command(name="aireply", description="Admin: turn AI chat-by-replying on or off for this server")
+    @app_commands.describe(setting="on, off, or status")
+    @app_commands.choices(setting=[app_commands.Choice(name=n, value=n) for n in ("on", "off", "status")])
+    @app_commands.guild_only()
+    async def aireply(self, interaction: discord.Interaction, setting: app_commands.Choice[str]):
+        enabled = await is_reply_chat_enabled(interaction.guild.id)
+        if setting.value == "status":
+            premium = await self._is_premium(interaction.guild.id)
+            await interaction.response.send_message(
+                f"AI chat by replying is **{'on' if enabled else 'off'}** here. "
+                f"Daily cap: {reply_cap_for(interaction.guild.id, premium)} per person "
+                f"({'Premium' if premium else 'standard'} server).",
+                ephemeral=True,
+            )
             return
-
-        perms = message.channel.permissions_for(message.author) if message.guild else None
-        async with message.channel.typing():
-            text, _warning, session_id = await self._run_chat_turn(message.author.id, content, perms=perms, guild=message.guild)
-        sent = await message.reply(text, mention_author=False, view=ai_reply_view(self, message.author.id))
-        if session_id:
-            await db.set_ai_chat_session_last_bot_message(session_id, sent.id)
+        perms = interaction.permissions
+        if not (perms.manage_guild or perms.administrator):
+            await interaction.response.send_message("You need the Manage Server permission to change this.", ephemeral=True)
+            return
+        await set_reply_chat_enabled(interaction.guild.id, setting.value == "on")
+        await interaction.response.send_message(
+            f"✅ AI chat by replying is now **{setting.value}** for this server.", ephemeral=True
+        )
 
     @app_commands.command(name="aiimage", description="Generate an image from a text prompt")
     @app_commands.describe(prompt="Describe the image you want", style="Art style (default: anime)")
@@ -365,11 +523,16 @@ class AIToolsCog(commands.Cog):
         messages_used = await get_user_ai_usage(user_id, "messages")
         images_used = await get_user_ai_usage(user_id, "images")
 
+        gid = interaction.guild.id if interaction.guild else None
+        reply_used = await get_reply_usage(user_id, gid)
+        reply_cap = reply_cap_for(gid, await self._is_premium(gid) if gid else False)
+        where = "in this server" if gid else "in DMs"
         line = (
             f"Tier: {tier.upper()}\n"
-            f"Chat messages today: {messages_used}/{caps['daily_messages']}\n"
+            f"/aichat messages today: {messages_used}/{caps['daily_messages']}\n"
+            f"Reply chats today {where}: {reply_used}/{reply_cap}\n"
             f"Images today: {images_used}/{caps['daily_images']}\n"
-            f"-# Limits reset daily at midnight UTC. Use /aichat and /aiimage."
+            f"-# Limits reset daily at midnight UTC. Reply to me or DM me to chat; /aichat and /aiimage also work."
         )
         buttons = [refresh_button(self, "aistatus")]
         card = NavCardView("🤖 AI usage status", [line], discord.Color.blurple(), buttons)
