@@ -204,9 +204,15 @@ def build_context(user_perms: Optional[set] = None, bot=None) -> str:
             lines.append(f"{usage} — {desc} [needs '{perm}' permission]")
         else:
             lines.append(f"{usage} — {desc}")
+    # The person is ALREADY talking to the AI, so never list the chat commands:
+    # otherwise the model tells them to "use /aichat" while they are chatting.
+    _chat_cmds = {"/aichat", "/newchat", "/endchat"}
+    lines = [ln for ln in lines if ln.split(" ", 1)[0] not in _chat_cmds]
     joined = "\n".join(lines)
     return (
         "You also know every command this Discord bot has, listed below. Rules:\n"
+        "- The person is already chatting with you right now. Never tell them to use /aichat "
+        "(or \"/ai chat\") to talk to you; just answer them.\n"
         "- Anyone can be told about any command, including mod/admin/owner-only ones — "
         "just mention the permission it needs, since Discord itself is what blocks someone "
         "without that permission from actually running it.\n"
