@@ -44,7 +44,7 @@ from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
     check_reply_limit, get_reply_usage, reply_cap_for,
-    is_reply_chat_enabled, set_reply_chat_enabled,
+    is_reply_chat_enabled,
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
@@ -395,30 +395,6 @@ class AIToolsCog(commands.Cog):
                 await message.reply(text, mention_author=False, allowed_mentions=none)
         except Exception:
             logger.exception("[aichat] reply/DM chat failed")
-
-    @app_commands.command(name="aireply", description="Admin: turn AI chat-by-replying on or off for this server")
-    @app_commands.describe(setting="on, off, or status")
-    @app_commands.choices(setting=[app_commands.Choice(name=n, value=n) for n in ("on", "off", "status")])
-    @app_commands.guild_only()
-    async def aireply(self, interaction: discord.Interaction, setting: app_commands.Choice[str]):
-        enabled = await is_reply_chat_enabled(interaction.guild.id)
-        if setting.value == "status":
-            premium = await self._is_premium(interaction.guild.id)
-            await interaction.response.send_message(
-                f"AI chat by replying is **{'on' if enabled else 'off'}** here. "
-                f"Daily cap: {reply_cap_for(interaction.guild.id, premium)} per person "
-                f"({'Premium' if premium else 'standard'} server).",
-                ephemeral=True,
-            )
-            return
-        perms = interaction.permissions
-        if not (perms.manage_guild or perms.administrator):
-            await interaction.response.send_message("You need the Manage Server permission to change this.", ephemeral=True)
-            return
-        await set_reply_chat_enabled(interaction.guild.id, setting.value == "on")
-        await interaction.response.send_message(
-            f"✅ AI chat by replying is now **{setting.value}** for this server.", ephemeral=True
-        )
 
     @app_commands.command(name="aiimage", description="Generate an image from a text prompt")
     @app_commands.describe(prompt="Describe the image you want", style="Art style (default: anime)")
