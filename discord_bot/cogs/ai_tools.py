@@ -44,11 +44,13 @@ from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
     check_reply_limit, get_reply_usage, reply_cap_for,
-    is_reply_chat_enabled,
+    is_reply_chat_enabled, is_premium_question, premium_answer,
+    is_bot_invite_question, is_support_invite_question, support_invite_answer,
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
 from discord_bot.cogs._views_shared import ActionButton, NavView, NavCardView, refresh_button
+from discord_clone_service import build_invite_url
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,14 @@ class QuitChatButton(discord.ui.Button):
         await interaction.followup.send("👋 Conversation ended — reply or use `/aichat` to start fresh.", ephemeral=True)
 
 
+def premium_view() -> discord.ui.View:
+    """Blue 'Go Premium' button (same one /help uses) for premium/credits questions."""
+    from discord_bot.cogs.help import _HelpGoPremiumButton
+    view = discord.ui.View(timeout=300)
+    view.add_item(_HelpGoPremiumButton())
+    return view
+
+
 def ai_reply_view(cog, owner_id: int) -> NavView:
     # Quit Chat button removed from replies (chat clutter); /endchat still works.
     return NavView([ActionButton("Usage", discord.ButtonStyle.secondary, cog, "aistatus", emoji="📊")])
@@ -91,6 +101,22 @@ class AIToolsCog(commands.Cog):
     async def _tier(self, user_id: int) -> str:
         tier = await get_user_tier(user_id)
         return tier if tier in AI_USAGE_CAPS else "basic"
+
+    def _quick_answer(self, text: str, in_server: bool):
+        """Fixed answers that skip the AI call (and cost no daily cap):
+        premium/credits -> Go Premium button, "add the bot to my server" -> this
+        bot's own generated invite link, "support server link" -> the support
+        link. Returns (text, view_or_None) or None."""
+        if is_premium_question(text):
+            return premium_answer(in_server), (premium_view() if in_server else None)
+        if is_support_invite_question(text):
+            return support_invite_answer(), None
+        if is_bot_invite_question(text):
+            app_id = getattr(self.bot, "application_id", None)
+            if app_id is None:
+                return "I couldn't work out my invite link just now. Try `/invite` in a moment.", None
+            return f"➕ Tap [here]({build_invite_url(app_id)}) to add me to your server.", None
+        return None
 
     @staticmethod
     def _perm_set(perms: Optional[discord.Permissions]) -> set:
@@ -191,6 +217,13 @@ class AIToolsCog(commands.Cog):
         message = message.strip()
         if not message or len(message) > 1000:
             await interaction.response.send_message("Message must be 1-1000 characters.", ephemeral=True)
+            return
+
+        quick = self._quick_answer(message, interaction.guild is not None)
+        if quick:
+            quick_text, quick_view = quick
+            kwargs = {"view": quick_view} if quick_view else {}
+            await interaction.response.send_message(quick_text, **kwargs)
             return
 
         user_id = interaction.user.id
@@ -328,16 +361,20 @@ class AIToolsCog(commands.Cog):
         out.reverse()
         return out
 
-    async def _run_reply_turn(self, message: discord.Message, content: str, history: list) -> Optional[str]:
+    async def _run_reply_turn(self, message: discord.Message, content: str, history: list):
+        """Returns (text, view_or_None)."""
         if mentions_other_bot(content):
-            return OTHER_BOT_REFUSAL  # refused before any AI call, costs no cap
+            return OTHER_BOT_REFUSAL, None  # refused before any AI call, costs no cap
+        quick = self._quick_answer(content, message.guild is not None)
+        if quick:
+            return quick  # fixed answer (premium button / invite link), no AI call, costs no cap
         user_id = message.author.id
         guild = message.guild
         guild_id = guild.id if guild else None
         premium = await self._is_premium(guild_id) if guild_id else False
         allowed, cap_msg = await check_reply_limit(user_id, guild_id, premium)
         if not allowed:
-            return cap_msg
+            return cap_msg, None
 
         is_anime = any(kw in content.lower() for kw in ("anime", "manga", "character", "episode", "series", "watch", "recommend"))
         perms = message.channel.permissions_for(message.author) if guild else None
@@ -347,7 +384,7 @@ class AIToolsCog(commands.Cog):
             command_context=command_context, history_override=history,
             guild_id=guild_id, kind="reply",
         )
-        return response or "AI service error. Try again later."
+        return (response or "AI service error. Try again later."), None
 
     @commands.Cog.listener("on_message")
     async def on_bot_chat(self, message: discord.Message):
@@ -385,14 +422,15 @@ class AIToolsCog(commands.Cog):
                 history = await self._reply_chain(replied)
 
             async with message.channel.typing():
-                text = await self._run_reply_turn(message, content, history)
+                text, view = await self._run_reply_turn(message, content, history)
             if not text:
                 return
             none = discord.AllowedMentions.none()
+            extra = {"view": view} if view else {}
             if message.guild is None:
-                await message.channel.send(text, allowed_mentions=none)
+                await message.channel.send(text, allowed_mentions=none, **extra)
             else:
-                await message.reply(text, mention_author=False, allowed_mentions=none)
+                await message.reply(text, mention_author=False, allowed_mentions=none, **extra)
         except Exception:
             logger.exception("[aichat] reply/DM chat failed")
 

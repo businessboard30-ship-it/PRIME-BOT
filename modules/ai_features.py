@@ -27,6 +27,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # AI CHAT with conversation history
 # ═══════════════════════════════════════════════════════════════════════════
 
+# The model writes this token instead of a URL; render_support_link() turns it into a
+# short blue markdown link ("here") so no long invite URL is ever shown in chat.
+SUPPORT_TOKEN = "[[SUPPORT]]"
+
 AI_CHAT_MODEL = "openai/gpt-oss-120b"  # Groq's current recommended general-purpose model
 # Shared rules appended to every prompt. Length is enforced three ways —
 # this prompt, a low max_completion_tokens, and trim_reply() — because a
@@ -38,10 +42,16 @@ BOT_RULES = (
     "2. Only talk about this bot, its commands and features, or light general/anime chat. Never recommend, "
     "compare, explain or mention other Discord bots (MEE6, Dyno, Carl-bot, etc.). If asked about another "
     "bot, say you only help with this bot.\n"
-    "3. Never invent commands or features. Only use commands you were explicitly given; otherwise say you "
-    "don't see one and point to /help.\n"
+    "3. Never invent commands or features. Only use commands you were explicitly given.\n"
     "4. AI chat has no paid credits or top-ups. If asked about buying AI credits, say that isn't a thing. "
-    "Premium is a per-server subscription that raises the daily AI chat limit; it is not AI credits."
+    "Premium is a per-server subscription that raises the daily AI chat limit; it is not AI credits.\n"
+    f"5. If a question about this bot is too hard, too detailed, or you are not sure of the answer, do NOT "
+    f"guess. Say you're not sure and send them to the support server by writing {SUPPORT_TOKEN} at the end, "
+    f"for example: \"Not sure about that one, the support server can help, tap {SUPPORT_TOKEN}\". "
+    f"Never write a URL or invite link yourself, only {SUPPORT_TOKEN}.\n"
+    "6. If the question is about the specific server they are in (its rules, roles, channels, staff, bans, "
+    "events, or anything only that server controls), say you can't answer that and tell them to talk to a "
+    "server admin or contact that server's support/staff. Do not send those to the bot's support server."
 )
 SYSTEM_PROMPT_ANIME = (
     "You are an anime expert. Be friendly and conversational about anime, manga, characters and recommendations.\n"
@@ -78,6 +88,84 @@ def trim_reply(text: str, limit: int = 600) -> str:
     if m >= limit // 2:
         return cut[: m + 1]
     return cut.rsplit(" ", 1)[0].rstrip(",;:") + "…"
+
+
+_SUPPORT_TOKEN_RE = re.compile(r"\[\[\s*SUPPORT\s*\]\]", re.IGNORECASE)
+
+
+def render_support_link(text: str) -> str:
+    """Swap the [[SUPPORT]] token for a clickable blue 'here' link to the support
+    server (markdown, so the long invite URL never shows)."""
+    if not text:
+        return text
+    try:
+        from config import DISCORD_SUPPORT_SERVER_INVITE as invite
+    except Exception:
+        invite = ""
+    if invite:
+        return _SUPPORT_TOKEN_RE.sub(f"[here]({invite})", text)
+    return _SUPPORT_TOKEN_RE.sub("in our support server", text)
+
+
+# Premium / credits questions get a fixed answer + the Go Premium button
+# (not left to the model), so the wording is always exact.
+_PREMIUM_Q = re.compile(
+    r"\b(premium|subscri(?:be|ption)|upgrade|top[\s-]?ups?|"
+    r"(?:buy|get|purchase|need|more|ai|chat)\s+credits?|"
+    r"credits?\s+(?:for|to)\s+(?:the\s+)?(?:ai|chat|bot))\b",
+    re.IGNORECASE,
+)
+
+
+def is_premium_question(text: str) -> bool:
+    return bool(text and _PREMIUM_Q.search(text))
+
+
+# "How do I add/invite the bot to my server?" -> the caller builds the bot's own
+# OAuth invite link (correct for the main bot and every clone).
+_BOT_INVITE_Q = re.compile(
+    r"\b(?:invite|add|get|put|bring)\s+(?:you|u|yourself|the\s+bot|this\s+bot|your\s+bot|the\s+\w+\s+bot)\b"
+    r"|\b(?:bot|your|the\s+bot'?s)\s+(?:invite|invitation)\b"
+    r"|\binvit(?:e|ation)\s+(?:link|url)\s+(?:for|of|to)\s+(?:the\s+|this\s+|your\s+)?bot\b"
+    r"|\bhow\s+(?:do|can|could|to)\s+(?:i\s+|we\s+)?(?:invite|add)\s+(?:it|this)\s+(?:bot\s+)?to\b",
+    re.IGNORECASE,
+)
+# "How do I join your support server / link to the support server?"
+_SUPPORT_INVITE_Q = re.compile(
+    r"\bsupport\s+(?:server|group|discord|guild)\b.{0,30}\b(?:link|invite|join)\b"
+    r"|\b(?:link|invite|join)\b.{0,30}\bsupport\s+(?:server|group|discord|guild)\b",
+    re.IGNORECASE,
+)
+
+
+def is_support_invite_question(text: str) -> bool:
+    return bool(text and _SUPPORT_INVITE_Q.search(text))
+
+
+def is_bot_invite_question(text: str) -> bool:
+    # A support-server ask is handled separately, so it never gets the bot's invite.
+    return bool(text and not is_support_invite_question(text) and _BOT_INVITE_Q.search(text))
+
+
+def support_invite_answer() -> str:
+    return render_support_link("Here you go, tap [[SUPPORT]] to join the support server.")
+
+
+def premium_answer(in_server: bool) -> str:
+    """Fixed reply to premium/credits questions. In a server it goes with the
+    Go Premium button (added by the caller)."""
+    if not in_server:
+        return (
+            "💎 Premium is a **per-server** subscription. It is **not** AI credits, and you are not "
+            "buying credits. Ask me this inside the server you want it for and I'll show you the "
+            "Go Premium button."
+        )
+    return (
+        "💎 **You are not buying credits.** Premium is a subscription that anyone can get, but it only "
+        "applies to **this server**, not every server you're in. It raises this server's daily AI chat "
+        f"limit from {REPLY_CAP_NORMAL} to {REPLY_CAP_PREMIUM} and unlocks every premium feature here. "
+        "Tap **Go Premium** below."
+    )
 
 
 def until_reset_text() -> str:
@@ -294,6 +382,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                     response_text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
                     
                     response_text = trim_reply(response_text)
+                    response_text = render_support_link(response_text)
                     if mentions_other_bot(response_text):
                         response_text = OTHER_BOT_REFUSAL
                     if response_text:
