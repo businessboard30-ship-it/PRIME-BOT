@@ -282,8 +282,9 @@ class AIToolsCog(commands.Cog):
             await interaction.response.send_message("You don't have an active conversation right now.", ephemeral=True)
 
     # ── Reply / DM chat ──────────────────────────────────────────────────
-    REPLY_CHAIN_MAX = 4      # messages of reply-chain context (incl. the one replied to)
+    REPLY_CHAIN_MAX = 6      # messages of reply-chain context (incl. the one replied to)
     DM_CONTEXT_MAX = 6       # recent DM messages used as context
+    CHANNEL_CONTEXT_MAX = 4  # extra channel messages prepended before the reply chain
 
     async def _is_premium(self, guild_id: int) -> bool:
         """Premium is bought per server AND per bot (main vs. clone), so count
@@ -330,9 +331,11 @@ class AIToolsCog(commands.Cog):
         return {"role": role, "content": text}
 
     async def _reply_chain(self, replied: discord.Message) -> list:
-        """The conversation is the reply chain itself (oldest first, up to
-        REPLY_CHAIN_MAX messages) — not a per-user session — so separate
-        topics in one channel never bleed into each other."""
+        """Build history from the reply chain (oldest first, up to
+        REPLY_CHAIN_MAX), then prepend recent channel messages that came
+        before the root of the chain. This means a third person jumping in
+        and replying to the AI inherits the conversation's context rather
+        than starting fresh — the AI sees what the channel was discussing."""
         chain, cur = [], replied
         for _ in range(self.REPLY_CHAIN_MAX):
             chain.append(cur)
@@ -347,7 +350,31 @@ class AIToolsCog(commands.Cog):
                     break
             cur = nxt
         chain.reverse()
-        return [c for c in (self._as_chat_message(m) for m in chain) if c]
+        chain_ids = {m.id for m in chain}
+
+        # Pull a few channel messages that predate the oldest chain message
+        # so the AI isn't blind to what triggered the conversation. We
+        # de-dup against chain_ids to avoid repeating messages already
+        # in the reply chain.
+        channel_ctx: list[dict] = []
+        root = chain[0] if chain else replied
+        try:
+            async for m in replied.channel.history(
+                limit=self.CHANNEL_CONTEXT_MAX + 5, before=root
+            ):
+                if m.id in chain_ids or m.author.bot and m.author.id != self.bot.user.id:
+                    continue
+                c = self._as_chat_message(m)
+                if c:
+                    channel_ctx.append(c)
+                if len(channel_ctx) >= self.CHANNEL_CONTEXT_MAX:
+                    break
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+        channel_ctx.reverse()
+
+        chain_msgs = [c for c in (self._as_chat_message(m) for m in chain) if c]
+        return channel_ctx + chain_msgs
 
     async def _dm_context(self, message: discord.Message) -> list:
         out = []

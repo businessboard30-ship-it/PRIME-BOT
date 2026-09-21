@@ -369,7 +369,7 @@ CUSTOM_ROLE_FEE_USD = 3.99
 # impulse-buy price. Per-user AND per-guild (buying it in one server never
 # boosts XP in another) — see database/migrations/013_xp_boost.sql's
 # discord_xp_boosts table.
-XP_BOOST_FEE_USD = 3
+XP_BOOST_FEE_USD = 1
 
 # Hardcore roast battle — per-activation charge. Challenger pays once to
 # unlock a single battle in hardcore mode. Target must still consent via DM
@@ -378,7 +378,7 @@ XP_BOOST_FEE_USD = 3
 HARDCORE_ROAST_FEE_USD = 1.00
 HARDCORE_ROAST_FEE_GHS = 15  # ~$1 in GHS
 XP_BOOST_MULTIPLIER = 2.0
-XP_BOOST_DURATION_DAYS = 7
+XP_BOOST_DURATION_DAYS = 14
 
 # ─────────────────────────────────────────────────────────────────────────
 # Boost Wallet — REMOVED. This used to be a flat, giftable XP credit

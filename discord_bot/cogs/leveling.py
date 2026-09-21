@@ -52,11 +52,9 @@ XP_COOLDOWN_SECONDS = 60
 
 XP_RATE_MULTIPLIERS = {"slow": 0.5, "default": 1.0, "fast": 1.5}
 
-# Bot owner gets this multiplier on message XP by default (stacks with
-# the guild's xp_rate setting and any paid per-user boost, same as those
-# stack with each other below). Bot owner = DISCORD_CLONE_ADMIN_IDS, same
-# convention as image_search.py's _is_owner — NOT the guild's own owner.
-OWNER_XP_MULTIPLIER = 5.0
+# Maximum combined XP multiplier (xp_rate * per-user boost * server boost).
+# Prevents runaway stacking from making the leaderboard uncompetitive.
+MAX_XP_MULTIPLIER = 10.0
 
 
 def _require_perm(interaction: discord.Interaction, perm: str) -> bool:
@@ -229,8 +227,9 @@ class LevelingCog(GuildOnlyCog):
         guild_boost = await db.get_active_guild_xp_boost(message.guild.id, clone_id=clone_id)
         if guild_boost:
             multiplier *= float(guild_boost["multiplier"])
-        if message.author.id in DISCORD_CLONE_ADMIN_IDS:
-            multiplier *= OWNER_XP_MULTIPLIER
+        # Cap total stacked multiplier so no single member can pull away
+        # uncompetitively regardless of how many boosts are layered.
+        multiplier = min(multiplier, MAX_XP_MULTIPLIER)
         gained = max(1, round(random.randint(XP_MIN, XP_MAX) * multiplier))
         new_level_guess = leveling.compute_level(current["total_xp"] + gained)
         # cooldown_seconds makes this atomic across processes — see

@@ -19,12 +19,14 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from discord_bot.cogs._dm_support import GuildOnlyCog
 
-from config import DISCORD_CLONE_ADMIN_IDS
 from database import db
 from modules import leveling
-from discord_bot.cogs.leveling import OWNER_XP_MULTIPLIER
 
 logger = logging.getLogger(__name__)
+
+# Hard cap on voice XP rate regardless of admin setting.
+# Keeps voice XP in the same ballpark as text XP (15-25 XP/msg every 60s).
+VOICE_XP_RATE_CAP = 25
 
 
 def _require_perm(interaction: discord.Interaction, perm: str) -> bool:
@@ -84,6 +86,16 @@ class VoiceXPCog(GuildOnlyCog):
             return False
         if config["afk_channel_excluded"] and member.guild.afk_channel and channel.id == member.guild.afk_channel.id:
             return False
+        # Must be unmuted/undeafened — muted or deafened members aren't
+        # participating and can idle-farm voice XP without contributing.
+        voice_state = member.voice
+        if voice_state and (voice_state.self_mute or voice_state.mute or
+                            voice_state.self_deaf or voice_state.deaf):
+            return False
+        # Must not be alone — solo voice sitting is easy to farm indefinitely.
+        real_members = [m for m in channel.members if not m.bot]
+        if len(real_members) < 2:
+            return False
         return True
 
     @commands.Cog.listener()
@@ -123,12 +135,15 @@ class VoiceXPCog(GuildOnlyCog):
         owed_minutes = elapsed_minutes - already_paid
         if owed_minutes <= 0:
             return
-        gained = owed_minutes * config["xp_per_minute"]
+        # Apply rate cap before multipliers so boosted servers can't bypass it.
+        effective_rate = min(config["xp_per_minute"], VOICE_XP_RATE_CAP)
+        gained = owed_minutes * effective_rate
         guild_boost = await db.get_active_guild_xp_boost(guild_id, clone_id=clone_id)
         if guild_boost:
             gained = round(gained * float(guild_boost["multiplier"]))
-        if user_id in DISCORD_CLONE_ADMIN_IDS:
-            gained = round(gained * OWNER_XP_MULTIPLIER)
+        # Voice XP does NOT reset the text XP cooldown — they run on separate
+        # clocks. db.add_xp is called without cooldown_seconds so voice payouts
+        # never race with on_message's cooldown check.
         current = await db.get_xp(guild_id, user_id, clone_id=clone_id)
         old_level = leveling.compute_level(current["total_xp"])
         new_total = current["total_xp"] + gained
@@ -139,14 +154,28 @@ class VoiceXPCog(GuildOnlyCog):
         if new_level > old_level:
             guild = self.bot.get_guild(guild_id)
             member = guild.get_member(user_id) if guild else None
-            if member and member.voice and member.voice.channel:
-                try:
-                    await member.voice.channel.send(f"🎉 {member.mention} leveled up to **level {new_level}** (from time in voice)!")
-                except discord.Forbidden:
-                    pass
-                leveling_cog = self.bot.get_cog("LevelingCog")
+            if guild is None:
+                return
+            leveling_cog = self.bot.get_cog("LevelingCog")
+            # Bug fix: grant roles even when the member already left voice
+            # (the most common case — they levelled up in their last minute).
+            # Previously this block was guarded by member.voice.channel so
+            # a leave-triggered settle never granted the role.
+            if member and isinstance(member, discord.Member):
                 if leveling_cog:
                     await leveling_cog._grant_level_roles(member, new_level, clone_id=clone_id)
+                # Announce in the configured level-up channel, not the voice
+                # channel the member may have already left.
+                lv_config = await db.get_leveling_config(guild_id, clone_id=clone_id)
+                if leveling_cog and lv_config.get("card_style") != "off":
+                    announce_ch = await leveling_cog._ensure_announce_channel(guild, lv_config, clone_id=clone_id)
+                    if announce_ch is None and member.voice and member.voice.channel:
+                        announce_ch = member.voice.channel
+                    if announce_ch:
+                        try:
+                            await announce_ch.send(f"🎉 {member.mention} leveled up to **level {new_level}** (voice XP)!")
+                        except discord.Forbidden:
+                            pass
 
     @tasks.loop(seconds=60)
     async def _tick(self):
@@ -186,8 +215,8 @@ class VoiceXPCog(GuildOnlyCog):
         config = await db.set_voice_xp_config(interaction.guild_id, clone_id=_clone_id_of(interaction), enabled=enabled)
         await interaction.followup.send(f"✅ Voice XP is now **{'enabled' if config['enabled'] else 'disabled'}**.", ephemeral=True)
 
-    @group.command(name="rate", description="Set how much XP is earned per minute in voice")
-    async def rate(self, interaction: discord.Interaction, xp_per_minute: app_commands.Range[int, 1, 1000]):
+    @group.command(name="rate", description="Set how much XP is earned per minute in voice (max 25)")
+    async def rate(self, interaction: discord.Interaction, xp_per_minute: app_commands.Range[int, 1, 25]):
         await interaction.response.defer(ephemeral=True)
         if not _require_perm(interaction, "manage_guild"):
             await interaction.followup.send("You need the **Manage Server** permission to do that.", ephemeral=True)
