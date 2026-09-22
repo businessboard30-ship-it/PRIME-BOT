@@ -517,7 +517,7 @@ class CardHeadingModal(discord.ui.Modal, title="Card heading text"):
         self.clone_id = clone_id
         self.invoker_id = invoker_id
         self.heading = discord.ui.TextInput(
-            label="Heading ({guild} / {member} work; blank = default)",
+            label="Heading ({guild}/{member}; blank=default)",
             style=discord.TextStyle.short, required=False, max_length=ULTRA_HEADING_MAX,
             default=current or "", placeholder="Welcome to {guild}!",
         )
