@@ -79,6 +79,10 @@ CHALLENGE_EXPIRY_MINUTES = 30
 DEFAULT_INACTIVITY_MINUTES = 60
 DEFAULT_RANDOM_CHECK_MINUTES = 30
 DEFAULT_RANDOM_CHANCE_PERCENT = 10
+# Auto-roast (unprompted challenge proposals from inactivity or random chance)
+# is now OFF by default in every server. An admin opts a server in with
+# /setup roast enabled:true — see get_config()/_poller() below.
+DEFAULT_ENABLED = False
 BOT_CONCEDE_CHANCE_PERCENT = 5  # odds the bot "takes the L" instead of roasting back
 
 # An 'active' battle with nobody replying used to sit open forever (see
@@ -1686,7 +1690,7 @@ class RoastCog(GuildOnlyCog):
             "random_chance_enabled": True,
             "random_check_minutes": DEFAULT_RANDOM_CHECK_MINUTES,
             "random_chance_percent": DEFAULT_RANDOM_CHANCE_PERCENT,
-            "enabled": True,
+            "enabled": False,  # opt-in: an admin must turn this on with /setup roast
         }
 
     async def start_challenge(self, guild, target, channel, proposed_by_admin_id):
@@ -2042,7 +2046,7 @@ class RoastCog(GuildOnlyCog):
                 "random_chance_enabled": True,
                 "random_check_minutes": DEFAULT_RANDOM_CHECK_MINUTES,
                 "random_chance_percent": DEFAULT_RANDOM_CHANCE_PERCENT,
-                "enabled": True,
+                "enabled": False,  # opt-in: an admin must turn this on with /setup roast
             }
             if not config["enabled"]:
                 continue
