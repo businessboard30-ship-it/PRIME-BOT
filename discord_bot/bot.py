@@ -40,6 +40,7 @@ from discord_bot.cogs._views_automod_reminders import DYNAMIC_ITEMS as AUTOMOD_R
 from discord_bot.cogs._views_ticket_wizard import DYNAMIC_ITEMS as TICKET_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_community_wizard import DYNAMIC_ITEMS as COMMUNITY_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_economy_wizard import DYNAMIC_ITEMS as ECONOMY_WIZARD_DYNAMIC_ITEMS
+from discord_bot.cogs._views_economy import EconomyCardView
 from discord_bot.cogs._views_leveling_wizard import DYNAMIC_ITEMS as LEVELING_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_download_wizard import DYNAMIC_ITEMS as DOWNLOAD_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_registry_invite_consent import DYNAMIC_ITEMS as REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS
@@ -133,6 +134,13 @@ class AnimeBotDiscord(commands.Bot):
         self.add_view(VerifyCreditsView())
         self.add_view(VerifyBoostView())
         self.add_view(AIStoreMenuView())
+        # Economy cards (balance/shop/rob/trade/etc buttons) — one prototype
+        # registered with every known button custom_id so any real card,
+        # sent with any subset of those buttons, keeps working after a
+        # restart. See _views_economy.py's module docstring for why this
+        # is safe even though the sent cards themselves aren't identical
+        # to this prototype.
+        self.add_view(EconomyCardView(persistent=True))
 
         # Dynamic items (per-guild custom_id, e.g. the owner join DM's
         # Remind me later / Don't ask again buttons) — matched by regex

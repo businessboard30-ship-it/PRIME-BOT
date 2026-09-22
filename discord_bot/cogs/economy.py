@@ -68,6 +68,16 @@ from discord_bot.cogs._views_economy import EconomyCardView
 
 logger = logging.getLogger(__name__)
 
+# Coin-for-coin sends: tax is a pure sink (funds nothing), the cap is a
+# multiple of the guild's own /ecoconfig daily_amount so it scales with
+# each guild's economy instead of being one hardcoded number. Both exist to
+# blunt alt-account funneling and real-money coin sales — see the plan
+# discussion in the economy cog's module docstring neighbor, _views_economy.py.
+SEND_TAX_RATE = 0.05
+SEND_DAILY_CAP_MULTIPLIER = 10
+ROB_PROTECTION_HOURS = 1
+MAX_SHOP_IMAGE_BYTES = 200 * 1024
+
 
 def _require_perm(interaction: discord.Interaction, perm: str) -> bool:
     """Checks the invoking user's permission in the current channel.
@@ -207,7 +217,7 @@ class EconomyCog(GuildOnlyCog):
             name=target.display_name, balance=bal["balance"],
             symbol=cfg["currency_symbol"], currency=cfg["currency_name"]
         )
-        card = EconomyCardView("💰 Balance", [line], discord.Color.blurple(), buttons=["leaderboard", "shop"])
+        card = EconomyCardView("💰 Balance", [line], discord.Color.blurple(), buttons=["send", "inventory", "leaderboard", "shop"])
         await interaction.followup.send(view=card)
 
     @economy_group.command(name="balance", description="Check your (or someone else's) balance")
@@ -215,12 +225,16 @@ class EconomyCog(GuildOnlyCog):
     async def balance(self, interaction: discord.Interaction, member: discord.Member = None):
         await self.send_balance(interaction, member or interaction.user)
 
-    async def send_leaderboard(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+    async def send_leaderboard(self, interaction: discord.Interaction, net_worth: bool = False):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         lang = await get_lang(interaction)
         clone_id = _clone_id_of(interaction)
         cfg = await db.get_economy_config(interaction.guild_id, clone_id=clone_id)
-        rows = await db.get_economy_leaderboard(interaction.guild_id, clone_id=clone_id, limit=10)
+        if net_worth:
+            rows = await db.get_economy_leaderboard_networth(interaction.guild_id, clone_id=clone_id, limit=10)
+        else:
+            rows = await db.get_economy_leaderboard(interaction.guild_id, clone_id=clone_id, limit=10)
         if not rows:
             msg = await tr("No one has earned anything yet.", lang)
             await interaction.followup.send(msg, ephemeral=True)
@@ -229,8 +243,11 @@ class EconomyCog(GuildOnlyCog):
         for i, row in enumerate(rows, start=1):
             member = interaction.guild.get_member(row["user_id"])
             name = member.display_name if member else f"User {row['user_id']}"
-            lines.append(f"**{i}.** {name} — {row['balance']} {cfg['currency_symbol']}")
-        card = EconomyCardView("🏆 Leaderboard", lines, discord.Color.gold(), buttons=["balance", "shop"])
+            amount = row["net_worth"] if net_worth else row["balance"]
+            lines.append(f"**{i}.** {name} — {amount} {cfg['currency_symbol']}")
+        title = "🏆 Leaderboard — net worth" if net_worth else "🏆 Leaderboard — coins"
+        card = EconomyCardView(title, lines, discord.Color.gold(),
+                                buttons=["leaderboard_toggle", "balance", "shop"])
         await interaction.followup.send(view=card)
 
     @economy_group.command(name="leaderboard", description="Show this server's richest members")
@@ -277,7 +294,16 @@ class EconomyCog(GuildOnlyCog):
 
     @economy_group.command(name="rob", description="Attempt to rob another member")
     async def rob(self, interaction: discord.Interaction, member: discord.Member):
-        await interaction.response.defer(ephemeral=True)
+        await self.attempt_rob(interaction, member)
+
+    async def attempt_rob(self, interaction: discord.Interaction, member: discord.Member):
+        """2 attempts per UTC day, entirely atomic (see db.attempt_robbery —
+        one transaction checks the daily allowance, checks the victim's 1h
+        post-rob protection, rolls the outcome and moves the coins), so
+        concurrent attempts can't double-spend the last attempt of the day
+        or hit a victim mid-protection-window."""
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         lang = await get_lang(interaction)
         if member.id == interaction.user.id or member.bot:
             msg = await tr("❌ You can't rob that person.", lang)
@@ -285,49 +311,63 @@ class EconomyCog(GuildOnlyCog):
             return
         clone_id = _clone_id_of(interaction)
         cfg = await db.get_economy_config(interaction.guild_id, clone_id=clone_id)
-        robber_bal = await db.get_economy_balance(interaction.guild_id, interaction.user.id, clone_id=clone_id)
-        elapsed = _seconds_since(robber_bal.get("last_rob_at"))
-        cooldown_seconds = cfg["rob_cooldown_hours"] * 3600
-        if elapsed < cooldown_seconds:
-            msg = await tr(
-                "⏳ You can rob again in **{cooldown}**.", lang,
-                cooldown=_fmt_cooldown(cooldown_seconds - elapsed)
-            )
-            await interaction.followup.send(msg, ephemeral=True)
-            return
         victim_bal = await db.get_economy_balance(interaction.guild_id, member.id, clone_id=clone_id)
         if victim_bal["balance"] < 10:
             msg = await tr("❌ {name} has nothing worth stealing.", lang, name=member.display_name)
             await interaction.followup.send(msg, ephemeral=True)
             return
-
-        success = random.randint(1, 100) <= cfg["rob_success_chance"]
-        if success:
-            stolen = min(victim_bal["balance"], random.randint(1, victim_bal["balance"] // 2 + 1))
-            await db.adjust_economy_balance(interaction.guild_id, member.id, -stolen, "robbed", clone_id=clone_id)
-            new_balance = await db.adjust_economy_balance(
-                interaction.guild_id, interaction.user.id, stolen, "rob_success",
-                clone_id=clone_id, cooldown_field="last_rob_at"
+        try:
+            result = await db.attempt_robbery(
+                interaction.guild_id, clone_id, interaction.user.id, member.id,
+                cfg["rob_success_chance"], protection_hours=ROB_PROTECTION_HOURS
             )
+        except db.RobUnavailable as e:
+            if e.code == "no_attempts":
+                msg = await tr("⏳ You've used both robbery attempts today. Try again tomorrow.", lang)
+            else:
+                msg = await tr(
+                    "🛡️ {name} is protected from robbery for **{cooldown}**.", lang,
+                    name=member.display_name, cooldown=_fmt_cooldown(e.seconds_left)
+                )
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        if result["success"]:
             line = await tr(
-                "🦹 You robbed **{stolen} {symbol}** from {name}! Balance: **{balance} {symbol}**", lang,
-                stolen=stolen, symbol=cfg["currency_symbol"], name=member.display_name, balance=new_balance
+                "🦹 You robbed **{stolen} {symbol}** from {name}! Balance: **{balance} {symbol}**\n"
+                "-# {left} attempt(s) left today", lang,
+                stolen=result["stolen"], symbol=cfg["currency_symbol"], name=member.display_name,
+                balance=result["robber_balance"], left=result["attempts_left"]
             )
             card = EconomyCardView("Rob — success", [line], discord.Color.green(), buttons=["balance", "shop"])
-            await interaction.followup.send(view=card)
         else:
-            fine = min(robber_bal["balance"], random.randint(1, 50))
-            new_balance = await db.adjust_economy_balance(
-                interaction.guild_id, interaction.user.id, -fine, "rob_failed",
-                clone_id=clone_id, cooldown_field="last_rob_at"
-            )
             line = await tr(
                 "🚨 You got caught trying to rob {name} and paid a **{fine} {symbol}** fine. "
-                "Balance: **{balance} {symbol}**", lang,
-                name=member.display_name, fine=fine, symbol=cfg["currency_symbol"], balance=new_balance
+                "Balance: **{balance} {symbol}**\n-# {left} attempt(s) left today", lang,
+                name=member.display_name, fine=result["fine"], symbol=cfg["currency_symbol"],
+                balance=result["robber_balance"], left=result["attempts_left"]
             )
             card = EconomyCardView("Rob — caught", [line], discord.Color.red(), buttons=["balance", "shop"])
-            await interaction.followup.send(view=card)
+        await interaction.followup.send(view=card)
+
+    # ── inventory ────────────────────────────────────────────────────────
+    async def send_inventory(self, interaction: discord.Interaction, target: discord.Member = None):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        lang = await get_lang(interaction)
+        target = target or interaction.user
+        clone_id = _clone_id_of(interaction)
+        items = await db.get_inventory(interaction.guild_id, target.id, clone_id=clone_id)
+        if not items:
+            msg = await tr("🎒 {name}'s inventory is empty.", lang, name=target.display_name)
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        cfg = await db.get_economy_config(interaction.guild_id, clone_id=clone_id)
+        lines = [f"**#{i['item_id']} — {i['name']}** x{i['quantity']} — worth {i['price']} {cfg['currency_symbol']} each"
+                  for i in items]
+        card = EconomyCardView("🎒 Inventory", lines, discord.Color.blurple(), buttons=["trade", "shop"])
+        await interaction.followup.send(view=card)
+
+    # ── shop buy → now grants an inventory row, not just the role ─────────
 
     # ── shop ────────────────────────────────────────────────────────────
     shop_group = app_commands.guild_only()(app_commands.Group(name="shop", description="Browse and manage the server shop"))
@@ -348,7 +388,7 @@ class EconomyCog(GuildOnlyCog):
             if i["description"]:
                 line += f"\n-# {i['description']}"
             lines.append(line)
-        card = EconomyCardView("🛒 Shop", lines, discord.Color.green(), buttons=["buy", "balance"])
+        card = EconomyCardView("🛒 Shop", lines, discord.Color.green(), buttons=["buy", "inventory", "balance"])
         await interaction.followup.send(view=card)
 
     @shop_group.command(name="list", description="List items in the shop")
@@ -373,6 +413,7 @@ class EconomyCog(GuildOnlyCog):
         new_balance = await db.adjust_economy_balance(
             interaction.guild_id, interaction.user.id, -item["price"], f"shop_buy:{item['item_id']}", clone_id=clone_id
         )
+        await db.grant_inventory_item(interaction.guild_id, interaction.user.id, item["item_id"], clone_id=clone_id)
         role_note = ""
         if item["role_id"] and isinstance(interaction.user, discord.Member):
             role = interaction.guild.get_role(item["role_id"])
@@ -395,19 +436,48 @@ class EconomyCog(GuildOnlyCog):
         await self.buy_item(interaction, item_id)
 
     @shop_group.command(name="add", description="Add an item to the shop (admin)")
+    @app_commands.describe(image="Small png/jpeg for the item (max 200KB)")
     async def shop_add(self, interaction: discord.Interaction, name: str, price: app_commands.Range[int, 1, None],
-                        description: str = None, role: discord.Role = None):
+                        description: str = None, role: discord.Role = None, image: discord.Attachment = None):
         await interaction.response.defer(ephemeral=True)
         lang = await get_lang(interaction)
         if not _require_perm(interaction, "manage_guild"):
             await _deny(interaction, "Manage Server", lang)
             return
+        image_data, image_ext = await self._read_shop_image(interaction, image, lang)
+        if image is not None and image_data is None:
+            return  # _read_shop_image already sent the rejection message
         item_id = await db.add_shop_item(
             interaction.guild_id, name, description, price, interaction.user.id,
-            role_id=role.id if role else None, clone_id=_clone_id_of(interaction)
+            role_id=role.id if role else None, clone_id=_clone_id_of(interaction),
+            image_data=image_data, image_ext=image_ext
         )
         msg = await tr("✅ Added **{name}** as item #{item_id}.", lang, name=name, item_id=item_id)
         await interaction.followup.send(msg, ephemeral=True)
+
+    async def _read_shop_image(self, interaction: discord.Interaction, image, lang: str):
+        """Shared by the /shop add command and the button-driven admin
+        wizard in _views_economy.py. Returns (None, None) for no image, or
+        sends a rejection and returns (None, None) too — callers check
+        `image is not None` themselves to tell "no image given" apart from
+        "image given but rejected"."""
+        if image is None:
+            return None, None
+        ext = (image.filename.rsplit(".", 1)[-1] if "." in image.filename else "").lower()
+        if ext not in ("png", "jpg", "jpeg") or (image.content_type or "") not in (
+            "image/png", "image/jpeg", "image/jpg"
+        ):
+            msg = await tr("❌ Item image must be a png or jpeg.", lang)
+            await interaction.followup.send(msg, ephemeral=True)
+            return None, None
+        if image.size > MAX_SHOP_IMAGE_BYTES:
+            msg = await tr(
+                "❌ That image is too big — keep it under **{kb}KB**.", lang,
+                kb=MAX_SHOP_IMAGE_BYTES // 1024
+            )
+            await interaction.followup.send(msg, ephemeral=True)
+            return None, None
+        return await image.read(), ext
 
     @shop_group.command(name="remove", description="Remove an item from the shop (admin)")
     async def shop_remove(self, interaction: discord.Interaction, item_id: int):
@@ -419,6 +489,118 @@ class EconomyCog(GuildOnlyCog):
         ok = await db.remove_shop_item(interaction.guild_id, item_id, clone_id=_clone_id_of(interaction))
         msg = await tr("✅ Removed.", lang) if ok else await tr("No such item.", lang)
         await interaction.followup.send(msg, ephemeral=True)
+
+    # ── trade board (cross-server browsing, same-guild settlement) ────────
+    async def send_trade_board(self, interaction: discord.Interaction, all_servers: bool = True):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        lang = await get_lang(interaction)
+        clone_id = _clone_id_of(interaction)
+        cfg = await db.get_economy_config(interaction.guild_id, clone_id=clone_id)
+        rows = await db.get_trade_listings(
+            guild_id=None if all_servers else interaction.guild_id, clone_id=clone_id, limit=10
+        )
+        if not rows:
+            msg = await tr("📋 No active trade listings.", lang)
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        lines = []
+        for r in rows:
+            here = r["guild_id"] == interaction.guild_id
+            where = "" if here else f" -# on {r['guild_name'] or 'another server'}"
+            lines.append(f"**#{r['id']} — {r['item_name']}** — {r['price']} {cfg['currency_symbol']}{where}")
+        title = "🌍 Trade board — all servers" if all_servers else "📋 Trade board — this server"
+        card = EconomyCardView(title, lines, discord.Color.teal(),
+                                buttons=["trade_buy", "trade_sell", "balance"])
+        await interaction.followup.send(view=card)
+
+    async def sell_on_trade_board(self, interaction: discord.Interaction, item_id: int, price: int):
+        await interaction.response.defer(ephemeral=True)
+        lang = await get_lang(interaction)
+        clone_id = _clone_id_of(interaction)
+        cfg = await db.get_economy_config(interaction.guild_id, clone_id=clone_id)
+        listing_id = await db.list_item_for_trade(
+            interaction.guild_id, clone_id, interaction.guild.name, interaction.user.id, item_id, price
+        )
+        if listing_id is None:
+            msg = await tr("❌ You don't own that item.", lang)
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        msg = await tr(
+            "✅ Listed as **#{listing_id}** for {price} {symbol}. Visible server-wide.", lang,
+            listing_id=listing_id, price=price, symbol=cfg["currency_symbol"]
+        )
+        card = EconomyCardView("Listed for trade", [msg], discord.Color.teal(), buttons=["trade", "shop"])
+        await interaction.followup.send(view=card)
+
+    async def buy_trade_listing(self, interaction: discord.Interaction, listing_id: int):
+        await interaction.response.defer(ephemeral=True)
+        lang = await get_lang(interaction)
+        clone_id = _clone_id_of(interaction)
+        cfg = await db.get_economy_config(interaction.guild_id, clone_id=clone_id)
+        result = await db.buy_trade_listing(listing_id, interaction.user.id, interaction.guild_id, clone_id)
+        err = result.get("error")
+        if err == "not_found":
+            msg = await tr("❌ That listing is no longer available.", lang)
+        elif err == "own_listing":
+            msg = await tr("❌ You can't buy your own listing — cancel it instead.", lang)
+        elif err == "wrong_guild":
+            msg = await tr(
+                "❌ That listing is on **{guild}** — buy it from there; each server's coins are separate.", lang,
+                guild=result.get("guild_name") or "another server"
+            )
+        elif err == "insufficient_funds":
+            msg = await tr("❌ You can't afford that.", lang)
+        else:
+            msg = await tr(
+                "✅ Bought item #{item_id} for {price} {symbol}. Balance: **{balance} {symbol}**", lang,
+                item_id=result["item_id"], price=result["price"], symbol=cfg["currency_symbol"],
+                balance=result["buyer_balance"]
+            )
+            card = EconomyCardView("Trade complete", [msg], discord.Color.green(), buttons=["trade", "balance"])
+            await interaction.followup.send(view=card)
+            return
+        await interaction.followup.send(msg, ephemeral=True)
+
+    # ── coin-for-coin sends: 5% tax + daily cap (see module-level consts) ──
+    async def send_coins(self, interaction: discord.Interaction, target: discord.Member, amount: int):
+        await interaction.response.defer(ephemeral=True)
+        lang = await get_lang(interaction)
+        if target.id == interaction.user.id or target.bot or amount <= 0:
+            msg = await tr("❌ Invalid send.", lang)
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        clone_id = _clone_id_of(interaction)
+        cfg = await db.get_economy_config(interaction.guild_id, clone_id=clone_id)
+        sender_bal = await db.get_economy_balance(interaction.guild_id, interaction.user.id, clone_id=clone_id)
+        if sender_bal.get("last_daily_at") is None:
+            msg = await tr("❌ Claim your daily reward at least once before sending coins.", lang)
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        daily_cap = cfg["daily_amount"] * SEND_DAILY_CAP_MULTIPLIER
+        try:
+            result = await db.send_coins(
+                interaction.guild_id, clone_id, interaction.user.id, target.id, amount,
+                daily_cap=daily_cap, tax_rate=SEND_TAX_RATE
+            )
+        except db.InsufficientFunds:
+            msg = await tr("❌ You can't afford that.", lang)
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        except db.DailyCapExceeded as e:
+            msg = await tr(
+                "❌ Daily send limit reached. You can send **{remaining} {symbol}** more today.", lang,
+                remaining=max(0, e.remaining), symbol=cfg["currency_symbol"]
+            )
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        line = await tr(
+            "💸 Sent **{received} {symbol}** to {name} (**{tax}** taxed). Balance: **{balance} {symbol}**", lang,
+            received=result["received"], symbol=cfg["currency_symbol"], name=target.display_name,
+            tax=result["tax"], balance=result["from_balance"]
+        )
+        card = EconomyCardView("Sent", [line], discord.Color.green(), buttons=["balance", "shop"])
+        await interaction.followup.send(view=card)
 
     # ── ad-supported bonuses (spec §4 open question #1) ────────────────
     @economy_group.command(name="vote", description="Vote for the bot for a currency bonus")

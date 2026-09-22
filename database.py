@@ -7,6 +7,7 @@
 import asyncio
 import json
 import logging
+import random
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -3155,6 +3156,86 @@ class Database:
         await conn.execute(
             "ALTER TABLE discord_economy_config ADD COLUMN IF NOT EXISTS wizard_invoker_id BIGINT"
         )
+
+        # Robbery: 2 attempts per UTC calendar day (rob_count_today resets
+        # when rob_day no longer matches today's date, checked in Python so
+        # the reset logic lives in one place — see _rob_attempts_left).
+        # robbed_protection_until: a short shield stamped on the VICTIM after
+        # a successful rob, so one person can't be drained repeatedly.
+        await conn.execute(
+            "ALTER TABLE discord_economy_balances ADD COLUMN IF NOT EXISTS rob_count_today INTEGER NOT NULL DEFAULT 0"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_economy_balances ADD COLUMN IF NOT EXISTS rob_day DATE"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_economy_balances ADD COLUMN IF NOT EXISTS robbed_protection_until TIMESTAMPTZ"
+        )
+        # Coin-for-coin sends: daily cap + reset marker, same day-rollover
+        # pattern as rob_count_today.
+        await conn.execute(
+            "ALTER TABLE discord_economy_balances ADD COLUMN IF NOT EXISTS sent_today BIGINT NOT NULL DEFAULT 0"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_economy_balances ADD COLUMN IF NOT EXISTS send_day DATE"
+        )
+
+        # Shop item images: small png/jpeg stored inline (capped at ~200KB
+        # by the cog before insert) so items never depend on an external
+        # host or an expiring Discord CDN link.
+        await conn.execute(
+            "ALTER TABLE discord_economy_shop_items ADD COLUMN IF NOT EXISTS image_data BYTEA"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_economy_shop_items ADD COLUMN IF NOT EXISTS image_ext TEXT"
+        )
+
+        # Inventory: what buying an item actually gives you now, separate
+        # from the role grant. One row per (guild, clone, user, item),
+        # quantity incremented on repeat purchases — this is what makes an
+        # item listable on the trade board.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_economy_inventory (
+                id SERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                user_id BIGINT NOT NULL,
+                item_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL DEFAULT 1,
+                acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_economy_inventory_key
+            ON discord_economy_inventory (guild_id, COALESCE(clone_id, -1), user_id, item_id)
+        """)
+
+        # Trade board. Deliberately scoped to the guild+clone the listing
+        # was created in (see database.py's transfer_economy_balance): each
+        # guild's coins are their own, so a listing can only be bought with
+        # that same guild's balance. "All servers" browsing is read-only
+        # across guilds (economy.py's trade browse queries without a guild
+        # filter) — buying still happens back in the listing's own guild.
+        # held_quantity keeps the listed item out of the seller's usable
+        # inventory while it's up, and is restored on cancel.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_economy_trade_listings (
+                id SERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                guild_name TEXT,
+                seller_id BIGINT NOT NULL,
+                item_id INTEGER NOT NULL,
+                price BIGINT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                listed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                resolved_at TIMESTAMPTZ
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_discord_economy_trade_status
+            ON discord_economy_trade_listings (status, listed_at DESC)
+        """)
 
         # --- Discord port: automation polish (Phase 4) ---------------------------
         # Auto-responders: simple trigger -> response pairs, checked against
@@ -10739,16 +10820,18 @@ class Database:
             return [dict(r) for r in rows]
 
     async def add_shop_item(self, guild_id: int, name: str, description: str, price: int, created_by: int,
-                             role_id: Optional[int] = None, clone_id: Optional[int] = None) -> int:
+                             role_id: Optional[int] = None, clone_id: Optional[int] = None,
+                             image_data: Optional[bytes] = None, image_ext: Optional[str] = None) -> int:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO discord_economy_shop_items (guild_id, clone_id, name, description, price, role_id, created_by)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                INSERT INTO discord_economy_shop_items
+                    (guild_id, clone_id, name, description, price, role_id, created_by, image_data, image_ext)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING item_id
                 """,
-                guild_id, clone_id, name, description, price, role_id, created_by
+                guild_id, clone_id, name, description, price, role_id, created_by, image_data, image_ext
             )
             return row["item_id"]
 
@@ -10778,6 +10861,457 @@ class Database:
                 guild_id, clone_id, item_id
             )
             return dict(row) if row else None
+
+    async def set_shop_item_image(self, item_id: int, image_data: bytes, image_ext: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_economy_shop_items SET image_data = $2, image_ext = $3 WHERE item_id = $1",
+                item_id, image_data, image_ext
+            )
+
+    # ── inventory (Phase 3.1 — robbery/trading/inventory expansion) ────────
+    async def grant_inventory_item(self, guild_id: int, user_id: int, item_id: int,
+                                    clone_id: Optional[int] = None, quantity: int = 1) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_economy_inventory (guild_id, clone_id, user_id, item_id, quantity)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id, item_id) DO UPDATE SET
+                    quantity = discord_economy_inventory.quantity + $5
+                """,
+                guild_id, clone_id, user_id, item_id, quantity
+            )
+
+    async def get_inventory(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT i.item_id, i.quantity, s.name, s.price, s.description
+                FROM discord_economy_inventory i
+                JOIN discord_economy_shop_items s ON s.item_id = i.item_id
+                WHERE i.guild_id = $1 AND i.clone_id IS NOT DISTINCT FROM $2 AND i.user_id = $3 AND i.quantity > 0
+                ORDER BY s.name ASC
+                """,
+                guild_id, clone_id, user_id
+            )
+            return [dict(r) for r in rows]
+
+    async def get_inventory_item(self, guild_id: int, user_id: int, item_id: int,
+                                  clone_id: Optional[int] = None) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT quantity FROM discord_economy_inventory
+                WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3 AND item_id = $4
+                """,
+                guild_id, clone_id, user_id, item_id
+            )
+            return dict(row) if row else None
+
+    # ── atomic coin transfer — shared by /rob, coin sends, and trade buys ──
+    class InsufficientFunds(Exception):
+        pass
+
+    async def transfer_economy_balance(self, guild_id: int, clone_id: Optional[int], from_user: int,
+                                        to_user: int, amount: int, reason: str) -> tuple:
+        """Moves `amount` from from_user to to_user in ONE transaction, so a
+        crash or concurrent call between the debit and credit can never lose
+        or duplicate coins (the old rob/trade code did these as two separate
+        adjust_economy_balance calls, which had exactly that gap). Locks
+        both rows in a fixed order (lowest user_id first) so two transfers
+        that touch the same pair of users can never deadlock each other.
+        Raises InsufficientFunds (without writing anything) if from_user
+        can't cover it. Returns (new_from_balance, new_to_balance)."""
+        pool = await get_pool()
+        lock_order = sorted([from_user, to_user])
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for uid in lock_order:
+                    await conn.execute(
+                        """
+                        INSERT INTO discord_economy_balances (guild_id, clone_id, user_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO NOTHING
+                        """,
+                        guild_id, clone_id, uid
+                    )
+                rows = {}
+                for uid in lock_order:
+                    rows[uid] = await conn.fetchrow(
+                        """
+                        SELECT balance FROM discord_economy_balances
+                        WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                        FOR UPDATE
+                        """,
+                        guild_id, clone_id, uid
+                    )
+                if rows[from_user]["balance"] < amount:
+                    raise self.InsufficientFunds()
+                new_from = await conn.fetchval(
+                    """
+                    UPDATE discord_economy_balances SET balance = balance - $4
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                    RETURNING balance
+                    """,
+                    guild_id, clone_id, from_user, amount
+                )
+                new_to = await conn.fetchval(
+                    """
+                    UPDATE discord_economy_balances SET balance = balance + $4
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                    RETURNING balance
+                    """,
+                    guild_id, clone_id, to_user, amount
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO discord_economy_transactions (guild_id, clone_id, user_id, amount, reason)
+                    VALUES ($1, $2, $3, $4, $5), ($1, $2, $6, $7, $5)
+                    """,
+                    guild_id, clone_id, from_user, -amount, reason, to_user, amount
+                )
+        return new_from, new_to
+
+    # ── robbery: 2x/day + 1h victim protection, fully atomic ───────────────
+    class RobUnavailable(Exception):
+        def __init__(self, code: str, seconds_left: float = 0):
+            self.code = code  # "no_attempts" | "victim_protected"
+            self.seconds_left = seconds_left
+
+    async def attempt_robbery(self, guild_id: int, clone_id: Optional[int], robber_id: int,
+                               victim_id: int, success_chance: int, protection_hours: float = 1.0) -> Dict:
+        """Everything a robbery needs — checking the robber's 2/day
+        allowance, checking the victim's post-rob protection window,
+        rolling the outcome, and moving the coins — happens inside one
+        transaction with both rows locked, so two rob attempts fired at once
+        can't both slip through on the last attempt of the day or both hit
+        a victim whose protection should have already kicked in."""
+        pool = await get_pool()
+        lock_order = sorted([robber_id, victim_id])
+        today = datetime.now(timezone.utc).date()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for uid in lock_order:
+                    await conn.execute(
+                        """
+                        INSERT INTO discord_economy_balances (guild_id, clone_id, user_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO NOTHING
+                        """,
+                        guild_id, clone_id, uid
+                    )
+                rows = {}
+                for uid in lock_order:
+                    rows[uid] = dict(await conn.fetchrow(
+                        """
+                        SELECT * FROM discord_economy_balances
+                        WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                        FOR UPDATE
+                        """,
+                        guild_id, clone_id, uid
+                    ))
+                robber = rows[robber_id]
+                victim = rows[victim_id]
+
+                attempts_used = robber["rob_count_today"] if robber["rob_day"] == today else 0
+                if attempts_used >= 2:
+                    raise self.RobUnavailable("no_attempts")
+
+                protection_until = victim["robbed_protection_until"]
+                if protection_until and protection_until.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc):
+                    seconds_left = (protection_until.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+                    raise self.RobUnavailable("victim_protected", seconds_left)
+
+                # Spend the attempt regardless of outcome — rolled into the
+                # same UPDATE that stamps rob_day/rob_count_today.
+                await conn.execute(
+                    """
+                    UPDATE discord_economy_balances
+                    SET rob_count_today = $4, rob_day = $5
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                    """,
+                    guild_id, clone_id, robber_id, attempts_used + 1, today
+                )
+
+                success = random.randint(1, 100) <= success_chance
+                result = {"success": success}
+                if success:
+                    stolen = min(victim["balance"], random.randint(1, victim["balance"] // 2 + 1)) if victim["balance"] > 0 else 0
+                    new_victim = await conn.fetchval(
+                        """
+                        UPDATE discord_economy_balances
+                        SET balance = GREATEST(0, balance - $4),
+                            robbed_protection_until = NOW() + ($5 || ' hours')::interval
+                        WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                        RETURNING balance
+                        """,
+                        guild_id, clone_id, victim_id, stolen, str(protection_hours)
+                    )
+                    new_robber = await conn.fetchval(
+                        """
+                        UPDATE discord_economy_balances SET balance = balance + $4
+                        WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                        RETURNING balance
+                        """,
+                        guild_id, clone_id, robber_id, stolen
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO discord_economy_transactions (guild_id, clone_id, user_id, amount, reason)
+                        VALUES ($1, $2, $3, $4, 'robbed'), ($1, $2, $5, $6, 'rob_success')
+                        """,
+                        guild_id, clone_id, victim_id, -stolen, robber_id, stolen
+                    )
+                    result.update(stolen=stolen, robber_balance=new_robber, victim_balance=new_victim)
+                else:
+                    fine = min(robber["balance"], random.randint(1, 50))
+                    new_robber = await conn.fetchval(
+                        """
+                        UPDATE discord_economy_balances SET balance = GREATEST(0, balance - $4)
+                        WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                        RETURNING balance
+                        """,
+                        guild_id, clone_id, robber_id, fine
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO discord_economy_transactions (guild_id, clone_id, user_id, amount, reason)
+                        VALUES ($1, $2, $3, $4, 'rob_failed')
+                        """,
+                        guild_id, clone_id, robber_id, -fine
+                    )
+                    result.update(fine=fine, robber_balance=new_robber)
+                result["attempts_left"] = 2 - (attempts_used + 1)
+        return result
+
+    # ── coin-for-coin sends: 5% tax + daily cap, alt/real-money resistant ──
+    async def send_coins(self, guild_id: int, clone_id: Optional[int], from_user: int, to_user: int,
+                          amount: int, daily_cap: int, tax_rate: float = 0.05) -> Dict:
+        """5% tax funds nothing and just leaves the economy (a sink), and
+        the daily cap resets on UTC day rollover — both exist to blunt
+        alt-account funneling and real-money coin sales, not to make
+        sending painful for normal use. Raises InsufficientFunds or
+        DailyCapExceeded; nothing is written on either."""
+        pool = await get_pool()
+        today = datetime.now(timezone.utc).date()
+        lock_order = sorted([from_user, to_user])
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for uid in lock_order:
+                    await conn.execute(
+                        """
+                        INSERT INTO discord_economy_balances (guild_id, clone_id, user_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO NOTHING
+                        """,
+                        guild_id, clone_id, uid
+                    )
+                rows = {}
+                for uid in lock_order:
+                    rows[uid] = dict(await conn.fetchrow(
+                        """
+                        SELECT * FROM discord_economy_balances
+                        WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                        FOR UPDATE
+                        """,
+                        guild_id, clone_id, uid
+                    ))
+                sender = rows[from_user]
+                sent_today = sender["sent_today"] if sender["send_day"] == today else 0
+                if sent_today + amount > daily_cap:
+                    raise self.DailyCapExceeded(daily_cap - sent_today)
+                total_cost = amount  # tax comes OUT of the amount received, not extra from the sender
+                if sender["balance"] < total_cost:
+                    raise self.InsufficientFunds()
+                tax = int(amount * tax_rate)
+                received = amount - tax
+                new_from = await conn.fetchval(
+                    """
+                    UPDATE discord_economy_balances
+                    SET balance = balance - $4, sent_today = $5, send_day = $6
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                    RETURNING balance
+                    """,
+                    guild_id, clone_id, from_user, amount, sent_today + amount, today
+                )
+                new_to = await conn.fetchval(
+                    """
+                    UPDATE discord_economy_balances SET balance = balance + $4
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3
+                    RETURNING balance
+                    """,
+                    guild_id, clone_id, to_user, received
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO discord_economy_transactions (guild_id, clone_id, user_id, amount, reason)
+                    VALUES ($1, $2, $3, $4, 'send_out'), ($1, $2, $5, $6, 'send_in')
+                    """,
+                    guild_id, clone_id, from_user, -amount, to_user, received
+                )
+        return {"from_balance": new_from, "to_balance": new_to, "tax": tax, "received": received}
+
+    class DailyCapExceeded(Exception):
+        def __init__(self, remaining: int):
+            self.remaining = remaining
+
+    # ── trade board ──────────────────────────────────────────────────────
+    async def list_item_for_trade(self, guild_id: int, clone_id: Optional[int], guild_name: str,
+                                   seller_id: int, item_id: int, price: int) -> Optional[int]:
+        """Moves one unit from the seller's usable inventory into escrow
+        (deletes it from discord_economy_inventory) and opens a listing.
+        Returns None if the seller doesn't actually own the item."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT quantity FROM discord_economy_inventory
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3 AND item_id = $4
+                    FOR UPDATE
+                    """,
+                    guild_id, clone_id, seller_id, item_id
+                )
+                if not row or row["quantity"] < 1:
+                    return None
+                await conn.execute(
+                    """
+                    UPDATE discord_economy_inventory SET quantity = quantity - 1
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3 AND item_id = $4
+                    """,
+                    guild_id, clone_id, seller_id, item_id
+                )
+                listing_id = await conn.fetchval(
+                    """
+                    INSERT INTO discord_economy_trade_listings (guild_id, clone_id, guild_name, seller_id, item_id, price)
+                    VALUES ($1, $2, $3, $4, $5, $6) RETURNING id
+                    """,
+                    guild_id, clone_id, guild_name, seller_id, item_id, price
+                )
+        return listing_id
+
+    async def cancel_trade_listing(self, listing_id: int, seller_id: int) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT * FROM discord_economy_trade_listings WHERE id = $1 AND status = 'active' FOR UPDATE",
+                    listing_id
+                )
+                if not row or row["seller_id"] != seller_id:
+                    return False
+                await conn.execute(
+                    "UPDATE discord_economy_trade_listings SET status = 'cancelled', resolved_at = NOW() WHERE id = $1",
+                    listing_id
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO discord_economy_inventory (guild_id, clone_id, user_id, item_id, quantity)
+                    VALUES ($1, $2, $3, $4, 1)
+                    ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id, item_id) DO UPDATE SET
+                        quantity = discord_economy_inventory.quantity + 1
+                    """,
+                    row["guild_id"], row["clone_id"], seller_id, row["item_id"]
+                )
+        return True
+
+    async def buy_trade_listing(self, listing_id: int, buyer_id: int, buyer_guild_id: int,
+                                 clone_id: Optional[int]) -> Dict:
+        """Buyer must be transacting from the SAME guild the listing was
+        made in — each guild's coins are its own (see transfer_economy_balance
+        docstring / discord-bot-expansion-spec decision log), so a listing
+        browsed from another server has to be bought from its home server."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT * FROM discord_economy_trade_listings WHERE id = $1 AND status = 'active' FOR UPDATE",
+                    listing_id
+                )
+                if not row:
+                    return {"error": "not_found"}
+                if row["seller_id"] == buyer_id:
+                    return {"error": "own_listing"}
+                if row["guild_id"] != buyer_guild_id or row["clone_id"] != clone_id:
+                    return {"error": "wrong_guild", "guild_name": row["guild_name"]}
+                try:
+                    new_buyer, new_seller = await self.transfer_economy_balance(
+                        row["guild_id"], row["clone_id"], buyer_id, row["seller_id"], row["price"],
+                        f"trade_buy:{listing_id}"
+                    )
+                except self.InsufficientFunds:
+                    return {"error": "insufficient_funds"}
+                await conn.execute(
+                    "UPDATE discord_economy_trade_listings SET status = 'sold', resolved_at = NOW() WHERE id = $1",
+                    listing_id
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO discord_economy_inventory (guild_id, clone_id, user_id, item_id, quantity)
+                    VALUES ($1, $2, $3, $4, 1)
+                    ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id, item_id) DO UPDATE SET
+                        quantity = discord_economy_inventory.quantity + 1
+                    """,
+                    row["guild_id"], row["clone_id"], buyer_id, row["item_id"]
+                )
+        return {"error": None, "item_id": row["item_id"], "price": row["price"],
+                "buyer_balance": new_buyer, "seller_id": row["seller_id"]}
+
+    async def get_trade_listings(self, guild_id: Optional[int] = None, clone_id: Optional[int] = None,
+                                  limit: int = 10) -> List[Dict]:
+        """guild_id=None browses every guild's active listings (the "All
+        servers" view); pass it to scope to one guild only."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if guild_id is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT t.*, s.name AS item_name FROM discord_economy_trade_listings t
+                    JOIN discord_economy_shop_items s ON s.item_id = t.item_id
+                    WHERE t.status = 'active' AND t.clone_id IS NOT DISTINCT FROM $1
+                    ORDER BY t.listed_at DESC LIMIT $2
+                    """,
+                    clone_id, limit
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT t.*, s.name AS item_name FROM discord_economy_trade_listings t
+                    JOIN discord_economy_shop_items s ON s.item_id = t.item_id
+                    WHERE t.status = 'active' AND t.guild_id = $1 AND t.clone_id IS NOT DISTINCT FROM $2
+                    ORDER BY t.listed_at DESC LIMIT $3
+                    """,
+                    guild_id, clone_id, limit
+                )
+            return [dict(r) for r in rows]
+
+    async def get_economy_leaderboard_networth(self, guild_id: int, clone_id: Optional[int] = None,
+                                                limit: int = 10) -> List[Dict]:
+        """Coins plus the shop value of everything in each member's
+        inventory — a separate view from the plain-coins leaderboard so a
+        hoarder-of-items vs. a hoarder-of-coins can both show up on top."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT b.user_id, b.balance,
+                       b.balance + COALESCE(SUM(i.quantity * s.price), 0) AS net_worth
+                FROM discord_economy_balances b
+                LEFT JOIN discord_economy_inventory i
+                    ON i.guild_id = b.guild_id AND i.clone_id IS NOT DISTINCT FROM b.clone_id AND i.user_id = b.user_id
+                LEFT JOIN discord_economy_shop_items s ON s.item_id = i.item_id
+                WHERE b.guild_id = $1 AND b.clone_id IS NOT DISTINCT FROM $2
+                GROUP BY b.user_id, b.balance
+                ORDER BY net_worth DESC LIMIT $3
+                """,
+                guild_id, clone_id, limit
+            )
+            return [dict(r) for r in rows]
 
     # ─────────────────────────────────────────────────────────────────────
     # Discord: automation polish (Phase 4) — autoresponders + scheduled posts
