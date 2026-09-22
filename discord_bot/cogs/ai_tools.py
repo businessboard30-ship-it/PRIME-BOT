@@ -45,7 +45,7 @@ from modules.ai_features import (
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
     check_reply_limit, get_reply_usage, reply_cap_for,
     is_reply_chat_enabled, is_premium_question, premium_answer,
-    is_bot_invite_question, is_support_invite_question, support_invite_answer,
+    is_bot_invite_question, is_support_invite_question,
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
@@ -110,12 +110,25 @@ class AIToolsCog(commands.Cog):
         if is_premium_question(text):
             return premium_answer(in_server), (premium_view() if in_server else None)
         if is_support_invite_question(text):
-            return support_invite_answer(), None
+            from config import DISCORD_SUPPORT_SERVER_INVITE
+            if not DISCORD_SUPPORT_SERVER_INVITE:
+                return "We don't have a support server link set up right now.", None
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                label="Join our support server", style=discord.ButtonStyle.link,
+                emoji="🆘", url=DISCORD_SUPPORT_SERVER_INVITE,
+            ))
+            return "Here you go — tap below to join the support server.", view
         if is_bot_invite_question(text):
             app_id = getattr(self.bot, "application_id", None)
             if app_id is None:
                 return "I couldn't work out my invite link just now. Try `/invite` in a moment.", None
-            return f"➕ Tap [here](<{build_invite_url(app_id)}>) to add me to your server.", None
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                label="Add me to your server", style=discord.ButtonStyle.link,
+                emoji="➕", url=build_invite_url(app_id),
+            ))
+            return "➕ Tap below to add me to your server.", view
         return None
 
     @staticmethod
@@ -415,10 +428,10 @@ class AIToolsCog(commands.Cog):
 
     @commands.Cog.listener("on_message")
     async def on_bot_chat(self, message: discord.Message):
-        """Chat without /aichat: reply to any message from this bot (or its
-        clone) in a server, or just DM the bot. Stays silent in a channel with
-        a live roast battle (the roast cog owns replies there) and when
-        the per-server switch is off. Answers are short (see
+        """Chat without /aichat: DM the bot, reply to one of its own messages
+        in a server, or @mention it anywhere in a server. Stays silent in a
+        channel with a live roast battle (the roast cog owns replies there)
+        and when the per-server switch is off. Answers are short (see
         BOT_RULES / trim_reply in modules/ai_features.py)."""
         if message.author.bot:
             return
@@ -429,24 +442,36 @@ class AIToolsCog(commands.Cog):
             if message.guild is None:
                 history = await self._dm_context(message)
             else:
+                is_mention = self.bot.user in message.mentions
+                replied = None
                 ref = message.reference
-                if not ref or not ref.message_id:
-                    return
-                replied = ref.resolved if isinstance(ref.resolved, discord.Message) else None
-                if replied is None:
-                    try:
-                        replied = await message.channel.fetch_message(ref.message_id)
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                if ref and ref.message_id:
+                    replied = ref.resolved if isinstance(ref.resolved, discord.Message) else None
+                    if replied is None:
+                        try:
+                            replied = await message.channel.fetch_message(ref.message_id)
+                        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                            replied = None
+                if replied is not None:
+                    # Only THIS bot's own messages: each clone is its own
+                    # process and answers replies to itself, so nothing
+                    # answers twice.
+                    if replied.author.id != self.bot.user.id:
                         return
-                # Only THIS bot's own messages: each clone is its own process
-                # and answers replies to itself, so nothing answers twice.
-                if replied.author.id != self.bot.user.id:
+                elif not is_mention:
                     return
                 if await self._roast_active_in(message.channel):
                     return
                 if not await is_reply_chat_enabled(message.guild.id):
                     return
-                history = await self._reply_chain(replied)
+                history = await self._reply_chain(replied) if replied is not None else []
+                if is_mention:
+                    # Strip the "<@bot_id>" / "<@!bot_id>" mention token so
+                    # the AI only sees the actual question, not raw mention
+                    # markup.
+                    content = re.sub(rf"<@!?{self.bot.user.id}>", "", content).strip()
+                    if not content:
+                        return
 
             async with message.channel.typing():
                 text, view = await self._run_reply_turn(message, content, history)
