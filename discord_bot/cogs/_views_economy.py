@@ -75,21 +75,28 @@ class EconomyCardView(discord.ui.LayoutView):
         text = None
         if not persistent:
             text = discord.ui.TextDisplay("\n".join([f"### {header}", *(lines or [])]))
-        if button_keys:
+        # Discord caps an ActionRow at 5 children — chunk the requested keys
+        # into as many rows as needed (persistent registers all 14 presets
+        # at once, which alone needs 3 rows; a plain ActionRow.add_item
+        # raises ValueError('maximum number of children exceeded') past 5,
+        # which is exactly what crashed startup before this chunking existed).
+        rows = []
+        for i in range(0, len(button_keys), 5):
             row = discord.ui.ActionRow()
-            for key in button_keys:
+            for key in button_keys[i:i + 5]:
                 label, style, emoji = self._PRESETS[key]
                 button = discord.ui.Button(label=label, style=style, emoji=emoji, custom_id=f"eco:{key}")
                 button.callback = self._make_callback(key)
                 row.add_item(button)
+            rows.append(row)
         if persistent:
             # The registered prototype never gets displayed — it exists
             # purely to give every custom_id a live callback — but
             # LayoutView still requires at least one non-empty container.
             placeholder = discord.ui.TextDisplay("economy card prototype")
-            children = [placeholder, discord.ui.Separator(), row] if row else [placeholder]
+            children = [placeholder, discord.ui.Separator(), *rows] if rows else [placeholder]
         else:
-            children = [text, discord.ui.Separator(), row] if row else [text]
+            children = [text, discord.ui.Separator(), *rows] if rows else [text]
         self.add_item(discord.ui.Container(*children, accent_colour=accent))
 
     def _make_callback(self, key: str):
