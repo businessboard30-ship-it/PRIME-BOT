@@ -188,14 +188,23 @@ def _live_lines(bot) -> list:
         return []
 
 
-def build_context(user_perms: Optional[set] = None, bot=None) -> str:
+def build_context(user_perms: Optional[set] = None, bot=None, runnable: Optional[set] = None) -> str:
     """Returns a system-prompt snippet listing every command the bot has.
     Every command is visible to every asker — the bot doesn't hide its own
     command list, and Discord's permission system is what actually blocks
     a mod-only command from running, not what the AI is willing to talk
     about. Commands that need a permission just say so, same as /help
     would show. `user_perms` is accepted but unused (kept so callers don't
-    need changes if per-user filtering is ever wanted again)."""
+    need changes if per-user filtering is ever wanted again).
+
+    `runnable`: names (no leading "/") of commands the AI can actually
+    execute for THIS user right now via modules.ai_command_guard — the
+    same set discord_bot.cogs.ai_tools built its tool schema from. Only
+    those get the "I can run this" framing below and the corresponding
+    system rule; everything else stays describe-only, same as before
+    this parameter existed (the default, runnable=None, is unchanged
+    behavior).
+    """
     lines = _live_lines(bot) if bot is not None else []
     for cmd, usage, desc, perm in ([] if lines else COMMANDS):
         if perm == "owner_only":
@@ -208,7 +217,21 @@ def build_context(user_perms: Optional[set] = None, bot=None) -> str:
     # otherwise the model tells them to "use /aichat" while they are chatting.
     _chat_cmds = {"/aichat", "/newchat", "/endchat"}
     lines = [ln for ln in lines if ln.split(" ", 1)[0] not in _chat_cmds]
+    runnable = runnable or set()
+    if runnable:
+        lines = [
+            (f"{ln} [I can run this for you — use the matching tool instead of just describing it]"
+             if ln.split(" ", 1)[0].lstrip("/") in runnable else ln)
+            for ln in lines
+        ]
     joined = "\n".join(lines)
+    can_run_rule = (
+        "- Some commands below are marked \"I can run this for you\" — for THOSE, call the matching "
+        "tool instead of just telling the person to type the command; only fall back to describing "
+        "the command as text for one that ISN'T marked that way.\n"
+        if runnable else
+        "- You can only tell someone what to type — you cannot run commands yourself.\n"
+    )
     return (
         "You also know every command this Discord bot has, listed below. Rules:\n"
         "- The person is already chatting with you right now. Never tell them to use /aichat "
@@ -220,7 +243,7 @@ def build_context(user_perms: Optional[set] = None, bot=None) -> str:
         "- If what someone wants isn't in this list at all, don't guess — say something "
         "like \"I don't see a command for that — try /help and scroll through the "
         "categories, there may be something close to what you need.\"\n"
-        "- You can only tell someone what to type — you cannot run commands yourself.\n"
+        f"{can_run_rule}"
         "- Keep answers to 1-3 short sentences; give just the command and what it does.\n"
         f"{joined}"
     )

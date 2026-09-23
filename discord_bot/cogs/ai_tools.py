@@ -187,13 +187,20 @@ class AIToolsCog(commands.Cog):
 
     async def _command_context(self, message: str, user_id: int,
                                 perms: Optional[discord.Permissions],
-                                guild: Optional[discord.Guild]) -> Optional[str]:
+                                guild: Optional[discord.Guild],
+                                runnable: Optional[set] = None) -> Optional[str]:
         """Only inject the full command list when the message actually looks
         like it's asking about the bot's commands — otherwise it drowns
         out the normal chat system prompt and the AI answers like a
         command-lookup tool for every message, including plain chat. XP
-        facts (real leveling numbers) are appended when relevant."""
-        command_context = build_context(self._perm_set(perms), self.bot) if is_command_question(message) else None
+        facts (real leveling numbers) are appended when relevant.
+        `runnable` (command names this user can actually have the AI run
+        right now — see _build_command_tools) is threaded through to
+        build_context so the "I can run this" framing lines up with what
+        the tool schema actually offers this turn; without it, the model
+        gets told "you cannot run commands yourself" even while a matching
+        tool sits right there, and it'll describe instead of act."""
+        command_context = build_context(self._perm_set(perms), self.bot, runnable=runnable) if is_command_question(message) else None
         xp_facts = await self._xp_facts(message, user_id, guild)
         if xp_facts:
             command_context = f"{command_context}\n\n{xp_facts}" if command_context else xp_facts
@@ -375,8 +382,9 @@ class AIToolsCog(commands.Cog):
         anime_keywords = ("anime", "manga", "character", "episode", "series", "watch", "recommend")
         is_anime = any(kw in message.lower() for kw in anime_keywords)
 
-        command_context = await self._command_context(message, user_id, perms, guild)
         tools = await self._build_command_tools(interaction) if interaction is not None else None
+        runnable = {t["function"]["name"] for t in tools} if tools else None
+        command_context = await self._command_context(message, user_id, perms, guild, runnable=runnable)
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
                                   session_id=session_id, command_context=command_context, tools=tools or None)
         if not response:
@@ -591,10 +599,11 @@ class AIToolsCog(commands.Cog):
 
         is_anime = any(kw in content.lower() for kw in ("anime", "manga", "character", "episode", "series", "watch", "recommend"))
         perms = message.channel.permissions_for(message.author) if guild else None
-        command_context = await self._command_context(content, user_id, perms, guild)
 
         proxy = ProxyInteraction(message, self.bot) if guild else None
         tools = await self._build_command_tools(proxy) if proxy is not None else []
+        runnable = {t["function"]["name"] for t in tools} if tools else None
+        command_context = await self._command_context(content, user_id, perms, guild, runnable=runnable)
         response = await ai_chat(
             user_id, content, is_anime_question=is_anime, tier="basic", session_id=None,
             command_context=command_context, history_override=history,
