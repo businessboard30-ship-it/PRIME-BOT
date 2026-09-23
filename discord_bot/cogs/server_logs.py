@@ -72,6 +72,18 @@ class ServerLogsCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # /modlog checks permission manually (interaction.permissions.manage_guild)
+    # rather than via an app_commands.checks decorator, so ai_command_guard's
+    # check_real_permission (which only replays a command's *decorated*
+    # checks) can't enforce it for the AI path — ai_modlog below re-does that
+    # same manual check itself. See ModerationCog.AI_CONFIRMED_HANDLERS for
+    # why this map exists at all: confirm_interaction's response is already
+    # consumed by AIConfirmView, so modlog's own interaction.response.defer()
+    # would raise discord.InteractionResponded.
+    AI_CONFIRMED_HANDLERS = {
+        "modlog": "ai_modlog",
+    }
+
     async def _config(self, guild_id: int):
         clone_id = _clone_id_of_bot(self.bot)
         return await db.get_automod_config(guild_id, clone_id=clone_id)
@@ -108,6 +120,22 @@ class ServerLogsCog(GuildOnlyCog):
         await interaction.followup.send(view=view)
         sent = await interaction.original_response()
         await remember_modlog_wizard_message(interaction.guild_id, clone_id, interaction.user.id, sent.channel.id, sent.id)
+
+    async def ai_modlog(self, confirm_interaction: discord.Interaction):
+        """Entry point for execute_ai_command — confirm_interaction's response
+        is already used by AIConfirmView, so this replies via followup and
+        never calls interaction.response.defer(). Re-does the manual
+        manage_guild check /modlog's own callback does, since that check
+        isn't a decorator and so isn't covered by check_real_permission."""
+        if not getattr(confirm_interaction.permissions, "manage_guild", False):
+            await confirm_interaction.followup.send("You need the **Manage Server** permission to use this.", ephemeral=True)
+            return
+        clone_id = _clone_id_of_bot(confirm_interaction.client)
+        config = await db.get_automod_config(confirm_interaction.guild_id, clone_id=clone_id)
+        view = build_modlog_wizard_view(confirm_interaction.guild_id, clone_id, confirm_interaction.user.id, config)
+        await confirm_interaction.followup.send(view=view)
+        sent = await confirm_interaction.original_response()
+        await remember_modlog_wizard_message(confirm_interaction.guild_id, clone_id, confirm_interaction.user.id, sent.channel.id, sent.id)
 
     # ── Server ───────────────────────────────────────────────────────────
     @commands.Cog.listener()
