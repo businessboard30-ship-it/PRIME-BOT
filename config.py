@@ -326,7 +326,7 @@ GUMROAD_PRODUCT_LINKS = {
     # below). Create this product in the Gumroad dashboard (pay-what-you-want,
     # min $10) and paste its link/id here or set GUMROAD_AD_PLACEMENT_LINK /
     # GUMROAD_AD_PLACEMENT_ID env vars.
-    "ad_placement": os.getenv("GUMROAD_AD_PLACEMENT_LINK", ""),
+    "ad_placement": os.getenv("GUMROAD_AD_PLACEMENT_LINK", "https://boardmaster87.gumroad.com/l/tfrgcw"),
 }
 GUMROAD_PRODUCT_IDS = {
     "welcome_card_pack": "dE2cyP0dOzPPAqn2wZerqw==",
