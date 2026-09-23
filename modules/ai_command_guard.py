@@ -260,16 +260,36 @@ async def execute_ai_command(interaction: discord.Interaction, command_name: str
     NOT re-applied here — acceptable only because resolve_and_check just
     ran the equivalent permission check, and invoke_directly is reserved
     for read-only commands with nothing to mutate.
+
+    For requires_confirmation=True commands specifically: `interaction`
+    here is always the AIConfirmView button click, i.e. confirmation has
+    ALREADY happened. Some of these commands' own slash-command callbacks
+    show a second, redundant ConfirmActionView of their own (kick, ban,
+    unwarn, purge) — routing those through command._do_call would re-run
+    that callback, which tries interaction.response.send_message() on a
+    response AIConfirmView.confirm() already consumed, raising
+    discord.InteractionResponded. A cog can opt out of this by defining a
+    class-level `AI_CONFIRMED_HANDLERS = {"command_name": "method_name"}`
+    dict; when present for this command_name, that method is called
+    directly (bound to the cog instance) with the resolved kwargs instead
+    of going through _do_call/the slash-command callback at all. The
+    method is expected to do the confirmed action itself and respond via
+    followup (since interaction.response is already used).
     """
     spec, command, reason, cap_reached = await resolve_and_check(interaction, command_name, kwargs)
     if spec is None:
         raise AICommandDenied(reason, cap_reached=cap_reached)
 
     await db.log_ai_command(interaction.guild_id, interaction.user.id, command_name, kwargs, allowed=True)
-    if invoke_directly:
+    cog = command.binding
+    handler_map = getattr(cog, "AI_CONFIRMED_HANDLERS", None) if (cog is not None and spec.requires_confirmation) else None
+    handler_name = handler_map.get(command_name) if handler_map else None
+    if handler_name:
+        handler = getattr(cog, handler_name)
+        await handler(interaction, **kwargs)
+    elif invoke_directly:
         # Bypasses _do_call's transformer/cooldown/check pipeline — see
         # docstring above for why that's the deliberate tradeoff here.
-        cog = command.binding
         if cog is not None:
             await command.callback(cog, interaction, **kwargs)
         else:
