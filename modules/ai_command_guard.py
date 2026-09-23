@@ -233,7 +233,8 @@ async def get_qualifying_commands(interaction: discord.Interaction) -> List[AICo
     return qualifying
 
 
-async def execute_ai_command(interaction: discord.Interaction, command_name: str, **kwargs) -> None:
+async def execute_ai_command(interaction: discord.Interaction, command_name: str, *,
+                              invoke_directly: bool = False, **kwargs) -> None:
     """Call ONLY after: (1) resolve_and_check returned no denial_reason, and
     (2) if spec.requires_confirmation, the user has explicitly confirmed.
     Raises AICommandDenied if anything is off — including being called
@@ -241,17 +242,44 @@ async def execute_ai_command(interaction: discord.Interaction, command_name: str
     confirm prompt being shown and being clicked. If exc.cap_reached is
     True, catch it and call send_cap_reached_prompt(interaction) instead
     of just showing str(exc) — that's what renders the actual Premium
-    button rather than plain text."""
+    button rather than plain text.
+
+    `invoke_directly`: False (default, used whenever `interaction` is a
+    genuine discord.Interaction — every /aichat call, and every confirm-
+    button click regardless of where the original request came from)
+    goes through command._do_call, discord.py's own dispatch machinery
+    (parameter transformation, cooldowns, the works) — same as a real
+    interaction uses. True calls the command's callback function
+    directly, skipping _do_call entirely. Only pass True when `interaction`
+    is NOT a real discord.Interaction (see discord_bot.cogs.ai_tools's
+    ProxyInteraction, used for non-mutating/no-confirmation commands
+    reached via reply/mention chat, which has no real Interaction to give
+    _do_call — that method reaches into Discord-issued-interaction-only
+    internals that a stand-in object can't safely satisfy). This also
+    means cooldowns and any checks the command decorated itself with are
+    NOT re-applied here — acceptable only because resolve_and_check just
+    ran the equivalent permission check, and invoke_directly is reserved
+    for read-only commands with nothing to mutate.
+    """
     spec, command, reason, cap_reached = await resolve_and_check(interaction, command_name, kwargs)
     if spec is None:
         raise AICommandDenied(reason, cap_reached=cap_reached)
 
     await db.log_ai_command(interaction.guild_id, interaction.user.id, command_name, kwargs, allowed=True)
-    # Binds and calls the command's own callback directly through discord.py's
-    # normal invocation path (parameter transformation, cooldowns, the works)
-    # rather than hand-rolling argument passing — same machinery a real
-    # interaction uses.
-    await command._do_call(interaction, kwargs)
+    if invoke_directly:
+        # Bypasses _do_call's transformer/cooldown/check pipeline — see
+        # docstring above for why that's the deliberate tradeoff here.
+        cog = command.binding
+        if cog is not None:
+            await command.callback(cog, interaction, **kwargs)
+        else:
+            await command.callback(interaction, **kwargs)
+    else:
+        # Binds and calls the command's own callback directly through discord.py's
+        # normal invocation path (parameter transformation, cooldowns, the works)
+        # rather than hand-rolling argument passing — same machinery a real
+        # interaction uses.
+        await command._do_call(interaction, kwargs)
 
 
 class AIConfirmView(discord.ui.View):

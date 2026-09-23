@@ -53,6 +53,7 @@ from modules.ai_command_guard import (
     get_qualifying_commands, resolve_and_check, execute_ai_command,
     AICommandDenied, send_cap_reached_prompt, AIConfirmView,
 )
+from discord_bot.cogs._ai_interaction_proxy import ProxyInteraction
 from discord_bot.cogs._views_shared import ActionButton, NavView, NavCardView, refresh_button
 from discord_clone_service import build_invite_url
 
@@ -294,39 +295,60 @@ class AIToolsCog(commands.Cog):
                 resolved[key] = value
         return resolved
 
-    async def _dispatch_tool_call(self, interaction: discord.Interaction, name: str, raw_args: dict) -> None:
-        """Runs one AI-chosen command end to end: re-checks allowlist +
-        real permission + daily cap (resolve_and_check never trusts the
+    async def _dispatch_tool_call(self, ctx, name: str, raw_args: dict, *, real_interaction: bool) -> None:
+        """Runs one AI-chosen command end to end, from either a real
+        discord.Interaction (/aichat) or a ProxyInteraction (reply/mention
+        chat — real_interaction=False). Always re-checks allowlist + real
+        permission + daily cap via resolve_and_check (never trusts the
         earlier qualifying-commands filter alone), then either asks for
-        confirmation or executes immediately, and always turns
-        AICommandDenied into the right user-facing response — the real
-        Premium button for a cap hit, plain text for anything else."""
-        spec, command, reason, cap_reached = await resolve_and_check(interaction, name, raw_args)
+        confirmation or executes, and always turns AICommandDenied into
+        the right user-facing response — the real Premium button for a
+        cap hit, plain text for anything else.
+
+        A confirmation-required command ALWAYS runs off a genuine
+        Interaction: the Confirm button click itself, which Discord issues
+        for real regardless of whether the original request was a slash
+        command or a plain reply. Only a non-confirmation (read-only)
+        command reached via reply/mention chat runs through the
+        ProxyInteraction, since there's no button click to get a real one
+        from and nothing here can mutate server/member state anyway.
+        """
+        spec, command, reason, cap_reached = await resolve_and_check(ctx, name, raw_args)
         if spec is None:
             if cap_reached:
-                await send_cap_reached_prompt(interaction)
+                await send_cap_reached_prompt(ctx)
             else:
-                await interaction.followup.send(reason, ephemeral=True)
+                await ctx.followup.send(reason, ephemeral=True)
             return
 
-        resolved_args = self._resolve_tool_args(interaction, command, raw_args)
+        resolved_args = self._resolve_tool_args(ctx, command, raw_args)
 
-        async def _run(inter: discord.Interaction):
+        async def _run(confirm_interaction: discord.Interaction):
+            # confirm_interaction is always a real Interaction (the button
+            # click), so this always uses the default invoke_directly=False.
             try:
-                await execute_ai_command(inter, name, **resolved_args)
+                await execute_ai_command(confirm_interaction, name, **resolved_args)
             except AICommandDenied as exc:
                 if exc.cap_reached:
-                    await send_cap_reached_prompt(inter)
+                    await send_cap_reached_prompt(confirm_interaction)
                 else:
-                    await inter.followup.send(str(exc), ephemeral=True)
+                    await confirm_interaction.followup.send(str(exc), ephemeral=True)
 
         if spec.requires_confirmation:
-            view = AIConfirmView(interaction.user.id, _run)
-            await interaction.followup.send(
+            view = AIConfirmView(ctx.user.id, _run)
+            await ctx.followup.send(
                 f"I'd run **/{name}** with `{resolved_args}` — confirm?", view=view, ephemeral=True,
             )
+        elif real_interaction:
+            await _run(ctx)
         else:
-            await _run(interaction)
+            try:
+                await execute_ai_command(ctx, name, invoke_directly=True, **resolved_args)
+            except AICommandDenied as exc:
+                if exc.cap_reached:
+                    await send_cap_reached_prompt(ctx)
+                else:
+                    await ctx.followup.send(str(exc))
 
     async def _run_chat_turn(self, user_id: int, message: str,
                               perms: Optional[discord.Permissions] = None,
@@ -362,7 +384,7 @@ class AIToolsCog(commands.Cog):
 
         if isinstance(response, dict):
             call = response["tool_calls"][0]
-            await self._dispatch_tool_call(interaction, call["name"], call.get("arguments") or {})
+            await self._dispatch_tool_call(interaction, call["name"], call.get("arguments") or {}, real_interaction=True)
             return "", warning, session_id
 
         prefix = f"⚠️ {warning}\n\n" if warning else ""
@@ -570,11 +592,18 @@ class AIToolsCog(commands.Cog):
         is_anime = any(kw in content.lower() for kw in ("anime", "manga", "character", "episode", "series", "watch", "recommend"))
         perms = message.channel.permissions_for(message.author) if guild else None
         command_context = await self._command_context(content, user_id, perms, guild)
+
+        proxy = ProxyInteraction(message, self.bot) if guild else None
+        tools = await self._build_command_tools(proxy) if proxy is not None else []
         response = await ai_chat(
             user_id, content, is_anime_question=is_anime, tier="basic", session_id=None,
             command_context=command_context, history_override=history,
-            guild_id=guild_id, kind="reply",
+            guild_id=guild_id, kind="reply", tools=tools or None,
         )
+        if isinstance(response, dict):
+            call = response["tool_calls"][0]
+            await self._dispatch_tool_call(proxy, call["name"], call.get("arguments") or {}, real_interaction=False)
+            return "", None
         return (response or "AI service error. Try again later."), None
 
     @commands.Cog.listener("on_message")
