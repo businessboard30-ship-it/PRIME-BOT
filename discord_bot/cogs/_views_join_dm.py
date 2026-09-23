@@ -577,12 +577,15 @@ class _PartnershipButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
             )
             return
 
-        from discord_bot.cogs.bump_setup import BumpWizardView, _create_bump_channel, ensure_bot_can_post
+        from discord_bot.cogs.bump_setup import (
+            BumpWizardView, _create_bump_channel_ex, ensure_bot_can_post, find_existing_bump_channels,
+        )
         try:
             current = await db.bump_get_guild_config(self.guild_id, clone_id=self.clone_id) or {}
             channel = guild.get_channel(current.get("bump_channel_id")) if current.get("bump_channel_id") else None
             if channel is None:
-                channel = discord.utils.get(guild.text_channels, name="bump")
+                found = find_existing_bump_channels(guild)
+                channel = found[0] if found else None
             created = False
             if channel is None:
                 if not guild.me.guild_permissions.manage_channels:
@@ -591,8 +594,7 @@ class _PartnershipButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
                         "grant it, or run `/bumpsetup` in your server.", ephemeral=True,
                     )
                     return
-                channel = await _create_bump_channel(interaction, guild=guild, user=interaction.user)
-                created = True
+                channel, created = await _create_bump_channel_ex(interaction, guild=guild, user=interaction.user)
 
             if not await ensure_bot_can_post(channel):
                 await interaction.followup.send(
@@ -1301,13 +1303,16 @@ async def _enable_bump(interaction: discord.Interaction, guild: discord.Guild, c
     #bump, else creates a bot-posting-only #bump. NEVER falls back to the
     system channel / first text channel like other one-tap features do: that
     put other servers' bumps and sponsored ads into #general."""
-    from discord_bot.cogs.bump_setup import _create_bump_channel, ensure_bot_can_post, ensure_server_listing
+    from discord_bot.cogs.bump_setup import (
+        _create_bump_channel_ex, ensure_bot_can_post, ensure_server_listing, find_existing_bump_channels,
+    )
     from database import get_pool
 
     current = await db.bump_get_guild_config(guild.id, clone_id=clone_id) or {}
     channel = guild.get_channel(current["bump_channel_id"]) if current.get("bump_channel_id") else None
     if channel is None or _is_general_chat_channel(guild, channel):
-        channel = discord.utils.get(guild.text_channels, name="bump")
+        found = find_existing_bump_channels(guild)
+        channel = found[0] if found else None
     created = False
     if channel is None:
         if not guild.me.guild_permissions.manage_channels:
@@ -1316,11 +1321,10 @@ async def _enable_bump(interaction: discord.Interaction, guild: discord.Guild, c
                 "or run `/bumpsetup` and pick a channel."
             )
         try:
-            channel = await _create_bump_channel(interaction, guild=guild, user=interaction.user)
+            channel, created = await _create_bump_channel_ex(interaction, guild=guild, user=interaction.user)
         except (discord.Forbidden, discord.HTTPException):
             logger.exception("_enable_bump couldn't create #bump in guild %s", guild.id)
             return False, "I couldn't create a #bump channel — run `/bumpsetup` and pick one."
-        created = True
     if not await ensure_bot_can_post(channel):
         return False, (
             f"I can't post in {channel.mention} and couldn't give myself access — "

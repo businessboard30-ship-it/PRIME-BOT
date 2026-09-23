@@ -847,13 +847,9 @@ class BumpChannelSelectView(discord.ui.View):
             )
             return
         try:
-            overwrites = {
-                interaction.guild.default_role: discord.PermissionOverwrite(send_messages=False),
-                interaction.guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
-            }
-            new_channel = await interaction.guild.create_text_channel(
-                "bump",
-                overwrites=overwrites,
+            from discord_bot.cogs.bump_setup import get_or_create_bump_channel
+            new_channel, created = await get_or_create_bump_channel(
+                interaction.guild, interaction.user, intro=False,
                 reason=f"Auto-created by /bumpsetup for {interaction.user}",
             )
         except discord.Forbidden:
@@ -873,8 +869,13 @@ class BumpChannelSelectView(discord.ui.View):
         # since bump content is meant to be automated announcements, not a
         # general chat channel — staff with Manage Channels can loosen this
         # afterward if they'd rather members see/post there freely.
-        await self.cog._finish_channel_setup(interaction, new_channel, respond_via="edit_message",
-                                              extra_note=f"Created {new_channel.mention} (posting there is bot-only by default — adjust its permissions anytime).")
+        await self.cog._finish_channel_setup(
+            interaction, new_channel, respond_via="edit_message",
+            extra_note=(
+                f"Created {new_channel.mention} (posting there is bot-only by default — adjust its permissions anytime)."
+                if created else f"You already have {new_channel.mention}, so I'm using it instead of creating another."
+            ),
+        )
 
 
 class BumpCog(commands.Cog):
@@ -1190,7 +1191,8 @@ class BumpCog(commands.Cog):
                     channels = await guild.fetch_channels()
                 except discord.HTTPException:
                     return "skipped"
-                existing = [c for c in channels if isinstance(c, discord.TextChannel) and c.name == "bump"]
+                from discord_bot.cogs.bump_setup import find_existing_bump_channels
+                existing = find_existing_bump_channels(guild, channels)
                 me = guild.me
                 channel, created = None, False
                 if existing:

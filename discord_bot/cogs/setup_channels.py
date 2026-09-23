@@ -467,19 +467,29 @@ class SetupChannelsCog(GuildOnlyCog):
             return None  # no longer missing — already handled
 
         category = await self._get_or_create_category(guild, clone_id)
-        kwargs = {}
         if key == "bump":
-            # Same bot-posts-only lock as /bumpsetup's own #bump (see
-            # bump_setup._create_bump_channel): members can read the ads, only
-            # the bot posts them. Without this the suggested #bump was open to
-            # everyone.
-            kwargs["overwrites"] = {
-                guild.default_role: discord.PermissionOverwrite(send_messages=False),
-                guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
-            }
-        channel = await guild.create_text_channel(entry["name"], category=category, reason="Server Setup wizard", **kwargs)
-        await self._seed_channel(guild, channel, key)
-        await self._write_config(guild, clone_id, key, channel)
+            from discord_bot.cogs.bump_setup import get_or_create_bump_channel
+            # One shared, locked get-or-create: reuses a bump channel the server
+            # already has (whatever it's called — this wizard's own name is
+            # "☑️bump", which /bumpsetup and the restore pass used to not
+            # recognise, so each made a second one) and is bot-posting-only when
+            # it does have to create one. It seeds nothing itself; _seed_channel below does.
+            channel, created = await get_or_create_bump_channel(
+                guild, None, name=entry["name"], category=category, reason="Server Setup wizard", intro=False,
+            )
+        else:
+            channel = await guild.create_text_channel(entry["name"], category=category, reason="Server Setup wizard")
+            created = True
+        if created:
+            await self._seed_channel(guild, channel, key)
+            await self._write_config(guild, clone_id, key, channel)
+        else:
+            # Adopted an existing bump channel — point the config at it, but
+            # don't mark it channel_auto_created (we didn't make it).
+            await db.bump_set_guild_config(
+                guild_id=guild.id, clone_id=clone_id, configured_by=guild.owner_id or 0,
+                bump_channel_id=channel.id, receives_bumps=True,
+            )
         if key == "bump":
             # No dead end: right after creating #bump, post the /bumpsetup wizard
             # in it (also heals the listing + this bot's permissions), so the
