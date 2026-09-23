@@ -54,11 +54,15 @@ def _clone_id_of(interaction: discord.Interaction):
     return getattr(interaction.client, "clone_id", None)
 
 
-async def _create_bump_channel(interaction: discord.Interaction) -> discord.TextChannel:
+async def _create_bump_channel(interaction: discord.Interaction, guild: discord.Guild = None, user=None) -> discord.TextChannel:
     """Creates a bot-posting-only #bump channel (in the "Server Setup"
     category if the guild already has one). Raises discord.Forbidden /
-    discord.HTTPException on failure — callers show their own message."""
-    guild = interaction.guild
+    discord.HTTPException on failure — callers show their own message.
+
+    `guild`/`user` are optional overrides for callers that run from a DM
+    (the join-DM "Partnership" button), where interaction.guild is None."""
+    guild = guild or interaction.guild
+    user = user or interaction.user
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(send_messages=False),
         guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
@@ -68,7 +72,7 @@ async def _create_bump_channel(interaction: discord.Interaction) -> discord.Text
         "bump",
         category=category,
         overwrites=overwrites,
-        reason=f"Auto-created by /bumpsetup for {interaction.user}",
+        reason=f"Auto-created by /bumpsetup for {user}",
     )
     try:
         await channel.send(
@@ -78,6 +82,29 @@ async def _create_bump_channel(interaction: discord.Interaction) -> discord.Text
     except discord.HTTPException:
         pass
     return channel
+
+
+async def ensure_bot_can_post(channel: discord.TextChannel) -> bool:
+    """Makes sure THIS bot can view/post embeds in `channel`. With a shared
+    bump network several bots (main + clones) deliver into the same #bump,
+    and a channel another bot created is bot-only for that bot — so grant
+    this bot access if it's missing. Returns False if it still can't post."""
+    me = channel.guild.me
+
+    def _ok():
+        p = channel.permissions_for(me)
+        return p.view_channel and p.send_messages and p.embed_links
+
+    if _ok():
+        return True
+    try:
+        await channel.set_permissions(
+            me, send_messages=True, embed_links=True, view_channel=True,
+            reason="Bump network: let this bot post in the shared #bump",
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+    return _ok()
 
 
 class BumpChannelSelect(discord.ui.ChannelSelect):
@@ -209,6 +236,9 @@ class BumpFinishButton(discord.ui.Button):
                 return
             wizard.channel_id = channel.id
             wizard.created_channel_id = channel.id
+        chosen = interaction.guild.get_channel(wizard.channel_id)
+        if isinstance(chosen, discord.TextChannel):
+            await ensure_bot_can_post(chosen)  # best-effort; shared #bump may belong to another bot
         await db.bump_set_guild_config(
             guild_id=interaction.guild_id,
             clone_id=_clone_id_of(interaction),

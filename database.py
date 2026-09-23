@@ -14503,32 +14503,57 @@ class Database:
             return new_streak
 
     async def bump_find_targets(self, exclude_guild_id: int, clone_id: Optional[int], language: str,
-                                 include_nsfw: bool, limit: int = 200) -> List[Dict]:
+                                 include_nsfw: bool, limit: int = 200, shared: bool = False) -> List[Dict]:
         """Other guilds that have EXPLICITLY opted in to receiving bumps
         (receives_bumps = TRUE — a separate consent from just having a
         bump channel set, see bump_guild_config comment), filtered by
         language (guild's own setting of 'any' always matches) and NSFW
-        opt-in."""
+        opt-in.
+
+        shared=False: only guilds configured under this same clone_id.
+        shared=True: guilds from EVERY clone's config (main bot + all
+        clones), one row per guild (if a guild is configured under several
+        bots, the main bot's config wins, else the lowest clone_id). Each
+        returned row carries the target's own `clone_id` so bump_enqueue can
+        file it under the bot that is actually inside that guild."""
         pool = await get_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT guild_id, bump_channel_id FROM bump_guild_config
-                WHERE COALESCE(clone_id, -1) = COALESCE($1, -1)
-                  AND guild_id != $2
-                  AND bump_channel_id IS NOT NULL
-                  AND receives_bumps = TRUE
-                  AND (language = 'any' OR $3 = 'any' OR language = $3)
-                  AND (NOT $4 OR nsfw_opt_in = TRUE)
-                LIMIT $5
-                """,
-                clone_id, exclude_guild_id, language, include_nsfw, limit,
-            )
+            if shared:
+                rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT ON (guild_id) guild_id, bump_channel_id, clone_id
+                    FROM bump_guild_config
+                    WHERE guild_id != $1
+                      AND bump_channel_id IS NOT NULL
+                      AND receives_bumps = TRUE
+                      AND (language = 'any' OR $2 = 'any' OR language = $2)
+                      AND (NOT $3 OR nsfw_opt_in = TRUE)
+                    ORDER BY guild_id, (clone_id IS NULL) DESC, clone_id
+                    LIMIT $4
+                    """,
+                    exclude_guild_id, language, include_nsfw, limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT guild_id, bump_channel_id FROM bump_guild_config
+                    WHERE COALESCE(clone_id, -1) = COALESCE($1, -1)
+                      AND guild_id != $2
+                      AND bump_channel_id IS NOT NULL
+                      AND receives_bumps = TRUE
+                      AND (language = 'any' OR $3 = 'any' OR language = $3)
+                      AND (NOT $4 OR nsfw_opt_in = TRUE)
+                    LIMIT $5
+                    """,
+                    clone_id, exclude_guild_id, language, include_nsfw, limit,
+                )
             return [dict(r) for r in rows]
 
     async def bump_enqueue(self, listing_id: int, clone_id: Optional[int], targets: List[Dict],
                             drip_seconds: int) -> int:
-        """Schedules one send per target, staggered by drip_seconds apart."""
+        """Schedules one send per target, staggered by drip_seconds apart.
+        A target dict with its own "clone_id" key (shared network) is queued
+        under that clone; otherwise under the sender's clone_id."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             now = datetime.now(timezone.utc)
@@ -14538,7 +14563,10 @@ class Database:
                     INSERT INTO bump_queue (listing_id, target_guild_id, target_channel_id, clone_id, scheduled_at)
                     VALUES ($1, $2, $3, $4, $5)
                     """,
-                    listing_id, target["guild_id"], target["bump_channel_id"], clone_id,
+                    listing_id, target["guild_id"], target["bump_channel_id"],
+                    # Shared-network targets carry their own clone_id so the bot
+                    # that is actually in that guild delivers it.
+                    target["clone_id"] if "clone_id" in target else clone_id,
                     now + timedelta(seconds=i * drip_seconds),
                 )
             return len(targets)
