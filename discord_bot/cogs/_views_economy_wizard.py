@@ -10,11 +10,12 @@ exists anywhere in database.py or economy.py's /buy flow. Adding a UI
 control for a setting nothing reads would be worse than no control at
 all — it would look configured and silently do nothing. Steps here are
 scoped to fields _ECONOMY_CONFIG_DEFAULTS actually has: currency name/
-symbol, daily amount, work range, rob success odds. (Vote-bonus and
-ad-bonus config already have their own commands — /ecoconfig vote,
-/ecoconfig ads — and are left there rather than folded into this wizard,
-since each needs 3-4 free-text fields a modal can't comfortably hold
-alongside everything else on one message.)
+symbol, daily amount, work range, rob success odds. Step 4 is the
+server's sponsor ad (the /watchad bonus): an edit modal that holds all five
+ad_* fields plus an Activate/Deactivate button, so nothing has to be typed
+as a slash command. /ecoconfig ads still works and writes the same columns.
+(Vote-bonus config keeps its own command, /ecoconfig vote — it needs 3-4
+free-text fields a modal can't comfortably hold alongside everything else.)
 """
 
 import re
@@ -32,6 +33,17 @@ def _clone_id_of(interaction: discord.Interaction):
     return getattr(interaction.client, "clone_id", None)
 
 
+def _ad_status_line(config: dict) -> str:
+    enabled = bool(config.get("ad_bonus_enabled", False))
+    title = config.get("ad_embed_title") or "Sponsored"
+    symbol = config.get("currency_symbol", "🪙")
+    amount = config.get("ad_bonus_amount", 50)
+    cooldown = config.get("ad_cooldown_hours", 4)
+    if enabled:
+        return f"✅ **Step 4: Sponsor ad** — 🟢 live: “{title}” · +{amount} {symbol} every {cooldown}h"
+    return f"⬜ **Step 4: Sponsor ad** — 🔴 off (“{title}” · +{amount} {symbol} every {cooldown}h when on)"
+
+
 def render_status_lines(config: dict) -> list:
     name = config.get("currency_name", "Coins")
     symbol = config.get("currency_symbol", "🪙")
@@ -44,6 +56,7 @@ def render_status_lines(config: dict) -> list:
         f"✅ **Step 1: Currency** — {symbol} {name}",
         f"✅ **Step 2: Daily / work payouts** — daily {daily}, work {work_min}–{work_max}",
         f"✅ **Step 3: Rob success odds** — {rob_odds}%",
+        _ad_status_line(config),
     ]
 
 
@@ -79,9 +92,12 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict) -> disc
     edit_row.add_item(EconomyPayoutsButton(guild_id, clone_id, invoker_id))
     rob_row = discord.ui.ActionRow()
     rob_row.add_item(EconomyRobOddsSelect(guild_id, clone_id, invoker_id, config))
+    ad_row = discord.ui.ActionRow()
+    ad_row.add_item(EconomyAdEditButton(guild_id, clone_id, invoker_id))
+    ad_row.add_item(EconomyAdToggleButton(guild_id, clone_id, invoker_id, bool(config.get("ad_bonus_enabled", False))))
 
     text = discord.ui.TextDisplay("\n".join(["### 💰 Set up economy", *perm_check.lines(guild_id, clone_id), *render_status_lines(config)]))
-    for item in (text, discord.ui.Separator(), edit_row, rob_row):
+    for item in (text, discord.ui.Separator(), edit_row, rob_row, ad_row):
         container.add_item(item)
 
     view.add_item(container)
@@ -254,4 +270,110 @@ class EconomyRobOddsSelect(discord.ui.DynamicItem[discord.ui.Select], template=_
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
-DYNAMIC_ITEMS = (EconomyCurrencyButton, EconomyPayoutsButton, EconomyRobOddsSelect)
+class EconomyAdModal(discord.ui.Modal, title="Sponsor ad"):
+    """All five ad_* settings in one modal (Discord's 5-field max). Saving does
+    NOT flip it live — the Activate button next to it does, so an admin can
+    draft an ad without it going out half-written."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
+        super().__init__()
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        self.ad_title = discord.ui.TextInput(
+            label="Headline", default=config.get("ad_embed_title") or "", required=False, max_length=100)
+        self.ad_description = discord.ui.TextInput(
+            label="Message", style=discord.TextStyle.paragraph,
+            default=config.get("ad_embed_description") or "", required=False, max_length=500)
+        self.ad_url = discord.ui.TextInput(
+            label="Link (optional, https://…)", default=config.get("ad_embed_url") or "",
+            required=False, max_length=300)
+        self.ad_amount = discord.ui.TextInput(
+            label="Bonus amount per claim", default=str(config.get("ad_bonus_amount", 50)), max_length=10)
+        self.ad_cooldown = discord.ui.TextInput(
+            label="Cooldown (hours)", default=str(config.get("ad_cooldown_hours", 4)), max_length=4)
+        for item in (self.ad_title, self.ad_description, self.ad_url, self.ad_amount, self.ad_cooldown):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            amount = int(str(self.ad_amount.value).strip())
+            cooldown = int(str(self.ad_cooldown.value).strip())
+        except ValueError:
+            await interaction.followup.send("Bonus amount and cooldown need to be whole numbers.", ephemeral=True)
+            return
+        if amount < 0 or cooldown < 1:
+            await interaction.followup.send("Bonus can't be negative and cooldown must be at least 1 hour.", ephemeral=True)
+            return
+        url = str(self.ad_url.value).strip()
+        if url and not re.match(r"^https?://\S+$", url):
+            await interaction.followup.send("The link needs to start with http:// or https:// (or leave it empty).", ephemeral=True)
+            return
+        await db.set_economy_config(
+            self.guild_id, clone_id=self.clone_id,
+            ad_embed_title=str(self.ad_title.value).strip() or None,
+            ad_embed_description=str(self.ad_description.value).strip() or None,
+            ad_embed_url=url or None,
+            ad_bonus_amount=amount, ad_cooldown_hours=cooldown,
+        )
+        config = await db.get_economy_config(self.guild_id, clone_id=self.clone_id)
+        view = build_wizard_view(self.guild_id, self.clone_id, self.invoker_id, config)
+        await interaction.edit_original_response(view=view)
+
+
+class EconomyAdEditButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("adedit")):
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        super().__init__(discord.ui.Button(
+            label="✏️ Edit sponsor ad", style=discord.ButtonStyle.secondary,
+            custom_id=_encode("adedit", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        config = await db.get_economy_config(self.guild_id, clone_id=self.clone_id)
+        await interaction.response.send_modal(EconomyAdModal(self.guild_id, self.clone_id, self.invoker_id, config))
+
+
+class EconomyAdToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("adtoggle")):
+    """Activate / Deactivate the sponsor ad. The custom_id deliberately carries
+    no on/off state — the callback reads the live value and flips it, so a
+    stale wizard message (or two admins clicking) can never set the wrong state."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, enabled: bool = False):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        super().__init__(discord.ui.Button(
+            label="⏸️ Deactivate ad" if enabled else "▶️ Activate ad",
+            style=discord.ButtonStyle.danger if enabled else discord.ButtonStyle.success,
+            custom_id=_encode("adtoggle", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        config = await db.get_economy_config(self.guild_id, clone_id=self.clone_id)
+        await db.set_economy_config(
+            self.guild_id, clone_id=self.clone_id,
+            ad_bonus_enabled=not bool(config.get("ad_bonus_enabled", False)),
+        )
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+DYNAMIC_ITEMS = (EconomyCurrencyButton, EconomyPayoutsButton, EconomyRobOddsSelect,
+                 EconomyAdEditButton, EconomyAdToggleButton)

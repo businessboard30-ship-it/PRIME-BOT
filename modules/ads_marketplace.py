@@ -160,6 +160,65 @@ async def get_active_ads(limit: int = 5) -> List[Dict]:
         return []
 
 
+async def deactivate_ad(ad_id: int) -> bool:
+    """Take a live ad off every surface without deleting it. get_active_ads
+    (join DM, bump channels, /ad active) only ever returns status='approved',
+    so flipping to 'deactivated' is all it takes — no schema change, and the
+    ad (image, budget, history) stays intact for reactivate_ad."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("""
+                UPDATE ad_submissions SET status = 'deactivated'
+                WHERE id = $1 AND status = 'approved'
+            """, ad_id)
+        return result.endswith("1")
+    except Exception as e:
+        print(f"[v0] Error deactivating ad: {e}")
+        return False
+
+
+async def reactivate_ad(ad_id: int) -> bool:
+    """Put a deactivated ad back live. Only 'deactivated' ads qualify, so this
+    can never be used to sneak a pending/rejected ad past approve_ad."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("""
+                UPDATE ad_submissions SET status = 'approved'
+                WHERE id = $1 AND status = 'deactivated'
+            """, ad_id)
+        return result.endswith("1")
+    except Exception as e:
+        print(f"[v0] Error reactivating ad: {e}")
+        return False
+
+
+async def search_ads(user_id: Optional[int] = None, query: str = "",
+                     statuses: Optional[tuple] = None, limit: int = 25) -> List[Dict]:
+    """Ads for Discord autocomplete so nobody has to type an ad id. user_id=None
+    is the bot-owner view (every ad); otherwise only that user's own ads.
+    query matches company/title text, or the exact id if the caller happens to
+    know it. statuses optionally narrows to e.g. ('pending',)."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, company_name, ad_title, status
+                FROM ad_submissions
+                WHERE ($1::bigint IS NULL OR user_id = $1)
+                  AND ($2::text[] IS NULL OR status = ANY($2::text[]))
+                  AND ($3 = '' OR company_name ILIKE '%' || $3 || '%'
+                       OR ad_title ILIKE '%' || $3 || '%' OR id::text = $3)
+                ORDER BY submitted_at DESC
+                LIMIT $4
+            """, user_id, list(statuses) if statuses else None, query.strip(), limit)
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[v0] Error searching ads: {e}")
+        return []
+
+
 async def get_pending_ads_awaiting_payment_reminder(min_age_seconds: int = 1800, limit: int = 25) -> List[Dict]:
     """Pending ads that are old enough to have plausibly stalled at
     checkout and haven't been auto-nudged yet (payment_reminder_sent_at
