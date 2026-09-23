@@ -40,6 +40,7 @@ from discord_bot.cogs._views_automod_reminders import DYNAMIC_ITEMS as AUTOMOD_R
 from discord_bot.cogs._views_ticket_wizard import DYNAMIC_ITEMS as TICKET_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_community_wizard import DYNAMIC_ITEMS as COMMUNITY_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_economy_wizard import DYNAMIC_ITEMS as ECONOMY_WIZARD_DYNAMIC_ITEMS
+from discord_bot.cogs._views_ads_wizard import DYNAMIC_ITEMS as ADS_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_economy import EconomyCardView
 from discord_bot.cogs._views_leveling_wizard import DYNAMIC_ITEMS as LEVELING_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_download_wizard import DYNAMIC_ITEMS as DOWNLOAD_WIZARD_DYNAMIC_ITEMS
@@ -154,6 +155,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*TICKET_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*COMMUNITY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ECONOMY_WIZARD_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*ADS_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*LEVELING_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*DOWNLOAD_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*REGISTRY_INVITE_CONSENT_DYNAMIC_ITEMS)

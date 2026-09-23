@@ -47,6 +47,7 @@ from modules.ads_marketplace import (
 from gumroad_payments import start_gumroad_payment
 from discord_bot.ad_images import upload_ad_image
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
+from discord_bot.cogs._views_ads_wizard import build_manager_view, _load as _load_manager
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +228,14 @@ class AdsMarketplaceCog(commands.Cog):
         buttons = [refresh_button(self, "ad_status", args=(ad_id,))]
         card = NavCardView(f"Ad #{ad_id}: {ad['ad_title']}", lines, discord.Color.blurple(), buttons)
         await interaction.response.send_message(view=card, ephemeral=True)
+
+    @ad.command(name="manage", description="[Owner] Manage ads — pick one, then approve, reject, deactivate or edit")
+    async def ad_manage(self, interaction: discord.Interaction):
+        if not _is_ads_admin(interaction.user.id):
+            await interaction.response.send_message("You're not authorized to manage ads.", ephemeral=True)
+            return
+        ads, counts, _ = await _load_manager()
+        await interaction.response.send_message(view=build_manager_view(ads, counts), ephemeral=True)
 
     @ad.command(name="pending", description="[Owner] List ads awaiting approval")
     async def ad_pending(self, interaction: discord.Interaction):
