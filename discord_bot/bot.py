@@ -603,12 +603,15 @@ class AnimeBotDiscord(commands.Bot):
         one shared place both the real on-join send and the on-demand
         /start resend build from, so they can never render differently
         for the same guild state."""
-        from discord_bot.cogs._views_join_dm import _enabled_feature_keys
+        from discord_bot.cogs._views_join_dm import _enabled_feature_keys, _fresh_ad_for_join_dm
         enabled = await _enabled_feature_keys(guild.id, clone_id)
+        # Freshest approved sponsored ad only, rendered on the last page
+        # only — see JoinDMLayoutView's is_last_page handling.
+        fresh_ad = await _fresh_ad_for_join_dm()
         return build_join_dm_view(
             guild.id, clone_id=clone_id, feature_keys=content["feature_keys"],
             intro=content["intro"], title=content["title"], notices=content["notices"],
-            enabled_keys=enabled, guild_name=guild.name, join_offer=join_offer,
+            enabled_keys=enabled, guild_name=guild.name, join_offer=join_offer, fresh_ad=fresh_ad,
         )
 
     async def _send_combined_owner_join_dm(self, guild: discord.Guild, *, is_initial_send: bool = True,
