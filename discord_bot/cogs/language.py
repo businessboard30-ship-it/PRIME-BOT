@@ -55,11 +55,28 @@ class LanguageCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # ai_command_guard.execute_ai_command looks this up when
+    # requires_confirmation=True (see ModerationCog.AI_CONFIRMED_HANDLERS
+    # for the full rationale): confirm_interaction's response is already
+    # consumed by AIConfirmView, so language's own
+    # interaction.response.send_message() would raise discord.InteractionResponded.
+    AI_CONFIRMED_HANDLERS = {
+        "language": "ai_language",
+    }
+
     @app_commands.command(name="language", description="Choose the language I reply to you in")
     async def language(self, interaction: discord.Interaction):
         current = await get_lang(interaction)
         prompt = await tr("Pick a language below — I'll use it for every command you run from now on.", current)
         await interaction.response.send_message(prompt, view=LanguageView(current), ephemeral=True)
+
+    async def ai_language(self, confirm_interaction: discord.Interaction):
+        """Entry point for execute_ai_command — confirm_interaction's response
+        is already used by AIConfirmView, so this replies via followup and
+        never calls interaction.response.send_message()."""
+        current = await get_lang(confirm_interaction)
+        prompt = await tr("Pick a language below — I'll use it for every command you run from now on.", current)
+        await confirm_interaction.followup.send(prompt, view=LanguageView(current), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
