@@ -21,6 +21,9 @@ each clone is its own independent `python -m discord_bot.bot --clone-id N`
 process, and posting via Discord's REST API with each channel's own
 clone token works regardless of which gateway processes are up.
 
+After each ad lands, the channel's 🔁 Bump button is re-posted below it (see
+_refresh_bump_prompt) so it's never left scrolled up behind an ad.
+
 Auth: header "Authorization: Bearer <CRON_SECRET>" or query param ?secret=.
 Wire this to an external scheduler (Vercel Cron, cron-job.org, etc.).
 Nothing calls it automatically — approved ads simply won't be placed into
@@ -138,6 +141,112 @@ async def _post(session: aiohttp.ClientSession, token: str, channel_id: int, emb
         return False
 
 
+# ── bump button follows the ad ───────────────────────────────────────────
+# discord_bot/cogs/bump.py posts a standalone "🔁 Bump" message (a button whose
+# custom_id is bump:prompt:<listing_id>) after every bump, and keeps exactly one
+# per listing. An ad card landing in the channel pushes that button up the
+# scroll, so after every ad we put a fresh copy of it back BELOW the ad. This
+# stays REST-only like the rest of this file — the button itself keeps working
+# because its custom_id is handled by the bot's DynamicItem, not by this cron.
+BUMP_PROMPT_PREFIX = "bump:prompt:"
+BUMP_HISTORY_SCAN = 50  # how far back to look for the existing prompt
+
+
+def _prompt_listing_id(message: dict) -> int | None:
+    for row in message.get("components") or []:
+        for comp in row.get("components") or []:
+            cid = comp.get("custom_id") or ""
+            if cid.startswith(BUMP_PROMPT_PREFIX):
+                try:
+                    return int(cid[len(BUMP_PROMPT_PREFIX):])
+                except ValueError:
+                    return None
+    return None
+
+
+def _bump_prompt_components(listing_id: int) -> list:
+    return [{
+        "type": 1,
+        "components": [{
+            "type": 2, "style": 3, "label": "Bump", "emoji": {"name": "🔁"},
+            "custom_id": f"{BUMP_PROMPT_PREFIX}{listing_id}",
+        }],
+    }]
+
+
+async def _bot_user_id(session: aiohttp.ClientSession, token: str, cache: dict) -> int | None:
+    if token in cache:
+        return cache[token]
+    try:
+        async with session.get(f"{DISCORD_API_BASE}/users/@me", headers={"Authorization": f"Bot {token}"}) as resp:
+            if resp.status != 200:
+                return None
+            cache[token] = int((await resp.json())["id"])
+            return cache[token]
+    except (aiohttp.ClientError, TimeoutError, KeyError, ValueError):
+        return None
+
+
+async def _refresh_bump_prompt(session: aiohttp.ClientSession, token: str, channel_id: int,
+                               guild_id: int, clone_id, bot_ids: dict) -> bool:
+    """Re-post the channel's Bump button below the ad that was just placed.
+    Best-effort: never raises, and never affects the ad's own placement."""
+    headers = {"Authorization": f"Bot {token}"}
+    try:
+        me = await _bot_user_id(session, token, bot_ids)
+        if me is None:
+            return False
+        async with session.get(
+            f"{DISCORD_API_BASE}/channels/{channel_id}/messages", params={"limit": BUMP_HISTORY_SCAN}, headers=headers,
+        ) as resp:
+            if resp.status != 200:
+                # Can't read history -> can't find (or clean up) the old button,
+                # so posting another would just leave two. Skip.
+                return False
+            history = await resp.json()
+
+        # Newest-first. Our own bump prompts only (anyone can copy a custom_id).
+        old = [(m, _prompt_listing_id(m)) for m in history if int((m.get("author") or {}).get("id", 0)) == me]
+        old = [(m, lid) for m, lid in old if lid is not None]
+
+        if old:
+            newest, listing_id = old[0]
+            content = newest.get("content") or "🔁 Tap the button below once the bump timer's up."
+        else:
+            # No prompt in recent history (scrolled away, or never bumped here):
+            # fall back to this server's own listing.
+            listing = await db.bump_get_listing(guild_id, clone_id)
+            if not listing:
+                return False
+            listing_id = listing["id"]
+            content = f"🔁 **{listing.get('name') or 'Your server'}** — anyone can bump it once the timer's up. Tap the button below."
+
+        payload = {
+            "content": content[:2000],
+            "components": _bump_prompt_components(listing_id),
+            "allowed_mentions": {"parse": []},  # the copied text mentions whoever bumped last
+        }
+        async with session.post(f"{DISCORD_API_BASE}/channels/{channel_id}/messages", headers=headers, json=payload) as resp:
+            if resp.status not in (200, 201):
+                logger.warning(f"[cron_ad_placement] couldn't re-post bump button in {channel_id}: HTTP {resp.status}")
+                return False
+
+        # New one is up — now retire the old ones so exactly one button is live.
+        for message, _ in old:
+            try:
+                async with session.delete(
+                    f"{DISCORD_API_BASE}/channels/{channel_id}/messages/{message['id']}", headers=headers,
+                ) as resp:
+                    if resp.status not in (200, 204, 404):
+                        logger.warning(f"[cron_ad_placement] couldn't delete old bump button in {channel_id}: HTTP {resp.status}")
+            except (aiohttp.ClientError, TimeoutError):
+                pass
+        return True
+    except Exception as e:
+        logger.warning(f"[cron_ad_placement] bump button refresh failed for channel {channel_id}: {e}")
+        return False
+
+
 async def run_ad_placements() -> dict:
     ads = await get_active_ads()
     all_channels = await db.get_all_bump_channels()
@@ -154,6 +263,7 @@ async def run_ad_placements() -> dict:
     # is still due for the next ad on the next run (per-ad cooldowns are
     # untouched), so the ads take turns instead of stacking.
     posted_channels: set = set()
+    bot_ids: dict = {}  # token -> that bot's own user id
 
     async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
         for ad in ads:
@@ -179,6 +289,9 @@ async def run_ad_placements() -> dict:
                     posted_channels.add(target["bump_channel_id"])
                     await db.record_ad_placement(ad["id"], target["bump_channel_id"], target["guild_id"])
                     placed += 1
+                    await _refresh_bump_prompt(
+                        session, token, target["bump_channel_id"], target["guild_id"], clone_id, bot_ids,
+                    )
                 else:
                     failed += 1
 
