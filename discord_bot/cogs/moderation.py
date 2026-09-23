@@ -53,11 +53,56 @@ async def _deny(interaction: discord.Interaction, perm_name: str):
         await interaction.response.send_message(msg, ephemeral=True)
 
 
+async def _respond(interaction: discord.Interaction, content: str, view):
+    """Shared result-sender for the do-work functions below.
+
+    The manual /command flow reaches these with `interaction.response`
+    still free (it's the fresh interaction handed to ConfirmActionView's
+    on_confirm), so it edits the confirm message in place as before. The
+    AI-confirmed flow (see ai_kick/ai_ban/ai_unwarn/ai_purge below) reaches
+    these with `interaction.response` already consumed by AIConfirmView's
+    own button-disable edit, so it must use a followup instead — calling
+    response.edit_message a second time raises discord.InteractionResponded.
+    """
+    if interaction.response.is_done():
+        await interaction.followup.send(content, view=view, ephemeral=True)
+    else:
+        await interaction.response.edit_message(content=content, view=view)
+
+
 class ModerationCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # AI-executed commands with requires_confirmation=True in
+    # ai_command_allowlist.py that ALSO show their own ConfirmActionView
+    # here would otherwise get double-confirmed and crash on
+    # discord.InteractionResponded (AIConfirmView already used up the
+    # interaction's response before execute_ai_command ever reaches this
+    # cog's callback). ai_command_guard.execute_ai_command looks this map
+    # up and, when present, calls the named method directly instead of
+    # going through the slash-command callback + its ConfirmActionView.
+    AI_CONFIRMED_HANDLERS = {
+        "kick": "ai_kick",
+        "ban": "ai_ban",
+        "unwarn": "ai_unwarn",
+        "purge": "ai_purge",
+    }
+
     # ── /kick ────────────────────────────────────────────────────────────
+    async def _do_kick(self, confirm_interaction: discord.Interaction, member: discord.Member, reason: str):
+        try:
+            await member.kick(reason=reason)
+        except discord.Forbidden:
+            await _respond(
+                confirm_interaction,
+                "⚠️ " + (perm_check.member_problem(confirm_interaction.guild, member, "kick_members", "kick") or "I can't kick that member (check role hierarchy)."),
+                None,
+            )
+            return
+        await modx.log_action(confirm_interaction.guild_id, "kick", confirm_interaction.user.id, target_user_id=member.id, reason=reason)
+        await _respond(confirm_interaction, f"👢 {member.mention} kicked.\nReason: {reason}", ModActionView(member.id))
+
     @app_commands.command(name="kick", description="Kick a member from this server")
     @app_commands.guild_only()
     @app_commands.describe(member="Member to kick", reason="Reason (shown in the audit log)")
@@ -66,23 +111,20 @@ class ModerationCog(GuildOnlyCog):
             await _deny(interaction, "Kick Members")
             return
 
-        async def _do_kick(confirm_interaction: discord.Interaction):
-            try:
-                await member.kick(reason=reason)
-            except discord.Forbidden:
-                await confirm_interaction.response.edit_message(
-                    content="⚠️ " + (perm_check.member_problem(interaction.guild, member, "kick_members", "kick") or "I can't kick that member (check role hierarchy)."), view=None
-                )
-                return
-            await modx.log_action(interaction.guild_id, "kick", interaction.user.id, target_user_id=member.id, reason=reason)
-            await confirm_interaction.response.edit_message(
-                content=f"👢 {member.mention} kicked.\nReason: {reason}", view=ModActionView(member.id)
-            )
-
-        view = ConfirmActionView(interaction.user.id, _do_kick, confirm_label="Kick")
+        view = ConfirmActionView(interaction.user.id, lambda ci: self._do_kick(ci, member, reason), confirm_label="Kick")
         await interaction.response.send_message(
             f"⚠️ Kick {member.mention}? Reason: {reason}", view=view, ephemeral=True
         )
+
+    async def ai_kick(self, confirm_interaction: discord.Interaction, member: discord.Member, reason: str = "No reason given"):
+        """Entry point for execute_ai_command — confirm_interaction is the
+        AIConfirmView button click, so the user has already confirmed and
+        this must NOT show another ConfirmActionView. Re-checks permission
+        since time has passed since the confirm prompt was shown."""
+        if not _require_perm(confirm_interaction, "kick_members"):
+            await _deny(confirm_interaction, "Kick Members")
+            return
+        await self._do_kick(confirm_interaction, member, reason)
 
     # ── /ban ─────────────────────────────────────────────────────────────
     @app_commands.command(name="ban", description="Ban a member from this server")
@@ -98,12 +140,30 @@ class ModerationCog(GuildOnlyCog):
             await _deny(interaction, "Ban Members")
             return
 
-        # `user` is raw text either way (a picked member's mention/name, or
-        # a hand-typed ID). Resolve to a real member first so hierarchy
-        # checks / a proper mention still apply when they're in the
-        # server; otherwise fall back to banning the raw ID directly —
-        # this is what lets you ban someone who already left, or who
-        # never joined in the first place (pre-emptive ban).
+        member, target_id, target_mention, error = await self._resolve_ban_target(interaction, user)
+        if error:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
+        view = ConfirmActionView(
+            interaction.user.id,
+            lambda ci: self._do_ban(ci, member, target_id, target_mention, reason, delete_days),
+            confirm_label="Ban",
+        )
+        await interaction.response.send_message(
+            f"⚠️ Ban {target_mention}? This also deletes {delete_days} day(s) of messages.\nReason: {reason}",
+            view=view, ephemeral=True
+        )
+
+    async def _resolve_ban_target(self, interaction: discord.Interaction, user: str):
+        """Shared by ban() and ai_ban(). `user` is raw text either way (a
+        picked member's mention/name, or a hand-typed ID). Resolve to a
+        real member first so hierarchy checks / a proper mention still
+        apply when they're in the server; otherwise fall back to the raw
+        ID directly — this is what lets you ban someone who already left,
+        or who never joined in the first place (pre-emptive ban).
+        Returns (member_or_None, target_id, target_mention, error_message).
+        error_message is None on success."""
         digits = user.strip("<@!>")
         member = None
         if digits.isdigit():
@@ -119,40 +179,45 @@ class ModerationCog(GuildOnlyCog):
                 interaction.guild.members,
             )
             if member is None:
-                await interaction.response.send_message(
+                return None, None, None, (
                     f"Couldn't find a member matching `{user}`. Pick them from the list, "
-                    "or paste their numeric Discord user ID to ban by ID.", ephemeral=True
+                    "or paste their numeric Discord user ID to ban by ID."
                 )
-                return
 
         target_id = member.id if member else int(digits)
         target_mention = member.mention if member else f"`{target_id}` (not in this server)"
+        return member, target_id, target_mention, None
 
-        async def _do_ban(confirm_interaction: discord.Interaction):
-            try:
-                if member is not None:
-                    await member.ban(reason=reason, delete_message_days=delete_days)
-                else:
-                    # Ban-by-ID: no hierarchy to check since they're not a
-                    # member here, and no message history to purge.
-                    await interaction.guild.ban(discord.Object(id=target_id), reason=reason)
-            except discord.Forbidden:
-                hint = perm_check.member_problem(interaction.guild, member, "ban_members", "ban") if member else None
-                await confirm_interaction.response.edit_message(
-                    content="⚠️ " + (hint or "I can't ban that member (check role hierarchy) or don't have permission to ban."),
-                    view=None,
-                )
-                return
-            await modx.log_action(interaction.guild_id, "ban", interaction.user.id, target_user_id=target_id, reason=reason)
-            await confirm_interaction.response.edit_message(
-                content=f"🔨 {target_mention} banned.\nReason: {reason}", view=ModActionView(target_id)
+    async def _do_ban(self, confirm_interaction: discord.Interaction, member, target_id: int, target_mention: str, reason: str, delete_days: int):
+        try:
+            if member is not None:
+                await member.ban(reason=reason, delete_message_days=delete_days)
+            else:
+                # Ban-by-ID: no hierarchy to check since they're not a
+                # member here, and no message history to purge.
+                await confirm_interaction.guild.ban(discord.Object(id=target_id), reason=reason)
+        except discord.Forbidden:
+            hint = perm_check.member_problem(confirm_interaction.guild, member, "ban_members", "ban") if member else None
+            await _respond(
+                confirm_interaction,
+                "⚠️ " + (hint or "I can't ban that member (check role hierarchy) or don't have permission to ban."),
+                None,
             )
+            return
+        await modx.log_action(confirm_interaction.guild_id, "ban", confirm_interaction.user.id, target_user_id=target_id, reason=reason)
+        await _respond(confirm_interaction, f"🔨 {target_mention} banned.\nReason: {reason}", ModActionView(target_id))
 
-        view = ConfirmActionView(interaction.user.id, _do_ban, confirm_label="Ban")
-        await interaction.response.send_message(
-            f"⚠️ Ban {target_mention}? This also deletes {delete_days} day(s) of messages.\nReason: {reason}",
-            view=view, ephemeral=True
-        )
+    async def ai_ban(self, confirm_interaction: discord.Interaction, user: str, reason: str = "No reason given", delete_days: int = 0):
+        """Entry point for execute_ai_command — see ai_kick for why this
+        must not show another ConfirmActionView."""
+        if not _require_perm(confirm_interaction, "ban_members"):
+            await _deny(confirm_interaction, "Ban Members")
+            return
+        member, target_id, target_mention, error = await self._resolve_ban_target(confirm_interaction, user)
+        if error:
+            await confirm_interaction.followup.send(error, ephemeral=True)
+            return
+        await self._do_ban(confirm_interaction, member, target_id, target_mention, reason, delete_days)
 
     # ── /unban ───────────────────────────────────────────────────────────
     @app_commands.command(name="unban", description="Unban a user by ID")
@@ -256,17 +321,29 @@ class ModerationCog(GuildOnlyCog):
             await interaction.response.send_message(f"{member.mention} has no warns to clear.", ephemeral=True)
             return
 
-        async def _do_unwarn(confirm_interaction: discord.Interaction):
-            await mod.clear_warns(member.id, interaction.guild_id)
-            await modx.log_action(interaction.guild_id, "unwarn", interaction.user.id, target_user_id=member.id, reason="")
-            await confirm_interaction.response.edit_message(
-                content=f"✅ Cleared warns for {member.mention}.", view=WarnActionView(member)
-            )
-
-        view = ConfirmActionView(interaction.user.id, _do_unwarn, confirm_label="Clear warns")
+        view = ConfirmActionView(interaction.user.id, lambda ci: self._do_unwarn(ci, member), confirm_label="Clear warns")
         await interaction.response.send_message(
             f"⚠️ Clear all {current} warn(s) for {member.mention}? This can't be undone.", view=view, ephemeral=True
         )
+
+    async def _do_unwarn(self, confirm_interaction: discord.Interaction, member: discord.Member):
+        await mod.clear_warns(member.id, confirm_interaction.guild_id)
+        await modx.log_action(confirm_interaction.guild_id, "unwarn", confirm_interaction.user.id, target_user_id=member.id, reason="")
+        await _respond(confirm_interaction, f"✅ Cleared warns for {member.mention}.", WarnActionView(member))
+
+    async def ai_unwarn(self, confirm_interaction: discord.Interaction, member: discord.Member):
+        """Entry point for execute_ai_command — see ai_kick for why this
+        must not show another ConfirmActionView. Unlike the manual /unwarn,
+        the AI's confirm prompt was already shown before we knew the warn
+        count, so the zero-warns case is handled here instead of upfront."""
+        if not _require_perm(confirm_interaction, "moderate_members"):
+            await _deny(confirm_interaction, "Timeout Members")
+            return
+        current = await mod.get_warn_count(member.id, confirm_interaction.guild_id)
+        if current == 0:
+            await confirm_interaction.followup.send(f"{member.mention} has no warns to clear.", ephemeral=True)
+            return
+        await self._do_unwarn(confirm_interaction, member)
 
     # ── /warns ───────────────────────────────────────────────────────────
     async def send_warns(self, interaction: discord.Interaction, target: discord.Member, ephemeral: bool = False):
@@ -297,30 +374,37 @@ class ModerationCog(GuildOnlyCog):
             await _deny(interaction, "Manage Messages")
             return
 
-        async def _do_clear(confirm_interaction: discord.Interaction):
-            try:
-                deleted = await interaction.channel.purge(limit=amount)
-            except discord.Forbidden:
-                await confirm_interaction.response.edit_message(
-                    content="⚠️ I don't have permission to manage messages in this channel.", view=None
-                )
-                return
-            except discord.HTTPException as e:
-                await confirm_interaction.response.edit_message(
-                    content=f"⚠️ Couldn't delete those messages: {e}. Discord only bulk-deletes messages younger than 14 days.",
-                    view=None,
-                )
-                return
-            await modx.log_action(interaction.guild_id, "clear", interaction.user.id, target_user_id=interaction.channel.id, reason=f"{len(deleted)} message(s)")
-            await confirm_interaction.response.edit_message(
-                content=f"🧹 Deleted {len(deleted)} message(s) in {interaction.channel.mention}.", view=None
-            )
-
-        view = ConfirmActionView(interaction.user.id, _do_clear, confirm_label="Delete")
+        view = ConfirmActionView(interaction.user.id, lambda ci: self._do_clear(ci, interaction.channel, amount), confirm_label="Delete")
         await interaction.response.send_message(
             f"⚠️ Delete the last {amount} message(s) in {interaction.channel.mention}? This can't be undone.",
             view=view, ephemeral=True
         )
+
+    async def _do_clear(self, confirm_interaction: discord.Interaction, channel, amount: int):
+        try:
+            deleted = await channel.purge(limit=amount)
+        except discord.Forbidden:
+            await _respond(confirm_interaction, "⚠️ I don't have permission to manage messages in this channel.", None)
+            return
+        except discord.HTTPException as e:
+            await _respond(
+                confirm_interaction,
+                f"⚠️ Couldn't delete those messages: {e}. Discord only bulk-deletes messages younger than 14 days.",
+                None,
+            )
+            return
+        await modx.log_action(confirm_interaction.guild_id, "clear", confirm_interaction.user.id, target_user_id=channel.id, reason=f"{len(deleted)} message(s)")
+        await _respond(confirm_interaction, f"🧹 Deleted {len(deleted)} message(s) in {channel.mention}.", None)
+
+    async def ai_purge(self, confirm_interaction: discord.Interaction, amount: int):
+        """Entry point for execute_ai_command — see ai_kick for why this
+        must not show another ConfirmActionView. Uses confirm_interaction's
+        own channel (the channel the AI chat happened in), matching what
+        the AI's confirm prompt told the user it would delete from."""
+        if not _require_perm(confirm_interaction, "manage_messages"):
+            await _deny(confirm_interaction, "Manage Messages")
+            return
+        await self._do_clear(confirm_interaction, confirm_interaction.channel, amount)
 
     # ── /modlogs ─────────────────────────────────────────────────────────
     async def send_modlogs(self, interaction: discord.Interaction, limit: int = 10, page: int = 0, edit: bool = False):
