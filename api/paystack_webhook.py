@@ -88,62 +88,15 @@ class handler(BaseHTTPRequestHandler):
                 # marked 'completed' if the user manually tapped "I've Paid —
                 # Verify" in chat, so anyone who paid but closed the app
                 # before tapping Verify would be stuck unable to join.
+                # Discord's premium-groups feature (role grant via
+                # discord_bot/role_grant.py, discord_premium_groups table)
+                # was removed — this case now only serves the Telegram side
+                # (handlers/premium_group_handler.py, a separate codebase
+                # sharing this payment_logs table), which relies solely on
+                # mark_payment_paid() below; its own join-request gate reads
+                # has_paid() independently.
                 await db.mark_payment_paid(reference)
                 logger.info(f"[v0] premium_group_join payment {reference} marked as paid")
-
-                # Discord equivalent: metadata.provider == 'discord' means
-                # this payment came from discord_bot/views.py's PremiumPayView,
-                # which stashes guild_id AND group_id in extra_metadata (a
-                # guild can now have several independently-priced premium
-                # groups, so group_id is what tells us which role to grant —
-                # guild_id alone is no longer enough). Grant the role
-                # directly via Discord's REST API (see discord_bot/role_grant.py)
-                # — this process has no live gateway connection, so it can't
-                # call member.add_roles() the way the bot process does; this
-                # is the closing half of the same gap Telegram's join-request
-                # gate closes, just for users who already joined the guild
-                # before paying and are just waiting on the role.
-                if metadata.get('provider') == 'discord' and user_id:
-                    guild_id = metadata.get('guild_id')
-                    group_id = metadata.get('group_id')
-                    if guild_id and group_id:
-                        from discord_bot.role_grant import grant_role
-                        group = await db.get_premium_group(int(group_id))
-                        if group and group.get('role_id'):
-                            # A group created by a clone (clone_id not None)
-                            # needs that clone's own bot token — the main
-                            # bot's token can't grant roles in a guild it's
-                            # not a member of.
-                            bot_token = None
-                            if group.get('clone_id') is not None:
-                                clone = await db.get_discord_clone(int(group['clone_id']))
-                                if clone:
-                                    from utils.crypto import secret_manager
-                                    bot_token = secret_manager.decrypt(clone['bot_token_encrypted'])
-                            granted = await grant_role(
-                                int(guild_id), int(user_id), int(group['role_id']),
-                                reason=f"premium_group_join payment verified (webhook): {group['name']}",
-                                bot_token=bot_token,
-                            )
-                            if not granted:
-                                # Not fatal — on_member_join and the in-app
-                                # Verify button are both independent, later
-                                # chances to grant the same role once
-                                # has_paid() is true.
-                                logger.warning(
-                                    f"[v0] Webhook could not grant Discord role for user {user_id} "
-                                    f"in guild {guild_id} group {group_id} — will retry via on_member_join or /verify"
-                                )
-                        else:
-                            logger.warning(
-                                f"[v0] Discord premium group {group_id} not found (guild {guild_id}) — "
-                                f"payment marked paid but no role to grant"
-                            )
-                    else:
-                        logger.warning(
-                            f"[v0] Discord premium payment missing guild_id/group_id in metadata — "
-                            f"payment marked paid but no role to grant"
-                        )
 
             elif payment_type == 'group_pay_now':
                 # Generic welcome-message "Pay Now" button (any group, any
