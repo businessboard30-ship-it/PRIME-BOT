@@ -87,28 +87,70 @@ class ModerationCog(GuildOnlyCog):
     # ── /ban ─────────────────────────────────────────────────────────────
     @app_commands.command(name="ban", description="Ban a member from this server")
     @app_commands.guild_only()
-    @app_commands.describe(member="Member to ban", reason="Reason (shown in the audit log)", delete_days="Days of message history to delete (0-7)")
-    async def ban(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason given", delete_days: app_commands.Range[int, 0, 7] = 0):
+    @app_commands.describe(
+        user="Member to ban — pick them from the list, or paste their numeric Discord user ID "
+             "(works even if they've left, or never joined at all)",
+        reason="Reason (shown in the audit log)",
+        delete_days="Days of message history to delete (0-7)",
+    )
+    async def ban(self, interaction: discord.Interaction, user: str, reason: str = "No reason given", delete_days: app_commands.Range[int, 0, 7] = 0):
         if not _require_perm(interaction, "ban_members"):
             await _deny(interaction, "Ban Members")
             return
 
-        async def _do_ban(confirm_interaction: discord.Interaction):
-            try:
-                await member.ban(reason=reason, delete_message_days=delete_days)
-            except discord.Forbidden:
-                await confirm_interaction.response.edit_message(
-                    content="⚠️ " + (perm_check.member_problem(interaction.guild, member, "ban_members", "ban") or "I can't ban that member (check role hierarchy)."), view=None
+        # `user` is raw text either way (a picked member's mention/name, or
+        # a hand-typed ID). Resolve to a real member first so hierarchy
+        # checks / a proper mention still apply when they're in the
+        # server; otherwise fall back to banning the raw ID directly —
+        # this is what lets you ban someone who already left, or who
+        # never joined in the first place (pre-emptive ban).
+        digits = user.strip("<@!>")
+        member = None
+        if digits.isdigit():
+            member = interaction.guild.get_member(int(digits))
+            if member is None:
+                try:
+                    member = await interaction.guild.fetch_member(int(digits))
+                except discord.NotFound:
+                    member = None
+        else:
+            member = discord.utils.find(
+                lambda m: user.lower() in (m.name.lower(), m.display_name.lower()),
+                interaction.guild.members,
+            )
+            if member is None:
+                await interaction.response.send_message(
+                    f"Couldn't find a member matching `{user}`. Pick them from the list, "
+                    "or paste their numeric Discord user ID to ban by ID.", ephemeral=True
                 )
                 return
-            await modx.log_action(interaction.guild_id, "ban", interaction.user.id, target_user_id=member.id, reason=reason)
+
+        target_id = member.id if member else int(digits)
+        target_mention = member.mention if member else f"`{target_id}` (not in this server)"
+
+        async def _do_ban(confirm_interaction: discord.Interaction):
+            try:
+                if member is not None:
+                    await member.ban(reason=reason, delete_message_days=delete_days)
+                else:
+                    # Ban-by-ID: no hierarchy to check since they're not a
+                    # member here, and no message history to purge.
+                    await interaction.guild.ban(discord.Object(id=target_id), reason=reason)
+            except discord.Forbidden:
+                hint = perm_check.member_problem(interaction.guild, member, "ban_members", "ban") if member else None
+                await confirm_interaction.response.edit_message(
+                    content="⚠️ " + (hint or "I can't ban that member (check role hierarchy) or don't have permission to ban."),
+                    view=None,
+                )
+                return
+            await modx.log_action(interaction.guild_id, "ban", interaction.user.id, target_user_id=target_id, reason=reason)
             await confirm_interaction.response.edit_message(
-                content=f"🔨 {member.mention} banned.\nReason: {reason}", view=ModActionView(member.id)
+                content=f"🔨 {target_mention} banned.\nReason: {reason}", view=ModActionView(target_id)
             )
 
         view = ConfirmActionView(interaction.user.id, _do_ban, confirm_label="Ban")
         await interaction.response.send_message(
-            f"⚠️ Ban {member.mention}? This also deletes {delete_days} day(s) of messages.\nReason: {reason}",
+            f"⚠️ Ban {target_mention}? This also deletes {delete_days} day(s) of messages.\nReason: {reason}",
             view=view, ephemeral=True
         )
 
