@@ -37,7 +37,7 @@ GROWTH_TIPS = [
     ("📣", "Bump this server", "/bump now",
      "Posts your server to every other opted-in server on the bump network — the fastest zero-cost way to get in front of new people."),
     ("⏱️", "Set up bump reminders", "/bumpsetup",
-     "Picks (or creates) a channel and reminds staff when the bump cooldown resets, so bumping actually happens on a schedule instead of being forgotten."),
+     "Picks a channel and reminds staff when the bump cooldown resets, so bumping actually happens on a schedule instead of being forgotten."),
     ("🔗", "Post an invite link where people already are", None,
      "Your server's socials, a linked community, or a bio link. A standing invite gets far more traffic than a one-off post."),
     ("🎉", "Run a giveaway", "/giveaway start",
