@@ -44,6 +44,10 @@ from discord.ext import commands, tasks
 from config import DISCORD_CLONE_ADMIN_IDS
 from database import db
 from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+from discord_bot.cogs._views_bump_link import (
+    DYNAMIC_ITEMS as BUMP_LINK_DYNAMIC_ITEMS, has_link, build_flag, find_existing_invite,
+    list_server_listings_missing_link, post_flag_in_channel, set_listing_invite,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,9 @@ ENABLE_BUMP_REMINDERS = True
 # (e.g. after downtime) trickles out instead of bursting all at once
 # like it did the first time this ran.
 MAX_REMINDERS_PER_TICK = 3
+# Boot-time sweep that flags server listings with no invite link (see
+# _flag_missing_links). Capped so a big backlog trickles out over a few minutes.
+MAX_LINK_FLAGS_PER_BOOT = 100
 
 TAG_KEYWORDS = {
     "gaming": ["game", "gaming", "valorant", "minecraft", "fortnite", "esports"],
@@ -657,7 +664,7 @@ class BumpEditModal(discord.ui.Modal, title="Edit bump listing"):
             label="Tags (comma separated)", default=", ".join(tags)[:100], max_length=100, required=False
         )
         self.invite_input = discord.ui.TextInput(
-            label="Invite URL (bot listings only)", default=invite_url[:200], required=False, max_length=200
+            label="Invite link (needed for the Join button)", default=invite_url[:200], required=False, max_length=200
         )
         self.perks_input = discord.ui.TextInput(
             label="Perks (also 'support: <link>')",
@@ -696,7 +703,7 @@ class BumpEditModal(discord.ui.Modal, title="Edit bump listing"):
                 perks.append(line)
         perks = perks[:4]
         clone_id = _clone_id_of(interaction.client)
-        await db.bump_upsert_listing(
+        saved = await db.bump_upsert_listing(
             guild_id=interaction.guild_id,
             clone_id=clone_id,
             created_by=interaction.user.id,
@@ -710,6 +717,15 @@ class BumpEditModal(discord.ui.Modal, title="Edit bump listing"):
             listing_id=self.listing_id,
         )
         await interaction.followup.send("✅ Listing saved.", ephemeral=True)
+        if self.listing_type == "server" and not has_link(saved):
+            url = await find_existing_invite(interaction.guild)
+            if url:
+                await set_listing_invite(saved["id"], url)
+                await interaction.followup.send(f"🔗 No link was set, so I reused your existing invite: {url}", ephemeral=True)
+            else:
+                config = await db.bump_get_guild_config(interaction.guild_id, clone_id) or {}
+                embed, view = build_flag(interaction.guild, saved["id"], saved.get("name"), config.get("bump_channel_id"))
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 class BumpSetupView(discord.ui.View):
@@ -734,7 +750,7 @@ class BumpSetupView(discord.ui.View):
         # uses), so auto-populate it here instead of shipping every new
         # server listing without a "Join server" button.
         invite_url = await interaction.client._best_effort_invite(interaction.guild)
-        await db.bump_upsert_listing(
+        saved = await db.bump_upsert_listing(
             guild_id=interaction.guild_id,
             clone_id=clone_id,
             created_by=interaction.user.id,
@@ -749,6 +765,10 @@ class BumpSetupView(discord.ui.View):
             content=f"✅ Saved.\n**Description:** {self.suggested_desc}\n**Tags:** {', '.join(self.suggested_tags)}",
             view=None,
         )
+        if not has_link(saved):
+            config = await db.bump_get_guild_config(interaction.guild_id, clone_id) or {}
+            embed, view = build_flag(interaction.guild, saved["id"], saved.get("name"), config.get("bump_channel_id"))
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="Edit before saving", style=discord.ButtonStyle.secondary, emoji="✏️")
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -872,9 +892,11 @@ class BumpCog(commands.Cog):
         bot.add_dynamic_items(
             DynamicRateOpenButton, DynamicRateStarButton, DynamicAddMineButton,
             DynamicBumpAgainButton, DynamicBumpPromptButton, DynamicBumpApproveButton, DynamicBumpRejectButton,
+            *BUMP_LINK_DYNAMIC_ITEMS,
         )
         self.bump_worker.start()
         self._restore_task = None
+        self._link_task = None
         # Reminder worker is temporarily disabled — a startup crash-loop
         # let cooldowns pile up across many listings, so the first tick
         # after the bot finally came back up fired reminders for all of
@@ -887,10 +909,13 @@ class BumpCog(commands.Cog):
     async def cog_load(self):
         # One background pass per boot; see _auto_restore_bump_channels.
         self._restore_task = asyncio.create_task(self._auto_restore_bump_channels())
+        self._link_task = asyncio.create_task(self._flag_missing_links())
 
     def cog_unload(self):
         if self._restore_task is not None:
             self._restore_task.cancel()
+        if self._link_task is not None:
+            self._link_task.cancel()
         self.bump_worker.cancel()
         if ENABLE_BUMP_REMINDERS:
             self.bump_reminder_worker.cancel()
@@ -985,6 +1010,56 @@ class BumpCog(commands.Cog):
             raise
         except Exception:
             logger.exception("[bump] auto-restore pass crashed")
+
+    async def _flag_missing_links(self):
+        """One pass per boot: every server listing with no invite link —
+        whether or not it was ever bumped, and including ones created before
+        this check existed — gets either a silent fix (the server already has
+        a vanity URL / permanent invite) or a flag in its bump channel that
+        explains why no link exists and gives its admins buttons to fix it.
+        A flag that's already sitting in the channel isn't posted twice."""
+        try:
+            await self.bot.wait_until_ready()
+            # After _auto_restore_bump_channels has had time to settle channels.
+            await asyncio.sleep(random.uniform(150, 300))
+            clone_id = _clone_id_of(self.bot)
+            rows = await list_server_listings_missing_link(clone_id)
+            if not rows:
+                return
+            auto = flagged = existing = skipped = 0
+            for row in rows[:MAX_LINK_FLAGS_PER_BOOT]:
+                guild = self.bot.get_guild(row["guild_id"])
+                if guild is None:
+                    continue
+                try:
+                    url = await find_existing_invite(guild)
+                    if url:
+                        await set_listing_invite(row["listing_id"], url)
+                        auto += 1
+                        continue
+                    result = await post_flag_in_channel(self.bot, guild, row)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("[bump] link check failed for listing %s", row.get("listing_id"))
+                    continue
+                if result == "posted":
+                    flagged += 1
+                    await asyncio.sleep(3)  # stay well under send rate limits
+                elif result == "exists":
+                    existing += 1
+                else:
+                    skipped += 1
+            logger.info(
+                "[bump] missing-link sweep (clone_id=%s): %d listing(s) without a link — auto-filled %d, flagged %d, "
+                "already flagged %d, couldn't post %d%s",
+                clone_id, len(rows), auto, flagged, existing, skipped,
+                f", {len(rows) - MAX_LINK_FLAGS_PER_BOOT} left for next boot" if len(rows) > MAX_LINK_FLAGS_PER_BOOT else "",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[bump] missing-link sweep crashed")
 
     async def _restore_one_guild(self, guild: discord.Guild, clone_id, configured_by) -> str:
         from database import get_pool
@@ -1311,6 +1386,23 @@ class BumpCog(commands.Cog):
         # silently exclude the wrong guild.
         owner_guild_id = interaction.guild_id if owner_guild_id is None else owner_guild_id
         try:
+            # A server listing with no invite link goes out with no Join
+            # button. Reuse the server's own vanity/permanent invite if it has
+            # one; otherwise hold the bump and tell them why + how to fix it.
+            if listing.get("listing_type", "server") == "server" and not has_link(listing):
+                owner_guild = self.bot.get_guild(owner_guild_id)
+                if owner_guild is not None:
+                    url = await find_existing_invite(owner_guild)
+                    if url:
+                        await set_listing_invite(listing["id"], url)
+                        listing = {**listing, "invite_url": url}
+                    else:
+                        embed, view = build_flag(owner_guild, listing["id"], listing.get("name"), config.get("bump_channel_id"))
+                        await interaction.followup.send(
+                            content="⛔ I've held this bump — your listing has no server link, so the ad would go out with no Join button.",
+                            embed=embed, view=view, ephemeral=True,
+                        )
+                        return
             cooldown_seconds = await self._cooldown_seconds()
             can_bump, remaining = await db.bump_check_cooldown(listing["id"], cooldown_seconds)
             if not can_bump:
