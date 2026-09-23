@@ -65,8 +65,17 @@ async def _respond(interaction: discord.Interaction, content: str, view):
     response.edit_message a second time raises discord.InteractionResponded.
     """
     if interaction.response.is_done():
-        await interaction.followup.send(content, view=view, ephemeral=True)
+        # followup.send() rejects view=None outright (it only accepts an
+        # actual View/LayoutView or the MISSING sentinel meaning "no view").
+        # None here means "no buttons", so translate it to MISSING.
+        await interaction.followup.send(
+            content,
+            view=view if view is not None else discord.utils.MISSING,
+            ephemeral=True,
+        )
     else:
+        # edit_message() *does* accept view=None (it means "clear the
+        # existing view/buttons"), so pass it through unchanged here.
         await interaction.response.edit_message(content=content, view=view)
 
 
