@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 # own owner, since clones are separate bot instances with separate owners.
 DEFAULT_COOLDOWN_SECONDS = 60 * 60  # 1 hour
 STREAK_WINDOW_SECONDS = 48 * 60 * 60  # 48h, matches the reference screenshot
-DRIP_SECONDS = 35 * 60  # ~1 ad / 35 min, matching the reference's stated rate
+DRIP_SECONDS = 4 * 60  # ~1 ad / 4 min between servers
 WORKER_TICK_SECONDS = 60
 MAX_SENDS_PER_TICK = 10
 # Reminder checks don't need per-minute precision like the send queue does
