@@ -307,11 +307,26 @@ class AIToolsCog(commands.Cog):
         blank in the slash-command UI."""
         resolved = {}
         by_name = {p.name: p for p in command.parameters}
+        # Reply/mention chat (ProxyInteraction) feeds the model the reply chain,
+        # which can contain OTHER people's @mentions (e.g. the bot's own
+        # "🎉 @Coachjay leveled up!" message). The model could then pick that
+        # person as the target of "what's my level" and show THEIR card. So a
+        # user-type argument is only honoured if it's the asker themself or
+        # was actually @mentioned in the asker's own message; otherwise it's
+        # dropped and the command falls back to its default (the asker).
+        proxy_message = getattr(interaction, "message", None)
+        allowed_user_ids = None
+        if proxy_message is not None:
+            allowed_user_ids = {interaction.user.id} | {
+                int(i) for i in re.findall(r"<@!?(\d+)>", proxy_message.content or "")
+            }
         for key, value in (args or {}).items():
             p = by_name.get(key)
             type_name = getattr(getattr(p, "type", None), "name", None)
             if type_name in ("user", "mentionable"):
                 uid = self._extract_id(value)
+                if allowed_user_ids is not None and uid not in allowed_user_ids:
+                    continue
                 obj = interaction.guild.get_member(uid) if (uid and interaction.guild) else None
                 if obj is not None:
                     resolved[key] = obj
