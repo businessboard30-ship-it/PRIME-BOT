@@ -4,7 +4,7 @@ handlers/ads_marketplace_handler.py, using modules/ads_marketplace.py
 as-is (plain Postgres CRUD, no Telegram dependency).
 
 Two independent halves of the same module, both exposed here:
-  - /ad submit|status — owner-approved sponsored ads. Approval uses
+  - /ad submit|status|toggle — owner-approved sponsored ads. Approval uses
     DISCORD_CLONE_ADMIN_IDS (config.py) rather than a per-guild permission,
     same as clone_admin.py's approval gate — this is a bot-owner decision
     (who gets to advertise across the bot), not a server admin's call, and
@@ -41,6 +41,7 @@ from discord.ext import commands
 from config import DISCORD_CLONE_ADMIN_IDS, AD_PLACEMENT_FEE_USD
 from modules.ads_marketplace import (
     submit_ad, set_ad_image, update_ad_fields, get_pending_ads, get_ad, approve_ad, reject_ad, get_active_ads,
+    deactivate_ad, reactivate_ad, search_ads,
     list_service, get_marketplace_listings, get_my_listings,
 )
 from gumroad_payments import start_gumroad_payment
@@ -59,6 +60,30 @@ class AdsMarketplaceCog(commands.Cog):
         self.bot = bot
 
     ad = app_commands.Group(name="ad", description="Sponsored ads (owner-approved)")
+
+    # ── ad picker (no more typing ids) ──────────────────────────────────
+    # Every ad_id option below is an autocomplete: the user sees
+    # "#12 · Acme — Big Sale (approved)" and Discord submits the int id.
+    # The bot owner sees every ad; anyone else only their own.
+    async def _ad_choices(self, interaction: discord.Interaction, current: str, statuses: tuple = None):
+        owner = _is_ads_admin(interaction.user.id)
+        ads = await search_ads(None if owner else interaction.user.id, current, statuses)
+        return [
+            app_commands.Choice(
+                name=f"#{a['id']} · {a['company_name']} — {a['ad_title']} ({a['status']})"[:100],
+                value=a["id"],
+            )
+            for a in ads
+        ]
+
+    async def _any_ad_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._ad_choices(interaction, current)
+
+    async def _pending_ad_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._ad_choices(interaction, current, ("pending",))
+
+    async def _toggle_ad_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._ad_choices(interaction, current, ("approved", "deactivated"))
 
     @ad.command(name="submit", description="Submit an ad for approval")
     @app_commands.describe(
@@ -116,6 +141,7 @@ class AdsMarketplaceCog(commands.Cog):
 
     @ad.command(name="image", description="Attach or replace the image on one of your ads")
     @app_commands.describe(ad_id="The ad's id", image="png/jpeg/gif/webp, max 8MB")
+    @app_commands.autocomplete(ad_id=_any_ad_autocomplete)
     async def ad_image(self, interaction: discord.Interaction, ad_id: int, image: discord.Attachment):
         await interaction.response.defer(ephemeral=True, thinking=True)
         is_admin = _is_ads_admin(interaction.user.id)
@@ -141,6 +167,7 @@ class AdsMarketplaceCog(commands.Cog):
         ad_id="The ad's id", company_name="New company/brand name", title="New headline",
         description="New body text", target_url="New link", image="New image (png/jpeg/gif/webp, max 8MB)",
     )
+    @app_commands.autocomplete(ad_id=_any_ad_autocomplete)
     async def ad_edit(
         self, interaction: discord.Interaction, ad_id: int, company_name: str = None, title: str = None,
         description: str = None, target_url: str = None, image: discord.Attachment = None,
@@ -184,6 +211,7 @@ class AdsMarketplaceCog(commands.Cog):
 
     @ad.command(name="status", description="Check the status of an ad you submitted")
     @app_commands.describe(ad_id="The ad's id (given to you when you submitted it)")
+    @app_commands.autocomplete(ad_id=_any_ad_autocomplete)
     async def ad_status(self, interaction: discord.Interaction, ad_id: int):
         ad = await get_ad(ad_id)
         if not ad or ad["user_id"] != interaction.user.id:
@@ -220,6 +248,7 @@ class AdsMarketplaceCog(commands.Cog):
 
     @ad.command(name="approve", description="[Owner] Approve a pending ad")
     @app_commands.describe(ad_id="The ad's id")
+    @app_commands.autocomplete(ad_id=_pending_ad_autocomplete)
     async def ad_approve(self, interaction: discord.Interaction, ad_id: int):
         if not _is_ads_admin(interaction.user.id):
             await interaction.response.send_message("You're not authorized to approve ads.", ephemeral=True)
@@ -229,12 +258,38 @@ class AdsMarketplaceCog(commands.Cog):
 
     @ad.command(name="reject", description="[Owner] Reject a pending ad")
     @app_commands.describe(ad_id="The ad's id", reason="Why it's being rejected")
+    @app_commands.autocomplete(ad_id=_pending_ad_autocomplete)
     async def ad_reject(self, interaction: discord.Interaction, ad_id: int, reason: str):
         if not _is_ads_admin(interaction.user.id):
             await interaction.response.send_message("You're not authorized to reject ads.", ephemeral=True)
             return
         ok = await reject_ad(ad_id, reason.strip()[:200])
         await interaction.response.send_message("✅ Rejected." if ok else "❌ Not found or already reviewed.", ephemeral=True)
+
+    @ad.command(name="toggle", description="[Owner] Deactivate a live ad, or switch a deactivated one back on")
+    @app_commands.describe(ad_id="Pick the ad")
+    @app_commands.autocomplete(ad_id=_toggle_ad_autocomplete)
+    async def ad_toggle(self, interaction: discord.Interaction, ad_id: int):
+        if not _is_ads_admin(interaction.user.id):
+            await interaction.response.send_message("You're not authorized to manage ads.", ephemeral=True)
+            return
+        ad = await get_ad(ad_id)
+        if not ad:
+            await interaction.response.send_message("No ad with that id.", ephemeral=True)
+            return
+        if ad["status"] == "approved":
+            ok = await deactivate_ad(ad_id)
+            msg = f"⏸️ Ad #{ad_id} deactivated — it's off every surface. Run this again to switch it back on."
+        elif ad["status"] == "deactivated":
+            ok = await reactivate_ad(ad_id)
+            msg = f"▶️ Ad #{ad_id} is live again."
+        else:
+            await interaction.response.send_message(
+                f"Ad #{ad_id} is **{ad['status']}**, so there's nothing to toggle "
+                "(only approved/deactivated ads can be).", ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(msg if ok else "❌ That ad changed while you were looking at it. Try again.", ephemeral=True)
 
     @ad.command(name="active", description="Show currently approved ads")
     async def ad_active(self, interaction: discord.Interaction):
