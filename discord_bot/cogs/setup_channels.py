@@ -456,7 +456,7 @@ class SetupChannelsCog(GuildOnlyCog):
         await db.set_setup_suggestions(guild.id, clone_id=clone_id, category_id=category.id)
         return category
 
-    async def _create_one(self, guild: discord.Guild, clone_id: int | None, key: str) -> discord.TextChannel | None:
+    async def _create_one(self, guild: discord.Guild, clone_id: int | None, key: str, invoker_id: int | None = None) -> discord.TextChannel | None:
         """Re-verifies the channel is still missing right before creating
         (in case /setup channels was run twice, or the owner made a
         matching channel manually in between), then creates it, seeds it,
@@ -467,9 +467,31 @@ class SetupChannelsCog(GuildOnlyCog):
             return None  # no longer missing — already handled
 
         category = await self._get_or_create_category(guild, clone_id)
-        channel = await guild.create_text_channel(entry["name"], category=category, reason="Server Setup wizard")
+        kwargs = {}
+        if key == "bump":
+            # Same bot-posts-only lock as /bumpsetup's own #bump (see
+            # bump_setup._create_bump_channel): members can read the ads, only
+            # the bot posts them. Without this the suggested #bump was open to
+            # everyone.
+            kwargs["overwrites"] = {
+                guild.default_role: discord.PermissionOverwrite(send_messages=False),
+                guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
+            }
+        channel = await guild.create_text_channel(entry["name"], category=category, reason="Server Setup wizard", **kwargs)
         await self._seed_channel(guild, channel, key)
         await self._write_config(guild, clone_id, key, channel)
+        if key == "bump":
+            # No dead end: right after creating #bump, post the /bumpsetup wizard
+            # in it (also heals the listing + this bot's permissions), so the
+            # owner can finish and Save — which sends the first bump.
+            try:
+                from discord_bot.cogs.bump_setup import post_setup_wizard
+                await post_setup_wizard(
+                    self.bot, guild, clone_id, channel,
+                    invoker_id=invoker_id or guild.owner_id or 0, created=True,
+                )
+            except Exception:
+                logger.exception("setup_channels: couldn't post bump wizard for guild %s", guild.id)
         return channel
 
     async def _seed_channel(self, guild: discord.Guild, channel: discord.TextChannel, key: str):
@@ -485,7 +507,7 @@ class SetupChannelsCog(GuildOnlyCog):
             try:
                 await channel.send(
                     "📣 Bump reminders and your server's listing will appear here. "
-                    "Run `/bumpsetup` to finish configuring your listing."
+                    "Finish the setup in the wizard below, or run `/bumpsetup` anytime."
                 )
             except discord.Forbidden:
                 pass
@@ -571,7 +593,7 @@ class SetupChannelsCog(GuildOnlyCog):
             await interaction.response.defer()
             clone_id = _clone_id_of(interaction.client)
             try:
-                channel = await self._create_one(guild, clone_id, key)
+                channel = await self._create_one(guild, clone_id, key, invoker_id=interaction.user.id)
             except discord.Forbidden:
                 await interaction.followup.send(
                     "I don't have permission to create channels here — grant me **Manage Channels** and try again.",
@@ -613,7 +635,7 @@ class SetupChannelsCog(GuildOnlyCog):
             forbidden = False
             for entry in missing:
                 try:
-                    channel = await self._create_one(guild, clone_id, entry["key"])
+                    channel = await self._create_one(guild, clone_id, entry["key"], invoker_id=interaction.user.id)
                 except discord.Forbidden:
                     # Stop here rather than raising past the loop: whatever
                     # got created before the permission ran out (or was
