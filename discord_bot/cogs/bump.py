@@ -328,11 +328,20 @@ class DynamicAddMineButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"bump:addmine",
 ):
-    """+ Add mine button on a posted ad card. No per-listing state at
-    all, so the template is a fixed string rather than a capture group."""
+    """+ Add my server button on a posted ad card — the growth loop: a server
+    that sees someone else's ad taps it to put its OWN server on the network.
+    No per-listing state at all, so the template is a fixed string rather than
+    a capture group (custom_id stays "bump:addmine" so buttons on already-posted
+    cards keep working). What it does depends on who taps and where:
+      - not in a server            -> says it only works in a server
+      - no Manage Server           -> explains what it is and who to ask
+      - server already on network  -> tells them, shows the bump channel, and
+                                      does NOT re-ask for a channel
+      - server not set up yet      -> the /bumpsetup wizard (explains bumping,
+                                      pick/create the channel, Save = first bump)"""
 
     def __init__(self):
-        super().__init__(discord.ui.Button(label="+ Add mine", style=discord.ButtonStyle.secondary, custom_id="bump:addmine"))
+        super().__init__(discord.ui.Button(label="+ Add my server", style=discord.ButtonStyle.secondary, custom_id="bump:addmine"))
 
     @classmethod
     async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Item, match: "re.Match[str]", /):
@@ -343,25 +352,29 @@ class DynamicAddMineButton(
             await interaction.response.send_message("This only works inside a server.", ephemeral=True)
             return
         if not _require_manage_guild(interaction):
-            await interaction.response.send_message("You need **Manage Server** to set up a listing here.", ephemeral=True)
+            await interaction.response.send_message(
+                "**+ Add my server** puts *your* server on the bump network, so it shows up as a card like this "
+                "in other servers' bump channels (and theirs show up in yours).\n"
+                "It needs someone with **Manage Server** — ask an admin to tap it.",
+                ephemeral=True,
+            )
             return
-        # BumpChannelSelectView needs the real cog instance — its two
-        # handlers call self.cog._finish_channel_setup(...). This is a
-        # DynamicItem with no reference to any live cog stored anywhere
-        # (by design, so it survives restarts), so None was being passed
-        # here instead, which crashed with AttributeError the moment
-        # someone picked a channel or clicked "Create a #bump channel for
-        # me" — the primary growth-loop button on every posted ad card.
-        # interaction.client.get_cog(...) fetches the actual live cog
-        # fresh at click time, which is always safe here since
-        # BumpChannelSelectView itself is a plain (non-dynamic) view shown
-        # only as an immediate reply within this interaction's short
-        # response window, never something clicked days later.
-        await interaction.response.send_message(
-            "Which channel should receive bumps (and send yours)?",
-            view=BumpChannelSelectView(interaction.client.get_cog("BumpCog")),
-            ephemeral=True,
-        )
+        clone_id = _clone_id_of(interaction.client)
+        config = await db.bump_get_guild_config(interaction.guild_id, clone_id)
+        listing = await db.bump_get_listing(interaction.guild_id, clone_id, "server")
+        if config and config.get("bump_channel_id") and listing:
+            await interaction.response.send_message(
+                f"✅ **{listing.get('name') or interaction.guild.name}** is already on the bump network. "
+                f"Its bump channel is <#{config['bump_channel_id']}> — bump it there with `/bump now` or the 🔁 Bump button.\n"
+                "Change settings with `/bumpsetup`, or edit the listing with `/bump edit`.",
+                ephemeral=True,
+            )
+            return
+        # Not set up yet: the same wizard as /bumpsetup. Its intro explains what
+        # bumping is; Save creates the listing and sends the first bump.
+        from discord_bot.cogs.bump_setup import BumpWizardView
+        wizard = BumpWizardView(interaction.user.id, config or {})
+        await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
 
 
 class DynamicBumpPromptButton(
