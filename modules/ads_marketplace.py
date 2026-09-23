@@ -110,6 +110,69 @@ async def get_active_ads(limit: int = 5) -> List[Dict]:
         return []
 
 
+async def get_pending_ads_awaiting_payment_reminder(min_age_seconds: int = 1800, limit: int = 25) -> List[Dict]:
+    """Pending ads that are old enough to have plausibly stalled at
+    checkout and haven't been auto-nudged yet (payment_reminder_sent_at
+    IS NULL) — this is the "old ones" that never got a payment link
+    reminder DM. See claim_ad_payment_reminder for the actual once-only
+    guarantee."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, user_id, company_name, ad_title, budget_usd
+                FROM ad_submissions
+                WHERE status = 'pending'
+                  AND payment_reminder_sent_at IS NULL
+                  AND submitted_at <= NOW() - ($1 * INTERVAL '1 second')
+                ORDER BY submitted_at ASC
+                LIMIT $2
+                """,
+                min_age_seconds, limit,
+            )
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[v0] Error fetching ads awaiting payment reminder: {e}")
+        return []
+
+
+async def claim_ad_payment_reminder(ad_id: int) -> bool:
+    """Atomic once-only claim: True only for the single caller that wins
+    the race to send this ad's reminder DM (matters because this loop
+    runs in every bot process — main bot and every clone — so more than
+    one process can see the same due ad in the same tick)."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE ad_submissions SET payment_reminder_sent_at = NOW()
+                WHERE id = $1 AND payment_reminder_sent_at IS NULL AND status = 'pending'
+                """,
+                ad_id,
+            )
+        return result.endswith("1")
+    except Exception as e:
+        print(f"[v0] Error claiming ad payment reminder for ad {ad_id}: {e}")
+        return False
+
+
+async def unclaim_ad_payment_reminder(ad_id: int) -> None:
+    """Rolls back a claim that didn't actually result in a sent DM (e.g.
+    this process doesn't share a server with the submitter) so a
+    different process gets a chance on the next hourly pass instead of
+    the ad silently never being followed up on."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE ad_submissions SET payment_reminder_sent_at = NULL WHERE id = $1", ad_id,
+            )
+    except Exception as e:
+        print(f"[v0] Error unclaiming ad payment reminder for ad {ad_id}: {e}")
+
+
 # ── Services Marketplace ──────────────────────────────────────────────
 
 async def list_service(user_id: int, service_name: str, service_title: str,
