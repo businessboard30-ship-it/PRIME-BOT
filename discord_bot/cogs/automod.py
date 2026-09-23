@@ -397,6 +397,22 @@ class AutomodCog(GuildOnlyCog):
             return None
         return owner if (owner is not None and not owner.bot) else None
 
+    def _flag_unpostable_log_channel(self, guild: discord.Guild, channel, clone_id) -> None:
+        """Flag the permission problem and log it at most once per guild per
+        process, instead of on every reminder tick / restart."""
+        seen = getattr(self, "_unpostable_logged", None)
+        if seen is None:
+            seen = self._unpostable_logged = set()
+        if guild.id not in seen:
+            seen.add(guild.id)
+            logger.info(f"Could not post combined automod reminder in guild {guild.id}'s log channel")
+        perm_check.flag(
+            guild.id, clone_id, "automod_log",
+            "Moderation logs and reminders can't be posted. "
+            + (perm_check.channel_problem(channel, guild.me)
+               or "The log channel is missing or I can't post there — pick one with `/automod setlogchannel`."),
+        )
+
     async def _send_combined_reminder(self, guild: discord.Guild, channel: discord.abc.Messageable, items: list, clone_id):
         """One message per guild per tick, covering every pending item
         collected for that guild this tick — instead of the old
@@ -431,6 +447,13 @@ class AutomodCog(GuildOnlyCog):
         # column is NOT NULL; it no longer determines where the message
         # is sent, and an unresolvable owner is not a reason to skip
         # posting the in-channel reminder itself.
+        # Pre-check: if we can't post in the log channel, don't create (and
+        # then delete) a batch row on every tick. Flag it once and move on.
+        me = guild.me
+        if me is None or not channel.permissions_for(me).send_messages \
+                or not channel.permissions_for(me).embed_links:
+            self._flag_unpostable_log_channel(guild, channel, clone_id)
+            return
         owner = await self._resolve_owner(guild)
         owner_id = owner.id if owner is not None else guild.owner_id
         if owner_id is None:
@@ -465,16 +488,17 @@ class AutomodCog(GuildOnlyCog):
 
         try:
             message = await channel.send(embed=embed, view=view)
-        except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as e:
             # Known, final outcome — nothing will ever back this batch row.
-            logger.info(f"Could not post combined automod reminder in guild {guild.id}'s log channel")
-            perm_check.flag(
-                guild.id, clone_id, "automod_log",
-                "Moderation logs and reminders can't be posted. "
-                + (perm_check.channel_problem(channel, guild.me)
-                   or "The log channel is missing or I can't post there — pick one with `/automod setlogchannel`."),
-            )
+            self._flag_unpostable_log_channel(guild, channel, clone_id)
             await db.delete_automod_reminder_batch(batch_id)
+            if isinstance(e, discord.NotFound):
+                # Channel was deleted: drop the dead pointer so the log-channel
+                # backfill can adopt/recreate one instead of retrying forever.
+                try:
+                    await db.set_automod_config(guild.id, clone_id=clone_id, log_channel_id=None)
+                except Exception:
+                    logger.exception(f"Could not clear dead log channel for guild {guild.id}")
             return
         except Exception:
             # Unknown failure (network blip, timeout, ...) — don't burn the

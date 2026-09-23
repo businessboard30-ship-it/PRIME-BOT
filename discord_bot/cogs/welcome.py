@@ -464,6 +464,13 @@ class WelcomeNudgeEditModal(discord.ui.Modal, title="Edit welcome message"):
             preview_text = _apply_template(new_template, member) if hasattr(member, "mention") else new_template
         view = WelcomeNudgeView(self.guild_id, self.channel_id, new_template)
         new_content = f"Updated. Here's the message it'll send:\n\n{preview_text}"
+        # Components V2 messages (e.g. the join-DM wizard that also opens this
+        # modal) permanently reject content=/embeds= — even on edit — so don't
+        # attempt the edit at all; send the update as a fresh classic message.
+        source_msg = getattr(interaction, "message", None)
+        if source_msg is not None and source_msg.flags.components_v2:
+            await interaction.followup.send(content=new_content, view=view, ephemeral=True)
+            return
         try:
             await interaction.edit_original_response(content=new_content, view=view)
         except discord.HTTPException as e:
@@ -1314,11 +1321,35 @@ class WelcomeCog(GuildOnlyCog):
     group = app_commands.guild_only()(app_commands.Group(name="welcome", description="Configure welcome cards for new members"))
 
     @group.command(name="enable", description="Turn welcome cards on for a channel")
-    async def enable(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    @app_commands.describe(channel="Text channel to post welcome cards in")
+    async def enable(
+        self,
+        interaction: discord.Interaction,
+        channel: app_commands.AppCommandChannel,
+    ):
+        # AppCommandChannel (not discord.TextChannel) so a channel that isn't
+        # in this bot's cache yet (just created, or created after the bot
+        # cached the guild) doesn't raise TransformerError before we run.
+        # We resolve it ourselves below and fall back to a REST fetch.
         await interaction.response.defer(ephemeral=True)
         if not _require_perm(interaction, "manage_guild"):
             await _deny(interaction, "Manage Server")
             return
+        resolved = interaction.guild.get_channel(channel.id) if interaction.guild else None
+        if resolved is None:
+            try:
+                resolved = await interaction.client.fetch_channel(channel.id)
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                resolved = None
+        if not isinstance(resolved, discord.TextChannel):
+            await interaction.followup.send(
+                f"⚠️ I can't access <#{channel.id}>, or it isn't a regular text channel. "
+                "Give me **View Channel**, **Send Messages**, **Embed Links** and "
+                "**Attach Files** there, then run the command again.",
+                ephemeral=True,
+            )
+            return
+        channel = resolved
         problem = perm_check.channel_problem(channel, interaction.guild.me)
         if problem:
             await interaction.followup.send(f"⚠️ Welcome cards not enabled. {problem}", ephemeral=True)

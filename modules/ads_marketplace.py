@@ -18,17 +18,21 @@ from modules.referrals import record_referral_earning
 # ── Ads (owner-approved) ──────────────────────────────────────────────
 
 async def submit_ad(user_id: int, company_name: str, ad_title: str,
-                     ad_description: str, target_url: str, budget_usd: float) -> Optional[int]:
+                     ad_description: str, target_url: str, budget_usd: float,
+                     image_channel_id: Optional[int] = None,
+                     image_message_id: Optional[int] = None) -> Optional[int]:
     """Submit an ad for owner approval. Returns the new ad's id, or None on failure."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow("""
                 INSERT INTO ad_submissions
-                    (user_id, company_name, ad_title, ad_description, target_url, budget_usd, status)
-                VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+                    (user_id, company_name, ad_title, ad_description, target_url, budget_usd, status,
+                     image_channel_id, image_message_id)
+                VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
                 RETURNING id
-            """, user_id, company_name, ad_title, ad_description, target_url, budget_usd)
+            """, user_id, company_name, ad_title, ad_description, target_url, budget_usd,
+                image_channel_id, image_message_id)
         ad_id = row["id"] if row else None
         if ad_id is not None:
             # Tracked-only referral commission — see modules/referrals.py docstring.
@@ -39,13 +43,29 @@ async def submit_ad(user_id: int, company_name: str, ad_title: str,
         return None
 
 
+async def set_ad_image(ad_id: int, user_id: int, image_channel_id: int, image_message_id: int) -> bool:
+    """Attach/replace the image on an ad the user owns (any status except rejected)."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute("""
+                UPDATE ad_submissions SET image_channel_id = $3, image_message_id = $4
+                WHERE id = $1 AND user_id = $2 AND status <> 'rejected'
+            """, ad_id, user_id, image_channel_id, image_message_id)
+        return result.endswith("1")
+    except Exception as e:
+        print(f"[v0] Error setting ad image: {e}")
+        return False
+
+
 async def get_pending_ads(limit: int = 10) -> List[Dict]:
     """List ads awaiting owner approval, oldest first."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT id, user_id, company_name, ad_title, ad_description, target_url, budget_usd, submitted_at
+                SELECT id, user_id, company_name, ad_title, ad_description, target_url, budget_usd, submitted_at,
+                       image_channel_id, image_message_id
                 FROM ad_submissions WHERE status = 'pending'
                 ORDER BY submitted_at ASC LIMIT $1
             """, limit)
@@ -100,7 +120,8 @@ async def get_active_ads(limit: int = 5) -> List[Dict]:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT id, company_name, ad_title, ad_description, target_url
+                SELECT id, company_name, ad_title, ad_description, target_url,
+                       image_channel_id, image_message_id
                 FROM ad_submissions WHERE status = 'approved'
                 ORDER BY approved_at DESC LIMIT $1
             """, limit)
