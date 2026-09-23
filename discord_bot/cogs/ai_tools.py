@@ -546,6 +546,13 @@ class AIToolsCog(commands.Cog):
         return text[:500]
 
     def _as_chat_message(self, m: discord.Message) -> Optional[dict]:
+        # Drop messages from other bots / webhooks entirely — their content
+        # (including embed text pulled by _msg_text) must never reach the AI
+        # as context because it is an untrusted prompt-injection vector.
+        if m.author.bot and m.author.id != self.bot.user.id:
+            return None
+        if m.webhook_id is not None and m.author.id != self.bot.user.id:
+            return None
         text = self._msg_text(m)
         if not text:
             return None
@@ -584,7 +591,8 @@ class AIToolsCog(commands.Cog):
             async for m in replied.channel.history(
                 limit=self.CHANNEL_CONTEXT_MAX + 5, before=root
             ):
-                if m.id in chain_ids or m.author.bot and m.author.id != self.bot.user.id:
+                is_other_bot = (m.author.bot or m.webhook_id is not None) and m.author.id != self.bot.user.id
+                if m.id in chain_ids or is_other_bot:
                     continue
                 c = self._as_chat_message(m)
                 if c:
@@ -602,6 +610,10 @@ class AIToolsCog(commands.Cog):
         out = []
         try:
             async for m in message.channel.history(limit=self.DM_CONTEXT_MAX, before=message):
+                # Skip other bots in DM history (shouldn't normally appear,
+                # but defence-in-depth: _as_chat_message also filters them).
+                if m.author.bot and m.author.id != self.bot.user.id:
+                    continue
                 c = self._as_chat_message(m)
                 if c:
                     out.append(c)
