@@ -50,36 +50,41 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)
 # cooldown is what actually paces it out to a 6-hourly auto-bump.
 AD_PLACEMENT_COOLDOWN_SECONDS = 6 * 60 * 60
 
-# Every placed ad carries this note so a reader knows this same slot is
-# available to them too, and how to send anything a text field can't
-# hold (video, extra assets) — /ad submit takes an optional image, and
-# /ad image attaches one later.
-_PLACEMENT_FOOTER = (
-    "\n\n— Placed automatically in the combined join DM and every clone's bump "
-    "channel. Want your own ad here? Use the 📣 **Advertise with us** button on "
-    "your server's join DM, or `/ad submit` (it takes an optional image)."
-)
+# Same teal as a server listing's card (discord_bot/cogs/bump.py's
+# _bump_embed), so an ad sits in the bump channel looking like one of the
+# cards around it instead of a loose block of text.
+CARD_COLOR = 0x22B3A4
+CARD_DESCRIPTION_MAX = 500  # same cap _bump_embed uses for listings
+_CARD_FOOTER = "📢 Sponsored  •  Want your ad here? Use /ad submit or 📣 Advertise with us in your join DM"
 
 
-def _ad_message(ad: dict) -> tuple[str, list]:
-    """(message text, link-button component rows). Every link in the ad —
-    its target URL and any URLs typed into the title/description — becomes a
-    button, so nothing is left in the text for Discord to expand into a big
-    preview card."""
+def _ad_card(ad: dict, image_url: str | None = None) -> tuple[dict, list]:
+    """(embed dict, link-button component rows) — an ad shaped like a server
+    card: teal embed, company as the title, headline in bold over the body,
+    hosted image, a Sponsored footer, and the link button row underneath.
+    Every link in the ad becomes a button, so nothing in the text is left for
+    Discord to expand into a big preview."""
     (title, description), buttons = split_ad_links(
         [ad["ad_title"], ad["ad_description"]], target_url=ad.get("target_url"),
     )
-    lines = [f"📣 **{ad['company_name']} — {title}**"]
-    if description:
-        lines.append(description)
-    text = "\n".join(lines) + _PLACEMENT_FOOTER
+    body = "\n".join(part for part in (f"**{title}**" if title else "", description) if part)
+    if len(body) > CARD_DESCRIPTION_MAX:
+        body = body[:CARD_DESCRIPTION_MAX - 1].rstrip() + "…"
+    embed = {
+        "title": f"📢 {ad['company_name']}"[:256],
+        "description": body or "\u200b",
+        "color": CARD_COLOR,
+        "footer": {"text": _CARD_FOOTER},
+    }
+    if image_url:
+        embed["image"] = {"url": image_url}
     components = []
     if buttons:
         components = [{
             "type": 1,
             "components": [{"type": 2, "style": 5, "label": label, "url": url} for label, url in buttons],
         }]
-    return text[:2000], components
+    return embed, components
 
 
 async def _token_for(clone_id):
@@ -114,13 +119,11 @@ async def resolve_ad_image_url_rest(session: aiohttp.ClientSession, token: str, 
         return None
 
 
-async def _post(session: aiohttp.ClientSession, token: str, channel_id: int, message: str,
-                image_url: str | None = None, components: list | None = None) -> bool:
+async def _post(session: aiohttp.ClientSession, token: str, channel_id: int, embed: dict,
+                components: list | None = None) -> bool:
     url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
     headers = {"Authorization": f"Bot {token}"}
-    payload = {"content": message}
-    if image_url:
-        payload["embeds"] = [{"image": {"url": image_url}}]
+    payload = {"embeds": [embed]}
     if components:
         payload["components"] = components
     try:
@@ -146,15 +149,23 @@ async def run_ad_placements() -> dict:
     # Cache tokens per clone_id so a clone with many guilds only gets
     # decrypted once per run, not once per (ad, channel) pair.
     token_cache: dict = {}
+    # One ad per channel per run: with several approved ads due at once they'd
+    # otherwise land back-to-back in every bump channel. A channel skipped here
+    # is still due for the next ad on the next run (per-ad cooldowns are
+    # untouched), so the ads take turns instead of stacking.
+    posted_channels: set = set()
 
     async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
         for ad in ads:
             targets = await db.get_unplaced_channels_for_ad(
                 ad["id"], all_channels, cooldown_seconds=AD_PLACEMENT_COOLDOWN_SECONDS,
             )
-            message, components = _ad_message(ad)
+            targets = [t for t in targets if t["bump_channel_id"] not in posted_channels]
+            if not targets:
+                continue
             # One fresh (non-expired) URL per ad per run, via the main bot's token.
             image_url = await resolve_ad_image_url_rest(session, DISCORD_BOT_TOKEN, ad) if ad.get("image_message_id") else None
+            embed, components = _ad_card(ad, image_url)
             for target in targets:
                 clone_id = target["clone_id"]
                 if clone_id not in token_cache:
@@ -163,8 +174,9 @@ async def run_ad_placements() -> dict:
                 if not token:
                     failed += 1
                     continue
-                ok = await _post(session, token, target["bump_channel_id"], message, image_url, components)
+                ok = await _post(session, token, target["bump_channel_id"], embed, components)
                 if ok:
+                    posted_channels.add(target["bump_channel_id"])
                     await db.record_ad_placement(ad["id"], target["bump_channel_id"], target["guild_id"])
                     placed += 1
                 else:
