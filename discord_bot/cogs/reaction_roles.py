@@ -230,7 +230,15 @@ class ReactionRolesCog(GuildOnlyCog):
             await _deny(interaction, "Manage Roles")
             return
         embed = discord.Embed(title=title, description=description, color=discord.Color.blurple())
-        msg = await interaction.channel.send(embed=embed)
+        try:
+            msg = await interaction.channel.send(embed=embed)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ I can't post in this channel. Give me **View Channel**, **Send Messages** and "
+                "**Embed Links** here (or run this in a channel I can post in), then try again.",
+                ephemeral=True,
+            )
+            return
         confirm = discord.Embed(
             title="Panel created",
             description=f"Add roles to it with `/reactionrole add message_id:{msg.id} role:<role> label:<text>`.",

@@ -275,6 +275,9 @@ async def log_ai_usage(user_id: int, usage_type: str = "messages", prompt_text: 
                     "INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
                     user_id,
                 )
+                # Postgres text columns reject NUL (0x00) bytes.
+                prompt_text = (prompt_text or "").replace("\x00", "")
+                response_text = response_text.replace("\x00", "") if response_text else response_text
                 if usage_type == "messages":
                     await conn.execute(
                         "INSERT INTO ai_chat_usage (user_id, prompt, response, session_id, guild_id, kind, created_at) "
