@@ -18,15 +18,19 @@ Three layers, all must pass, in this order:
      is called at all; this module doesn't render UI itself.
 
 Every attempt — allowed or denied — is logged via db.log_ai_command.
+
+get_qualifying_commands() adds a fourth, EARLIER step: filtering what the
+AI is even offered as an option, before the user asks for anything and
+before a confirm button could ever be shown. See its docstring below.
 """
 
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import discord
 
 from database import db
-from modules.ai_command_allowlist import is_command_allowed, AICommandSpec
+from modules.ai_command_allowlist import is_command_allowed, AI_COMMANDS, AICommandSpec
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,37 @@ def _resolve_command(bot: discord.Client, name: str) -> Optional[discord.app_com
         if cmd.name == name:
             return cmd
     return None
+
+
+async def get_qualifying_commands(interaction: discord.Interaction) -> List[AICommandSpec]:
+    """Pre-filter, run BEFORE the user ever asks for anything and BEFORE
+    the AI's tool schema for this turn is built. Walks the full
+    allowlist and keeps only the specs whose real command this user
+    actually passes check_real_permission() for right now, in this guild.
+
+    Callers (the NLU/tool-calling layer) should build the model's
+    available-tools list from this, not from AI_COMMANDS directly — a
+    command a user doesn't qualify for should never reach the model as
+    an option, so there's nothing to refuse and no confirm button to
+    show for it. This does NOT replace resolve_and_check/execute_ai_command
+    — permissions can change between this call and the moment a command
+    is actually invoked (roles edited mid-conversation, etc.), so the
+    same real check still runs again right before execution.
+
+    No result is logged here — this is a visibility filter, not an
+    attempt, so it would just be noise in ai_command_log.
+    """
+    qualifying: List[AICommandSpec] = []
+    if interaction.guild is None:
+        return qualifying
+    for spec in AI_COMMANDS:
+        command = _resolve_command(interaction.client, spec.name)
+        if command is None:
+            continue
+        ok, _reason = await check_real_permission(interaction, command)
+        if ok:
+            qualifying.append(spec)
+    return qualifying
 
 
 async def resolve_and_check(interaction: discord.Interaction, command_name: str, args: dict) -> Tuple[Optional[AICommandSpec], Optional[discord.app_commands.Command], Optional[str]]:
