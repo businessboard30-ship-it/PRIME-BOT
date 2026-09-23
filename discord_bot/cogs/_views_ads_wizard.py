@@ -16,6 +16,7 @@ owner gate (DISCORD_CLONE_ADMIN_IDS — the same gate /ad approve uses), so a
 stale or forwarded message can't be used by anyone else.
 """
 
+import logging
 import re
 
 import discord
@@ -23,8 +24,11 @@ import discord
 from config import DISCORD_CLONE_ADMIN_IDS
 from modules.ads_marketplace import (
     get_ad, list_ads_for_manager, count_ads_by_status,
-    approve_ad, reject_ad, deactivate_ad, reactivate_ad, update_ad_fields,
+    approve_ad, reject_ad, deactivate_ad, reactivate_ad, update_ad_fields, set_ad_image,
 )
+from discord_bot.ad_images import upload_ad_image
+
+logger = logging.getLogger(__name__)
 
 _STATUS_EMOJI = {"pending": "⏳", "approved": "🟢", "deactivated": "⏸️", "rejected": "❌"}
 _STATUS_LABEL = {"pending": "Pending", "approved": "Live", "deactivated": "Deactivated", "rejected": "Rejected"}
@@ -130,6 +134,29 @@ async def _deny(interaction: discord.Interaction):
         await interaction.response.send_message(msg, ephemeral=True)
 
 
+async def notify_rejected(client: discord.Client, ad: dict, reason: str) -> bool:
+    """DM the submitter that their ad was rejected, with the reason. Returns
+    False when the DM couldn't be delivered (DMs closed, user not found) —
+    callers surface that to the owner; /ad status still shows the reason."""
+    try:
+        user = client.get_user(ad["user_id"]) or await client.fetch_user(ad["user_id"])
+        embed = discord.Embed(
+            title=f"❌ Your ad #{ad['id']} was not approved",
+            description=(
+                f"**{_clip(ad['company_name'], 100)} — {_clip(ad['ad_title'], 200)}**\n\n"
+                f"**Reason:** {reason or 'No reason given.'}\n\n"
+                "You can fix the issue and submit a new ad with `/ad submit`. "
+                f"You can also check this any time with `/ad status ad_id:{ad['id']}`."
+            ),
+            color=discord.Color.red(),
+        )
+        await user.send(embed=embed)
+        return True
+    except (discord.HTTPException, discord.NotFound) as e:
+        logger.info(f"[ads] couldn't DM rejection for ad {ad.get('id')}: {e}")
+        return False
+
+
 class AdPickSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"adwz_pick"):
     def __init__(self, ads: list = None, selected_id: int = None):
         options = [
@@ -207,33 +234,49 @@ class AdRejectModal(discord.ui.Modal, title="Reject ad"):
     def __init__(self, ad: dict):
         super().__init__()
         self.ad_id = ad["id"]
-        self.reason = discord.ui.TextInput(
-            label="Reason (shown to the submitter)", style=discord.TextStyle.paragraph, max_length=200,
-        )
-        self.add_item(self.reason)
+        self.reason = discord.ui.TextInput(style=discord.TextStyle.paragraph, max_length=200)
+        self.add_item(discord.ui.Label(
+            text="Reason", description="Sent to the submitter in a DM", component=self.reason,
+        ))
 
     async def on_submit(self, interaction: discord.Interaction):
         if not _is_owner(interaction.user.id):
             await _deny(interaction)
             return
         await interaction.response.defer()
-        ok = await reject_ad(self.ad_id, str(self.reason.value).strip()[:200])
-        await render(interaction, None if ok else self.ad_id,
-                     f"❌ Ad #{self.ad_id} rejected and removed from this list." if ok
-                     else "❌ Couldn't reject — it was already reviewed.")
+        reason = str(self.reason.value).strip()[:200]
+        ad = await get_ad(self.ad_id)
+        ok = await reject_ad(self.ad_id, reason)
+        if not ok:
+            await render(interaction, self.ad_id, "❌ Couldn't reject — it was already reviewed.")
+            return
+        sent = await notify_rejected(interaction.client, ad, reason) if ad else False
+        await render(
+            interaction, None,
+            f"❌ Ad #{self.ad_id} rejected and removed from this list. "
+            + ("Submitter notified by DM." if sent else "Couldn't DM the submitter (DMs closed) — they can still see the reason in /ad status."),
+        )
 
 
 class AdEditModal(discord.ui.Modal, title="Edit ad"):
     def __init__(self, ad: dict):
         super().__init__()
         self.ad_id = ad["id"]
-        self.company = discord.ui.TextInput(label="Company / brand", default=_clip(ad["company_name"], 100), max_length=100)
-        self.headline = discord.ui.TextInput(label="Headline", default=_clip(ad["ad_title"], 200), max_length=200)
+        self.company = discord.ui.TextInput(default=_clip(ad["company_name"], 100), max_length=100)
+        self.headline = discord.ui.TextInput(default=_clip(ad["ad_title"], 200), max_length=200)
         self.body = discord.ui.TextInput(
-            label="Body text", style=discord.TextStyle.paragraph, default=_clip(ad["ad_description"], 1000), max_length=1000)
-        self.link = discord.ui.TextInput(label="Link (https://… or N/A)", default=_clip(ad["target_url"], 300), max_length=300)
-        for item in (self.company, self.headline, self.body, self.link):
-            self.add_item(item)
+            style=discord.TextStyle.paragraph, default=_clip(ad["ad_description"], 1000), max_length=1000)
+        self.link = discord.ui.TextInput(default=_clip(ad["target_url"], 300), max_length=300)
+        self.upload = discord.ui.FileUpload(required=False, min_values=0, max_values=1)
+        self.add_item(discord.ui.Label(text="Company / brand", component=self.company))
+        self.add_item(discord.ui.Label(text="Headline", component=self.headline))
+        self.add_item(discord.ui.Label(text="Body text", component=self.body))
+        self.add_item(discord.ui.Label(text="Link (https://… or N/A)", component=self.link))
+        self.add_item(discord.ui.Label(
+            text="Image (upload or replace)",
+            description="png/jpeg/gif/webp, max 8MB — leave empty to keep the current one",
+            component=self.upload,
+        ))
 
     async def on_submit(self, interaction: discord.Interaction):
         if not _is_owner(interaction.user.id):
@@ -251,7 +294,20 @@ class AdEditModal(discord.ui.Modal, title="Edit ad"):
             ad_description=str(self.body.value).strip(),
             target_url=link,
         )
-        await render(interaction, self.ad_id, "✏️ Saved." if ok else "❌ Couldn't save that edit.")
+        if not ok:
+            await render(interaction, self.ad_id, "❌ Couldn't save that edit.")
+            return
+        note = "✏️ Saved."
+        files = list(self.upload.values or [])
+        if files:
+            channel_id, message_id, reason = await upload_ad_image(interaction.client, files[0], interaction.user, self.ad_id)
+            if reason:
+                note = f"✏️ Text saved, but the image wasn't changed — {reason}."
+            elif await set_ad_image(self.ad_id, None, channel_id, message_id):
+                note = "✏️ Saved (text + image)."
+            else:
+                note = "✏️ Text saved, but the image couldn't be attached. Try again."
+        await render(interaction, self.ad_id, note)
 
 
 DYNAMIC_ITEMS = (AdPickSelect, AdActionButton)

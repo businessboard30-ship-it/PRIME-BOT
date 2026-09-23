@@ -47,7 +47,7 @@ from modules.ads_marketplace import (
 from gumroad_payments import start_gumroad_payment
 from discord_bot.ad_images import upload_ad_image
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
-from discord_bot.cogs._views_ads_wizard import build_manager_view, _load as _load_manager
+from discord_bot.cogs._views_ads_wizard import build_manager_view, notify_rejected, _load as _load_manager
 
 logger = logging.getLogger(__name__)
 
@@ -272,8 +272,19 @@ class AdsMarketplaceCog(commands.Cog):
         if not _is_ads_admin(interaction.user.id):
             await interaction.response.send_message("You're not authorized to reject ads.", ephemeral=True)
             return
-        ok = await reject_ad(ad_id, reason.strip()[:200])
-        await interaction.response.send_message("✅ Rejected." if ok else "❌ Not found or already reviewed.", ephemeral=True)
+        reason = reason.strip()[:200]
+        await interaction.response.defer(ephemeral=True)
+        ad = await get_ad(ad_id)
+        ok = await reject_ad(ad_id, reason)
+        if not ok:
+            await interaction.followup.send("❌ Not found or already reviewed.", ephemeral=True)
+            return
+        sent = await notify_rejected(interaction.client, ad, reason) if ad else False
+        await interaction.followup.send(
+            "✅ Rejected — submitter notified by DM." if sent
+            else "✅ Rejected — couldn't DM the submitter (DMs closed); they can still see the reason in /ad status.",
+            ephemeral=True,
+        )
 
     @ad.command(name="toggle", description="[Owner] Deactivate a live ad, or switch a deactivated one back on")
     @app_commands.describe(ad_id="Pick the ad")
