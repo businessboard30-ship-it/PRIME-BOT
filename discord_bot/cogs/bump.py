@@ -354,6 +354,91 @@ class DynamicAddMineButton(
         )
 
 
+class DynamicBumpAgainButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"bump:again:(?P<listing_id>\d+)",
+):
+    """🔁 Bump again button on a posted ad card — lets staff re-bump the
+    instant the cooldown clears without going to find `/bump now`. Same
+    dynamic/persistent mechanism as the other buttons on this card (see
+    DynamicRateOpenButton docstring), which matters extra here: this
+    card gets drip-posted into every OTHER opted-in server too, so most
+    clicks land on a copy of the card sitting in a server that isn't the
+    listing's own. That's why this looks the listing's owning guild up
+    fresh from listing_id and permission-checks against THAT guild's
+    membership, instead of trusting interaction.guild_id / the clicking
+    user's permissions in whatever server the card happens to be in —
+    otherwise anyone with Manage Server in a server that merely
+    *received* the ad could bump someone else's listing."""
+
+    def __init__(self, listing_id: int):
+        self.listing_id = listing_id
+        super().__init__(
+            discord.ui.Button(label="🔁 Bump again", style=discord.ButtonStyle.primary, custom_id=f"bump:again:{listing_id}")
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Item, match: "re.Match[str]", /):
+        return cls(int(match["listing_id"]))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        listing = await db.bump_get_listing(0, None, listing_id=self.listing_id)
+        if not listing:
+            await interaction.followup.send("This listing no longer exists.", ephemeral=True)
+            return
+
+        owner_guild_id = listing["guild_id"]
+        owner_guild = interaction.client.get_guild(owner_guild_id)
+        if owner_guild is None:
+            await interaction.followup.send("The server that owns this listing isn't reachable right now.", ephemeral=True)
+            return
+
+        member = owner_guild.get_member(interaction.user.id)
+        if member is None:
+            try:
+                member = await owner_guild.fetch_member(interaction.user.id)
+            except discord.HTTPException:
+                member = None
+        if member is None or not member.guild_permissions.manage_guild:
+            await interaction.followup.send(
+                "Only someone with **Manage Server** in the listing's own server can bump it again.",
+                ephemeral=True,
+            )
+            return
+
+        clone_id = listing.get("clone_id")
+        config = await db.bump_get_guild_config(owner_guild_id, clone_id)
+        if not config or not config.get("bump_channel_id"):
+            await interaction.followup.send("That server hasn't finished `/bumpsetup` yet.", ephemeral=True)
+            return
+        if not config.get("receives_bumps", True):
+            await interaction.followup.send(
+                "That server's bump channel isn't accepting bumps right now — run `/bumpsetup` there again to re-confirm.",
+                ephemeral=True,
+            )
+            return
+
+        cog = interaction.client.get_cog("BumpCog")
+        if cog is None:
+            await interaction.followup.send("Bump isn't available right now — try again shortly.", ephemeral=True)
+            return
+        await cog._do_bump(interaction, config, listing, clone_id, owner_guild_id=owner_guild_id)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        logger.exception("Unhandled error in DynamicBumpAgainButton (listing %s): %s", self.listing_id, error)
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.send_message("Something went wrong — check the bot logs.", ephemeral=True)
+            except discord.HTTPException:
+                pass
+        else:
+            try:
+                await interaction.followup.send("Something went wrong — check the bot logs.", ephemeral=True)
+            except discord.HTTPException:
+                pass
+
+
 class DynamicBumpApproveButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"bump:approve:(?P<listing_id>\d+)",
@@ -464,9 +549,10 @@ def _rating_view(listing_id: int) -> discord.ui.View:
 def _bump_post_view(listing_id: int, invite_url: str | None, support_url: str | None = None) -> discord.ui.View:
     """The button row under a posted ad card — matches the reference
     design's Join / + Add mine / ★ Rate row, plus an optional Support
-    link when the listing owner has set one. Built from DynamicItems so
-    it keeps working on old messages after a bot restart (see
-    DynamicRateOpenButton docstring)."""
+    link when the listing owner has set one, plus 🔁 Bump again so staff
+    can re-bump the moment the cooldown clears without going to find
+    `/bump now`. Built from DynamicItems so it keeps working on old
+    messages after a bot restart (see DynamicRateOpenButton docstring)."""
     view = discord.ui.View(timeout=None)
     if invite_url:
         view.add_item(discord.ui.Button(label="Join server", style=discord.ButtonStyle.link, url=invite_url, emoji="🔗"))
@@ -474,6 +560,7 @@ def _bump_post_view(listing_id: int, invite_url: str | None, support_url: str | 
         view.add_item(discord.ui.Button(label="Support", style=discord.ButtonStyle.link, url=support_url, emoji="🛟"))
     view.add_item(DynamicAddMineButton())
     view.add_item(DynamicRateOpenButton(listing_id))
+    view.add_item(DynamicBumpAgainButton(listing_id))
     return view
 
 
@@ -708,7 +795,7 @@ class BumpCog(commands.Cog):
         # again on a cog reload; discord.py just overwrites the same keys.
         bot.add_dynamic_items(
             DynamicRateOpenButton, DynamicRateStarButton, DynamicAddMineButton,
-            DynamicBumpApproveButton, DynamicBumpRejectButton,
+            DynamicBumpAgainButton, DynamicBumpApproveButton, DynamicBumpRejectButton,
         )
         self.bump_worker.start()
         # Reminder worker is temporarily disabled — a startup crash-loop
@@ -968,15 +1055,26 @@ class BumpCog(commands.Cog):
             )
         )
 
-    async def _do_bump(self, interaction: discord.Interaction, config: dict, listing: dict, clone_id):
-        # No defer here — every caller (bump_now, _bump_selected) already
-        # deferred before calling this. A second defer() on the same
-        # interaction raises discord.InteractionResponded, and since it
-        # used to run as this function's very first statement — outside
-        # the try block below — nothing caught it: /bump now died right
-        # after loading the config/listing, before bump_record or
-        # bump_enqueue ever ran, so no bump was ever actually recorded or
-        # posted.
+    async def _do_bump(self, interaction: discord.Interaction, config: dict, listing: dict, clone_id,
+                        owner_guild_id: int | None = None):
+        # No defer here — every caller (bump_now, _bump_selected,
+        # DynamicBumpAgainButton) already deferred before calling this. A
+        # second defer() on the same interaction raises
+        # discord.InteractionResponded, and since it used to run as this
+        # function's very first statement — outside the try block below —
+        # nothing caught it: /bump now died right after loading the
+        # config/listing, before bump_record or bump_enqueue ever ran, so
+        # no bump was ever actually recorded or posted.
+        #
+        # owner_guild_id: the listing's own guild, used to exclude it from
+        # its own target list. Defaults to interaction.guild_id (true for
+        # the /bump now and select-menu paths, always run inside the
+        # listing's own server), but the 🔁 Bump again button on a posted
+        # ad card can be clicked from a copy of that card sitting in a
+        # totally different server, so that caller passes the listing's
+        # real owning guild explicitly rather than letting this default
+        # silently exclude the wrong guild.
+        owner_guild_id = interaction.guild_id if owner_guild_id is None else owner_guild_id
         try:
             cooldown_seconds = await self._cooldown_seconds()
             can_bump, remaining = await db.bump_check_cooldown(listing["id"], cooldown_seconds)
@@ -988,7 +1086,7 @@ class BumpCog(commands.Cog):
                 return
 
             candidates = await db.bump_find_targets(
-                exclude_guild_id=interaction.guild_id, clone_id=clone_id,
+                exclude_guild_id=owner_guild_id, clone_id=clone_id,
                 language=config.get("language", "any"), include_nsfw=bool(config.get("nsfw_opt_in")),
             )
             # Only bump into servers the bot is CURRENTLY in — a config row can
@@ -1002,7 +1100,7 @@ class BumpCog(commands.Cog):
 
             # Re-fetch: bump_record just incremented total_bumps/streak in the
             # DB, and the listing dict we're holding predates that write.
-            refreshed = await db.bump_get_listing(interaction.guild_id, clone_id, listing["listing_type"], listing["id"]) or listing
+            refreshed = await db.bump_get_listing(owner_guild_id, clone_id, listing["listing_type"], listing["id"]) or listing
             server_icon_url = None
             if refreshed["listing_type"] == "bot":
                 online, members = None, None
