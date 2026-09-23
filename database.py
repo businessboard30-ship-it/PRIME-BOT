@@ -2044,6 +2044,29 @@ class Database:
         # rebuilds one persistent view per panel message from this table on
         # cog load. message_id identifies the panel post; a panel can carry
         # up to 25 roles (Discord's per-view component limit).
+        # AI-executed command audit trail (see modules/ai_command_guard.py).
+        # Every command the AI runs on a user's behalf logs here in addition
+        # to whatever domain-specific log the command itself already writes
+        # (e.g. moderation.py's own modlog entry) — this table answers "did
+        # the AI do this and who told it to," the domain log answers "what
+        # happened."
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_command_log (
+                id SERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                command_name TEXT NOT NULL,
+                args_json TEXT,
+                allowed BOOLEAN NOT NULL,
+                denial_reason TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_command_log_guild
+            ON ai_command_log (guild_id, created_at DESC)
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS discord_reaction_roles (
                 id SERIAL PRIMARY KEY,
@@ -13087,6 +13110,25 @@ class Database:
         encrypted = cd.get("payment_key_encrypted")
         api_key = secret_manager.decrypt(encrypted) if (provider != "main" and encrypted) else None
         return {"provider": provider if api_key or provider == "main" else "main", "api_key": api_key}
+
+    async def log_ai_command(self, guild_id: int, user_id: int, command_name: str,
+                              args: Optional[Dict] = None, allowed: bool = True,
+                              denial_reason: Optional[str] = None) -> None:
+        """See modules/ai_command_guard.py. Logged for BOTH allowed and
+        denied attempts — a pattern of denied attempts (e.g. someone
+        repeatedly asking the AI to do something it keeps refusing) is
+        itself useful for an admin to be able to see."""
+        import json
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO ai_command_log (guild_id, user_id, command_name, args_json, allowed, denial_reason)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                guild_id, user_id, command_name,
+                json.dumps(args or {}, default=str), allowed, denial_reason,
+            )
 
     async def log_manual_verify(self, admin_id: int, user_id: int, payment_type: str, chat_id: int, reason: str) -> None:
         """Audit trail for /verify (admin-only manual grant that bypasses
