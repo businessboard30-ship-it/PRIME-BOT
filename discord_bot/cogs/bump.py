@@ -1374,6 +1374,59 @@ class BumpCog(commands.Cog):
             except discord.HTTPException:
                 pass
 
+    async def _recover_target_channel(self, row: dict, clone_id):
+        """Returns a postable bump channel for this queue row's target guild,
+        repairing it if needed; None if it can't be recovered.
+
+        1. If the configured channel still exists (just uncached), use it —
+           granting this bot posting access if a different bot made it.
+        2. If it was deleted, re-link an existing #bump or recreate one (same
+           locked, never-duplicate path as the startup auto-restore), save the
+           new channel on that server's config, and — only when a brand-new
+           channel was made — post a short "here's what this is" note so the
+           server knows what happened and how to configure it."""
+        try:
+            guild = self.bot.get_guild(row["target_guild_id"])
+            if guild is None:
+                return None
+            from discord_bot.cogs.bump_setup import ensure_bot_can_post
+            try:
+                found = await guild.fetch_channel(row["target_channel_id"])
+                if isinstance(found, discord.TextChannel) and await ensure_bot_can_post(found):
+                    return found
+                return None
+            except discord.NotFound:
+                pass  # deleted — fall through to restore
+            except discord.HTTPException:
+                return None
+            config = await db.bump_get_guild_config(guild.id, clone_id) or {}
+            result = await self._restore_one_guild(guild, clone_id, config.get("configured_by"))
+            if result not in ("created", "reused"):
+                return None
+            fresh = await db.bump_get_guild_config(guild.id, clone_id) or {}
+            new_id = fresh.get("bump_channel_id")
+            channel = self.bot.get_channel(new_id) if new_id else None
+            if channel is None and new_id:
+                try:
+                    channel = await guild.fetch_channel(new_id)
+                except discord.HTTPException:
+                    return None
+            if channel is not None and result == "created":
+                try:
+                    await channel.send(
+                        "📣 **Bump channel restored.** The previous bump channel was missing, so I recreated it. "
+                        "Other servers' and bots' ads land here — that's how the free partnership network works. "
+                        "Run `/bumpsetup` to change settings, or `/bump now` to send your own server out."
+                    )
+                except discord.HTTPException:
+                    pass
+            return channel
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[bump] couldn't recover bump channel for guild %s", row.get("target_guild_id"))
+            return None
+
     # --- worker: drains bump_queue -----------------------------------
 
     @tasks.loop(seconds=WORKER_TICK_SECONDS)
@@ -1395,7 +1448,12 @@ class BumpCog(commands.Cog):
                 continue
             channel = self.bot.get_channel(row["target_channel_id"])
             if channel is None:
-                await db.bump_mark_sent(row["id"])  # target gone/uncached — drop it, don't retry forever
+                # Not cached — either just uncached, or the server's bump channel
+                # was deleted. Self-heal: re-link/recreate #bump for that server so
+                # it still receives this ad instead of silently losing it.
+                channel = await self._recover_target_channel(row, clone_id)
+            if channel is None:
+                await db.bump_mark_sent(row["id"])  # genuinely unrecoverable — drop it, don't retry forever
                 continue
             try:
                 server_icon_url = None
