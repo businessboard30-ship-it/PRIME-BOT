@@ -435,6 +435,31 @@ async def _unlock_hardcore_roast(reference: str, user_id: int, chat_id, clone_id
     logger.info(f"[unlock-hc] pending_id={row['id']} marked awaiting_consent — poller will DM target")
 
 
+_AD_PLACEMENT_ID_RE = re.compile(r"_ad(\d+)$")
+
+
+async def _unlock_ad_placement(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """Auto-approves the ad this payment was for. discord_bot/cogs/
+    ads_marketplace.py's ad_submit encodes the ad's id as a "_ad<id>" suffix
+    on the Gumroad reference (there's no ad_id column on payment_logs), so
+    we recover it from the reference string rather than looking it up any
+    other way. Falls back to a warning (no crash, no revert) if the ad was
+    already approved/rejected by the time payment lands — approve_ad() is a
+    conditional UPDATE ... WHERE status = 'pending', so it's naturally
+    idempotent against a retried ping."""
+    from modules.ads_marketplace import approve_ad
+    match = _AD_PLACEMENT_ID_RE.search(reference)
+    if not match:
+        logger.error(f"[unlock-ad] reference {reference!r} has no ad id suffix — can't approve")
+        return
+    ad_id = int(match.group(1))
+    ok = await approve_ad(ad_id)
+    if not ok:
+        logger.warning(f"[unlock-ad] ad #{ad_id} not pending (already approved/rejected?) ref={reference}")
+    else:
+        logger.info(f"[unlock-ad] ad #{ad_id} auto-approved after payment (buyer {buyer_id}) ref={reference}")
+
+
 UNLOCK_HANDLERS = {
     "welcome_card_pack": _unlock_welcome_card_pack,
     "ultra_welcome_pack": _unlock_ultra_pack,
@@ -447,6 +472,7 @@ UNLOCK_HANDLERS = {
     "xp_server_boost": _make_unlock_xp_server_boost_tier("xp_server_boost"),
     "xp_server_boost_month": _make_unlock_xp_server_boost_tier("xp_server_boost_month"),
     "hardcore_roast": _unlock_hardcore_roast,
+    "ad_placement": _unlock_ad_placement,
 }
 
 

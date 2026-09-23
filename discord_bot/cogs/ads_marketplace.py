@@ -13,13 +13,15 @@ Two independent halves of the same module, both exposed here:
     approval step (matches the original: list_service goes active
     immediately).
 
-NOT PORTED: any payment collection for either. The old flow just recorded
-a budget_usd / price_usd figure — no evidence Paystack was actually wired
-to ad_submissions or services_listings on the Telegram side either (only
-premium groups and the AI/download paywall touched payments.py). So there's
-no monetization logic to lose here; adding real payment collection is a
-new feature, not a port, and needs its own design (who gets paid, when,
-how disputes/refunds work) before it's built.
+/ad submit now collects payment: after the ad is recorded 'pending', the
+submitter gets a Gumroad "ad_placement" checkout button (see
+gumroad_payments.start_gumroad_payment, payment_type "ad_placement" in
+config.GUMROAD_PRODUCT_LINKS/AD_PLACEMENT_FEE_USD). The ad's id is encoded
+as a "_ad<id>" suffix on the payment reference so payments_manual.py's
+_unlock_ad_placement can auto-approve() it once the webhook confirms —
+no manual /ad approve needed unless payment fails or you're comping one.
+services_listings (/marketplace) still has no payment collection — those
+are user-to-user deals, buyer and seller settle directly.
 
 /adboard (posting approved ads into a channel) is intentionally NOT a
 live-gateway command — same reasoning as automation.py's /announce: this
@@ -30,16 +32,18 @@ api/cron_discord_announcements.py's pattern once you decide the cadence.
 """
 
 import logging
+import secrets
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from config import DISCORD_CLONE_ADMIN_IDS
+from config import DISCORD_CLONE_ADMIN_IDS, AD_PLACEMENT_FEE_USD
 from modules.ads_marketplace import (
     submit_ad, get_pending_ads, get_ad, approve_ad, reject_ad, get_active_ads,
     list_service, get_marketplace_listings, get_my_listings,
 )
+from gumroad_payments import start_gumroad_payment
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 
 logger = logging.getLogger(__name__)
@@ -64,15 +68,23 @@ class AdsMarketplaceCog(commands.Cog):
         self, interaction: discord.Interaction, company_name: str, title: str,
         description: str, target_url: str, budget_usd: float,
     ):
-        if budget_usd < 0:
-            await interaction.response.send_message("Budget can't be negative.", ephemeral=True)
+        if budget_usd < AD_PLACEMENT_FEE_USD:
+            await interaction.response.send_message(
+                f"Minimum ad budget is ${AD_PLACEMENT_FEE_USD:.2f}.", ephemeral=True
+            )
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         ad_id = await submit_ad(interaction.user.id, company_name.strip(), title.strip(), description.strip(), target_url.strip(), budget_usd)
         if not ad_id:
-            await interaction.response.send_message("❌ Couldn't submit that ad. Try again.", ephemeral=True)
+            await interaction.followup.send("❌ Couldn't submit that ad. Try again.", ephemeral=True)
             return
-        await interaction.response.send_message(
-            f"✅ Ad #{ad_id} submitted for review. Use `/ad status ad_id:{ad_id}` to check on it.", ephemeral=True
+        # Ad id is embedded in the reference (not a payment_logs column) so
+        # payments_manual._unlock_ad_placement can recover it from the
+        # webhook ping and auto-approve this exact ad — see that file.
+        reference = f"gum_ad_placement_{interaction.user.id}_{secrets.token_hex(4)}_ad{ad_id}"
+        await start_gumroad_payment(
+            interaction, "ad_placement", f"${budget_usd:.2f}",
+            guild_id=interaction.guild_id, reference=reference, amount_usd=budget_usd,
         )
 
     @ad.command(name="status", description="Check the status of an ad you submitted")

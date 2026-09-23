@@ -322,6 +322,11 @@ GUMROAD_PRODUCT_LINKS = {
     # the Gumroad dashboard (one-time, $1) and paste its link/id here or
     # set GUMROAD_HARDCORE_ROAST_LINK / GUMROAD_HARDCORE_ROAST_ID env vars.
     "hardcore_roast": os.getenv("GUMROAD_HARDCORE_ROAST_LINK", ""),
+    # Ad placement — sponsored ad slot, PWYW with a minimum (AD_PLACEMENT_FEE_USD
+    # below). Create this product in the Gumroad dashboard (pay-what-you-want,
+    # min $10) and paste its link/id here or set GUMROAD_AD_PLACEMENT_LINK /
+    # GUMROAD_AD_PLACEMENT_ID env vars.
+    "ad_placement": os.getenv("GUMROAD_AD_PLACEMENT_LINK", ""),
 }
 GUMROAD_PRODUCT_IDS = {
     "welcome_card_pack": "dE2cyP0dOzPPAqn2wZerqw==",
@@ -335,7 +340,13 @@ GUMROAD_PRODUCT_IDS = {
     "xp_server_boost_month": "Otjay_g0whBiQhfwXCnJIQ==",
     "premium": os.getenv("GUMROAD_PREMIUM_PRODUCT_ID", ""),
     "hardcore_roast": os.getenv("GUMROAD_HARDCORE_ROAST_ID", ""),
+    "ad_placement": os.getenv("GUMROAD_AD_PLACEMENT_ID", ""),
 }
+
+# Minimum price for a sponsored ad placement (1 week). Advertisers can name
+# a higher budget for more visibility; anything below this is rejected both
+# at submission (/ad submit) and at the Gumroad ping (underpaid check).
+AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "10"))
 
 # ─────────────────────────────────────────────────────────────────────
 # Premium: $5/month PER SERVER, unlocks every current and future package

@@ -43,6 +43,7 @@ _PRICE_ATTRS = {
     "xp_boost": "XP_BOOST_FEE_USD",
     "premium": "PREMIUM_FEE_USD",
     "hardcore_roast": "HARDCORE_ROAST_FEE_USD",
+    "ad_placement": "AD_PLACEMENT_FEE_USD",
 }
 
 
@@ -67,9 +68,15 @@ def build_link(payment_type: str, user_id: int, reference: str) -> Optional[str]
 
 async def start_gumroad_payment(interaction: discord.Interaction, payment_type: str,
                                  amount_display: str, guild_id: Optional[int] = None,
-                                 reference: Optional[str] = None) -> str:
+                                 reference: Optional[str] = None,
+                                 amount_usd: Optional[float] = None) -> str:
     """Same calling convention as payments_manual.start_manual_payment
-    (call after interaction.response.defer). Returns the reference."""
+    (call after interaction.response.defer). Returns the reference.
+
+    amount_usd: logs this instead of expected_price_usd(payment_type) — for
+    variable-price items (e.g. ad_placement, where the buyer names a budget
+    at/above the product's minimum) so payment_logs reflects what they
+    actually agreed to pay, not just the floor price."""
     user = interaction.user
     reference = reference or new_reference(payment_type, user.id)
     clone_id = getattr(interaction.client, "clone_id", None)
@@ -79,8 +86,9 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
         logger.error(f"[gumroad] no GUMROAD_PRODUCT_LINKS entry for {payment_type}")
         return reference
 
+    logged_amount = amount_usd if amount_usd is not None else (expected_price_usd(payment_type) or 0.0)
     await db.log_payment(
-        user.id, expected_price_usd(payment_type) or 0.0, reference, status="pending",
+        user.id, logged_amount, reference, status="pending",
         payment_type=payment_type, chat_id=guild_id, provider=PROVIDER, clone_id=clone_id,
     )
     view = discord.ui.View(timeout=None)
