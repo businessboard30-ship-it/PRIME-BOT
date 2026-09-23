@@ -25,12 +25,15 @@ plain persistent View can't do.
 import re
 import asyncio
 import logging
+import secrets
 
 import discord
 
 from database import db
-from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, CUSTOM_ROLE_FEE_USD
+from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, CUSTOM_ROLE_FEE_USD, AD_PLACEMENT_FEE_USD
 import config as _cfg
+from modules.ads_marketplace import submit_ad
+from gumroad_payments import start_gumroad_payment
 # Reused business logic for the listing/registry-invite offer now embedded
 # on the join DM's last page (see JoinDMLayoutView's join_offer handling
 # below) — same functions the standalone _views_auto_listing_offer.py /
@@ -500,6 +503,7 @@ class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
         self.clone_id = clone_id
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.client.get_guild(self.guild_id)
         embed = discord.Embed(title="📣 New advertising request", colour=discord.Colour.gold())
         embed.add_field(name="Advertising", value=str(self.what)[:1024], inline=False)
@@ -511,24 +515,40 @@ class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
             embed.add_field(name="Contact", value=str(self.contact)[:1024], inline=False)
         embed.set_footer(text=f"From {interaction.user} ({interaction.user.id}) • server: {guild.name if guild else self.guild_id}")
 
-        delivered = False
         for owner_id in getattr(_cfg, "DISCORD_OWNER_BROADCAST_IDS", ()):
             try:
                 user = interaction.client.get_user(owner_id) or await interaction.client.fetch_user(owner_id)
                 await user.send(embed=embed)
-                delivered = True
             except Exception:
                 continue
-        if not delivered:
-            await interaction.response.send_message(
-                f"Sorry, I couldn't send that. Please reach us in the support server instead: {DISCORD_SUPPORT_SERVER_INVITE}",
+
+        # Records this in ad_submissions (same table/flow as /ad submit) so
+        # it gets an id, shows up in /ad pending|status, and — once paid —
+        # auto-approves the same way via payments_manual._unlock_ad_placement.
+        # This modal has no separate "budget" field (it's free text inside
+        # `details`), so the Gumroad checkout is prefilled at the
+        # AD_PLACEMENT_FEE_USD minimum; it's still pay-what-you-want, so the
+        # advertiser can raise it on the Gumroad page itself if they offered more.
+        ad_id = await submit_ad(
+            interaction.user.id,
+            company_name=str(interaction.user)[:100],
+            ad_title=str(self.what)[:200],
+            ad_description=str(self.details) or "(no details provided)",
+            target_url=str(self.link) or "N/A",
+            budget_usd=AD_PLACEMENT_FEE_USD,
+        )
+        if not ad_id:
+            await interaction.followup.send(
+                f"Thanks! Your request was sent. Join our support server to talk about pricing: "
+                f"{DISCORD_SUPPORT_SERVER_INVITE}",
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(
-            "✅ Thanks! Your request was sent. Join our support server to talk about pricing: "
-            f"{DISCORD_SUPPORT_SERVER_INVITE}",
-            ephemeral=True,
+
+        reference = f"gum_ad_placement_{interaction.user.id}_{secrets.token_hex(4)}_ad{ad_id}"
+        await start_gumroad_payment(
+            interaction, "ad_placement", f"${AD_PLACEMENT_FEE_USD:.2f}+",
+            guild_id=self.guild_id, reference=reference, amount_usd=AD_PLACEMENT_FEE_USD,
         )
 
 
