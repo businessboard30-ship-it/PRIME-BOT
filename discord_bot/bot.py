@@ -224,7 +224,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.external_tools")
         await self.load_extension("discord_bot.cogs.crypto_alerts")
         await self.load_extension("discord_bot.cogs.ads_marketplace")
-        # DISABLED: vote/listing dropped — await self.load_extension("discord_bot.cogs.bump")
+        await self.load_extension("discord_bot.cogs.bump")
         await self.load_extension("discord_bot.cogs.referrals")
         # botstore dropped: feature retired to free up global slash-command
         # slots. Re-add the line above (discord_bot.cogs.botstore) to restore.
@@ -242,9 +242,8 @@ class AnimeBotDiscord(commands.Bot):
         # DISABLED: server listing dropped
         # await self.load_extension("discord_bot.cogs.server_listing")
         # await self.load_extension("discord_bot.cogs.listing_snapshots")
-        # One-shot cleanup: deletes vote panels + bump channels the bot created,
-        # clears DB rows, then self-unloads. Remove this line once confirmed clean.
-        await self.load_extension("discord_bot.cogs.vote_bump_cleanup")
+        # vote_bump_cleanup removed: it deleted #bump channels and wiped bump
+        # config on every startup, which is incompatible with bump being live.
         await self.load_extension("discord_bot.cogs.report_notifications")
         # Loaded on clones too now, not just the main bot: a clone can host
         # its own "Build Bot" wizard / /registerclone for sub-clones. Each
