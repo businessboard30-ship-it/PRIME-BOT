@@ -49,6 +49,10 @@ from modules.ai_features import (
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
+from modules.ai_command_guard import (
+    get_qualifying_commands, resolve_and_check, execute_ai_command,
+    AICommandDenied, send_cap_reached_prompt, AIConfirmView,
+)
 from discord_bot.cogs._views_shared import ActionButton, NavView, NavCardView, refresh_button
 from discord_clone_service import build_invite_url
 
@@ -194,14 +198,148 @@ class AIToolsCog(commands.Cog):
             command_context = f"{command_context}\n\n{xp_facts}" if command_context else xp_facts
         return command_context
 
+    # ── AI-executed commands (natural-language tool calling) ───────────────
+    # Only wired into /aichat below, where a real discord.Interaction exists
+    # (execute_ai_command/_do_call and the Premium confirm button both need
+    # one). The reply/DM listener runs off a plain discord.Message and is
+    # deliberately left out — not a regression, that path never called
+    # execute_ai_command before either.
+
+    _OPTION_TYPE_JSON = {
+        # discord.AppCommandOptionType name -> JSON schema type. user/member/
+        # channel/role/mentionable/attachment all come back from the model as
+        # plain text (an ID or a "<@id>"/"<#id>" mention) and get resolved to
+        # real Discord objects in _resolve_tool_args below, since Groq's tool
+        # schema has no native Discord types.
+        "string": "string", "integer": "integer", "number": "number",
+        "boolean": "boolean", "user": "string", "channel": "string",
+        "role": "string", "mentionable": "string", "attachment": "string",
+    }
+
+    def _command_tool_schema(self, spec, command: discord.app_commands.Command) -> dict:
+        properties, required = {}, []
+        for p in command.parameters:
+            json_type = self._OPTION_TYPE_JSON.get(getattr(p.type, "name", "string"), "string")
+            prop = {"type": json_type, "description": (p.description or p.display_name or p.name)[:200]}
+            if getattr(p, "choices", None):
+                prop["enum"] = [c.value for c in p.choices]
+            properties[p.name] = prop
+            if p.required:
+                required.append(p.name)
+        return {
+            "type": "function",
+            "function": {
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": {"type": "object", "properties": properties, "required": required},
+            },
+        }
+
+    async def _build_command_tools(self, interaction: discord.Interaction) -> list:
+        """Tool schema list for whatever this user actually qualifies to run
+        right now (get_qualifying_commands already applies the live
+        permission + daily-cap check) — empty outside a guild."""
+        if interaction.guild is None:
+            return []
+        specs = await get_qualifying_commands(interaction)
+        tools = []
+        for spec in specs:
+            command = interaction.client.tree.get_command(spec.name) or next(
+                (c for c in interaction.client.tree.walk_commands() if c.name == spec.name), None
+            )
+            if command is not None:
+                tools.append(self._command_tool_schema(spec, command))
+        return tools
+
+    @staticmethod
+    def _extract_id(value) -> Optional[int]:
+        if value is None:
+            return None
+        m = re.match(r"^<[@#][!&]?(\d+)>$", str(value).strip())
+        if m:
+            return int(m.group(1))
+        try:
+            return int(str(value).strip())
+        except ValueError:
+            return None
+
+    def _resolve_tool_args(self, interaction: discord.Interaction, command: discord.app_commands.Command, args: dict) -> dict:
+        """Turns the model's plain-text args into the real objects the
+        command's own callback expects, for the Discord-entity parameter
+        types. Anything that fails to resolve is left out — the command's
+        own parameter validation (required-arg check inside _do_call) is
+        what ultimately catches that, same as a human leaving a field
+        blank in the slash-command UI."""
+        resolved = {}
+        by_name = {p.name: p for p in command.parameters}
+        for key, value in (args or {}).items():
+            p = by_name.get(key)
+            type_name = getattr(getattr(p, "type", None), "name", None)
+            if type_name in ("user", "mentionable"):
+                uid = self._extract_id(value)
+                obj = interaction.guild.get_member(uid) if (uid and interaction.guild) else None
+                if obj is not None:
+                    resolved[key] = obj
+            elif type_name == "channel":
+                cid = self._extract_id(value)
+                obj = interaction.guild.get_channel(cid) if (cid and interaction.guild) else None
+                if obj is not None:
+                    resolved[key] = obj
+            elif type_name == "role":
+                rid = self._extract_id(value)
+                obj = interaction.guild.get_role(rid) if (rid and interaction.guild) else None
+                if obj is not None:
+                    resolved[key] = obj
+            else:
+                resolved[key] = value
+        return resolved
+
+    async def _dispatch_tool_call(self, interaction: discord.Interaction, name: str, raw_args: dict) -> None:
+        """Runs one AI-chosen command end to end: re-checks allowlist +
+        real permission + daily cap (resolve_and_check never trusts the
+        earlier qualifying-commands filter alone), then either asks for
+        confirmation or executes immediately, and always turns
+        AICommandDenied into the right user-facing response — the real
+        Premium button for a cap hit, plain text for anything else."""
+        spec, command, reason, cap_reached = await resolve_and_check(interaction, name, raw_args)
+        if spec is None:
+            if cap_reached:
+                await send_cap_reached_prompt(interaction)
+            else:
+                await interaction.followup.send(reason, ephemeral=True)
+            return
+
+        resolved_args = self._resolve_tool_args(interaction, command, raw_args)
+
+        async def _run(inter: discord.Interaction):
+            try:
+                await execute_ai_command(inter, name, **resolved_args)
+            except AICommandDenied as exc:
+                if exc.cap_reached:
+                    await send_cap_reached_prompt(inter)
+                else:
+                    await inter.followup.send(str(exc), ephemeral=True)
+
+        if spec.requires_confirmation:
+            view = AIConfirmView(interaction.user.id, _run)
+            await interaction.followup.send(
+                f"I'd run **/{name}** with `{resolved_args}` — confirm?", view=view, ephemeral=True,
+            )
+        else:
+            await _run(interaction)
+
     async def _run_chat_turn(self, user_id: int, message: str,
                               perms: Optional[discord.Permissions] = None,
-                              guild: Optional[discord.Guild] = None) -> tuple[str, str, Optional[int]]:
+                              guild: Optional[discord.Guild] = None,
+                              interaction: Optional[discord.Interaction] = None) -> tuple[str, str, Optional[int]]:
         """Shared by /aichat and the reply-to-continue listener. Returns
         (reply_text, warning, session_id). session_id is None only if
         usage was denied (caller should stop before sending anything).
         `perms` scopes which commands the AI is even told about — see
-        modules/command_reference.py."""
+        modules/command_reference.py. `interaction`, when given (/aichat
+        only), also lets the model itself pick and run a real command; if
+        it does, this handles that fully and returns ("", warning,
+        session_id) so the caller sends nothing further."""
         if mentions_other_bot(message):
             # Refused before any AI call, so it doesn't spend the user's daily cap.
             return OTHER_BOT_REFUSAL, "", None
@@ -216,10 +354,16 @@ class AIToolsCog(commands.Cog):
         is_anime = any(kw in message.lower() for kw in anime_keywords)
 
         command_context = await self._command_context(message, user_id, perms, guild)
+        tools = await self._build_command_tools(interaction) if interaction is not None else None
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
-                                  session_id=session_id, command_context=command_context)
+                                  session_id=session_id, command_context=command_context, tools=tools or None)
         if not response:
             return "AI service error. Try again later.", warning, session_id
+
+        if isinstance(response, dict):
+            call = response["tool_calls"][0]
+            await self._dispatch_tool_call(interaction, call["name"], call.get("arguments") or {})
+            return "", warning, session_id
 
         prefix = f"⚠️ {warning}\n\n" if warning else ""
         return f"{prefix}{response}", warning, session_id
@@ -268,7 +412,14 @@ class AIToolsCog(commands.Cog):
         # even for user-installed contexts where guild_permissions is
         # unreachable.
         perms = interaction.permissions if interaction.guild else None
-        text, _warning, session_id = await self._run_chat_turn(user_id, message, perms=perms, guild=interaction.guild)
+        text, _warning, session_id = await self._run_chat_turn(
+            user_id, message, perms=perms, guild=interaction.guild, interaction=interaction,
+        )
+        if not text:
+            # A tool call was made instead of a text reply — _run_chat_turn
+            # (via _dispatch_tool_call) already sent the confirm prompt,
+            # the command's own result, or a denial/Premium pitch.
+            return
         view = ai_reply_view(self, user_id)
         sent = await interaction.followup.send(text, view=view, wait=True, suppress_embeds=True)
 

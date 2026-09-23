@@ -304,20 +304,34 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                    command_context: Optional[str] = None,
                    history_override: Optional[List[Dict]] = None,
                    guild_id: Optional[int] = None,
-                   kind: Optional[str] = None) -> Optional[str]:
+                   kind: Optional[str] = None,
+                   tools: Optional[List[Dict]] = None) -> Optional[object]:
     """
     Send message to Groq API and get response.
-    Returns response text on success. On failure, returns None (caller shows
-    a generic "AI service error" to the user) but ALSO stashes the real
-    error string on `ai_chat.last_error` so an admin-facing surface (see
-    handlers/ai_handler.py) can show the actual cause — missing key, bad
-    model name, Groq outage, rate limit, etc. — instead of just "None".
+    Returns response text (str) on success. On failure, returns None (caller
+    shows a generic "AI service error" to the user) but ALSO stashes the
+    real error string on `ai_chat.last_error` so an admin-facing surface
+    (see handlers/ai_handler.py) can show the actual cause — missing key,
+    bad model name, Groq outage, rate limit, etc. — instead of just "None".
 
     `session_id` scopes conversation history to one active conversation
     (see get_or_create_active_session / /newchat /endchat in
     discord_bot/cogs/ai_tools.py) — without it, this behaves like a single
     one-shot turn with no prior context. `tier` controls how many past
     turns are replayed (AI_HISTORY_TURNS), a founder/elite perk.
+
+    `tools`: optional Groq/OpenAI-style tool schema list (see
+    discord_bot.cogs.ai_tools._build_command_tools, built from
+    modules.ai_command_guard.get_qualifying_commands). When omitted (the
+    default, used by every existing caller), behavior is 100% unchanged —
+    no tool_choice is sent and the return value is always str-or-None as
+    before. When provided and the model chooses to call one, this returns
+    a dict ``{"tool_calls": [{"name": str, "arguments": dict}, ...]}``
+    instead of a string — callers that pass `tools` must check for that
+    dict shape before treating the result as chat text. Nothing is logged
+    to ai_chat_usage for a tool-call turn (there's no reply text to log);
+    the eventual command attempt is logged separately by
+    ai_command_guard.resolve_and_check/execute_ai_command.
     """
     ai_chat.last_error = None
     try:
@@ -374,6 +388,9 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                 "reasoning_effort": "low",
                 "top_p": 1.0
             }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
             
             async with session.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -383,7 +400,27 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    response_text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                    msg = data.get('choices', [{}])[0].get('message', {})
+
+                    raw_calls = msg.get('tool_calls') or []
+                    if tools and raw_calls:
+                        import json as _json
+                        parsed = []
+                        for tc in raw_calls:
+                            fn = tc.get('function', {})
+                            try:
+                                args = _json.loads(fn.get('arguments') or '{}')
+                            except (ValueError, TypeError):
+                                args = {}
+                            name = fn.get('name')
+                            if name:
+                                parsed.append({"name": name, "arguments": args})
+                        if parsed:
+                            return {"tool_calls": parsed}
+                        # Model claimed a tool call but gave nothing usable —
+                        # fall through and treat any content as normal text.
+
+                    response_text = msg.get('content', '')
                     
                     response_text = trim_reply(response_text)
                     response_text = render_support_link(response_text)
