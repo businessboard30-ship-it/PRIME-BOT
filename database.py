@@ -1188,6 +1188,14 @@ class Database:
                 approved_at TIMESTAMP
             )
         """)
+        # payment_reminder_sent_at: set the one time we auto-DM a fresh
+        # Gumroad payment link to a submitter who never paid — see
+        # get_pending_ads_awaiting_payment_reminder / claim_ad_payment_reminder
+        # below and payment_reminder_loop in discord_bot/bot.py. Nullable
+        # add-on so it's a no-op on a table that already exists.
+        await conn.execute("""
+            ALTER TABLE ad_submissions ADD COLUMN IF NOT EXISTS payment_reminder_sent_at TIMESTAMPTZ
+        """)
 
         # Services Marketplace
         await conn.execute("""
@@ -4464,6 +4472,20 @@ class Database:
             "ALTER TABLE bump_listings ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ",
         ):
             await conn.execute(_col_sql)
+
+        # Owner-approved sponsored ads (ad_submissions) placed once into
+        # each clone's bump channel — see get_all_bump_channels /
+        # get_unplaced_channels_for_ad / record_ad_placement below, and
+        # api/cron_ad_placement.py which drives the actual sends.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ad_placements (
+                ad_id BIGINT NOT NULL,
+                channel_id BIGINT NOT NULL,
+                guild_id BIGINT NOT NULL,
+                posted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (ad_id, channel_id)
+            )
+        """)
 
         # One-time OAuth handshake state for /bump bot's ownership-verify
         # wizard (see api/bump_oauth.py). Mirrors discover_oauth_states:
@@ -14613,6 +14635,70 @@ class Database:
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute("UPDATE bump_listings SET reminder_sent_at = NOW() WHERE id = $1", listing_id)
+
+    # --- Owner-approved ad placement (across all clones' bump channels) ---
+    # Deliberately separate from bump_find_targets' clone-scoped listing
+    # fan-out above: those are user-submitted server/bot listings and stay
+    # within one clone's own guild set (see bump_guild_config comment).
+    # Sponsored ads (ad_submissions, owner-approved) are the bot owner's own
+    # inventory, so they're allowed to cross clone boundaries — every clone's
+    # bump channel is fair game, one-time per ad/channel pair (no repeat
+    # spam of the same ad into the same channel).
+
+    async def get_all_bump_channels(self, limit: int = 1000) -> List[Dict]:
+        """Every guild across every clone that has a bump channel configured
+        and opted in to receiving bumps — used to fan an approved ad out to
+        the whole bump network, not just one clone's guilds."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT guild_id, clone_id, bump_channel_id
+                FROM bump_guild_config
+                WHERE bump_channel_id IS NOT NULL AND receives_bumps = TRUE
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_unplaced_channels_for_ad(self, ad_id: int, channels: List[Dict],
+                                            cooldown_seconds: Optional[int] = None) -> List[Dict]:
+        """Filters `channels` (as returned by get_all_bump_channels) down to
+        the ones due for this ad: never posted there, or (when
+        cooldown_seconds is given) last posted more than that long ago —
+        this is what makes the 6h auto-bump repeat instead of firing once
+        per ad/channel forever."""
+        if not channels:
+            return []
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if cooldown_seconds is None:
+                done = await conn.fetch(
+                    "SELECT channel_id FROM ad_placements WHERE ad_id = $1", ad_id
+                )
+            else:
+                done = await conn.fetch(
+                    """
+                    SELECT channel_id FROM ad_placements
+                    WHERE ad_id = $1 AND posted_at > NOW() - ($2 * INTERVAL '1 second')
+                    """,
+                    ad_id, cooldown_seconds,
+                )
+        done_ids = {r["channel_id"] for r in done}
+        return [c for c in channels if c["bump_channel_id"] not in done_ids]
+
+    async def record_ad_placement(self, ad_id: int, channel_id: int, guild_id: int) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO ad_placements (ad_id, channel_id, guild_id, posted_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (ad_id, channel_id) DO UPDATE SET posted_at = NOW()
+                """,
+                ad_id, channel_id, guild_id,
+            )
 
     # ========================================================================
     # Feature Enhancements (migration 009): reviews, verification tiers,
