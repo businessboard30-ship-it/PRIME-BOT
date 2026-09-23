@@ -45,7 +45,7 @@ from modules.ai_features import (
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
     check_reply_limit, get_reply_usage, reply_cap_for,
     is_reply_chat_enabled, is_premium_question, premium_answer,
-    is_bot_invite_question, is_support_invite_question,
+    is_bot_invite_question, is_support_invite_question, SUPPORT_BUTTON_MARKER,
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
@@ -97,6 +97,33 @@ def premium_view() -> discord.ui.View:
 def ai_reply_view(cog, owner_id: int) -> NavView:
     # Quit Chat button removed from replies (chat clutter); /endchat still works.
     return NavView([ActionButton("Usage", discord.ButtonStyle.secondary, cog, "aistatus", emoji="📊")])
+
+
+def _support_button() -> Optional[discord.ui.Button]:
+    """Same shape as the bot-invite button in _quick_answer: a link-style
+    button, never a URL/markdown link inside the message text."""
+    from config import DISCORD_SUPPORT_SERVER_INVITE
+    if not DISCORD_SUPPORT_SERVER_INVITE:
+        return None
+    return discord.ui.Button(
+        label="Support server", style=discord.ButtonStyle.link,
+        emoji="🆘", url=DISCORD_SUPPORT_SERVER_INVITE,
+    )
+
+
+def extract_support_marker(text: str, view: discord.ui.View) -> str:
+    """If the AI's free-form answer wanted to point the user to the support
+    server (SUPPORT_BUTTON_MARKER from modules.ai_features), strip the marker
+    out of the text and drop a real link button onto `view` instead — so the
+    support link is masked by construction, exactly like the bot's own invite
+    link, rather than relying on markdown link-masking inside the text."""
+    if SUPPORT_BUTTON_MARKER not in text:
+        return text
+    text = text.replace(SUPPORT_BUTTON_MARKER, "").rstrip()
+    btn = _support_button()
+    if btn is not None:
+        view.add_item(btn)
+    return text
 
 
 class AIToolsCog(commands.Cog):
@@ -451,6 +478,7 @@ class AIToolsCog(commands.Cog):
             # the command's own result, or a denial/Premium pitch.
             return
         view = ai_reply_view(self, user_id)
+        text = extract_support_marker(text, view)
         sent = await interaction.followup.send(text, view=view, wait=True, suppress_embeds=True)
 
         # Remember this message's id so a reply to it continues the same
@@ -666,6 +694,9 @@ class AIToolsCog(commands.Cog):
                 text, view = await self._run_reply_turn(message, content, history)
             if not text:
                 return
+            if SUPPORT_BUTTON_MARKER in text:
+                view = view or discord.ui.View()
+                text = extract_support_marker(text, view)
             none = discord.AllowedMentions.none()
             extra = {"view": view} if view else {}
             if message.guild is None:
