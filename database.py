@@ -139,7 +139,18 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "30"
+SCHEMA_VERSION = "31"
+# "30" -> "31": ai_command_log (CREATE TABLE + its guild/created_at index,
+# see modules/ai_command_guard.py) landed in _create_tables() without a
+# version bump — same bump-or-it-never-runs trap as every entry below. Any
+# DB already stamped schema_version='30' skipped the DDL pass forever, so
+# the table was never created, and get_qualifying_commands/resolve_and_check
+# (now actually reachable now that /aichat and reply/mention chat can pick
+# and run commands — see discord_bot/cogs/ai_tools.py) started failing every
+# call with asyncpg.exceptions.UndefinedTableError: relation
+# "ai_command_log" does not exist. This bump forces the next cold start to
+# re-run the (idempotent) DDL pass, including that CREATE TABLE, then
+# re-stamp schema_version='31'.
 # "29" -> "30": owner-approved ad placement/reminder tracking —
 # ad_placements table (cross-clone bump-channel ad placement, 6h repeat
 # cooldown) and ad_submissions.payment_reminder_sent_at (once-only
