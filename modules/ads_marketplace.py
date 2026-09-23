@@ -219,6 +219,37 @@ async def search_ads(user_id: Optional[int] = None, query: str = "",
         return []
 
 
+async def list_ads_for_manager(limit: int = 25) -> List[Dict]:
+    """Ads for the owner's /ad manage picker: pending ones first (they're the
+    ones that need action), then the most recently submitted. 25 = Discord's
+    select-menu option cap."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, company_name, ad_title, status
+                FROM ad_submissions
+                ORDER BY (status = 'pending') DESC, submitted_at DESC
+                LIMIT $1
+            """, limit)
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[v0] Error listing ads for manager: {e}")
+        return []
+
+
+async def count_ads_by_status() -> Dict[str, int]:
+    """{'pending': n, 'approved': n, 'deactivated': n, 'rejected': n} (missing = 0)."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT status, COUNT(*) AS n FROM ad_submissions GROUP BY status")
+        return {r["status"]: int(r["n"]) for r in rows}
+    except Exception as e:
+        print(f"[v0] Error counting ads: {e}")
+        return {}
+
+
 async def get_pending_ads_awaiting_payment_reminder(min_age_seconds: int = 1800, limit: int = 25) -> List[Dict]:
     """Pending ads that are old enough to have plausibly stalled at
     checkout and haven't been auto-nudged yet (payment_reminder_sent_at
