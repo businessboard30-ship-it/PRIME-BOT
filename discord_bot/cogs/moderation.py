@@ -10,6 +10,7 @@ modules/moderation_adapter.py (warns) and modules/moderation_extra.py
 directly with zero changes needed there.
 """
 
+import io
 import logging
 from datetime import timedelta
 
@@ -19,6 +20,7 @@ from discord.ext import commands
 from discord_bot.cogs._dm_support import GuildOnlyCog
 from discord_bot import perm_check
 
+from database import db
 from modules import moderation_adapter as mod
 from modules import moderation_extra as modx
 from discord_bot.cogs._views_moderation import ModActionView, WarnActionView, ModLogsView, ConfirmActionView
@@ -27,6 +29,75 @@ logger = logging.getLogger(__name__)
 
 WARN_LIMIT_BEFORE_TIMEOUT = 3
 DEFAULT_TIMEOUT_MINUTES = 60  # used for auto-timeout on hitting the warn limit
+
+# Keep each deleted-message transcript line well under Discord's 4096-char
+# embed description limit even at 100 lines; anything longer than this per
+# message gets truncated so one giant paste can't blow the whole embed.
+CLEAR_LOG_CONTENT_TRUNCATE = 200
+
+
+def _clone_id_of(interaction: discord.Interaction):
+    return getattr(interaction.client, "clone_id", None)
+
+
+async def _post_clear_log(interaction: discord.Interaction, channel: discord.abc.GuildChannel, deleted: list) -> None:
+    """Posts a transcript of what /messages purge (or ai_purge) just deleted
+    to the guild's configured mod-log channel, if one is set up and the
+    "moderation" log category is enabled (discord_automod_config —
+    shared with server_logs.py's ServerLogsCog, see that module's
+    docstring). Best-effort only: never raises, since a logging failure
+    shouldn't surface as if the purge itself failed.
+    """
+    try:
+        config = await db.get_automod_config(interaction.guild_id, clone_id=_clone_id_of(interaction))
+        if not config.get("log_channel_id") or not config.get("log_moderation_enabled"):
+            return
+        log_channel = interaction.guild.get_channel(int(config["log_channel_id"]))
+        if log_channel is None or not deleted:
+            return
+
+        # Oldest first reads like a normal chat transcript.
+        ordered = sorted(deleted, key=lambda m: m.created_at)
+        lines = []
+        for m in ordered:
+            author = f"{m.author} ({m.author.id})" if m.author else "Unknown author"
+            content = m.content.replace("\n", " ").strip() if m.content else ""
+            if not content:
+                if m.attachments:
+                    content = f"[{len(m.attachments)} attachment(s)]"
+                elif m.embeds:
+                    content = "[embed]"
+                else:
+                    content = "[no text content]"
+            elif len(content) > CLEAR_LOG_CONTENT_TRUNCATE:
+                content = content[:CLEAR_LOG_CONTENT_TRUNCATE] + "…"
+            lines.append(f"[{m.created_at:%Y-%m-%d %H:%M:%S}] {author}: {content}")
+
+        transcript = "\n".join(lines)
+        embed = discord.Embed(
+            title="🧹 Messages purged",
+            description=(
+                f"**{len(deleted)}** message(s) deleted in {channel.mention} "
+                f"by {interaction.user.mention}."
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.set_footer(text=f"By {interaction.user}", icon_url=getattr(interaction.user.display_avatar, "url", None))
+
+        # Discord embed field values cap at 1024 chars; a field-code-block
+        # transcript fits comfortably up to that. Beyond it, fall back to a
+        # .txt attachment rather than silently truncating the transcript.
+        if len(transcript) <= 1000:
+            embed.add_field(name="Deleted messages", value=f"```{transcript}```", inline=False)
+            await log_channel.send(embed=embed)
+        else:
+            buf = io.BytesIO(transcript.encode("utf-8"))
+            file = discord.File(buf, filename=f"purge-{channel.id}-{int(interaction.created_at.timestamp())}.txt")
+            await log_channel.send(embed=embed, file=file)
+    except (discord.Forbidden, discord.HTTPException) as e:
+        logger.warning(f"[v0] Failed to post clear log for guild={interaction.guild_id}: {e}")
+    except Exception as e:
+        logger.warning(f"[v0] Unexpected error posting clear log for guild={interaction.guild_id}: {e}")
 
 
 def _require_perm(interaction: discord.Interaction, perm: str) -> bool:
@@ -403,6 +474,7 @@ class ModerationCog(GuildOnlyCog):
             )
             return
         await modx.log_action(confirm_interaction.guild_id, "clear", confirm_interaction.user.id, target_user_id=channel.id, reason=f"{len(deleted)} message(s)")
+        await _post_clear_log(confirm_interaction, channel, deleted)
         await _respond(confirm_interaction, f"🧹 Deleted {len(deleted)} message(s) in {channel.mention}.", None)
 
     async def ai_purge(self, confirm_interaction: discord.Interaction, amount: int):
