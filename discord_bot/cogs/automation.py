@@ -186,6 +186,15 @@ class AutomationCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # See ModerationCog.AI_CONFIRMED_HANDLERS (discord_bot/cogs/moderation.py)
+    # for why this map exists: "serversetup" is requires_confirmation=True
+    # in ai_command_allowlist.py, so ai_command_guard.execute_ai_command
+    # looks this up and calls ai_serversetup directly instead of replaying
+    # the slash-command callback through command._do_call.
+    AI_CONFIRMED_HANDLERS = {
+        "serversetup": "ai_serversetup",
+    }
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.guild is None:
@@ -216,6 +225,26 @@ class AutomationCog(GuildOnlyCog):
         )
         await interaction.response.send_message(
             msg, view=ServerSetupView(_clone_id_of(interaction), lang), ephemeral=True
+        )
+
+    # AI-executed "serversetup" (requires_confirmation=True in
+    # ai_command_allowlist.py) arrives here via execute_ai_command with an
+    # interaction whose response has ALREADY been consumed by
+    # AIConfirmView.confirm()'s edit_message call. Routing it through the
+    # slash-command callback above (via command._do_call) would re-run its
+    # interaction.response.send_message() and crash with
+    # discord.InteractionResponded — see ai_command_guard.execute_ai_command's
+    # docstring and ModerationCog.AI_CONFIRMED_HANDLERS for the established
+    # pattern this follows. Sends via followup instead, since the response
+    # is already used.
+    async def ai_serversetup(self, confirm_interaction: discord.Interaction):
+        lang = await get_lang(confirm_interaction)
+        msg = await tr(
+            "**Welcome to setup!** Tap each feature you want to turn on — you can always "
+            "reconfigure later with its own slash command.", lang
+        )
+        await confirm_interaction.followup.send(
+            msg, view=ServerSetupView(_clone_id_of(confirm_interaction), lang), ephemeral=True
         )
 
     autoresponder_group = app_commands.guild_only()(app_commands.Group(name="autoresponder", description="Manage auto-responses"))
