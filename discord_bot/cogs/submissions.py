@@ -46,6 +46,18 @@ def _is_submissions_admin(user_id: int) -> bool:
 
 
 class SubmissionsCog(commands.Cog):
+    # AI-confirmation entry point — see AI_CONFIRMED_HANDLERS in
+    # moderation.py/automation.py for the established pattern. /submit's
+    # original body starts with interaction.response.defer(), which raises
+    # discord.InteractionResponded when called on an interaction whose
+    # response slot is already consumed by an AI confirmation prompt
+    # (edit_message on the confirm step counts as that interaction's
+    # response). ai_submit is the same body with defer() dropped — every
+    # call below it was already routed through followup.send(), which works
+    # fine without a prior defer() as long as the interaction was responded
+    # to some other way first.
+    AI_CONFIRMED_HANDLERS = {"submit": "ai_submit"}
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
@@ -77,6 +89,31 @@ class SubmissionsCog(commands.Cog):
         else:
             card.add_item(discord.ui.Container(text, accent_colour=discord.Color.green()))
         await interaction.followup.send(view=card, ephemeral=True)
+
+    async def ai_submit(
+        self, confirm_interaction: discord.Interaction, title: str, genres: str, synopsis: str,
+        episodes: int = None, image_url: str = "",
+    ):
+        """Same as submit() above, minus the leading defer() — confirm_interaction's
+        response slot is already consumed by the AI confirmation prompt, so we go
+        straight to followup.send for everything, identical to the rest of submit()."""
+        if not await rate_limiter.check_submission_limit(confirm_interaction.user.id):
+            await confirm_interaction.followup.send(
+                "You've reached your submission limit for today. Try again tomorrow.", ephemeral=True
+            )
+            return
+        submission_id = await db.add_submission(
+            confirm_interaction.user.id, title.strip()[:255], episodes, genres.strip(), synopsis.strip(), image_url.strip()
+        )
+        line = f"**{title.strip()}** · id `{submission_id}`\n-# {DISCLAIMER_FOOTER}"
+        card = discord.ui.LayoutView()
+        text = discord.ui.TextDisplay(f"### ✅ Submitted for review\n{line}")
+        if image_url.strip():
+            section = discord.ui.Section(text, accessory=discord.ui.Thumbnail(image_url.strip()))
+            card.add_item(discord.ui.Container(section, accent_colour=discord.Color.green()))
+        else:
+            card.add_item(discord.ui.Container(text, accent_colour=discord.Color.green()))
+        await confirm_interaction.followup.send(view=card, ephemeral=True)
 
     submissions = app_commands.Group(name="submissions", description="[Admin] Review submitted anime/movies")
 
