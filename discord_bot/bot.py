@@ -208,6 +208,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.invites")
         await self.load_extension("discord_bot.cogs.quickstart")
         await self.load_extension("discord_bot.cogs.setup_channels")
+        await self.load_extension("discord_bot.cogs.bump_setup")
         await self.load_extension("discord_bot.cogs.analytics")
         await self.load_extension("discord_bot.cogs.economy")
         # heist / heist_inventory dropped: feature retired to free up global
