@@ -40,10 +40,11 @@ from discord.ext import commands
 
 from config import DISCORD_CLONE_ADMIN_IDS, AD_PLACEMENT_FEE_USD
 from modules.ads_marketplace import (
-    submit_ad, get_pending_ads, get_ad, approve_ad, reject_ad, get_active_ads,
+    submit_ad, set_ad_image, get_pending_ads, get_ad, approve_ad, reject_ad, get_active_ads,
     list_service, get_marketplace_listings, get_my_listings,
 )
 from gumroad_payments import start_gumroad_payment
+from discord_bot.ad_images import upload_ad_image
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 
 logger = logging.getLogger(__name__)
@@ -63,10 +64,12 @@ class AdsMarketplaceCog(commands.Cog):
     @app_commands.describe(
         company_name="Your company/brand name", title="Ad headline", description="Ad body text",
         target_url="Where the ad should link", budget_usd="Proposed budget in USD",
+        image="Optional image for the ad (png/jpeg/gif/webp, max 8MB)",
     )
     async def ad_submit(
         self, interaction: discord.Interaction, company_name: str, title: str,
         description: str, target_url: str, budget_usd: float,
+        image: discord.Attachment = None,
     ):
         if budget_usd < AD_PLACEMENT_FEE_USD:
             await interaction.response.send_message(
@@ -74,7 +77,24 @@ class AdsMarketplaceCog(commands.Cog):
             )
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        ad_id = await submit_ad(interaction.user.id, company_name.strip(), title.strip(), description.strip(), target_url.strip(), budget_usd)
+        # Validate/upload the image first so a bad file fails BEFORE the ad is
+        # recorded and a payment link is issued.
+        img_channel_id = img_message_id = None
+        if image is not None:
+            img_channel_id, img_message_id, reason = await upload_ad_image(
+                interaction.client, image, interaction.user
+            )
+            if reason:
+                await interaction.followup.send(
+                    f"❌ Ad not submitted — {reason}. Fix the image (or leave it out) and run the command again.",
+                    ephemeral=True,
+                )
+                return
+        ad_id = await submit_ad(
+            interaction.user.id, company_name.strip(), title.strip(), description.strip(),
+            target_url.strip(), budget_usd,
+            image_channel_id=img_channel_id, image_message_id=img_message_id,
+        )
         if not ad_id:
             await interaction.followup.send("❌ Couldn't submit that ad. Try again.", ephemeral=True)
             return
@@ -88,8 +108,30 @@ class AdsMarketplaceCog(commands.Cog):
         )
         await interaction.followup.send(
             "Once approved, this ad is placed in the combined join DM and in every clone's "
-            "bump channel. This command is text-only — got a video, image, or other file to "
-            "include? Send it with `/feedback` (it has an attachment field) and we'll add it.",
+            "bump channel."
+            + (" 🖼️ Your image is attached." if img_message_id
+               else f" Want an image on it? Run `/ad image ad_id:{ad_id}` and attach one."),
+            ephemeral=True,
+        )
+
+    @ad.command(name="image", description="Attach or replace the image on one of your ads")
+    @app_commands.describe(ad_id="The ad's id", image="png/jpeg/gif/webp, max 8MB")
+    async def ad_image(self, interaction: discord.Interaction, ad_id: int, image: discord.Attachment):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ad = await get_ad(ad_id)
+        if not ad or ad["user_id"] != interaction.user.id:
+            await interaction.followup.send("No ad with that id belongs to you.", ephemeral=True)
+            return
+        if ad["status"] == "rejected":
+            await interaction.followup.send("That ad was rejected, so its image can't be changed.", ephemeral=True)
+            return
+        channel_id, message_id, reason = await upload_ad_image(interaction.client, image, interaction.user, ad_id)
+        if reason:
+            await interaction.followup.send(f"❌ {reason.capitalize()}.", ephemeral=True)
+            return
+        ok = await set_ad_image(ad_id, interaction.user.id, channel_id, message_id)
+        await interaction.followup.send(
+            f"🖼️ Image saved on ad #{ad_id}." if ok else "❌ Couldn't save the image on that ad. Try again.",
             ephemeral=True,
         )
 
@@ -120,7 +162,11 @@ class AdsMarketplaceCog(commands.Cog):
         if not pending:
             await interaction.response.send_message("No ads pending review.", ephemeral=True)
             return
-        lines = [f"• **#{a['id']} — {a['company_name']}** — {a['ad_title']} · ${a['budget_usd']}" for a in pending]
+        lines = [
+            f"• **#{a['id']} — {a['company_name']}** — {a['ad_title']} · ${a['budget_usd']}"
+            + (" · 🖼️" if a.get("image_message_id") else "")
+            for a in pending
+        ]
         buttons = [refresh_button(self, "ad_pending")]
         card = NavCardView("📋 Ads pending review", lines, discord.Color.orange(), buttons)
         await interaction.response.send_message(view=card, ephemeral=True)

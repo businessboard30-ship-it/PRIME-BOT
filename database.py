@@ -139,7 +139,12 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "31"
+SCHEMA_VERSION = "32"
+# "31" -> "32": ad_submissions.image_channel_id / image_message_id (ad images —
+# the image is re-posted to the image-hosting channel and only its
+# channel/message ids are stored, see discord_bot/ad_images.py). Any DB already
+# stamped schema_version='31' skips the DDL pass, so this bump is what makes
+# the ALTER TABLE below actually run once, then re-stamp schema_version='32'.
 # "30" -> "31": ai_command_log (CREATE TABLE + its guild/created_at index,
 # see modules/ai_command_guard.py) landed in _create_tables() without a
 # version bump — same bump-or-it-never-runs trap as every entry below. Any
@@ -1246,6 +1251,12 @@ class Database:
         # add-on so it's a no-op on a table that already exists.
         await conn.execute("""
             ALTER TABLE ad_submissions ADD COLUMN IF NOT EXISTS payment_reminder_sent_at TIMESTAMPTZ
+        """)
+        await conn.execute("""
+            ALTER TABLE ad_submissions ADD COLUMN IF NOT EXISTS image_channel_id BIGINT
+        """)
+        await conn.execute("""
+            ALTER TABLE ad_submissions ADD COLUMN IF NOT EXISTS image_message_id BIGINT
         """)
 
         # Services Marketplace

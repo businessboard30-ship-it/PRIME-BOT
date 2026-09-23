@@ -114,7 +114,7 @@ def _apply_enabled_state(view, enabled_keys: set) -> None:
     return
 
 
-async def _fresh_ad_for_join_dm() -> dict | None:
+async def _fresh_ad_for_join_dm(bot=None) -> dict | None:
     """The single freshest approved sponsored ad (get_active_ads is
     already most-recently-approved-first), for the join DM's last page
     only. Best-effort: a lookup failure just means no ad slot shows this
@@ -122,7 +122,13 @@ async def _fresh_ad_for_join_dm() -> dict | None:
     try:
         from modules.ads_marketplace import get_active_ads
         ads = await get_active_ads(limit=1)
-        return ads[0] if ads else None
+        if not ads:
+            return None
+        ad = ads[0]
+        if bot is not None and ad.get("image_message_id"):
+            from discord_bot.ad_images import resolve_ad_image_url
+            ad["image_url"] = await resolve_ad_image_url(bot, ad)
+        return ad
     except Exception:
         logger.exception("Couldn't fetch fresh ad for join DM")
         return None
@@ -243,6 +249,8 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             if fresh_ad.get("target_url") and fresh_ad["target_url"] != "N/A":
                 ad_lines.append(fresh_ad["target_url"])
             container.add_item(discord.ui.TextDisplay("\n".join(ad_lines)))
+            if fresh_ad.get("image_url"):
+                container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(fresh_ad["image_url"])))
 
         footer = "Run /help anytime for the full command list."
         if total_pages > 1:
@@ -451,7 +459,7 @@ class _PageNavButton(discord.ui.DynamicItem[discord.ui.Button], template=re.comp
         guild = interaction.client.get_guild(self.guild_id)
         intro, title, notices = await _extract_layout_intro_title_notices(interaction, guild, self.guild_id, self.clone_id)
         join_offer = _offer_state_from_message(interaction.message)
-        fresh_ad = await _fresh_ad_for_join_dm()
+        fresh_ad = await _fresh_ad_for_join_dm(interaction.client)
         new_view = build_join_dm_view(
             self.guild_id, clone_id=self.clone_id, feature_keys=all_feature_keys, page=target_page,
             intro=intro, title=title, notices=notices, enabled_keys=enabled,
@@ -569,9 +577,8 @@ class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
         )
         placement_note = (
             "\n\nOnce approved, this ad is placed in the combined join DM and in every "
-            "clone's bump channel. Have a video, image, or other file to include? This "
-            "form is text-only — send it with `/feedback` (it has an attachment field) "
-            "and we'll add it."
+            "clone's bump channel."
+            + (f" Want an image on it? Run `/ad image ad_id:{ad_id}` and attach one." if ad_id else "")
         )
 
         if not ad_id:

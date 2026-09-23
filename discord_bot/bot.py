@@ -618,7 +618,7 @@ class AnimeBotDiscord(commands.Bot):
         enabled = await _enabled_feature_keys(guild.id, clone_id)
         # Freshest approved sponsored ad only, rendered on the last page
         # only — see JoinDMLayoutView's is_last_page handling.
-        fresh_ad = await _fresh_ad_for_join_dm()
+        fresh_ad = await _fresh_ad_for_join_dm(self)
         return build_join_dm_view(
             guild.id, clone_id=clone_id, feature_keys=content["feature_keys"],
             intro=content["intro"], title=content["title"], notices=content["notices"],

@@ -51,13 +51,12 @@ AD_PLACEMENT_COOLDOWN_SECONDS = 6 * 60 * 60
 
 # Every placed ad carries this note so a reader knows this same slot is
 # available to them too, and how to send anything a text field can't
-# hold (video/image, extra assets) — via /feedback, which (unlike this
-# modal-based flow) accepts an attachment.
+# hold (video, extra assets) — /ad submit takes an optional image, and
+# /ad image attaches one later.
 _PLACEMENT_FOOTER = (
     "\n\n— Placed automatically in the combined join DM and every clone's bump "
     "channel. Want your own ad here? Use the 📣 **Advertise with us** button on "
-    "your server's join DM, or `/ad submit`. Got a video, image, or other asset "
-    "to include? Send it with `/feedback` (attachment field) and we'll add it."
+    "your server's join DM, or `/ad submit` (it takes an optional image)."
 )
 
 
@@ -81,11 +80,34 @@ async def _token_for(clone_id):
     return secret_manager.decrypt(clone["bot_token_encrypted"])
 
 
-async def _post(session: aiohttp.ClientSession, token: str, channel_id: int, message: str) -> bool:
+async def resolve_ad_image_url_rest(session: aiohttp.ClientSession, token: str, ad: dict) -> str | None:
+    """Fresh (non-expired) URL of an ad's hosted image over plain REST. Kept
+    here, not in discord_bot/, so this serverless cron doesn't import
+    discord.py. Use the MAIN bot's token: it has to see the hosting channel."""
+    channel_id, message_id = ad.get("image_channel_id"), ad.get("image_message_id")
+    if not channel_id or not message_id:
+        return None
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}"
+    try:
+        async with session.get(url, headers={"Authorization": f"Bot {token}"}) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+        atts = data.get("attachments") or []
+        return atts[0]["url"] if atts else None
+    except (aiohttp.ClientError, TimeoutError, KeyError, ValueError):
+        return None
+
+
+async def _post(session: aiohttp.ClientSession, token: str, channel_id: int, message: str,
+                image_url: str | None = None) -> bool:
     url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
     headers = {"Authorization": f"Bot {token}"}
+    payload = {"content": message}
+    if image_url:
+        payload["embeds"] = [{"image": {"url": image_url}}]
     try:
-        async with session.post(url, headers=headers, json={"content": message}) as resp:
+        async with session.post(url, headers=headers, json=payload) as resp:
             if resp.status in (200, 201):
                 return True
             body = await resp.text()
@@ -114,6 +136,8 @@ async def run_ad_placements() -> dict:
                 ad["id"], all_channels, cooldown_seconds=AD_PLACEMENT_COOLDOWN_SECONDS,
             )
             message = _ad_message(ad)
+            # One fresh (non-expired) URL per ad per run, via the main bot's token.
+            image_url = await resolve_ad_image_url_rest(session, DISCORD_BOT_TOKEN, ad) if ad.get("image_message_id") else None
             for target in targets:
                 clone_id = target["clone_id"]
                 if clone_id not in token_cache:
@@ -122,7 +146,7 @@ async def run_ad_placements() -> dict:
                 if not token:
                     failed += 1
                     continue
-                ok = await _post(session, token, target["bump_channel_id"], message)
+                ok = await _post(session, token, target["bump_channel_id"], message, image_url)
                 if ok:
                     await db.record_ad_placement(ad["id"], target["bump_channel_id"], target["guild_id"])
                     placed += 1
