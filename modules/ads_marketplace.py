@@ -221,14 +221,17 @@ async def search_ads(user_id: Optional[int] = None, query: str = "",
 
 async def list_ads_for_manager(limit: int = 25) -> List[Dict]:
     """Ads for the owner's /ad manage picker: pending ones first (they're the
-    ones that need action), then the most recently submitted. 25 = Discord's
-    select-menu option cap."""
+    ones that need action), then the most recently submitted. Rejected ads are
+    left out — they're finished business (the row is kept, so the submitter's
+    /ad status still shows the rejection reason). 25 = Discord's select-menu
+    option cap."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT id, company_name, ad_title, status
                 FROM ad_submissions
+                WHERE status <> 'rejected'
                 ORDER BY (status = 'pending') DESC, submitted_at DESC
                 LIMIT $1
             """, limit)
