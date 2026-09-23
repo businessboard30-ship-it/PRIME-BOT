@@ -43,18 +43,47 @@ async def submit_ad(user_id: int, company_name: str, ad_title: str,
         return None
 
 
-async def set_ad_image(ad_id: int, user_id: int, image_channel_id: int, image_message_id: int) -> bool:
-    """Attach/replace the image on an ad the user owns (any status except rejected)."""
+async def set_ad_image(ad_id: int, user_id: Optional[int], image_channel_id: int, image_message_id: int) -> bool:
+    """Attach/replace the image on an ad. With a user_id, only that user's own
+    non-rejected ad qualifies; user_id=None is the bot-owner path (any ad)."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            result = await conn.execute("""
-                UPDATE ad_submissions SET image_channel_id = $3, image_message_id = $4
-                WHERE id = $1 AND user_id = $2 AND status <> 'rejected'
-            """, ad_id, user_id, image_channel_id, image_message_id)
+            if user_id is None:
+                result = await conn.execute("""
+                    UPDATE ad_submissions SET image_channel_id = $2, image_message_id = $3
+                    WHERE id = $1
+                """, ad_id, image_channel_id, image_message_id)
+            else:
+                result = await conn.execute("""
+                    UPDATE ad_submissions SET image_channel_id = $3, image_message_id = $4
+                    WHERE id = $1 AND user_id = $2 AND status <> 'rejected'
+                """, ad_id, user_id, image_channel_id, image_message_id)
         return result.endswith("1")
     except Exception as e:
         print(f"[v0] Error setting ad image: {e}")
+        return False
+
+
+_EDITABLE_AD_FIELDS = ("company_name", "ad_title", "ad_description", "target_url")
+
+
+async def update_ad_fields(ad_id: int, **fields) -> bool:
+    """Bot-owner edit of any ad's text fields, regardless of status. Only the
+    whitelisted columns are ever touched; None values are ignored."""
+    updates = {k: v for k, v in fields.items() if k in _EDITABLE_AD_FIELDS and v is not None}
+    if not updates:
+        return False
+    try:
+        pool = await get_pool()
+        sets = ", ".join(f"{col} = ${i}" for i, col in enumerate(updates, start=2))
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                f"UPDATE ad_submissions SET {sets} WHERE id = $1", ad_id, *updates.values()
+            )
+        return result.endswith("1")
+    except Exception as e:
+        print(f"[v0] Error updating ad: {e}")
         return False
 
 

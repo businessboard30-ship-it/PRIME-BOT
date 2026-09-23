@@ -40,7 +40,7 @@ from discord.ext import commands
 
 from config import DISCORD_CLONE_ADMIN_IDS, AD_PLACEMENT_FEE_USD
 from modules.ads_marketplace import (
-    submit_ad, set_ad_image, get_pending_ads, get_ad, approve_ad, reject_ad, get_active_ads,
+    submit_ad, set_ad_image, update_ad_fields, get_pending_ads, get_ad, approve_ad, reject_ad, get_active_ads,
     list_service, get_marketplace_listings, get_my_listings,
 )
 from gumroad_payments import start_gumroad_payment
@@ -118,22 +118,69 @@ class AdsMarketplaceCog(commands.Cog):
     @app_commands.describe(ad_id="The ad's id", image="png/jpeg/gif/webp, max 8MB")
     async def ad_image(self, interaction: discord.Interaction, ad_id: int, image: discord.Attachment):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        is_admin = _is_ads_admin(interaction.user.id)
         ad = await get_ad(ad_id)
-        if not ad or ad["user_id"] != interaction.user.id:
+        if not ad or (ad["user_id"] != interaction.user.id and not is_admin):
             await interaction.followup.send("No ad with that id belongs to you.", ephemeral=True)
             return
-        if ad["status"] == "rejected":
+        if ad["status"] == "rejected" and not is_admin:
             await interaction.followup.send("That ad was rejected, so its image can't be changed.", ephemeral=True)
             return
         channel_id, message_id, reason = await upload_ad_image(interaction.client, image, interaction.user, ad_id)
         if reason:
             await interaction.followup.send(f"❌ {reason.capitalize()}.", ephemeral=True)
             return
-        ok = await set_ad_image(ad_id, interaction.user.id, channel_id, message_id)
+        ok = await set_ad_image(ad_id, None if is_admin else interaction.user.id, channel_id, message_id)
         await interaction.followup.send(
             f"🖼️ Image saved on ad #{ad_id}." if ok else "❌ Couldn't save the image on that ad. Try again.",
             ephemeral=True,
         )
+
+    @ad.command(name="edit", description="[Owner] Edit any ad's text and/or image")
+    @app_commands.describe(
+        ad_id="The ad's id", company_name="New company/brand name", title="New headline",
+        description="New body text", target_url="New link", image="New image (png/jpeg/gif/webp, max 8MB)",
+    )
+    async def ad_edit(
+        self, interaction: discord.Interaction, ad_id: int, company_name: str = None, title: str = None,
+        description: str = None, target_url: str = None, image: discord.Attachment = None,
+    ):
+        if not _is_ads_admin(interaction.user.id):
+            await interaction.response.send_message("You're not authorized to edit ads.", ephemeral=True)
+            return
+        if not any((company_name, title, description, target_url, image)):
+            await interaction.response.send_message("Give me at least one thing to change.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ad = await get_ad(ad_id)
+        if not ad:
+            await interaction.followup.send("No ad with that id.", ephemeral=True)
+            return
+        changed = []
+        if any((company_name, title, description, target_url)):
+            ok = await update_ad_fields(
+                ad_id,
+                company_name=company_name.strip() if company_name else None,
+                ad_title=title.strip() if title else None,
+                ad_description=description.strip() if description else None,
+                target_url=target_url.strip() if target_url else None,
+            )
+            if not ok:
+                await interaction.followup.send("❌ Couldn't update that ad's text.", ephemeral=True)
+                return
+            changed.append("text")
+        if image is not None:
+            channel_id, message_id, reason = await upload_ad_image(interaction.client, image, interaction.user, ad_id)
+            if reason:
+                await interaction.followup.send(
+                    f"❌ Image not changed — {reason}." + (" (Text was updated.)" if changed else ""), ephemeral=True
+                )
+                return
+            if not await set_ad_image(ad_id, None, channel_id, message_id):
+                await interaction.followup.send("❌ Couldn't save the image on that ad.", ephemeral=True)
+                return
+            changed.append("image")
+        await interaction.followup.send(f"✅ Ad #{ad_id} updated ({' + '.join(changed)}).", ephemeral=True)
 
     @ad.command(name="status", description="Check the status of an ad you submitted")
     @app_commands.describe(ad_id="The ad's id (given to you when you submitted it)")
