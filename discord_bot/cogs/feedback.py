@@ -36,8 +36,11 @@ class Feedback(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="feedback", description="Send feedback or a suggestion to the bot owner")
-    @app_commands.describe(message="What would you like to tell us?")
-    async def feedback(self, interaction: discord.Interaction, message: str):
+    @app_commands.describe(
+        message="What would you like to tell us?",
+        attachment="Optional: a video, image, or other file (e.g. for an ad submission's extra assets)",
+    )
+    async def feedback(self, interaction: discord.Interaction, message: str, attachment: discord.Attachment = None):
         message = message.strip()
         if not message:
             await interaction.response.send_message("Feedback message can't be empty.", ephemeral=True)
@@ -51,13 +54,14 @@ class Feedback(commands.Cog):
             return
 
         guild_id = interaction.guild_id  # None when sent from a DM — column is nullable
-        await db.add_discord_user_feedback(interaction.user.id, guild_id, message)
+        stored_message = f"{message}\n[attachment: {attachment.url}]" if attachment else message
+        await db.add_discord_user_feedback(interaction.user.id, guild_id, stored_message)
 
         await interaction.response.send_message(
             "✅ Thanks — your feedback has been sent to the team.", ephemeral=True
         )
 
-        await self._notify_admins(interaction, message)
+        await self._notify_admins(interaction, message, attachment)
 
     @app_commands.command(name="viewfeedback", description="View recent feedback (owner only)")
     @app_commands.describe(limit="How many recent entries to show (max 25)")
@@ -95,7 +99,7 @@ class Feedback(commands.Cog):
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    async def _notify_admins(self, interaction: discord.Interaction, message: str):
+    async def _notify_admins(self, interaction: discord.Interaction, message: str, attachment: discord.Attachment = None):
         source = f"#{interaction.channel}" if interaction.guild else "a DM"
         guild_name = interaction.guild.name if interaction.guild else "Direct Message"
 
@@ -106,6 +110,13 @@ class Feedback(commands.Cog):
         )
         embed.add_field(name="From", value=f"{interaction.user} ({interaction.user.id})", inline=False)
         embed.add_field(name="Where", value=f"{guild_name} ({source})", inline=False)
+        if attachment:
+            # Image attachments render inline via set_image; anything else
+            # (video, pdf, etc.) just gets linked — embeds can't preview those.
+            if attachment.content_type and attachment.content_type.startswith("image/"):
+                embed.set_image(url=attachment.url)
+            else:
+                embed.add_field(name="Attachment", value=f"[{attachment.filename}]({attachment.url})", inline=False)
 
         for admin_id in DISCORD_OWNER_BROADCAST_IDS:
             try:
