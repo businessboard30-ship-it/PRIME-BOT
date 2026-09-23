@@ -31,8 +31,11 @@ DRIP_SECONDS apart, and a background loop (bump_worker, same tasks.loop
 shape as autopost.py's) drains a few due rows every tick.
 """
 
+import asyncio
 import logging
+import random
 import re
+import time
 
 import discord
 from discord import app_commands
@@ -354,6 +357,77 @@ class DynamicAddMineButton(
         )
 
 
+class DynamicBumpPromptButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"bump:prompt:(?P<listing_id>\d+)",
+):
+    """The standalone 🔁 Bump button. It is NOT part of the ad card: after
+    every successful bump the bot posts a separate message with this button
+    in the bumping server's own bump channel (see BumpCog._post_bump_prompt),
+    so it is visible to everyone there and ANYONE in that server can press it
+    — no Manage Server needed. The cooldown is what gates it: pressing it
+    early just tells the clicker when the next bump unlocks. A successful
+    press bumps and posts a fresh prompt, so the button always reappears
+    after every bump. DynamicItem (custom_id carries the listing id) so it
+    keeps working on old messages after a restart."""
+
+    def __init__(self, listing_id: int):
+        self.listing_id = listing_id
+        super().__init__(
+            discord.ui.Button(label="Bump", style=discord.ButtonStyle.success, emoji="🔁",
+                              custom_id=f"bump:prompt:{listing_id}")
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Item, match: "re.Match[str]", /):
+        return cls(int(match["listing_id"]))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        cog = interaction.client.get_cog("BumpCog")
+        if cog is None:
+            await interaction.followup.send("Bump isn't available right now — try again shortly.", ephemeral=True)
+            return
+        listing = await db.bump_get_listing(0, None, listing_id=self.listing_id)
+        if not listing:
+            await interaction.followup.send("This listing no longer exists.", ephemeral=True)
+            return
+        owner_guild_id = listing["guild_id"]
+        if interaction.guild_id != owner_guild_id:
+            await interaction.followup.send("This bump button belongs to a different server.", ephemeral=True)
+            return
+        clone_id = listing.get("clone_id")
+        config = await db.bump_get_guild_config(owner_guild_id, clone_id)
+        if not config or not config.get("bump_channel_id"):
+            await interaction.followup.send("This server hasn't finished `/bumpsetup` yet.", ephemeral=True)
+            return
+        if not config.get("receives_bumps", True):
+            await interaction.followup.send(
+                "This server's bump channel isn't accepting bumps right now — an admin needs to run `/bumpsetup` again.",
+                ephemeral=True,
+            )
+            return
+        cooldown_seconds = await cog._cooldown_seconds()
+        can_bump, remaining = await db.bump_check_cooldown(listing["id"], cooldown_seconds)
+        if not can_bump:
+            await interaction.followup.send(
+                f"⏳ Already bumped recently — you can bump again <t:{int(time.time()) + remaining}:R>.",
+                ephemeral=True,
+            )
+            return
+        await cog._do_bump(interaction, config, listing, clone_id, owner_guild_id=owner_guild_id)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        logger.exception("Unhandled error in DynamicBumpPromptButton (listing %s): %s", self.listing_id, error)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Something went wrong — check the bot logs.", ephemeral=True)
+            else:
+                await interaction.followup.send("Something went wrong — check the bot logs.", ephemeral=True)
+        except discord.HTTPException:
+            pass
+
+
 class DynamicBumpAgainButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"bump:again:(?P<listing_id>\d+)",
@@ -560,7 +634,9 @@ def _bump_post_view(listing_id: int, invite_url: str | None, support_url: str | 
         view.add_item(discord.ui.Button(label="Support", style=discord.ButtonStyle.link, url=support_url, emoji="🛟"))
     view.add_item(DynamicAddMineButton())
     view.add_item(DynamicRateOpenButton(listing_id))
-    view.add_item(DynamicBumpAgainButton(listing_id))
+    # No 🔁 Bump again here anymore: bumping is a standalone message posted
+    # after every bump (DynamicBumpPromptButton). DynamicBumpAgainButton stays
+    # registered below only so buttons on already-posted cards keep working.
     return view
 
 
@@ -795,9 +871,10 @@ class BumpCog(commands.Cog):
         # again on a cog reload; discord.py just overwrites the same keys.
         bot.add_dynamic_items(
             DynamicRateOpenButton, DynamicRateStarButton, DynamicAddMineButton,
-            DynamicBumpAgainButton, DynamicBumpApproveButton, DynamicBumpRejectButton,
+            DynamicBumpAgainButton, DynamicBumpPromptButton, DynamicBumpApproveButton, DynamicBumpRejectButton,
         )
         self.bump_worker.start()
+        self._restore_task = None
         # Reminder worker is temporarily disabled — a startup crash-loop
         # let cooldowns pile up across many listings, so the first tick
         # after the bot finally came back up fired reminders for all of
@@ -807,7 +884,13 @@ class BumpCog(commands.Cog):
         if ENABLE_BUMP_REMINDERS:
             self.bump_reminder_worker.start()
 
+    async def cog_load(self):
+        # One background pass per boot; see _auto_restore_bump_channels.
+        self._restore_task = asyncio.create_task(self._auto_restore_bump_channels())
+
     def cog_unload(self):
+        if self._restore_task is not None:
+            self._restore_task.cancel()
         self.bump_worker.cancel()
         if ENABLE_BUMP_REMINDERS:
             self.bump_reminder_worker.cancel()
@@ -851,6 +934,116 @@ class BumpCog(commands.Cog):
             ),
             view=BumpSetupView(self, desc, tags, perks),
         )
+
+    async def _auto_restore_bump_channels(self):
+        """Automatic, silent restore of #bump channels wiped by the old
+        vote_bump_cleanup pass (channel deleted + bump_channel_id cleared +
+        receives_bumps FALSE). Runs once per boot per bot, in the background.
+
+        Every clone is a separate bot with its own bump_guild_config row for
+        the same guild, so several bots can be restoring the same guild at
+        once. To make sure that never yields two #bump channels:
+          - a per-guild Postgres advisory lock (transaction-scoped, so it
+            works through the pooler) serializes check-then-create across ALL
+            bots/processes, and
+          - inside the lock the guild's channels are re-fetched over REST, so
+            a #bump another clone created seconds ago is always seen, not just
+            whatever this bot has cached.
+        If a #bump already exists (one OR several) it is reused and NEVER
+        added to; a second one is only ever created when none exists. Nothing
+        is posted anywhere — no channel messages, no DMs; only log lines."""
+        try:
+            await self.bot.wait_until_ready()
+            # Spread clones out so they don't all hit the same guilds at once.
+            await asyncio.sleep(random.uniform(20, 90))
+            clone_id = _clone_id_of(self.bot)
+            rows = await db.bump_list_cleared_guilds(clone_id)
+            if not rows:
+                return
+            restored = reused = skipped = 0
+            for row in rows:
+                guild = self.bot.get_guild(row["guild_id"])
+                if guild is None:
+                    continue
+                try:
+                    result = await self._restore_one_guild(guild, clone_id, row.get("configured_by"))
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("[bump] auto-restore failed for guild %s", guild.id)
+                    result = "skipped"
+                if result == "created":
+                    restored += 1
+                    await asyncio.sleep(2)  # stay well under channel-create rate limits
+                elif result == "reused":
+                    reused += 1
+                else:
+                    skipped += 1
+            logger.info("[bump] auto-restore (clone_id=%s): created %d, re-linked %d, skipped %d",
+                        clone_id, restored, reused, skipped)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[bump] auto-restore pass crashed")
+
+    async def _restore_one_guild(self, guild: discord.Guild, clone_id, configured_by) -> str:
+        from database import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Held until this transaction ends — i.e. until after the
+                # channel exists and the config is saved.
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", 7_310_000_000_000 + guild.id % 1_000_000_000_000)
+                try:
+                    channels = await guild.fetch_channels()
+                except discord.HTTPException:
+                    return "skipped"
+                existing = [c for c in channels if isinstance(c, discord.TextChannel) and c.name == "bump"]
+                me = guild.me
+                channel, created = None, False
+                if existing:
+                    # Reuse — prefer one this bot can already post in.
+                    def _can_post(c):
+                        p = c.permissions_for(me)
+                        return p.view_channel and p.send_messages and p.embed_links
+                    channel = next((c for c in existing if _can_post(c)), existing[0])
+                    if not _can_post(channel):
+                        # Another clone's #bump is bot-only for that clone. Give this
+                        # bot access if we're allowed to; otherwise stay quiet and
+                        # leave it — never create a second channel.
+                        try:
+                            await channel.set_permissions(
+                                me, send_messages=True, embed_links=True, view_channel=True,
+                                reason="Bump channel restore: let this bot post in the existing #bump",
+                            )
+                        except (discord.Forbidden, discord.HTTPException):
+                            return "skipped"
+                else:
+                    if not me.guild_permissions.manage_channels:
+                        return "skipped"
+                    try:
+                        channel = await guild.create_text_channel(
+                            "bump",
+                            overwrites={
+                                guild.default_role: discord.PermissionOverwrite(send_messages=False),
+                                me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
+                            },
+                            reason="Restoring bump channel removed by the old auto-cleanup",
+                        )
+                    except (discord.Forbidden, discord.HTTPException):
+                        return "skipped"
+                    created = True
+                await db.bump_set_guild_config(
+                    guild_id=guild.id, clone_id=clone_id, configured_by=configured_by or self.bot.user.id,
+                    bump_channel_id=channel.id, receives_bumps=True,
+                )
+                if created:
+                    await conn.execute(
+                        "UPDATE bump_guild_config SET channel_auto_created = TRUE "
+                        "WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                        guild.id, clone_id,
+                    )
+        return "created" if created else "reused"
 
     async def _cooldown_seconds(self) -> int:
         """Owner-editable via /bumpadmin cooldown — falls back to
@@ -1055,6 +1248,48 @@ class BumpCog(commands.Cog):
             )
         )
 
+    async def _post_bump_prompt(self, guild_id: int, config: dict, listing: dict, bumped_by, cooldown_seconds: int):
+        """Posts the standalone 🔁 Bump message in the bumping server's own
+        bump channel — after EVERY successful bump, whichever path triggered
+        it (/bump now, the setup flow, or the button itself). Any earlier
+        prompt for this listing is deleted first so exactly one live button
+        sits in the channel. Best-effort: a failure here never affects the bump."""
+        try:
+            channel = self.bot.get_channel(int(config["bump_channel_id"]))
+            if channel is None:
+                return
+            me = channel.guild.me
+            perms = channel.permissions_for(me)
+            if not (perms.send_messages and perms.embed_links):
+                return
+            button_id = f"bump:prompt:{listing['id']}"
+            if perms.read_message_history:
+                try:
+                    async for old in channel.history(limit=30):
+                        if old.author.id != self.bot.user.id:
+                            continue
+                        ids = [getattr(c, "custom_id", None) for row in old.components
+                               for c in getattr(row, "children", [])]
+                        if button_id in ids:
+                            try:
+                                await old.delete()
+                            except discord.HTTPException:
+                                pass
+                except discord.HTTPException:
+                    pass
+            next_ts = int(time.time()) + cooldown_seconds
+            name = listing.get("name") or channel.guild.name
+            view = discord.ui.View(timeout=None)
+            view.add_item(DynamicBumpPromptButton(listing["id"]))
+            await channel.send(
+                f"✅ **{name}** was bumped by {bumped_by.mention}!\n"
+                f"Anyone can bump it again <t:{next_ts}:R> — tap the button below once the timer's up.",
+                view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception:
+            logger.exception("[bump] couldn't post bump prompt for listing %s", listing.get("id"))
+
     async def _do_bump(self, interaction: discord.Interaction, config: dict, listing: dict, clone_id,
                         owner_guild_id: int | None = None):
         # No defer here — every caller (bump_now, _bump_selected,
@@ -1118,6 +1353,7 @@ class BumpCog(commands.Cog):
                     if queued else "✅ Bumped — no other opted-in servers match your filters yet."
                 ),
             )
+            await self._post_bump_prompt(owner_guild_id, config, refreshed, interaction.user, cooldown_seconds)
         except Exception:
             logger.exception("_do_bump failed for listing %s", listing.get("id"))
             # interaction.response was already used (deferred) by the
