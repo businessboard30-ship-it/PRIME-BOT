@@ -274,6 +274,9 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         bottom_children = [_AdvertiseButton(guild_id, clone_id)]
         if page == 0:
             bottom_children.insert(0, _ConnectButton(guild_id, clone_id))
+            # Partnership (bump network) — first page only, appended AFTER the
+            # existing buttons so Connect/Advertise keep their positions.
+            bottom_children.append(_PartnershipButton(guild_id, clone_id))
 
         # Manual + support are masked text links (not buttons), so the row below
         # only holds the action buttons (Connect / Advertise).
@@ -525,6 +528,88 @@ class _ConnectButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join
         from discord_bot.cogs._views_connect import Ctx, build_hub
         ctx = Ctx(interaction.user.id, interaction.guild, getattr(interaction.client, "clone_id", None))
         await interaction.response.send_message(view=build_hub(ctx), ephemeral=interaction.guild is not None)
+
+
+class _PartnershipButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_bump:(\d+):(-|\d+)$"):
+    """"Partnership" = the bump network (most owners call it partnership).
+    Red (danger) so it stands apart from the blue/green/grey buttons. Tapping
+    it makes sure the server has a #bump channel (reusing the configured or an
+    existing #bump one, otherwise auto-creating it) and posts the /bumpsetup
+    wizard there. Needs Manage Server, same as the feature toggles."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(
+            discord.ui.Button(
+                label="Partnership (Bump)", style=discord.ButtonStyle.danger,
+                emoji="🤝", custom_id=_encode("bump", guild_id, clone_id), row=4,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.followup.send("I'm not in that server anymore.", ephemeral=True)
+            return
+        member = guild.get_member(interaction.user.id)
+        if member is None or not (member.guild_permissions.manage_guild or member == guild.owner):
+            await interaction.followup.send(
+                "You need Manage Server permission in that server to set up partnership.", ephemeral=True,
+            )
+            return
+
+        from discord_bot.cogs.bump_setup import BumpWizardView, _create_bump_channel
+        try:
+            current = await db.bump_get_guild_config(self.guild_id, clone_id=self.clone_id) or {}
+            channel = guild.get_channel(current.get("bump_channel_id")) if current.get("bump_channel_id") else None
+            if channel is None:
+                channel = discord.utils.get(guild.text_channels, name="bump")
+            created = False
+            if channel is None:
+                if not guild.me.guild_permissions.manage_channels:
+                    await interaction.followup.send(
+                        "I need the **Manage Channels** permission to create the bump channel — "
+                        "grant it, or run `/bumpsetup` in your server.", ephemeral=True,
+                    )
+                    return
+                channel = await _create_bump_channel(interaction, guild=guild, user=interaction.user)
+                created = True
+
+            wizard = BumpWizardView(interaction.user.id, current)
+            wizard.channel_id = channel.id
+            if created:
+                wizard.created_channel_id = channel.id
+            for item in wizard.children:
+                if item.__class__.__name__ == "BumpChannelSelect":
+                    item.default_values = [discord.Object(id=channel.id, type=discord.abc.GuildChannel)]
+            await channel.send(
+                content=f"{interaction.user.mention} started partnership (bump) setup from the setup DM — finish it below.",
+                embed=wizard.build_embed(), view=wizard,
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("join_dm partnership setup failed for guild %s", self.guild_id)
+            await interaction.followup.send(
+                "I couldn't post in the bump channel — check my permissions there, or run `/bumpsetup` in your server.",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            logger.exception("join_dm partnership setup failed for guild %s", self.guild_id)
+            await interaction.followup.send(
+                "Something went wrong — try again in a moment, or run `/bumpsetup` in your server.", ephemeral=True,
+            )
+            return
+        note = "created" if created else "ready"
+        await interaction.followup.send(
+            f"🤝 Partnership setup is {note} in {channel.mention} — head there to finish it.", ephemeral=True,
+        )
 
 
 class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
@@ -1680,7 +1765,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 
 # Registered in discord_bot/bot.py's setup_hook via bot.add_dynamic_items(...).
 DYNAMIC_ITEMS = (
-    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
+    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton,
 )

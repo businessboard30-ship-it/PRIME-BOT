@@ -54,11 +54,15 @@ def _clone_id_of(interaction: discord.Interaction):
     return getattr(interaction.client, "clone_id", None)
 
 
-async def _create_bump_channel(interaction: discord.Interaction) -> discord.TextChannel:
+async def _create_bump_channel(interaction: discord.Interaction, guild: discord.Guild = None, user=None) -> discord.TextChannel:
     """Creates a bot-posting-only #bump channel (in the "Server Setup"
     category if the guild already has one). Raises discord.Forbidden /
-    discord.HTTPException on failure — callers show their own message."""
-    guild = interaction.guild
+    discord.HTTPException on failure — callers show their own message.
+
+    `guild`/`user` are optional overrides for callers that run from a DM
+    (the join-DM "Partnership" button), where interaction.guild is None."""
+    guild = guild or interaction.guild
+    user = user or interaction.user
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(send_messages=False),
         guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
@@ -68,7 +72,7 @@ async def _create_bump_channel(interaction: discord.Interaction) -> discord.Text
         "bump",
         category=category,
         overwrites=overwrites,
-        reason=f"Auto-created by /bumpsetup for {interaction.user}",
+        reason=f"Auto-created by /bumpsetup for {user}",
     )
     try:
         await channel.send(
