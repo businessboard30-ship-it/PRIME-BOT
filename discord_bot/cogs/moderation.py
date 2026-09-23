@@ -167,6 +167,10 @@ class ModerationCog(GuildOnlyCog):
         "ban": "ai_ban",
         "unwarn": "ai_unwarn",
         "purge": "ai_purge",
+        "unban": "ai_unban",
+        "timeout": "ai_timeout",
+        "untimeout": "ai_untimeout",
+        "warn": "ai_warn",
     }
 
     # ── /kick ────────────────────────────────────────────────────────────
@@ -321,6 +325,27 @@ class ModerationCog(GuildOnlyCog):
         await modx.log_action(interaction.guild_id, "unban", interaction.user.id, target_user_id=int(user_id), reason="")
         await interaction.response.send_message(f"✅ Unbanned user {user_id}.", view=ModActionView(int(user_id)))
 
+    async def ai_unban(self, confirm_interaction: discord.Interaction, user_id: str):
+        """Entry point for execute_ai_command — confirm_interaction's response
+        is already used by AIConfirmView, so this replies via followup and
+        never touches interaction.response.send_message directly."""
+        if not _require_perm(confirm_interaction, "ban_members"):
+            await _deny(confirm_interaction, "Ban Members")
+            return
+        if not user_id.isdigit():
+            await confirm_interaction.followup.send("Usage: `/unban <user_id>` (numeric ID).", ephemeral=True)
+            return
+        try:
+            await confirm_interaction.guild.unban(discord.Object(id=int(user_id)), reason=f"Unbanned by {confirm_interaction.user.id}")
+        except discord.NotFound:
+            await confirm_interaction.followup.send("That user isn't banned here.", ephemeral=True)
+            return
+        except discord.Forbidden:
+            await confirm_interaction.followup.send("⚠️ " + perm_check.forbidden_hint(confirm_interaction.guild, "ban_members"), ephemeral=True)
+            return
+        await modx.log_action(confirm_interaction.guild_id, "unban", confirm_interaction.user.id, target_user_id=int(user_id), reason="")
+        await confirm_interaction.followup.send(f"✅ Unbanned user {user_id}.", view=ModActionView(int(user_id)))
+
     # ── /timeout (mute) ──────────────────────────────────────────────────
     @app_commands.command(name="timeout", description="Timeout (mute) a member")
     @app_commands.guild_only()
@@ -339,6 +364,24 @@ class ModerationCog(GuildOnlyCog):
         await modx.log_action(interaction.guild_id, "timeout", interaction.user.id, target_user_id=member.id, reason=f"{minutes}min: {reason}")
         await interaction.response.send_message(f"🔇 {member.mention} timed out for {minutes} min.\nReason: {reason}", view=ModActionView(member.id))
 
+    async def ai_timeout(self, confirm_interaction: discord.Interaction, member: discord.Member,
+                          minutes: int, reason: str = "No reason given"):
+        """Entry point for execute_ai_command — replies via followup since
+        confirm_interaction's response was already consumed by AIConfirmView."""
+        if not _require_perm(confirm_interaction, "moderate_members"):
+            await _deny(confirm_interaction, "Timeout Members")
+            return
+        try:
+            await member.timeout(timedelta(minutes=minutes), reason=reason)
+        except discord.Forbidden:
+            await confirm_interaction.followup.send(
+                "⚠️ " + (perm_check.member_problem(confirm_interaction.guild, member, "moderate_members", "time out") or "I can't time out that member (check role hierarchy)."),
+                ephemeral=True,
+            )
+            return
+        await modx.log_action(confirm_interaction.guild_id, "timeout", confirm_interaction.user.id, target_user_id=member.id, reason=f"{minutes}min: {reason}")
+        await confirm_interaction.followup.send(f"🔇 {member.mention} timed out for {minutes} min.\nReason: {reason}", view=ModActionView(member.id))
+
     # ── /untimeout (unmute) ──────────────────────────────────────────────
     @app_commands.command(name="untimeout", description="Remove an active timeout from a member")
     @app_commands.guild_only()
@@ -354,6 +397,23 @@ class ModerationCog(GuildOnlyCog):
             return
         await modx.log_action(interaction.guild_id, "untimeout", interaction.user.id, target_user_id=member.id, reason="")
         await interaction.response.send_message(f"🔊 {member.mention} timeout removed.", view=ModActionView(member.id))
+
+    async def ai_untimeout(self, confirm_interaction: discord.Interaction, member: discord.Member):
+        """Entry point for execute_ai_command — replies via followup since
+        confirm_interaction's response was already consumed by AIConfirmView."""
+        if not _require_perm(confirm_interaction, "moderate_members"):
+            await _deny(confirm_interaction, "Timeout Members")
+            return
+        try:
+            await member.timeout(None, reason=f"Timeout removed by {confirm_interaction.user.id}")
+        except discord.Forbidden:
+            await confirm_interaction.followup.send(
+                "⚠️ " + (perm_check.member_problem(confirm_interaction.guild, member, "moderate_members", "change the timeout of") or perm_check.forbidden_hint(confirm_interaction.guild, "moderate_members")),
+                ephemeral=True,
+            )
+            return
+        await modx.log_action(confirm_interaction.guild_id, "untimeout", confirm_interaction.user.id, target_user_id=member.id, reason="")
+        await confirm_interaction.followup.send(f"🔊 {member.mention} timeout removed.", view=ModActionView(member.id))
 
     # ── /warn ────────────────────────────────────────────────────────────
     @app_commands.command(name="warn", description="Warn a member")
@@ -383,6 +443,37 @@ class ModerationCog(GuildOnlyCog):
             return
 
         await interaction.response.send_message(
+            f"⚠️ {member.mention} warned ({count}/{WARN_LIMIT_BEFORE_TIMEOUT}).\nReason: {reason}",
+            view=WarnActionView(member)
+        )
+
+    async def ai_warn(self, confirm_interaction: discord.Interaction, member: discord.Member,
+                       reason: str = "No reason given"):
+        """Entry point for execute_ai_command — replies via followup since
+        confirm_interaction's response was already consumed by AIConfirmView."""
+        if not _require_perm(confirm_interaction, "moderate_members"):
+            await _deny(confirm_interaction, "Timeout Members")
+            return
+        count = await mod.add_warn(member.id, confirm_interaction.guild_id, confirm_interaction.user.id, reason)
+        await modx.log_action(confirm_interaction.guild_id, "warn", confirm_interaction.user.id, target_user_id=member.id, reason=reason)
+
+        if count >= WARN_LIMIT_BEFORE_TIMEOUT:
+            try:
+                await member.timeout(timedelta(minutes=DEFAULT_TIMEOUT_MINUTES), reason=f"Reached {count}/{WARN_LIMIT_BEFORE_TIMEOUT} warns")
+                await confirm_interaction.followup.send(
+                    f"⚠️ {member.mention} warned ({count}/{WARN_LIMIT_BEFORE_TIMEOUT}) and timed out "
+                    f"for {DEFAULT_TIMEOUT_MINUTES} min for reaching the warn limit.\nReason: {reason}",
+                    view=WarnActionView(member)
+                )
+            except discord.Forbidden:
+                await confirm_interaction.followup.send(
+                    f"⚠️ {member.mention} warned ({count}/{WARN_LIMIT_BEFORE_TIMEOUT}) but I couldn't time them out "
+                    f"— {perm_check.member_problem(confirm_interaction.guild, member, 'moderate_members', 'time out') or 'check my role hierarchy'}\nReason: {reason}",
+                    view=WarnActionView(member)
+                )
+            return
+
+        await confirm_interaction.followup.send(
             f"⚠️ {member.mention} warned ({count}/{WARN_LIMIT_BEFORE_TIMEOUT}).\nReason: {reason}",
             view=WarnActionView(member)
         )
