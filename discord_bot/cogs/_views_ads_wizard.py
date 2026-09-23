@@ -42,7 +42,7 @@ def _clip(text, n: int) -> str:
 def _counts_line(counts: dict) -> str:
     return "  ·  ".join(
         f"{_STATUS_EMOJI[k]} {counts.get(k, 0)} {_STATUS_LABEL[k].lower()}"
-        for k in ("pending", "approved", "deactivated", "rejected")
+        for k in ("pending", "approved", "deactivated")
     )
 
 
@@ -106,6 +106,8 @@ async def _load(selected_id: int = None):
     ads = await list_ads_for_manager()
     counts = await count_ads_by_status()
     selected = await get_ad(selected_id) if selected_id else None
+    if selected and selected["status"] == "rejected":
+        selected = None  # rejected ads vanish from the manager
     return ads, counts, selected
 
 
@@ -216,7 +218,9 @@ class AdRejectModal(discord.ui.Modal, title="Reject ad"):
             return
         await interaction.response.defer()
         ok = await reject_ad(self.ad_id, str(self.reason.value).strip()[:200])
-        await render(interaction, self.ad_id, "❌ Rejected." if ok else "❌ Couldn't reject — it was already reviewed.")
+        await render(interaction, None if ok else self.ad_id,
+                     f"❌ Ad #{self.ad_id} rejected and removed from this list." if ok
+                     else "❌ Couldn't reject — it was already reviewed.")
 
 
 class AdEditModal(discord.ui.Modal, title="Edit ad"):
