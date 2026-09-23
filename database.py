@@ -382,56 +382,92 @@ class Database:
         never in play; a clone that doesn't get the lock just sleeps
         briefly and tries again.
         """
+        # NOTE ON POOLER COMPATIBILITY: the session-scoped
+        # pg_advisory_lock/pg_advisory_unlock pair used here previously
+        # does NOT reliably serialize anything when DATABASE_URL points at
+        # Supabase's PgBouncer in transaction-pooling mode (see
+        # is_using_pooler above). In transaction mode, PgBouncer is free to
+        # hand a client's individual (non-transactional) statements to
+        # *different* physical backend connections — so a lock taken by
+        # one statement may simply not be held by the backend that runs a
+        # later statement. That's how multiple clones still raced each
+        # other into _create_tables and hit UniqueViolationError on
+        # discord_economy_inventory_id_seq despite the lock "succeeding"
+        # every time.
+        #
+        # pg_try_advisory_xact_lock() fixes this: it's transaction-scoped
+        # and auto-released on COMMIT/ROLLBACK, and PgBouncer in
+        # transaction mode guarantees a single client transaction stays
+        # pinned to one backend connection for its whole duration. So the
+        # lock check, the DDL pass, and the schema_version write all run
+        # inside one explicit transaction — that transaction is short-lived
+        # (only as long as this migration takes) and is NOT the same thing
+        # as the "one giant transaction around all ~150 statements" that
+        # caused the command_timeout stalls described above; the previous
+        # fix already solved that by not wrapping the DDL loop in Python
+        # try/finally with manual locking — this just moves the same
+        # boundary into a real DB transaction so the lock actually holds.
         pool = await get_pool()
         async with pool.acquire() as conn:
-            while not await conn.fetchval("SELECT pg_try_advisory_lock(727271001)"):
+            while True:
+                got_lock = False
+                async with conn.transaction():
+                    got_lock = await conn.fetchval(
+                        "SELECT pg_try_advisory_xact_lock(727271001)"
+                    )
+                    if not got_lock:
+                        # Nothing else happens in this transaction — it
+                        # commits trivially and releases nothing, since we
+                        # never held the lock in the first place.
+                        continue
+                    # Skip the DDL pass entirely once the schema is already at
+                    # the current version. Every CREATE TABLE IF NOT EXISTS /
+                    # ALTER TABLE IF EXISTS in _create_tables is a no-op once
+                    # the schema exists, but Postgres event triggers fire on
+                    # *any* executed DDL command regardless of whether it
+                    # changed anything — Supabase installs one by default that
+                    # sends NOTIFY pgrst, 'reload schema' on that. With the main
+                    # bot and every clone each running this full ~150-statement
+                    # pass on their own cold start (sometimes a dozen within the
+                    # same second, per the note above), that was forcing a full
+                    # schema reintrospection (postgres-meta re-walking
+                    # pg_timezone_names, pg_type, etc.) on every ordinary
+                    # restart — not just on real schema changes. Bump
+                    # SCHEMA_VERSION when you actually add/alter a table so the
+                    # next cold start applies it once.
+                    try:
+                        current_version = await conn.fetchval(
+                            "SELECT value FROM admin_config WHERE key = 'schema_version'"
+                        )
+                    except asyncpg.exceptions.UndefinedTableError:
+                        # Very first run ever against this database — admin_config
+                        # itself doesn't exist yet, so the schema is definitely
+                        # not current.
+                        current_version = None
+                    if current_version != SCHEMA_VERSION:
+                        logger.info(
+                            f"[db init] schema_version {current_version!r} != {SCHEMA_VERSION!r} "
+                            f"— running full DDL pass (this triggers Supabase's schema-reload)."
+                        )
+                        await self._create_tables(conn)
+                        await conn.execute(
+                            """
+                            INSERT INTO admin_config (key, value, updated_at)
+                            VALUES ('schema_version', $1, CURRENT_TIMESTAMP)
+                            ON CONFLICT (key) DO UPDATE
+                            SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+                            """,
+                            SCHEMA_VERSION,
+                        )
+                    else:
+                        logger.info(
+                            f"[db init] schema_version already {SCHEMA_VERSION!r} — skipping DDL pass."
+                        )
+                # Transaction has committed (releasing the xact lock if we
+                # held it) by the time we get here.
+                if got_lock:
+                    break
                 await asyncio.sleep(0.5)
-            try:
-                # Skip the DDL pass entirely once the schema is already at
-                # the current version. Every CREATE TABLE IF NOT EXISTS /
-                # ALTER TABLE IF EXISTS in _create_tables is a no-op once
-                # the schema exists, but Postgres event triggers fire on
-                # *any* executed DDL command regardless of whether it
-                # changed anything — Supabase installs one by default that
-                # sends NOTIFY pgrst, 'reload schema' on that. With the main
-                # bot and every clone each running this full ~150-statement
-                # pass on their own cold start (sometimes a dozen within the
-                # same second, per the note above), that was forcing a full
-                # schema reintrospection (postgres-meta re-walking
-                # pg_timezone_names, pg_type, etc.) on every ordinary
-                # restart — not just on real schema changes. Bump
-                # SCHEMA_VERSION when you actually add/alter a table so the
-                # next cold start applies it once.
-                try:
-                    current_version = await conn.fetchval(
-                        "SELECT value FROM admin_config WHERE key = 'schema_version'"
-                    )
-                except asyncpg.exceptions.UndefinedTableError:
-                    # Very first run ever against this database — admin_config
-                    # itself doesn't exist yet, so the schema is definitely
-                    # not current.
-                    current_version = None
-                if current_version != SCHEMA_VERSION:
-                    logger.info(
-                        f"[db init] schema_version {current_version!r} != {SCHEMA_VERSION!r} "
-                        f"— running full DDL pass (this triggers Supabase's schema-reload)."
-                    )
-                    await self._create_tables(conn)
-                    await conn.execute(
-                        """
-                        INSERT INTO admin_config (key, value, updated_at)
-                        VALUES ('schema_version', $1, CURRENT_TIMESTAMP)
-                        ON CONFLICT (key) DO UPDATE
-                        SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
-                        """,
-                        SCHEMA_VERSION,
-                    )
-                else:
-                    logger.info(
-                        f"[db init] schema_version already {SCHEMA_VERSION!r} — skipping DDL pass."
-                    )
-            finally:
-                await conn.execute("SELECT pg_advisory_unlock(727271001)")
             # NOTE: _migrate_stale_stripe_provider is no longer called here.
             # Stripe is now a fully supported clone payment provider (see
             # payments.StripePayment / payments.gateway_charge_amount and
@@ -4124,69 +4160,9 @@ class Database:
 
         # --- Discord port: multiple premium groups per guild -------------------
         # Replaces the old one-row-per-guild `discord_guild_premium` table:
-        # a guild (main bot OR a clone) can now define any number of
-        # independently-priced paid roles — no ranking/tiering between them,
-        # a member can buy any subset. clone_id is NULL for groups created
-        # in the main bot; a clone's groups are scoped to that clone_id so
-        # two different clones running in the same guild never share pricing.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS discord_premium_groups (
-                group_id SERIAL PRIMARY KEY,
-                guild_id BIGINT NOT NULL,
-                clone_id INTEGER REFERENCES discord_cloned_bots(clone_id),
-                name TEXT NOT NULL,
-                role_id BIGINT NOT NULL,
-                fee_ghs NUMERIC NOT NULL,
-                active BOOLEAN NOT NULL DEFAULT TRUE,
-                created_by BIGINT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_discord_premium_groups_guild
-            ON discord_premium_groups (guild_id, clone_id)
-        """)
-
-        # channel_id: the group's "home" channel — the bot grants the
-        # group's role an explicit view+send overwrite on this channel the
-        # moment the group is created (see /createpremium), so the channel
-        # is actually usable by new members the instant they pay instead of
-        # relying on the admin to remember to configure permissions by hand
-        # afterward. Nullable only so pre-existing groups (created before
-        # this column existed) aren't broken — every group created going
-        # forward always has one, since /createpremium requires it.
-        await conn.execute("ALTER TABLE discord_premium_groups ADD COLUMN IF NOT EXISTS channel_id BIGINT")
-
-
-        # payment_logs needs to know WHICH premium group a payment was for,
-        # now that a single (user, payment_type, chat_id) triple is no
-        # longer unique — a guild can have several groups sharing the same
-        # payment_type ("premium_group_join") and chat_id (the guild_id).
-        await conn.execute("ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS group_id INTEGER")
-
-        # One-time, idempotent backfill: fold any pre-existing single-tier
-        # `discord_guild_premium` row into discord_premium_groups as a
-        # "Premium" default group, so guilds configured before this change
-        # don't lose their price/role. Safe to run every cold start —
-        # WHERE NOT EXISTS makes it a no-op after the first successful run.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS discord_guild_premium (
-                guild_id   BIGINT PRIMARY KEY,
-                role_id    BIGINT,
-                fee_ghs    NUMERIC,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        await conn.execute("""
-            INSERT INTO discord_premium_groups (guild_id, clone_id, name, role_id, fee_ghs, created_by)
-            SELECT g.guild_id, NULL, 'Premium', g.role_id, COALESCE(g.fee_ghs, 20), 0
-            FROM discord_guild_premium g
-            WHERE g.role_id IS NOT NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM discord_premium_groups p
-                  WHERE p.guild_id = g.guild_id AND p.clone_id IS NULL AND p.role_id = g.role_id
-              )
-        """)
+        # payment_logs.group_id stays (Telegram's own premium-groups feature,
+        # a separate codebase sharing this table, still uses it) even though
+        # Discord's discord_premium_groups table/CRUD/commands were removed.
 
         # Generic admin-action audit log (originally shipped alongside
         # discord_guild_premium; moved here so it's auto-provisioned on cold
@@ -6504,71 +6480,6 @@ class Database:
             )
 
     # ────────────────────────────────────────────────────────────────────��
-    # Discord: multiple premium groups per guild (per clone)
-    # ─────────────────────────────────────────────────────────────────────
-    # Each row is one independently-priced paid role. No ranking between
-    # groups — a guild admin (main bot or clone owner) can create as many as
-    # they want, and a member can buy any subset of them.
-
-    async def create_premium_group(self, guild_id: int, name: str, role_id: int, fee_ghs: float,
-                                    created_by: int, clone_id: Optional[int] = None,
-                                    channel_id: Optional[int] = None) -> int:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                INSERT INTO discord_premium_groups (guild_id, clone_id, name, role_id, fee_ghs, created_by, channel_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                RETURNING group_id
-                """,
-                guild_id, clone_id, name, role_id, fee_ghs, created_by, channel_id
-            )
-            return row["group_id"]
-
-    async def list_premium_groups(self, guild_id: int, clone_id: Optional[int] = None,
-                                   active_only: bool = True) -> List[Dict]:
-        """List premium groups for a guild, scoped to clone_id (None = main
-        bot). clone_id must match exactly (including NULL) so a clone
-        running in a guild never sees — or lets members pay into — a
-        different clone's (or the main bot's) groups for that same guild."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            query = "SELECT * FROM discord_premium_groups WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2"
-            params = [guild_id, clone_id]
-            if active_only:
-                query += " AND active = TRUE"
-            query += " ORDER BY group_id ASC"
-            rows = await conn.fetch(query, *params)
-            return [dict(r) for r in rows]
-
-    async def get_premium_group(self, group_id: int) -> Optional[Dict]:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM discord_premium_groups WHERE group_id = $1", group_id)
-            return dict(row) if row else None
-
-    async def update_premium_group(self, group_id: int, name: str = None, role_id: int = None,
-                                    fee_ghs: float = None, active: bool = None, channel_id: int = None) -> None:
-        """Partial update — pass only the fields you want to change.
-        Existing values are preserved via COALESCE, except `active`, which
-        needs its own branch since COALESCE(NULL-meaning-"leave alone",
-        FALSE) can't distinguish "leave alone" from "set to false"."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                UPDATE discord_premium_groups SET
-                    name = COALESCE($2, name),
-                    role_id = COALESCE($3, role_id),
-                    fee_ghs = COALESCE($4, fee_ghs),
-                    active = CASE WHEN $5::boolean IS NULL THEN active ELSE $5 END,
-                    channel_id = COALESCE($6, channel_id)
-                WHERE group_id = $1
-                """,
-                group_id, name, role_id, fee_ghs, active, channel_id
-            )
-
-    # ─────────────────────────────────────────────────────────────────────
     # Discord: clone bot registry
     # ─────────────────────────────────────────────────────────────────────
     # Registering a clone here only makes it *eligible* to run — a live
@@ -6668,7 +6579,7 @@ class Database:
             "discord_xp", "discord_level_roles", "discord_economy_balances",
             "discord_economy_shop_items", "discord_economy_transactions",
             "discord_economy_config", "discord_welcome_config",
-            "discord_reaction_roles", "discord_automod_config", "discord_premium_groups",
+            "discord_reaction_roles", "discord_automod_config",
         )
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -13199,43 +13110,6 @@ class Database:
         encrypted = cd.get("payment_key_encrypted")
         api_key = secret_manager.decrypt(encrypted) if (provider != "main" and encrypted) else None
         return {"provider": provider if api_key or provider == "main" else "main", "api_key": api_key}
-
-    # ── Discord: LEGACY single-tier-per-guild config (superseded) ───────────
-    # Superseded by discord_premium_groups (see the "Discord: multiple
-    # premium groups per guild" section above), which supports any number
-    # of independently-priced groups instead of exactly one per guild.
-    # discord_guild_premium is still created and its data still migrated
-    # into discord_premium_groups on every cold start (see _create_tables),
-    # but nothing in the app writes to it anymore — /createpremium,
-    # /editpremium, etc. all go through the group-based functions instead.
-    # Kept only for a clean rollback path; safe to drop this table and these
-    # two functions once you're confident you won't need to revert.
-    async def get_discord_guild_premium(self, guild_id: int) -> Optional[Dict]:
-        """Returns {'guild_id', 'role_id', 'fee_ghs'} or None if this guild
-        has no premium tier configured yet."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT guild_id, role_id, fee_ghs FROM discord_guild_premium WHERE guild_id = $1",
-                guild_id
-            )
-            return dict(row) if row else None
-
-    async def set_discord_guild_premium(self, guild_id: int, role_id: int = None, fee_ghs: float = None) -> None:
-        """Upsert a guild's premium tier config. Pass only the fields you
-        want to set/update — existing values are preserved via COALESCE."""
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO discord_guild_premium (guild_id, role_id, fee_ghs)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (guild_id) DO UPDATE SET
-                    role_id = COALESCE(EXCLUDED.role_id, discord_guild_premium.role_id),
-                    fee_ghs = COALESCE(EXCLUDED.fee_ghs, discord_guild_premium.fee_ghs)
-                """,
-                guild_id, role_id, fee_ghs
-            )
 
     async def log_ai_command(self, guild_id: int, user_id: int, command_name: str,
                               args: Optional[Dict] = None, allowed: bool = True,

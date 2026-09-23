@@ -51,7 +51,7 @@ async def grant_role(guild_id: int, user_id: int, role_id: int, reason: str = ""
         # `reason` can contain arbitrary text (e.g. a /verify admin's typed
         # reason), so encode it rather than sending raw and risking aiohttp
         # rejecting the request outright on a non-ASCII reason.
-        "X-Audit-Log-Reason": quote(reason or "premium_group_join payment verified"),
+        "X-Audit-Log-Reason": quote(reason or "payment verified"),
     }
 
     try:

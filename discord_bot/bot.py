@@ -27,7 +27,6 @@ from discord.ext import commands, tasks
 
 from config import DISCORD_BOT_TOKEN, DISCORD_DEV_GUILD_ID, DISCORD_CLONE_ADMIN_IDS
 from database import db
-from discord_bot.views import PremiumPayView, VerifyPaymentView
 from discord_bot.cogs.ai_store import VerifyCreditsView, VerifyBoostView, AIStoreMenuView
 from discord_bot.cogs._dm_support import GUILD_ONLY_MESSAGE
 from discord_bot.cogs._views_join_dm import build_join_dm_view, DYNAMIC_ITEMS
@@ -127,10 +126,8 @@ class AnimeBotDiscord(commands.Bot):
 
         # Persistent views MUST be registered before on_ready fires, so
         # buttons on messages sent before a restart keep working immediately
-        # on reconnect. Both views use fixed custom_ids (see views.py) —
-        # that's what makes global registration correct across every guild.
-        self.add_view(PremiumPayView())
-        self.add_view(VerifyPaymentView())
+        # on reconnect. These views use fixed custom_ids — that's what makes
+        # global registration correct across every guild.
         self.add_view(VerifyCreditsView())
         self.add_view(VerifyBoostView())
         self.add_view(AIStoreMenuView())
@@ -185,7 +182,6 @@ class AnimeBotDiscord(commands.Bot):
         # global slash-command slots (see CommandLimitReached in clone_admin
         # setup). Cogs left in place; re-add these two lines to restore.
         await self.load_extension("discord_bot.cogs.language")
-        await self.load_extension("discord_bot.cogs.premium")
         await self.load_extension("discord_bot.cogs.moderation")
         await self.load_extension("discord_bot.cogs.automod")
         await self.load_extension("discord_bot.cogs.server_logs")
@@ -208,6 +204,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.invites")
         await self.load_extension("discord_bot.cogs.quickstart")
         await self.load_extension("discord_bot.cogs.setup_channels")
+        await self.load_extension("discord_bot.cogs.bump_setup")
         await self.load_extension("discord_bot.cogs.analytics")
         await self.load_extension("discord_bot.cogs.economy")
         # heist / heist_inventory dropped: feature retired to free up global

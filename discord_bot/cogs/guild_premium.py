@@ -1,22 +1,31 @@
 # path: discord_bot/cogs/guild_premium.py
 
-"""Premium renewal reminders. No slash commands on purpose (the bot sits at
-Discord's 100-global-command ceiling — see custom_role.py's docstring).
+"""Premium renewal reminders, plus /premium (the self-serve entry point into
+the "Go Premium" pitch).
 
 Gumroad memberships renew themselves, so only non-auto-renewing (Paystack,
 30-days-per-payment) Premiums get a reminder: config.PREMIUM_REMINDER_DAYS
 before expiry, one DM per expiry window to whoever paid last, with a Renew
 button. Every clone process runs its own copy of this loop, so each one only
-touches rows belonging to its own clone_id."""
+touches rows belonging to its own clone_id.
+
+/premium was deliberately left out for a long time: Discord caps a bot at
+100 GLOBAL slash commands total, and this project was sitting right at that
+ceiling (see custom_role.py's docstring for the exact CommandLimitReached
+crash-loop this caused before). Removing the old Discord premium-groups
+feature (/pay /status /createpremium /listpremium /premiumadmin /editpremium
+/togglepremium /verify — 8 commands) freed enough headroom to add this one
+without risking that wall again."""
 
 import logging
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
 from database import db
-from discord_bot.cogs._views_premium import PremiumSubscribeButton
+from discord_bot.cogs._views_premium import PremiumSubscribeButton, send_premium_pitch
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +34,13 @@ class GuildPremiumCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._reminder_loop.start()
+
+    @app_commands.command(name="premium", description="Go Premium — unlock every feature for this whole server")
+    @app_commands.guild_only()
+    async def premium(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        clone_id = getattr(interaction.client, "clone_id", None)
+        await send_premium_pitch(interaction, interaction.guild_id, clone_id)
 
     async def cog_unload(self):
         self._reminder_loop.cancel()
