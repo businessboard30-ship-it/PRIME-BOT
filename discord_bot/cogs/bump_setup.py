@@ -295,6 +295,25 @@ class BumpFinishButton(discord.ui.Button):
         await interaction.response.edit_message(embed=embed, view=wizard)
         wizard.stop()
 
+        # Immediately send the first bump — same step /bump now runs — so the
+        # server is on the network right after saving. _do_bump posts its own
+        # result (and the 🔁 Bump prompt) via interaction.followup, which is
+        # available now that the response above has been used. Best-effort:
+        # a failure here never undoes the save.
+        try:
+            cog = interaction.client.get_cog("BumpCog")
+            clone_id = _clone_id_of(interaction)
+            config = await db.bump_get_guild_config(interaction.guild_id, clone_id=clone_id)
+            listing = await db.bump_get_listing(interaction.guild_id, clone_id, "server")
+            if cog and config and listing:
+                await cog._do_bump(interaction, config, listing, clone_id)
+            else:
+                await interaction.followup.send(
+                    "Saved ✅ — run `/bump now` to send your first bump.", ephemeral=True,
+                )
+        except Exception:
+            logger.exception("[bumpsetup] first bump after save failed for guild %s", interaction.guild_id)
+
 
 class BumpCancelButton(discord.ui.Button):
     def __init__(self, wizard: "BumpWizardView"):
@@ -343,8 +362,15 @@ class BumpWizardView(discord.ui.View):
         embed = discord.Embed(
             title="Bump network setup",
             description=(
-                "Configure how this server sends and receives bumps. Pick a channel (or tap "
-                "**Create #bump for me**), then hit **Save**."
+                "**What is bumping?** Bumping is a free partnership network: when you bump, your server "
+                "(or bot) is posted as an ad card in the bump channel of every other server on the network, "
+                "and their servers and bots get posted in yours. More servers see you, and you discover "
+                "partners in return.\n\n"
+                "• Bump again whenever the cooldown ends — keeping a streak boosts your listing.\n"
+                "• Receiving is part of the deal: your bump channel shows other servers' ads.\n"
+                "• Filter by language and choose how often you want to receive bumps.\n\n"
+                "**Setup:** pick a channel (or tap **Create #bump for me**), adjust the options, then hit "
+                "**Save** — your first bump is sent automatically."
             ),
             color=discord.Color.blurple(),
         )
