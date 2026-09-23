@@ -382,56 +382,92 @@ class Database:
         never in play; a clone that doesn't get the lock just sleeps
         briefly and tries again.
         """
+        # NOTE ON POOLER COMPATIBILITY: the session-scoped
+        # pg_advisory_lock/pg_advisory_unlock pair used here previously
+        # does NOT reliably serialize anything when DATABASE_URL points at
+        # Supabase's PgBouncer in transaction-pooling mode (see
+        # is_using_pooler above). In transaction mode, PgBouncer is free to
+        # hand a client's individual (non-transactional) statements to
+        # *different* physical backend connections — so a lock taken by
+        # one statement may simply not be held by the backend that runs a
+        # later statement. That's how multiple clones still raced each
+        # other into _create_tables and hit UniqueViolationError on
+        # discord_economy_inventory_id_seq despite the lock "succeeding"
+        # every time.
+        #
+        # pg_try_advisory_xact_lock() fixes this: it's transaction-scoped
+        # and auto-released on COMMIT/ROLLBACK, and PgBouncer in
+        # transaction mode guarantees a single client transaction stays
+        # pinned to one backend connection for its whole duration. So the
+        # lock check, the DDL pass, and the schema_version write all run
+        # inside one explicit transaction — that transaction is short-lived
+        # (only as long as this migration takes) and is NOT the same thing
+        # as the "one giant transaction around all ~150 statements" that
+        # caused the command_timeout stalls described above; the previous
+        # fix already solved that by not wrapping the DDL loop in Python
+        # try/finally with manual locking — this just moves the same
+        # boundary into a real DB transaction so the lock actually holds.
         pool = await get_pool()
         async with pool.acquire() as conn:
-            while not await conn.fetchval("SELECT pg_try_advisory_lock(727271001)"):
+            while True:
+                got_lock = False
+                async with conn.transaction():
+                    got_lock = await conn.fetchval(
+                        "SELECT pg_try_advisory_xact_lock(727271001)"
+                    )
+                    if not got_lock:
+                        # Nothing else happens in this transaction — it
+                        # commits trivially and releases nothing, since we
+                        # never held the lock in the first place.
+                        continue
+                    # Skip the DDL pass entirely once the schema is already at
+                    # the current version. Every CREATE TABLE IF NOT EXISTS /
+                    # ALTER TABLE IF EXISTS in _create_tables is a no-op once
+                    # the schema exists, but Postgres event triggers fire on
+                    # *any* executed DDL command regardless of whether it
+                    # changed anything — Supabase installs one by default that
+                    # sends NOTIFY pgrst, 'reload schema' on that. With the main
+                    # bot and every clone each running this full ~150-statement
+                    # pass on their own cold start (sometimes a dozen within the
+                    # same second, per the note above), that was forcing a full
+                    # schema reintrospection (postgres-meta re-walking
+                    # pg_timezone_names, pg_type, etc.) on every ordinary
+                    # restart — not just on real schema changes. Bump
+                    # SCHEMA_VERSION when you actually add/alter a table so the
+                    # next cold start applies it once.
+                    try:
+                        current_version = await conn.fetchval(
+                            "SELECT value FROM admin_config WHERE key = 'schema_version'"
+                        )
+                    except asyncpg.exceptions.UndefinedTableError:
+                        # Very first run ever against this database — admin_config
+                        # itself doesn't exist yet, so the schema is definitely
+                        # not current.
+                        current_version = None
+                    if current_version != SCHEMA_VERSION:
+                        logger.info(
+                            f"[db init] schema_version {current_version!r} != {SCHEMA_VERSION!r} "
+                            f"— running full DDL pass (this triggers Supabase's schema-reload)."
+                        )
+                        await self._create_tables(conn)
+                        await conn.execute(
+                            """
+                            INSERT INTO admin_config (key, value, updated_at)
+                            VALUES ('schema_version', $1, CURRENT_TIMESTAMP)
+                            ON CONFLICT (key) DO UPDATE
+                            SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+                            """,
+                            SCHEMA_VERSION,
+                        )
+                    else:
+                        logger.info(
+                            f"[db init] schema_version already {SCHEMA_VERSION!r} — skipping DDL pass."
+                        )
+                # Transaction has committed (releasing the xact lock if we
+                # held it) by the time we get here.
+                if got_lock:
+                    break
                 await asyncio.sleep(0.5)
-            try:
-                # Skip the DDL pass entirely once the schema is already at
-                # the current version. Every CREATE TABLE IF NOT EXISTS /
-                # ALTER TABLE IF EXISTS in _create_tables is a no-op once
-                # the schema exists, but Postgres event triggers fire on
-                # *any* executed DDL command regardless of whether it
-                # changed anything — Supabase installs one by default that
-                # sends NOTIFY pgrst, 'reload schema' on that. With the main
-                # bot and every clone each running this full ~150-statement
-                # pass on their own cold start (sometimes a dozen within the
-                # same second, per the note above), that was forcing a full
-                # schema reintrospection (postgres-meta re-walking
-                # pg_timezone_names, pg_type, etc.) on every ordinary
-                # restart — not just on real schema changes. Bump
-                # SCHEMA_VERSION when you actually add/alter a table so the
-                # next cold start applies it once.
-                try:
-                    current_version = await conn.fetchval(
-                        "SELECT value FROM admin_config WHERE key = 'schema_version'"
-                    )
-                except asyncpg.exceptions.UndefinedTableError:
-                    # Very first run ever against this database — admin_config
-                    # itself doesn't exist yet, so the schema is definitely
-                    # not current.
-                    current_version = None
-                if current_version != SCHEMA_VERSION:
-                    logger.info(
-                        f"[db init] schema_version {current_version!r} != {SCHEMA_VERSION!r} "
-                        f"— running full DDL pass (this triggers Supabase's schema-reload)."
-                    )
-                    await self._create_tables(conn)
-                    await conn.execute(
-                        """
-                        INSERT INTO admin_config (key, value, updated_at)
-                        VALUES ('schema_version', $1, CURRENT_TIMESTAMP)
-                        ON CONFLICT (key) DO UPDATE
-                        SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
-                        """,
-                        SCHEMA_VERSION,
-                    )
-                else:
-                    logger.info(
-                        f"[db init] schema_version already {SCHEMA_VERSION!r} — skipping DDL pass."
-                    )
-            finally:
-                await conn.execute("SELECT pg_advisory_unlock(727271001)")
             # NOTE: _migrate_stale_stripe_provider is no longer called here.
             # Stripe is now a fully supported clone payment provider (see
             # payments.StripePayment / payments.gateway_charge_amount and
