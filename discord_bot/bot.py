@@ -259,6 +259,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.lookup")
 
         self.join_dm_reminder_loop.start()
+        self.payment_reminder_loop.start()
 
         # Slash command sync: to a single dev guild (near-instant propagation)
         # if DISCORD_DEV_GUILD_ID is set, otherwise global (works everywhere
@@ -755,6 +756,68 @@ class AnimeBotDiscord(commands.Bot):
 
     @join_dm_reminder_loop.before_loop
     async def _before_join_dm_reminder_loop(self):
+        await self.wait_until_ready()
+
+    @tasks.loop(hours=1)
+    async def payment_reminder_loop(self):
+        """Auto-DMs a fresh Gumroad payment link, once, to anyone whose ad
+        (submitted via /ad submit or the join DM's Advertise button) has
+        sat pending for a while with no payment — the "old ones" that
+        never got their checkout link followed up on.
+
+        Runs in every bot process (main + every clone) because
+        ad_submissions has no clone/guild attribution to know which bot
+        actually shares a server with the submitter (DMs need that);
+        claim_ad_payment_reminder's atomic UPDATE ensures only the one
+        process that successfully claims a given ad actually sends for
+        it, so this is safe to run everywhere without double-DMing.
+        """
+        from modules.ads_marketplace import (
+            get_pending_ads_awaiting_payment_reminder, claim_ad_payment_reminder,
+            unclaim_ad_payment_reminder,
+        )
+        from gumroad_payments import build_link, new_reference
+
+        try:
+            ads = await get_pending_ads_awaiting_payment_reminder()
+        except Exception:
+            logger.exception("[ad-payment-reminder] failed to list due ads")
+            return
+
+        for ad in ads:
+            if not await claim_ad_payment_reminder(ad["id"]):
+                continue  # another process already won this one
+            try:
+                user = self.get_user(ad["user_id"]) or await self.fetch_user(ad["user_id"])
+                budget = float(ad["budget_usd"])
+                reference = f"gum_ad_placement_{ad['user_id']}_{secrets.token_hex(4)}_ad{ad['id']}"
+                link = build_link("ad_placement", ad["user_id"], reference)
+                if not link:
+                    continue
+                await db.log_payment(
+                    ad["user_id"], budget, reference, status="pending",
+                    payment_type="ad_placement", chat_id=None, provider="gumroad",
+                    clone_id=self.clone_id,
+                )
+                view = discord.ui.View(timeout=None)
+                view.add_item(discord.ui.Button(label="💳 Pay on Gumroad", url=link, style=discord.ButtonStyle.link))
+                await user.send(
+                    f"👋 Following up on your ad **#{ad['id']} — {ad['ad_title']}** ({ad['company_name']}) — "
+                    f"it's still pending because we never saw a payment come through. Pay **${budget:.2f}** "
+                    f"below to get it approved and placed (combined join DM + every clone's bump channel).",
+                    view=view,
+                )
+            except (discord.Forbidden, discord.NotFound):
+                # This process doesn't share a server with them (or their DMs
+                # are closed) — unclaim so a different clone process, or this
+                # same one after the submitter opens DMs, gets a shot next hour.
+                await unclaim_ad_payment_reminder(ad["id"])
+            except Exception:
+                logger.exception(f"[ad-payment-reminder] failed to DM ad {ad['id']}")
+                await unclaim_ad_payment_reminder(ad["id"])
+
+    @payment_reminder_loop.before_loop
+    async def _before_payment_reminder_loop(self):
         await self.wait_until_ready()
 
     async def _owner_ids_for_alert(self) -> list:
