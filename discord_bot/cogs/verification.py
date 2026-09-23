@@ -582,6 +582,15 @@ class VerificationCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # ai_command_guard.execute_ai_command looks this up when
+    # requires_confirmation=True (see ModerationCog.AI_CONFIRMED_HANDLERS
+    # for the full rationale): confirm_interaction's response is already
+    # consumed by AIConfirmView, so setupverification's own
+    # interaction.response.defer() would raise discord.InteractionResponded.
+    AI_CONFIRMED_HANDLERS = {
+        "setupverification": "ai_setupverification",
+    }
+
     @app_commands.command(name="setupverification", description="Set up join verification (anti-raid gate) for this server")
     @app_commands.guild_only()
     @app_commands.default_permissions(manage_guild=True)
@@ -592,6 +601,17 @@ class VerificationCog(GuildOnlyCog):
         current = await db.get_verification_config(interaction.guild_id, clone_id=clone_id)
         wizard = WizardView(interaction.user.id, current)
         await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+
+    async def ai_setupverification(self, confirm_interaction: discord.Interaction):
+        """Entry point for execute_ai_command — confirm_interaction's response
+        is already used by AIConfirmView, so this replies via followup and
+        never calls interaction.response.defer()/send_message(). Permission
+        (manage_guild) was already re-verified by check_real_permission in
+        resolve_and_check before this was invoked."""
+        clone_id = _clone_id_of(confirm_interaction)
+        current = await db.get_verification_config(confirm_interaction.guild_id, clone_id=clone_id)
+        wizard = WizardView(confirm_interaction.user.id, current)
+        await confirm_interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
