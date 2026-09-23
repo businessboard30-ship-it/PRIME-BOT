@@ -61,7 +61,6 @@ CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
     "📣 Bump Network": [
         (["bumpsetup"], "pick this server's bump channel, language filter and NSFW/frequency settings"),
         (["bump now"], "bump this server to other opted-in servers"),
-        (["bump bot"], "add or bump a bot listing owned by this server"),
         (["bump edit"], "edit this server's bump listing, including the support server/channel link"),
     ],
     "🤖 AI Tools": [
