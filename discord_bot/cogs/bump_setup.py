@@ -107,6 +107,60 @@ async def ensure_bot_can_post(channel: discord.TextChannel) -> bool:
     return _ok()
 
 
+async def ensure_server_listing(client, guild: discord.Guild, clone_id, user_id: int) -> str:
+    """Makes sure this server has a bump listing so /bump now works — creates
+    the suggested one (description/tags/perks pulled from the guild) if there
+    isn't one yet, never overwriting an existing listing. Returns a short
+    status line for footers."""
+    footer = "Saved ✅"
+    try:
+        existing = await db.bump_get_listing(guild.id, clone_id, "server")
+        if not existing:
+            from discord_bot.cogs.bump import _suggest_description_and_tags, _suggest_perks
+            desc, tags = _suggest_description_and_tags(guild)
+            perks = _suggest_perks(guild)
+            invite_url = await client._best_effort_invite(guild)
+            await db.bump_upsert_listing(
+                guild_id=guild.id, clone_id=clone_id, created_by=user_id, listing_type="server",
+                name=guild.name, description=desc, invite_url=invite_url, tags=tags, perks=perks,
+            )
+            footer = "Saved ✅ — listing created. Change it anytime with /bump edit"
+    except Exception:
+        logger.exception("[bumpsetup] auto-listing failed for guild %s", guild.id)
+        footer = "Saved ✅ — couldn't auto-create your listing, run /bump edit to add it"
+    return footer
+
+
+async def post_setup_wizard(client, guild: discord.Guild, clone_id, channel: discord.TextChannel,
+                            invoker_id: int, created: bool = False, intro: str = None) -> bool:
+    """Posts the bumpsetup wizard INTO `channel` (used after a bump channel is
+    auto-created outside /bumpsetup, e.g. by the suggested-channels flow or the
+    join-DM Partnership button). Heals along the way: makes sure this bot can
+    post there and that the server has a listing, so /bump now works even if
+    the wizard is never finished. Returns False if nothing could be posted."""
+    if not await ensure_bot_can_post(channel):
+        return False
+    await ensure_server_listing(client, guild, clone_id, invoker_id)
+    current = await db.bump_get_guild_config(guild.id, clone_id=clone_id) or {}
+    wizard = BumpWizardView(invoker_id, current)
+    wizard.channel_id = channel.id
+    if created:
+        wizard.created_channel_id = channel.id
+    for item in wizard.children:
+        if isinstance(item, BumpChannelSelect):
+            item.default_values = [discord.Object(id=channel.id, type=discord.abc.GuildChannel)]
+    try:
+        await channel.send(
+            content=intro or f"<@{invoker_id}> finish your bump (partnership) setup below — then hit **Save**.",
+            embed=wizard.build_embed(), view=wizard,
+            allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=invoker_id)]),
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        logger.exception("[bumpsetup] couldn't post wizard in channel %s", channel.id)
+        return False
+    return True
+
+
 class BumpChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, wizard: "BumpWizardView"):
         self.wizard = wizard
@@ -262,32 +316,10 @@ class BumpFinishButton(discord.ui.Button):
             except Exception:
                 logger.exception("[bumpsetup] couldn't flag channel_auto_created for guild %s", interaction.guild_id)
         # /bump now needs a server listing to exist. Create the suggested
-        # one (description/tags/perks pulled from the guild) if there isn't
-        # one yet — never overwrites an existing listing.
-        footer = "Saved ✅"
-        try:
-            clone_id = _clone_id_of(interaction)
-            existing = await db.bump_get_listing(interaction.guild_id, clone_id, "server")
-            if not existing:
-                from discord_bot.cogs.bump import _suggest_description_and_tags, _suggest_perks
-                desc, tags = _suggest_description_and_tags(interaction.guild)
-                perks = _suggest_perks(interaction.guild)
-                invite_url = await interaction.client._best_effort_invite(interaction.guild)
-                await db.bump_upsert_listing(
-                    guild_id=interaction.guild_id,
-                    clone_id=clone_id,
-                    created_by=interaction.user.id,
-                    listing_type="server",
-                    name=interaction.guild.name,
-                    description=desc,
-                    invite_url=invite_url,
-                    tags=tags,
-                    perks=perks,
-                )
-                footer = "Saved ✅ — listing created. Change it anytime with /bump edit"
-        except Exception:
-            logger.exception("[bumpsetup] auto-listing failed for guild %s", interaction.guild_id)
-            footer = "Saved ✅ — couldn't auto-create your listing, run /bump edit to add it"
+        # one if there isn't one yet — never overwrites an existing listing.
+        footer = await ensure_server_listing(
+            interaction.client, interaction.guild, _clone_id_of(interaction), interaction.user.id,
+        )
         for item in wizard.children:
             item.disabled = True
         embed = wizard.build_embed()
