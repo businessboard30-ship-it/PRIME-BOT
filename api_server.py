@@ -151,6 +151,7 @@ ROUTES = {
     "/api/cron_expire_monetization": "api.cron_expire_monetization",
     "/api/cron_renew_yandex_search": "api.cron_renew_yandex_search",
     "/api/cron_cleanup_pending_payments": "api.cron_cleanup_pending_payments",
+    "/api/cron_ad_placement": "api.cron_ad_placement",
     "/api/oauth_gdrive": "api.oauth_gdrive",
     "/api/discord_login_oauth": "api.discord_login_oauth",
     "/api/site_visits": "api.site_visits",
