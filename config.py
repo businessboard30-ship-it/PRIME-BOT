@@ -686,8 +686,8 @@ MESSAGES = {
     "payment_success": "Payment successful! Setting up your new bot...",
 }
 
-# Shared bump network: when on, a bump from the main bot or ANY clone reaches
+# Shared bump network: when True, a bump from the main bot or ANY clone reaches
 # opted-in servers of ALL clones (each target is delivered by the bot that is
-# actually in that server). Set BUMP_SHARED_NETWORK=0 to go back to one
-# separate network per bot.
-BUMP_SHARED_NETWORK = os.getenv("BUMP_SHARED_NETWORK", "1").strip().lower() not in ("0", "false", "no", "off")
+# actually in that server). Set to False to go back to one separate network
+# per bot.
+BUMP_SHARED_NETWORK = True
