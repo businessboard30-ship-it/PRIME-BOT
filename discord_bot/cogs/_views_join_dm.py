@@ -245,10 +245,22 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         # shown here.
         if fresh_ad and is_last_page:
             container.add_item(discord.ui.Separator())
-            ad_lines = [f"📣 **{fresh_ad['company_name']} — {fresh_ad['ad_title']}**", fresh_ad["ad_description"]]
-            if fresh_ad.get("target_url") and fresh_ad["target_url"] != "N/A":
-                ad_lines.append(fresh_ad["target_url"])
+            # Links (target URL + any URLs typed into the text) become link
+            # buttons instead of raw URLs — same helper the bump-channel ad
+            # placement uses (modules/ad_links.py).
+            from modules.ad_links import split_ad_links
+            (ad_title, ad_desc), ad_buttons = split_ad_links(
+                [fresh_ad["ad_title"], fresh_ad["ad_description"]], target_url=fresh_ad.get("target_url"),
+            )
+            ad_lines = [f"📣 **{fresh_ad['company_name']} — {ad_title}**"]
+            if ad_desc:
+                ad_lines.append(ad_desc)
             container.add_item(discord.ui.TextDisplay("\n".join(ad_lines)))
+            if ad_buttons:
+                container.add_item(discord.ui.ActionRow(*[
+                    discord.ui.Button(label=label, style=discord.ButtonStyle.link, url=url)
+                    for label, url in ad_buttons
+                ]))
             if fresh_ad.get("image_url"):
                 container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(fresh_ad["image_url"])))
 

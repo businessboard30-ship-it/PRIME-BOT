@@ -37,6 +37,7 @@ import aiohttp
 from config import CRON_SECRET, DISCORD_BOT_TOKEN
 from database import db
 from modules.ads_marketplace import get_active_ads
+from modules.ad_links import split_ad_links
 from utils.crypto import secret_manager
 
 logger = logging.getLogger(__name__)
@@ -60,11 +61,25 @@ _PLACEMENT_FOOTER = (
 )
 
 
-def _ad_message(ad: dict) -> str:
-    lines = [f"📣 **{ad['company_name']} — {ad['ad_title']}**", ad["ad_description"]]
-    if ad.get("target_url") and ad["target_url"] != "N/A":
-        lines.append(ad["target_url"])
-    return "\n".join(lines) + _PLACEMENT_FOOTER
+def _ad_message(ad: dict) -> tuple[str, list]:
+    """(message text, link-button component rows). Every link in the ad —
+    its target URL and any URLs typed into the title/description — becomes a
+    button, so nothing is left in the text for Discord to expand into a big
+    preview card."""
+    (title, description), buttons = split_ad_links(
+        [ad["ad_title"], ad["ad_description"]], target_url=ad.get("target_url"),
+    )
+    lines = [f"📣 **{ad['company_name']} — {title}**"]
+    if description:
+        lines.append(description)
+    text = "\n".join(lines) + _PLACEMENT_FOOTER
+    components = []
+    if buttons:
+        components = [{
+            "type": 1,
+            "components": [{"type": 2, "style": 5, "label": label, "url": url} for label, url in buttons],
+        }]
+    return text[:2000], components
 
 
 async def _token_for(clone_id):
@@ -100,12 +115,14 @@ async def resolve_ad_image_url_rest(session: aiohttp.ClientSession, token: str, 
 
 
 async def _post(session: aiohttp.ClientSession, token: str, channel_id: int, message: str,
-                image_url: str | None = None) -> bool:
+                image_url: str | None = None, components: list | None = None) -> bool:
     url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
     headers = {"Authorization": f"Bot {token}"}
     payload = {"content": message}
     if image_url:
         payload["embeds"] = [{"image": {"url": image_url}}]
+    if components:
+        payload["components"] = components
     try:
         async with session.post(url, headers=headers, json=payload) as resp:
             if resp.status in (200, 201):
@@ -135,7 +152,7 @@ async def run_ad_placements() -> dict:
             targets = await db.get_unplaced_channels_for_ad(
                 ad["id"], all_channels, cooldown_seconds=AD_PLACEMENT_COOLDOWN_SECONDS,
             )
-            message = _ad_message(ad)
+            message, components = _ad_message(ad)
             # One fresh (non-expired) URL per ad per run, via the main bot's token.
             image_url = await resolve_ad_image_url_rest(session, DISCORD_BOT_TOKEN, ad) if ad.get("image_message_id") else None
             for target in targets:
@@ -146,7 +163,7 @@ async def run_ad_placements() -> dict:
                 if not token:
                     failed += 1
                     continue
-                ok = await _post(session, token, target["bump_channel_id"], message, image_url)
+                ok = await _post(session, token, target["bump_channel_id"], message, image_url, components)
                 if ok:
                     await db.record_ad_placement(ad["id"], target["bump_channel_id"], target["guild_id"])
                     placed += 1
