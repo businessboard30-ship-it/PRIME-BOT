@@ -54,7 +54,7 @@ async def _find_audit_actor(guild: discord.Guild, action: discord.AuditLogAction
     """Best-effort "who did it" lookup. Returns a discord.Member/User, or
     None if it can't be determined (missing permission, nothing recent
     enough, or no matching entry at all)."""
-    if not guild.me.guild_permissions.view_audit_log:
+    if guild.me is None or not guild.me.guild_permissions.view_audit_log:
         return None
     try:
         async for entry in guild.audit_logs(action=action, limit=5):
