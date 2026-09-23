@@ -282,6 +282,46 @@ class ModerationCog(GuildOnlyCog):
     async def warns(self, interaction: discord.Interaction, member: discord.Member = None):
         await self.send_warns(interaction, member or interaction.user, ephemeral=(member is None))
 
+    # ── /messages clear ─────────────────────────────────────────────────
+    # A group (not a standalone top-level command) so this only costs one
+    # slot against Discord's 100-command cap and future message-management
+    # subcommands can nest under it the same way.
+    messages_group = app_commands.guild_only()(
+        app_commands.Group(name="messages", description="Message management")
+    )
+
+    @messages_group.command(name="purge", description="Bulk-delete recent messages in this channel")
+    @app_commands.describe(amount="How many recent messages to delete (1-100). Discord can only bulk-delete messages younger than 14 days.")
+    async def purge(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
+        if not _require_perm(interaction, "manage_messages"):
+            await _deny(interaction, "Manage Messages")
+            return
+
+        async def _do_clear(confirm_interaction: discord.Interaction):
+            try:
+                deleted = await interaction.channel.purge(limit=amount)
+            except discord.Forbidden:
+                await confirm_interaction.response.edit_message(
+                    content="⚠️ I don't have permission to manage messages in this channel.", view=None
+                )
+                return
+            except discord.HTTPException as e:
+                await confirm_interaction.response.edit_message(
+                    content=f"⚠️ Couldn't delete those messages: {e}. Discord only bulk-deletes messages younger than 14 days.",
+                    view=None,
+                )
+                return
+            await modx.log_action(interaction.guild_id, "clear", interaction.user.id, target_user_id=interaction.channel.id, reason=f"{len(deleted)} message(s)")
+            await confirm_interaction.response.edit_message(
+                content=f"🧹 Deleted {len(deleted)} message(s) in {interaction.channel.mention}.", view=None
+            )
+
+        view = ConfirmActionView(interaction.user.id, _do_clear, confirm_label="Delete")
+        await interaction.response.send_message(
+            f"⚠️ Delete the last {amount} message(s) in {interaction.channel.mention}? This can't be undone.",
+            view=view, ephemeral=True
+        )
+
     # ── /modlogs ─────────────────────────────────────────────────────────
     async def send_modlogs(self, interaction: discord.Interaction, limit: int = 10, page: int = 0, edit: bool = False):
         if not _require_perm(interaction, "moderate_members"):

@@ -58,6 +58,7 @@ AI_COMMANDS = (
     AICommandSpec("unwarn", "discord_bot.cogs.moderation", True, "Clear all warns for a member"),
     AICommandSpec("warns", "discord_bot.cogs.moderation", False, "Check a member's warn count"),
     AICommandSpec("modlogs", "discord_bot.cogs.moderation", False, "Show recent moderation actions"),
+    AICommandSpec("purge", "discord_bot.cogs.moderation", True, "Bulk-delete recent messages in the current channel"),
 
     # ── Setup / config ──────────────────────────────────────────────────
     AICommandSpec("serversetup", "discord_bot.cogs.automation", True, "Guided setup wizard for this bot's features"),
