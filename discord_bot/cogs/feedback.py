@@ -32,6 +32,15 @@ MAX_FEEDBACK_LENGTH = 1000
 
 
 class Feedback(commands.Cog):
+    # AI-confirmation entry point: maps a slash command name to the sibling
+    # method that performs the same work but replies via followup instead of
+    # response.send_message, for use when the *original* interaction's
+    # response slot has already been consumed by an AI confirmation prompt
+    # (interaction.response.send_message/.defer can only be called once per
+    # interaction — see AI_CONFIRMED_HANDLERS in moderation.py/automation.py
+    # for the established pattern this mirrors).
+    AI_CONFIRMED_HANDLERS = {"feedback": "ai_feedback"}
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
@@ -62,6 +71,33 @@ class Feedback(commands.Cog):
         )
 
         await self._notify_admins(interaction, message, attachment)
+
+    async def ai_feedback(self, confirm_interaction: discord.Interaction, message: str, attachment: discord.Attachment = None):
+        """Same work as feedback() above, for the AI-confirmation path where
+        confirm_interaction's response slot is already consumed (its
+        edit_message counts as the response), so every reply here goes
+        through followup instead of response.send_message."""
+        message = message.strip()
+        if not message:
+            await confirm_interaction.followup.send("Feedback message can't be empty.", ephemeral=True)
+            return
+        if len(message) > MAX_FEEDBACK_LENGTH:
+            await confirm_interaction.followup.send(
+                f"Feedback is limited to {MAX_FEEDBACK_LENGTH} characters "
+                f"(yours was {len(message)}). Please shorten it and try again.",
+                ephemeral=True,
+            )
+            return
+
+        guild_id = confirm_interaction.guild_id
+        stored_message = f"{message}\n[attachment: {attachment.url}]" if attachment else message
+        await db.add_discord_user_feedback(confirm_interaction.user.id, guild_id, stored_message)
+
+        await confirm_interaction.followup.send(
+            "✅ Thanks — your feedback has been sent to the team.", ephemeral=True
+        )
+
+        await self._notify_admins(confirm_interaction, message, attachment)
 
     @app_commands.command(name="viewfeedback", description="View recent feedback (owner only)")
     @app_commands.describe(limit="How many recent entries to show (max 25)")
