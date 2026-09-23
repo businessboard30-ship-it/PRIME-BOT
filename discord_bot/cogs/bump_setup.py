@@ -151,10 +151,37 @@ class BumpFinishButton(discord.ui.Button):
             intensity_level=wizard.intensity_level,
             receives_bumps=True,
         )
+        # /bump now needs a server listing to exist. Create the suggested
+        # one (description/tags/perks pulled from the guild) if there isn't
+        # one yet — never overwrites an existing listing.
+        footer = "Saved ✅"
+        try:
+            clone_id = _clone_id_of(interaction)
+            existing = await db.bump_get_listing(interaction.guild_id, clone_id, "server")
+            if not existing:
+                from discord_bot.cogs.bump import _suggest_description_and_tags, _suggest_perks
+                desc, tags = _suggest_description_and_tags(interaction.guild)
+                perks = _suggest_perks(interaction.guild)
+                invite_url = await interaction.client._best_effort_invite(interaction.guild)
+                await db.bump_upsert_listing(
+                    guild_id=interaction.guild_id,
+                    clone_id=clone_id,
+                    created_by=interaction.user.id,
+                    listing_type="server",
+                    name=interaction.guild.name,
+                    description=desc,
+                    invite_url=invite_url,
+                    tags=tags,
+                    perks=perks,
+                )
+                footer = "Saved ✅ — listing created. Change it anytime with /bump edit"
+        except Exception:
+            logger.exception("[bumpsetup] auto-listing failed for guild %s", interaction.guild_id)
+            footer = "Saved ✅ — couldn't auto-create your listing, run /bump edit to add it"
         for item in wizard.children:
             item.disabled = True
         embed = wizard.build_embed()
-        embed.set_footer(text="Saved ✅")
+        embed.set_footer(text=footer)
         await interaction.response.edit_message(embed=embed, view=wizard)
         wizard.stop()
 
