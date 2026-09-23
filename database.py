@@ -139,7 +139,11 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "29"
+SCHEMA_VERSION = "30"
+# "29" -> "30": owner-approved ad placement/reminder tracking —
+# ad_placements table (cross-clone bump-channel ad placement, 6h repeat
+# cooldown) and ad_submissions.payment_reminder_sent_at (once-only
+# auto-DM'd Gumroad payment link for pending ads that never got paid).
 # "28" -> "29": AI reply-chat caps — ai_chat_usage.guild_id + .kind columns
 # (per-user-per-server daily cap for reply/DM chat; /aichat rows stay
 # kind IS NULL and keep their tier limits) and discord_ai_reply_config
