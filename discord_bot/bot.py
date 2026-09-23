@@ -29,6 +29,7 @@ from config import DISCORD_BOT_TOKEN, DISCORD_DEV_GUILD_ID, DISCORD_CLONE_ADMIN_
 from database import db
 from discord_bot.cogs.ai_store import VerifyCreditsView, VerifyBoostView, AIStoreMenuView
 from discord_bot.cogs._dm_support import GUILD_ONLY_MESSAGE
+from discord_bot.cogs._perm_guard import global_interaction_check, TooManyPrivilegedMembers, GUARD_MESSAGE
 from discord_bot.cogs._views_join_dm import build_join_dm_view, DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_card_customize import DYNAMIC_ITEMS as CARD_CUSTOMIZE_DYNAMIC_ITEMS
@@ -287,6 +288,12 @@ class AnimeBotDiscord(commands.Bot):
         # only fires for what reaches the tree unhandled.
         self.tree.on_error = self._on_app_command_error
 
+        # Global lockout: refuses to run ANY slash command in a guild that
+        # has too many members holding manage-type permissions. See
+        # discord_bot/cogs/_perm_guard.py — same self.tree.X = ... pattern
+        # as on_error above, runs before every command in every guild.
+        self.tree.interaction_check = global_interaction_check
+
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
         # This bot has no legacy prefix commands at all — everything is a
         # slash command via app_commands. command_prefix="!" is still set
@@ -306,6 +313,13 @@ class AnimeBotDiscord(commands.Bot):
         if isinstance(error, app_commands.NoPrivateMessage):
             if not interaction.response.is_done():
                 await interaction.response.send_message(GUILD_ONLY_MESSAGE, ephemeral=True)
+            return
+        if isinstance(error, TooManyPrivilegedMembers):
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    GUARD_MESSAGE.format(limit=error.limit, count=error.count),
+                    ephemeral=True,
+                )
             return
         if isinstance(error, app_commands.CheckFailure):
             # Cog-level interaction_check already sent its own message in the
