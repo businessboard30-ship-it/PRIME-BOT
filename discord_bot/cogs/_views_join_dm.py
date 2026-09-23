@@ -114,6 +114,20 @@ def _apply_enabled_state(view, enabled_keys: set) -> None:
     return
 
 
+async def _fresh_ad_for_join_dm() -> dict | None:
+    """The single freshest approved sponsored ad (get_active_ads is
+    already most-recently-approved-first), for the join DM's last page
+    only. Best-effort: a lookup failure just means no ad slot shows this
+    time, not a broken DM."""
+    try:
+        from modules.ads_marketplace import get_active_ads
+        ads = await get_active_ads(limit=1)
+        return ads[0] if ads else None
+    except Exception:
+        logger.exception("Couldn't fetch fresh ad for join DM")
+        return None
+
+
 def _paginate(feature_keys) -> tuple:
     """Shared page-math helper — the single source of truth for how
     feature_keys splits into pages, so the layout builder and the nav
@@ -148,7 +162,7 @@ class JoinDMLayoutView(discord.ui.LayoutView):
     def __init__(
         self, guild_id: int, clone_id, feature_keys, page: int, intro: str,
         title: str = "🚀 Thanks for adding me!", notices=None, enabled_keys=None,
-        guild_name: str = None, join_offer: dict = None,
+        guild_name: str = None, join_offer: dict = None, fresh_ad: dict = None,
     ):
         super().__init__(timeout=None)
         keys, total_pages = _paginate(feature_keys)
@@ -217,6 +231,19 @@ class JoinDMLayoutView(discord.ui.LayoutView):
                     _JoinOfferInviteButton("decline", guild_id, clone_id),
                 ))
 
+        # Sponsored ad slot — freshest approved ad only (fresh_ad is
+        # already picked via get_active_ads(limit=1), most-recent first),
+        # and only on the last page, same treatment as the notices/
+        # join_offer blocks above. Old approved ads roll off automatically
+        # as soon as a newer one is approved — there's never more than one
+        # shown here.
+        if fresh_ad and is_last_page:
+            container.add_item(discord.ui.Separator())
+            ad_lines = [f"📣 **{fresh_ad['company_name']} — {fresh_ad['ad_title']}**", fresh_ad["ad_description"]]
+            if fresh_ad.get("target_url") and fresh_ad["target_url"] != "N/A":
+                ad_lines.append(fresh_ad["target_url"])
+            container.add_item(discord.ui.TextDisplay("\n".join(ad_lines)))
+
         footer = "Run /help anytime for the full command list."
         if total_pages > 1:
             footer = f"Page {page + 1}/{total_pages} — {footer}"
@@ -253,7 +280,8 @@ class JoinDMLayoutView(discord.ui.LayoutView):
 
 def build_join_dm_view(guild_id: int, clone_id=None, feature_keys=None, page: int = 0,
                         intro: str = "", title: str = "🚀 Thanks for adding me!", notices=None,
-                        enabled_keys=None, guild_name: str = None, join_offer: dict = None) -> "JoinDMLayoutView":
+                        enabled_keys=None, guild_name: str = None, join_offer: dict = None,
+                        fresh_ad: dict = None) -> "JoinDMLayoutView":
     """Thin wrapper kept so existing call sites (bot.py, the nav/back
     button callbacks below) don't all need to construct JoinDMLayoutView
     directly. Callers now send this view on its own — `await
@@ -262,7 +290,8 @@ def build_join_dm_view(guild_id: int, clone_id=None, feature_keys=None, page: in
     Container now."""
     return JoinDMLayoutView(
         guild_id, clone_id, feature_keys, page, intro, title=title,
-        notices=notices, enabled_keys=enabled_keys, guild_name=guild_name, join_offer=join_offer,
+        notices=notices, enabled_keys=enabled_keys, guild_name=guild_name,
+        join_offer=join_offer, fresh_ad=fresh_ad,
     )
 
 
@@ -422,10 +451,11 @@ class _PageNavButton(discord.ui.DynamicItem[discord.ui.Button], template=re.comp
         guild = interaction.client.get_guild(self.guild_id)
         intro, title, notices = await _extract_layout_intro_title_notices(interaction, guild, self.guild_id, self.clone_id)
         join_offer = _offer_state_from_message(interaction.message)
+        fresh_ad = await _fresh_ad_for_join_dm()
         new_view = build_join_dm_view(
             self.guild_id, clone_id=self.clone_id, feature_keys=all_feature_keys, page=target_page,
             intro=intro, title=title, notices=notices, enabled_keys=enabled,
-            guild_name=guild.name if guild else None, join_offer=join_offer,
+            guild_name=guild.name if guild else None, join_offer=join_offer, fresh_ad=fresh_ad,
         )
         # One edit with the whole rebuilt layout — the embed and buttons
         # can no longer be two separate calls with two separate sources
@@ -537,10 +567,17 @@ class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
             target_url=str(self.link) or "N/A",
             budget_usd=AD_PLACEMENT_FEE_USD,
         )
+        placement_note = (
+            "\n\nOnce approved, this ad is placed in the combined join DM and in every "
+            "clone's bump channel. Have a video, image, or other file to include? This "
+            "form is text-only — send it with `/feedback` (it has an attachment field) "
+            "and we'll add it."
+        )
+
         if not ad_id:
             await interaction.followup.send(
                 f"Thanks! Your request was sent. Join our support server to talk about pricing: "
-                f"{DISCORD_SUPPORT_SERVER_INVITE}",
+                f"{DISCORD_SUPPORT_SERVER_INVITE}{placement_note}",
                 ephemeral=True,
             )
             return
@@ -550,6 +587,7 @@ class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
             interaction, "ad_placement", f"${AD_PLACEMENT_FEE_USD:.2f}+",
             guild_id=self.guild_id, reference=reference, amount_usd=AD_PLACEMENT_FEE_USD,
         )
+        await interaction.followup.send(placement_note.strip(), ephemeral=True)
 
 
 class _AdvertiseButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_advertise:(\d+):(-|\d+)$"):
