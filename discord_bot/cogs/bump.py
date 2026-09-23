@@ -31,7 +31,9 @@ DRIP_SECONDS apart, and a background loop (bump_worker, same tasks.loop
 shape as autopost.py's) drains a few due rows every tick.
 """
 
+import asyncio
 import logging
+import random
 import re
 
 import discord
@@ -798,6 +800,7 @@ class BumpCog(commands.Cog):
             DynamicBumpAgainButton, DynamicBumpApproveButton, DynamicBumpRejectButton,
         )
         self.bump_worker.start()
+        self._restore_task = None
         # Reminder worker is temporarily disabled — a startup crash-loop
         # let cooldowns pile up across many listings, so the first tick
         # after the bot finally came back up fired reminders for all of
@@ -807,7 +810,13 @@ class BumpCog(commands.Cog):
         if ENABLE_BUMP_REMINDERS:
             self.bump_reminder_worker.start()
 
+    async def cog_load(self):
+        # One background pass per boot; see _auto_restore_bump_channels.
+        self._restore_task = asyncio.create_task(self._auto_restore_bump_channels())
+
     def cog_unload(self):
+        if self._restore_task is not None:
+            self._restore_task.cancel()
         self.bump_worker.cancel()
         if ENABLE_BUMP_REMINDERS:
             self.bump_reminder_worker.cancel()
@@ -851,6 +860,116 @@ class BumpCog(commands.Cog):
             ),
             view=BumpSetupView(self, desc, tags, perks),
         )
+
+    async def _auto_restore_bump_channels(self):
+        """Automatic, silent restore of #bump channels wiped by the old
+        vote_bump_cleanup pass (channel deleted + bump_channel_id cleared +
+        receives_bumps FALSE). Runs once per boot per bot, in the background.
+
+        Every clone is a separate bot with its own bump_guild_config row for
+        the same guild, so several bots can be restoring the same guild at
+        once. To make sure that never yields two #bump channels:
+          - a per-guild Postgres advisory lock (transaction-scoped, so it
+            works through the pooler) serializes check-then-create across ALL
+            bots/processes, and
+          - inside the lock the guild's channels are re-fetched over REST, so
+            a #bump another clone created seconds ago is always seen, not just
+            whatever this bot has cached.
+        If a #bump already exists (one OR several) it is reused and NEVER
+        added to; a second one is only ever created when none exists. Nothing
+        is posted anywhere — no channel messages, no DMs; only log lines."""
+        try:
+            await self.bot.wait_until_ready()
+            # Spread clones out so they don't all hit the same guilds at once.
+            await asyncio.sleep(random.uniform(20, 90))
+            clone_id = _clone_id_of(self.bot)
+            rows = await db.bump_list_cleared_guilds(clone_id)
+            if not rows:
+                return
+            restored = reused = skipped = 0
+            for row in rows:
+                guild = self.bot.get_guild(row["guild_id"])
+                if guild is None:
+                    continue
+                try:
+                    result = await self._restore_one_guild(guild, clone_id, row.get("configured_by"))
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("[bump] auto-restore failed for guild %s", guild.id)
+                    result = "skipped"
+                if result == "created":
+                    restored += 1
+                    await asyncio.sleep(2)  # stay well under channel-create rate limits
+                elif result == "reused":
+                    reused += 1
+                else:
+                    skipped += 1
+            logger.info("[bump] auto-restore (clone_id=%s): created %d, re-linked %d, skipped %d",
+                        clone_id, restored, reused, skipped)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[bump] auto-restore pass crashed")
+
+    async def _restore_one_guild(self, guild: discord.Guild, clone_id, configured_by) -> str:
+        from database import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Held until this transaction ends — i.e. until after the
+                # channel exists and the config is saved.
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", 7_310_000_000_000 + guild.id % 1_000_000_000_000)
+                try:
+                    channels = await guild.fetch_channels()
+                except discord.HTTPException:
+                    return "skipped"
+                existing = [c for c in channels if isinstance(c, discord.TextChannel) and c.name == "bump"]
+                me = guild.me
+                channel, created = None, False
+                if existing:
+                    # Reuse — prefer one this bot can already post in.
+                    def _can_post(c):
+                        p = c.permissions_for(me)
+                        return p.view_channel and p.send_messages and p.embed_links
+                    channel = next((c for c in existing if _can_post(c)), existing[0])
+                    if not _can_post(channel):
+                        # Another clone's #bump is bot-only for that clone. Give this
+                        # bot access if we're allowed to; otherwise stay quiet and
+                        # leave it — never create a second channel.
+                        try:
+                            await channel.set_permissions(
+                                me, send_messages=True, embed_links=True, view_channel=True,
+                                reason="Bump channel restore: let this bot post in the existing #bump",
+                            )
+                        except (discord.Forbidden, discord.HTTPException):
+                            return "skipped"
+                else:
+                    if not me.guild_permissions.manage_channels:
+                        return "skipped"
+                    try:
+                        channel = await guild.create_text_channel(
+                            "bump",
+                            overwrites={
+                                guild.default_role: discord.PermissionOverwrite(send_messages=False),
+                                me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
+                            },
+                            reason="Restoring bump channel removed by the old auto-cleanup",
+                        )
+                    except (discord.Forbidden, discord.HTTPException):
+                        return "skipped"
+                    created = True
+                await db.bump_set_guild_config(
+                    guild_id=guild.id, clone_id=clone_id, configured_by=configured_by or self.bot.user.id,
+                    bump_channel_id=channel.id, receives_bumps=True,
+                )
+                if created:
+                    await conn.execute(
+                        "UPDATE bump_guild_config SET channel_auto_created = TRUE "
+                        "WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                        guild.id, clone_id,
+                    )
+        return "created" if created else "reused"
 
     async def _cooldown_seconds(self) -> int:
         """Owner-editable via /bumpadmin cooldown — falls back to

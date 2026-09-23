@@ -14258,6 +14258,26 @@ class Database:
                 )
             return dict(row)
 
+    async def bump_list_cleared_guilds(self, clone_id: Optional[int]) -> List[Dict]:
+        """Guilds whose bump config was wiped by bump_clear_guild_config (the
+        old vote_bump_cleanup pass, or a departed guild): the row still
+        exists but bump_channel_id IS NULL and receives_bumps = FALSE. Rows
+        with a NULL channel but receives_bumps TRUE were simply never set up,
+        so they're excluded. Backs /bumpadmin restore."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT guild_id, configured_by
+                FROM bump_guild_config
+                WHERE COALESCE(clone_id, -1) = COALESCE($1, -1)
+                  AND bump_channel_id IS NULL AND receives_bumps = FALSE
+                ORDER BY updated_at DESC
+                """,
+                clone_id,
+            )
+            return [dict(r) for r in rows]
+
     async def bump_list_configured_guilds(self, clone_id: Optional[int]) -> List[Dict]:
         """All guilds that have a bump channel configured for this clone,
         newest-configured first. Backs /bumpadmin list — each row has
