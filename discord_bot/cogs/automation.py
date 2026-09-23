@@ -193,6 +193,8 @@ class AutomationCog(GuildOnlyCog):
     # the slash-command callback through command._do_call.
     AI_CONFIRMED_HANDLERS = {
         "serversetup": "ai_serversetup",
+        "announce": "ai_announce",
+        "cancelannouncement": "ai_cancelannouncement",
     }
 
     @commands.Cog.listener()
@@ -317,7 +319,30 @@ class AutomationCog(GuildOnlyCog):
         )
         await interaction.followup.send(msg, ephemeral=True)
 
-    @app_commands.command(name="announcements", description="List this server's scheduled announcements")
+    async def ai_announce(self, confirm_interaction: discord.Interaction, channel: discord.TextChannel, message: str,
+                           in_minutes: int = 0, repeat_every_minutes: int = None):
+        """Entry point for execute_ai_command — confirm_interaction's response
+        is already used by AIConfirmView, so this replies via followup and
+        never calls interaction.response.defer()."""
+        lang = await get_lang(confirm_interaction)
+        if not _require_perm(confirm_interaction, "manage_guild"):
+            await _deny(confirm_interaction, "Manage Server", lang)
+            return
+        next_run_at = datetime.now(timezone.utc) + timedelta(minutes=in_minutes)
+        ann_id = await db.add_scheduled_announcement(
+            confirm_interaction.guild_id, channel.id, message, next_run_at, confirm_interaction.user.id,
+            interval_minutes=repeat_every_minutes, clone_id=_clone_id_of(confirm_interaction)
+        )
+        now_word = await tr("now", lang)
+        in_minutes_word = await tr("in {minutes}m", lang, minutes=in_minutes) if in_minutes else now_word
+        repeat_note = await tr(", repeating every {minutes}m", lang, minutes=repeat_every_minutes) \
+            if repeat_every_minutes else ""
+        msg = await tr(
+            "✅ Scheduled announcement #{id} in {channel} ({when}{repeat_note}). "
+            "Delivery runs on the external cron — see api/cron_discord_announcements.py.", lang,
+            id=ann_id, channel=channel.mention, when=in_minutes_word, repeat_note=repeat_note
+        )
+        await confirm_interaction.followup.send(msg, ephemeral=True)
     @app_commands.guild_only()
     async def announcements(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -348,6 +373,18 @@ class AutomationCog(GuildOnlyCog):
         ok = await db.remove_scheduled_announcement(interaction.guild_id, announcement_id, clone_id=_clone_id_of(interaction))
         msg = await tr("✅ Cancelled.", lang) if ok else await tr("No such announcement.", lang)
         await interaction.followup.send(msg, ephemeral=True)
+
+    async def ai_cancelannouncement(self, confirm_interaction: discord.Interaction, announcement_id: int):
+        """Entry point for execute_ai_command — confirm_interaction's response
+        is already used by AIConfirmView, so this replies via followup and
+        never calls interaction.response.defer()."""
+        lang = await get_lang(confirm_interaction)
+        if not _require_perm(confirm_interaction, "manage_guild"):
+            await _deny(confirm_interaction, "Manage Server", lang)
+            return
+        ok = await db.remove_scheduled_announcement(confirm_interaction.guild_id, announcement_id, clone_id=_clone_id_of(confirm_interaction))
+        msg = await tr("✅ Cancelled.", lang) if ok else await tr("No such announcement.", lang)
+        await confirm_interaction.followup.send(msg, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
