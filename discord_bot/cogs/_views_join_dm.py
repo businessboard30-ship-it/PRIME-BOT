@@ -1286,14 +1286,62 @@ async def _enable_analytics(interaction: discord.Interaction, guild: discord.Gui
     return True, "Run `/serveranalytics` anytime for a snapshot — nothing to turn on here."
 
 
+def _is_general_chat_channel(guild: discord.Guild, channel) -> bool:
+    """True for the channel an old version of _enable_bump used to default the
+    bump network into: the server's system channel / #general. Ads and other
+    servers' bumps don't belong in the main chat."""
+    if channel is None or "bump" in channel.name.lower():
+        return False
+    return channel == guild.system_channel or "general" in channel.name.lower()
+
+
 async def _enable_bump(interaction: discord.Interaction, guild: discord.Guild, clone_id):
-    channel = _default_text_channel(guild)
+    """Turns the bump network on in a dedicated #bump channel — reuses the
+    configured one (unless it's the old #general default) or an existing
+    #bump, else creates a bot-posting-only #bump. NEVER falls back to the
+    system channel / first text channel like other one-tap features do: that
+    put other servers' bumps and sponsored ads into #general."""
+    from discord_bot.cogs.bump_setup import _create_bump_channel, ensure_bot_can_post, ensure_server_listing
+    from database import get_pool
+
+    current = await db.bump_get_guild_config(guild.id, clone_id=clone_id) or {}
+    channel = guild.get_channel(current["bump_channel_id"]) if current.get("bump_channel_id") else None
+    if channel is None or _is_general_chat_channel(guild, channel):
+        channel = discord.utils.get(guild.text_channels, name="bump")
+    created = False
     if channel is None:
-        return False, "I couldn't find a channel I'm able to post in — create one and try `/bumpsetup`."
+        if not guild.me.guild_permissions.manage_channels:
+            return False, (
+                "I need the **Manage Channels** permission to create a #bump channel — grant it, "
+                "or run `/bumpsetup` and pick a channel."
+            )
+        try:
+            channel = await _create_bump_channel(interaction, guild=guild, user=interaction.user)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("_enable_bump couldn't create #bump in guild %s", guild.id)
+            return False, "I couldn't create a #bump channel — run `/bumpsetup` and pick one."
+        created = True
+    if not await ensure_bot_can_post(channel):
+        return False, (
+            f"I can't post in {channel.mention} and couldn't give myself access — "
+            "grant me **Send Messages** + **Embed Links** there, then try again."
+        )
     await db.bump_set_guild_config(
         guild_id=guild.id, clone_id=clone_id, configured_by=interaction.user.id,
         bump_channel_id=channel.id, receives_bumps=True,
     )
+    if created:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE bump_guild_config SET channel_auto_created = TRUE "
+                    "WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                    guild.id, clone_id,
+                )
+        except Exception:
+            logger.exception("_enable_bump couldn't flag channel_auto_created for guild %s", guild.id)
+    await ensure_server_listing(interaction.client, guild, clone_id, interaction.user.id)
     return True, f"Bump network is on in {channel.mention}. Fine-tune the listing with `/bumpsetup`."
 
 

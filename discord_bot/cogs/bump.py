@@ -897,6 +897,7 @@ class BumpCog(commands.Cog):
         self.bump_worker.start()
         self._restore_task = None
         self._link_task = None
+        self._general_task = None
         # Reminder worker is temporarily disabled — a startup crash-loop
         # let cooldowns pile up across many listings, so the first tick
         # after the bot finally came back up fired reminders for all of
@@ -909,6 +910,7 @@ class BumpCog(commands.Cog):
     async def cog_load(self):
         # One background pass per boot; see _auto_restore_bump_channels.
         self._restore_task = asyncio.create_task(self._auto_restore_bump_channels())
+        self._general_task = asyncio.create_task(self._move_bump_out_of_general())
         self._link_task = asyncio.create_task(self._flag_missing_links())
 
     def cog_unload(self):
@@ -916,6 +918,8 @@ class BumpCog(commands.Cog):
             self._restore_task.cancel()
         if self._link_task is not None:
             self._link_task.cancel()
+        if self._general_task is not None:
+            self._general_task.cancel()
         self.bump_worker.cancel()
         if ENABLE_BUMP_REMINDERS:
             self.bump_reminder_worker.cancel()
@@ -1010,6 +1014,70 @@ class BumpCog(commands.Cog):
             raise
         except Exception:
             logger.exception("[bump] auto-restore pass crashed")
+
+    async def _move_bump_out_of_general(self):
+        """One pass per boot: servers whose bump channel is their system
+        channel / #general get moved to a dedicated #bump (reused if one
+        exists, else created bot-posting-only). An older version of the
+        "Enable Bump Network" button defaulted to the system channel, which put
+        other servers' bumps and sponsored ads into the main chat. Only touches
+        channels the bot did NOT create itself; if the bot can't create/reuse a
+        #bump (no Manage Channels) the server is left as-is and logged."""
+        try:
+            await self.bot.wait_until_ready()
+            await asyncio.sleep(random.uniform(60, 120))
+            clone_id = _clone_id_of(self.bot)
+            from database import get_pool
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT guild_id, bump_channel_id, configured_by FROM bump_guild_config
+                    WHERE COALESCE(clone_id, -1) = COALESCE($1, -1) AND bump_channel_id IS NOT NULL
+                      AND COALESCE(channel_auto_created, FALSE) = FALSE
+                    """,
+                    clone_id,
+                )
+            moved = skipped = 0
+            for row in rows:
+                guild = self.bot.get_guild(row["guild_id"])
+                if guild is None:
+                    continue
+                channel = guild.get_channel(int(row["bump_channel_id"]))
+                if channel is None or "bump" in channel.name.lower():
+                    continue
+                if not (channel == guild.system_channel or "general" in channel.name.lower()):
+                    continue
+                try:
+                    result = await self._restore_one_guild(guild, clone_id, row.get("configured_by"))
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("[bump] couldn't move guild %s out of #%s", guild.id, channel.name)
+                    result = "skipped"
+                if result in ("created", "reused"):
+                    moved += 1
+                    fresh = await db.bump_get_guild_config(guild.id, clone_id) or {}
+                    new_channel = guild.get_channel(int(fresh["bump_channel_id"])) if fresh.get("bump_channel_id") else None
+                    if new_channel is not None and result == "created":
+                        try:
+                            await new_channel.send(
+                                f"📣 Bumps and sponsored ads used to land in {channel.mention}. "
+                                "I've moved them here so the main chat stays clean. "
+                                "Run `/bumpsetup` if you'd like a different channel."
+                            )
+                        except discord.HTTPException:
+                            pass
+                    await asyncio.sleep(3)
+                else:
+                    skipped += 1
+            if moved or skipped:
+                logger.info("[bump] moved %d server(s) out of #general (clone_id=%s); %d couldn't be moved (no Manage Channels?)",
+                            moved, clone_id, skipped)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[bump] general-channel cleanup pass crashed")
 
     async def _flag_missing_links(self):
         """One pass per boot: every server listing with no invite link —
