@@ -565,7 +565,7 @@ class _PartnershipButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
             )
             return
 
-        from discord_bot.cogs.bump_setup import BumpWizardView, _create_bump_channel
+        from discord_bot.cogs.bump_setup import BumpWizardView, _create_bump_channel, ensure_bot_can_post
         try:
             current = await db.bump_get_guild_config(self.guild_id, clone_id=self.clone_id) or {}
             channel = guild.get_channel(current.get("bump_channel_id")) if current.get("bump_channel_id") else None
@@ -582,6 +582,12 @@ class _PartnershipButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
                 channel = await _create_bump_channel(interaction, guild=guild, user=interaction.user)
                 created = True
 
+            if not await ensure_bot_can_post(channel):
+                await interaction.followup.send(
+                    f"I can't post in {channel.mention} and couldn't give myself access — "
+                    "grant me **Send Messages** + **Embed Links** there, then tap this again.", ephemeral=True,
+                )
+                return
             wizard = BumpWizardView(interaction.user.id, current)
             wizard.channel_id = channel.id
             if created:

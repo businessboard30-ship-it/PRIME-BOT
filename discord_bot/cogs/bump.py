@@ -1320,15 +1320,24 @@ class BumpCog(commands.Cog):
                 )
                 return
 
+            from config import BUMP_SHARED_NETWORK
             candidates = await db.bump_find_targets(
                 exclude_guild_id=owner_guild_id, clone_id=clone_id,
                 language=config.get("language", "any"), include_nsfw=bool(config.get("nsfw_opt_in")),
+                shared=BUMP_SHARED_NETWORK,
             )
-            # Only bump into servers the bot is CURRENTLY in — a config row can
-            # go stale if the bot was kicked and on_guild_remove hasn't caught
-            # it yet (or for rows written before that listener existed), and we
-            # never want to post into a server the bot no longer belongs to.
-            targets = [t for t in candidates if self.bot.get_guild(t["guild_id"]) is not None]
+            if BUMP_SHARED_NETWORK:
+                # Shared network: each target is queued under the clone that is
+                # actually in that server, and THAT bot's worker delivers it
+                # (and drops it if it has since left) — so this bot doesn't need
+                # to be in the target guild.
+                targets = candidates
+            else:
+                # Only bump into servers the bot is CURRENTLY in — a config row can
+                # go stale if the bot was kicked and on_guild_remove hasn't caught
+                # it yet (or for rows written before that listener existed), and we
+                # never want to post into a server the bot no longer belongs to.
+                targets = [t for t in candidates if self.bot.get_guild(t["guild_id"]) is not None]
 
             streak = await db.bump_record(listing["id"], STREAK_WINDOW_SECONDS)
             queued = await db.bump_enqueue(listing["id"], clone_id, targets, DRIP_SECONDS) if targets else 0

@@ -84,6 +84,29 @@ async def _create_bump_channel(interaction: discord.Interaction, guild: discord.
     return channel
 
 
+async def ensure_bot_can_post(channel: discord.TextChannel) -> bool:
+    """Makes sure THIS bot can view/post embeds in `channel`. With a shared
+    bump network several bots (main + clones) deliver into the same #bump,
+    and a channel another bot created is bot-only for that bot — so grant
+    this bot access if it's missing. Returns False if it still can't post."""
+    me = channel.guild.me
+
+    def _ok():
+        p = channel.permissions_for(me)
+        return p.view_channel and p.send_messages and p.embed_links
+
+    if _ok():
+        return True
+    try:
+        await channel.set_permissions(
+            me, send_messages=True, embed_links=True, view_channel=True,
+            reason="Bump network: let this bot post in the shared #bump",
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+    return _ok()
+
+
 class BumpChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, wizard: "BumpWizardView"):
         self.wizard = wizard
@@ -213,6 +236,9 @@ class BumpFinishButton(discord.ui.Button):
                 return
             wizard.channel_id = channel.id
             wizard.created_channel_id = channel.id
+        chosen = interaction.guild.get_channel(wizard.channel_id)
+        if isinstance(chosen, discord.TextChannel):
+            await ensure_bot_can_post(chosen)  # best-effort; shared #bump may belong to another bot
         await db.bump_set_guild_config(
             guild_id=interaction.guild_id,
             clone_id=_clone_id_of(interaction),
