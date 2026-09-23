@@ -1292,7 +1292,7 @@ def _is_general_chat_channel(guild: discord.Guild, channel) -> bool:
     servers' bumps don't belong in the main chat."""
     if channel is None or "bump" in channel.name.lower():
         return False
-    return channel == guild.system_channel or "general" in channel.name.lower()
+    return channel == _default_text_channel(guild) or "general" in channel.name.lower()
 
 
 async def _enable_bump(interaction: discord.Interaction, guild: discord.Guild, clone_id):

@@ -1015,10 +1015,55 @@ class BumpCog(commands.Cog):
         except Exception:
             logger.exception("[bump] auto-restore pass crashed")
 
+    @staticmethod
+    def _is_network_message(msg: discord.Message, bot_id: int) -> bool:
+        """True only for messages THIS bot posted as part of the bump network:
+        bump/listing cards, sponsored ad cards, the 🔁 Bump prompt, cooldown
+        reminders, and the link-flag / restore notes. Nothing else."""
+        if msg.author.id != bot_id:
+            return False
+        for embed in msg.embeds:
+            footer = (embed.footer.text or "") if embed.footer else ""
+            if "Total bumps:" in footer or footer.startswith("📢 Sponsored"):
+                return True
+        for row in msg.components:
+            for comp in getattr(row, "children", []):
+                cid = getattr(comp, "custom_id", None) or ""
+                if cid.startswith(("bump:", "bumplink:")):
+                    return True
+        content = msg.content or ""
+        return content.startswith(("⏱️ Bump cooldown's reset for", "📣 **Bump channel restored.**"))
+
+    async def _delete_network_messages(self, channel: discord.TextChannel, limit: int = 300) -> int:
+        """Deletes this bot's own bump/ad messages from a channel they should
+        never have been posted in (see _is_network_message). Own messages can
+        be deleted without any extra permission; needs Read Message History
+        to find them. Best-effort — never raises."""
+        deleted = 0
+        try:
+            if not channel.permissions_for(channel.guild.me).read_message_history:
+                return 0
+            targets = [m async for m in channel.history(limit=limit) if self._is_network_message(m, self.bot.user.id)]
+            for msg in targets:
+                try:
+                    await msg.delete()
+                    deleted += 1
+                except discord.NotFound:
+                    pass
+                except discord.HTTPException:
+                    logger.info("[bump] couldn't delete message %s in %s", msg.id, channel.id)
+                await asyncio.sleep(0.5)  # stay under delete rate limits
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[bump] cleanup of old bump messages failed in channel %s", getattr(channel, "id", None))
+        return deleted
+
     async def _move_bump_out_of_general(self):
         """One pass per boot: servers whose bump channel is their system
         channel / #general get moved to a dedicated #bump (reused if one
-        exists, else created bot-posting-only). An older version of the
+        exists, else created bot-posting-only) and this bot's own bump/ad
+        messages already sitting in the old channel are deleted. An older version of the
         "Enable Bump Network" button defaulted to the system channel, which put
         other servers' bumps and sponsored ads into the main chat. Only touches
         channels the bot did NOT create itself; if the bot can't create/reuse a
@@ -1046,7 +1091,8 @@ class BumpCog(commands.Cog):
                 channel = guild.get_channel(int(row["bump_channel_id"]))
                 if channel is None or "bump" in channel.name.lower():
                     continue
-                if not (channel == guild.system_channel or "general" in channel.name.lower()):
+                from discord_bot.cogs._views_join_dm import _default_text_channel
+                if not (channel == _default_text_channel(guild) or "general" in channel.name.lower()):
                     continue
                 try:
                     result = await self._restore_one_guild(guild, clone_id, row.get("configured_by"))
@@ -1057,6 +1103,9 @@ class BumpCog(commands.Cog):
                     result = "skipped"
                 if result in ("created", "reused"):
                     moved += 1
+                    removed = await self._delete_network_messages(channel)
+                    logger.info("[bump] guild %s: moved out of #%s, deleted %d bump/ad message(s) from it",
+                                guild.id, channel.name, removed)
                     fresh = await db.bump_get_guild_config(guild.id, clone_id) or {}
                     new_channel = guild.get_channel(int(fresh["bump_channel_id"])) if fresh.get("bump_channel_id") else None
                     if new_channel is not None and result == "created":
