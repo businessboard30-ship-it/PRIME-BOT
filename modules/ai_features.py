@@ -27,9 +27,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # AI CHAT with conversation history
 # ═══════════════════════════════════════════════════════════════════════════
 
-# The model writes this token instead of a URL; render_support_link() turns it into a
-# short blue markdown link ("here") so no long invite URL is ever shown in chat.
+# The model writes this token instead of a URL; render_support_link() strips it to
+# plain wording and leaves SUPPORT_BUTTON_MARKER behind so the caller attaches a real
+# Discord link button — the same guaranteed-no-preview mechanism as the bot's own
+# invite link, instead of trusting the model to never leak a raw/unmasked URL.
 SUPPORT_TOKEN = "[[SUPPORT]]"
+SUPPORT_BUTTON_MARKER = "\x00SUPPORT_BTN\x00"
 BOT_NAME = "Maxwell"  # what the AI says when asked its name
 
 AI_CHAT_MODEL = "openai/gpt-oss-120b"  # Groq's current recommended general-purpose model
@@ -97,18 +100,24 @@ _SUPPORT_TOKEN_RE = re.compile(r"\[\[\s*SUPPORT\s*\]\]", re.IGNORECASE)
 
 
 def render_support_link(text: str) -> str:
-    """Swap the [[SUPPORT]] token for a clickable blue 'here' link to the support
-    server (markdown, so the long invite URL never shows)."""
+    """Strip the [[SUPPORT]] token to plain wording ("our support server") and,
+    if a support invite is configured, append SUPPORT_BUTTON_MARKER so the caller
+    (ai_tools.py) attaches an actual discord.ui.Button link — never a URL in the
+    message text itself. This makes the support link behave exactly like the bot's
+    own invite link: a real button, masked by construction, not by hoping the model
+    always uses the token instead of writing the URL out itself."""
     if not text:
         return text
+    if not _SUPPORT_TOKEN_RE.search(text):
+        return text
+    text = _SUPPORT_TOKEN_RE.sub("our support server", text).rstrip()
     try:
         from config import DISCORD_SUPPORT_SERVER_INVITE as invite
     except Exception:
         invite = ""
     if invite:
-        # <...> around the URL stops Discord from adding the big server preview card
-        return _SUPPORT_TOKEN_RE.sub(f"[here](<{invite}>)", text)
-    return _SUPPORT_TOKEN_RE.sub("in our support server", text)
+        text = f"{text} {SUPPORT_BUTTON_MARKER}"
+    return text
 
 
 # Premium / credits questions get a fixed answer + the Go Premium button
@@ -149,6 +158,25 @@ def is_support_invite_question(text: str) -> bool:
 def is_bot_invite_question(text: str) -> bool:
     # A support-server ask is handled separately, so it never gets the bot's invite.
     return bool(text and not is_support_invite_question(text) and _BOT_INVITE_Q.search(text))
+
+
+# Safety net: if the model ignores rule 5 and writes/paraphrases a raw invite URL
+# instead of the [[SUPPORT]] token, catch it here too so it still comes out as a
+# button instead of a bare link Discord could preview.
+_RAW_SUPPORT_URL_RE = re.compile(r"https?://(?:www\.)?discord\.gg/\S+", re.IGNORECASE)
+
+
+def scrub_raw_support_url(text: str) -> str:
+    if not text or not _RAW_SUPPORT_URL_RE.search(text):
+        return text
+    try:
+        from config import DISCORD_SUPPORT_SERVER_INVITE as invite
+    except Exception:
+        invite = ""
+    text = _RAW_SUPPORT_URL_RE.sub("our support server", text).rstrip()
+    if invite and SUPPORT_BUTTON_MARKER not in text:
+        text = f"{text} {SUPPORT_BUTTON_MARKER}"
+    return text
 
 
 def support_invite_answer() -> str:
@@ -424,6 +452,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                     
                     response_text = trim_reply(response_text)
                     response_text = render_support_link(response_text)
+                    response_text = scrub_raw_support_url(response_text)
                     if mentions_other_bot(response_text):
                         response_text = OTHER_BOT_REFUSAL
                     if response_text:
