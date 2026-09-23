@@ -86,6 +86,12 @@ class AdsMarketplaceCog(commands.Cog):
             interaction, "ad_placement", f"${budget_usd:.2f}",
             guild_id=interaction.guild_id, reference=reference, amount_usd=budget_usd,
         )
+        await interaction.followup.send(
+            "Once approved, this ad is placed in the combined join DM and in every clone's "
+            "bump channel. This command is text-only — got a video, image, or other file to "
+            "include? Send it with `/feedback` (it has an attachment field) and we'll add it.",
+            ephemeral=True,
+        )
 
     @ad.command(name="status", description="Check the status of an ad you submitted")
     @app_commands.describe(ad_id="The ad's id (given to you when you submitted it)")
