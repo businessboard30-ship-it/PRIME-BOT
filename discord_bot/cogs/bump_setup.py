@@ -54,6 +54,32 @@ def _clone_id_of(interaction: discord.Interaction):
     return getattr(interaction.client, "clone_id", None)
 
 
+async def _create_bump_channel(interaction: discord.Interaction) -> discord.TextChannel:
+    """Creates a bot-posting-only #bump channel (in the "Server Setup"
+    category if the guild already has one). Raises discord.Forbidden /
+    discord.HTTPException on failure — callers show their own message."""
+    guild = interaction.guild
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(send_messages=False),
+        guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
+    }
+    category = discord.utils.get(guild.categories, name="📋 Server Setup")
+    channel = await guild.create_text_channel(
+        "bump",
+        category=category,
+        overwrites=overwrites,
+        reason=f"Auto-created by /bumpsetup for {interaction.user}",
+    )
+    try:
+        await channel.send(
+            "📣 Bump reminders and your server's listing will appear here. "
+            "Run `/bump now` to send your server out to the network."
+        )
+    except discord.HTTPException:
+        pass
+    return channel
+
+
 class BumpChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, wizard: "BumpWizardView"):
         self.wizard = wizard
@@ -129,6 +155,35 @@ class BumpNsfwToggleButton(discord.ui.Button):
         await self.wizard.refresh(interaction)
 
 
+class BumpCreateChannelButton(discord.ui.Button):
+    def __init__(self, wizard: "BumpWizardView"):
+        self.wizard = wizard
+        super().__init__(label="➕ Create #bump for me", style=discord.ButtonStyle.primary, row=3)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild.me.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "I need the **Manage Channels** permission to create one — grant it, or pick an existing channel above.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        try:
+            channel = await _create_bump_channel(interaction)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.warning("[bumpsetup] couldn't create #bump in guild %s: %s", interaction.guild_id, e)
+            await interaction.followup.send(
+                "Couldn't create the channel — pick an existing one above instead.", ephemeral=True,
+            )
+            return
+        self.wizard.channel_id = channel.id
+        self.wizard.created_channel_id = channel.id
+        for item in self.wizard.children:
+            if isinstance(item, BumpChannelSelect):
+                item.default_values = [discord.Object(id=channel.id, type=discord.abc.GuildChannel)]
+        await interaction.edit_original_response(embed=self.wizard.build_embed(), view=self.wizard)
+
+
 class BumpFinishButton(discord.ui.Button):
     def __init__(self, wizard: "BumpWizardView"):
         self.wizard = wizard
@@ -137,10 +192,23 @@ class BumpFinishButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         wizard = self.wizard
         if not wizard.channel_id:
-            await interaction.response.send_message(
-                "Pick a bump channel first — that's the one field this needs.", ephemeral=True,
-            )
-            return
+            # Nothing picked — create #bump automatically instead of blocking.
+            if not interaction.guild.me.guild_permissions.manage_channels:
+                await interaction.response.send_message(
+                    "Pick a bump channel first — I don't have **Manage Channels**, so I can't create one for you.",
+                    ephemeral=True,
+                )
+                return
+            try:
+                channel = await _create_bump_channel(interaction)
+            except (discord.Forbidden, discord.HTTPException) as e:
+                logger.warning("[bumpsetup] auto-create #bump failed in guild %s: %s", interaction.guild_id, e)
+                await interaction.response.send_message(
+                    "Couldn't create a #bump channel — pick an existing one above.", ephemeral=True,
+                )
+                return
+            wizard.channel_id = channel.id
+            wizard.created_channel_id = channel.id
         await db.bump_set_guild_config(
             guild_id=interaction.guild_id,
             clone_id=_clone_id_of(interaction),
@@ -151,6 +219,18 @@ class BumpFinishButton(discord.ui.Button):
             intensity_level=wizard.intensity_level,
             receives_bumps=True,
         )
+        if wizard.created_channel_id and wizard.created_channel_id == wizard.channel_id:
+            try:
+                from database import get_pool
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE bump_guild_config SET channel_auto_created = TRUE "
+                        "WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                        interaction.guild_id, _clone_id_of(interaction),
+                    )
+            except Exception:
+                logger.exception("[bumpsetup] couldn't flag channel_auto_created for guild %s", interaction.guild_id)
         # /bump now needs a server listing to exist. Create the suggested
         # one (description/tags/perks pulled from the guild) if there isn't
         # one yet — never overwrites an existing listing.
@@ -208,11 +288,13 @@ class BumpWizardView(discord.ui.View):
         self.language = current.get("language") or "any"
         self.nsfw_opt_in = bool(current.get("nsfw_opt_in") or False)
         self.intensity_level = current.get("intensity_level") or 3
+        self.created_channel_id = None
 
         self.add_item(BumpChannelSelect(self))
         self.add_item(BumpLanguageSelect(self))
         self.add_item(BumpIntensitySelect(self))
         self.add_item(BumpNsfwToggleButton(self))
+        self.add_item(BumpCreateChannelButton(self))
         self.add_item(BumpFinishButton(self))
         self.add_item(BumpCancelButton(self))
 
@@ -231,8 +313,8 @@ class BumpWizardView(discord.ui.View):
         embed = discord.Embed(
             title="Bump network setup",
             description=(
-                "Configure how this server sends and receives bumps. Pick your options below, "
-                "then hit **Save**."
+                "Configure how this server sends and receives bumps. Pick a channel (or tap "
+                "**Create #bump for me**), then hit **Save**."
             ),
             color=discord.Color.blurple(),
         )
