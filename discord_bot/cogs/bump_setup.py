@@ -15,6 +15,7 @@ button that writes it all to the DB in one call.
 """
 
 import logging
+import re
 
 import discord
 from discord import app_commands
@@ -54,33 +55,90 @@ def _clone_id_of(interaction: discord.Interaction):
     return getattr(interaction.client, "clone_id", None)
 
 
-async def _create_bump_channel(interaction: discord.Interaction, guild: discord.Guild = None, user=None) -> discord.TextChannel:
-    """Creates a bot-posting-only #bump channel (in the "Server Setup"
-    category if the guild already has one). Raises discord.Forbidden /
-    discord.HTTPException on failure — callers show their own message.
+# Matches "bump", "☑️bump", "📣│bump", "bump-network", "bumps" — but not "bumper".
+# The Server Setup wizard names its channel "☑️bump", while /bumpsetup and the
+# restore pass used to look for exactly "bump" — so each one failed to see the
+# other's channel and created a second #bump.
+_BUMP_NAME_RE = re.compile(r"(?<![a-z0-9])bumps?(?![a-z0-9])")
 
-    `guild`/`user` are optional overrides for callers that run from a DM
-    (the join-DM "Partnership" button), where interaction.guild is None."""
+
+def is_bump_channel_name(name: str) -> bool:
+    return bool(_BUMP_NAME_RE.search((name or "").lower()))
+
+
+def find_existing_bump_channels(guild: discord.Guild, channels=None) -> list:
+    """Every text channel that looks like a bump channel, best first: ones
+    this bot can already post in, then oldest. `channels` lets callers pass a
+    freshly REST-fetched list instead of the (possibly stale) cache."""
+    pool = channels if channels is not None else guild.text_channels
+    found = [c for c in pool if isinstance(c, discord.TextChannel) and is_bump_channel_name(c.name)]
+    me = guild.me
+
+    def _can_post(c):
+        p = c.permissions_for(me)
+        return p.view_channel and p.send_messages and p.embed_links
+
+    found.sort(key=lambda c: (not _can_post(c), c.id))
+    return found
+
+
+async def get_or_create_bump_channel(guild: discord.Guild, user=None, *, name: str = "bump", category=None,
+                                     reason: str = None, intro: bool = True):
+    """The ONE place a bump channel gets created. Returns (channel, created).
+
+    Reuses any existing bump-looking channel instead of making another, and the
+    check-then-create runs under the same per-guild Postgres advisory lock as
+    BumpCog._restore_one_guild with a fresh REST channel list — so two clicks,
+    two paths (wizard / DM button / restore), or two bots can't each create one.
+    Raises discord.Forbidden / discord.HTTPException on failure."""
+    from database import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", 7_310_000_000_000 + guild.id % 1_000_000_000_000)
+            try:
+                channels = await guild.fetch_channels()
+            except discord.HTTPException:
+                channels = list(guild.channels)
+            existing = find_existing_bump_channels(guild, channels)
+            if existing:
+                return existing[0], False
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(send_messages=False),
+                guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
+            }
+            category = category or discord.utils.get(guild.categories, name="📋 Server Setup")
+            channel = await guild.create_text_channel(
+                name, category=category, overwrites=overwrites,
+                reason=reason or f"Auto-created by /bumpsetup for {user}",
+            )
+    if intro:
+        try:
+            await channel.send(
+                "📣 Bump reminders and your server's listing will appear here. "
+                "Run `/bump now` to send your server out to the network."
+            )
+        except discord.HTTPException:
+            pass
+    return channel, True
+
+
+async def _create_bump_channel_ex(interaction: discord.Interaction, guild: discord.Guild = None, user=None):
+    """(channel, created) — a bot-posting-only #bump, or the server's existing
+    one if it already has one. `guild`/`user` are optional overrides for callers
+    that run from a DM (the join-DM \"Partnership\" button), where
+    interaction.guild is None."""
     guild = guild or interaction.guild
     user = user or interaction.user
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(send_messages=False),
-        guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
-    }
-    category = discord.utils.get(guild.categories, name="📋 Server Setup")
-    channel = await guild.create_text_channel(
-        "bump",
-        category=category,
-        overwrites=overwrites,
-        reason=f"Auto-created by /bumpsetup for {user}",
-    )
-    try:
-        await channel.send(
-            "📣 Bump reminders and your server's listing will appear here. "
-            "Run `/bump now` to send your server out to the network."
-        )
-    except discord.HTTPException:
-        pass
+    return await get_or_create_bump_channel(guild, user)
+
+
+async def _create_bump_channel(interaction: discord.Interaction, guild: discord.Guild = None, user=None) -> discord.TextChannel:
+    """Same as _create_bump_channel_ex but returns only the channel (an existing
+    #bump is reused, never duplicated). Raises discord.Forbidden /
+    discord.HTTPException on failure — callers show their own message."""
+    channel, _created = await _create_bump_channel_ex(interaction, guild, user)
     return channel
 
 
@@ -250,7 +308,7 @@ class BumpCreateChannelButton(discord.ui.Button):
             return
         await interaction.response.defer()
         try:
-            channel = await _create_bump_channel(interaction)
+            channel, created = await _create_bump_channel_ex(interaction)
         except (discord.Forbidden, discord.HTTPException) as e:
             logger.warning("[bumpsetup] couldn't create #bump in guild %s: %s", interaction.guild_id, e)
             await interaction.followup.send(
@@ -258,7 +316,12 @@ class BumpCreateChannelButton(discord.ui.Button):
             )
             return
         self.wizard.channel_id = channel.id
-        self.wizard.created_channel_id = channel.id
+        if created:
+            self.wizard.created_channel_id = channel.id
+        else:
+            await interaction.followup.send(
+                f"You already have {channel.mention}, so I selected it instead of creating another.", ephemeral=True,
+            )
         for item in self.wizard.children:
             if isinstance(item, BumpChannelSelect):
                 item.default_values = [discord.Object(id=channel.id, type=discord.abc.GuildChannel)]
@@ -281,7 +344,7 @@ class BumpFinishButton(discord.ui.Button):
                 )
                 return
             try:
-                channel = await _create_bump_channel(interaction)
+                channel, created = await _create_bump_channel_ex(interaction)
             except (discord.Forbidden, discord.HTTPException) as e:
                 logger.warning("[bumpsetup] auto-create #bump failed in guild %s: %s", interaction.guild_id, e)
                 await interaction.response.send_message(
@@ -289,7 +352,8 @@ class BumpFinishButton(discord.ui.Button):
                 )
                 return
             wizard.channel_id = channel.id
-            wizard.created_channel_id = channel.id
+            if created:
+                wizard.created_channel_id = channel.id
         chosen = interaction.guild.get_channel(wizard.channel_id)
         if isinstance(chosen, discord.TextChannel):
             await ensure_bot_can_post(chosen)  # best-effort; shared #bump may belong to another bot
