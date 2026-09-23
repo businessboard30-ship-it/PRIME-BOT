@@ -1323,6 +1323,23 @@ class BumpCog(commands.Cog):
             )
         )
 
+    async def _post_bump_card(self, config: dict, embed: discord.Embed, view: discord.ui.View):
+        """Posts the bumped listing's ad card publicly in the bumping server's
+        own bump channel. Returns the channel id on success, None if it
+        couldn't be posted (best-effort — never fails the bump)."""
+        try:
+            channel = self.bot.get_channel(int(config["bump_channel_id"]))
+            if channel is None:
+                return None
+            perms = channel.permissions_for(channel.guild.me)
+            if not (perms.send_messages and perms.embed_links):
+                return None
+            await channel.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
+            return channel.id
+        except Exception:
+            logger.exception("[bump] couldn't post public bump card")
+            return None
+
     async def _post_bump_prompt(self, guild_id: int, config: dict, listing: dict, bumped_by, cooldown_seconds: int):
         """Posts the standalone 🔁 Bump message in the bumping server's own
         bump channel — after EVERY successful bump, whichever path triggered
@@ -1445,15 +1462,24 @@ class BumpCog(commands.Cog):
                 online, members, server_icon_url = await _live_counts(interaction.client, refreshed)
                 bot_info = None
 
-            await interaction.followup.send(
-                embed=_bump_embed(refreshed, streak, online, members, bot_info, server_icon_url),
-                view=_bump_post_view(refreshed["id"], refreshed.get("invite_url"), refreshed.get("support_url")),
-                content=(
-                    f"✅ Added to the queue — will reach **{queued}** server{'s' if queued != 1 else ''} "
-                    f"over the next ~{(queued * DRIP_SECONDS) // 60 or 1} min."
-                    if queued else "✅ Bumped — no other opted-in servers match your filters yet."
-                ),
+            card_embed = _bump_embed(refreshed, streak, online, members, bot_info, server_icon_url)
+            card_view = _bump_post_view(refreshed["id"], refreshed.get("invite_url"), refreshed.get("support_url"))
+            summary = (
+                f"✅ Added to the queue — will reach **{queued}** server{'s' if queued != 1 else ''} "
+                f"over the next ~{(queued * DRIP_SECONDS) // 60 or 1} min."
+                if queued else "✅ Bumped — no other opted-in servers match your filters yet."
             )
+            # The card goes in the server's bump channel where everyone can see
+            # it. Every caller defers ephemerally, and the first followup after
+            # an ephemeral defer is always ephemeral — so the public card can't
+            # come from interaction.followup; only the short confirmation does.
+            posted_in = await self._post_bump_card(config, card_embed, card_view)
+            if posted_in:
+                await interaction.followup.send(f"{summary}\n📣 Posted in <#{posted_in}>.", ephemeral=True)
+            else:
+                # Couldn't post publicly (channel gone / missing perms) — fall
+                # back to showing the card to the bumper rather than losing it.
+                await interaction.followup.send(embed=card_embed, view=card_view, content=summary, ephemeral=True)
             await self._post_bump_prompt(owner_guild_id, config, refreshed, interaction.user, cooldown_seconds)
         except Exception:
             logger.exception("_do_bump failed for listing %s", listing.get("id"))
