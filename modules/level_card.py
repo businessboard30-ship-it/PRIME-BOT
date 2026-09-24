@@ -710,6 +710,16 @@ _TIER_IMAGE_LEVELS = [
     (56, "tier12_mythic.png", "MYTHIC"),
     (61, "tier13_primordial.png", "PRIMORDIAL"),
     (66, "tier14_godlike.png", "GODLIKE"),
+    (71, "tier15_frostborn.png", "GOD OF WINTER"),
+    (76, "tier16_sea_god.png", "GOD OF THE SEA"),
+    (81, "tier17_forest_god.png", "GOD OF THE FOREST"),
+    (86, "tier18_thunder_god.png", "GOD OF THUNDER"),
+    (91, "tier19_sun_god.png", "GOD OF THE SUN"),
+    (96, "tier20_fire_god.png", "GOD OF FLAME"),
+    (101, "tier21_blood_moon.png", "GOD OF THE BLOOD MOON"),
+    (106, "tier22_royal_god.png", "GOD OF ROYALTY"),
+    (111, "tier23_void_god.png", "GOD OF THE VOID"),
+    (116, "tier24_prism_god.png", "GOD OF ALL"),
 ]
 
 # Each artwork's transparent avatar-hole, hand-measured (center x/y, radius)
@@ -727,6 +737,31 @@ _TIER_IMAGE_HOLES = {
     "tier12_mythic.png": (196, 69, 40),
     "tier13_primordial.png": (218, 72, 42),
     "tier14_godlike.png": (197, 72, 41),
+    # tier15+ are 1200x400 (measured from a flat-green cut-out, so exact circles)
+    "tier15_frostborn.png": (257, 195, 118),
+    "tier16_sea_god.png": (279, 203, 99),
+    "tier17_forest_god.png": (279, 202, 100),
+    "tier18_thunder_god.png": (279, 202, 99),
+    "tier19_sun_god.png": (257, 195, 119),
+    "tier20_fire_god.png": (279, 202, 100),
+    "tier21_blood_moon.png": (257, 197, 117),
+    "tier22_royal_god.png": (279, 202, 99),
+    "tier23_void_god.png": (257, 194, 119),
+    "tier24_prism_god.png": (279, 202, 99),
+}
+
+
+# Soft dark scrim drawn behind the name/level/XP block on artworks whose
+# right-hand side is bright or busy (white text alone gets lost there).
+# Value = peak alpha 0-255; tiers not listed get no scrim.
+_TIER_TEXT_SCRIM = {
+    "tier15_frostborn.png": 95,
+    "tier16_sea_god.png": 125,
+    "tier17_forest_god.png": 70,
+    "tier18_thunder_god.png": 55,
+    "tier19_sun_god.png": 45,
+    "tier22_royal_god.png": 150,
+    "tier24_prism_god.png": 105,
 }
 
 
@@ -789,10 +824,18 @@ def render_level_card_tiered(avatar_bytes: bytes, username: str, new_level: int,
     avatar_layer.paste(avatar, (int(cx - r), int(cy - r)), mask)
 
     bg = Image.alpha_composite(avatar_layer, canvas)
+    text_x = int(cx + r + 60)
+
+    scrim_alpha = _TIER_TEXT_SCRIM.get(tier_filename, 0)
+    if scrim_alpha:
+        scrim = Image.new("RGBA", bg.size, (0, 0, 0, 0))
+        ImageDraw.Draw(scrim).rounded_rectangle(
+            (text_x - 22, 18, CARD_WIDTH - 40, CARD_HEIGHT - 52), radius=22, fill=(0, 0, 0, scrim_alpha),
+        )
+        bg = Image.alpha_composite(bg, scrim.filter(ImageFilter.GaussianBlur(9)))
+
     draw = ImageDraw.Draw(bg)
     accent_rgb = _hex_to_rgb(accent_color)
-
-    text_x = int(cx + r + 60)
 
     def _shadow_text(xy, text, font, fill):
         x, y = xy
