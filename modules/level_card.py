@@ -720,6 +720,19 @@ _TIER_IMAGE_LEVELS = [
     (106, "tier22_royal_god.png", "GOD OF ROYALTY"),
     (111, "tier23_void_god.png", "GOD OF THE VOID"),
     (116, "tier24_prism_god.png", "GOD OF ALL"),
+    # tier25+: wrath tier — the title is baked into the artwork, so these
+    # render name + level only (see _TIER_NAME_LEVEL_ONLY).
+    (121, "tier25_world_forger.png", "WORLD FORGER"),
+    (126, "tier26_planet_creator.png", "PLANET CREATOR"),
+    (131, "tier27_star_forger.png", "STAR FORGER"),
+    (136, "tier28_wrath_of_worlds.png", "WRATH OF WORLDS"),
+    (141, "tier29_world_eater.png", "WORLD EATER"),
+    (146, "tier30_planet_destroyer.png", "PLANET DESTROYER"),
+    (151, "tier31_galaxy_tyrant.png", "GALAXY TYRANT"),
+    (156, "tier32_cosmic_wrath.png", "COSMIC WRATH"),
+    (161, "tier33_void_leviathan.png", "VOID LEVIATHAN"),
+    (166, "tier34_devourer_of_universes.png", "DEVOURER OF UNIVERSES"),
+    (171, "tier35_wrath_of_creation.png", "WRATH OF CREATION"),
 ]
 
 # Each artwork's transparent avatar-hole, hand-measured (center x/y, radius)
@@ -748,6 +761,27 @@ _TIER_IMAGE_HOLES = {
     "tier22_royal_god.png": (279, 202, 99),
     "tier23_void_god.png": (257, 194, 119),
     "tier24_prism_god.png": (279, 202, 99),
+    "tier25_world_forger.png": (280, 190, 92),
+    "tier26_planet_creator.png": (279, 192, 93),
+    "tier27_star_forger.png": (280, 192, 93),
+    "tier28_wrath_of_worlds.png": (280, 193, 93),
+    "tier29_world_eater.png": (280, 193, 93),
+    "tier30_planet_destroyer.png": (280, 193, 93),
+    "tier31_galaxy_tyrant.png": (280, 193, 93),
+    "tier32_cosmic_wrath.png": (280, 193, 93),
+    "tier33_void_leviathan.png": (280, 192, 93),
+    "tier34_devourer_of_universes.png": (280, 193, 93),
+    "tier35_wrath_of_creation.png": (280, 193, 93),
+}
+
+# Artwork with its title already painted on (stone plaque under the avatar):
+# skip the tier label, XP bar and XP counter — just the member's name and
+# level, on a tight scrim so the scene behind stays visible.
+_TIER_NAME_LEVEL_ONLY = {
+    "tier25_world_forger.png", "tier26_planet_creator.png", "tier27_star_forger.png",
+    "tier28_wrath_of_worlds.png", "tier29_world_eater.png", "tier30_planet_destroyer.png",
+    "tier31_galaxy_tyrant.png", "tier32_cosmic_wrath.png", "tier33_void_leviathan.png",
+    "tier34_devourer_of_universes.png", "tier35_wrath_of_creation.png",
 }
 
 
@@ -825,6 +859,31 @@ def render_level_card_tiered(avatar_bytes: bytes, username: str, new_level: int,
 
     bg = Image.alpha_composite(avatar_layer, canvas)
     text_x = int(cx + r + 60)
+
+    if tier_filename in _TIER_NAME_LEVEL_ONLY:
+        probe = ImageDraw.Draw(bg)
+        name_size, _ = _fit_text(probe, username, 300, 34, min_size=18)
+        level_text = f"Level {new_level}"
+        block_w = int(max(_textlength_fallback(probe, username, name_size),
+                          _textlength_fallback(probe, level_text, 28)))
+        x0, y0 = text_x - 18, 20
+        scrim = Image.new("RGBA", bg.size, (0, 0, 0, 0))
+        ImageDraw.Draw(scrim).rounded_rectangle(
+            (x0 + 4, y0 + 2, x0 + block_w + 32, y0 + 94), radius=24, fill=(0, 0, 0, 170),
+        )
+        # wide blur = soft shadow rather than a visible box (matters over the bright tier35 core)
+        bg = Image.alpha_composite(bg, scrim.filter(ImageFilter.GaussianBlur(11)))
+        draw = ImageDraw.Draw(bg)
+        draw_text_fallback(draw, (text_x + 2, y0 + 10), username, name_size, (0, 0, 0))
+        draw_text_fallback(draw, (text_x, y0 + 8), username, name_size, (255, 255, 255))
+        draw.text((text_x + 2, y0 + 52), level_text, font=_load_font(28), fill=(0, 0, 0, 190))
+        draw.text((text_x, y0 + 50), level_text, font=_load_font(28), fill=_hex_to_rgb(accent_color))
+        flattened = Image.new("RGBA", bg.size, (0, 0, 0, 255))
+        bg = Image.alpha_composite(flattened, bg)
+        out = io.BytesIO()
+        bg.convert("RGB").save(out, format="PNG")
+        out.seek(0)
+        return out.read()
 
     scrim_alpha = _TIER_TEXT_SCRIM.get(tier_filename, 0)
     if scrim_alpha:
