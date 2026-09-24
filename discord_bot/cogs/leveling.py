@@ -113,6 +113,26 @@ class LevelingCog(GuildOnlyCog):
         self._leaderboard_autopost_loop.cancel()
 
     async def _ensure_announce_channel(self, guild: discord.Guild, config: dict, clone_id=None):
+        """Serialises channel creation per (guild, clone) so several members
+        levelling up at the same moment can't each create their own
+        #level-ups channel. The fast path (channel already recorded and
+        still exists) takes no lock. Otherwise we wait for the lock and then
+        RE-READ the config — the `config` we were handed was fetched before
+        any of the waiting tasks ran, so it can't be trusted to show a
+        channel another task just created. See _ensure_announce_channel_locked
+        for the actual resolution rules."""
+        existing_id = config.get("announce_channel_id")
+        if existing_id:
+            found = guild.get_channel(int(existing_id))
+            if found is not None:
+                return found
+        locks = self.__dict__.setdefault("_announce_locks", {})
+        lock = locks.setdefault((guild.id, clone_id), asyncio.Lock())
+        async with lock:
+            fresh = await db.get_leveling_config(guild.id, clone_id=clone_id)
+            return await self._ensure_announce_channel_locked(guild, fresh, clone_id)
+
+    async def _ensure_announce_channel_locked(self, guild: discord.Guild, config: dict, clone_id=None):
         """Returns a channel to post level-ups in. If announce_channel_id
         is unset (or was auto-created and then deleted), creates a
         dedicated #level-ups channel once and remembers it — same pattern
@@ -172,6 +192,16 @@ class LevelingCog(GuildOnlyCog):
                 announce_auto_created=(reused is auto_match),
             )
             return reused
+
+        # A #level-ups channel may already exist (made by a process that beat
+        # us to it, or after a DB reset) — adopt it instead of making a twin.
+        same_name = discord.utils.get(guild.text_channels, name="level-ups")
+        if same_name is not None and same_name.permissions_for(guild.me).send_messages:
+            await db.set_leveling_config(
+                guild.id, clone_id=clone_id,
+                announce_channel_id=same_name.id, announce_auto_created=True,
+            )
+            return same_name
 
         if not guild.me.guild_permissions.manage_channels:
             return None
