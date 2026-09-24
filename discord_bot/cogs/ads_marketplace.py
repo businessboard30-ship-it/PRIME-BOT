@@ -48,6 +48,7 @@ from gumroad_payments import start_gumroad_payment
 from discord_bot.ad_images import upload_ad_image
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 from discord_bot.cogs._views_ads_wizard import build_manager_view, notify_rejected, _load as _load_manager
+from discord_bot.cogs._views_ads_autobump import build_autobump_view
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,14 @@ class AdsMarketplaceCog(commands.Cog):
             return
         ads, counts, _ = await _load_manager()
         await interaction.response.send_message(view=build_manager_view(ads, counts), ephemeral=True)
+
+    @ad.command(name="autobump", description="[Owner] Ad auto-bump — turn it on/off and change how often ads repeat")
+    async def ad_autobump(self, interaction: discord.Interaction):
+        if not _is_ads_admin(interaction.user.id):
+            await interaction.response.send_message("You're not authorized to manage ads.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(view=await build_autobump_view(), ephemeral=True)
 
     @ad.command(name="pending", description="[Owner] List ads awaiting approval")
     async def ad_pending(self, interaction: discord.Interaction):

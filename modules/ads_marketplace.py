@@ -15,6 +15,100 @@ from database import get_pool
 from modules.referrals import record_referral_earning
 
 
+# ── Ad auto-bump settings (owner-editable via /ad autobump) ────────────
+# Stored in admin_config so the serverless placement cron
+# (api/cron_ad_placement.py) and the gateway wizard read the same values.
+
+AUTOBUMP_ENABLED_KEY = "ad_autobump_enabled"
+AUTOBUMP_INTERVAL_KEY = "ad_autobump_interval_seconds"
+AUTOBUMP_DEFAULT_INTERVAL = 6 * 60 * 60      # the old hardcoded 6h
+AUTOBUMP_MIN_INTERVAL = 15 * 60              # floor so a typo can't spam bump channels
+AUTOBUMP_MAX_INTERVAL = 7 * 24 * 60 * 60
+
+
+def format_interval(seconds: int) -> str:
+    seconds = int(seconds)
+    if seconds % 3600 == 0:
+        h = seconds // 3600
+        return f"{h} hour" + ("" if h == 1 else "s")
+    if seconds % 60 == 0 and seconds < 3600:
+        return f"{seconds // 60} min"
+    return f"{seconds / 3600:.1f} hours"
+
+
+async def _config_get(key: str) -> Optional[str]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT value FROM admin_config WHERE key = $1", key)
+
+
+async def _config_set(key: str, value) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO admin_config (key, value, updated_at) VALUES ($1, $2, NOW())
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            """,
+            key, str(value),
+        )
+
+
+async def get_autobump_settings() -> Dict:
+    """{'enabled': bool, 'interval_seconds': int}. Defaults (on, 6h) match the
+    behaviour before this was configurable, so nothing changes until edited."""
+    enabled, interval = True, AUTOBUMP_DEFAULT_INTERVAL
+    try:
+        raw_enabled = await _config_get(AUTOBUMP_ENABLED_KEY)
+        if raw_enabled is not None:
+            enabled = str(raw_enabled).strip().lower() not in ("0", "false", "off", "no")
+        raw_interval = await _config_get(AUTOBUMP_INTERVAL_KEY)
+        if raw_interval is not None:
+            interval = max(AUTOBUMP_MIN_INTERVAL, min(AUTOBUMP_MAX_INTERVAL, int(raw_interval)))
+    except Exception as e:
+        print(f"[v0] Error reading ad auto-bump settings: {e}")
+    return {"enabled": enabled, "interval_seconds": interval}
+
+
+async def set_autobump_enabled(enabled: bool) -> bool:
+    try:
+        await _config_set(AUTOBUMP_ENABLED_KEY, "1" if enabled else "0")
+        return True
+    except Exception as e:
+        print(f"[v0] Error saving ad auto-bump on/off: {e}")
+        return False
+
+
+async def set_autobump_interval(seconds: int) -> Optional[int]:
+    """Saves the repeat interval (clamped to 15 min - 7 days). Returns the
+    value actually stored, or None on failure."""
+    seconds = max(AUTOBUMP_MIN_INTERVAL, min(AUTOBUMP_MAX_INTERVAL, int(seconds)))
+    try:
+        await _config_set(AUTOBUMP_INTERVAL_KEY, seconds)
+        return seconds
+    except Exception as e:
+        print(f"[v0] Error saving ad auto-bump interval: {e}")
+        return None
+
+
+async def get_autobump_stats() -> Dict:
+    """{'last_posted_at': datetime|None, 'posted_24h': int} from ad_placements."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT MAX(posted_at) AS last_posted_at,
+                       COUNT(*) FILTER (WHERE posted_at > NOW() - INTERVAL '24 hours') AS posted_24h
+                FROM ad_placements
+                """
+            )
+        return {"last_posted_at": row["last_posted_at"], "posted_24h": int(row["posted_24h"] or 0)}
+    except Exception as e:
+        print(f"[v0] Error reading ad auto-bump stats: {e}")
+        return {"last_posted_at": None, "posted_24h": 0}
+
+
 # ── Ads (owner-approved) ──────────────────────────────────────────────
 
 async def submit_ad(user_id: int, company_name: str, ad_title: str,

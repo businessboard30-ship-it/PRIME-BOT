@@ -39,7 +39,7 @@ import aiohttp
 
 from config import CRON_SECRET, DISCORD_BOT_TOKEN
 from database import db
-from modules.ads_marketplace import get_active_ads
+from modules.ads_marketplace import get_active_ads, get_autobump_settings, format_interval
 from modules.ad_links import split_ad_links
 from utils.crypto import secret_manager
 
@@ -48,9 +48,10 @@ logger = logging.getLogger(__name__)
 DISCORD_API_BASE = "https://discord.com/api/v10"
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
-# Re-post each active ad into a bump channel at most once per window —
-# run this cron on any schedule you like (every minute is fine), the
-# cooldown is what actually paces it out to a 6-hourly auto-bump.
+# Default window: re-post each active ad into a bump channel at most once per
+# window — run this cron on any schedule you like (every minute is fine), the
+# cooldown is what actually paces it. The owner changes the window (and can
+# turn auto-bump off) any time with /ad autobump; this is only the fallback.
 AD_PLACEMENT_COOLDOWN_SECONDS = 6 * 60 * 60
 
 # Same teal as a server listing's card (discord_bot/cogs/bump.py's
@@ -248,6 +249,11 @@ async def _refresh_bump_prompt(session: aiohttp.ClientSession, token: str, chann
 
 
 async def run_ad_placements() -> dict:
+    settings = await get_autobump_settings()
+    if not settings["enabled"]:
+        return {"ads": 0, "channels": 0, "placed": 0, "failed": 0, "skipped": "ad auto-bump is off"}
+    cooldown_seconds = settings["interval_seconds"]
+    logger.info(f"[cron_ad_placement] auto-bump on, repeating every {format_interval(cooldown_seconds)}")
     ads = await get_active_ads()
     all_channels = await db.get_all_bump_channels()
     placed, failed = 0, 0
@@ -268,7 +274,7 @@ async def run_ad_placements() -> dict:
     async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
         for ad in ads:
             targets = await db.get_unplaced_channels_for_ad(
-                ad["id"], all_channels, cooldown_seconds=AD_PLACEMENT_COOLDOWN_SECONDS,
+                ad["id"], all_channels, cooldown_seconds=cooldown_seconds,
             )
             targets = [t for t in targets if t["bump_channel_id"] not in posted_channels]
             if not targets:
