@@ -130,7 +130,12 @@ async def submit_ad(user_id: int, company_name: str, ad_title: str,
         ad_id = row["id"] if row else None
         if ad_id is not None:
             # Tracked-only referral commission — see modules/referrals.py docstring.
-            await record_referral_earning(user_id, "ad", ad_id, budget_usd)
+            # Own try/except: the row is already saved here, so a failure in
+            # referral tracking must not make callers think the submit failed.
+            try:
+                await record_referral_earning(user_id, "ad", ad_id, budget_usd)
+            except Exception as e:
+                print(f"[v0] Ad {ad_id} saved, but referral tracking failed: {e}")
         return ad_id
     except Exception as e:
         print(f"[v0] Error submitting ad: {e}")
@@ -181,8 +186,10 @@ async def update_ad_fields(ad_id: int, **fields) -> bool:
         return False
 
 
-async def get_pending_ads(limit: int = 10) -> List[Dict]:
-    """List ads awaiting owner approval, oldest first."""
+async def get_pending_ads(limit: int = 20) -> List[Dict]:
+    """List ads awaiting owner approval, NEWEST first. This used to be oldest
+    first with LIMIT 10 — since unpaid ads are never expired, ten stale ones
+    were enough to hide every newer request from /ad pending."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -190,12 +197,23 @@ async def get_pending_ads(limit: int = 10) -> List[Dict]:
                 SELECT id, user_id, company_name, ad_title, ad_description, target_url, budget_usd, submitted_at,
                        image_channel_id, image_message_id
                 FROM ad_submissions WHERE status = 'pending'
-                ORDER BY submitted_at ASC LIMIT $1
+                ORDER BY submitted_at DESC, id DESC LIMIT $1
             """, limit)
         return [dict(r) for r in rows]
     except Exception as e:
         print(f"[v0] Error fetching pending ads: {e}")
         return []
+
+
+async def count_pending_ads() -> int:
+    """Total ads awaiting review, so /ad pending can say "showing N of M"."""
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return int(await conn.fetchval("SELECT COUNT(*) FROM ad_submissions WHERE status = 'pending'") or 0)
+    except Exception as e:
+        print(f"[v0] Error counting pending ads: {e}")
+        return 0
 
 
 async def get_ad(ad_id: int) -> Optional[Dict]:

@@ -40,7 +40,7 @@ from discord.ext import commands
 
 from config import DISCORD_CLONE_ADMIN_IDS, AD_PLACEMENT_FEE_USD
 from modules.ads_marketplace import (
-    submit_ad, set_ad_image, update_ad_fields, get_pending_ads, get_ad, approve_ad, reject_ad, get_active_ads,
+    submit_ad, set_ad_image, update_ad_fields, get_pending_ads, count_pending_ads, get_ad, approve_ad, reject_ad, get_active_ads,
     deactivate_ad, reactivate_ad, search_ads,
     list_service, get_marketplace_listings, get_my_listings,
 )
@@ -55,6 +55,15 @@ logger = logging.getLogger(__name__)
 
 def _is_ads_admin(user_id: int) -> bool:
     return user_id in DISCORD_CLONE_ADMIN_IDS
+
+
+def _pending_ad_line(a: dict) -> str:
+    """One /ad pending row. Company/title are trimmed so a full page of long
+    names can't blow past the card's text limit."""
+    return (
+        f"• **#{a['id']} — {str(a['company_name'])[:30]}** — {str(a['ad_title'])[:60]} · ${a['budget_usd']}"
+        + (" · 🖼️" if a.get("image_message_id") else "")
+    )
 
 
 class AdsMarketplaceCog(commands.Cog):
@@ -255,11 +264,13 @@ class AdsMarketplaceCog(commands.Cog):
         if not pending:
             await interaction.response.send_message("No ads pending review.", ephemeral=True)
             return
-        lines = [
-            f"• **#{a['id']} — {a['company_name']}** — {a['ad_title']} · ${a['budget_usd']}"
-            + (" · 🖼️" if a.get("image_message_id") else "")
-            for a in pending
-        ]
+        total = await count_pending_ads()
+        lines = [_pending_ad_line(a) for a in pending]
+        if total > len(pending):
+            lines.append(
+                f"_Showing the newest {len(pending)} of {total} pending. For older ones, use "
+                f"`/ad approve` or `/ad reject` and search by name._"
+            )
         buttons = [refresh_button(self, "ad_pending")]
         card = NavCardView("📋 Ads pending review", lines, discord.Color.orange(), buttons)
         await interaction.response.send_message(view=card, ephemeral=True)

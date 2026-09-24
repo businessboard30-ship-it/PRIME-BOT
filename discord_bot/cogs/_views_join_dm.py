@@ -648,24 +648,8 @@ class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.client.get_guild(self.guild_id)
-        embed = discord.Embed(title="📣 New advertising request", colour=discord.Colour.gold())
-        embed.add_field(name="Advertising", value=str(self.what)[:1024], inline=False)
-        if str(self.link):
-            embed.add_field(name="Link", value=str(self.link)[:1024], inline=False)
-        if str(self.details):
-            embed.add_field(name="Details", value=str(self.details)[:1024], inline=False)
-        if str(self.contact):
-            embed.add_field(name="Contact", value=str(self.contact)[:1024], inline=False)
-        embed.set_footer(text=f"From {interaction.user} ({interaction.user.id}) • server: {guild.name if guild else self.guild_id}")
-
-        for owner_id in getattr(_cfg, "DISCORD_OWNER_BROADCAST_IDS", ()):
-            try:
-                user = interaction.client.get_user(owner_id) or await interaction.client.fetch_user(owner_id)
-                await user.send(embed=embed)
-            except Exception:
-                continue
-
-        # Records this in ad_submissions (same table/flow as /ad submit) so
+        # Saved BEFORE the owner DM (it used to be after) so the DM can say whether
+        # the save worked. Records this in ad_submissions (same table/flow as /ad submit) so
         # it gets an id, shows up in /ad pending|status, and — once paid —
         # auto-approves the same way via payments_manual._unlock_ad_placement.
         # This modal has no separate "budget" field (it's free text inside
@@ -680,6 +664,33 @@ class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
             target_url=str(self.link) or "N/A",
             budget_usd=AD_PLACEMENT_FEE_USD,
         )
+        embed = discord.Embed(title="📣 New advertising request", colour=discord.Colour.gold())
+        embed.add_field(name="Advertising", value=str(self.what)[:1024], inline=False)
+        if str(self.link):
+            embed.add_field(name="Link", value=str(self.link)[:1024], inline=False)
+        if str(self.details):
+            embed.add_field(name="Details", value=str(self.details)[:1024], inline=False)
+        if str(self.contact):
+            embed.add_field(name="Contact", value=str(self.contact)[:1024], inline=False)
+        if ad_id:
+            embed.add_field(name="Status", value=f"✅ Saved as ad **#{ad_id}** — review it with `/ad pending`", inline=False)
+        else:
+            embed.colour = discord.Colour.red()
+            embed.add_field(
+                name="Status",
+                value="⚠️ NOT SAVED (database error) — this will NOT show in `/ad pending`. "
+                      "Search the bot log for `Error submitting ad`.",
+                inline=False,
+            )
+        embed.set_footer(text=f"From {interaction.user} ({interaction.user.id}) • server: {guild.name if guild else self.guild_id}")
+
+        for owner_id in getattr(_cfg, "DISCORD_OWNER_BROADCAST_IDS", ()):
+            try:
+                user = interaction.client.get_user(owner_id) or await interaction.client.fetch_user(owner_id)
+                await user.send(embed=embed)
+            except Exception:
+                continue
+
         placement_note = (
             "\n\nOnce approved, this ad is placed in the combined join DM and in every "
             "clone's bump channel."
