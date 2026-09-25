@@ -725,7 +725,11 @@ _TIER_IMAGE_LEVELS = [
     ], None),
     (7, "tier00i_universal_scorpion.png", "UNIVERSAL SCORPION"),
     (8, "tier00j_metallic_serpent.png", "METALLIC SERPENT"),
-    (10, None, None),  # gap: 10-20 fall back to render_level_card_evolved
+    (10, "tier00k_ancient_mummy.png", "ANCIENT MUMMY CRAWLING OUT"),
+    (12, "tier00l_ancients_rift_cultivator.png", "THE ANCIENT'S RIFT CULTIVATOR"),
+    (14, "tier00m_cyber_bot.png", "CYBER BOT"),
+    (16, "tier00n_greed_megathon.png", "GREED MEGATHON"),
+    (18, "tier00o_cosmic_weaver_rising.png", "COSMIC WEAVER RISING"),
     (21, "tier05_transcendent.png", "TRANSCENDENT"),
     (26, "tier06_celestial.png", "CELESTIAL"),
     (31, "tier07_divine_spark.png", "DIVINE SPARK"),
@@ -784,6 +788,11 @@ _TIER_IMAGE_HOLES = {
     "tier00h_chrono_collapser_red.png": (895, 296, 109),
     "tier00i_universal_scorpion.png": (895, 296, 109),
     "tier00j_metallic_serpent.png": (895, 296, 109),
+    "tier00k_ancient_mummy.png": (830, 465, 115),
+    "tier00l_ancients_rift_cultivator.png": (815, 465, 113),
+    "tier00m_cyber_bot.png": (1110, 285, 111),
+    "tier00n_greed_megathon.png": (1490, 262, 108),
+    "tier00o_cosmic_weaver_rising.png": (855, 460, 110),
     "tier05_transcendent.png": (221, 94, 42),
     "tier06_celestial.png": (198, 95, 42),
     "tier07_divine_spark.png": (220, 87, 42),
@@ -841,6 +850,9 @@ _TIER_NAME_LEVEL_ONLY = {
     "tier00e_cosmic_omnipotence.png", "tier00f_primordial_entropy.png",
     "tier00g_chrono_collapser_blue.png", "tier00h_chrono_collapser_red.png",
     "tier00i_universal_scorpion.png", "tier00j_metallic_serpent.png",
+    "tier00k_ancient_mummy.png", "tier00l_ancients_rift_cultivator.png",
+    "tier00m_cyber_bot.png", "tier00n_greed_megathon.png",
+    "tier00o_cosmic_weaver_rising.png",
 }
 
 
