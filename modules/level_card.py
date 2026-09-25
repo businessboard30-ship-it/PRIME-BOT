@@ -699,11 +699,33 @@ _TIER_IMAGE_DIR = os.path.join(os.path.dirname(__file__), "..")  # repo root —
 
 # (min_level, filename, display label). Sorted ascending; a level maps to
 # the last entry whose min_level it meets or exceeds.
+#
+# `filename` can also be:
+#   - a list of (filename, label) tuples -> one is picked at random each
+#     time a card in that level range is rendered (see get_tier_image_for_
+#     level below). Used for the level 1-2 pool and the Chrono Collapser
+#     blue/red variants.
+#   - None -> explicit gap: levels in this range get NO tier image, so the
+#     caller (leveling.py) falls through to render_level_card_evolved
+#     instead. Needed here because level 10 would otherwise keep matching
+#     tier00j_metallic_serpent.png (the last real entry below it) all the
+#     way up to level 20.
 _TIER_IMAGE_LEVELS = [
-    (3, "tier00a_novice.png", "NOVICE"),
-    (4, "tier00b_apprentice.png", "APPRENTICE"),
-    (5, "tier00c_scout.png", "SCOUT"),
-    (7, "tier00d_knight.png", "KNIGHT"),
+    (1, [
+        ("tier00a_novice.png", "NOVICE"),
+        ("tier00b_apprentice.png", "APPRENTICE"),
+        ("tier00c_scout.png", "SCOUT"),
+        ("tier00d_knight.png", "KNIGHT"),
+    ], None),
+    (3, "tier00e_cosmic_omnipotence.png", "COSMIC OMNIPOTENCE"),
+    (4, "tier00f_primordial_entropy.png", "PRIMORDIAL ENTROPY"),
+    (5, [
+        ("tier00g_chrono_collapser_blue.png", "CHRONO COLLAPSER"),
+        ("tier00h_chrono_collapser_red.png", "CHRONO COLLAPSER"),
+    ], None),
+    (7, "tier00i_universal_scorpion.png", "UNIVERSAL SCORPION"),
+    (8, "tier00j_metallic_serpent.png", "METALLIC SERPENT"),
+    (10, None, None),  # gap: 10-20 fall back to render_level_card_evolved
     (21, "tier05_transcendent.png", "TRANSCENDENT"),
     (26, "tier06_celestial.png", "CELESTIAL"),
     (31, "tier07_divine_spark.png", "DIVINE SPARK"),
@@ -754,6 +776,12 @@ _TIER_IMAGE_HOLES = {
     "tier00b_apprentice.png": (600, 201, 95),
     "tier00c_scout.png": (600, 199, 96),
     "tier00d_knight.png": (600, 199, 96),
+    "tier00e_cosmic_omnipotence.png": (895, 285, 131),
+    "tier00f_primordial_entropy.png": (895, 296, 109),
+    "tier00g_chrono_collapser_blue.png": (895, 296, 109),
+    "tier00h_chrono_collapser_red.png": (895, 296, 109),
+    "tier00i_universal_scorpion.png": (895, 296, 109),
+    "tier00j_metallic_serpent.png": (895, 296, 109),
     "tier05_transcendent.png": (221, 94, 42),
     "tier06_celestial.png": (198, 95, 42),
     "tier07_divine_spark.png": (220, 87, 42),
@@ -805,6 +833,9 @@ _TIER_NAME_LEVEL_ONLY = {
     "tier36_cosmic_omnipotence.png", "tier37_universe_sovereign.png",
     "tier38_soul_reaper.png", "tier39_leviathan_fighter.png",
     "tier40_hunter.png", "tier41_medusas_pride.png",
+    "tier00e_cosmic_omnipotence.png", "tier00f_primordial_entropy.png",
+    "tier00g_chrono_collapser_blue.png", "tier00h_chrono_collapser_red.png",
+    "tier00i_universal_scorpion.png", "tier00j_metallic_serpent.png",
 }
 
 
@@ -824,15 +855,28 @@ _TIER_TEXT_SCRIM = {
 
 def get_tier_image_for_level(new_level: int):
     """Returns (filename, label) for the highest tier whose min_level is
-    <= new_level, or None if new_level is below the first image tier
-    (caller should fall back to render_level_card_evolved in that case)."""
-    match = None
+    <= new_level, or None if new_level is below the first image tier, or
+    if the matching entry is an explicit gap (filename is None) — either
+    way the caller should fall back to render_level_card_evolved.
+
+    An entry's "filename" slot can itself be a list of (filename, label)
+    tuples; one is picked at random on each call (re-rolled every level-up,
+    not cached), so a member re-triggering that level range doesn't always
+    see the same art."""
+    chosen_entry = None
     for min_level, filename, label in _TIER_IMAGE_LEVELS:
         if new_level >= min_level:
-            match = (filename, label)
+            chosen_entry = (filename, label)
         else:
             break
-    return match
+    if chosen_entry is None:
+        return None
+    filename, label = chosen_entry
+    if filename is None:
+        return None
+    if isinstance(filename, list):
+        return random.choice(filename)
+    return (filename, label)
 
 
 @lru_cache(maxsize=None)
