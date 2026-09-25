@@ -737,6 +737,12 @@ _TIER_IMAGE_LEVELS = [
     (161, "tier33_void_leviathan.png", "VOID LEVIATHAN"),
     (166, "tier34_devourer_of_universes.png", "DEVOURER OF UNIVERSES"),
     (171, "tier35_wrath_of_creation.png", "WRATH OF CREATION"),
+    (176, "tier36_cosmic_omnipotence.png", "COSMIC OMNIPOTENCE"),
+    (181, "tier37_universe_sovereign.png", "UNIVERSE SOVEREIGN"),
+    (186, "tier38_soul_reaper.png", "SOUL REAPER"),
+    (191, "tier39_leviathan_fighter.png", "LEVIATHAN FIGHTER"),
+    (196, "tier40_hunter.png", "HUNTER"),
+    (201, "tier41_medusas_pride.png", "MEDUSA'S PRIDE"),
 ]
 
 # Each artwork's transparent avatar-hole, hand-measured (center x/y, radius)
@@ -780,6 +786,12 @@ _TIER_IMAGE_HOLES = {
     "tier33_void_leviathan.png": (280, 192, 93),
     "tier34_devourer_of_universes.png": (280, 193, 93),
     "tier35_wrath_of_creation.png": (280, 193, 93),
+    "tier36_cosmic_omnipotence.png": (895, 285, 131),
+    "tier37_universe_sovereign.png": (895, 285, 131),
+    "tier38_soul_reaper.png": (895, 285, 131),
+    "tier39_leviathan_fighter.png": (895, 285, 131),
+    "tier40_hunter.png": (895, 285, 131),
+    "tier41_medusas_pride.png": (895, 285, 131),
 }
 
 # Artwork with its title already painted on (stone plaque under the avatar):
@@ -790,6 +802,9 @@ _TIER_NAME_LEVEL_ONLY = {
     "tier28_wrath_of_worlds.png", "tier29_world_eater.png", "tier30_planet_destroyer.png",
     "tier31_galaxy_tyrant.png", "tier32_cosmic_wrath.png", "tier33_void_leviathan.png",
     "tier34_devourer_of_universes.png", "tier35_wrath_of_creation.png",
+    "tier36_cosmic_omnipotence.png", "tier37_universe_sovereign.png",
+    "tier38_soul_reaper.png", "tier39_leviathan_fighter.png",
+    "tier40_hunter.png", "tier41_medusas_pride.png",
 }
 
 
