@@ -765,6 +765,8 @@ _TIER_IMAGE_LEVELS = [
     (191, "tier39_leviathan_fighter.png", "LEVIATHAN FIGHTER"),
     (196, "tier40_hunter.png", "HUNTER"),
     (201, "tier41_medusas_pride.png", "MEDUSA'S PRIDE"),
+    (206, "tier42_planet_swallower.png", "PLANET SWALLOWER"),
+    (211, "tier43_spacetime_smasher.png", "SPACETIME SMASHER"),
 ]
 
 # Each artwork's transparent avatar-hole, hand-measured (center x/y, radius)
@@ -820,6 +822,8 @@ _TIER_IMAGE_HOLES = {
     "tier39_leviathan_fighter.png": (895, 285, 131),
     "tier40_hunter.png": (895, 285, 131),
     "tier41_medusas_pride.png": (895, 285, 131),
+    "tier42_planet_swallower.png": (896, 297, 109),
+    "tier43_spacetime_smasher.png": (895, 253, 106),
 }
 
 # Artwork with its title already painted on (stone plaque under the avatar):
@@ -833,6 +837,7 @@ _TIER_NAME_LEVEL_ONLY = {
     "tier36_cosmic_omnipotence.png", "tier37_universe_sovereign.png",
     "tier38_soul_reaper.png", "tier39_leviathan_fighter.png",
     "tier40_hunter.png", "tier41_medusas_pride.png",
+    "tier42_planet_swallower.png", "tier43_spacetime_smasher.png",
     "tier00e_cosmic_omnipotence.png", "tier00f_primordial_entropy.png",
     "tier00g_chrono_collapser_blue.png", "tier00h_chrono_collapser_red.png",
     "tier00i_universal_scorpion.png", "tier00j_metallic_serpent.png",
