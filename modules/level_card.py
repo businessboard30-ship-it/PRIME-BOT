@@ -700,6 +700,10 @@ _TIER_IMAGE_DIR = os.path.join(os.path.dirname(__file__), "..")  # repo root —
 # (min_level, filename, display label). Sorted ascending; a level maps to
 # the last entry whose min_level it meets or exceeds.
 _TIER_IMAGE_LEVELS = [
+    (3, "tier00a_novice.png", "NOVICE"),
+    (4, "tier00b_apprentice.png", "APPRENTICE"),
+    (5, "tier00c_scout.png", "SCOUT"),
+    (7, "tier00d_knight.png", "KNIGHT"),
     (21, "tier05_transcendent.png", "TRANSCENDENT"),
     (26, "tier06_celestial.png", "CELESTIAL"),
     (31, "tier07_divine_spark.png", "DIVINE SPARK"),
@@ -740,6 +744,10 @@ _TIER_IMAGE_LEVELS = [
 # share near-identical geometry (w~1002 vs w~1004 originals) but heights
 # differ per tier, so each is listed explicitly rather than assumed shared.
 _TIER_IMAGE_HOLES = {
+    "tier00a_novice.png": (289, 212, 114),
+    "tier00b_apprentice.png": (600, 201, 95),
+    "tier00c_scout.png": (600, 199, 96),
+    "tier00d_knight.png": (600, 199, 96),
     "tier05_transcendent.png": (221, 94, 42),
     "tier06_celestial.png": (198, 95, 42),
     "tier07_divine_spark.png": (220, 87, 42),
