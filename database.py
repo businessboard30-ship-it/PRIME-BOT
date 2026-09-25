@@ -14178,6 +14178,25 @@ class Database:
                 session_id, message_id,
             )
 
+    async def get_giftboost_mention_candidates(self) -> List[Dict]:
+        """One-off cleanup support: rows in ai_chat_usage whose stored
+        response mentions the owner-only /levelrole giftboost subcommand
+        (see modules.ai_features.scrub_giftboost_mention), joined to the
+        session's last_bot_message_id and guild_id so the caller can try to
+        locate and delete the actual Discord message. Only catches cases
+        where that response was the LAST message of its session — there's
+        no per-message id/channel log to do better than that."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT u.user_id, u.guild_id, u.created_at, s.last_bot_message_id "
+                "FROM ai_chat_usage u "
+                "JOIN ai_chat_sessions s ON s.id = u.session_id "
+                "WHERE u.response ~* 'levelrole\\s+gift\\s*boost' "
+                "AND s.last_bot_message_id IS NOT NULL",
+            )
+            return [dict(r) for r in rows]
+
     async def get_ai_chat_session_by_last_bot_message(self, message_id: int) -> Optional[Dict]:
         """Used for reply-to-continue: given the id of a message the bot
         sent, find the still-active session it belongs to (if any)."""

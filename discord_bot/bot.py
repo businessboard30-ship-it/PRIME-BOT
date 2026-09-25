@@ -258,6 +258,7 @@ class AnimeBotDiscord(commands.Bot):
         # discord_clone carve-out in _resolve_approvers).
         await self.load_extension("discord_bot.cogs.clone_admin")
         await self.load_extension("discord_bot.cogs.lookup")
+        await self.load_extension("discord_bot.cogs._cleanup_giftboost_mentions")
 
         self.join_dm_reminder_loop.start()
         self.payment_reminder_loop.start()

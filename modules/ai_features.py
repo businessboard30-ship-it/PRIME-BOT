@@ -57,7 +57,9 @@ BOT_RULES = (
     "events, or anything only that server controls), say you can't answer that and tell them to talk to a "
     "server admin or contact that server's support/staff. Do not send those to the bot's support server.\n"
     f"7. Your name is {BOT_NAME}. If someone asks your name or who you are, simply say you're {BOT_NAME}. Keep it short.\n"
-    "8. The person is already chatting with you. Never tell them to use /aichat or /ai chat to talk to you; just answer."
+    "8. The person is already chatting with you. Never tell them to use /aichat or /ai chat to talk to you; just answer.\n"
+    "9. /levelrole giftboost exists but is bot-owner only — never suggest it to anyone as a way to get an XP "
+    "boost. If asked how to boost XP, only mention the Boost XP button."
 )
 SYSTEM_PROMPT_ANIME = (
     "You are an anime expert. Be friendly and conversational about anime, manga, characters and recommendations.\n"
@@ -179,8 +181,51 @@ def scrub_raw_support_url(text: str) -> str:
     return text
 
 
+# Safety net for BOT_RULES #9: if the model ignores the rule and still names
+# the owner-only /levelrole giftboost subcommand, strip that mention out and
+# redirect to the actual user-facing option (Boost XP).
+_GIFTBOOST_MENTION_RE = re.compile(
+    r"/?levelrole\s+giftboost\b|\blevelrole\s+gift\s*boost\b|\bgift\s*boost\s+command\b",
+    re.IGNORECASE,
+)
+
+
+def scrub_giftboost_mention(text: str) -> str:
+    if not text or not _GIFTBOOST_MENTION_RE.search(text):
+        return text
+    return _GIFTBOOST_MENTION_RE.sub("the Boost XP button", text).rstrip()
+
+
 def support_invite_answer() -> str:
     return render_support_link("Here you go, tap [[SUPPORT]] to join the support server.")
+
+
+# "How do I level up / get XP faster?" -> short explanation + Boost XP button
+# (not left to the model, same reasoning as premium/credits above).
+_LEVELUP_Q = re.compile(
+    r"\blevel(?:ing)?\s*up\b|\bhow\s+(?:do|can|could)\s+i\s+level\s*up\b|"
+    r"\b(?:get|gain|earn|need)\s+(?:more\s+)?xp\b|\bxp\s+faster\b|\bboost\s+(?:my\s+)?xp\b",
+    re.IGNORECASE,
+)
+
+
+def is_levelup_question(text: str) -> bool:
+    return bool(text and _LEVELUP_Q.search(text))
+
+
+def levelup_answer(in_server: bool) -> str:
+    """Fixed reply to level-up/XP questions. In a server it goes with the
+    Boost XP button (added by the caller)."""
+    if not in_server:
+        return (
+            "📈 You level up by chatting — XP comes from sending messages, with a short cooldown "
+            "between each. Ask me this inside a server to see the Boost XP option."
+        )
+    return (
+        "📈 You gain XP just by chatting (with a short cooldown between messages) — the more active "
+        "you are, the faster you level up. Want it quicker? Tap **Boost XP** below for a temporary "
+        "XP multiplier."
+    )
 
 
 def premium_answer(in_server: bool) -> str:
@@ -456,6 +501,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                     response_text = trim_reply(response_text)
                     response_text = render_support_link(response_text)
                     response_text = scrub_raw_support_url(response_text)
+                    response_text = scrub_giftboost_mention(response_text)
                     if mentions_other_bot(response_text):
                         response_text = OTHER_BOT_REFUSAL
                     if response_text:

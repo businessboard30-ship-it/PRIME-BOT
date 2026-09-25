@@ -46,7 +46,9 @@ from modules.ai_features import (
     check_reply_limit, get_reply_usage, reply_cap_for,
     is_reply_chat_enabled, is_premium_question, premium_answer,
     is_bot_invite_question, is_support_invite_question, SUPPORT_BUTTON_MARKER,
+    is_levelup_question, levelup_answer,
 )
+from discord_bot.cogs._views_leveling_boost import build_boost_xp_view
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
 from modules.ai_command_guard import (
@@ -134,13 +136,20 @@ class AIToolsCog(commands.Cog):
         tier = await get_user_tier(user_id)
         return tier if tier in AI_USAGE_CAPS else "basic"
 
-    def _quick_answer(self, text: str, in_server: bool):
+    def _quick_answer(self, text: str, in_server: bool, guild: Optional[discord.Guild] = None):
         """Fixed answers that skip the AI call (and cost no daily cap):
         premium/credits -> Go Premium button, "add the bot to my server" -> this
         bot's own generated invite link, "support server link" -> the support
-        link. Returns (text, view_or_None) or None."""
+        link, "how do I level up / get XP" -> short explanation + Boost XP
+        button. Returns (text, view_or_None) or None."""
         if is_premium_question(text):
             return premium_answer(in_server), (premium_view() if in_server else None)
+        if is_levelup_question(text):
+            view = None
+            if in_server and guild is not None:
+                clone_id = getattr(self.bot, "clone_id", None)
+                view = build_boost_xp_view(guild.id, clone_id)
+            return levelup_answer(in_server), view
         if is_support_invite_question(text):
             from config import DISCORD_SUPPORT_SERVER_INVITE
             if not DISCORD_SUPPORT_SERVER_INVITE:
@@ -448,7 +457,7 @@ class AIToolsCog(commands.Cog):
             await interaction.response.send_message("Message must be 1-1000 characters.", ephemeral=True)
             return
 
-        quick = self._quick_answer(message, interaction.guild is not None)
+        quick = self._quick_answer(message, interaction.guild is not None, interaction.guild)
         if quick:
             quick_text, quick_view = quick
             kwargs = {"view": quick_view} if quick_view else {}
@@ -641,7 +650,7 @@ class AIToolsCog(commands.Cog):
         """Returns (text, view_or_None)."""
         if mentions_other_bot(content):
             return OTHER_BOT_REFUSAL, None  # refused before any AI call, costs no cap
-        quick = self._quick_answer(content, message.guild is not None)
+        quick = self._quick_answer(content, message.guild is not None, message.guild)
         if quick:
             return quick  # fixed answer (premium button / invite link), no AI call, costs no cap
         user_id = message.author.id
