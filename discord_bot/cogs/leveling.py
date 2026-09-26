@@ -466,6 +466,74 @@ class LevelingCog(GuildOnlyCog):
         card = NavCardView(f"{target.display_name} — level {p['level']}", lines, discord.Color.blurple(), buttons)
         await interaction.followup.send(view=card)
 
+    # New command (never previously registered under any shape), so unlike
+    # /leaderboard's history below there's no CommandSignatureMismatch risk
+    # in making this a Group from day one.
+    clan_group = app_commands.guild_only()(app_commands.Group(name="clan", description="Clans & clan chiefs"))
+
+    @clan_group.command(name="view", description="Show your (or someone else's) locked clan and chief status")
+    @app_commands.describe(member="Member to check (optional)")
+    async def clan_view(self, interaction: discord.Interaction, member: discord.Member = None):
+        await interaction.response.defer()
+        target = member or interaction.user
+        clone_id = _clone_id_of(interaction)
+        clan_filename = await db.get_or_assign_clan_card(interaction.guild_id, target.id, clone_id=clone_id)
+        clan_label = clan_cards.get_clan_label(clan_filename)
+        lines = [f"Clan: **{clan_label}**"]
+        chief_seat = await db.get_chief_seat_for_user(interaction.guild_id, target.id, clone_id=clone_id)
+        if chief_seat:
+            lines.append(f"👑 Chief of **{chief_seat['clan_slug']}**")
+        buttons = [ActionButton("Members", discord.ButtonStyle.secondary, self, "clan_members_button",
+                                 emoji="👥", args=(clan_filename,))]
+        card = NavCardView(f"{target.display_name}'s clan", lines, discord.Color.blurple(), buttons)
+        await interaction.followup.send(view=card)
+
+    @clan_group.command(name="members", description="See who's in a clan, ranked by XP")
+    @app_commands.describe(clan="Which clan to view")
+    @app_commands.choices(clan=[
+        app_commands.Choice(name=label, value=filename) for filename, label, *_ in clan_cards.CLAN_CARDS
+    ])
+    async def clan_members(self, interaction: discord.Interaction, clan: app_commands.Choice[str]):
+        await interaction.response.defer()
+        clone_id = _clone_id_of(interaction)
+        await self._send_clan_members_page(interaction, clan.value, clone_id, page=0)
+
+    async def clan_members_button(self, interaction: discord.Interaction, clan_filename: str):
+        """ActionButton target for /clan view's Members button — not a
+        slash command itself, see _views_shared.py's ActionButton
+        docstring for why plain helper methods (vs @app_commands.command
+        methods) are called directly rather than through .callback()."""
+        await interaction.response.defer()
+        await self._send_clan_members_page(interaction, clan_filename, _clone_id_of(interaction), page=0)
+
+    async def _send_clan_members_page(self, interaction: discord.Interaction, clan_filename: str,
+                                       clone_id, page: int, edit: bool = False):
+        """Shared render for /clan members and the leaderboard's Clans
+        button dropdown — both end up here so the two entry points can't
+        drift apart. `edit` picks response.edit_message vs a fresh
+        followup, since the button path is an existing ephemeral message
+        and the slash-command path is a brand new one."""
+        clan_label = clan_cards.get_clan_label(clan_filename)
+        per_page = 10
+        members = await db.get_clan_members(
+            interaction.guild_id, clan_filename, clone_id=clone_id, limit=per_page, offset=page * per_page,
+        )
+        total = await db.get_clan_member_count(interaction.guild_id, clan_filename, clone_id=clone_id)
+        if not members:
+            lines = ["Nobody's been assigned to this clan here yet."]
+        else:
+            lines = []
+            for i, m in enumerate(members, start=page * per_page + 1):
+                member_obj = interaction.guild.get_member(m["user_id"])
+                name = member_obj.display_name if member_obj else f"<@{m['user_id']}>"
+                lines.append(f"`#{i}` {name} — Lvl `{m['level']}` ({m['total_xp']} xp)")
+        title = f"**{clan_label}** — {total} member{'s' if total != 1 else ''}"
+        content = title + "\n\n" + "\n".join(lines)
+        if edit:
+            await interaction.response.edit_message(content=content, view=None)
+        else:
+            await interaction.followup.send(content=content)
+
     # Plain command — this used to briefly become a Group (show + autopost
     # subcommands) so the daily-post config could live under it, but that
     # changed its shape, and since this bot's DISCORD_DEV_GUILD_ID only
