@@ -188,8 +188,14 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     user_ids = [r["user_id"] for r in rows]
     if mode == "local":
         boosts = await db.get_active_xp_boosts_for_users(guild.id, user_ids, clone_id=clone_id)
+        # Chief seats are local-only (Option B, per-server exclusive seats
+        # — see database.py's recompute_clan_chiefs). Build a user_id ->
+        # clan_slug map once per render rather than per row.
+        chief_seats = await db.get_clan_seats(guild.id, clone_id=clone_id)
+        chief_by_user_id = {s["user_id"]: s["clan_slug"] for s in chief_seats if s["user_id"] is not None}
     else:
         boosts = await db.get_active_global_boosts_for_users(user_ids)
+        chief_by_user_id = {}
 
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
@@ -264,7 +270,9 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
         total_xp = row["total_xp"]
         level = row["level"] if mode == "local" else leveling.compute_level(total_xp)
         multiplier = boosts.get(row["user_id"])
-        line = f"{_medal_or_rank(i)} {name}\nLvl `{level}` — {total_xp} xp"
+        chief_clan = chief_by_user_id.get(row["user_id"])
+        crown_prefix = f"👑 {chief_clan} " if chief_clan else ""
+        line = f"{_medal_or_rank(i)} {crown_prefix}{name}\nLvl `{level}` — {total_xp} xp"
 
         if multiplier and badge_budget > 0:
             # Real Section + disabled button ("own allocated button with the
