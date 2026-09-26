@@ -54,12 +54,48 @@ def _load_clan_artwork(filename: str):
     return Image.open(path).convert("RGBA")
 
 
-def render_clan_card(avatar_bytes: bytes, clan_filename: str) -> bytes:
+def _draw_crown_badge(canvas: "Image.Image", cx: float, cy: float, r: float) -> None:
+    """PLACEHOLDER chief badge — drawn geometry, no art asset. Swap this
+    out for the real chief-card art the moment it lands (see
+    render_clan_card's is_chief param); nothing else about the render
+    path needs to change when that happens. Draws a small gold circle
+    with a 3-point crown notch, anchored at the avatar hole's top-left so
+    it never covers the member's face."""
+    badge_r = max(14, int(r * 0.32))
+    bx = int(cx - r * 0.72)
+    by = int(cy - r * 0.95)
+    draw = ImageDraw.Draw(canvas)
+    gold = (255, 200, 40, 255)
+    outline = (120, 80, 0, 255)
+    draw.ellipse(
+        (bx - badge_r, by - badge_r, bx + badge_r, by + badge_r),
+        fill=gold, outline=outline, width=max(2, badge_r // 8),
+    )
+    # 3-point crown, scaled to sit inside the badge circle.
+    w, h = badge_r * 1.3, badge_r * 0.9
+    top = by - h * 0.55
+    bottom = by + h * 0.35
+    points = [
+        (bx - w / 2, bottom), (bx - w / 2, top + h * 0.35), (bx - w / 4, top),
+        (bx, top + h * 0.35), (bx, top - h * 0.05), (bx + w / 4, top),
+        (bx + w / 2, top + h * 0.35), (bx + w / 2, bottom),
+    ]
+    draw.polygon(points, fill=outline)
+
+
+def render_clan_card(avatar_bytes: bytes, clan_filename: str, is_chief: bool = False) -> bytes:
     """Composites the member's avatar into the clan card's circular hole.
-    No text is drawn — see module docstring for why. Artwork is scaled to
-    CARD_HEIGHT (matching the tier cards' sizing) with width following
-    proportionally, since these are wide (~3:1) banners meant to be shown
-    in full, not left-cropped to a fixed CARD_WIDTH like the tier cards."""
+    No text is drawn on the base card — see module docstring for why.
+    Artwork is scaled to CARD_HEIGHT (matching the tier cards' sizing)
+    with width following proportionally, since these are wide (~3:1)
+    banners meant to be shown in full, not left-cropped to a fixed
+    CARD_WIDTH like the tier cards.
+
+    is_chief=True overlays the placeholder crown badge (see
+    _draw_crown_badge) on top of the existing card — this is the
+    "placeholder crown badge on their existing clan card until the real
+    chief art arrives" the owner asked for, so the chief mechanism can be
+    built/tested without blocking on art."""
     filename, label, hole_cx, hole_cy, hole_r = _CLAN_BY_FILENAME[clan_filename]
     art = _load_clan_artwork(filename)
     orig_w, orig_h = art.size
@@ -82,6 +118,8 @@ def render_clan_card(avatar_bytes: bytes, clan_filename: str) -> bytes:
     avatar_layer.paste(avatar, (int(cx - r), int(cy - r)), mask)
 
     bg = Image.alpha_composite(avatar_layer, canvas)
+    if is_chief:
+        _draw_crown_badge(bg, cx, cy, r)
     flattened = Image.new("RGBA", bg.size, (0, 0, 0, 255))
     bg = Image.alpha_composite(flattened, bg)
     out = io.BytesIO()
