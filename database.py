@@ -139,7 +139,12 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "34"
+SCHEMA_VERSION = "35"
+# "34" -> "35" adds 019_godhood.sql (discord_godhood_trials +
+# discord_godhood_hall_of_fame tables) for the 5-god ascension gauntlet —
+# see modules/godhood_cards.py and database.py's
+# get_or_assign_godhood_trial()/record_godhood_completion(). Same
+# bump-or-it-never-runs trap as every entry below.
 # "33" -> "34" adds 018_clan_chiefs.sql (discord_clan_chiefs table) for the
 # 5-exclusive-seat chief leaderboard system — see modules/clan_cards.py,
 # database.py's ensure_clan_seats()/recompute_clan_chiefs(), and
@@ -4830,6 +4835,14 @@ class Database:
         if clan_chiefs_migration.exists():
             await conn.execute(clan_chiefs_migration.read_text())
 
+        # Godhood trials — discord_godhood_trials + discord_godhood_hall_of_fame
+        # (5-god ascension gauntlet). See modules/godhood_cards.py and
+        # database.py's get_or_assign_godhood_trial()/record_godhood_completion().
+        # Additive/idempotent like 001-018.
+        godhood_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "019_godhood.sql"
+        if godhood_migration.exists():
+            await conn.execute(godhood_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -8062,6 +8075,215 @@ class Database:
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND clan_card = $3",
                 guild_id, clone_id, clan_card,
             )
+
+    # ─────────────────────────────────────────────────────────────────
+    # Godhood trials — discord_godhood_trials + discord_godhood_hall_of_fame.
+    # See database/migrations/019_godhood.sql and modules/godhood_cards.py
+    # for the roster/ladder/tier constants. Called from leveling.py's
+    # on_message level-up hook — see _maybe_advance_godhood there.
+    # ─────────────────────────────────────────────────────────────────
+
+    async def get_active_godhood_trial(self, guild_id: int, user_id: int,
+                                        clone_id: Optional[int] = None) -> Optional[Dict]:
+        """The member's current in-progress gauntlet row (not failed, not
+        completed), or None. Always the most recent row for this member —
+        see 019_godhood.sql's note on why there's no hard uniqueness
+        constraint (a member can have older failed rows from earlier tiers
+        sitting underneath)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_godhood_trials "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3 "
+                "AND failed_at IS NULL AND completed_at IS NULL "
+                "ORDER BY chosen_at DESC LIMIT 1",
+                guild_id, clone_id, user_id,
+            )
+            return dict(row) if row else None
+
+    async def get_or_assign_godhood_trial(self, guild_id: int, user_id: int, new_level: int,
+                                           clone_id: Optional[int] = None) -> Optional[Dict]:
+        """Called from leveling.py's on_message ONLY when new_level is one
+        of modules.godhood_cards.GODHOOD_TRIGGER_LEVELS. Returns the
+        newly-created trial row (freshly "chosen", trial 1 not yet
+        started — current_trial_no stays 0 here, start_next_godhood_trial
+        does the rest) if this member got chosen this call, else None (no
+        roll won, or not eligible to roll at all).
+
+        Eligibility, checked in this order:
+          1. Already has an ACTIVE gauntlet (get_active_godhood_trial) ->
+             not eligible, return None without rolling. One gauntlet at a
+             time.
+          2. Has a previous FAILED row -> only eligible once new_level's
+             tier (godhood_cards.tier_index_for_level) is strictly greater
+             than that row's chosen_at_tier (godhood_cards.
+             eligible_for_reroll) -> otherwise return None without rolling.
+          3. Otherwise rolls GODHOOD_CHOSEN_CHANCE_PERCENT; on a miss,
+             returns None (no row written — a miss isn't persisted, so the
+             same level can't "remember" a failed roll and skip future
+             tiers).
+        """
+        import random as _random
+        from modules import godhood_cards as gc
+
+        tier = gc.tier_index_for_level(new_level)
+        if tier is None:
+            return None
+
+        active = await self.get_active_godhood_trial(guild_id, user_id, clone_id=clone_id)
+        if active is not None:
+            return None
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            last_failed = await conn.fetchrow(
+                "SELECT * FROM discord_godhood_trials "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3 "
+                "AND failed_at IS NOT NULL "
+                "ORDER BY chosen_at DESC LIMIT 1",
+                guild_id, clone_id, user_id,
+            )
+            if last_failed is not None:
+                if not gc.eligible_for_reroll(last_failed["chosen_at_tier"], new_level):
+                    return None
+
+            if _random.randint(1, 100) > gc.GODHOOD_CHOSEN_CHANCE_PERCENT:
+                return None
+
+            god_filename = _random.choice(gc.GODHOOD_CARD_FILENAMES)
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_godhood_trials
+                    (guild_id, clone_id, user_id, god_filename, chosen_at_level, chosen_at_tier)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                RETURNING *
+                """,
+                guild_id, clone_id, user_id, god_filename, new_level, tier,
+            )
+            return dict(row)
+
+    async def start_next_godhood_trial(self, trial_id: int) -> Optional[Dict]:
+        """Advances current_trial_no to the next trial in
+        modules.godhood_cards.GODHOOD_TRIALS and stamps
+        trial_started_at/trial_deadline_at (now + GODHOOD_TRIAL_DEADLINE_DAYS).
+        Called right after get_or_assign_godhood_trial (to kick off trial 1)
+        and again every time a trial's target is met (to kick off the next
+        one). Returns the updated row, or None if the gauntlet was already
+        complete (current_trial_no was already 5)."""
+        from modules import godhood_cards as gc
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_godhood_trials WHERE id = $1", trial_id,
+            )
+            if row is None:
+                return None
+            next_trial = gc.get_next_trial(row["current_trial_no"])
+            if next_trial is None:
+                return None
+            updated = await conn.fetchrow(
+                """
+                UPDATE discord_godhood_trials
+                SET current_trial_no = $2, trial_target_type = $3, trial_target_amount = $4,
+                    trial_progress_amount = 0, trial_started_at = NOW(),
+                    trial_deadline_at = NOW() + ($5 || ' days')::interval
+                WHERE id = $1
+                RETURNING *
+                """,
+                trial_id, next_trial["trial_no"], next_trial["target_type"],
+                next_trial["target_amount"], str(gc.GODHOOD_TRIAL_DEADLINE_DAYS),
+            )
+            return dict(updated)
+
+    async def update_godhood_progress(self, trial_id: int, progress_amount: int) -> Dict:
+        """Overwrites trial_progress_amount with an absolute value (not a
+        delta) — callers pass the freshly-computed total (e.g. current
+        level, for 'level_reached' trials) each time, same pattern as
+        discord_xp.total_xp being read fresh rather than incremented
+        piecemeal. Returns the updated row so the caller can check
+        target_met inline without a second query."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE discord_godhood_trials SET trial_progress_amount = $2 "
+                "WHERE id = $1 RETURNING *",
+                trial_id, progress_amount,
+            )
+            return dict(row)
+
+    async def fail_expired_godhood_trials(self) -> List[Dict]:
+        """Marks failed_at = NOW() for every active gauntlet whose
+        trial_deadline_at has passed. Meant to be polled on a loop (same
+        pattern as voice_xp.py's _tick or listing_snapshots.py's poller),
+        NOT checked inline on every message — a missed deadline should
+        fail the trial even if the member goes quiet and stops sending
+        messages/gaining XP entirely. Returns the newly-failed rows so the
+        caller can DM/announce the failure."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                UPDATE discord_godhood_trials
+                SET failed_at = NOW()
+                WHERE failed_at IS NULL AND completed_at IS NULL
+                  AND trial_deadline_at IS NOT NULL AND trial_deadline_at < NOW()
+                RETURNING *
+                """
+            )
+            return [dict(r) for r in rows]
+
+    async def record_godhood_completion(self, trial_id: int, guild_id: int, user_id: int,
+                                         god_filename: str, clone_id: Optional[int] = None) -> None:
+        """Called once trial 5 (the final, 'level_reached': 100 trial)
+        clears. Stamps completed_at + is_chief on the trial row, then
+        writes the permanent discord_godhood_hall_of_fame row. That table
+        is capped at 5 per (guild, clone) by this method, NOT by a DB
+        constraint (same app-enforced-cap pattern as discord_clan_chiefs'
+        5 seats) — the 6th completion bumps the oldest existing row rather
+        than being rejected, so the hall of fame always shows exactly the
+        5 most recent completions."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE discord_godhood_trials SET completed_at = NOW(), is_chief = TRUE WHERE id = $1",
+                    trial_id,
+                )
+                await conn.execute(
+                    "INSERT INTO discord_godhood_hall_of_fame (guild_id, clone_id, user_id, god_filename) "
+                    "VALUES ($1, $2, $3, $4)",
+                    guild_id, clone_id, user_id, god_filename,
+                )
+                count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM discord_godhood_hall_of_fame "
+                    "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                    guild_id, clone_id,
+                )
+                if count > 5:
+                    await conn.execute(
+                        """
+                        DELETE FROM discord_godhood_hall_of_fame
+                        WHERE id = (
+                            SELECT id FROM discord_godhood_hall_of_fame
+                            WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                            ORDER BY completed_at ASC LIMIT 1
+                        )
+                        """,
+                        guild_id, clone_id,
+                    )
+
+    async def get_godhood_hall_of_fame(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
+        """Up to 5 rows, most recent completion first — the permanent
+        top-5 board that's the actual point of the gauntlet."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM discord_godhood_hall_of_fame "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "ORDER BY completed_at DESC LIMIT 5",
+                guild_id, clone_id,
+            )
+            return [dict(r) for r in rows]
 
     # ─────────────────────────────────────────────────────────────────
     # Boost Wallet — flat, giftable XP. See database/migrations/

@@ -32,6 +32,7 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 from database import db
 from modules import leveling
 from modules import clan_cards
+from modules import godhood_cards
 from modules.level_card import (
     render_level_card, render_level_card_evolved,
     render_level_card_tiered, get_tier_image_for_level,
@@ -109,9 +110,12 @@ class LevelingCog(GuildOnlyCog):
         # messages whenever two bot processes briefly overlapped.
         if not self._leaderboard_autopost_loop.is_running():
             self._leaderboard_autopost_loop.start()
+        if not self._godhood_deadline_loop.is_running():
+            self._godhood_deadline_loop.start()
 
     def cog_unload(self):
         self._leaderboard_autopost_loop.cancel()
+        self._godhood_deadline_loop.cancel()
 
     async def _ensure_announce_channel(self, guild: discord.Guild, config: dict, clone_id=None):
         """Serialises channel creation per (guild, clone) so several members
@@ -276,6 +280,13 @@ class LevelingCog(GuildOnlyCog):
         new_level = row["level"]
         new_total = row["total_xp"]
 
+        # Godhood trial-1 activity tracking (messages + XP gained) — fires
+        # on every XP-earning message, independent of whether this message
+        # also caused a level-up. See modules/godhood_cards.py's
+        # GODHOOD_TRIALS[0] ('activity_combined').
+        if isinstance(message.author, discord.Member):
+            await self._track_godhood_activity(message.author, gained, clone_id=clone_id)
+
         if new_level > old_level and isinstance(message.author, discord.Member):
             announce_channel = await self._ensure_announce_channel(message.guild, config, clone_id=clone_id)
             if announce_channel is None:
@@ -310,6 +321,14 @@ class LevelingCog(GuildOnlyCog):
             )
             if is_chief_now or new_level % 3 == 0:
                 await self._send_clan_message(announce_channel, message.author, clone_id=clone_id)
+
+            # Godhood gauntlet — see modules/godhood_cards.py. Checked
+            # HERE (on level-up) same as the chief recompute above: only
+            # fires the "chosen" roll on GODHOOD_TRIGGER_LEVELS, and only
+            # advances/checks an already-active gauntlet's progress on
+            # 'level_reached' trials, which is every level-up by
+            # definition of that trial type.
+            await self._maybe_advance_godhood(announce_channel, message.author, new_level, clone_id=clone_id)
 
     async def _announce_chief_change(self, channel, guild: discord.Guild, change: dict, clone_id=None):
         """Plain mention, no @everyone — announces both the new chief and
@@ -443,6 +462,150 @@ class LevelingCog(GuildOnlyCog):
             pass
         except Exception as e:
             logger.error(f"[v0] Failed to send clan card for {member.id}: {e}")
+
+    async def _maybe_advance_godhood(self, channel, member: discord.Member, new_level: int, clone_id=None):
+        """Entry point for the whole godhood gauntlet, called on every
+        level-up. Three things can happen here, in order:
+
+        1. No active gauntlet, new_level is a trigger level (10/11/20/21/
+           30/31) -> roll for being "chosen" (get_or_assign_godhood_trial).
+           On a hit, start trial 1 immediately and announce the choosing.
+        2. Active gauntlet, current trial's target_type is 'level_reached'
+           -> every level-up IS progress for that trial type, so check it
+           against new_level directly (no separate progress hook needed
+           for this trial shape — see modules/godhood_cards.py's
+           GODHOOD_TRIALS, all of trials 2-5 are 'level_reached').
+        3. Target met -> either start_next_godhood_trial (announce the new
+           trial) or, if that was trial 5, record_godhood_completion and
+           announce the hall-of-fame induction instead.
+
+        Trial 1 ('activity_combined') is NOT advanced here — see
+        _track_godhood_activity, called separately from on_message's XP
+        gain above regardless of whether this level-up happened, since
+        activity accrues on every message, not just level-ups.
+        """
+        try:
+            active = await db.get_active_godhood_trial(member.guild.id, member.id, clone_id=clone_id)
+            if active is None:
+                chosen = await db.get_or_assign_godhood_trial(
+                    member.guild.id, member.id, new_level, clone_id=clone_id,
+                )
+                if chosen is None:
+                    return
+                started = await db.start_next_godhood_trial(chosen["id"])
+                await self._send_godhood_chosen_message(channel, member, started)
+                return
+
+            if active["trial_target_type"] != "level_reached":
+                return  # trial 1 (activity_combined) advances via _track_godhood_activity instead
+
+            row = await db.update_godhood_progress(active["id"], new_level)
+            if row["trial_progress_amount"] < row["trial_target_amount"]:
+                return
+
+            if row["current_trial_no"] >= 5:
+                await db.record_godhood_completion(
+                    row["id"], member.guild.id, member.id, row["god_filename"], clone_id=clone_id,
+                )
+                await self._send_godhood_completion_message(channel, member, row)
+            else:
+                started = await db.start_next_godhood_trial(row["id"])
+                await self._send_godhood_trial_advanced_message(channel, member, started)
+        except Exception as e:
+            logger.error(f"[v0] Godhood advance failed for {member.id}: {e}")
+
+    async def _track_godhood_activity(self, member: discord.Member, xp_gained: int, clone_id=None):
+        """Called from on_message on EVERY XP-earning message (not just
+        level-ups), so trial 1's 'activity_combined' target (messages sent
+        + XP gained since the trial started) accrues continuously rather
+        than only on level-up ticks. No-ops instantly if there's no active
+        trial-1 gauntlet for this member, so this is cheap on the common
+        case of "member isn't in a gauntlet at all"."""
+        try:
+            active = await db.get_active_godhood_trial(member.guild.id, member.id, clone_id=clone_id)
+            if active is None or active["trial_target_type"] != "activity_combined":
+                return
+            new_progress = active["trial_progress_amount"] + 1 + xp_gained
+            row = await db.update_godhood_progress(active["id"], new_progress)
+            if row["trial_progress_amount"] < row["trial_target_amount"]:
+                return
+            started = await db.start_next_godhood_trial(row["id"])
+            announce_channel = member.guild.system_channel
+            if started and announce_channel is not None:
+                await self._send_godhood_trial_advanced_message(announce_channel, member, started)
+        except Exception as e:
+            logger.error(f"[v0] Godhood activity tracking failed for {member.id}: {e}")
+
+    async def _render_godhood_card(self, member: discord.Member, god_filename: str, is_chief: bool = False) -> discord.File:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                str(member.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                avatar_bytes = await resp.read()
+        card_bytes = await asyncio.to_thread(
+            godhood_cards.render_godhood_card, avatar_bytes, god_filename, is_chief,
+        )
+        return discord.File(fp=io.BytesIO(card_bytes), filename="godhood.png")
+
+    async def _send_godhood_chosen_message(self, channel, member: discord.Member, trial_row: dict):
+        """The "you have been chosen" moment — trial 1 just started."""
+        try:
+            label = godhood_cards.get_godhood_label(trial_row["god_filename"])
+            trial_spec = next(
+                t for t in godhood_cards.GODHOOD_TRIALS if t["trial_no"] == trial_row["current_trial_no"]
+            )
+            file = await self._render_godhood_card(member, trial_row["god_filename"])
+            await channel.send(
+                content=(
+                    f"⚡ {member.mention} has been chosen by **{label}** to inherit their cultivation. "
+                    f"5 trials stand between you and godhood. "
+                    f"**Trial {trial_spec['trial_no']}: {trial_spec['title']}** begins now — "
+                    f"you have {godhood_cards.GODHOOD_TRIAL_DEADLINE_DAYS} days."
+                ),
+                file=file,
+            )
+        except discord.Forbidden:
+            pass
+        except Exception as e:
+            logger.error(f"[v0] Failed to send godhood-chosen message for {member.id}: {e}")
+
+    async def _send_godhood_trial_advanced_message(self, channel, member: discord.Member, trial_row: dict):
+        try:
+            next_trial = next(
+                t for t in godhood_cards.GODHOOD_TRIALS if t["trial_no"] == trial_row["current_trial_no"]
+            )
+            label = godhood_cards.get_godhood_label(trial_row["god_filename"])
+            file = await self._render_godhood_card(member, trial_row["god_filename"])
+            await channel.send(
+                content=(
+                    f"🔥 {member.mention} has passed a trial of **{label}**! "
+                    f"**Trial {next_trial['trial_no']}: {next_trial['title']}** begins now — "
+                    f"you have {godhood_cards.GODHOOD_TRIAL_DEADLINE_DAYS} days."
+                ),
+                file=file,
+            )
+        except discord.Forbidden:
+            pass
+        except Exception as e:
+            logger.error(f"[v0] Failed to send godhood-advanced message for {member.id}: {e}")
+
+    async def _send_godhood_completion_message(self, channel, member: discord.Member, trial_row: dict):
+        """Trial 5 just cleared — clan chief badge + permanent hall-of-fame
+        slot (the actual end goal of the gauntlet)."""
+        try:
+            label = godhood_cards.get_godhood_label(trial_row["god_filename"])
+            file = await self._render_godhood_card(member, trial_row["god_filename"], is_chief=True)
+            await channel.send(
+                content=(
+                    f"👑 {member.mention} has completed the trials of **{label}** and ascended to "
+                    f"**Clan Chief**! A permanent seat on the Hall of Fame is theirs. ⚡"
+                ),
+                file=file,
+            )
+        except discord.Forbidden:
+            pass
+        except Exception as e:
+            logger.error(f"[v0] Failed to send godhood-completion message for {member.id}: {e}")
 
     @app_commands.command(name="rank", description="Show your (or someone else's) level and XP")
     @app_commands.guild_only()
@@ -626,6 +789,55 @@ class LevelingCog(GuildOnlyCog):
 
     @_leaderboard_autopost_loop.before_loop
     async def _before_leaderboard_autopost_loop(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(hours=1)
+    async def _godhood_deadline_loop(self):
+        """Polls for expired godhood trial deadlines once an hour — a
+        member who goes quiet mid-trial (stops sending messages/gaining
+        levels entirely) still needs their trial_deadline_at enforced, so
+        this can't be a check that only runs inline on activity events
+        (same reasoning as voice_xp.py's _tick loop, applied to a much
+        longer interval since a 3-day deadline doesn't need minute-level
+        precision)."""
+        try:
+            failed_rows = await db.fail_expired_godhood_trials()
+            for row in failed_rows:
+                await self._announce_godhood_failure(row)
+        except Exception as e:
+            logger.error(f"[v0] _godhood_deadline_loop iteration failed: {e}")
+            raise
+
+    async def _announce_godhood_failure(self, trial_row: dict):
+        guild = self.bot.get_guild(trial_row["guild_id"])
+        if guild is None:
+            return
+        channel = guild.system_channel
+        if channel is None:
+            return
+        try:
+            label = godhood_cards.get_godhood_label(trial_row["god_filename"])
+            await channel.send(
+                f"💀 <@{trial_row['user_id']}> failed to complete their trial of **{label}** in time. "
+                f"The gauntlet ends here — a new god may choose them again once they reach a higher level tier."
+            )
+        except discord.Forbidden:
+            pass
+        except Exception as e:
+            logger.error(f"[v0] Failed to announce godhood failure for {trial_row.get('user_id')}: {e}")
+
+    @_godhood_deadline_loop.error
+    async def _godhood_deadline_loop_error(self, error: Exception):
+        """Same silent-death trap as _leaderboard_autopost_loop_error —
+        discord.ext.tasks stops a loop forever after one raised iteration,
+        so this restarts it instead of letting deadline enforcement quietly
+        stop working for the rest of the process's life."""
+        logger.error(f"[v0] _godhood_deadline_loop crashed, restarting it: {error}")
+        if not self._godhood_deadline_loop.is_running():
+            self._godhood_deadline_loop.start()
+
+    @_godhood_deadline_loop.before_loop
+    async def _before_godhood_deadline_loop(self):
         await self.bot.wait_until_ready()
 
     group = app_commands.guild_only()(app_commands.Group(name="levelrole", description="Configure level-up role rewards"))
