@@ -323,6 +323,7 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     container.add_item(discord.ui.Separator())
     boost_row = discord.ui.ActionRow()
     boost_row.add_item(BoostXPButton(guild.id, clone_id))
+    boost_row.add_item(LeaderboardClansButton(guild.id, clone_id))
     container.add_item(boost_row)
     container.add_item(build_boost_wallet_row(guild.id, clone_id))
 
@@ -464,6 +465,53 @@ class LeaderboardMyRankButton(discord.ui.DynamicItem[discord.ui.Button],
         await _rerender(interaction, self.guild_id, self.clone_id, self.mode, target_page)
 
 
+class LeaderboardClansButton(discord.ui.DynamicItem[discord.ui.Button],
+                              template=r"^lvllb_clans:(\d+):(-|\d+)$"):
+    """Opens an ephemeral clan picker. This is a persistent DynamicItem
+    like every other control on the leaderboard message (so it survives a
+    redeploy), but the picker it opens is a brand-new ephemeral message —
+    that one doesn't need to survive a restart, so ClanPickSelect below is
+    a plain (non-Dynamic) Select."""
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Clans", emoji="🏰", style=discord.ButtonStyle.secondary,
+            custom_id=f"lvllb_clans:{guild_id}:{_clone_part(clone_id)}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)), _clone_from(match.group(2)))
+
+    async def callback(self, interaction: discord.Interaction):
+        view = discord.ui.View(timeout=180)
+        view.add_item(ClanPickSelect(self.guild_id, self.clone_id))
+        await interaction.response.send_message("Pick a clan to view its members:", view=view, ephemeral=True)
+
+
+class ClanPickSelect(discord.ui.Select):
+    """One-off (non-persistent) select backing the Clans button's ephemeral
+    picker — see LeaderboardClansButton for why this doesn't need to be a
+    DynamicItem. Reuses leveling.py's _send_clan_members_page so this and
+    /clan members can't drift apart."""
+    def __init__(self, guild_id: int, clone_id):
+        from modules.clan_cards import CLAN_CARDS
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        options = [discord.SelectOption(label=label, value=filename) for filename, label, *_ in CLAN_CARDS]
+        super().__init__(placeholder="Choose a clan…", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        leveling_cog = interaction.client.get_cog("LevelingCog")
+        if leveling_cog is None:
+            await interaction.response.send_message("Clan lookup isn't available right now.", ephemeral=True)
+            return
+        await leveling_cog._send_clan_members_page(
+            interaction, self.values[0], self.clone_id, page=0, edit=True,
+        )
+
+
 class _LeaderboardGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
                                    template=r"^lvllb_goprem:(\d+):(-|\d+)$"):
     def __init__(self, guild_id: int, clone_id):
@@ -489,4 +537,4 @@ class _LeaderboardGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
 
 
 DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton,
-                 _LeaderboardGoPremiumButton)
+                 LeaderboardClansButton, _LeaderboardGoPremiumButton)
