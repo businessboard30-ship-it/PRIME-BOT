@@ -31,6 +31,7 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 
 from database import db
 from modules import leveling
+from modules import clan_cards
 from modules.level_card import (
     render_level_card, render_level_card_evolved,
     render_level_card_tiered, get_tier_image_for_level,
@@ -285,6 +286,12 @@ class LevelingCog(GuildOnlyCog):
                     announce_channel, message.author, new_level, new_total, card_style,
                 )
             await self._grant_level_roles(message.author, new_level, clone_id=clone_id)
+            # Clan flavor card — every 9 levels gained (9, 18, 27, ...),
+            # regardless of card_style ("text"/"off" only silence the normal
+            # tier card above, not this). See modules/clan_cards.py and
+            # database.py's get_or_assign_clan_card.
+            if new_level % 9 == 0:
+                await self._send_clan_message(announce_channel, message.author, clone_id=clone_id)
 
     async def _send_level_up_card(self, channel, member: discord.Member, new_level: int, new_total_xp: int,
                                    card_style: str = "card", clone_id=None):
@@ -354,6 +361,36 @@ class LevelingCog(GuildOnlyCog):
                 await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!")
             except discord.Forbidden:
                 pass
+
+    async def _send_clan_message(self, channel, member: discord.Member, clone_id=None):
+        """Sends the every-9-levels clan flavor card. Locked-random clan
+        (get_or_assign_clan_card) so a member always gets the same one.
+        The "your clan is proud of you" message is plain message content
+        mentioning the member — NOT drawn onto the card image (see
+        modules/clan_cards.py's docstring for why)."""
+        try:
+            clan_filename = await db.get_or_assign_clan_card(
+                member.guild.id, member.id, clone_id=clone_id,
+            )
+            clan_label = clan_cards.get_clan_label(clan_filename)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    str(member.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    avatar_bytes = await resp.read()
+            card_bytes = await asyncio.to_thread(
+                clan_cards.render_clan_card, avatar_bytes, clan_filename,
+            )
+            file = discord.File(fp=io.BytesIO(card_bytes), filename="clan.png")
+            await channel.send(
+                content=f"{member.mention} Your clan, **{clan_label}**, is proud of you. "
+                        f"Level up more to become a god. ⚡",
+                file=file,
+            )
+        except discord.Forbidden:
+            pass
+        except Exception as e:
+            logger.error(f"[v0] Failed to send clan card for {member.id}: {e}")
 
     @app_commands.command(name="rank", description="Show your (or someone else's) level and XP")
     @app_commands.guild_only()

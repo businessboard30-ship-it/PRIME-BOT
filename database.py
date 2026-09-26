@@ -139,7 +139,11 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "32"
+SCHEMA_VERSION = "33"
+# "32" -> "33" adds 017_clan_cards.sql (discord_clan_cards table) for the
+# every-9-levels clan flavor message — see modules/clan_cards.py and
+# get_or_assign_clan_card()/leveling.py's _send_clan_message. Same
+# bump-or-it-never-runs trap as every entry below.
 # "31" -> "32": ad_submissions.image_channel_id / image_message_id (ad images —
 # the image is re-posted to the image-hosting channel and only its
 # channel/message ids are stored, see discord_bot/ad_images.py). Any DB already
@@ -4806,6 +4810,14 @@ class Database:
         if guild_premium_migration.exists():
             await conn.execute(guild_premium_migration.read_text())
 
+        # Clan cards — discord_clan_cards (locked-once random clan assignment
+        # for the every-9-levels flavor message). See modules/clan_cards.py
+        # and get_or_assign_clan_card()/leveling.py's _send_clan_message.
+        # Additive/idempotent like 001-015.
+        clan_cards_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "017_clan_cards.sql"
+        if clan_cards_migration.exists():
+            await conn.execute(clan_cards_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -7831,6 +7843,51 @@ class Database:
                 guild_id, user_id, clone_id, multiplier, duration_days
             )
             return dict(row)
+
+    async def get_or_assign_clan_card(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> str:
+        """Returns the member's locked clan_card filename, assigning one at
+        random (from modules.clan_cards.CLAN_CARD_FILENAMES) the first time
+        this is called for them, and returning that same one forever after.
+
+        The random pick + INSERT happen in Python, not SQL, but the lock
+        itself is still race-safe: ON CONFLICT DO NOTHING means a second
+        concurrent call (two on_message events for the same member landing
+        together) can't create two different rows, and the SELECT
+        afterwards always reads back whichever row actually won — so both
+        callers agree on one clan even if they each rolled a different
+        random filename.
+
+        Called from leveling.py's _send_clan_message every time a member
+        crosses a multiple of 9 levels — see 017_clan_cards.sql."""
+        import random as _random
+        from modules.clan_cards import CLAN_CARD_FILENAMES
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT clan_card FROM discord_clan_cards "
+                "WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
+                guild_id, user_id, clone_id
+            )
+            if existing:
+                return existing
+            picked = _random.choice(CLAN_CARD_FILENAMES)
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_clan_cards (guild_id, user_id, clone_id, clan_card)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO NOTHING
+                RETURNING clan_card
+                """,
+                guild_id, user_id, clone_id, picked
+            )
+            if row:
+                return row["clan_card"]
+            # Lost the race to a concurrent call — read back whichever row won.
+            return await conn.fetchval(
+                "SELECT clan_card FROM discord_clan_cards "
+                "WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
+                guild_id, user_id, clone_id
+            )
 
     # ─────────────────────────────────────────────────────────────────
     # Boost Wallet — flat, giftable XP. See database/migrations/
