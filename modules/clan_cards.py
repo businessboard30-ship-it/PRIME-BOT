@@ -35,10 +35,10 @@ _ASSET_DIR = os.path.join(os.path.dirname(__file__), "..")  # repo root, same as
 # in each PNG's own original pixel space (flat-green cut-out -> exact
 # circle), same method as level_card.py's _TIER_IMAGE_HOLES.
 CLAN_CARDS = [
-    ("clan_white_knight.png", "WHITE", 228.0, 376.5, 145.75),
-    ("clan_white_monster.png", "WHITE", 220.5, 378.0, 140.25),
-    ("clan_white_wolves.png", "WHITE", 237.0, 378.0, 141.0),
-    ("clan_white_dragon.png", "WHITE", 218.0, 374.5, 131.75),
+    ("clan_white_knight.png", "MOONWARDEN", 228.0, 376.5, 145.75),
+    ("clan_white_monster.png", "HOLLOWFANG", 220.5, 378.0, 140.25),
+    ("clan_white_wolves.png", "PALEFANG", 237.0, 378.0, 141.0),
+    ("clan_white_dragon.png", "VOIDCLAW", 218.0, 374.5, 131.75),
     ("clan_deviors.png", "DEVIORS", 255.0, 384.0, 149.5),
 ]
 
@@ -92,4 +92,4 @@ def render_clan_card(avatar_bytes: bytes, clan_filename: str) -> bytes:
 
 def get_clan_label(clan_filename: str) -> str:
     entry = _CLAN_BY_FILENAME.get(clan_filename)
-    return entry[1] if entry else "WHITE"
+    return entry[1] if entry else "UNKNOWN"
