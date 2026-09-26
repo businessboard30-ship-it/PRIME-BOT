@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 # Keeps voice XP in the same ballpark as text XP (15-25 XP/msg every 60s).
 VOICE_XP_RATE_CAP = 25
 
+# Max number of bots in a voice channel that count toward the "not alone"
+# minimum (see _is_trackable). Lets one real member earn voice XP solo
+# alongside a couple of music/utility bots, without letting someone spam
+# extra bots into the channel to bypass the anti-farming check entirely.
+VOICE_XP_MAX_BOTS_COUNTED = 2
+
 
 def _require_perm(interaction: discord.Interaction, perm: str) -> bool:
     if interaction.guild is None:
@@ -92,9 +98,15 @@ class VoiceXPCog(GuildOnlyCog):
         if voice_state and (voice_state.self_mute or voice_state.mute or
                             voice_state.self_deaf or voice_state.deaf):
             return False
-        # Must not be alone — solo voice sitting is easy to farm indefinitely.
+        # Must not be truly alone — solo voice sitting is easy to farm
+        # indefinitely. Bots count toward this minimum too (e.g. a music
+        # bot playing along with you), but only up to VOICE_XP_MAX_BOTS_COUNTED
+        # so stacking extra bots in the channel can't be used to game the
+        # threshold — it's about "something is actually happening in here",
+        # not a loophole for infinite bot-farming.
         real_members = [m for m in channel.members if not m.bot]
-        if len(real_members) < 2:
+        bot_count = min(len(channel.members) - len(real_members), VOICE_XP_MAX_BOTS_COUNTED)
+        if len(real_members) + bot_count < 2:
             return False
         return True
 
