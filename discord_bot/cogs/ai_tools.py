@@ -269,6 +269,50 @@ class AIToolsCog(commands.Cog):
             + "\n".join(lines) + "\nQuote this list as-is; mention /clan members shows the full paginated list."
         )
 
+    _GODHOOD_WORDS = re.compile(r"\bgod(hood|s)?\b|\btrial(s)?\b|\bchosen\b|\bascen(d|sion)\b", re.IGNORECASE)
+
+    async def _godhood_facts(self, message: str, user_id: int, guild: Optional[discord.Guild]) -> Optional[str]:
+        """Real godhood-gauntlet facts for the asker when the message
+        mentions gods/trials/chosen/ascension, so the AI quotes the
+        database instead of inventing trial progress or a deadline.
+        Mirrors _clan_facts. Only ever looks at the ASKER's own row —
+        unlike clans there's no "show me someone else's gauntlet" case in
+        BOT_RULES, so this doesn't try to resolve a named user."""
+        if not self._GODHOOD_WORDS.search(message):
+            return None
+        if guild is None:
+            return "FACT: Godhood trials are per-server, so tell the user to ask this in a server."
+        from modules import godhood_cards
+        clone_id = getattr(self.bot, "clone_id", None)
+        try:
+            active = await db.get_active_godhood_trial(guild.id, user_id, clone_id=clone_id)
+        except Exception:
+            logger.debug("[aichat] godhood lookup failed", exc_info=True)
+            return None
+        if active is None:
+            return (
+                "FACT: This user has not been chosen by a god yet (or their last gauntlet already ended). "
+                "Tell them it's a random 20% chance that triggers automatically on hitting level 10, 11, 20, "
+                "21, 30, or 31 — there's no command to request it, just keep leveling up."
+            )
+        label = godhood_cards.get_godhood_label(active["god_filename"])
+        trial_no = active["current_trial_no"]
+        target_type = active["trial_target_type"]
+        progress = active["trial_progress_amount"]
+        target = active["trial_target_amount"]
+        deadline = active["trial_deadline_at"]
+        deadline_txt = f"<t:{int(deadline.timestamp())}:R>" if deadline else "no deadline set yet"
+        target_desc = (
+            f"{progress}/{target} combined messages+XP"
+            if target_type == "activity_combined"
+            else f"reach level {target} (currently tracked at {progress})"
+        )
+        return (
+            f"FACT — this user was chosen by **{label}** and is on **Trial {trial_no} of 5**: "
+            f"{target_desc}. Deadline: {deadline_txt}. Quote this as-is; don't invent a different god, "
+            f"trial number, or deadline."
+        )
+
     async def _command_context(self, message: str, user_id: int,
                                 perms: Optional[discord.Permissions],
                                 guild: Optional[discord.Guild],
@@ -291,6 +335,9 @@ class AIToolsCog(commands.Cog):
         clan_facts = await self._clan_facts(message, user_id, guild)
         if clan_facts:
             command_context = f"{command_context}\n\n{clan_facts}" if command_context else clan_facts
+        godhood_facts = await self._godhood_facts(message, user_id, guild)
+        if godhood_facts:
+            command_context = f"{command_context}\n\n{godhood_facts}" if command_context else godhood_facts
         return command_context
 
     # ── AI-executed commands (natural-language tool calling) ───────────────

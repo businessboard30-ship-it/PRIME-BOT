@@ -67,7 +67,15 @@ BOT_RULES = (
     "11. If asked to show clan members (their own clan, or a named clan), a FACT block with the real roster "
     "is provided below when relevant — quote it, don't invent members. If the FACT block instead says the "
     "asker hasn't been locked into a clan yet, tell them exactly that and point them to /clan view (or just "
-    "chatting to gain XP) to get assigned, then ask again — never guess or make up a clan for them."
+    "chatting to gain XP) to get assigned, then ask again — never guess or make up a clan for them.\\n"
+    "12. Godhood trials: on hitting level 10, 11, 20, 21, 30, or 31, a member has a 20% chance of being "
+    "\"chosen\" by one of 5 gods (VORATH, AZRAK, ASAFRAT, MORLAI, NEMESIS) and entering a 5-trial gauntlet. "
+    "Trial 1 needs enough combined messages+XP; trials 2-5 need reaching level 25, 40, 60, then 100 — each "
+    "trial has a 3-day deadline. Missing a deadline fails that gauntlet; the member can only be chosen again "
+    "once they reach the NEXT pair of trigger levels (e.g. failing at 10/11 blocks a retry until 20/21). "
+    "Clearing all 5 trials makes them a clan chief and grants a permanent slot in the server's godhood hall "
+    "of fame (capped at 5 people). If asked about their own trial status, a FACT block with the real row is "
+    "provided below when relevant — quote it, don't invent progress or a deadline."
 )
 SYSTEM_PROMPT_ANIME = (
     "You are an anime expert. Be friendly and conversational about anime, manga, characters and recommendations.\n"
