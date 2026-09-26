@@ -286,11 +286,11 @@ class LevelingCog(GuildOnlyCog):
                     announce_channel, message.author, new_level, new_total, card_style,
                 )
             await self._grant_level_roles(message.author, new_level, clone_id=clone_id)
-            # Clan flavor card — every 9 levels gained (9, 18, 27, ...),
+            # Clan flavor card — every 3 levels gained (3, 6, 9, ...),
             # regardless of card_style ("text"/"off" only silence the normal
             # tier card above, not this). See modules/clan_cards.py and
             # database.py's get_or_assign_clan_card.
-            if new_level % 9 == 0:
+            if new_level % 3 == 0:
                 await self._send_clan_message(announce_channel, message.author, clone_id=clone_id)
 
     async def _send_level_up_card(self, channel, member: discord.Member, new_level: int, new_total_xp: int,
@@ -363,7 +363,7 @@ class LevelingCog(GuildOnlyCog):
                 pass
 
     async def _send_clan_message(self, channel, member: discord.Member, clone_id=None):
-        """Sends the every-9-levels clan flavor card. Locked-random clan
+        """Sends the every-3-levels clan flavor card. Locked-random clan
         (get_or_assign_clan_card) so a member always gets the same one.
         The "your clan is proud of you" message is plain message content
         mentioning the member — NOT drawn onto the card image (see

@@ -179,15 +179,22 @@ class VoiceXPCog(GuildOnlyCog):
                 # Announce in the configured level-up channel, not the voice
                 # channel the member may have already left.
                 lv_config = await db.get_leveling_config(guild_id, clone_id=clone_id)
-                if leveling_cog and lv_config.get("card_style") != "off":
+                card_style = lv_config.get("card_style", "card")
+                if leveling_cog and card_style != "off":
                     announce_ch = await leveling_cog._ensure_announce_channel(guild, lv_config, clone_id=clone_id)
                     if announce_ch is None and member.voice and member.voice.channel:
                         announce_ch = member.voice.channel
                     if announce_ch:
-                        try:
-                            await announce_ch.send(f"🎉 {member.mention} leveled up to **level {new_level}** (voice XP)!")
-                        except discord.Forbidden:
-                            pass
+                        # Was a plain text message only — voice XP never actually
+                        # rendered the tier/level card (or the clan card below),
+                        # so voice-only members never saw either. Route through
+                        # the same renderer text XP uses instead of duplicating it.
+                        await leveling_cog._send_level_up_card(
+                            announce_ch, member, new_level, new_total, card_style,
+                        )
+                        # Clan flavor card — every 3 levels, same as text XP.
+                        if new_level % 3 == 0:
+                            await leveling_cog._send_clan_message(announce_ch, member, clone_id=clone_id)
 
     @tasks.loop(seconds=60)
     async def _tick(self):
