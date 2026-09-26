@@ -292,6 +292,33 @@ class LevelingCog(GuildOnlyCog):
             # database.py's get_or_assign_clan_card.
             if new_level % 3 == 0:
                 await self._send_clan_message(announce_channel, message.author, clone_id=clone_id)
+            # Clan chiefs — 5 exclusive per-server seats, re-derived from
+            # the top 5 of the XP leaderboard. Checked HERE (on level-up)
+            # only, never polled — per the confirmed spec. Cheap even so:
+            # this only touches the DB when a level-up already happened,
+            # and recompute_clan_chiefs itself is a single top-5 query.
+            chief_changes = await db.recompute_clan_chiefs(message.guild.id, clone_id=clone_id)
+            for change in chief_changes:
+                await self._announce_chief_change(announce_channel, message.guild, change, clone_id=clone_id)
+
+    async def _announce_chief_change(self, channel, guild: discord.Guild, change: dict, clone_id=None):
+        """Plain mention, no @everyone — announces both the new chief and
+        whoever they just displaced (if that seat was previously held).
+        See database.py's recompute_clan_chiefs docstring for why a seat's
+        clan_slug can be a clan the new holder isn't personally locked to
+        (Option B, confirmed by owner)."""
+        clan_slug = change["clan_slug"]
+        new_id = change["new_user_id"]
+        old_id = change["old_user_id"]
+        try:
+            if new_id is not None:
+                await channel.send(f"👑 <@{new_id}> is now **Chief of {clan_slug}**!")
+            if old_id is not None and old_id != new_id:
+                await channel.send(f"<@{old_id}> has lost the **{clan_slug}** chief seat.")
+        except discord.Forbidden:
+            pass
+        except Exception as e:
+            logger.error(f"[v0] Failed to announce chief change ({clan_slug}) in guild {guild.id}: {e}")
 
     async def _send_level_up_card(self, channel, member: discord.Member, new_level: int, new_total_xp: int,
                                    card_style: str = "card", clone_id=None):
@@ -373,13 +400,17 @@ class LevelingCog(GuildOnlyCog):
                 member.guild.id, member.id, clone_id=clone_id,
             )
             clan_label = clan_cards.get_clan_label(clan_filename)
+            # Placeholder crown badge (see modules/clan_cards.py's
+            # _draw_crown_badge) if this member currently holds a chief
+            # seat — swaps for the real chief art the moment it arrives.
+            chief_seat = await db.get_chief_seat_for_user(member.guild.id, member.id, clone_id=clone_id)
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     str(member.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
                     avatar_bytes = await resp.read()
             card_bytes = await asyncio.to_thread(
-                clan_cards.render_clan_card, avatar_bytes, clan_filename,
+                clan_cards.render_clan_card, avatar_bytes, clan_filename, chief_seat is not None,
             )
             file = discord.File(fp=io.BytesIO(card_bytes), filename="clan.png")
             await channel.send(
@@ -398,15 +429,20 @@ class LevelingCog(GuildOnlyCog):
     async def rank(self, interaction: discord.Interaction, member: discord.Member = None):
         await interaction.response.defer()
         target = member or interaction.user
-        row = await db.get_xp(interaction.guild_id, target.id, clone_id=_clone_id_of(interaction))
+        clone_id = _clone_id_of(interaction)
+        row = await db.get_xp(interaction.guild_id, target.id, clone_id=clone_id)
         p = leveling.xp_progress(row["total_xp"])
         bar = _progress_bar(p["current_xp_in_level"], p["xp_needed_for_next_level"])
         line = (
             f"`{bar}` {p['current_xp_in_level']}/{p['xp_needed_for_next_level']} XP "
             f"({p['total_xp']} total)"
         )
+        lines = [line]
+        chief_seat = await db.get_chief_seat_for_user(interaction.guild_id, target.id, clone_id=clone_id)
+        if chief_seat:
+            lines.append(f"👑 Chief of **{chief_seat['clan_slug']}**")
         buttons = [ActionButton("Leaderboard", discord.ButtonStyle.secondary, self, "leaderboard", emoji="🏆")]
-        card = NavCardView(f"{target.display_name} — level {p['level']}", [line], discord.Color.blurple(), buttons)
+        card = NavCardView(f"{target.display_name} — level {p['level']}", lines, discord.Color.blurple(), buttons)
         await interaction.followup.send(view=card)
 
     # Plain command — this used to briefly become a Group (show + autopost
