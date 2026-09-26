@@ -139,7 +139,11 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "33"
+SCHEMA_VERSION = "34"
+# "33" -> "34" adds 018_clan_chiefs.sql (discord_clan_chiefs table) for the
+# 5-exclusive-seat chief leaderboard system — see modules/clan_cards.py,
+# database.py's ensure_clan_seats()/recompute_clan_chiefs(), and
+# leveling.py's on_message chief-recompute-on-level-up hook.
 # "32" -> "33" adds 017_clan_cards.sql (discord_clan_cards table) for the
 # every-9-levels clan flavor message — see modules/clan_cards.py and
 # get_or_assign_clan_card()/leveling.py's _send_clan_message. Same
@@ -4818,6 +4822,14 @@ class Database:
         if clan_cards_migration.exists():
             await conn.execute(clan_cards_migration.read_text())
 
+        # Clan chiefs — discord_clan_chiefs (5 exclusive per-server chief
+        # seats, Option B). See modules/clan_cards.py and database.py's
+        # ensure_clan_seats()/recompute_clan_chiefs(). Additive/idempotent
+        # like 001-017.
+        clan_chiefs_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "018_clan_chiefs.sql"
+        if clan_chiefs_migration.exists():
+            await conn.execute(clan_chiefs_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -7890,6 +7902,118 @@ class Database:
             )
 
     # ─────────────────────────────────────────────────────────────────
+    # Clan Chiefs — discord_clan_chiefs. 5 exclusive per-server seats
+    # (Option B, confirmed by project owner over Option A's rank-only /
+    # duplicate-clan-chief approach). A seat's clan_slug is a permanent
+    # label on the SEAT, not on whoever's sitting in it — see
+    # 018_clan_chiefs.sql's header for the full decision log.
+    # ─────────────────────────────────────────────────────────────────
+
+    async def ensure_clan_seats(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        """Creates this guild's 5 clan-chief seats (ranks 1-5) the first
+        time they're needed, labeling each seat with one of
+        modules.clan_cards.CLAN_CARDS's 5 clans in that fixed order.
+        Idempotent (ON CONFLICT DO NOTHING) — safe to call every time
+        recompute_clan_chiefs runs, not just once."""
+        from modules.clan_cards import CLAN_CARDS
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            for seat_rank, (_filename, clan_label, *_rest) in enumerate(CLAN_CARDS, start=1):
+                await conn.execute(
+                    """
+                    INSERT INTO discord_clan_chiefs (guild_id, clone_id, seat_rank, clan_slug, user_id, since)
+                    VALUES ($1, $2, $3, $4, NULL, NULL)
+                    ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), seat_rank) DO NOTHING
+                    """,
+                    guild_id, clone_id, seat_rank, clan_label,
+                )
+
+    async def get_clan_seats(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
+        """All 5 seats for this guild, ordered by seat_rank. Used by /rank,
+        /leaderboard (crown badges), and the chief announcement. Callers
+        should call ensure_clan_seats first if seats might not exist yet
+        (recompute_clan_chiefs already does this internally)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM discord_clan_chiefs WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "ORDER BY seat_rank",
+                guild_id, clone_id,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_chief_seat_for_user(self, guild_id: int, user_id: int,
+                                       clone_id: Optional[int] = None) -> Optional[Dict]:
+        """Returns the seat this member currently holds (or None) — used by
+        /rank to show \"👑 Chief of <clan>\"."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_clan_chiefs WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "AND user_id = $3",
+                guild_id, clone_id, user_id,
+            )
+            return dict(row) if row else None
+
+    async def recompute_clan_chiefs(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
+        """Re-derives who holds each of the 5 chief seats from the current
+        top-5 of the per-server XP leaderboard (same total_xp DESC,
+        last_xp_at ASC tie-break as get_xp_leaderboard/get_xp_rank, so a
+        seat holder always matches where that member actually sits on
+        /leaderboard). Called from leveling.py's on_message ONLY when a
+        level-up just happened — never polled — per the confirmed spec.
+
+        Seats are keyed by seat_rank, not by clan: rank #1 on the
+        leaderboard always sits in seat_rank 1, whatever clan_slug that
+        seat happens to carry. So when someone overtakes the current
+        rank-1 holder, they don't get a fresh seat — they inherit seat 1
+        and its clan_slug outright, and the person they overtook is
+        dropped from every seat they no longer qualify for. That's the
+        \"takes the title of the clan the user lost\" rule as confirmed.
+
+        Returns a list of change dicts, one per seat whose user_id
+        actually changed this call:
+            {seat_rank, clan_slug, old_user_id, new_user_id}
+        so the caller can announce both the new chief and the ousted one.
+        Empty list means no seat moved (including the common case where
+        the level-up didn't touch the top 5 at all)."""
+        await self.ensure_clan_seats(guild_id, clone_id=clone_id)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            top5 = await conn.fetch(
+                "SELECT user_id FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "AND total_xp > 0 ORDER BY total_xp DESC, last_xp_at ASC NULLS LAST LIMIT 5",
+                guild_id, clone_id,
+            )
+            top5_ids = [r["user_id"] for r in top5]
+            seats = await conn.fetch(
+                "SELECT * FROM discord_clan_chiefs WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "ORDER BY seat_rank",
+                guild_id, clone_id,
+            )
+            changes = []
+            for seat in seats:
+                seat_rank = seat["seat_rank"]
+                new_user_id = top5_ids[seat_rank - 1] if seat_rank - 1 < len(top5_ids) else None
+                old_user_id = seat["user_id"]
+                if new_user_id == old_user_id:
+                    continue
+                await conn.execute(
+                    """
+                    UPDATE discord_clan_chiefs SET user_id = $4, since = NOW()
+                    WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND seat_rank = $3
+                    """,
+                    guild_id, clone_id, seat_rank, new_user_id,
+                )
+                changes.append({
+                    "seat_rank": seat_rank,
+                    "clan_slug": seat["clan_slug"],
+                    "old_user_id": old_user_id,
+                    "new_user_id": new_user_id,
+                })
+            return changes
+
+    # ─────────────────────────────────────────────────────────────────
     # Boost Wallet — flat, giftable XP. See database/migrations/
     # 014_xp_wallet.sql and config.XP_WALLET_TIERS / XP_WALLET_EXPIRY_DAYS.
     # ─────────────────────────────────────────────────────────────────
@@ -8529,9 +8653,16 @@ class Database:
         caller (there were none passing a 4th positional arg) is unaffected."""
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # Tie-break: total_xp DESC, then last_xp_at ASC. total_xp only
+            # ever increases and last_xp_at is stamped at the same moment
+            # it changes, so on an exact tie whoever's last_xp_at is
+            # earlier is whoever reached that total FIRST — that member
+            # keeps the higher seat (no flip-flopping between two members
+            # sitting on the same total_xp). See discord_clan_chiefs /
+            # recompute_clan_chiefs for why this matters beyond display.
             rows = await conn.fetch(
                 "SELECT * FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
-                "ORDER BY total_xp DESC LIMIT $3 OFFSET $4",
+                "ORDER BY total_xp DESC, last_xp_at ASC NULLS LAST LIMIT $3 OFFSET $4",
                 guild_id, clone_id, limit, offset
             )
             return [dict(r) for r in rows]
@@ -8556,13 +8687,17 @@ class Database:
             row = await conn.fetchrow(
                 """
                 WITH me AS (
-                    SELECT total_xp FROM discord_xp
+                    SELECT total_xp, last_xp_at FROM discord_xp
                     WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3
                 )
                 SELECT me.total_xp AS total_xp,
+                       -- Same tie-break as get_xp_leaderboard: a strictly
+                       -- higher total_xp outranks me, OR an exact-tie total
+                       -- reached earlier (lower last_xp_at) outranks me.
                        (SELECT COUNT(*) FROM discord_xp d
                         WHERE d.guild_id = $1 AND d.clone_id IS NOT DISTINCT FROM $3
-                          AND d.total_xp > me.total_xp) + 1 AS rank,
+                          AND (d.total_xp > me.total_xp
+                               OR (d.total_xp = me.total_xp AND d.last_xp_at < me.last_xp_at))) + 1 AS rank,
                        (SELECT COUNT(*) FROM discord_xp d
                         WHERE d.guild_id = $1 AND d.clone_id IS NOT DISTINCT FROM $3) AS total_players
                 FROM me
