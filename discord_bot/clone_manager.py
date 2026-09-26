@@ -288,6 +288,11 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
     # whole startup sequence forever.
     STAGGER_TIMEOUT_SECONDS = 30
     STAGGER_POLL_SECONDS = 1
+    # How long to wait before spawning the NEXT clone after this one timed
+    # out waiting for its gateway — Discord's observed IDENTIFY ratelimit
+    # window in these logs runs ~55-60s, so this needs to be in that
+    # ballpark to actually let it clear rather than just adding a token gap.
+    POST_TIMEOUT_BACKOFF_SECONDS = 60
     for c in active:
         if c["clone_id"] not in managed:
             label = c.get("bot_username") or f"clone-{c['clone_id']}"
@@ -305,6 +310,15 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
                     f"to the next clone anyway (it may still connect, or may be a bad/"
                     f"revoked token — the restart-backoff loop below will keep retrying it)."
                 )
+                # A timeout here usually means Discord's IDENTIFY rate limit is
+                # already backed up (see the module docstring above) — piling
+                # the next clone's IDENTIFY straight on top just compounds the
+                # same jam, which is exactly the "clones stuck loading to join
+                # vc" symptom (a gateway stuck behind the rate limit can't send
+                # the voice-state-update a voice join needs either). Give the
+                # rate-limit window a chance to clear before spawning the next
+                # one instead of immediately racing it.
+                await asyncio.sleep(POST_TIMEOUT_BACKOFF_SECONDS)
 
     # Restart anything that died, backing off per-clone so a bad token
     # (invalid/revoked, missing privileged intent, etc.) doesn't spin the

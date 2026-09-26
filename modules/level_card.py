@@ -723,11 +723,12 @@ _TIER_IMAGE_LEVELS = [
         ("tier00g_chrono_collapser_blue.png", "CHRONO COLLAPSER"),
         ("tier00h_chrono_collapser_red.png", "CHRONO COLLAPSER"),
     ], None),
-    (7, "tier00i_universal_scorpion.png", "UNIVERSAL SCORPION"),
+    (7, "tier00i_voidreign.png", "VOIDREIGN"),
     (8, "tier00j_metallic_serpent.png", "METALLIC SERPENT"),
+    (9, "tier00u_griever.png", "GRIEVER"),
     (10, "tier00k_ancient_mummy.png", "ANCIENT MUMMY CRAWLING OUT"),
     (11, "tier00l_ancients_rift_cultivator.png", "THE ANCIENT'S RIFT CULTIVATOR"),
-    (12, "tier00m_cyber_bot.png", "CYBER BOT"),
+    (12, "tier00m_nightfall.png", "NIGHTFALL"),
     (13, "tier00n_greed_megathon.png", "GREED MEGATHON"),
     (14, "tier00o_cosmic_weaver_rising.png", "COSMIC WEAVER RISING"),
     (15, "tier00s_plague.png", "PLAGUE"),
@@ -791,11 +792,12 @@ _TIER_IMAGE_HOLES = {
     "tier00f_primordial_entropy.png": (895, 296, 109),
     "tier00g_chrono_collapser_blue.png": (895, 296, 109),
     "tier00h_chrono_collapser_red.png": (895, 296, 109),
-    "tier00i_universal_scorpion.png": (895, 296, 109),
+    "tier00i_voidreign.png": (1368, 443, 113),
     "tier00j_metallic_serpent.png": (895, 296, 109),
+    "tier00u_griever.png": (325, 150, 51),
     "tier00k_ancient_mummy.png": (830, 465, 115),
     "tier00l_ancients_rift_cultivator.png": (815, 465, 113),
-    "tier00m_cyber_bot.png": (1110, 285, 111),
+    "tier00m_nightfall.png": (1402, 475, 106),
     "tier00n_greed_megathon.png": (1490, 262, 108),
     "tier00o_cosmic_weaver_rising.png": (855, 460, 110),
     "tier00p_the_unmaking.png": (903, 295, 110),
@@ -866,6 +868,12 @@ _TIER_NAME_LEVEL_ONLY = {
     "tier00p_the_unmaking.png", "tier00q_harbinger_of_ruin.png",
     "tier00r_beyond_the_void.png", "tier00s_plague.png",
     "tier00t_unmatched_beast.png",
+    # Custom banners (level 9/7/12) — full-scene art with no built-in
+    # progress-bar layout, and VOIDREIGN/NIGHTFALL already have their
+    # title painted into the artwork itself. Keep these to name + level
+    # only rather than drawing the normal label/XP-bar/XP-counter block
+    # on top, which would just clutter a finished piece of art.
+    "tier00u_griever.png", "tier00i_voidreign.png", "tier00m_nightfall.png",
 }
 
 
