@@ -290,16 +290,26 @@ class LevelingCog(GuildOnlyCog):
             # regardless of card_style ("text"/"off" only silence the normal
             # tier card above, not this). See modules/clan_cards.py and
             # database.py's get_or_assign_clan_card.
-            if new_level % 3 == 0:
-                await self._send_clan_message(announce_channel, message.author, clone_id=clone_id)
             # Clan chiefs — 5 exclusive per-server seats, re-derived from
             # the top 5 of the XP leaderboard. Checked HERE (on level-up)
             # only, never polled — per the confirmed spec. Cheap even so:
             # this only touches the DB when a level-up already happened,
             # and recompute_clan_chiefs itself is a single top-5 query.
+            # Run BEFORE the clan-card send below so a member who just
+            # became chief this exact level-up still gets their card.
             chief_changes = await db.recompute_clan_chiefs(message.guild.id, clone_id=clone_id)
             for change in chief_changes:
                 await self._announce_chief_change(announce_channel, message.guild, change, clone_id=clone_id)
+
+            # Regular members get the clan card every 3 levels. Chiefs get
+            # it on EVERY level-up (confirmed) — check the seat table
+            # rather than chief_changes so an existing chief who didn't
+            # move seats this level-up still gets one.
+            is_chief_now = any(c["new_user_id"] == message.author.id for c in chief_changes) or (
+                await db.get_chief_seat_for_user(message.guild.id, message.author.id, clone_id=clone_id) is not None
+            )
+            if is_chief_now or new_level % 3 == 0:
+                await self._send_clan_message(announce_channel, message.author, clone_id=clone_id)
 
     async def _announce_chief_change(self, channel, guild: discord.Guild, change: dict, clone_id=None):
         """Plain mention, no @everyone — announces both the new chief and
@@ -390,11 +400,18 @@ class LevelingCog(GuildOnlyCog):
                 pass
 
     async def _send_clan_message(self, channel, member: discord.Member, clone_id=None):
-        """Sends the every-3-levels clan flavor card. Locked-random clan
-        (get_or_assign_clan_card) so a member always gets the same one.
-        The "your clan is proud of you" message is plain message content
-        mentioning the member — NOT drawn onto the card image (see
-        modules/clan_cards.py's docstring for why)."""
+        """Sends the clan flavor card — every 3 levels for regular members,
+        every level-up for chiefs (confirmed). Locked-random clan
+        (get_or_assign_clan_card) so a member always gets the same card
+        art. The "your clan is proud of you" message is plain message
+        content mentioning the member — NOT drawn onto the card image (see
+        modules/clan_cards.py's docstring for why).
+
+        If the member currently holds a chief seat, the caption names the
+        SEAT's clan_slug (what they're chief OF) rather than their own
+        locked clan — those two can differ under Option B, and the point
+        of this message for a chief is to celebrate the seat, not the
+        locked-random card art it happens to be drawn on."""
         try:
             clan_filename = await db.get_or_assign_clan_card(
                 member.guild.id, member.id, clone_id=clone_id,
@@ -404,6 +421,7 @@ class LevelingCog(GuildOnlyCog):
             # _draw_crown_badge) if this member currently holds a chief
             # seat — swaps for the real chief art the moment it arrives.
             chief_seat = await db.get_chief_seat_for_user(member.guild.id, member.id, clone_id=clone_id)
+            announced_clan = chief_seat["clan_slug"] if chief_seat else clan_label
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     str(member.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)
@@ -413,11 +431,14 @@ class LevelingCog(GuildOnlyCog):
                 clan_cards.render_clan_card, avatar_bytes, clan_filename, chief_seat is not None,
             )
             file = discord.File(fp=io.BytesIO(card_bytes), filename="clan.png")
-            await channel.send(
-                content=f"{member.mention} Your clan, **{clan_label}**, is proud of you. "
-                        f"Level up more to become a god. ⚡",
-                file=file,
+            caption = (
+                f"👑 {member.mention} Your clan, **{announced_clan}**, is proud of their Chief. "
+                f"Keep climbing. ⚡"
+                if chief_seat else
+                f"{member.mention} Your clan, **{announced_clan}**, is proud of you. "
+                f"Level up more to become a god. ⚡"
             )
+            await channel.send(content=caption, file=file)
         except discord.Forbidden:
             pass
         except Exception as e:
