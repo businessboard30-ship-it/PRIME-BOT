@@ -24,6 +24,7 @@ import io
 import logging
 import os
 from functools import lru_cache
+from typing import Optional
 
 from PIL import Image, ImageDraw
 
@@ -131,3 +132,17 @@ def render_clan_card(avatar_bytes: bytes, clan_filename: str, is_chief: bool = F
 def get_clan_label(clan_filename: str) -> str:
     entry = _CLAN_BY_FILENAME.get(clan_filename)
     return entry[1] if entry else "UNKNOWN"
+
+
+def resolve_clan_filename(text: str) -> Optional[str]:
+    """Best-effort match of a clan name mentioned in free text (e.g. "who's
+    in the moonwarden clan") to its CLAN_CARDS filename, case-insensitive.
+    Returns None if no known clan label appears anywhere in text — callers
+    should fall back to "the asker's own clan" in that case."""
+    if not text:
+        return None
+    upper = text.upper()
+    for filename, label, *_ in CLAN_CARDS:
+        if label in upper:
+            return filename
+    return None

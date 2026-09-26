@@ -7901,6 +7901,22 @@ class Database:
                 guild_id, user_id, clone_id
             )
 
+    async def get_clan_card_if_assigned(self, guild_id: int, user_id: int,
+                                         clone_id: Optional[int] = None) -> Optional[str]:
+        """Read-only counterpart to get_or_assign_clan_card: returns the
+        member's locked clan_card filename if they've already been
+        assigned one, else None — never assigns. Used by the AI
+        clan-lookup path (ai_tools.py's _clan_facts) so merely asking
+        "what clan am I in" / "show my clan" doesn't silently lock
+        someone into a clan as a side effect of just asking about it."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT clan_card FROM discord_clan_cards "
+                "WHERE guild_id = $1 AND user_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
+                guild_id, user_id, clone_id
+            )
+
     # ─────────────────────────────────────────────────────────────────
     # Clan Chiefs — discord_clan_chiefs. 5 exclusive per-server seats
     # (Option B, confirmed by project owner over Option A's rank-only /

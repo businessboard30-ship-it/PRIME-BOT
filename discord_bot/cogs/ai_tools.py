@@ -221,6 +221,54 @@ class AIToolsCog(commands.Cog):
             "stats, and tell them /rank shows the full card:\n" + "\n".join(lines)
         )
 
+    _CLAN_WORDS = re.compile(r"\bclan(s)?\b", re.IGNORECASE)
+
+    async def _clan_facts(self, message: str, user_id: int, guild: Optional[discord.Guild]) -> Optional[str]:
+        """Real clan-roster facts for the asker when the message mentions
+        clans, so the AI quotes the database instead of inventing members.
+        Mirrors _xp_facts. Any user can ask this (not just existing
+        members) — if a named clan is mentioned that clan's roster is
+        shown; otherwise it resolves to the asker's OWN clan. If the
+        asker hasn't been locked into a clan yet (no discord_clan_cards
+        row — see database.py's get_clan_card_if_assigned, which is
+        read-only and never auto-assigns), a FACT is returned telling the
+        model to explain how to get one instead of guessing."""
+        if not self._CLAN_WORDS.search(message):
+            return None
+        if guild is None:
+            return "FACT: Clans are per-server, so tell the user to ask this in a server (or use /clan view there)."
+        from modules import clan_cards
+        clone_id = getattr(self.bot, "clone_id", None)
+        filename = clan_cards.resolve_clan_filename(message)
+        if filename is None:
+            filename = await db.get_clan_card_if_assigned(guild.id, user_id, clone_id=clone_id)
+            if filename is None:
+                return (
+                    "FACT: This user hasn't been locked into a clan on this server yet. Clans are assigned "
+                    "automatically the first time someone runs /clan view, or automatically every 3 levels "
+                    "gained. Tell them to run /clan view (or just keep chatting to gain XP) to get locked "
+                    "into a clan, then ask again to see its members."
+                )
+        label = clan_cards.get_clan_label(filename)
+        try:
+            members = await db.get_clan_members(guild.id, filename, clone_id=clone_id, limit=10, offset=0)
+            total = await db.get_clan_member_count(guild.id, filename, clone_id=clone_id)
+        except Exception:
+            logger.debug("[aichat] clan lookup failed", exc_info=True)
+            return None
+        if not members:
+            return f"FACT: The **{label}** clan has no members locked in on this server yet."
+        lines = []
+        for i, m in enumerate(members, start=1):
+            member_obj = guild.get_member(m["user_id"])
+            name = member_obj.display_name if member_obj else f"user {m['user_id']}"
+            lines.append(f"{i}. {name} — level {m['level']} ({m['total_xp']} xp)")
+        more = f" (+{total - len(members)} more not shown)" if total > len(members) else ""
+        return (
+            f"FACT — **{label}** clan roster on this server, {total} member(s) total, ranked by XP{more}:\n"
+            + "\n".join(lines) + "\nQuote this list as-is; mention /clan members shows the full paginated list."
+        )
+
     async def _command_context(self, message: str, user_id: int,
                                 perms: Optional[discord.Permissions],
                                 guild: Optional[discord.Guild],
@@ -240,6 +288,9 @@ class AIToolsCog(commands.Cog):
         xp_facts = await self._xp_facts(message, user_id, guild)
         if xp_facts:
             command_context = f"{command_context}\n\n{xp_facts}" if command_context else xp_facts
+        clan_facts = await self._clan_facts(message, user_id, guild)
+        if clan_facts:
+            command_context = f"{command_context}\n\n{clan_facts}" if command_context else clan_facts
         return command_context
 
     # ── AI-executed commands (natural-language tool calling) ───────────────

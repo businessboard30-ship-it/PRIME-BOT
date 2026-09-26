@@ -63,7 +63,11 @@ BOT_RULES = (
     "10. Clans: every member is auto-locked to one of 5 random clans, shown on a flavor card every 3 levels. "
     "5 clan-chief seats exist per server, held by whoever is rank #1-5 on that server's XP leaderboard — "
     "overtaking a chief takes their exact seat and title, even if it's a different clan than your own. Chief "
-    "status shows on /rank and /leaderboard. Chiefs get their clan card every level-up instead of every 3."
+    "status shows on /rank and /leaderboard. Chiefs get their clan card every level-up instead of every 3.\n"
+    "11. If asked to show clan members (their own clan, or a named clan), a FACT block with the real roster "
+    "is provided below when relevant — quote it, don't invent members. If the FACT block instead says the "
+    "asker hasn't been locked into a clan yet, tell them exactly that and point them to /clan view (or just "
+    "chatting to gain XP) to get assigned, then ask again — never guess or make up a clan for them."
 )
 SYSTEM_PROMPT_ANIME = (
     "You are an anime expert. Be friendly and conversational about anime, manga, characters and recommendations.\n"
