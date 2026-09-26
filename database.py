@@ -8013,6 +8013,40 @@ class Database:
                 })
             return changes
 
+    async def get_clan_members(self, guild_id: int, clan_card: str, clone_id: Optional[int] = None,
+                                limit: int = 10, offset: int = 0) -> List[Dict]:
+        """Members in this guild locked to clan_card (a CLAN_CARD_FILENAMES
+        value — see get_or_assign_clan_card), ordered by total_xp DESC,
+        joined against discord_xp for level/xp. Someone who hasn't been
+        assigned a clan yet (hasn't leveled to a multiple of 9) just won't
+        appear here. Backs /clan members and the leaderboard's Clans
+        button dropdown."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT cc.user_id, COALESCE(x.total_xp, 0) AS total_xp, COALESCE(x.level, 0) AS level
+                FROM discord_clan_cards cc
+                LEFT JOIN discord_xp x
+                    ON x.guild_id = cc.guild_id AND x.user_id = cc.user_id
+                    AND x.clone_id IS NOT DISTINCT FROM cc.clone_id
+                WHERE cc.guild_id = $1 AND cc.clone_id IS NOT DISTINCT FROM $2 AND cc.clan_card = $3
+                ORDER BY total_xp DESC
+                LIMIT $4 OFFSET $5
+                """,
+                guild_id, clone_id, clan_card, limit, offset,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_clan_member_count(self, guild_id: int, clan_card: str, clone_id: Optional[int] = None) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM discord_clan_cards "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND clan_card = $3",
+                guild_id, clone_id, clan_card,
+            )
+
     # ─────────────────────────────────────────────────────────────────
     # Boost Wallet — flat, giftable XP. See database/migrations/
     # 014_xp_wallet.sql and config.XP_WALLET_TIERS / XP_WALLET_EXPIRY_DAYS.
