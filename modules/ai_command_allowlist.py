@@ -100,7 +100,6 @@ AI_COMMANDS = (
     AICommandSpec("removeclone", "discord_bot.cogs.clone_admin", True, "Deactivate one of your Discord bot clones"),
 
     # ── Styling ─────────────────────────────────────────────────────────
-    AICommandSpec("stylepreview", "discord_bot.cogs.style", False, "Preview text styled in a fancy unicode font"),
     AICommandSpec("stylerename", "discord_bot.cogs.style", True, "Style text into a font and rename a channel to it"),
 )
 
