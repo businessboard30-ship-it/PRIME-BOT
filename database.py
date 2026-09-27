@@ -8973,6 +8973,31 @@ class Database:
                 guild_id, clone_id
             )
 
+    async def get_xp_leaderboard_page(self, guild_id: int, limit: int = 10, clone_id: Optional[int] = None,
+                                       offset: int = 0) -> tuple[List[Dict], int]:
+        """Same rows as get_xp_leaderboard, PLUS the total row count, in
+        ONE round-trip via COUNT(*) OVER() instead of the caller doing a
+        separate get_xp_leaderboard_count query first and then this one —
+        that was two sequential DB round-trips on every single
+        /leaderboard render/click before either query even started, which
+        matters most on a small guild where nothing else in the render is
+        slow enough to hide it. Returns ([], 0) if the guild/clone has no
+        rows at all. If offset lands past the end (stale page number),
+        rows comes back empty even though total > 0 — caller should
+        re-page and re-fetch in that rare case, same as before."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, total_xp, level, COUNT(*) OVER() AS _total_count FROM discord_xp "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "ORDER BY total_xp DESC, last_xp_at ASC NULLS LAST LIMIT $3 OFFSET $4",
+                guild_id, clone_id, limit, offset
+            )
+            if not rows:
+                return [], 0
+            total = rows[0]["_total_count"]
+            return [{"user_id": r["user_id"], "total_xp": r["total_xp"], "level": r["level"]} for r in rows], total
+
     async def get_xp_rank(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
         """Local (per-guild) rank for the "Your Current Stats" panel. Rank is
         1 + how many rows in this guild/clone outrank this user's total_xp —
@@ -9033,6 +9058,27 @@ class Database:
             return await conn.fetchval(
                 "SELECT COUNT(*) FROM (SELECT user_id FROM discord_xp GROUP BY user_id) t"
             )
+
+    async def get_global_xp_leaderboard_page(self, limit: int = 10, offset: int = 0) -> tuple[List[Dict], int]:
+        """Same as get_xp_leaderboard_page but for the global tab — one
+        round-trip via COUNT(*) OVER() instead of a separate count query
+        plus this one."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, SUM(total_xp)::BIGINT AS total_xp, COUNT(*) OVER() AS _total_count
+                FROM discord_xp
+                GROUP BY user_id
+                ORDER BY total_xp DESC
+                LIMIT $1 OFFSET $2
+                """,
+                limit, offset
+            )
+            if not rows:
+                return [], 0
+            total = rows[0]["_total_count"]
+            return [{"user_id": r["user_id"], "total_xp": r["total_xp"]} for r in rows], total
 
     async def get_global_xp_rank(self, user_id: int) -> Optional[Dict]:
         """Same shape/semantics as get_xp_rank but summed across every

@@ -175,10 +175,18 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     # sequential chain of DB round-trips.
     premium_task = asyncio.create_task(db.is_guild_premium_active(guild.id, clone_id))
 
+    # Count + rows used to be two sequential DB round-trips before either
+    # even started — get_xp_leaderboard_page/get_global_xp_leaderboard_page
+    # return both together via a COUNT(*) OVER() window function in one
+    # trip. That matters most on a small guild like this one, where the
+    # actual query time is tiny and the fixed per-round-trip latency to
+    # Supabase is most of what you're waiting on.
+    raw_offset = max(0, page) * PAGE_SIZE
     if mode == "local":
-        total = await db.get_xp_leaderboard_count(guild.id, clone_id=clone_id)
+        rows, total = await db.get_xp_leaderboard_page(guild.id, limit=PAGE_SIZE, clone_id=clone_id, offset=raw_offset)
     else:
-        total = await db.get_global_xp_leaderboard_count()
+        rows, total = await db.get_global_xp_leaderboard_page(limit=PAGE_SIZE, offset=raw_offset)
+
     if not total:
         premium_task.cancel()
         return None
@@ -187,10 +195,16 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     page = max(0, min(page, total_pages - 1))
     offset = page * PAGE_SIZE
 
-    if mode == "local":
-        rows = await db.get_xp_leaderboard(guild.id, limit=PAGE_SIZE, clone_id=clone_id, offset=offset)
-    else:
-        rows = await db.get_global_xp_leaderboard(limit=PAGE_SIZE, offset=offset)
+    if offset != raw_offset:
+        # Only hit when the requested page was actually out of range (a
+        # stale page number, e.g. someone's XP pushed the row they were
+        # on onto an earlier page between clicks) — pays one extra
+        # round-trip, but only in that rare case, not on every render.
+        if mode == "local":
+            rows, total = await db.get_xp_leaderboard_page(guild.id, limit=PAGE_SIZE, clone_id=clone_id, offset=offset)
+        else:
+            rows, total = await db.get_global_xp_leaderboard_page(limit=PAGE_SIZE, offset=offset)
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
 
     user_ids = [r["user_id"] for r in rows]
     if mode == "local":
