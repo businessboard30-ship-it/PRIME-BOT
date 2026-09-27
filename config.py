@@ -512,6 +512,14 @@ DISCORD_OWNER_BRAND_NAME = "the bot owner"
 # means the button is simply omitted rather than sent broken.
 # Hardcoded (was DISCORD_SUPPORT_SERVER_INVITE env var) — public invite link, same every deploy.
 DISCORD_SUPPORT_SERVER_INVITE = "https://discord.gg/DYfajXrP9B"
+
+# The support server's own guild ID (NOT the invite code above — a vanity/temp
+# invite string can't tell us which guild a message came from at runtime, only
+# the numeric ID can). Set this once it's known; until it is, the "don't tell
+# people to join the support server while already in it" check in
+# modules/ai_features.py's ai_chat() simply never matches, which is a safe
+# no-op fallback (same behavior as before this existed), not a crash.
+DISCORD_SUPPORT_SERVER_ID = int(os.getenv("DISCORD_SUPPORT_SERVER_ID", "1534576875983339621") or 0)
 # Frontend (dash-production) equivalent of the line above — Next.js only
 # inlines env vars prefixed NEXT_PUBLIC_ at build time, so this can't just
 # reuse DISCORD_SUPPORT_SERVER_INVITE from this (backend) process; set it
