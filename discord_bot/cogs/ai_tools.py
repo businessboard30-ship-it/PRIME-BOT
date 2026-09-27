@@ -509,6 +509,19 @@ class AIToolsCog(commands.Cog):
                     await send_cap_reached_prompt(confirm_interaction)
                 else:
                     await confirm_interaction.followup.send(str(exc), ephemeral=True)
+            except discord.app_commands.CommandSignatureMismatch:
+                # Discord's global command cache on THIS guild/shard hasn't
+                # picked up a just-deployed signature change yet (global
+                # syncs propagate on Discord's own schedule, not instantly
+                # — see bot.py's startup sync log). Nothing wrong with the
+                # command itself; it resolves on its own shortly after
+                # deploy. Surface something the user can act on instead of
+                # letting discord.py's unhandled-exception logger eat it.
+                logger.warning(f"[ai_command] signature mismatch for '{name}' — Discord's command cache is stale post-deploy")
+                await confirm_interaction.followup.send(
+                    "That command was just updated and Discord hasn't finished syncing it yet — "
+                    "give it a few minutes and try again.", ephemeral=True,
+                )
 
         if spec.requires_confirmation:
             view = AIConfirmView(ctx.user.id, _run)
