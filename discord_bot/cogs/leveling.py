@@ -45,6 +45,9 @@ from modules import godhood_cards
 CHIEF_LOST_SEAT_GIFS = [
     "https://tenor.com/77Lu.gif",
     "https://media.tenor.com/h0gymow_GfsAAAA1/tom-spike-kicks-tom.webp",
+    "https://media.tenor.com/NY_LEh5VX3wAAAAM/tiffany-j-kick-tj-kick.gif",
+    "https://media.tenor.com/QnTJ2AH5uyIAAAAM/flying-kick-common-side-effects.gif",
+    "https://media.tenor.com/aDZHwZaw9t4AAAAM/anime-kick.gif",
 ]
 from modules.level_card import (
     render_level_card, render_level_card_evolved,
