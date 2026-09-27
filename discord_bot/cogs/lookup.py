@@ -1,8 +1,9 @@
 # path: discord_bot/cogs/lookup.py
 
-"""/find — admin-only wizard: start typing a server name OR a person's
-name, get live autocomplete suggestions searched across the main bot AND
-every clone (discord_guilds is the shared cross-process registry all of
+"""/find — admin-only wizard: start typing a server name, a person's
+name, OR paste a raw server/user ID directly, and get live autocomplete
+suggestions searched across the main bot AND every clone (discord_guilds
+is the shared cross-process registry all of
 them write to — see clone_manager.py's docstring for why clones can't be
 searched in-memory: each one is a separate OS process with its own
 gateway connection, so Postgres is the only thing they all actually
@@ -134,9 +135,9 @@ class LookupCog(commands.Cog):
     # ── the command itself ────────────────────────────────────────────
     @app_commands.command(
         name="find",
-        description="[Admin] Start typing a server name or a person's name — searches across the main bot and every clone",
+        description="[Admin] Start typing a server name, person's name, or paste a server/user ID",
     )
-    @app_commands.describe(query="Start typing — suggestions search live across all bots")
+    @app_commands.describe(query="Server/user ID, or start typing a name — suggestions search live across all bots")
     async def find(self, interaction: discord.Interaction, query: str):
         if not _is_clone_admin(interaction.user.id):
             await interaction.response.send_message("You're not authorized to use this.", ephemeral=True)
@@ -148,6 +149,20 @@ class LookupCog(commands.Cog):
             return
         if query.startswith("u:"):
             await self._show_person(interaction, int(query[2:]))
+            return
+
+        # A raw numeric ID (guild ID or user ID) typed directly — check
+        # whether it's a known guild first, then fall back to treating it
+        # as a user ID (Discord user IDs are always resolvable via the API
+        # even if we've never cached a username for them).
+        stripped = query.strip()
+        if stripped.isdigit():
+            raw_id = int(stripped)
+            all_rows = await db.get_all_guilds_with_managers(include_left=True)
+            if any(r["guild_id"] == raw_id for r in all_rows):
+                await self._show_guild(interaction, raw_id)
+                return
+            await self._show_person(interaction, raw_id)
             return
 
         # They typed free text instead of picking a suggestion — search
