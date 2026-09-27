@@ -1598,6 +1598,19 @@ async def _start_build_bot_wizard(interaction: discord.Interaction, guild: disco
     return None, None
 
 
+async def _open_style_wizard(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """"Channel names & fonts" — opens the /style wizard right here, no
+    slash command needed. Already deferred by _FeatureToggleButton, so
+    this just follows up with the wizard message; the wizard's own
+    buttons (Convert/Ask AI/channel-select) are DynamicItem, same as
+    everything else in this file, so it keeps working no matter how long
+    the DM sits unread. Returns None/None: nothing is "enabled" here,
+    this never behaves like a toggle."""
+    from discord_bot.cogs._views_style_wizard import StyleWizardLayoutView
+    await interaction.followup.send(view=StyleWizardLayoutView(guild.id, clone_id))
+    return None, None
+
+
 async def _open_premium_pitch(interaction: discord.Interaction, guild: discord.Guild, clone_id):
     """"Go Premium" — not a toggle: explains the $5/month per-server tier and
     offers the Subscribe button (see _views_premium.py). Already deferred by
@@ -1638,6 +1651,8 @@ FEATURE_TOGGLES = {
                  "Reward active members with levels and roles over time."),
     "analytics": ("Server analytics", "📊", _enable_analytics, None,
                   "See member/activity stats and where to find more members."),
+    "styles": ("Channel names & fonts", "🔤", _open_style_wizard, None,
+               "Style text into fancy fonts, or ask AI for channel-name ideas, then apply them right to a channel."),
     "channels": ("Create suggested channels", "📁", _enable_channels, None,
                  "Create commonly-useful channels for this server in one tap."),
     "starboard": ("Starboard", "⭐", _enable_starboard, None,

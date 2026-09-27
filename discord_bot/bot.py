@@ -31,6 +31,7 @@ from discord_bot.cogs.ai_store import VerifyCreditsView, VerifyBoostView, AIStor
 from discord_bot.cogs._dm_support import GUILD_ONLY_MESSAGE
 from discord_bot.cogs._perm_guard import global_interaction_check, TooManyPrivilegedMembers, GUARD_MESSAGE
 from discord_bot.cogs._views_join_dm import build_join_dm_view, DYNAMIC_ITEMS
+from discord_bot.cogs._views_style_wizard import STYLE_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_card_customize import DYNAMIC_ITEMS as CARD_CUSTOMIZE_DYNAMIC_ITEMS
 from discord_bot.cogs._views_invites import DYNAMIC_ITEMS as INVITES_WIZARD_DYNAMIC_ITEMS
@@ -147,6 +148,7 @@ class AnimeBotDiscord(commands.Bot):
         # rather than registered per fixed custom_id, so one call here
         # covers every guild's buttons, past and future.
         self.add_dynamic_items(*DYNAMIC_ITEMS)
+        self.add_dynamic_items(*STYLE_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*WELCOME_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*CARD_CUSTOMIZE_DYNAMIC_ITEMS)
         self.add_dynamic_items(*INVITES_WIZARD_DYNAMIC_ITEMS)
@@ -218,6 +220,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.automation")
         await self.load_extension("discord_bot.cogs.discover")
         await self.load_extension("discord_bot.cogs.ai_tools")
+        await self.load_extension("discord_bot.cogs.style")
         await self.load_extension("discord_bot.cogs.roast")
         # Roast Arena disabled — unused, and its poller was one of the
         # background egress contributors. Extension + dynamic items left
