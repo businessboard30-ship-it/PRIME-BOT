@@ -295,6 +295,22 @@ class LevelingCog(GuildOnlyCog):
         if isinstance(message.author, discord.Member):
             await self._track_godhood_activity(message.author, gained, clone_id=clone_id)
 
+        # Clan chiefs — 5 exclusive per-server seats, re-derived from the
+        # top 5 of the XP leaderboard. Checked on EVERY XP-granting message
+        # now, not just level-ups: total_xp can cross another member's
+        # total (changing who belongs in the top 5) without either member
+        # leveling up, and a level-up-only check left seats stale until
+        # someone next happened to level up — see recompute_clan_chiefs'
+        # docstring. Cheap regardless: it's a single top-5 query plus a
+        # membership diff, and almost always returns no changes.
+        chief_changes = await db.recompute_clan_chiefs(message.guild.id, clone_id=clone_id)
+        if chief_changes:
+            chief_announce_channel = await self._ensure_announce_channel(message.guild, config, clone_id=clone_id)
+            if chief_announce_channel is None:
+                chief_announce_channel = message.channel
+            for change in chief_changes:
+                await self._announce_chief_change(chief_announce_channel, message.guild, change, clone_id=clone_id)
+
         if new_level > old_level and isinstance(message.author, discord.Member):
             announce_channel = await self._ensure_announce_channel(message.guild, config, clone_id=clone_id)
             if announce_channel is None:
@@ -309,16 +325,6 @@ class LevelingCog(GuildOnlyCog):
             # regardless of card_style ("text"/"off" only silence the normal
             # tier card above, not this). See modules/clan_cards.py and
             # database.py's get_or_assign_clan_card.
-            # Clan chiefs — 5 exclusive per-server seats, re-derived from
-            # the top 5 of the XP leaderboard. Checked HERE (on level-up)
-            # only, never polled — per the confirmed spec. Cheap even so:
-            # this only touches the DB when a level-up already happened,
-            # and recompute_clan_chiefs itself is a single top-5 query.
-            # Run BEFORE the clan-card send below so a member who just
-            # became chief this exact level-up still gets their card.
-            chief_changes = await db.recompute_clan_chiefs(message.guild.id, clone_id=clone_id)
-            for change in chief_changes:
-                await self._announce_chief_change(announce_channel, message.guild, change, clone_id=clone_id)
 
             # Regular members get the clan card every 3 levels. Chiefs get
             # it on EVERY level-up (confirmed) — check the seat table

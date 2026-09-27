@@ -7988,8 +7988,10 @@ class Database:
         """Re-derives who holds each of the 5 chief seats from the current
         top-5 of the per-server XP leaderboard (same total_xp DESC,
         last_xp_at ASC tie-break as get_xp_leaderboard/get_xp_rank). Called
-        from leveling.py's on_message ONLY when a level-up just happened —
-        never polled — per the confirmed spec.
+        from leveling.py's on_message on every XP-granting message (not
+        just level-ups, since total_xp can cross another member's total —
+        changing top-5 membership — without either member leveling up) —
+        never polled separately from that hook.
 
         Membership-based, not order-based (revised): a seat only changes
         hands when its current holder actually falls OUT of the top 5.
