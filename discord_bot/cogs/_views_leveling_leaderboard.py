@@ -193,9 +193,15 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
         # clan_slug map once per render rather than per row.
         chief_seats = await db.get_clan_seats(guild.id, clone_id=clone_id)
         chief_by_user_id = {s["user_id"]: s["clan_slug"] for s in chief_seats if s["user_id"] is not None}
+        # Batched up front (one query for the whole page) instead of the
+        # old per-row get_leader_link call awaited sequentially inside the
+        # rendering loop below — that was up to 10 separate DB round-trips
+        # per /leaderboard render and was the main source of the slowness.
+        leader_links = await db.get_leader_links_for_users(guild.id, user_ids, clone_id=clone_id)
     else:
         boosts = await db.get_active_global_boosts_for_users(user_ids)
         chief_by_user_id = {}
+        leader_links = {}
 
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
@@ -299,7 +305,7 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
             chunk_lines.append(line)
 
         if mode == "local" and len(link_row.children) < MAX_LEADER_LINKS:
-            link = await db.get_leader_link(guild.id, row["user_id"], clone_id=clone_id)
+            link = leader_links.get(row["user_id"])
             if link and link["status"] == "approved":
                 link_row.add_item(discord.ui.Button(
                     label=f"#{i} · {name}'s server", style=discord.ButtonStyle.link, url=link["invite_url"]

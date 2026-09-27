@@ -9095,6 +9095,27 @@ class Database:
             )
             return dict(row) if row else None
 
+    async def get_leader_links_for_users(self, guild_id: int, user_ids: list,
+                                          clone_id: Optional[int] = None) -> Dict[int, Dict]:
+        """Bulk lookup for one page of the LOCAL leaderboard (one query for
+        up to 10 rows instead of 10 separate sequential get_leader_link
+        round-trips awaited one at a time in the render loop — that
+        per-row query was the main /leaderboard slowness culprit, same
+        class of bug get_active_xp_boosts_for_users already fixed for
+        boosts). Returns {user_id: link_row} for whichever of user_ids
+        have any link submission in this guild/clone (any status, so the
+        caller can still check link["status"] == "approved" itself)."""
+        if not user_ids:
+            return {}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM discord_leader_links WHERE guild_id = $1 "
+                "AND clone_id IS NOT DISTINCT FROM $2 AND user_id = ANY($3::bigint[])",
+                guild_id, clone_id, user_ids
+            )
+            return {r["user_id"]: dict(r) for r in rows}
+
     async def submit_leader_link(self, guild_id: int, user_id: int, invite_url: str, clone_id: Optional[int] = None) -> Dict:
         """Insert or reset a link submission to 'pending'. Called from the
         DM modal — re-submitting (e.g. after a denial) puts it back into
