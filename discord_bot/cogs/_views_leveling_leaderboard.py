@@ -169,11 +169,18 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     button/select callback below — exactly one place assembles the
     Container so all three stay in sync. Returns None only when there's
     truly nothing to show yet (no XP anywhere in scope)."""
+    # Kicked off immediately and only awaited right before it's needed at
+    # the bottom of the function — it doesn't depend on anything else
+    # computed here, so there's no reason for it to sit at the end of a
+    # sequential chain of DB round-trips.
+    premium_task = asyncio.create_task(db.is_guild_premium_active(guild.id, clone_id))
+
     if mode == "local":
         total = await db.get_xp_leaderboard_count(guild.id, clone_id=clone_id)
     else:
         total = await db.get_global_xp_leaderboard_count()
     if not total:
+        premium_task.cancel()
         return None
 
     total_pages = max(1, math.ceil(total / PAGE_SIZE))
@@ -187,17 +194,20 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
 
     user_ids = [r["user_id"] for r in rows]
     if mode == "local":
-        boosts = await db.get_active_xp_boosts_for_users(guild.id, user_ids, clone_id=clone_id)
+        # These three only depend on user_ids, not on each other — they
+        # were previously awaited one at a time (boosts, THEN clan_seats,
+        # THEN leader_links), each paying its own round-trip latency in
+        # series. Firing them together cuts that to the slowest single
+        # one instead of the sum of all three.
+        boosts, chief_seats, leader_links = await asyncio.gather(
+            db.get_active_xp_boosts_for_users(guild.id, user_ids, clone_id=clone_id),
+            db.get_clan_seats(guild.id, clone_id=clone_id),
+            db.get_leader_links_for_users(guild.id, user_ids, clone_id=clone_id),
+        )
         # Chief seats are local-only (Option B, per-server exclusive seats
         # — see database.py's recompute_clan_chiefs). Build a user_id ->
         # clan_slug map once per render rather than per row.
-        chief_seats = await db.get_clan_seats(guild.id, clone_id=clone_id)
         chief_by_user_id = {s["user_id"]: s["clan_slug"] for s in chief_seats if s["user_id"] is not None}
-        # Batched up front (one query for the whole page) instead of the
-        # old per-row get_leader_link call awaited sequentially inside the
-        # rendering loop below — that was up to 10 separate DB round-trips
-        # per /leaderboard render and was the main source of the slowness.
-        leader_links = await db.get_leader_links_for_users(guild.id, user_ids, clone_id=clone_id)
     else:
         boosts = await db.get_active_global_boosts_for_users(user_ids)
         chief_by_user_id = {}
@@ -333,9 +343,14 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     container.add_item(boost_row)
     container.add_item(build_boost_wallet_row(guild.id, clone_id))
 
-    # Go Premium footer — only show if guild isn't already premium
+    # Go Premium footer — only show if guild isn't already premium.
+    # premium_task was kicked off at the very top of this function, so by
+    # the time we get here (after several DB round-trips + a gateway
+    # query_members call) it's almost certainly already resolved — this
+    # just collects the result instead of firing a brand-new query and
+    # waiting on it cold.
     try:
-        is_prem = await db.is_guild_premium_active(guild.id, clone_id)
+        is_prem = await premium_task
     except Exception:
         is_prem = False
     if not is_prem:
