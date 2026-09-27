@@ -7987,25 +7987,35 @@ class Database:
     async def recompute_clan_chiefs(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
         """Re-derives who holds each of the 5 chief seats from the current
         top-5 of the per-server XP leaderboard (same total_xp DESC,
-        last_xp_at ASC tie-break as get_xp_leaderboard/get_xp_rank, so a
-        seat holder always matches where that member actually sits on
-        /leaderboard). Called from leveling.py's on_message ONLY when a
-        level-up just happened — never polled — per the confirmed spec.
+        last_xp_at ASC tie-break as get_xp_leaderboard/get_xp_rank). Called
+        from leveling.py's on_message ONLY when a level-up just happened —
+        never polled — per the confirmed spec.
 
-        Seats are keyed by seat_rank, not by clan: rank #1 on the
-        leaderboard always sits in seat_rank 1, whatever clan_slug that
-        seat happens to carry. So when someone overtakes the current
-        rank-1 holder, they don't get a fresh seat — they inherit seat 1
-        and its clan_slug outright, and the person they overtook is
-        dropped from every seat they no longer qualify for. That's the
-        \"takes the title of the clan the user lost\" rule as confirmed.
+        Membership-based, not order-based (revised): a seat only changes
+        hands when its current holder actually falls OUT of the top 5.
+        Internal reshuffling among the 5 people already holding seats
+        (e.g. #3 and #4 swapping places on /leaderboard) does NOT move
+        anyone's seat — seat_rank/clan_slug is sticky to whoever holds it
+        until they're displaced entirely, not re-derived from exact
+        position every call. This avoids the old behavior where one
+        person overtaking another could cascade through and dethrone
+        everyone sitting between the old and new position, even people
+        who didn't actually lose to anyone. In the normal case (one
+        person's XP crosses into/out of the top 5) this produces exactly
+        one change, not four or five.
+
+        Vacated seats (from someone dropping out of the top 5) are filled
+        by whichever top-5 member doesn't already hold a seat, matched in
+        top-5 order. Ties for "who's the newcomer" essentially can't arise
+        since the seat count and top-5 size are both fixed at 5.
 
         Returns a list of change dicts, one per seat whose user_id
         actually changed this call:
             {seat_rank, clan_slug, old_user_id, new_user_id}
         so the caller can announce both the new chief and the ousted one.
         Empty list means no seat moved (including the common case where
-        the level-up didn't touch the top 5 at all)."""
+        the level-up didn't touch the top 5 at all, or only reshuffled
+        people who already hold seats)."""
         await self.ensure_clan_seats(guild_id, clone_id=clone_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -8020,22 +8030,32 @@ class Database:
                 "ORDER BY seat_rank",
                 guild_id, clone_id,
             )
+
+            # Who currently holds a seat, and who's in the top 5 now.
+            seat_holder_ids = {seat["user_id"] for seat in seats if seat["user_id"] is not None}
+            top5_id_set = set(top5_ids)
+
+            # Only seats whose holder fell out of the top 5 entirely (or
+            # were never filled) are up for grabs.
+            vacated_seats = [
+                seat for seat in seats
+                if seat["user_id"] is None or seat["user_id"] not in top5_id_set
+            ]
+            # People in the top 5 who don't already hold one of the 5 seats.
+            newcomers = [uid for uid in top5_ids if uid not in seat_holder_ids]
+
             changes = []
-            for seat in seats:
-                seat_rank = seat["seat_rank"]
-                new_user_id = top5_ids[seat_rank - 1] if seat_rank - 1 < len(top5_ids) else None
+            for seat, new_user_id in zip(vacated_seats, newcomers):
                 old_user_id = seat["user_id"]
-                if new_user_id == old_user_id:
-                    continue
                 await conn.execute(
                     """
                     UPDATE discord_clan_chiefs SET user_id = $4, since = NOW()
                     WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND seat_rank = $3
                     """,
-                    guild_id, clone_id, seat_rank, new_user_id,
+                    guild_id, clone_id, seat["seat_rank"], new_user_id,
                 )
                 changes.append({
-                    "seat_rank": seat_rank,
+                    "seat_rank": seat["seat_rank"],
                     "clan_slug": seat["clan_slug"],
                     "old_user_id": old_user_id,
                     "new_user_id": new_user_id,
