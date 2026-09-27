@@ -8958,7 +8958,8 @@ class Database:
             # sitting on the same total_xp). See discord_clan_chiefs /
             # recompute_clan_chiefs for why this matters beyond display.
             rows = await conn.fetch(
-                "SELECT * FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "SELECT user_id, total_xp, level FROM discord_xp "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
                 "ORDER BY total_xp DESC, last_xp_at ASC NULLS LAST LIMIT $3 OFFSET $4",
                 guild_id, clone_id, limit, offset
             )
@@ -9113,7 +9114,7 @@ class Database:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM discord_leader_links WHERE guild_id = $1 "
+                "SELECT user_id, invite_url, status FROM discord_leader_links WHERE guild_id = $1 "
                 "AND clone_id IS NOT DISTINCT FROM $2 AND user_id = ANY($3::bigint[])",
                 guild_id, clone_id, user_ids
             )
