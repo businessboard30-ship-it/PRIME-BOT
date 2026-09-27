@@ -317,23 +317,26 @@ async def get_pool():
         # (a single serverless invocation doesn't run concurrent queries)
         # If using a pooler, it's even safer (pooler handles connection fan-in)
         min_pool_size = 1
-        # Was max_pool_size=2 for the non-pooler case. That's dangerously
-        # low for the persistent bot process specifically: this single
-        # pool is shared by ~25+ background `@tasks.loop` pollers
-        # (automod reminders, starboard, crypto_alerts, schedule, giveaway
-        # timers, voice_xp, bump, heist, ...) AND every concurrent slash
-        # command/component interaction across every guild the bot is in.
-        # With only 2 connections, any brief overlap (e.g. a background
-        # loop tick landing mid-interaction) makes pool.acquire() block
-        # for other callers. Most buttons survive this because they
-        # defer() first (which buys ~15 minutes), but a few — e.g.
-        # _WelcomeEditButton in _views_join_dm.py — MUST call send_modal()
-        # as their literal first response and can't defer around a DB
-        # wait, so this contention surfaced there as a hard, repeatable
-        # "The application didn't respond in time." Bumped to match the
-        # pooler case; a real (non-serverless) Postgres provider handles
-        # 5 connections from one process without issue.
-        max_pool_size = 5 if is_using_pooler else 5
+        # Was max_pool_size=2 for the non-pooler case — dangerously low
+        # for the persistent bot process, which shares this one pool with
+        # ~25+ background @tasks.loop pollers and every concurrent slash
+        # command/component interaction. Non-pooler case bumped to 5
+        # (see below for the pooler case, now 20).
+        max_pool_size = 20 if is_using_pooler else 5
+        # NOTE: 20 (not 5) when a pooler is present. Supavisor/PgBouncer in
+        # transaction mode is built to safely multiplex far more client-side
+        # connections than that — it fans them into a much smaller number of
+        # real Postgres backend connections. Capping at 5 here was starving
+        # this pool needlessly: the persistent bot process shares ONE pool
+        # across ~25+ background @tasks.loop pollers (automod reminders,
+        # starboard, crypto_alerts, schedule, giveaway timers, voice_xp,
+        # bump, heist, the leaderboard autopost loop, ...) AND every
+        # concurrent slash command/component interaction across every guild
+        # — /leaderboard alone fires several acquire()s per render (see
+        # _views_leveling_leaderboard.py). At 5, any brief overlap between a
+        # background tick and a couple of interactions serializes everyone
+        # else behind pool.acquire(). Direct (non-pooler) connections stay
+        # at 5 — Postgres itself, not a pooler, is what's limiting those.
         # NOTE: 5 (not 1) when a pooler is present — the persistent bot
         # process (discord_bot/bot.py) fields many concurrent interactions
         # (slash commands, vote clicks, autopost/crypto_alerts loops) on one
