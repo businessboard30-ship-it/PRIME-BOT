@@ -35,7 +35,7 @@ from typing import Optional, Dict, Any, List
 import aiohttp
 
 from database import get_pool
-from modules.ai_features import GROQ_API_KEY
+from modules.ai_features import GROQ_API_KEY, GROQ_API_KEYS, _groq_post
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +277,7 @@ async def _ai_scam_score(description: str) -> int:
     function writes to the submitter's own AI conversation history, which
     would incorrectly mix an internal risk check into their personal
     /ai chat log."""
-    if not GROQ_API_KEY or not description.strip():
+    if not GROQ_API_KEYS or not description.strip():
         return 0
     prompt = (
         "You are a fraud/scam classifier for a Discord bot listing site. "
@@ -287,27 +287,21 @@ async def _ai_scam_score(description: str) -> int:
         f"description.\n\nDescription:\n{description[:800]}"
     )
     try:
-        async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-            payload = {
-                "model": CLASSIFIER_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                "max_completion_tokens": 5,
-            }
-            async with session.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp:
-                if resp.status != 200:
-                    return 0
-                data = await resp.json()
-                text = data["choices"][0]["message"]["content"].strip()
-                match = re.search(r"\d+", text)
-                if not match:
-                    return 0
-                raw = min(100, max(0, int(match.group())))
-                return round(raw * 0.4)  # scaled to contribute at most 40 pts to the total score
+        payload = {
+            "model": CLASSIFIER_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_completion_tokens": 5,
+        }
+        status, data, _error = await _groq_post(payload, timeout_seconds=8)
+        if status != 200:
+            return 0
+        text = data["choices"][0]["message"]["content"].strip()
+        match = re.search(r"\d+", text)
+        if not match:
+            return 0
+        raw = min(100, max(0, int(match.group())))
+        return round(raw * 0.4)  # scaled to contribute at most 40 pts to the total score
     except Exception as e:
         logger.error(f"[v0] archive: AI classifier call failed: {e}")
         return 0
@@ -626,7 +620,7 @@ async def suggest_category(description: str, current_category: str) -> Optional[
     looks like a mismatch. Returns the suggested category only if it
     disagrees with current_category, or None (no opinion / not configured /
     call failed) — this must never block or fail a listing on its own."""
-    if not GROQ_API_KEY or not description.strip():
+    if not GROQ_API_KEYS or not description.strip():
         return None
     prompt = (
         f"Categories: {', '.join(CATEGORIES)}. A Discord bot was listed under "
@@ -634,22 +628,16 @@ async def suggest_category(description: str, current_category: str) -> Optional[
         "Reply with ONLY the single best-fitting category name from the list above, nothing else."
     )
     try:
-        async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-            payload = {
-                "model": CLASSIFIER_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0,
-                "max_completion_tokens": 10,
-            }
-            async with session.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-                suggested = data["choices"][0]["message"]["content"].strip()
+        payload = {
+            "model": CLASSIFIER_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_completion_tokens": 10,
+        }
+        status, data, _error = await _groq_post(payload, timeout_seconds=8)
+        if status != 200:
+            return None
+        suggested = data["choices"][0]["message"]["content"].strip()
     except Exception as e:
         logger.warning(f"[v0] archive suggest_category failed: {e}")
         return None

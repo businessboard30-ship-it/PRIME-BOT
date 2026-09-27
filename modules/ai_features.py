@@ -17,11 +17,64 @@ logger = logging.getLogger(__name__)
 # AI_GATEWAY_API_KEY or provider keys from env
 import os
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+# Optional second Groq key (separate account/project) — pure failover, not
+# load-balanced. _groq_post tries GROQ_API_KEY first and only falls through
+# to this one on an error a different key could plausibly fix (auth/rate
+# limit/server error/timeout), never on a normal bad-request-type failure.
+GROQ_API_KEY_BACKUP = os.getenv("GROQ_API_KEY_BACKUP", "")
+GROQ_API_KEYS = [k for k in (GROQ_API_KEY, GROQ_API_KEY_BACKUP) if k]
 FAL_API_KEY = os.getenv("FAL_API_KEY", "")
 # GEMINI_API_KEY: free Google AI Studio key (aistudio.google.com/apikey) — no
 # credit card, no billing setup. gemini-2.5-flash-image ("Nano Banana") has a
 # genuinely generous free tier (Google's own docs: up to 500 requests/day).
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# Status codes worth retrying with the backup key — auth problems (this key
+# specifically is bad/disabled), rate limits, and Groq-side server errors.
+# Anything else (400 bad request, etc.) would fail identically on any key,
+# so there's no point burning the second key's quota on it.
+_GROQ_RETRYABLE_STATUSES = {401, 403, 429, 500, 502, 503, 504}
+
+
+async def _groq_post(payload: dict, timeout_seconds: int = 30):
+    """POSTs payload to Groq's chat/completions endpoint, trying each key in
+    GROQ_API_KEYS in order. Moves on to the next key only on a retryable
+    status (see _GROQ_RETRYABLE_STATUSES) or a network-level exception —
+    a normal 200 or a non-retryable error status is returned immediately.
+
+    Returns (status, data_or_None, error_text_or_None):
+    - success: (200, parsed_json, None)
+    - non-retryable HTTP error: (status, None, error_body_text)
+    - every key exhausted on retryable errors/exceptions: (last_status_or_None, None, last_error_text)
+    """
+    last_status = None
+    last_error = None
+    for key in GROQ_API_KEYS:
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+                ) as resp:
+                    if resp.status == 200:
+                        return 200, await resp.json(), None
+                    error_text = await resp.text()
+                    last_status, last_error = resp.status, error_text
+                    if resp.status not in _GROQ_RETRYABLE_STATUSES:
+                        return resp.status, None, error_text
+                    logger.warning(
+                        f"[v0] Groq key failed with HTTP {resp.status}, trying next key if available"
+                    )
+        except Exception as e:
+            last_status, last_error = None, f"{type(e).__name__}: {e}"
+            logger.warning(f"[v0] Groq request errored ({last_error}), trying next key if available")
+    return last_status, None, last_error
 
 # ═══════════════════════════════════════════════════════════════════════════
 # AI CHAT with conversation history
@@ -436,7 +489,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
     """
     ai_chat.last_error = None
     try:
-        if not GROQ_API_KEY:
+        if not GROQ_API_KEYS:
             ai_chat.last_error = "GROQ_API_KEY is not set in the environment."
             return "⚠️ AI service not configured. Admin needs to set GROQ_API_KEY."
 
@@ -473,74 +526,63 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
 
         # Add current message
         messages.append({"role": "user", "content": message})
-        
-        # Call Groq API
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "model": AI_CHAT_MODEL,
-                "messages": messages,
-                "temperature": 0.7,
-                "max_completion_tokens": 400,
-                "reasoning_effort": "low",
-                "top_p": 1.0
-            }
-            if tools:
-                payload["tools"] = tools
-                payload["tool_choice"] = "auto"
-            
-            async with session.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    msg = data.get('choices', [{}])[0].get('message', {})
 
-                    raw_calls = msg.get('tool_calls') or []
-                    if tools and raw_calls:
-                        import json as _json
-                        parsed = []
-                        for tc in raw_calls:
-                            fn = tc.get('function', {})
-                            try:
-                                args = _json.loads(fn.get('arguments') or '{}')
-                            except (ValueError, TypeError):
-                                args = {}
-                            name = fn.get('name')
-                            if name:
-                                parsed.append({"name": name, "arguments": args})
-                        if parsed:
-                            return {"tool_calls": parsed}
-                        # Model claimed a tool call but gave nothing usable —
-                        # fall through and treat any content as normal text.
+        payload = {
+            "model": AI_CHAT_MODEL,
+            "messages": messages,
+            "temperature": 0.7,
+            "max_completion_tokens": 400,
+            "reasoning_effort": "low",
+            "top_p": 1.0
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
 
-                    response_text = msg.get('content', '')
-                    
-                    response_text = trim_reply(response_text)
-                    response_text = render_support_link(response_text)
-                    response_text = scrub_raw_support_url(response_text)
-                    response_text = scrub_giftboost_mention(response_text)
-                    if mentions_other_bot(response_text):
-                        response_text = OTHER_BOT_REFUSAL
-                    if response_text:
-                        # Log usage — store both sides of the turn plus the
-                        # session so this exchange can be replayed as real
-                        # history next time, not just remembered as a prompt.
-                        await log_ai_usage(user_id, "messages", message, response_text=response_text,
-                                           session_id=session_id, guild_id=guild_id, kind=kind)
-                        return response_text
-                else:
-                    error = await resp.text()
-                    ai_chat.last_error = f"Groq API HTTP {resp.status}: {error[:300]}"
-                    logger.error(f"[v0] Groq API error: {error}")
-        
+        # Call Groq API — _groq_post tries GROQ_API_KEY_BACKUP if the
+        # primary key comes back with an auth/rate-limit/server error.
+        status, data, error_text = await _groq_post(payload, timeout_seconds=30)
+
+        if status == 200:
+            msg = data.get('choices', [{}])[0].get('message', {})
+
+            raw_calls = msg.get('tool_calls') or []
+            if tools and raw_calls:
+                import json as _json
+                parsed = []
+                for tc in raw_calls:
+                    fn = tc.get('function', {})
+                    try:
+                        args = _json.loads(fn.get('arguments') or '{}')
+                    except (ValueError, TypeError):
+                        args = {}
+                    name = fn.get('name')
+                    if name:
+                        parsed.append({"name": name, "arguments": args})
+                if parsed:
+                    return {"tool_calls": parsed}
+                # Model claimed a tool call but gave nothing usable —
+                # fall through and treat any content as normal text.
+
+            response_text = msg.get('content', '')
+
+            response_text = trim_reply(response_text)
+            response_text = render_support_link(response_text)
+            response_text = scrub_raw_support_url(response_text)
+            response_text = scrub_giftboost_mention(response_text)
+            if mentions_other_bot(response_text):
+                response_text = OTHER_BOT_REFUSAL
+            if response_text:
+                # Log usage — store both sides of the turn plus the
+                # session so this exchange can be replayed as real
+                # history next time, not just remembered as a prompt.
+                await log_ai_usage(user_id, "messages", message, response_text=response_text,
+                                   session_id=session_id, guild_id=guild_id, kind=kind)
+                return response_text
+        else:
+            ai_chat.last_error = f"Groq API HTTP {status}: {(error_text or '')[:300]}"
+            logger.error(f"[v0] Groq API error: {error_text}")
+
         return None
     
     except Exception as e:

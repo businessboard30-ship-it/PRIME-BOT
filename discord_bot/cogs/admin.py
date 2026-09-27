@@ -289,6 +289,7 @@ class AdminCog(commands.Cog):
             "DISCORD_BOT_TOKEN": bool(os.getenv("DISCORD_BOT_TOKEN")),
             "DATABASE_URL": bool(os.getenv("DATABASE_URL")),
             "GROQ_API_KEY": bool(os.getenv("GROQ_API_KEY")),
+            "GROQ_API_KEY_BACKUP (optional)": bool(os.getenv("GROQ_API_KEY_BACKUP")),
             "FAL_API_KEY or OPENAI_API_KEY": bool(os.getenv("FAL_API_KEY") or os.getenv("OPENAI_API_KEY")),
             "ENCRYPTION_KEY": bool(os.getenv("ENCRYPTION_KEY")),
         }

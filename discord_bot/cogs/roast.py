@@ -65,7 +65,9 @@ from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 
 logger = logging.getLogger(__name__)
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+from modules.ai_features import GROQ_API_KEYS, _groq_post
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")  # kept for the presence check in admin.py
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 ROAST_MODEL = "llama-3.1-70b-versatile"
 
@@ -607,33 +609,27 @@ async def _generate_roast(display_name: str, context: str = "", pick_fresh=None)
     if not context:
         return fallback()
 
-    if not GROQ_API_KEY:
+    if not GROQ_API_KEYS:
         return fallback()
     try:
-        async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-            user_msg = f"Roast {display_name}."
-            if context:
-                user_msg += f" They just said: \"{context[:200]}\" — you can roast that too."
-            payload = {
-                "model": ROAST_MODEL,
-                "messages": [
-                    {"role": "system", "content": ROAST_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                "temperature": 0.95,
-                "max_tokens": 120,
-            }
-            async with session.post(
-                GROQ_ENDPOINT, json=payload, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                    return text.strip() or fallback()
-                logger.warning(f"[v0] roast generation failed: HTTP {resp.status}")
-                return fallback()
+        user_msg = f"Roast {display_name}."
+        if context:
+            user_msg += f" They just said: \"{context[:200]}\" — you can roast that too."
+        payload = {
+            "model": ROAST_MODEL,
+            "messages": [
+                {"role": "system", "content": ROAST_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            "temperature": 0.95,
+            "max_tokens": 120,
+        }
+        status, data, error_text = await _groq_post(payload, timeout_seconds=15)
+        if status == 200:
+            text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return text.strip() or fallback()
+        logger.warning(f"[v0] roast generation failed: HTTP {status}: {error_text}")
+        return fallback()
     except Exception as e:
         logger.warning(f"[v0] roast generation error: {e}")
         return fallback()
