@@ -1,32 +1,29 @@
 # path: discord_bot/cogs/style.py
 
-"""/style — one command, one line of typed text (a normal slash-command
-argument, not a popup), then everything after that (convert to fonts, ask
-AI for name ideas, apply to a channel) is buttons/selects on the result
-view — no discord.ui.Modal anywhere in this file. The channel-name/font
-wizard reachable from the combined owner join DM's "styles" feature
-button (_views_join_dm.py) is a SEPARATE, unrelated entry point — it
-still lives in _views_style_wizard.py and still uses modals there, since
-it has no slash-command argument to source text from and isn't in scope
-here; changing this command's shape doesn't touch it.
+"""/style — the ONLY command in this cog. Type text once (a normal
+slash-command argument, not a popup), then everything else — convert to
+fonts, ask AI for name ideas, apply the styled result to a channel — is
+buttons/a select on that one result view. No discord.ui.Modal anywhere
+in this file, and no second/third slash command: renaming used to be its
+own /stylerename command, but that's now just the "Apply to a channel"
+select on this same result view (_StyleApplyChannelSelect ->
+_StyleApplySelectView, both below) — one command, one wizard, everything
+lives there.
 
-/stylerename is a real, independently-runnable slash command (not just a
-button on the result view) for exactly one reason: being in
-modules/ai_command_allowlist.py's AI_COMMANDS is what lets /aichat (and
-reply/mention chat) call it as a natural-language tool call — "rename
-#chat to Gaming Lounge in small caps, implement it" runs through here
-via the existing AI-command tool-calling pipeline in
-ai_command_guard.py/ai_tools.py. It mutates a real channel, so it's
-requires_confirmation=True in the allowlist — the AI must get an
-explicit Confirm click (AIConfirmView) before this callback ever runs,
-same as kick/ban/purge.
+The channel-name/font wizard reachable from the combined owner join DM's
+"styles" feature button (_views_join_dm.py) is a SEPARATE, unrelated
+entry point — it still lives in _views_style_wizard.py and still uses
+modals there, since it has no slash-command argument to source text
+from and isn't in scope here; nothing in this file touches it.
 
-REMOVED: /stylepreview. It only ever existed as a read-only twin of this
-command's Convert step for the AI-tool-calling allowlist (see the
-allowlist's comment for /stylerename above) — now that /style's own
-Convert button works straight off a typed argument with no modal in the
-way, that duplicate command added nothing a person couldn't already get
-from /style itself, so it's gone along with its allowlist entry."""
+Because /stylerename no longer exists as an independently-runnable slash
+command, it's also gone from modules/ai_command_allowlist.py's
+AI_COMMANDS — /aichat can no longer natural-language-trigger a channel
+rename directly. That's an intentional tradeoff of "only one command":
+the allowlist mechanism calls a real slash command's callback, and there
+isn't a standalone rename command left to call. If AI-triggered renames
+are wanted back later, that needs its own command again (or a tool-call
+path into this wizard), not a decision to make silently here."""
 
 import logging
 
@@ -40,8 +37,6 @@ from modules.ai_features import ai_chat, check_ai_usage_limit
 from modules.superbot_adapter import get_user_tier
 
 logger = logging.getLogger(__name__)
-
-_STYLE_APP_CHOICES = [app_commands.Choice(name=label, value=key) for key, label, _emoji in style_choices()]
 
 AI_PROMPT_CONTEXT = (
     "You are suggesting Discord channel names. The user will describe a theme, vibe, or "
@@ -92,15 +87,17 @@ class _StyleAIButton(discord.ui.Button):
             blocks.append(f"**{idea}**\n{styled}")
         await interaction.followup.send(
             f"**Ideas for \u201c{self.text}\u201d:**\n\n" + "\n\n".join(blocks) +
-            "\n\n-# Like one? Run `/stylerename` to apply it to a channel directly.",
+            "\n\n-# Like one? Run /style again with that text, then use **Apply to a channel** below.",
             ephemeral=True,
         )
 
 
 class _StyleApplyChannelSelect(discord.ui.ChannelSelect):
-    """Picking a channel here goes straight to the font Select
-    (_StyleApplySelectView, already modal-free) using the text from
-    /style as the base name — no "type the base name" modal in between."""
+    """The entire former /stylerename command, folded into this one
+    select: pick a channel here, it goes straight to the font Select
+    below (_StyleApplySelectView, already modal-free) using the text
+    from /style as the base name. No separate command, no "type the
+    base name" modal — this IS /stylerename now."""
     def __init__(self, text: str, guild_id: int, clone_id):
         super().__init__(
             placeholder="\ud83c\udfaf Apply to a channel\u2026",
@@ -112,6 +109,11 @@ class _StyleApplyChannelSelect(discord.ui.ChannelSelect):
         self.clone_id = clone_id
 
     async def callback(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "You need **Manage Channels** to rename a channel.", ephemeral=True,
+            )
+            return
         channel = self.values[0]
         view = _StyleApplySelectView(self.guild_id, self.clone_id, channel.id, self.text)
         await interaction.response.send_message(
@@ -122,7 +124,9 @@ class _StyleApplyChannelSelect(discord.ui.ChannelSelect):
 class _StyleResultView(discord.ui.LayoutView):
     """The whole /style result — every field it needs (the text) was
     already typed as the command's own argument, so nothing here ever
-    needs to pop up a text box of its own."""
+    needs to pop up a text box, and there's no second command to run
+    for any of it: fonts, AI ideas, and the channel rename are all right
+    here."""
     def __init__(self, text: str, guild_id: int, clone_id):
         super().__init__(timeout=300)
         lines = [f"{emoji} **{label}** — {apply_style(text, key)}" for key, label, emoji in style_choices()]
@@ -161,28 +165,6 @@ class StyleCog(commands.Cog):
         await interaction.response.send_message(
             view=_StyleResultView(text[:80].strip(), guild_id, clone_id), ephemeral=True,
         )
-
-    @app_commands.command(name="stylerename", description="Style text into a font and rename a channel to it")
-    @app_commands.guild_only()
-    @app_commands.describe(channel="Channel to rename", text="Base name (plain text)", style="Which font")
-    @app_commands.choices(style=_STYLE_APP_CHOICES)
-    @app_commands.checks.has_permissions(manage_channels=True)
-    async def stylerename(self, interaction: discord.Interaction, channel: discord.TextChannel,
-                           text: str, style: app_commands.Choice[str]):
-        styled_name = apply_style(text[:80], style.value)
-        perms = channel.permissions_for(interaction.guild.me)
-        if not perms.manage_channels:
-            await interaction.response.send_message(
-                "I don't have **Manage Channels** permission there \u2014 grant it and try again.", ephemeral=True,
-            )
-            return
-        await interaction.response.defer(ephemeral=True)
-        try:
-            await channel.edit(name=styled_name[:100], reason=f"Styled via /stylerename by {interaction.user}")
-        except discord.HTTPException as e:
-            await interaction.followup.send(f"\u274c Discord rejected that name: {e.text}", ephemeral=True)
-            return
-        await interaction.followup.send(f"\u2705 Renamed {channel.mention} to **{styled_name}**.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
