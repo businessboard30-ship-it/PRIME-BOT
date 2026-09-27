@@ -142,19 +142,16 @@ async def _bulk_cache_members(bot, guild, mode: str, user_ids: list[int]):
         pass
 
 
-async def _stats_lines(bot, guild, clone_id, mode: str, user_id: int):
-    """Builds the 'Your Current Stats' body for whoever last interacted.
-    Returns None if they have no XP at all yet in that mode."""
-    if mode == "local":
-        rank_row = await db.get_xp_rank(guild.id, user_id, clone_id=clone_id)
-    else:
-        rank_row = await db.get_global_xp_rank(user_id)
+async def _format_stats_text(rank_row, name: str) -> str:
+    """Pure formatter — no I/O. Split out of the old _stats_lines so the
+    rank DB query and the name resolution can be pipelined through the
+    same bulk-cache + gather flow as everything else instead of each
+    doing its own separate, racing lookup (see build_leaderboard_view)."""
     if rank_row is None or rank_row.get("total_xp") is None:
         return None
     rank = rank_row["rank"]
     total_players = rank_row["total_players"] or 1
     pct = round((rank / total_players) * 100, 1)
-    name, _avatar, _role_name, _role_color = await _resolve_display(bot, guild, mode, user_id)
     return (
         f"**Your Current Stats**\n"
         f"User: {name}\n"
@@ -253,27 +250,49 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     stats_text = None
     stats_task = None
     if stats_for_user_id is not None:
-        stats_task = asyncio.create_task(_stats_lines(bot, guild, clone_id, mode, stats_for_user_id))
+        # Just the rank DB query now — no name resolution here (see
+        # below), so this can run purely concurrently with everything
+        # else with nothing left inside it that could race
+        # _bulk_cache_members.
+        if mode == "local":
+            stats_task = asyncio.create_task(db.get_xp_rank(guild.id, stats_for_user_id, clone_id=clone_id))
+        else:
+            stats_task = asyncio.create_task(db.get_global_xp_rank(stats_for_user_id))
 
     # One gateway round-trip resolves every uncached row (+ the stats-line
     # user) at once — see _bulk_cache_members' docstring for why the
     # earlier asyncio.gather-only fix wasn't enough on its own.
     bulk_ids = [r["user_id"] for r in rows]
-    if stats_for_user_id is not None:
+    needs_stats_display = stats_for_user_id is not None and stats_for_user_id not in bulk_ids
+    if needs_stats_display:
         bulk_ids.append(stats_for_user_id)
     await _bulk_cache_members(bot, guild, mode, bulk_ids)
 
     # _resolve_display only hits a REST fetch_member/fetch_user fallback
     # now for whatever _bulk_cache_members above didn't resolve (left the
     # guild, etc.) — firing those via gather still helps for that
-    # remainder, it's just no longer doing the heavy lifting.
+    # remainder, it's just no longer doing the heavy lifting. The
+    # stats-panel user's name is resolved in this SAME gather (added to
+    # the batch below) rather than via its own separate _resolve_display
+    # call afterward — that separate call used to run concurrently with
+    # _bulk_cache_members above as its own task, which meant it could hit
+    # an uncached member and fire a redundant REST fetch_member before
+    # bulk-caching had finished — the exact per-row REST fallback
+    # _bulk_cache_members exists to avoid. Resolving it here instead,
+    # strictly after the cache is warm, closes that race.
+    display_ids = list(rows)
+    if needs_stats_display:
+        display_ids.append({"user_id": stats_for_user_id})
     display_results = await asyncio.gather(
-        *[_resolve_display(bot, guild, mode, r["user_id"]) for r in rows]
+        *[_resolve_display(bot, guild, mode, r["user_id"]) for r in display_ids]
     )
-    display_by_user_id = {r["user_id"]: d for r, d in zip(rows, display_results)}
+    display_by_user_id = {r["user_id"]: d for r, d in zip(display_ids, display_results)}
 
     if stats_task is not None:
-        stats_text = await stats_task
+        rank_row = await stats_task
+        stats_name = (display_by_user_id[stats_for_user_id][0]
+                      if stats_for_user_id in display_by_user_id else f"User {stats_for_user_id}")
+        stats_text = await _format_stats_text(rank_row, stats_name)
     stats_section = discord.ui.Section(accessory=LeaderboardMyRankButton(guild.id, clone_id, mode, page))
     stats_section.add_item(stats_text or "**Your Current Stats**\nTap *My Rank* to see where you stand.")
     container.add_item(stats_section)
