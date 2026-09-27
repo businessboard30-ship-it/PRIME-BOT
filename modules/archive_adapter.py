@@ -40,7 +40,7 @@ from modules.ai_features import GROQ_API_KEY, GROQ_API_KEYS, _groq_post
 logger = logging.getLogger(__name__)
 
 RESUBMIT_LIMIT = 3
-CLASSIFIER_MODEL = "llama-3.1-8b-instant"  # small/cheap — this is a binary risk check, not a chat
+CLASSIFIER_MODEL = "openai/gpt-oss-20b"  # small/cheap — this is a binary risk check, not a chat (llama-3.1-8b-instant decommissioned)
 
 DISCORD_EPOCH = 1420070400000  # ms, per Discord's snowflake spec
 

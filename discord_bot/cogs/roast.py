@@ -69,7 +69,7 @@ from modules.ai_features import GROQ_API_KEYS, _groq_post
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")  # kept for the presence check in admin.py
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-ROAST_MODEL = "llama-3.1-70b-versatile"
+ROAST_MODEL = "openai/gpt-oss-120b"  # llama-3.1/3.3-70b-versatile both decommissioned
 
 POLL_INTERVAL_SECONDS = 300
 # Minimum time between admin roast-suggestion DMs, regardless of trigger.

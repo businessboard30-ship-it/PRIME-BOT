@@ -55,7 +55,7 @@ class GroqService:
     """AI service for anime recommendations and summaries using Groq API"""
     
     def __init__(self):
-        self.model = "llama-3.1-70b-versatile"  # Active Groq model (mixtral-8x7b deprecated in Mar 2025)
+        self.model = "openai/gpt-oss-120b"  # Active Groq model (llama-3.1/3.3-70b-versatile both decommissioned)
         self.cache = {}
         self.cache_ttl = 86400  # 24 hours
     
@@ -199,7 +199,7 @@ String to translate:
 {text}"""
 
     payload = {
-        "model": "llama-3.1-70b-versatile",
+        "model": "openai/gpt-oss-120b",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": 300,

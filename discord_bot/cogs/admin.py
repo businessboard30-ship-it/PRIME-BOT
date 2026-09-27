@@ -298,6 +298,29 @@ class AdminCog(commands.Cog):
             embed.add_field(name=name, value="✅ set" if ok else "❌ missing", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @admin.command(name="aidebug", description="[Owner] Send a test prompt to Groq and show the real error if it fails")
+    async def aidebug(self, interaction: discord.Interaction):
+        if not _is_bot_admin(interaction.user.id):
+            await _deny(interaction)
+            return
+        await interaction.response.defer(ephemeral=True)
+        from modules.ai_features import ai_chat, GROQ_API_KEY, GROQ_API_KEY_BACKUP
+        result = await ai_chat(interaction.user.id, "Say 'ok' and nothing else.", kind="aidebug")
+        embed = discord.Embed(
+            title="AI debug",
+            color=discord.Color.green() if result and not isinstance(result, dict) else discord.Color.red(),
+        )
+        embed.add_field(name="GROQ_API_KEY", value="✅ set" if GROQ_API_KEY else "❌ missing", inline=True)
+        embed.add_field(name="GROQ_API_KEY_BACKUP", value="✅ set" if GROQ_API_KEY_BACKUP else "❌ missing", inline=True)
+        embed.add_field(
+            name="Result",
+            value=(str(result)[:500] if result else "None (call failed — see error below)"),
+            inline=False,
+        )
+        if ai_chat.last_error:
+            embed.add_field(name="Last error", value=str(ai_chat.last_error)[:1000], inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     # ── Revenue / subscriber / commission / clone tooling ────────────────
     # Discord equivalent of admin_panel.py's show_revenue_dashboard /
     # show_subscribers_list / show_commissions_tracking / show_bot_analytics
