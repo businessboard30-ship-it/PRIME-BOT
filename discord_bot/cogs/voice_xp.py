@@ -163,12 +163,21 @@ class VoiceXPCog(GuildOnlyCog):
         await db.add_xp(guild_id, user_id, gained, new_level, clone_id=clone_id)
         self._minutes_paid[key] = elapsed_minutes
 
+        # Godhood trial-1 activity tracking fires on every XP-earning tick,
+        # same as leveling.py's on_message — NOT gated behind new_level >
+        # old_level below, since most voice ticks award XP without also
+        # crossing a level boundary, and trial 1 needs to accrue on those
+        # ticks too, not just on the ticks that happen to level someone up.
+        guild = self.bot.get_guild(guild_id)
+        member = guild.get_member(user_id) if guild else None
+        leveling_cog = self.bot.get_cog("LevelingCog")
+        if member and isinstance(member, discord.Member) and leveling_cog:
+            await leveling_cog._track_godhood_activity(member, gained, clone_id=clone_id)
+
         if new_level > old_level:
-            guild = self.bot.get_guild(guild_id)
-            member = guild.get_member(user_id) if guild else None
             if guild is None:
                 return
-            leveling_cog = self.bot.get_cog("LevelingCog")
+
             # Bug fix: grant roles even when the member already left voice
             # (the most common case — they levelled up in their last minute).
             # Previously this block was guarded by member.voice.channel so
@@ -177,24 +186,52 @@ class VoiceXPCog(GuildOnlyCog):
                 if leveling_cog:
                     await leveling_cog._grant_level_roles(member, new_level, clone_id=clone_id)
                 # Announce in the configured level-up channel, not the voice
-                # channel the member may have already left.
+                # channel the member may have already left. Computed once
+                # and reused below for the clan-card/chief/godhood messages
+                # too, instead of re-deriving it per feature.
                 lv_config = await db.get_leveling_config(guild_id, clone_id=clone_id)
                 card_style = lv_config.get("card_style", "card")
-                if leveling_cog and card_style != "off":
+                announce_ch = None
+                if leveling_cog:
                     announce_ch = await leveling_cog._ensure_announce_channel(guild, lv_config, clone_id=clone_id)
                     if announce_ch is None and member.voice and member.voice.channel:
                         announce_ch = member.voice.channel
+
+                if leveling_cog and card_style != "off" and announce_ch:
+                    # Was a plain text message only — voice XP never actually
+                    # rendered the tier/level card (or the clan card below),
+                    # so voice-only members never saw either. Route through
+                    # the same renderer text XP uses instead of duplicating it.
+                    await leveling_cog._send_level_up_card(
+                        announce_ch, member, new_level, new_total, card_style,
+                    )
+
+                # Clan chiefs — re-derived here regardless of card_style,
+                # same as leveling.py's on_message. This was previously
+                # MISSING from the voice path entirely: a member who
+                # overtook the top-5 purely via voice XP never re-derived
+                # the seat table, so a stale (non-top-5) member could keep
+                # sitting in a chief seat indefinitely until some unrelated
+                # TEXT level-up happened to trigger a recompute elsewhere
+                # in the guild. Mirrored from leveling.py's on_message.
+                is_chief_now = False
+                if leveling_cog:
+                    chief_changes = await db.recompute_clan_chiefs(guild_id, clone_id=clone_id)
+                    if chief_changes and announce_ch:
+                        for change in chief_changes:
+                            await leveling_cog._announce_chief_change(announce_ch, guild, change, clone_id=clone_id)
+                    is_chief_now = any(c["new_user_id"] == user_id for c in chief_changes) or (
+                        await db.get_chief_seat_for_user(guild_id, user_id, clone_id=clone_id) is not None
+                    )
+                    if card_style != "off" and (is_chief_now or new_level % 3 == 0) and announce_ch:
+                        await leveling_cog._send_clan_message(announce_ch, member, clone_id=clone_id)
+
+                    # Godhood gauntlet — same gap as clan chiefs above, also
+                    # only ever wired into the text path before this fix.
+                    # (Activity tracking for trial 1 happens unconditionally
+                    # earlier in this function, not here — see above.)
                     if announce_ch:
-                        # Was a plain text message only — voice XP never actually
-                        # rendered the tier/level card (or the clan card below),
-                        # so voice-only members never saw either. Route through
-                        # the same renderer text XP uses instead of duplicating it.
-                        await leveling_cog._send_level_up_card(
-                            announce_ch, member, new_level, new_total, card_style,
-                        )
-                        # Clan flavor card — every 3 levels, same as text XP.
-                        if new_level % 3 == 0:
-                            await leveling_cog._send_clan_message(announce_ch, member, clone_id=clone_id)
+                        await leveling_cog._maybe_advance_godhood(announce_ch, member, new_level, clone_id=clone_id)
 
     @tasks.loop(seconds=60)
     async def _tick(self):
