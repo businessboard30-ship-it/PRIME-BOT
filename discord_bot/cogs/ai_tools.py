@@ -151,7 +151,11 @@ class AIToolsCog(commands.Cog):
                 view = build_boost_xp_view(guild.id, clone_id)
             return levelup_answer(in_server), view
         if is_support_invite_question(text):
-            from config import DISCORD_SUPPORT_SERVER_INVITE
+            from config import DISCORD_SUPPORT_SERVER_INVITE, DISCORD_SUPPORT_SERVER_ID
+            if guild is not None and DISCORD_SUPPORT_SERVER_ID and guild.id == DISCORD_SUPPORT_SERVER_ID:
+                # Asking for the support server's own invite link while
+                # already inside it doesn't add up — no join button.
+                return "You're already in it — this is the support server.", None
             if not DISCORD_SUPPORT_SERVER_INVITE:
                 return "We don't have a support server link set up right now.", None
             view = discord.ui.View()
