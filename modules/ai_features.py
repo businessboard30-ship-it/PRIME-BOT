@@ -179,17 +179,24 @@ def trim_reply(text: str, limit: int = 600) -> str:
 _SUPPORT_TOKEN_RE = re.compile(r"\[\[\s*SUPPORT\s*\]\]", re.IGNORECASE)
 
 
-def render_support_link(text: str) -> str:
+def render_support_link(text: str, in_support_server: bool = False) -> str:
     """Strip the [[SUPPORT]] token to plain wording ("our support server") and,
     if a support invite is configured, append SUPPORT_BUTTON_MARKER so the caller
     (ai_tools.py) attaches an actual discord.ui.Button link — never a URL in the
     message text itself. This makes the support link behave exactly like the bot's
     own invite link: a real button, masked by construction, not by hoping the model
-    always uses the token instead of writing the URL out itself."""
+    always uses the token instead of writing the URL out itself.
+
+    in_support_server=True means this chat is already happening inside the
+    support server — telling someone to go join it doesn't add up, so this
+    rewords to plain "ask here" phrasing and never attaches the join button,
+    regardless of what the model wrote."""
     if not text:
         return text
     if not _SUPPORT_TOKEN_RE.search(text):
         return text
+    if in_support_server:
+        return _SUPPORT_TOKEN_RE.sub("right here — you're already in it", text).rstrip()
     text = _SUPPORT_TOKEN_RE.sub("our support server", text).rstrip()
     try:
         from config import DISCORD_SUPPORT_SERVER_INVITE as invite
@@ -246,9 +253,11 @@ def is_bot_invite_question(text: str) -> bool:
 _RAW_SUPPORT_URL_RE = re.compile(r"https?://(?:www\.)?discord\.gg/\S+", re.IGNORECASE)
 
 
-def scrub_raw_support_url(text: str) -> str:
+def scrub_raw_support_url(text: str, in_support_server: bool = False) -> str:
     if not text or not _RAW_SUPPORT_URL_RE.search(text):
         return text
+    if in_support_server:
+        return _RAW_SUPPORT_URL_RE.sub("right here — you're already in it", text).rstrip()
     try:
         from config import DISCORD_SUPPORT_SERVER_INVITE as invite
     except Exception:
@@ -502,6 +511,22 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
 
         # Build conversation with context
         system_content = SYSTEM_PROMPT_ANIME if is_anime_question else SYSTEM_PROMPT_GENERAL
+        try:
+            from config import DISCORD_SUPPORT_SERVER_ID
+        except Exception:
+            DISCORD_SUPPORT_SERVER_ID = 0
+        chatting_in_support_server = bool(
+            guild_id and DISCORD_SUPPORT_SERVER_ID and guild_id == DISCORD_SUPPORT_SERVER_ID
+        )
+        if chatting_in_support_server:
+            # Overrides rule 5's "send them to the support server" — doing
+            # that here doesn't add up, they're already in it.
+            system_content += (
+                "\n\nIMPORTANT: this conversation is happening INSIDE the support server itself. "
+                "Never tell the user to join, come to, or check the support server — they're already "
+                "here. If a question is too hard or you're unsure, just say so and suggest they ask "
+                "their question here (e.g. wait for a staff member), not that they go find support."
+            )
         if command_context:
             # Permission-filtered command list built by the caller (see
             # modules/command_reference.py + discord_bot/cogs/ai_tools.py) —
@@ -567,8 +592,8 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
             response_text = msg.get('content', '')
 
             response_text = trim_reply(response_text)
-            response_text = render_support_link(response_text)
-            response_text = scrub_raw_support_url(response_text)
+            response_text = render_support_link(response_text, in_support_server=chatting_in_support_server)
+            response_text = scrub_raw_support_url(response_text, in_support_server=chatting_in_support_server)
             response_text = scrub_giftboost_mention(response_text)
             if mentions_other_bot(response_text):
                 response_text = OTHER_BOT_REFUSAL
