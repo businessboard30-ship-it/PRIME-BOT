@@ -33,6 +33,19 @@ from database import db
 from modules import leveling
 from modules import clan_cards
 from modules import godhood_cards
+
+# Curated GIF URLs for the "lost the seat" chief-change announcement.
+# Same reasoning as ship.py's SHIP_IMAGE_URLS — hardcoded picks, not a
+# live search/API call, so there's no copyright/ToS exposure and no risk
+# of an unmoderated result slipping into the message. Discord auto-embeds
+# a plain link like this in message content; no download/PIL work needed
+# since (unlike welcome.py's sticker) this isn't composited into anything.
+CHIEF_LOST_SEAT_GIFS = [
+    "https://tenor.com/bizBJ.gif",
+    "https://tenor.com/bjPvj.gif",
+    "https://tenor.com/bJMx3.gif",
+    "https://tenor.com/77Lu.gif",
+]
 from modules.level_card import (
     render_level_card, render_level_card_evolved,
     render_level_card_tiered, get_tier_image_for_level,
@@ -335,7 +348,9 @@ class LevelingCog(GuildOnlyCog):
         whoever they just displaced (if that seat was previously held).
         See database.py's recompute_clan_chiefs docstring for why a seat's
         clan_slug can be a clan the new holder isn't personally locked to
-        (Option B, confirmed by owner)."""
+        (Option B, confirmed by owner). The "lost the seat" message links
+        a GIF (CHIEF_LOST_SEAT_GIFS) — Discord auto-embeds a plain link
+        like this in message content, no attachment needed."""
         clan_slug = change["clan_slug"]
         new_id = change["new_user_id"]
         old_id = change["old_user_id"]
@@ -343,7 +358,8 @@ class LevelingCog(GuildOnlyCog):
             if new_id is not None:
                 await channel.send(f"👑 <@{new_id}> is now **Chief of {clan_slug}**!")
             if old_id is not None and old_id != new_id:
-                await channel.send(f"<@{old_id}> has lost the **{clan_slug}** chief seat.")
+                gif = random.choice(CHIEF_LOST_SEAT_GIFS)
+                await channel.send(f"<@{old_id}> has lost the **{clan_slug}** chief seat.\n{gif}")
         except discord.Forbidden:
             pass
         except Exception as e:
