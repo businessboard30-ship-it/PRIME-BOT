@@ -264,10 +264,30 @@ class AIToolsCog(commands.Cog):
             name = member_obj.display_name if member_obj else f"user {m['user_id']}"
             lines.append(f"{i}. {name} — level {m['level']} ({m['total_xp']} xp)")
         more = f" (+{total - len(members)} more not shown)" if total > len(members) else ""
-        return (
+        fact = (
             f"FACT — **{label}** clan roster on this server, {total} member(s) total, ranked by XP{more}:\n"
             + "\n".join(lines) + "\nQuote this list as-is; mention /clan members shows the full paginated list."
         )
+        # If the asker themselves holds a chief seat whose clan_slug differs
+        # from their own locked clan, surface both explicitly — this is the
+        # exact situation BOT_RULES rule 10 tells the model to explain
+        # instead of calling a bug, so give it the real numbers to do that
+        # with instead of relying on the general rule alone.
+        try:
+            own_locked = await db.get_clan_card_if_assigned(guild.id, user_id, clone_id=clone_id)
+            chief_seat = await db.get_chief_seat_for_user(guild.id, user_id, clone_id=clone_id)
+        except Exception:
+            own_locked, chief_seat = None, None
+        if chief_seat and own_locked:
+            own_label = clan_cards.get_clan_label(own_locked)
+            if chief_seat["clan_slug"] != own_label:
+                fact += (
+                    f"\nFACT — this asker's own locked clan is **{own_label}**, but they currently hold the "
+                    f"Chief seat for **{chief_seat['clan_slug']}** (a different clan) because they're rank "
+                    f"#{chief_seat['seat_rank']} on this server's leaderboard. Their level-up messages will "
+                    f"say \"{chief_seat['clan_slug']}\" while they hold that seat — that's expected, not a bug."
+                )
+        return fact
 
     _GODHOOD_WORDS = re.compile(r"\bgod(hood|s)?\b|\btrial(s)?\b|\bchosen\b|\bascen(d|sion)\b", re.IGNORECASE)
 
