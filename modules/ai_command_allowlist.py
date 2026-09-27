@@ -98,6 +98,10 @@ AI_COMMANDS = (
     AICommandSpec("start", "discord_bot.cogs.quickstart", False, "Show the bot's setup quickstart"),
     AICommandSpec("download", "discord_bot.cogs.external_tools", False, "Download audio/video from a supported link"),
     AICommandSpec("removeclone", "discord_bot.cogs.clone_admin", True, "Deactivate one of your Discord bot clones"),
+
+    # ── Styling ─────────────────────────────────────────────────────────
+    AICommandSpec("stylepreview", "discord_bot.cogs.style", False, "Preview text styled in a fancy unicode font"),
+    AICommandSpec("stylerename", "discord_bot.cogs.style", True, "Style text into a font and rename a channel to it"),
 )
 
 AI_COMMANDS_BY_NAME = {c.name: c for c in AI_COMMANDS}
