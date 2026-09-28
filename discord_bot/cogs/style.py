@@ -163,7 +163,7 @@ class StyleCog(commands.Cog):
             )
             return
         await interaction.response.send_message(
-            view=_StyleResultView(text[:80].strip(), guild_id, clone_id), ephemeral=True,
+            view=_StyleResultView(text[:60].strip(), guild_id, clone_id), ephemeral=True,
         )
 
 

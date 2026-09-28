@@ -25,7 +25,7 @@ import logging
 import discord
 from discord.ext import commands
 
-from modules.text_styles import apply_style, style_choices
+from modules.text_styles import STYLES, apply_style, style_choices
 from modules.ai_features import ai_chat, check_ai_usage_limit
 from modules.superbot_adapter import get_user_tier
 
@@ -160,7 +160,19 @@ class _StyleApplySelectView(discord.ui.View):
 
         self.select = discord.ui.Select(
             placeholder="Choose a font style\u2026",
-            options=[discord.SelectOption(label=label, value=key, emoji=emoji) for key, label, emoji in style_choices()],
+            # NO emoji= here: style_choices()'s "emoji" is a sample glyph
+            # (e.g. U+1D401 bold B), not a real emoji, and Discord rejects
+            # non-emoji characters in a SelectOption with a 400 "Invalid
+            # emoji" — which killed the whole message and surfaced as "bot
+            # didn't respond". The description carries a live preview of
+            # the user's own text in each font instead.
+            options=[
+                discord.SelectOption(
+                    label=label, value=key,
+                    description=apply_style(base_name, key)[:100] or label,
+                )
+                for key, label, _sample in style_choices()
+            ],
         )
         self.select.callback = self._on_select
         self.add_item(self.select)
@@ -168,6 +180,7 @@ class _StyleApplySelectView(discord.ui.View):
     async def _on_select(self, interaction: discord.Interaction):
         style_key = self.select.values[0]
         styled_name = apply_style(self.base_name, style_key)
+        font_label = STYLES[style_key][0]
 
         guild = interaction.client.get_guild(self.guild_id)
         channel = guild.get_channel(self.channel_id) if guild else None
@@ -181,13 +194,27 @@ class _StyleApplySelectView(discord.ui.View):
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
+        # Acknowledge instantly AND show which font was picked: the chosen
+        # option stays highlighted in the dropdown and the message text
+        # names it. (Discord rate-limits channel renames to 2 per 10
+        # minutes, so the edit below can take a while — this keeps the
+        # interaction alive and tells the user what's happening.)
+        for opt in self.select.options:
+            opt.default = (opt.value == style_key)
+        await interaction.response.edit_message(
+            content=f"\u23f3 Applying **{font_label}** \u2192 {styled_name}\u2026", view=self,
+        )
         try:
             await channel.edit(name=styled_name[:100], reason=f"Styled via /style by {interaction.user}")
         except discord.HTTPException as e:
-            await interaction.followup.send(f"\u274c Discord rejected that name: {e.text}", ephemeral=True)
+            await interaction.edit_original_response(
+                content=f"\u274c Discord rejected that name: {e.text}", view=None,
+            )
             return
-        await interaction.followup.send(f"\u2705 Renamed to **{styled_name}**.", ephemeral=True)
+        await interaction.edit_original_response(
+            content=f"\u2705 {channel.mention} renamed using **{font_label}**:\n{styled_name}", view=None,
+        )
+        self.stop()
 
 
 class _StyleConvertButton(discord.ui.DynamicItem[discord.ui.Button], template=_ID_RE.pattern):
