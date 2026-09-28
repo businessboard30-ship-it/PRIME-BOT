@@ -499,6 +499,7 @@ class _StyleWizard(discord.ui.LayoutView):
         ))
         container.add_item(discord.ui.TextDisplay(
             ("-# Category names keep your capitals." if self.mode == "category" else "-# Discord channel names are lowercase \u2014 your text is lowercased for you.")
+            + "\n-# \u23f3 Discord allows only 2 renames per channel every 10 minutes \u2014 preview as much as you like, then Apply once."
         ))
         self.add_item(container)
 
