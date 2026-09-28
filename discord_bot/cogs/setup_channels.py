@@ -36,6 +36,10 @@ from discord_bot.cogs._views_download_wizard import (
 )
 
 from database import db, get_pool
+from modules.text_styles import (
+    STYLES, BRACKETS, FREE_FONTS, channel_name, free_style_choices, premium_style_choices,
+    free_bracket_choices, premium_bracket_choices, to_plain, strip_brackets, wrap_brackets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,8 +183,14 @@ async def scan_missing_channels(guild: discord.Guild, clone_id: int | None) -> l
 
     # --- soft (keyword-heuristic) ---
     existing_names = [c.name.lower() for c in guild.text_channels]
+    soft_ids = suggestions.get("soft_channel_ids") or {}
     for key, (base_name, desc, seed, keywords) in SOFT_CHANNELS.items():
         if key in dismissed:
+            continue
+        # A channel we created ourselves (possibly with a fancy-font name that
+        # no keyword can match) counts as present for as long as it exists.
+        _cid = soft_ids.get(key)
+        if _cid and guild.get_channel(int(_cid)) is not None:
             continue
         if any(kw in name for name in existing_names for kw in keywords):
             continue  # something that looks like this already exists
@@ -223,6 +233,231 @@ class RenameChannelModal(discord.ui.Modal, title="Rename suggested channel"):
             await interaction.response.edit_message(embed=embed, view=view)
 
 
+# ── font panel for a suggested channel's name ──────────────────────────────
+# Opened from the "Rename a suggestion" dropdown. Replaces the suggestions
+# message in place (so it works on the ephemeral /setup channels message AND
+# the join-DM one), lets the owner pick a font + brackets with a live preview,
+# and Save stores the styled name exactly like the old rename box did.
+
+_PANEL_PLAIN = "__plain__"
+
+
+def _styled_name(base: str, font, bracket) -> str:
+    """base -> final channel name. font/bracket None = leave that part alone.
+    Text channels can't hold spaces or capitals, so this hyphenates/lowercases
+    the same way /style does."""
+    if font is None and bracket is None:
+        return base
+    if font is None:
+        plain = strip_brackets(to_plain(base))
+        return wrap_brackets("-".join(plain.lower().split()), bracket)[:100]
+    return channel_name(base, font, True, bracket)
+
+
+class _NamePanel:
+    """State for one open font panel (in memory, expires after 10 minutes)."""
+
+    def __init__(self, guild_id: int, key: str, page: int, base: str, v2: bool):
+        self.guild_id, self.key, self.page, self.v2 = guild_id, key, page, v2
+        self.base = base
+        self.font = None
+        self.bracket = None
+        self.premium_active = False
+        self.can_manage = False
+        self.status = None
+
+    @property
+    def result(self) -> str:
+        return _styled_name(self.base, self.font, self.bracket)
+
+    def block(self):
+        from discord_bot.cogs.style import _premium_block_message
+        return _premium_block_message(self.font, self.bracket, self.premium_active, self.can_manage)
+
+    # -- rendering --------------------------------------------------------
+    def _lines(self) -> list:
+        font = f"**{STYLES[self.font][0]}**" if self.font else "*plain*"
+        lines = [
+            "\U0001f524 **Style this channel name**",
+            f"**Name** \u2014 `{self.base.replace(chr(96), chr(39))}`",
+            f"**Font** \u2014 {font}",
+            f"**Brackets** \u2014 {BRACKETS[self.bracket][0] if self.bracket else '*none*'}",
+            "", "**Preview**", self.result,
+        ]
+        lock = self.block()
+        if lock and not self.status:
+            lines += ["", lock]
+        if self.status:
+            lines += ["", self.status]
+        return lines
+
+    def _items(self):
+        """Rows of fresh components: [[select], [select], [select], [select], [buttons]]"""
+        return [
+            [_PFontSelect(self, False)], [_PFontSelect(self, True)],
+            [_PBracketSelect(self, False)], [_PBracketSelect(self, True)],
+            [_PEditButton(self), _PSaveButton(self), _PBackButton(self)],
+        ]
+
+    def build(self):
+        """(kwargs for edit_message) matching the message type we're editing."""
+        if self.v2:
+            view = discord.ui.LayoutView(timeout=600)
+            box = discord.ui.Container(accent_colour=discord.Color.blurple())
+            box.add_item(discord.ui.TextDisplay("\n".join(self._lines())))
+            box.add_item(discord.ui.Separator())
+            for row in self._items():
+                box.add_item(discord.ui.ActionRow(*row))
+            view.add_item(box)
+            return {"view": view}
+        view = discord.ui.View(timeout=600)
+        for r, row in enumerate(self._items()):
+            for item in row:
+                item.row = r
+                view.add_item(item)
+        embed = discord.Embed(description="\n".join(self._lines()), color=discord.Color.blurple())
+        embed.set_footer(text="Discord channel names are lowercase \u2014 your text is lowercased for you.")
+        return {"embed": embed, "view": view}
+
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(**self.build())
+
+
+class _PFontSelect(discord.ui.Select):
+    def __init__(self, panel: _NamePanel, premium: bool):
+        choices = premium_style_choices() if premium else free_style_choices()
+        options = []
+        if not premium:
+            options.append(discord.SelectOption(
+                label="Plain (no font)", value=_PANEL_PLAIN, default=(panel.font is None)))
+        for key, label, _sample in choices:
+            options.append(discord.SelectOption(
+                label=label, value=key, default=(key == panel.font),
+                description=(_styled_name(panel.base, key, panel.bracket)[:100] or None),
+            ))
+        super().__init__(
+            placeholder="1 \u00b7 \U0001f48e Premium fonts\u2026" if premium else "1 \u00b7 Pick a font\u2026",
+            options=options[:25], min_values=1, max_values=1,
+        )
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        v = self.values[0]
+        self.panel.font = None if v == _PANEL_PLAIN else v
+        self.panel.status = None
+        await self.panel.refresh(interaction)
+
+
+class _PBracketSelect(discord.ui.Select):
+    def __init__(self, panel: _NamePanel, premium: bool):
+        choices = premium_bracket_choices() if premium else free_bracket_choices()
+        options = [
+            discord.SelectOption(
+                label=label, value=key, default=(key == (panel.bracket or "none")),
+                description=(_styled_name(panel.base, panel.font or "bold", key)[:100] or None),
+            )
+            for key, label in choices
+        ]
+        super().__init__(
+            placeholder="2 \u00b7 \U0001f48e Premium brackets\u2026" if premium else "2 \u00b7 Brackets (optional)\u2026",
+            options=options[:25], min_values=1, max_values=1,
+        )
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        v = self.values[0]
+        self.panel.bracket = None if v == "none" else v
+        self.panel.status = None
+        await self.panel.refresh(interaction)
+
+
+class _PNameModal(discord.ui.Modal, title="Edit the channel name"):
+    def __init__(self, panel: _NamePanel):
+        super().__init__()
+        self.panel = panel
+        self.field = discord.ui.TextInput(
+            label="Base name (plain text)", max_length=80, required=True,
+            default=to_plain(panel.base)[:80],
+        )
+        self.add_item(self.field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.panel.base = str(self.field.value).strip() or self.panel.base
+        self.panel.status = None
+        await self.panel.refresh(interaction)
+
+
+class _PEditButton(discord.ui.Button):
+    def __init__(self, panel):
+        super().__init__(label="Edit name", emoji="\u270f\ufe0f", style=discord.ButtonStyle.secondary)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(_PNameModal(self.panel))
+
+
+class _PSaveButton(discord.ui.Button):
+    def __init__(self, panel):
+        super().__init__(label="Save", emoji="\u2705", style=discord.ButtonStyle.success,
+                         disabled=panel.block() is not None)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        panel = self.panel
+        from discord_bot.cogs.style import _premium_flags, _resolve
+        clone_id = _clone_id_of(interaction.client)
+        guild, member = await _resolve(interaction, panel)
+        if guild is not None and member is not None:
+            # Re-check at click time: premium status may have changed.
+            panel.premium_active, panel.can_manage = await _premium_flags(member, guild, clone_id)
+        if panel.block():
+            panel.status = None
+            await panel.refresh(interaction)
+            return
+        name = panel.result.strip()[:90]
+        if not name:
+            panel.status = "\u274c Nothing to save."
+            await panel.refresh(interaction)
+            return
+        await db.set_custom_channel_name(panel.guild_id, panel.key, name, clone_id=clone_id)
+        await _show_suggestions(interaction, panel.guild_id, panel.page, f"\n\n\u2705 Saved name: **{name}**")
+
+
+class _PBackButton(discord.ui.Button):
+    def __init__(self, panel):
+        super().__init__(label="Back", emoji="\u2b05\ufe0f", style=discord.ButtonStyle.secondary)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        await _show_suggestions(interaction, self.panel.guild_id, self.panel.page, "")
+
+
+async def _show_suggestions(interaction: discord.Interaction, guild_id: int, page: int, note: str):
+    """Put the suggestions list back on the message the panel replaced."""
+    clone_id = _clone_id_of(interaction.client)
+    guild = interaction.client.get_guild(guild_id)
+    missing = await scan_missing_channels(guild, clone_id) if guild else []
+    panel_v2 = bool(getattr(interaction.message, "flags", None) and interaction.message.flags.components_v2)
+    if panel_v2:
+        await interaction.response.edit_message(
+            view=build_suggestions_layout_view(guild, missing, page=page, extra_note=note))
+    else:
+        embed = build_suggestions_embed(guild, missing, page=page)
+        if note:
+            embed.description = (embed.description or "") + note
+        await interaction.response.edit_message(embed=embed, view=SetupSuggestView(guild_id, missing, page=page))
+
+
+async def open_name_panel(interaction: discord.Interaction, guild_id: int, key: str, page: int, current_name: str):
+    from discord_bot.cogs.style import _premium_flags, _resolve
+    panel = _NamePanel(guild_id, key, page, current_name, v2=is_v2_message(interaction))
+    guild, member = await _resolve(interaction, panel)
+    if guild is not None and member is not None:
+        panel.premium_active, panel.can_manage = await _premium_flags(
+            member, guild, _clone_id_of(interaction.client))
+    await interaction.response.edit_message(**panel.build())
+
+
 class SetupSuggestView(discord.ui.View):
     """One row of Create/Skip per missing channel, laid out the same way
     the quickstart wizard's per-feature rows are: each channel gets its
@@ -262,7 +497,7 @@ class SetupSuggestView(discord.ui.View):
         # that entirely.
         if page_entries:
             select = discord.ui.Select(
-                placeholder="✏️ Rename a suggestion on this page...",
+                placeholder="🔤 Style / rename a suggestion on this page...",
                 custom_id=f"setupch_renamesel:{guild_id}:{self.page}",
                 options=[
                     discord.SelectOption(label=entry["name"][:100], value=entry["key"])
@@ -307,7 +542,7 @@ def build_suggestions_embed(guild: discord.Guild, missing: list[dict], page: int
     embed = discord.Embed(
         title=f"📋 Suggested channels for {guild.name}",
         description="Create any of these individually, or use **Create All Suggested** for the fast path. "
-                    "Names can be edited before creating with the rename dropdown below.",
+                    "Pick a font or edit the name before creating with the style dropdown below.",
         color=discord.Color.blurple(),
     )
     for entry in page_entries:
@@ -370,7 +605,7 @@ class SetupSuggestLayoutView(discord.ui.LayoutView):
         intro = (
             f"## 📋 Suggested channels for {guild_name}\n"
             "Create any of these individually, or use **Create All Suggested** for the fast path. "
-            "Names can be edited before creating with the rename dropdown below."
+            "Pick a font or edit the name before creating with the style dropdown below."
         )
         if extra_note:
             intro += "\n" + extra_note.strip()
@@ -392,7 +627,7 @@ class SetupSuggestLayoutView(discord.ui.LayoutView):
 
         if page_entries:
             container.add_item(discord.ui.ActionRow(discord.ui.Select(
-                placeholder="✏️ Rename a suggestion on this page...",
+                placeholder="🔤 Style / rename a suggestion on this page...",
                 custom_id=f"setupch_renamesel:{guild_id}:{page}",
                 options=[
                     discord.SelectOption(label=entry["name"][:100], value=entry["key"])
@@ -592,7 +827,7 @@ class SetupChannelsCog(GuildOnlyCog):
                     "That suggestion was already handled — refresh with `/setup channels`.", ephemeral=True
                 )
                 return
-            await interaction.response.send_modal(RenameChannelModal(guild_id, key, entry["name"], page=page))
+            await open_name_panel(interaction, guild_id, key, page, entry["name"])
         elif custom_id.startswith("setupch_create:"):
             _, guild_id_s, key, page_s = custom_id.split(":", 3)
             guild_id, page = int(guild_id_s), int(page_s)
