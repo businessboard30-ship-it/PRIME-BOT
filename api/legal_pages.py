@@ -34,7 +34,7 @@ from config import (
     WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, DISCORD_CLONE_ACTIVATION_FEE_USD,
     CLONE_MONETIZATION_FEE_USD, CUSTOM_ROLE_FEE_USD, MUSIC_PRO_PRICE_LABEL,
     XP_BOOST_FEE_USD, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS,
-    XP_SERVER_BOOST_TIERS,
+    XP_SERVER_BOOST_TIERS, PREMIUM_FEE_USD,
 )
 
 _PAGE_CSS = """
@@ -167,8 +167,18 @@ PRICING_HTML = f"""
 <h1>Pricing</h1>
 <p class="updated">{BOT_NAME}</p>
 <p>{BOT_NAME} is free to add and use. Paid features are optional
-per-server or per-user unlocks — nothing here is a recurring
-subscription. All prices in USD.</p>
+per-server or per-user unlocks. Go Premium is a monthly plan; everything
+else below is a one-time purchase. All prices in USD.</p>
+
+<h2>Go Premium (per server, monthly)</h2>
+<ul>
+<li>${PREMIUM_FEE_USD:g}/month for the whole server — unlocks every premium
+feature (giveaways, tickets, Music Pro, welcome cards, fonts, custom roles,
+higher AI chat limit and future features).</li>
+<li>Global checkout (Gumroad) renews automatically and can be cancelled any
+time. Ghana checkout (Paystack) covers 30 days per payment and does not
+auto-renew.</li>
+</ul>
 
 <h2>One-time unlocks</h2>
 <ul>
@@ -204,10 +214,25 @@ command.</p>
 REFUND_HTML = f"""
 <h1>Refund Policy</h1>
 <p class="updated">{BOT_NAME}</p>
-<p>All purchases are digital, one-time unlocks — see our <a
-href="/pricing">Pricing</a> page for what's available.</p>
+<p>All purchases are digital — one-time unlocks, plus the optional monthly
+Go Premium plan. See our <a href="/pricing">Pricing</a> page for what's
+available.</p>
 
-<h2>How refunds work</h2>
+<h2>Go Premium (monthly)</h2>
+<ul>
+<li>Cancel any time. Cancelling stops future renewals; Premium stays active
+until the end of the period you already paid for.</li>
+<li>Paystack (Ghana) payments are a single 30-day purchase and never renew
+on their own, so there is nothing to cancel.</li>
+<li>If Premium was paid for but never activated on your server, or doesn't
+work as described because of a fault on our end, contact us and we'll fix it
+or refund that payment.</li>
+<li>A period of Premium that was already active and working is generally not
+refundable, and we don't give partial refunds for unused days after
+cancelling.</li>
+</ul>
+
+<h2>How refunds work (one-time unlocks)</h2>
 <ul>
 <li>If a purchase hasn't been delivered/activated yet (e.g. still pending
 manual approval), you can request a full refund at any time before it's
