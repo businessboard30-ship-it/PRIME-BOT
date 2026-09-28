@@ -55,6 +55,7 @@ from modules.ai_command_guard import (
     get_qualifying_commands, resolve_and_check, execute_ai_command,
     AICommandDenied, send_cap_reached_prompt, AIConfirmView,
 )
+from modules.ai_command_allowlist import needs_confirmation
 from discord_bot.cogs._ai_interaction_proxy import ProxyInteraction
 from discord_bot.cogs._views_shared import ActionButton, NavView, NavCardView, refresh_button
 from discord_clone_service import build_invite_url
@@ -464,6 +465,14 @@ class AIToolsCog(commands.Cog):
             elif type_name == "channel":
                 cid = self._extract_id(value)
                 obj = interaction.guild.get_channel(cid) if (cid and interaction.guild) else None
+                if obj is None and cid is None and interaction.guild is not None:
+                    # The model often can't see a channel ID — accept "this"/"here"
+                    # (the channel the user is chatting in) or a plain #name.
+                    label = str(value).strip().lstrip("#").lower()
+                    if label in ("this", "here", "current", "this channel", "current channel"):
+                        obj = getattr(interaction, "channel", None)
+                    else:
+                        obj = discord.utils.find(lambda c: c.name.lower() == label, interaction.guild.channels)
                 if obj is not None:
                     resolved[key] = obj
             elif type_name == "role":
@@ -527,11 +536,20 @@ class AIToolsCog(commands.Cog):
                     "give it a few minutes and try again.", ephemeral=True,
                 )
 
-        if spec.requires_confirmation:
+        if needs_confirmation(spec, resolved_args):
+            prompt = f"I'd run **/{name}** with `{resolved_args}` — confirm?"
+            # A cog can supply a clearer confirm message (and refuse early,
+            # before any confirm button) via AI_CONFIRM_PROMPTS = {"cmd": "method"};
+            # the method returns (ok, text).
+            hook = ((getattr(command.binding, "AI_CONFIRM_PROMPTS", None) or {}).get(name)
+                    if command.binding is not None else None)
+            if hook:
+                ok, prompt = await getattr(command.binding, hook)(ctx, **resolved_args)
+                if not ok:
+                    await ctx.followup.send(prompt, ephemeral=True)
+                    return
             view = AIConfirmView(ctx.user.id, _run)
-            await ctx.followup.send(
-                f"I'd run **/{name}** with `{resolved_args}` — confirm?", view=view, ephemeral=True,
-            )
+            await ctx.followup.send(prompt, view=view, ephemeral=True)
         elif real_interaction:
             await _run(ctx)
         else:

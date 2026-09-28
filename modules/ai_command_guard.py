@@ -26,7 +26,7 @@ from typing import List, Optional, Tuple
 import discord
 
 from database import db, get_pool
-from modules.ai_command_allowlist import is_command_allowed, AI_COMMANDS, AICommandSpec
+from modules.ai_command_allowlist import is_command_allowed, needs_confirmation, AI_COMMANDS, AICommandSpec
 from modules.superbot_adapter import get_user_tier
 
 logger = logging.getLogger(__name__)
@@ -282,7 +282,7 @@ async def execute_ai_command(interaction: discord.Interaction, command_name: str
 
     await db.log_ai_command(interaction.guild_id, interaction.user.id, command_name, kwargs, allowed=True)
     cog = command.binding
-    handler_map = getattr(cog, "AI_CONFIRMED_HANDLERS", None) if (cog is not None and spec.requires_confirmation) else None
+    handler_map = getattr(cog, "AI_CONFIRMED_HANDLERS", None) if (cog is not None and needs_confirmation(spec, kwargs)) else None
     handler_name = handler_map.get(command_name) if handler_map else None
     if handler_name:
         handler = getattr(cog, handler_name)
