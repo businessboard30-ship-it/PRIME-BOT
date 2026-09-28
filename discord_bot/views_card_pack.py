@@ -24,8 +24,7 @@ import discord
 
 from database import db
 from payments import resolve_gateway
-import config
-from config import WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD
+from config import WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, PAYMENT_SUPPORT_LINE
 import utils.currency as fx
 
 logger = logging.getLogger(__name__)
@@ -141,7 +140,7 @@ async def start_card_pack_payment(interaction: discord.Interaction, force_mode: 
         description=(
             f"**Amount:** {charged_amount_display}\n\n"
             f"Unlocks every premium welcome-card look.\n\n"
-            f"{config.PAYMENT_SUPPORT_LINE}\n\n"
+            f"{PAYMENT_SUPPORT_LINE}\n\n"
             f"Tap **Pay**, then **Verify**."
         ),
         color=discord.Color.gold(),
