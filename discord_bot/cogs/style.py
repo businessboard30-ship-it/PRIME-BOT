@@ -77,6 +77,22 @@ def _normalize_font(value) -> Optional[str]:
     return None
 
 
+def _normalize_bracket(value) -> Optional[str]:
+    """Bracket key or label -> key. 'none'/empty -> None. Unknown -> False."""
+    if value in (None, ""):
+        return None
+    raw = str(value).strip().lower()
+    key = raw.replace(" ", "_").replace("-", "_")
+    if key in ("none", "no", "no_brackets"):
+        return None
+    if key in BRACKETS:
+        return key
+    for k, (label, left, right) in BRACKETS.items():
+        if raw in (label.lower(), left, (left + right)):
+            return k
+    return False
+
+
 async def _rename(user, guild, channel, new_name: str) -> tuple:
     """(ok, message). The one place a rename actually happens — re-checks the
     USER's and the BOT's Manage Channels on THAT channel."""
@@ -309,14 +325,14 @@ class _StyleWizard(discord.ui.LayoutView):
     """The whole /style experience — one panel, state shown live."""
 
     def __init__(self, guild_id: int, clone_id, *, channel=None, text: Optional[str] = None,
-                 font: Optional[str] = None):
+                 font: Optional[str] = None, bracket: Optional[str] = None):
         super().__init__(timeout=600)
         self.guild_id = guild_id
         self.clone_id = clone_id
         self.channel = channel
         self.text = text          # None => use the channel's current name
         self.font = font
-        self.bracket: Optional[str] = None
+        self.bracket: Optional[str] = bracket
         self.ideas: list = []
         self.status: Optional[str] = None
         self.rebuild()
@@ -383,7 +399,7 @@ class StyleCog(commands.Cog):
     AI_CONFIRMED_HANDLERS = {"style": "ai_style"}
     AI_CONFIRM_PROMPTS = {"style": "ai_style_prompt"}
 
-    def _ai_check(self, interaction, text, font, channel):
+    def _ai_check(self, interaction, text, font, channel, bracket=None):
         """(error_or_None, text_or_None, style_key_or_None). text None means
         'use the channel's current name'."""
         if channel is None:
@@ -395,6 +411,8 @@ class StyleCog(commands.Cog):
             style_key = _normalize_font(font)
             if style_key is None:
                 return f"\u274c I don't know a font called \u201c{font}\u201d.", None, None
+        if _normalize_bracket(bracket) is False:
+            return f"\u274c I don't know a bracket style called \u201c{bracket}\u201d.", None, style_key
         if not channel.permissions_for(interaction.user).manage_channels:
             return f"\u274c You need **Manage Channels** on {channel.mention} to rename it.", None, style_key
         if not channel.permissions_for(interaction.guild.me).manage_channels:
@@ -402,26 +420,27 @@ class StyleCog(commands.Cog):
         text = (text or "").strip()[:_MAX_TEXT] or None
         return None, text, style_key
 
-    async def ai_style_prompt(self, interaction, text=None, font=None, channel=None, **_ignored):
-        err, text, style_key = self._ai_check(interaction, text, font, channel)
+    async def ai_style_prompt(self, interaction, text=None, font=None, channel=None, bracket=None, **_ignored):
+        err, text, style_key = self._ai_check(interaction, text, font, channel, bracket)
         if err:
             return False, err
         base = text or channel.name
         if style_key is None:
             return True, f"Open the style wizard for {channel.mention} (text: **{base}**)?"
-        new_name = channel_name(base, style_key, _hyphenate(channel))
+        new_name = channel_name(base, style_key, _hyphenate(channel), _normalize_bracket(bracket) or None)
         return True, f"Rename {channel.mention} to **{new_name}** ({STYLES[style_key][0]})?"
 
-    async def ai_style(self, interaction, text=None, font=None, channel=None, **_ignored):
-        err, text, style_key = self._ai_check(interaction, text, font, channel)
+    async def ai_style(self, interaction, text=None, font=None, channel=None, bracket=None, **_ignored):
+        err, text, style_key = self._ai_check(interaction, text, font, channel, bracket)
         if err:
             await interaction.followup.send(err, ephemeral=True)
             return
         if style_key is None:
-            wiz = _StyleWizard(interaction.guild.id, getattr(self.bot, "clone_id", None), channel=channel, text=text)
+            wiz = _StyleWizard(interaction.guild.id, getattr(self.bot, "clone_id", None), channel=channel, text=text,
+                               bracket=_normalize_bracket(bracket) or None)
             await interaction.followup.send(view=wiz, ephemeral=True)
             return
-        new_name = channel_name(text or channel.name, style_key, _hyphenate(channel))
+        new_name = channel_name(text or channel.name, style_key, _hyphenate(channel), _normalize_bracket(bracket) or None)
         _ok, msg = await _rename(interaction.user, interaction.guild, channel, new_name)
         await interaction.followup.send(f"{msg} ({STYLES[style_key][0]})" if _ok else msg, ephemeral=True)
 

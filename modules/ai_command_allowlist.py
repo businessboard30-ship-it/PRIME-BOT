@@ -76,9 +76,13 @@ AI_COMMANDS = (
         "style", "discord_bot.cogs.style", True,
         "Rename a channel using a fancy unicode font. Args: `channel` (#mention/ID/name, or 'this' for the "
         "channel the user is chatting in), `font` (e.g. bold, script, kanji), `text` (optional \u2014 defaults to "
-        "the channel's current name; channel names are always lowercased). With font+channel it renames "
-        "after the user confirms; with just channel it opens the style wizard. Needs Manage Channels.",
-        confirm_only_with=("font", "channel"),
+        "the channel's current name; channel names are always lowercased), `bracket` (optional wrapper/"
+        "decoration around the name: cjk 【】, white_cjk 『』, corner 「」, double_angle 《》, tortoise 〔〕, "
+        "math_white ⟦⟧, math_angle ⟪⟫, ornate ❰❱, heavy_angle ❮❯, curly_white ⦃⦄, guillemets «», "
+        "flourish ꧁꧂, tibetan ༺༻, sparkle ✦, star ★, kira ⋆, swords ⚔, or prefixes bar ┃, dot ・, "
+        "thin_bar ︱, diamond ❖, arrow ➤, dotted_bar ┊). With font+channel it renames after the user "
+        "confirms; with just channel it opens the style wizard. Needs Manage Channels.",
+        confirm_only_with=("font", "channel", "text", "bracket"),
     ),
 
     # ── Info / read-only ────────────────────────────────────────────────
