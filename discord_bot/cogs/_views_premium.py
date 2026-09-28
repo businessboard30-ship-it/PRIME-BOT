@@ -26,24 +26,28 @@ logger = logging.getLogger(__name__)
 _SUB_RE = re.compile(r"^premium_sub:(\d+):(-|\d+)$")
 
 
+_PERKS = (
+    "🎉 **Giveaways** — bonus entries, auto-reroll, scheduling & custom colors\n"
+    "🎫 **Tickets** — categories, custom buttons, transcripts & auto-close\n"
+    "🎵 **Music Pro** — unlimited plays, uploads & downloads\n"
+    "🎴 **Welcome Cards** — premium themes + your own background\n"
+    "🔤 **Fonts & Designs** — 20+ fonts, frames & emoji tags\n"
+    "🎨 **Custom Roles** — every member styles their own\n"
+    "💀 **Hardcore Roast** — unfiltered roast battles\n"
+    "🤖 **AI Chat** — 3x daily limit (30/day)\n"
+    "🖼️ **Bot Branding** — your own bot name, avatar & banner\n"
+    "🎮 **Roblox Alerts** — auto game update posts\n"
+    "🆕 **Every future feature** — free, automatically"
+)
+_FOOTER = "-# Not included: clones & temporary XP boosts. Anything you bought separately stays yours."
+
+
 def _pitch_text(fee: float, status_line: str) -> str:
     return (
         f"## 💎 Go Premium — ${fee:g}/month for your whole server\n"
-        f"{status_line}\n\n"
-        "🎉 **Giveaways** — bonus entries, auto-reroll, scheduling & custom colors\n"
-        "🎫 **Tickets** — categories, custom buttons, transcripts & auto-close\n"
-        "🎵 **Music Pro** — unlimited plays, uploads & downloads\n"
-        "🎴 **Welcome Cards** — premium themes + your own background\n"
-        "🔤 **Fonts & Designs** — 20+ fonts, frames & emoji tags\n"
-        "🎨 **Custom Roles** — every member styles their own\n"
-        "💀 **Hardcore Roast** — unfiltered roast battles\n"
-        "🤖 **AI Chat** — 3x daily limit (30/day)\n"
-        "🖼️ **Bot Branding** — your own bot name, avatar & banner\n"
-        "🎮 **Roblox Alerts** — auto game update posts\n"
-        "🆕 **Every future feature** — free, automatically\n\n"
+        f"{status_line}\n\n{_PERKS}\n\n"
         "🌍 Global: Gumroad, cancel anytime · 🇬🇭 Ghana: Paystack, 30 days per payment\n"
-        "-# Needs **Manage Server** to use. Not included: clones & temporary XP boosts. "
-        "Anything you bought separately stays yours."
+        + _FOOTER
     )
 
 
@@ -74,31 +78,36 @@ class PremiumSubscribeButton(discord.ui.DynamicItem[discord.ui.Button], template
         if guild is None:
             await interaction.response.send_message("I'm not in that server anymore.", ephemeral=True)
             return
-        member = guild.get_member(interaction.user.id)
-        if member is None or not (member.guild_permissions.manage_guild or member == guild.owner):
-            await interaction.response.send_message(
-                "You need **Manage Server** permission in that server to subscribe.", ephemeral=True,
-            )
-            return
         await interaction.response.defer(ephemeral=True, thinking=True)
-        from payments_manual import start_dual_mode_payment
-        fee = config.PREMIUM_FEE_USD
-        await start_dual_mode_payment(
-            interaction, payment_type="premium", price_usd=fee,
-            product_title=f"💎 Premium — {guild.name}",
-            product_description=(
-                "💎 Every feature, for your whole server. Gumroad renews monthly; Paystack = 30 days."
-            ),
-            amount_display_manual=f"${fee:g}/month", guild_id=self.guild_id,
-        )
+        await _start_checkout(interaction, guild, self.clone_id)
+
+
+async def _start_checkout(interaction: discord.Interaction, guild, clone_id) -> None:
+    """Straight to the pay buttons — perks and checkout in ONE message.
+    Anyone in the server can pay for it."""
+    from payments_manual import start_dual_mode_payment
+    fee = config.PREMIUM_FEE_USD
+    row = await db.get_guild_premium(guild.id, clone_id=clone_id)
+    status = ""
+    if row and await db.is_guild_premium_active(guild.id, clone_id):
+        ts = int(row["expires_at"].timestamp())
+        status = f"✅ **Active** until <t:{ts}:D> — paying again adds 30 more days.\n\n"
+    await start_dual_mode_payment(
+        interaction, payment_type="premium", price_usd=fee,
+        product_title=f"💎 Go Premium — {guild.name}",
+        product_description=f"{status}{_PERKS}\n\n{_FOOTER}",
+        amount_display_manual=f"${fee:g}/month for the whole server", guild_id=guild.id,
+    )
 
 
 async def send_premium_pitch(interaction: discord.Interaction, guild_id: int, clone_id) -> None:
     """Call AFTER interaction.response.defer(ephemeral=True) (the join-DM
-    feature button already does)."""
-    view = discord.ui.View(timeout=None)
-    view.add_item(PremiumSubscribeButton(guild_id, clone_id))
-    await interaction.followup.send(await build_pitch(guild_id, clone_id), view=view, ephemeral=True)
+    feature button already does). One tap from 'Go Premium' to the pay buttons."""
+    guild = interaction.client.get_guild(guild_id)
+    if guild:
+        await _start_checkout(interaction, guild, clone_id)
+        return
+    await interaction.followup.send(await build_pitch(guild_id, clone_id), ephemeral=True)
 
 
 DYNAMIC_ITEMS = (PremiumSubscribeButton,)
