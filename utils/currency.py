@@ -97,7 +97,7 @@ def _fetch_rate(currency: str) -> Optional[float]:
     if currency == "GHS":
         import os
         try:
-            fallback = float(os.getenv("USD_GHS_FALLBACK_RATE", "11.0"))
+            fallback = float(os.getenv("USD_GHS_FALLBACK_RATE", "11.51"))
         except ValueError:
             fallback = 11.0
         logger.warning("Using fixed fallback USD->GHS rate %s", fallback)

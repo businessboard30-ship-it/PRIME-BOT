@@ -5,9 +5,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Non-secret deployment settings live here (env var still overrides if set).
+# Only real secrets (tokens, API keys, DB URL, encryption key) belong in Railway.
+_DEFAULT_PUBLIC_BASE_URL = "https://web-production-9dd98.up.railway.app"
+_PUBLIC_BASE = os.getenv("PUBLIC_BASE_URL", _DEFAULT_PUBLIC_BASE_URL).rstrip("/")
+
 # Bot Configuration
 BOT_TOKEN = os.getenv("SINOBANED2_BOT_TOKEN", "your_token_here")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # 0 = unset (matches current Railway value)
 
 # Public-facing name/URL of the server directory site (app/servers/...).
 # Same env-var name and fallback the frontend already uses (see
@@ -54,7 +59,7 @@ JIKAN_ENDPOINT = "https://api.jikan.moe/v4"
 
 # Payment Configuration
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
-PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY", "")
+PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY", "pk_live_43a4e2c5203be6ae79d012694379691a2c129f89")  # public key, safe in code
 CLONE_BOT_FEE_GHS = 50  # 50 GHS in pesewas = 5000
 
 # --- Shared AI Chat / Download paywall ---------------------------------------
@@ -191,7 +196,7 @@ DISCOVER_CAP_TIERS = [
 # bot scope), used solely to learn who clicked an invite link so
 # api/discover_oauth_join.py can join them server-side. Get these from the
 # same Discord Developer Portal application as the bot, under OAuth2.
-DISCORD_OAUTH_CLIENT_ID = os.getenv("DISCORD_OAUTH_CLIENT_ID", "")
+DISCORD_OAUTH_CLIENT_ID = os.getenv("DISCORD_OAUTH_CLIENT_ID", "1534579332528472246")  # public application ID
 DISCORD_OAUTH_CLIENT_SECRET = os.getenv("DISCORD_OAUTH_CLIENT_SECRET", "")
 # Must exactly match a Redirect URI configured in the Developer Portal.
 # api/discover_oauth_join.py is served by api_server.py (PUBLIC_BASE_URL's
@@ -199,7 +204,7 @@ DISCORD_OAUTH_CLIENT_SECRET = os.getenv("DISCORD_OAUTH_CLIENT_SECRET", "")
 # two different Railway services/domains in this deployment.
 DISCORD_OAUTH_REDIRECT_URI = os.getenv(
     "DISCORD_OAUTH_REDIRECT_URI",
-    f"{os.getenv('PUBLIC_BASE_URL', '').rstrip('/')}/api/discover_oauth_join"
+    f"{_PUBLIC_BASE}/api/discover_oauth_join"
 )
 
 # Separate Redirect URI for /bump bot's ownership-verification flow (see
@@ -209,7 +214,7 @@ DISCORD_OAUTH_REDIRECT_URI = os.getenv(
 # application, same client id/secret.
 BUMP_OAUTH_REDIRECT_URI = os.getenv(
     "BUMP_OAUTH_REDIRECT_URI",
-    f"{os.getenv('PUBLIC_BASE_URL', '').rstrip('/')}/api/bump_oauth"
+    f"{_PUBLIC_BASE}/api/bump_oauth"
 )
 
 # Separate Redirect URI for the /servers directory's vote sign-in (see
@@ -217,7 +222,7 @@ BUMP_OAUTH_REDIRECT_URI = os.getenv(
 # client id/secret as the two above — just another registered redirect URI.
 SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI = os.getenv(
     "SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI",
-    f"{os.getenv('PUBLIC_BASE_URL', '').rstrip('/')}/api/server_listing_vote_oauth"
+    f"{_PUBLIC_BASE}/api/server_listing_vote_oauth"
 )
 
 # Redirect URI for "Sign in with Discord" on the landing page (see
@@ -227,7 +232,7 @@ SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI = os.getenv(
 # Developer Portal if Discord complains about an invalid scope.
 DISCORD_LOGIN_OAUTH_REDIRECT_URI = os.getenv(
     "DISCORD_LOGIN_OAUTH_REDIRECT_URI",
-    f"{os.getenv('PUBLIC_BASE_URL', '').rstrip('/')}/api/discord_login_oauth"
+    f"{_PUBLIC_BASE}/api/discord_login_oauth"
 )
 
 
@@ -638,7 +643,7 @@ CLONE_BOT_REAL_ENABLED = True
 # no trailing slash). Required to register per-clone webhooks
 # (https://<PUBLIC_BASE_URL>/api/bot?clone_id=N). Clone creation fails loudly
 # if this isn't set, rather than silently registering a broken webhook URL.
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+PUBLIC_BASE_URL = _PUBLIC_BASE
 
 # Max number of per-clone Application instances kept warm in memory at once
 # (Part 3.1 "Per-clone Application instances" — bounded LRU, not unbounded).
