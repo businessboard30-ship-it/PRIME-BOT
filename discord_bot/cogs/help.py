@@ -247,25 +247,11 @@ class HelpView(discord.ui.View):
             ))
 
 
-class _HelpGoPremiumButton(discord.ui.Button):
-    def __init__(self):
-        import config as _config
-        super().__init__(
-            label=f"Go Premium 💎 — ${_config.PREMIUM_FEE_USD:g}/month",
-            style=discord.ButtonStyle.primary, row=1,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        guild_id = interaction.guild_id
-        clone_id = getattr(interaction.client, "clone_id", None)
-        if not guild_id:
-            await interaction.response.send_message(
-                "Premium is per-server — run this command inside a server.", ephemeral=True
-            )
-            return
-        from discord_bot.cogs._views_premium import send_premium_pitch
-        await interaction.response.defer(ephemeral=True)
-        await send_premium_pitch(interaction, guild_id, clone_id)
+def _HelpGoPremiumButton():
+    """Kept as a factory so existing callers (HelpView, ai_tools.premium_view)
+    don't change; returns the persistent, restart-safe button."""
+    from discord_bot.cogs._views_premium import PremiumPitchButton
+    return PremiumPitchButton()
 
 
 class HelpCog(commands.Cog):

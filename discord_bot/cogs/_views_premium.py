@@ -110,4 +110,32 @@ async def send_premium_pitch(interaction: discord.Interaction, guild_id: int, cl
     await interaction.followup.send(await build_pitch(guild_id, clone_id), ephemeral=True)
 
 
-DYNAMIC_ITEMS = (PremiumSubscribeButton,)
+class PremiumPitchButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^premium_pitch$"):
+    """Persistent 'Go Premium' button used by /help and the AI's premium
+    answers. Fixed custom_id and no per-message state (the guild comes from
+    the interaction itself), so it keeps working after a bot restart or
+    after the message's view has timed out."""
+
+    def __init__(self):
+        super().__init__(discord.ui.Button(
+            label=f"Go Premium 💎 — ${config.PREMIUM_FEE_USD:g}/month",
+            style=discord.ButtonStyle.primary, custom_id="premium_pitch", row=1,
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls()
+
+    async def callback(self, interaction: discord.Interaction):
+        guild_id = interaction.guild_id
+        if not guild_id:
+            await interaction.response.send_message(
+                "Premium is per-server — run this command inside a server.", ephemeral=True
+            )
+            return
+        clone_id = getattr(interaction.client, "clone_id", None)
+        await interaction.response.defer(ephemeral=True)
+        await send_premium_pitch(interaction, guild_id, clone_id)
+
+
+DYNAMIC_ITEMS = (PremiumSubscribeButton, PremiumPitchButton)

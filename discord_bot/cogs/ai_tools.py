@@ -92,7 +92,7 @@ class QuitChatButton(discord.ui.Button):
 def premium_view() -> discord.ui.View:
     """Blue 'Go Premium' button (same one /help uses) for premium/credits questions."""
     from discord_bot.cogs.help import _HelpGoPremiumButton
-    view = discord.ui.View(timeout=300)
+    view = discord.ui.View(timeout=None)
     view.add_item(_HelpGoPremiumButton())
     return view
 
