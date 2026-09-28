@@ -1,0 +1,36 @@
+name: Deploy redirector to GitHub Pages
+
+# Publishes redirector/ (stable-URL redirect pages + config.json) as the repo's Pages site.
+# No build step. The old unlock-pages deploy is disabled; don't run both (one Pages site per repo).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "redirector/**"
+      - ".github/workflows/deploy-redirector.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Drop non-site files
+        run: rm -f redirector/test_r.js redirector/README.md
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: redirector
+      - id: deployment
+        uses: actions/deploy-pages@v4
