@@ -69,7 +69,8 @@ def build_link(payment_type: str, user_id: int, reference: str) -> Optional[str]
 async def start_gumroad_payment(interaction: discord.Interaction, payment_type: str,
                                  amount_display: str, guild_id: Optional[int] = None,
                                  reference: Optional[str] = None,
-                                 amount_usd: Optional[float] = None) -> str:
+                                 amount_usd: Optional[float] = None,
+                                 intro: Optional[str] = None) -> str:
     """Same calling convention as payments_manual.start_manual_payment
     (call after interaction.response.defer). Returns the reference.
 
@@ -93,8 +94,9 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
     )
     view = discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label="💳 Pay on Gumroad", url=link, style=discord.ButtonStyle.link))
+    prefix = f"{intro}\n\n" if intro else ""
     await interaction.followup.send(
-        f"Pay **{amount_display}** on Gumroad using the button below. "
+        f"{prefix}Pay **{amount_display}** on Gumroad using the button below. "
         f"Use this exact button — it carries your order reference. "
         f"Your purchase is confirmed and unlocked automatically within a few seconds of paying; "
         f"you'll get a DM when it's done.",

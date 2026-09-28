@@ -243,7 +243,8 @@ async def _notify_buyer(bot: discord.Client, buyer_id: int, payment_type: str, a
 
 async def start_manual_payment(interaction: discord.Interaction, payment_type: str,
                                 amount_display: str, guild_id: Optional[int] = None,
-                                reference: Optional[str] = None) -> str:
+                                reference: Optional[str] = None,
+                                intro: Optional[str] = None) -> str:
     """Start a Gumroad checkout for payment_type (the international path).
     Kept under this name so existing callers don't change. Call after
     interaction.response.defer(ephemeral=True, thinking=True).
@@ -255,7 +256,7 @@ async def start_manual_payment(interaction: discord.Interaction, payment_type: s
     None for account-level purchases."""
     from gumroad_payments import start_gumroad_payment
     return await start_gumroad_payment(
-        interaction, payment_type, amount_display, guild_id=guild_id, reference=reference
+        interaction, payment_type, amount_display, guild_id=guild_id, reference=reference, intro=intro
     )
 
 
@@ -640,7 +641,10 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
         await offer_region_choice(interaction, on_ghana=_again("auto", "GHS"), on_international=_again("gumroad"))
         return
     if mode == "gumroad":
-        await start_manual_payment(interaction, payment_type, amount_display_manual, guild_id=guild_id)
+        await start_manual_payment(
+            interaction, payment_type, amount_display_manual, guild_id=guild_id,
+            intro=f"**{product_title}**\n{product_description}",
+        )
         return
 
     from payments import resolve_gateway
