@@ -24,6 +24,7 @@ font/channel needs the Confirm click (AI_CONFIRMED_HANDLERS /
 AI_CONFIRM_PROMPTS below).
 """
 
+import asyncio
 import logging
 from typing import Optional, Union
 
@@ -150,7 +151,17 @@ async def _rename(user, guild, channel, new_name: str) -> tuple:
     if not new_name.strip():
         return False, "\u274c Nothing to rename it to."
     try:
-        await channel.edit(name=new_name[:100], reason=f"Styled via /style by {user}")
+        # Discord allows only 2 renames per 10 min per channel. discord.py
+        # silently sleeps out that limit (up to ~10 min), which left the
+        # wizard stuck on "Renaming..." — so give up fast and say why.
+        await asyncio.wait_for(
+            channel.edit(name=new_name[:100], reason=f"Styled via /style by {user}"), timeout=10,
+        )
+    except asyncio.TimeoutError:
+        return False, (
+            f"\u23f3 Discord is rate-limiting renames on {channel.mention} (max 2 every 10 minutes). "
+            "Nothing was changed \u2014 wait a few minutes and tap Apply again."
+        )
     except discord.HTTPException as e:
         return False, f"\u274c Discord rejected that name: {e.text}"
     return True, f"\u2705 {channel.mention} renamed to **{new_name[:100]}**"
