@@ -567,7 +567,7 @@ class BoostTierButton(discord.ui.Button):
         )
         embed = discord.Embed(
             title=f"🚀 Boost — {self.tier.title()}",
-            description=f"**{charged_amount_display}** for 30 days of {self.tier} placement.\n\nTap **Pay Now**, then **Verify**.",
+            description=f"**{charged_amount_display}** for 30 days of {self.tier} placement.\n\n❤️ Your payment helps keep this bot alive.\n\nTap **Pay Now**, then **Verify**.",
             color=discord.Color.blue(),
         )
         view = discord.ui.View(timeout=300)

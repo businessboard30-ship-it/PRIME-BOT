@@ -53,7 +53,7 @@ class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^level
         await start_dual_mode_payment(
             interaction, payment_type="xp_boost", price_usd=float(app_config.XP_BOOST_FEE_USD),
             product_title="⚡ XP Boost",
-            product_description=f"{app_config.XP_BOOST_MULTIPLIER:g}x XP for you, for {app_config.XP_BOOST_DURATION_DAYS} days.",
+            product_description=f"⚡ {app_config.XP_BOOST_MULTIPLIER:g}x XP for you, {app_config.XP_BOOST_DURATION_DAYS} days.",
             amount_display_manual=f"${app_config.XP_BOOST_FEE_USD:g}", guild_id=self.guild_id,
         )
 

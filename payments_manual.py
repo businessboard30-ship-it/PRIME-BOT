@@ -26,6 +26,7 @@ from typing import Optional
 import discord
 
 from database import db
+import config
 from config import DISCORD_CLONE_ADMIN_IDS
 
 logger = logging.getLogger(__name__)
@@ -504,13 +505,11 @@ async def start_geo_payment(interaction: discord.Interaction, *, payment_type: s
         await interaction.followup.send("Couldn't start checkout right now — please try again shortly.", ephemeral=True)
         return
 
-    lines = [f"**Price:** {amount_display}", "", product_description, ""]
+    lines = [f"**Price:** {amount_display}", "", product_description, "", config.PAYMENT_SUPPORT_LINE, ""]
     if paystack_url:
-        lines.append("🇬🇭 **Pay with Paystack** — for buyers in **Ghana** (Mobile Money / local cards, charged in GHS). "
-                     "After paying, come back here and tap **Verify**.")
+        lines.append("🇬🇭 **Ghana** — Paystack (MoMo / local cards). After paying, tap **Verify**.")
     if gumroad_url:
-        lines.append("🌍 **Pay with Gumroad** — for buyers **outside Ghana** (international cards / PayPal, charged in USD). "
-                     "It unlocks automatically within seconds — no Verify needed.")
+        lines.append("🌍 **International** — Gumroad (card / PayPal). Unlocks automatically.")
     if not paystack_url:
         lines.append("_Paystack is unavailable right now._")
     if not gumroad_url:
@@ -690,7 +689,8 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
         title=product_title,
         description=(
             f"**Amount:** {charged_amount_display}\n\n{product_description}\n\n"
-            f"Tap **Pay** below, complete checkout, then come back and tap **Verify**."
+            f"{config.PAYMENT_SUPPORT_LINE}\n\n"
+            f"Tap **Pay**, then **Verify**."
         ),
         color=discord.Color.gold(),
     )

@@ -278,7 +278,7 @@ class ImageSearchCog(commands.Cog):
             else f"{charge['amount_minor_units'] / 100:.2f} {charge['currency'].upper()} (converted from GHS {price:g})"
         )
         await interaction.followup.send(
-            f"💳 **Unlock Source Links**\nPay {charged_amount_display}, then tap **Verify Payment**.\n"
+            f"💳 **Unlock Source Links**\nPay {charged_amount_display}, then tap **Verify Payment**.\n❤️ Your payment helps keep this bot alive.\n"
             f"[Complete payment]({payment_result.get('authorization_url')})",
             view=view, ephemeral=True,
         )
@@ -356,8 +356,8 @@ class ImageSearchCog(commands.Cog):
         view = VerifyYandexView(self)
         await interaction.followup.send(
             f"💳 **Yandex Direct Search — {charged_amount_display}**\n"
-            f"Pay, then tap **Verify Payment**. Unlocks a direct 'Open in Yandex' link on every "
-            f"image you send for {IMAGE_SEARCH_YANDEX_DAYS} days.\n"
+            f"Pay, then tap **Verify Payment**. Direct Yandex links for {IMAGE_SEARCH_YANDEX_DAYS} days.\n"
+            f"❤️ Your payment helps keep this bot alive.\n"
             f"[Complete payment]({payment_result.get('authorization_url')})",
             view=view, ephemeral=True,
         )

@@ -392,7 +392,7 @@ class MusicProUpgradeButton(discord.ui.DynamicItem[discord.ui.Button], template=
         await start_dual_mode_payment(
             interaction, payment_type="music_pro", price_usd=app_config.MUSIC_PRO_FEE_USD,
             product_title="🎵 Music Pro",
-            product_description="One-time unlock for this server's music features upgrade.",
+            product_description="🎵 Unlimited plays, uploads & downloads.",
             amount_display_manual=app_config.MUSIC_PRO_PRICE_LABEL, guild_id=self.guild_id,
         )
 

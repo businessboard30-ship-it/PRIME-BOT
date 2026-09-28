@@ -77,7 +77,7 @@ class BuyBoostSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"^buyb
         price_usd = float(tier["fee_usd"])
         amount_display = f"${tier['fee_usd']:g}"
         title = "⚡ Server XP Boost"
-        description = f"Boosts XP for everyone in this server — {tier['multiplier']:g}x for {tier['duration_hours']}h."
+        description = f"⚡ {tier['multiplier']:g}x XP for everyone, {tier['duration_hours']}h."
         await start_dual_mode_payment(
             interaction, payment_type=payment_type, price_usd=price_usd,
             product_title=title, product_description=description,

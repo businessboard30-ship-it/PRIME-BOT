@@ -365,6 +365,9 @@ AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "10"))
 # after expiry so a slow renewal doesn't cut anyone off mid-payment.
 # ─────────────────────────────────────────────────────────────────────
 PREMIUM_FEE_USD = 2
+
+# Shown on every payment screen.
+PAYMENT_SUPPORT_LINE = "❤️ Your payment helps keep this bot alive."
 PREMIUM_DAYS = 30
 PREMIUM_SUB_DAYS = 33
 PREMIUM_GRACE_DAYS = 3

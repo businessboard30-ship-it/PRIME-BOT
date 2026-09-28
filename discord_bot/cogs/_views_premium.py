@@ -87,8 +87,7 @@ class PremiumSubscribeButton(discord.ui.DynamicItem[discord.ui.Button], template
             interaction, payment_type="premium", price_usd=fee,
             product_title=f"💎 Premium — {guild.name}",
             product_description=(
-                "Unlocks every package and every future feature for this whole server. "
-                "Gumroad renews monthly automatically; Paystack covers 30 days per payment."
+                "💎 Every feature, for your whole server. Gumroad renews monthly; Paystack = 30 days."
             ),
             amount_display_manual=f"${fee:g}/month", guild_id=self.guild_id,
         )

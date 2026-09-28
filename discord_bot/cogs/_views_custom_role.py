@@ -187,7 +187,7 @@ class _BuyCustomRoleView(discord.ui.View):
         await start_dual_mode_payment(
             interaction, payment_type="custom_role", price_usd=CUSTOM_ROLE_FEE_USD,
             product_title="🎨 Custom Role",
-            product_description="One-time unlock — style your own role (name, font, color, optional icon) anytime after, unlimited edits.",
+            product_description="🎨 Style your own role — name, font, color, icon. Unlimited edits.",
             amount_display_manual=f"${CUSTOM_ROLE_FEE_USD}", guild_id=self.guild_id,
         )
 

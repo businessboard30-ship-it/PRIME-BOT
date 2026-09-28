@@ -548,7 +548,7 @@ class CloneAdminCog(commands.Cog):
             await start_geo_payment(
                 interaction, payment_type="discord_clone_monetization",
                 price_usd=float(CLONE_MONETIZATION_FEE_USD), product_title="Activate Monetization",
-                product_description=f"Unlocks custom prices and your own payment link for clone #{clone_id}.",
+                product_description=f"💰 Custom prices + your own payment link for clone #{clone_id}.",
                 amount_display=f"${CLONE_MONETIZATION_FEE_USD} (GHS {CLONE_MONETIZATION_FEE_GHS} in Ghana)",
                 extra={"monetize_clone_id": clone_id},
             )
