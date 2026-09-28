@@ -7,7 +7,7 @@ marketplace — all wired into a single `discord.py` application.
 always-on process host — NOT Vercel/serverless, see note below)1
 
 ---
-
+d
 ## Why not Vercel / serverless
 
 Discord bots need a persistent WebSocket (gateway) connection — there's no
