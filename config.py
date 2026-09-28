@@ -260,7 +260,7 @@ DISCORD_CLONE_FREE_EVERY_NTH = 3
 # currency (from /currency set, or a Discord-locale guess) live at
 # checkout time via convert_from_usd/usd_to_minor_units, same pattern as
 # config.DISCOVER_CAP_TIERS. No more hardcoded GHS here.
-WELCOME_CARD_PACK_FEE_USD = 5
+WELCOME_CARD_PACK_FEE_USD = 2
 
 # Ultra pack: on top of the premium card pack's fixed artist themes above,
 # this unlocks /welcome custombg — a guild can point the welcome card's
