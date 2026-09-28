@@ -206,7 +206,8 @@ def channel_name(text: str, key: str, hyphenate: bool = True, bracket=None, lowe
     channels also can't hold spaces, so runs of whitespace become single
     hyphens (voice/stage channels keep spaces: hyphenate=False)."""
     plain = to_plain(text)
-    cleaned = " ".join((plain.lower() if lower else plain).split())
+    # Small caps has no uppercase glyphs, so capitals would stay plain.
+    cleaned = " ".join((plain.lower() if (lower or key == "small_caps") else plain).split())
     if hyphenate:
         cleaned = cleaned.replace(" ", "-")
     return wrap_brackets(apply_style(cleaned, key), bracket)[:100]
