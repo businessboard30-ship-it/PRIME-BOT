@@ -191,6 +191,27 @@ def bracket_choices() -> list:
     return [(k, v[0]) for k, v in BRACKETS.items()]
 
 
+def strip_brackets(text: str) -> str:
+    """Remove any bracket/decoration we may have added on a previous rename
+    (from either edge), so restyling swaps brackets instead of stacking them."""
+    pairs = [(l, r) for _k, (_lbl, l, r) in BRACKETS.items() if l or r]
+    changed = True
+    removed = False
+    while changed:
+        changed = False
+        text = text.strip()
+        for left, right in pairs:
+            if left and text.startswith(left):
+                text = text[len(left):]
+                changed = removed = True
+            if right and text.endswith(right):
+                text = text[:-len(right)]
+                changed = removed = True
+    if removed:
+        text = text.strip(" -")
+    return text
+
+
 def wrap_brackets(text: str, bracket) -> str:
     if not bracket or bracket not in BRACKETS:
         return text
@@ -205,7 +226,7 @@ def channel_name(text: str, key: str, hyphenate: bool = True, bracket=None, lowe
     Discord's own lowercasing, which only touches plain A-Z). Text/forum
     channels also can't hold spaces, so runs of whitespace become single
     hyphens (voice/stage channels keep spaces: hyphenate=False)."""
-    plain = to_plain(text)
+    plain = strip_brackets(to_plain(text))
     # Small caps has no uppercase glyphs, so capitals would stay plain.
     cleaned = " ".join((plain.lower() if (lower or key == "small_caps") else plain).split())
     if hyphenate:
