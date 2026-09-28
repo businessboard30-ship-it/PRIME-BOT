@@ -19,7 +19,17 @@ import asyncio
 import logging
 import os
 import secrets
+import sys
+from pathlib import Path
 from typing import Optional
+
+# Make the repo root importable no matter how this file is launched
+# (python discord_bot/bot.py, python -m discord_bot.bot, Railway start cmd).
+# Without this, `from config import ...` fails with ModuleNotFoundError when
+# run as a script because only /app/discord_bot is put on sys.path.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import discord
 from discord import app_commands
