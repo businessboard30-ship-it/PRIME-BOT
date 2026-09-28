@@ -317,23 +317,26 @@ async def get_pool():
         # (a single serverless invocation doesn't run concurrent queries)
         # If using a pooler, it's even safer (pooler handles connection fan-in)
         min_pool_size = 1
-        # Was max_pool_size=2 for the non-pooler case. That's dangerously
-        # low for the persistent bot process specifically: this single
-        # pool is shared by ~25+ background `@tasks.loop` pollers
-        # (automod reminders, starboard, crypto_alerts, schedule, giveaway
-        # timers, voice_xp, bump, heist, ...) AND every concurrent slash
-        # command/component interaction across every guild the bot is in.
-        # With only 2 connections, any brief overlap (e.g. a background
-        # loop tick landing mid-interaction) makes pool.acquire() block
-        # for other callers. Most buttons survive this because they
-        # defer() first (which buys ~15 minutes), but a few — e.g.
-        # _WelcomeEditButton in _views_join_dm.py — MUST call send_modal()
-        # as their literal first response and can't defer around a DB
-        # wait, so this contention surfaced there as a hard, repeatable
-        # "The application didn't respond in time." Bumped to match the
-        # pooler case; a real (non-serverless) Postgres provider handles
-        # 5 connections from one process without issue.
-        max_pool_size = 5 if is_using_pooler else 5
+        # Was max_pool_size=2 for the non-pooler case — dangerously low
+        # for the persistent bot process, which shares this one pool with
+        # ~25+ background @tasks.loop pollers and every concurrent slash
+        # command/component interaction. Non-pooler case bumped to 5
+        # (see below for the pooler case, now 20).
+        max_pool_size = 20 if is_using_pooler else 5
+        # NOTE: 20 (not 5) when a pooler is present. Supavisor/PgBouncer in
+        # transaction mode is built to safely multiplex far more client-side
+        # connections than that — it fans them into a much smaller number of
+        # real Postgres backend connections. Capping at 5 here was starving
+        # this pool needlessly: the persistent bot process shares ONE pool
+        # across ~25+ background @tasks.loop pollers (automod reminders,
+        # starboard, crypto_alerts, schedule, giveaway timers, voice_xp,
+        # bump, heist, the leaderboard autopost loop, ...) AND every
+        # concurrent slash command/component interaction across every guild
+        # — /leaderboard alone fires several acquire()s per render (see
+        # _views_leveling_leaderboard.py). At 5, any brief overlap between a
+        # background tick and a couple of interactions serializes everyone
+        # else behind pool.acquire(). Direct (non-pooler) connections stay
+        # at 5 — Postgres itself, not a pooler, is what's limiting those.
         # NOTE: 5 (not 1) when a pooler is present — the persistent bot
         # process (discord_bot/bot.py) fields many concurrent interactions
         # (slash commands, vote clicks, autopost/crypto_alerts loops) on one
@@ -8955,7 +8958,8 @@ class Database:
             # sitting on the same total_xp). See discord_clan_chiefs /
             # recompute_clan_chiefs for why this matters beyond display.
             rows = await conn.fetch(
-                "SELECT * FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "SELECT user_id, total_xp, level FROM discord_xp "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
                 "ORDER BY total_xp DESC, last_xp_at ASC NULLS LAST LIMIT $3 OFFSET $4",
                 guild_id, clone_id, limit, offset
             )
@@ -8968,6 +8972,31 @@ class Database:
                 "SELECT COUNT(*) FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id
             )
+
+    async def get_xp_leaderboard_page(self, guild_id: int, limit: int = 10, clone_id: Optional[int] = None,
+                                       offset: int = 0) -> tuple[List[Dict], int]:
+        """Same rows as get_xp_leaderboard, PLUS the total row count, in
+        ONE round-trip via COUNT(*) OVER() instead of the caller doing a
+        separate get_xp_leaderboard_count query first and then this one —
+        that was two sequential DB round-trips on every single
+        /leaderboard render/click before either query even started, which
+        matters most on a small guild where nothing else in the render is
+        slow enough to hide it. Returns ([], 0) if the guild/clone has no
+        rows at all. If offset lands past the end (stale page number),
+        rows comes back empty even though total > 0 — caller should
+        re-page and re-fetch in that rare case, same as before."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, total_xp, level, COUNT(*) OVER() AS _total_count FROM discord_xp "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "ORDER BY total_xp DESC, last_xp_at ASC NULLS LAST LIMIT $3 OFFSET $4",
+                guild_id, clone_id, limit, offset
+            )
+            if not rows:
+                return [], 0
+            total = rows[0]["_total_count"]
+            return [{"user_id": r["user_id"], "total_xp": r["total_xp"], "level": r["level"]} for r in rows], total
 
     async def get_xp_rank(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
         """Local (per-guild) rank for the "Your Current Stats" panel. Rank is
@@ -9029,6 +9058,27 @@ class Database:
             return await conn.fetchval(
                 "SELECT COUNT(*) FROM (SELECT user_id FROM discord_xp GROUP BY user_id) t"
             )
+
+    async def get_global_xp_leaderboard_page(self, limit: int = 10, offset: int = 0) -> tuple[List[Dict], int]:
+        """Same as get_xp_leaderboard_page but for the global tab — one
+        round-trip via COUNT(*) OVER() instead of a separate count query
+        plus this one."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id, SUM(total_xp)::BIGINT AS total_xp, COUNT(*) OVER() AS _total_count
+                FROM discord_xp
+                GROUP BY user_id
+                ORDER BY total_xp DESC
+                LIMIT $1 OFFSET $2
+                """,
+                limit, offset
+            )
+            if not rows:
+                return [], 0
+            total = rows[0]["_total_count"]
+            return [{"user_id": r["user_id"], "total_xp": r["total_xp"]} for r in rows], total
 
     async def get_global_xp_rank(self, user_id: int) -> Optional[Dict]:
         """Same shape/semantics as get_xp_rank but summed across every
@@ -9110,7 +9160,7 @@ class Database:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT * FROM discord_leader_links WHERE guild_id = $1 "
+                "SELECT user_id, invite_url, status FROM discord_leader_links WHERE guild_id = $1 "
                 "AND clone_id IS NOT DISTINCT FROM $2 AND user_id = ANY($3::bigint[])",
                 guild_id, clone_id, user_ids
             )

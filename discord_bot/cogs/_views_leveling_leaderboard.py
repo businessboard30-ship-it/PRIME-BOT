@@ -142,19 +142,16 @@ async def _bulk_cache_members(bot, guild, mode: str, user_ids: list[int]):
         pass
 
 
-async def _stats_lines(bot, guild, clone_id, mode: str, user_id: int):
-    """Builds the 'Your Current Stats' body for whoever last interacted.
-    Returns None if they have no XP at all yet in that mode."""
-    if mode == "local":
-        rank_row = await db.get_xp_rank(guild.id, user_id, clone_id=clone_id)
-    else:
-        rank_row = await db.get_global_xp_rank(user_id)
+async def _format_stats_text(rank_row, name: str) -> str:
+    """Pure formatter — no I/O. Split out of the old _stats_lines so the
+    rank DB query and the name resolution can be pipelined through the
+    same bulk-cache + gather flow as everything else instead of each
+    doing its own separate, racing lookup (see build_leaderboard_view)."""
     if rank_row is None or rank_row.get("total_xp") is None:
         return None
     rank = rank_row["rank"]
     total_players = rank_row["total_players"] or 1
     pct = round((rank / total_players) * 100, 1)
-    name, _avatar, _role_name, _role_color = await _resolve_display(bot, guild, mode, user_id)
     return (
         f"**Your Current Stats**\n"
         f"User: {name}\n"
@@ -169,35 +166,59 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     button/select callback below — exactly one place assembles the
     Container so all three stay in sync. Returns None only when there's
     truly nothing to show yet (no XP anywhere in scope)."""
+    # Kicked off immediately and only awaited right before it's needed at
+    # the bottom of the function — it doesn't depend on anything else
+    # computed here, so there's no reason for it to sit at the end of a
+    # sequential chain of DB round-trips.
+    premium_task = asyncio.create_task(db.is_guild_premium_active(guild.id, clone_id))
+
+    # Count + rows used to be two sequential DB round-trips before either
+    # even started — get_xp_leaderboard_page/get_global_xp_leaderboard_page
+    # return both together via a COUNT(*) OVER() window function in one
+    # trip. That matters most on a small guild like this one, where the
+    # actual query time is tiny and the fixed per-round-trip latency to
+    # Supabase is most of what you're waiting on.
+    raw_offset = max(0, page) * PAGE_SIZE
     if mode == "local":
-        total = await db.get_xp_leaderboard_count(guild.id, clone_id=clone_id)
+        rows, total = await db.get_xp_leaderboard_page(guild.id, limit=PAGE_SIZE, clone_id=clone_id, offset=raw_offset)
     else:
-        total = await db.get_global_xp_leaderboard_count()
+        rows, total = await db.get_global_xp_leaderboard_page(limit=PAGE_SIZE, offset=raw_offset)
+
     if not total:
+        premium_task.cancel()
         return None
 
     total_pages = max(1, math.ceil(total / PAGE_SIZE))
     page = max(0, min(page, total_pages - 1))
     offset = page * PAGE_SIZE
 
-    if mode == "local":
-        rows = await db.get_xp_leaderboard(guild.id, limit=PAGE_SIZE, clone_id=clone_id, offset=offset)
-    else:
-        rows = await db.get_global_xp_leaderboard(limit=PAGE_SIZE, offset=offset)
+    if offset != raw_offset:
+        # Only hit when the requested page was actually out of range (a
+        # stale page number, e.g. someone's XP pushed the row they were
+        # on onto an earlier page between clicks) — pays one extra
+        # round-trip, but only in that rare case, not on every render.
+        if mode == "local":
+            rows, total = await db.get_xp_leaderboard_page(guild.id, limit=PAGE_SIZE, clone_id=clone_id, offset=offset)
+        else:
+            rows, total = await db.get_global_xp_leaderboard_page(limit=PAGE_SIZE, offset=offset)
+        total_pages = max(1, math.ceil(total / PAGE_SIZE))
 
     user_ids = [r["user_id"] for r in rows]
     if mode == "local":
-        boosts = await db.get_active_xp_boosts_for_users(guild.id, user_ids, clone_id=clone_id)
+        # These three only depend on user_ids, not on each other — they
+        # were previously awaited one at a time (boosts, THEN clan_seats,
+        # THEN leader_links), each paying its own round-trip latency in
+        # series. Firing them together cuts that to the slowest single
+        # one instead of the sum of all three.
+        boosts, chief_seats, leader_links = await asyncio.gather(
+            db.get_active_xp_boosts_for_users(guild.id, user_ids, clone_id=clone_id),
+            db.get_clan_seats(guild.id, clone_id=clone_id),
+            db.get_leader_links_for_users(guild.id, user_ids, clone_id=clone_id),
+        )
         # Chief seats are local-only (Option B, per-server exclusive seats
         # — see database.py's recompute_clan_chiefs). Build a user_id ->
         # clan_slug map once per render rather than per row.
-        chief_seats = await db.get_clan_seats(guild.id, clone_id=clone_id)
         chief_by_user_id = {s["user_id"]: s["clan_slug"] for s in chief_seats if s["user_id"] is not None}
-        # Batched up front (one query for the whole page) instead of the
-        # old per-row get_leader_link call awaited sequentially inside the
-        # rendering loop below — that was up to 10 separate DB round-trips
-        # per /leaderboard render and was the main source of the slowness.
-        leader_links = await db.get_leader_links_for_users(guild.id, user_ids, clone_id=clone_id)
     else:
         boosts = await db.get_active_global_boosts_for_users(user_ids)
         chief_by_user_id = {}
@@ -229,27 +250,49 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     stats_text = None
     stats_task = None
     if stats_for_user_id is not None:
-        stats_task = asyncio.create_task(_stats_lines(bot, guild, clone_id, mode, stats_for_user_id))
+        # Just the rank DB query now — no name resolution here (see
+        # below), so this can run purely concurrently with everything
+        # else with nothing left inside it that could race
+        # _bulk_cache_members.
+        if mode == "local":
+            stats_task = asyncio.create_task(db.get_xp_rank(guild.id, stats_for_user_id, clone_id=clone_id))
+        else:
+            stats_task = asyncio.create_task(db.get_global_xp_rank(stats_for_user_id))
 
     # One gateway round-trip resolves every uncached row (+ the stats-line
     # user) at once — see _bulk_cache_members' docstring for why the
     # earlier asyncio.gather-only fix wasn't enough on its own.
     bulk_ids = [r["user_id"] for r in rows]
-    if stats_for_user_id is not None:
+    needs_stats_display = stats_for_user_id is not None and stats_for_user_id not in bulk_ids
+    if needs_stats_display:
         bulk_ids.append(stats_for_user_id)
     await _bulk_cache_members(bot, guild, mode, bulk_ids)
 
     # _resolve_display only hits a REST fetch_member/fetch_user fallback
     # now for whatever _bulk_cache_members above didn't resolve (left the
     # guild, etc.) — firing those via gather still helps for that
-    # remainder, it's just no longer doing the heavy lifting.
+    # remainder, it's just no longer doing the heavy lifting. The
+    # stats-panel user's name is resolved in this SAME gather (added to
+    # the batch below) rather than via its own separate _resolve_display
+    # call afterward — that separate call used to run concurrently with
+    # _bulk_cache_members above as its own task, which meant it could hit
+    # an uncached member and fire a redundant REST fetch_member before
+    # bulk-caching had finished — the exact per-row REST fallback
+    # _bulk_cache_members exists to avoid. Resolving it here instead,
+    # strictly after the cache is warm, closes that race.
+    display_ids = list(rows)
+    if needs_stats_display:
+        display_ids.append({"user_id": stats_for_user_id})
     display_results = await asyncio.gather(
-        *[_resolve_display(bot, guild, mode, r["user_id"]) for r in rows]
+        *[_resolve_display(bot, guild, mode, r["user_id"]) for r in display_ids]
     )
-    display_by_user_id = {r["user_id"]: d for r, d in zip(rows, display_results)}
+    display_by_user_id = {r["user_id"]: d for r, d in zip(display_ids, display_results)}
 
     if stats_task is not None:
-        stats_text = await stats_task
+        rank_row = await stats_task
+        stats_name = (display_by_user_id[stats_for_user_id][0]
+                      if stats_for_user_id in display_by_user_id else f"User {stats_for_user_id}")
+        stats_text = await _format_stats_text(rank_row, stats_name)
     stats_section = discord.ui.Section(accessory=LeaderboardMyRankButton(guild.id, clone_id, mode, page))
     stats_section.add_item(stats_text or "**Your Current Stats**\nTap *My Rank* to see where you stand.")
     container.add_item(stats_section)
@@ -333,9 +376,14 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     container.add_item(boost_row)
     container.add_item(build_boost_wallet_row(guild.id, clone_id))
 
-    # Go Premium footer — only show if guild isn't already premium
+    # Go Premium footer — only show if guild isn't already premium.
+    # premium_task was kicked off at the very top of this function, so by
+    # the time we get here (after several DB round-trips + a gateway
+    # query_members call) it's almost certainly already resolved — this
+    # just collects the result instead of firing a brand-new query and
+    # waiting on it cold.
     try:
-        is_prem = await db.is_guild_premium_active(guild.id, clone_id)
+        is_prem = await premium_task
     except Exception:
         is_prem = False
     if not is_prem:
