@@ -46,7 +46,7 @@ QUICKSTART_ITEMS = [
     ("⬇️", "Media downloads", "/download", "Works right away, no setup — grab audio/video from a link."),
     ("📥", "Downloadhub", "/setup downloadhub", "Auto-creates a channel where members submit/upload music & video and play it in voice."),
     ("📊", "Server analytics", "/serveranalytics", "See member/activity stats and where to find more members."),
-    ("💎", "Go Premium", "/start", f"Unlock every pack and future feature for ${config.PREMIUM_FEE_USD:g}/month per server."),
+    ("💎", "Go Premium", "/start", f"Premium fonts, welcome cards, Music Pro and every future feature \u2014 ${config.PREMIUM_FEE_USD:g}/month for the whole server."),
 ]
 
 

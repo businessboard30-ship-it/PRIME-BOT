@@ -1633,8 +1633,9 @@ async def _open_premium_pitch(interaction: discord.Interaction, guild: discord.G
 # maintained lists (embed fields vs. button keys) used to.
 FEATURE_TOGGLES = {
     "go_premium": ("Go Premium", "💎", _open_premium_pitch, None,
-                   "Unlock EVERY package — welcome cards, custom roles, Music Pro, Hardcore Roast, Roblox alerts, "
-                   f"custom bot branding — plus all future features, for just ${_cfg.PREMIUM_FEE_USD:g}/month per server. Tap to see everything you get."),
+                   "Everything unlocked for your whole server — premium fonts & designs, welcome cards, custom roles, "
+                   "Music Pro, Hardcore Roast, Roblox alerts, custom bot branding and every future feature — for just "
+                   f"${_cfg.PREMIUM_FEE_USD:g}/month. Tap to see what you get."),
     "welcome": ("Welcome messages", "👋", _enable_welcome, None,
                 "Greet new members automatically in a channel of your choice."),
     "tickets": ("Support tickets", "🎫", _enable_tickets, None,

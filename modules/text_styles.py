@@ -118,7 +118,22 @@ STYLES = {
 STYLES["circled"][2].update({str(i): chr(0x2460 + i - 1) for i in range(1, 10)})
 STYLES["circled"][2]["0"] = "⓪"
 
-STYLE_ORDER = list(STYLES.keys())
+STYLE_ORDER = list(STYLES.keys())   # the original 25 (fits one Discord select)
+
+# Premium-only extra fonts (kept out of STYLE_ORDER so the older join-DM
+# wizard's single 25-option select never overflows).
+STYLES.update({
+    "dotted": ("Dotted", "ṳ", _combining("\u0324")),
+    "slashed": ("Slashed", "s̸", _combining("\u0338")),
+    "double_underline": ("Double Underline", "u̳", _combining("\u0333")),
+})
+EXTRA_STYLE_ORDER = ["dotted", "slashed", "double_underline"]
+
+# Free tier: the 8 most-used fonts and 6 simple brackets. Everything else is
+# Premium (server has Go Premium AND the user has Manage Server).
+FREE_FONTS = frozenset({"bold", "italic", "script", "small_caps", "monospace",
+                        "double_struck", "fullwidth", "circled"})
+FREE_BRACKETS = frozenset({"none", "cjk", "corner", "double_angle", "guillemets", "bar", "dot"})
 
 
 def apply_style(text: str, key: str) -> str:
@@ -136,7 +151,21 @@ def style_choices() -> list:
     return [(key, STYLES[key][0], STYLES[key][1]) for key in STYLE_ORDER]
 
 
+def all_style_choices() -> list:
+    """Same as style_choices() plus the Premium-only extra fonts."""
+    return [(key, STYLES[key][0], STYLES[key][1]) for key in STYLE_ORDER + EXTRA_STYLE_ORDER]
+
+
+def free_style_choices() -> list:
+    return [c for c in all_style_choices() if c[0] in FREE_FONTS]
+
+
+def premium_style_choices() -> list:
+    return [c for c in all_style_choices() if c[0] not in FREE_FONTS]
+
+
 _REVERSE = None
+_OUR_MARKS = frozenset("\u0336\u0332\u0324\u0338\u0333")
 
 
 def to_plain(text: str) -> str:
@@ -155,7 +184,11 @@ def to_plain(text: str) -> str:
         _REVERSE = rev
     text = unicodedata.normalize("NFKC", text)
     text = "".join(_REVERSE.get(ch, ch) for ch in text)
-    return "".join(ch for ch in text if ch not in ("\u0336", "\u0332"))
+    # NFKD splits any letter that fused with one of our combining marks
+    # (e.g. u + U+0324 -> U+1E73), then NFC re-fuses legitimate accents.
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if ch not in _OUR_MARKS)
+    return unicodedata.normalize("NFC", text)
 
 
 # key -> (label, left, right). Optional wrapper applied AFTER the font.
@@ -177,18 +210,42 @@ BRACKETS = {
     "sparkle": ("✦ ✦", "✦", "✦"),
     "star": ("★ ★", "★", "★"),
     "kira": ("⋆ ⋆", "⋆", "⋆"),
-    "swords": ("⚔ ⚔", "⚔", "⚔"),
     "bar": ("┃ prefix", "┃", ""),
     "dot": ("・ prefix", "・", ""),
     "thin_bar": ("︱ prefix", "︱", ""),
     "diamond": ("❖ prefix", "❖", ""),
     "arrow": ("➤ prefix", "➤", ""),
     "dotted_bar": ("┊ prefix", "┊", ""),
+    # Premium-only designs
+    "frame_round": ("╭─ ─╮ frame", "╭─", "─╮"),
+    "frame_heavy": ("━━ ━━ frame", "━━", "━━"),
+    "frame_wave": ("▁▂▃ ▃▂▁ frame", "▁▂▃", "▃▂▁"),
+    "frame_corner": ("⌜ ⌟ frame", "⌜", "⌟"),
+    "gem": ("⟡ ⟡", "⟡", "⟡"),
+    "moon": ("☾ ☽", "☾", "☽"),
+    "heart": ("♡ ♡", "♡", "♡"),
+    "fire": ("🔥 prefix", "🔥", ""),
+    "crown": ("👑 prefix", "👑", ""),
 }
 
 
 def bracket_choices() -> list:
     return [(k, v[0]) for k, v in BRACKETS.items()]
+
+
+def free_bracket_choices() -> list:
+    return [(k, v[0]) for k, v in BRACKETS.items() if k in FREE_BRACKETS]
+
+
+def premium_bracket_choices() -> list:
+    return [(k, v[0]) for k, v in BRACKETS.items() if k not in FREE_BRACKETS]
+
+
+def is_premium_style(font=None, bracket=None) -> bool:
+    """True when this font/bracket combo needs Premium."""
+    if font and font not in FREE_FONTS and font in STYLES:
+        return True
+    return bool(bracket and bracket in BRACKETS and bracket not in FREE_BRACKETS)
 
 
 def strip_brackets(text: str) -> str:

@@ -31,7 +31,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modules.text_styles import BRACKETS, STYLES, apply_style, bracket_choices, channel_name, style_choices
+from modules.text_styles import (
+    BRACKETS, FREE_BRACKETS, FREE_FONTS, STYLES, all_style_choices, channel_name,
+    free_bracket_choices, free_style_choices, is_premium_style, premium_bracket_choices,
+    premium_style_choices,
+)
+import config
+from database import db
 from modules.ai_features import ai_chat, check_ai_usage_limit
 from modules.superbot_adapter import get_user_tier
 
@@ -109,6 +115,29 @@ def _normalize_bracket(value) -> Optional[str]:
     return False
 
 
+async def _premium_flags(user, guild, clone_id) -> tuple:
+    """(premium_active, can_manage_server) for this user in this guild."""
+    try:
+        active = bool(await db.is_guild_premium_active(guild.id, clone_id))
+    except Exception:
+        logger.exception("premium check failed")
+        active = False
+    perms = getattr(user, "guild_permissions", None)
+    can = bool(perms and (perms.manage_guild or perms.administrator)) or (guild.owner_id == user.id)
+    return active, can
+
+
+def _premium_block_message(font, bracket, active: bool, can_manage: bool) -> Optional[str]:
+    """None when this style is allowed; otherwise why it isn't."""
+    if not is_premium_style(font, bracket):
+        return None
+    if not active:
+        return f"\U0001f48e That style is **Premium** \u2014 Go Premium (${config.PREMIUM_FEE_USD:g}/month per server) to unlock it."
+    if not can_manage:
+        return "\U0001f48e Premium styles need the **Manage Server** permission."
+    return None
+
+
 async def _rename(user, guild, channel, new_name: str) -> tuple:
     """(ok, message). The one place a rename actually happens — re-checks the
     USER's and the BOT's Manage Channels on THAT channel."""
@@ -158,8 +187,9 @@ class _WizChannelSelect(discord.ui.ChannelSelect):
 
 
 class _WizFontSelect(discord.ui.Select):
-    def __init__(self, wiz: "_StyleWizard"):
+    def __init__(self, wiz: "_StyleWizard", premium: bool):
         base = wiz.base_text
+        choices = premium_style_choices() if premium else free_style_choices()
         options = [
             discord.SelectOption(
                 label=label, value=key, default=(key == wiz.font),
@@ -167,9 +197,12 @@ class _WizFontSelect(discord.ui.Select):
                 # (Discord rejects non-emoji glyphs there with a 400).
                 description=(_name(base, key, wiz.channel, wiz.bracket, wiz.mode)[:100] or None) if base else None,
             )
-            for key, label, _sample in style_choices()
+            for key, label, _sample in choices
         ]
-        super().__init__(placeholder="2 \u00b7 Pick a font\u2026", options=options, min_values=1, max_values=1)
+        super().__init__(
+            placeholder=("2 \u00b7 \U0001f48e Premium fonts\u2026" if premium else "2 \u00b7 Pick a font\u2026"),
+            options=options, min_values=1, max_values=1,
+        )
         self.wiz = wiz
 
     async def callback(self, interaction: discord.Interaction):
@@ -180,18 +213,22 @@ class _WizFontSelect(discord.ui.Select):
 
 
 class _WizBracketSelect(discord.ui.Select):
-    def __init__(self, wiz: "_StyleWizard"):
+    def __init__(self, wiz: "_StyleWizard", premium: bool):
         base = wiz.base_text
         font = wiz.font or "bold"
+        choices = premium_bracket_choices() if premium else free_bracket_choices()
         options = [
             discord.SelectOption(
                 label=label, value=key, default=(key == (wiz.bracket or "none")),
                 description=(_name(base, font, wiz.channel, key, wiz.mode)[:100] or None) if base else None,
             )
-            for key, label in bracket_choices()
+            for key, label in choices
         ]
-        super().__init__(placeholder="3 \u00b7 Brackets / decoration (optional)\u2026", options=options,
-                         min_values=1, max_values=1)
+        super().__init__(
+            placeholder=("3 \u00b7 \U0001f48e Premium brackets & designs\u2026" if premium
+                         else "3 \u00b7 Brackets (optional)\u2026"),
+            options=options, min_values=1, max_values=1,
+        )
         self.wiz = wiz
 
     async def callback(self, interaction: discord.Interaction):
@@ -303,7 +340,7 @@ class _WizAllFontsButton(discord.ui.Button):
             await interaction.response.edit_message(view=self.wiz)
             return
         w = self.wiz
-        lines = [f"**{label}** \u2014 {_name(base, key, w.channel, w.bracket, w.mode)}" for key, label, _s in style_choices()]
+        lines = [f"{'\U0001f48e ' if key not in FREE_FONTS else ''}**{label}** \u2014 {_name(base, key, w.channel, w.bracket, w.mode)}" for key, label, _s in all_style_choices()]
         chunks, cur = [], ""
         for ln in lines:
             if len(cur) + len(ln) + 1 > 1800:
@@ -333,15 +370,35 @@ class _WizModeButton(discord.ui.Button):
         await interaction.response.edit_message(view=wiz)
 
 
+class _WizGoPremiumButton(discord.ui.Button):
+    def __init__(self, wiz):
+        super().__init__(label=f"Go Premium \U0001f48e \u2014 ${config.PREMIUM_FEE_USD:g}/month",
+                         style=discord.ButtonStyle.primary)
+        self.wiz = wiz
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_premium import send_premium_pitch
+        await interaction.response.defer(ephemeral=True)
+        await send_premium_pitch(interaction, self.wiz.guild_id, self.wiz.clone_id)
+
+
 class _WizApplyButton(discord.ui.Button):
     def __init__(self, wiz):
-        ready = bool(wiz.channel and wiz.base_text and wiz.font)
+        ready = bool(wiz.channel and wiz.base_text and wiz.font) and not wiz.locked
         super().__init__(label="Apply", emoji="\u2705", style=discord.ButtonStyle.success, disabled=not ready)
         self.wiz = wiz
 
     async def callback(self, interaction: discord.Interaction):
         wiz = self.wiz
         if not (wiz.channel and wiz.base_text and wiz.font):
+            return
+        # Re-check premium + Manage Server at click time (state may be stale).
+        wiz.premium_active, wiz.can_manage = await _premium_flags(interaction.user, interaction.guild, wiz.clone_id)
+        block = _premium_block_message(wiz.font, wiz.bracket, wiz.premium_active, wiz.can_manage)
+        if block:
+            wiz.status = block
+            wiz.rebuild()
+            await interaction.response.edit_message(view=wiz)
             return
         new_name = wiz.result_name()
         # Ack instantly + show progress; Discord rate-limits renames to
@@ -359,8 +416,11 @@ class _StyleWizard(discord.ui.LayoutView):
     """The whole /style experience — one panel, state shown live."""
 
     def __init__(self, guild_id: int, clone_id, *, channel=None, text: Optional[str] = None,
-                 font: Optional[str] = None, bracket: Optional[str] = None):
+                 font: Optional[str] = None, bracket: Optional[str] = None,
+                 premium_active: bool = False, can_manage: bool = False):
         super().__init__(timeout=600)
+        self.premium_active = premium_active
+        self.can_manage = can_manage
         self.mode = "category" if isinstance(channel, discord.CategoryChannel) else "channel"
         self.guild_id = guild_id
         self.clone_id = clone_id
@@ -371,6 +431,11 @@ class _StyleWizard(discord.ui.LayoutView):
         self.ideas: list = []
         self.status: Optional[str] = None
         self.rebuild()
+
+    @property
+    def locked(self) -> bool:
+        """A Premium style is picked but this user/server can't use it."""
+        return _premium_block_message(self.font, self.bracket, self.premium_active, self.can_manage) is not None
 
     @property
     def base_text(self) -> str:
@@ -401,15 +466,22 @@ class _StyleWizard(discord.ui.LayoutView):
         ]
         if self.base_text and self.font:
             lines += ["", "**Preview**", self.result_name()]
+        lock_msg = _premium_block_message(self.font, self.bracket, self.premium_active, self.can_manage)
+        if lock_msg and not self.status:
+            lines += ["", lock_msg]
         if self.status:
             lines += ["", self.status]
         container.add_item(discord.ui.TextDisplay("\n".join(lines)))
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.ActionRow(_WizChannelSelect(self)))
-        container.add_item(discord.ui.ActionRow(_WizFontSelect(self)))
-        container.add_item(discord.ui.ActionRow(_WizBracketSelect(self)))
+        container.add_item(discord.ui.ActionRow(_WizFontSelect(self, False)))
+        container.add_item(discord.ui.ActionRow(_WizFontSelect(self, True)))
+        container.add_item(discord.ui.ActionRow(_WizBracketSelect(self, False)))
+        container.add_item(discord.ui.ActionRow(_WizBracketSelect(self, True)))
         if self.ideas:
             container.add_item(discord.ui.ActionRow(_WizIdeaSelect(self)))
+        if self.locked and not self.premium_active:
+            container.add_item(discord.ui.ActionRow(_WizGoPremiumButton(self)))
         container.add_item(discord.ui.ActionRow(
             _WizEditTextButton(self), _WizAIButton(self), _WizAllFontsButton(self), _WizModeButton(self),
             _WizApplyButton(self),
@@ -461,6 +533,10 @@ class StyleCog(commands.Cog):
         if err:
             return False, err
         base = text or channel.name
+        active, can = await _premium_flags(interaction.user, interaction.guild, getattr(self.bot, "clone_id", None))
+        block = _premium_block_message(style_key, _normalize_bracket(bracket) or None, active, can)
+        if block:
+            return False, block
         if style_key is None:
             return True, f"Open the style wizard for {channel.mention} (text: **{base}**)?"
         new_name = _name(base, style_key, channel, _normalize_bracket(bracket) or None)
@@ -471,9 +547,16 @@ class StyleCog(commands.Cog):
         if err:
             await interaction.followup.send(err, ephemeral=True)
             return
+        clone_id = getattr(self.bot, "clone_id", None)
+        active, can = await _premium_flags(interaction.user, interaction.guild, clone_id)
+        block = _premium_block_message(style_key, _normalize_bracket(bracket) or None, active, can)
+        if block:
+            await interaction.followup.send(block, ephemeral=True)
+            return
         if style_key is None:
-            wiz = _StyleWizard(interaction.guild.id, getattr(self.bot, "clone_id", None), channel=channel, text=text,
-                               bracket=_normalize_bracket(bracket) or None)
+            wiz = _StyleWizard(interaction.guild.id, clone_id, channel=channel, text=text,
+                               bracket=_normalize_bracket(bracket) or None,
+                               premium_active=active, can_manage=can)
             await interaction.followup.send(view=wiz, ephemeral=True)
             return
         new_name = _name(text or channel.name, style_key, channel, _normalize_bracket(bracket) or None)
@@ -488,7 +571,9 @@ class StyleCog(commands.Cog):
         if interaction.guild is None:
             await interaction.response.send_message("Run this in a server.", ephemeral=True)
             return
-        wiz = _StyleWizard(interaction.guild.id, getattr(self.bot, "clone_id", None))
+        clone_id = getattr(self.bot, "clone_id", None)
+        active, can = await _premium_flags(interaction.user, interaction.guild, clone_id)
+        wiz = _StyleWizard(interaction.guild.id, clone_id, premium_active=active, can_manage=can)
         await interaction.response.send_message(view=wiz, ephemeral=True)
 
 

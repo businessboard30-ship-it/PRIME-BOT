@@ -79,7 +79,7 @@ AI_COMMANDS = (
         "the channel's current name; channel names are always lowercased), `bracket` (optional wrapper/"
         "decoration around the name: cjk 【】, white_cjk 『』, corner 「」, double_angle 《》, tortoise 〔〕, "
         "math_white ⟦⟧, math_angle ⟪⟫, ornate ❰❱, heavy_angle ❮❯, curly_white ⦃⦄, guillemets «», "
-        "flourish ꧁꧂, tibetan ༺༻, sparkle ✦, star ★, kira ⋆, swords ⚔, or prefixes bar ┃, dot ・, "
+        "flourish ꧁꧂, tibetan ༺༻, sparkle ✦, star ★, kira ⋆, or prefixes bar ┃, dot ・, "
         "thin_bar ︱, diamond ❖, arrow ➤, dotted_bar ┊). With font+channel it renames after the user "
         "confirms; with just channel it opens the style wizard. Needs Manage Channels.",
         confirm_only_with=("font", "channel", "text", "bracket"),
