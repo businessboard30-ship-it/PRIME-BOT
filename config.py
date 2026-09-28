@@ -542,26 +542,6 @@ OWNER_BROADCAST_CHANNEL_ID = 1535782838732066836
 # Hardcoded (was OWNER_BROADCAST_INTERVAL_HOURS env var) — tuning constant.
 OWNER_BROADCAST_INTERVAL_HOURS = 6
 
-# --- Vote-bonus webhook (economy.py /vote, spec §4 open question #1) --------
-# Real vote verification from top.gg / discordbotlist.com: both send a
-# server-to-server POST when someone votes for a bot, carrying an
-# `Authorization` header that must match a secret YOU configure on the
-# listing site's webhook settings page. Set the same value here. Leave
-# blank and the webhook endpoint (api/vote_webhook.py) will reject every
-# request with 401 — /vote in economy.py keeps working as an honor-system
-# command either way, this only controls the extra verified path.
-TOPGG_WEBHOOK_AUTH = os.getenv("TOPGG_WEBHOOK_AUTH", "")
-
-# The main bot's own Discord user/application ID (NOT the bot token) —
-# needed so the vote webhook can tell "this vote was for the main bot"
-# apart from "this vote was for clone N", since vote payloads identify the
-# bot that was voted for by its Discord user ID, not by our internal
-# clone_id. Find it under Discord Developer Portal -> your app -> General
-# Information -> Application ID. Clones are resolved automatically via
-# discord_cloned_bots.bot_user_id, no config needed per clone.
-# Hardcoded (was DISCORD_BOT_USER_ID env var) — not a secret, publicly visible application ID.
-DISCORD_BOT_USER_ID = 1534579332528472246
-
 # --- Clone monetization gate --------------------------------------------------
 # A clone owner can (a) connect their own Paystack/Stripe key instead of
 # routing through the main bot's account, and (b) set their own price for

@@ -14,14 +14,8 @@ per guild via /ecoconfig, none of them a real-money path:
 
   - Vote-gated bonus (/vote): posts the guild's configured voting-site link
     and, on a cooldown, grants a bonus. The slash command itself stays
-    honor-system (it can't confirm you actually clicked vote) but there is
-    now also a verified path: api/vote_webhook.py receives top.gg's /
-    discordbotlist.com's server-to-server vote notification and grants the
-    same bonus via db.grant_vote_bonus_for_voter — configure
-    config.TOPGG_WEBHOOK_AUTH and point the listing site's webhook URL at
-    <PUBLIC_BASE_URL>/api/vote_webhook to enable it. Both paths share the
-    same cooldown field (last_vote_bonus_at) so a member can't double-dip
-    by running /vote right after the webhook already credited them.
+    honor-system (it can't confirm you actually clicked vote); the cooldown
+    is tracked in last_vote_bonus_at.
   - Sponsored/affiliate embed (/watchad): shows the guild's configured
     sponsor embed, grants a bonus on a separate (shorter) cooldown.
   - Ad-network SDK/webview: not implemented — Discord's UI has no clean

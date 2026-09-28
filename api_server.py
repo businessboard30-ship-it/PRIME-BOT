@@ -144,7 +144,6 @@ asyncio.run = _run_on_shared_loop
 # classes (e.g. api.legal_pages's TermsHandler/PrivacyHandler).
 ROUTES = {
     "/api/paystack_webhook": "api.paystack_webhook",
-    "/api/vote_webhook": "api.vote_webhook",
     "/api/discord_dashboard": "api.discord_dashboard",
     "/api/cron_discord_announcements": "api.cron_discord_announcements",
     "/api/cron_discord_owner_broadcast": "api.cron_discord_owner_broadcast",
