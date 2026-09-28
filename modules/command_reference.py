@@ -144,6 +144,7 @@ _COMMAND_QUESTION_HINTS = (
     "syntax", "usage", "ban ", "kick ", "timeout", "mute", "warn ",
     "premium", "economy", "leaderboard", "level up", "leveling",
     "help menu", "/help",
+    "font", "fonts", "rename", "restyle", "fancy text",
 )
 
 

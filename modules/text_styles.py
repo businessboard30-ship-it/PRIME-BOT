@@ -45,6 +45,27 @@ def _table(upper_start=None, lower_start=None, digit_start=None,
     return mapping
 
 
+def _alpha(chars, both_cases=True) -> dict:
+    """Map A-Z (and a-z too, when both_cases) onto a 26-item list of
+    replacement characters — for styles that only have one alphabet."""
+    chars = list(chars)
+    assert len(chars) == 26, len(chars)
+    mapping = dict(zip(UPPER, chars))
+    if both_cases:
+        mapping.update(dict(zip(LOWER, chars)))
+    return mapping
+
+
+def _combining(mark: str) -> dict:
+    """Letters/digits followed by a combining mark (strikethrough, underline)."""
+    return {ch: ch + mark for ch in UPPER + LOWER + DIGITS}
+
+
+_SUPERSCRIPT = dict(zip(UPPER, "ᴬᴮᶜᴰᴱᶠᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾꟴᴿˢᵀᵁⱽᵂˣʸᶻ"))
+_SUPERSCRIPT.update(zip(LOWER, "ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖᑫʳˢᵗᵘᵛʷˣʸᶻ"))
+_SUPERSCRIPT.update(zip(DIGITS, "⁰¹²³⁴⁵⁶⁷⁸⁹"))
+
+
 # key -> (display label, sample emoji, char map)
 STYLES = {
     "bold": ("Bold", "𝐁", _table(0x1D400, 0x1D41A, 0x1D7CE)),
@@ -74,10 +95,7 @@ STYLES = {
     )),
     "bold_script": ("Bold Script", "𝓢", _table(0x1D4D0, 0x1D4EA)),
     "fullwidth": ("Fullwidth", "Ｓ", _table(0xFF21, 0xFF41, 0xFF10)),
-    "circled": ("Circled", "Ⓢ", _table(
-        0x24B6, 0x24D0,
-        digit_start=0x2460,  # circled 1-9 only, 0 patched below
-    )),
+    "circled": ("Circled", "Ⓢ", _table(0x24B6, 0x24D0)),
     "small_caps": ("Small Caps", "ꜱ", _table(
         upper_start=None, lower_start=None,
     ) | {
@@ -86,8 +104,18 @@ STYLES = {
         "o": "ᴏ", "p": "ᴘ", "q": "Q", "r": "ʀ", "t": "ᴛ", "u": "ᴜ", "v": "ᴠ",
         "w": "ᴡ", "y": "ʏ", "z": "ᴢ",
     }),
+    "squared": ("Squared", "🄰", _table(0x1F130, 0x1F130) ),
+    "negative_circled": ("Black Circle", "🅐", _table(0x1F150, 0x1F150)),
+    "negative_squared": ("Black Square", "🅰", _table(0x1F170, 0x1F170)),
+    "superscript": ("Superscript", "ᵃ", _SUPERSCRIPT),
+    "aesthetic": ("Aesthetic", "ᗩ", _alpha("ᗩᗷᑕᗪᗴᖴᏀᕼᏆᒎᛕᏞᗰᑎᗝᑭᑫᖇᔕᎢᑌᐯᗯ᙭Ꭹᘔ")),
+    "currency": ("Currency", "₳", _alpha(["₳","฿","₵","Đ","Ɇ","₣","₲","Ⱨ","ł","J","₭","Ⱡ","₥","₦","Ø","₱","Q","Ɽ","₴","₮","Ʉ","V","₩","Ӿ","Ɏ","Ⱬ"])),
+    "kanji": ("Kanji", "卂", _alpha(["卂","乃","匚","ㄉ","乇","千","Ꮆ","卄","丨","ﾌ","Ҝ","ㄥ","爪","几","ㄖ","卩","Ɋ","尺","丂","ㄒ","ㄩ","ᐯ","山","乂","ㄚ","乙"])),
+    "strike": ("Strikethrough", "S̶", _combining("\u0336")),
+    "underline": ("Underline", "U̲", _combining("\u0332")),
 }
-# Circled digit 0 isn't in the same contiguous 1-9 run (U+2460 starts at 1) — patch it.
+# Circled digits: 1-9 are the contiguous run U+2460-2468; 0 is separate (U+24EA).
+STYLES["circled"][2].update({str(i): chr(0x2460 + i - 1) for i in range(1, 10)})
 STYLES["circled"][2]["0"] = "⓪"
 
 STYLE_ORDER = list(STYLES.keys())
@@ -106,3 +134,16 @@ def apply_style(text: str, key: str) -> str:
 def style_choices() -> list:
     """[(key, label, emoji), ...] in STYLE_ORDER, for building a select menu."""
     return [(key, STYLES[key][0], STYLES[key][1]) for key in STYLE_ORDER]
+
+
+def channel_name(text: str, key: str, hyphenate: bool = True) -> str:
+    """Text -> a Discord-channel-safe styled name. Discord channel names are
+    lowercase, so the text is lowercased BEFORE the font is applied (a
+    styled capital like U+1D40F would otherwise sneak a capital past
+    Discord's own lowercasing, which only touches plain A-Z). Text/forum
+    channels also can't hold spaces, so runs of whitespace become single
+    hyphens (voice/stage channels keep spaces: hyphenate=False)."""
+    cleaned = " ".join(text.lower().split())
+    if hyphenate:
+        cleaned = cleaned.replace(" ", "-")
+    return apply_style(cleaned, key)[:100]

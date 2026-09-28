@@ -45,6 +45,10 @@ class AICommandSpec:
     cog_module: str                # e.g. "discord_bot.cogs.moderation" — for the money/owner guard
     requires_confirmation: bool
     description: str                # short, for the AI's own tool-schema and for the confirm prompt
+    # Optional: when set, requires_confirmation only applies to a CALL that
+    # actually passes one of these args (e.g. /style only mutates anything
+    # when `font`/`channel` are given — a bare preview needs no confirm).
+    confirm_only_with: tuple = ()
 
 
 AI_COMMANDS = (
@@ -68,6 +72,14 @@ AI_COMMANDS = (
     AICommandSpec("announcements", "discord_bot.cogs.automation", False, "List scheduled announcements"),
     AICommandSpec("cancelannouncement", "discord_bot.cogs.automation", True, "Cancel a scheduled announcement"),
     AICommandSpec("language", "discord_bot.cogs.language", True, "Choose the language the bot replies in"),
+    AICommandSpec(
+        "style", "discord_bot.cogs.style", True,
+        "Rename a channel using a fancy unicode font. Args: `channel` (#mention/ID/name, or 'this' for the "
+        "channel the user is chatting in), `font` (e.g. bold, script, kanji), `text` (optional \u2014 defaults to "
+        "the channel's current name; channel names are always lowercased). With font+channel it renames "
+        "after the user confirms; with just channel it opens the style wizard. Needs Manage Channels.",
+        confirm_only_with=("font", "channel"),
+    ),
 
     # ── Info / read-only ────────────────────────────────────────────────
     AICommandSpec("serveranalytics", "discord_bot.cogs.analytics", False, "Snapshot of this server's size and activity"),
@@ -101,6 +113,17 @@ AI_COMMANDS = (
 )
 
 AI_COMMANDS_BY_NAME = {c.name: c for c in AI_COMMANDS}
+
+
+def needs_confirmation(spec: AICommandSpec, args: dict) -> bool:
+    """Whether THIS call (not just this command) needs an explicit confirm
+    click. Same as spec.requires_confirmation unless the spec narrows it
+    with confirm_only_with."""
+    if not spec.requires_confirmation:
+        return False
+    if not spec.confirm_only_with:
+        return True
+    return any((args or {}).get(k) not in (None, "") for k in spec.confirm_only_with)
 
 # Second, independent guard — checked by module path at execution time, not
 # just by which names made it into AI_COMMANDS above. If a future command
