@@ -383,16 +383,38 @@ class AIToolsCog(commands.Cog):
         "role": "string", "mentionable": "string", "attachment": "string",
     }
 
+    @staticmethod
+    def _param_defs(command: discord.app_commands.Command) -> list:
+        """Parameter definitions the AI may fill in. A cog can declare them
+        itself via AI_TOOL_PARAMS = {command_name: [{name, type, description,
+        enum?, required?}]} for commands that deliberately have NO slash
+        options (e.g. /style, which just opens a wizard) but still accept
+        arguments from the AI."""
+        cog = getattr(command, "binding", None)
+        declared = (getattr(cog, "AI_TOOL_PARAMS", None) or {}).get(command.name)
+        if declared:
+            return list(declared)
+        return [
+            {
+                "name": p.name,
+                "type": getattr(p.type, "name", "string"),
+                "description": p.description or p.display_name or p.name,
+                "enum": [c.value for c in p.choices] if getattr(p, "choices", None) else None,
+                "required": bool(p.required),
+            }
+            for p in command.parameters
+        ]
+
     def _command_tool_schema(self, spec, command: discord.app_commands.Command) -> dict:
         properties, required = {}, []
-        for p in command.parameters:
-            json_type = self._OPTION_TYPE_JSON.get(getattr(p.type, "name", "string"), "string")
-            prop = {"type": json_type, "description": (p.description or p.display_name or p.name)[:200]}
-            if getattr(p, "choices", None):
-                prop["enum"] = [c.value for c in p.choices]
-            properties[p.name] = prop
-            if p.required:
-                required.append(p.name)
+        for d in self._param_defs(command):
+            json_type = self._OPTION_TYPE_JSON.get(d.get("type", "string"), "string")
+            prop = {"type": json_type, "description": str(d.get("description") or d["name"])[:200]}
+            if d.get("enum"):
+                prop["enum"] = list(d["enum"])
+            properties[d["name"]] = prop
+            if d.get("required"):
+                required.append(d["name"])
         return {
             "type": "function",
             "function": {
@@ -438,7 +460,7 @@ class AIToolsCog(commands.Cog):
         what ultimately catches that, same as a human leaving a field
         blank in the slash-command UI."""
         resolved = {}
-        by_name = {p.name: p for p in command.parameters}
+        by_name = {d["name"]: d for d in self._param_defs(command)}
         # Reply/mention chat (ProxyInteraction) feeds the model the reply chain,
         # which can contain OTHER people's @mentions (e.g. the bot's own
         # "🎉 @Coachjay leveled up!" message). The model could then pick that
@@ -454,7 +476,7 @@ class AIToolsCog(commands.Cog):
             }
         for key, value in (args or {}).items():
             p = by_name.get(key)
-            type_name = getattr(getattr(p, "type", None), "name", None)
+            type_name = (p or {}).get("type")
             if type_name in ("user", "mentionable"):
                 uid = self._extract_id(value)
                 if allowed_user_ids is not None and uid not in allowed_user_ids:
@@ -473,6 +495,13 @@ class AIToolsCog(commands.Cog):
                         obj = getattr(interaction, "channel", None)
                     else:
                         obj = discord.utils.find(lambda c: c.name.lower() == label, interaction.guild.channels)
+                        if obj is None:
+                            from modules.text_styles import to_plain, strip_brackets
+                            def _plain(n):
+                                return strip_brackets(to_plain(n)).lower().strip(" -")
+                            want = _plain(label)
+                            hits = [c for c in interaction.guild.channels if _plain(c.name) == want]
+                            obj = hits[0] if len(hits) == 1 else None
                 if obj is not None:
                     resolved[key] = obj
             elif type_name == "role":

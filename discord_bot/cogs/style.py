@@ -517,6 +517,18 @@ class StyleCog(commands.Cog):
     # (followup-only), and ai_style_prompt writes the confirm text and
     # refuses early when it could never succeed.
     AI_CONFIRMED_HANDLERS = {"style": "ai_style"}
+    # /style has no slash options (it just opens a wizard), so the AI's tool
+    # schema can't be read off the command — declare what it may pass here.
+    AI_TOOL_PARAMS = {"style": [
+        {"name": "channel", "type": "channel", "required": True,
+         "description": "Channel or category to rename: #mention, ID, its name, or 'this' for the current channel"},
+        {"name": "font", "type": "string", "enum": list(STYLES.keys()),
+         "description": "Font key to apply (e.g. bold, script, kanji). Omit to open the wizard instead."},
+        {"name": "text", "type": "string",
+         "description": "Optional text to style; defaults to the channel's current name"},
+        {"name": "bracket", "type": "string", "enum": list(BRACKETS.keys()),
+         "description": "Optional bracket/decoration around the name (see command description)"},
+    ]}
     AI_CONFIRM_PROMPTS = {"style": "ai_style_prompt"}
 
     def _ai_check(self, interaction, text, font, channel, bracket=None):
