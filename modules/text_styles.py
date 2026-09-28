@@ -158,7 +158,47 @@ def to_plain(text: str) -> str:
     return "".join(ch for ch in text if ch not in ("\u0336", "\u0332"))
 
 
-def channel_name(text: str, key: str, hyphenate: bool = True) -> str:
+# key -> (label, left, right). Optional wrapper applied AFTER the font.
+BRACKETS = {
+    "none": ("No brackets", "", ""),
+    "cjk": ("【 】", "【", "】"),
+    "white_cjk": ("『 』", "『", "』"),
+    "corner": ("「 」", "「", "」"),
+    "double_angle": ("《 》", "《", "》"),
+    "tortoise": ("〔 〕", "〔", "〕"),
+    "math_white": ("⟦ ⟧", "⟦", "⟧"),
+    "math_angle": ("⟪ ⟫", "⟪", "⟫"),
+    "ornate": ("❰ ❱", "❰", "❱"),
+    "heavy_angle": ("❮ ❯", "❮", "❯"),
+    "curly_white": ("⦃ ⦄", "⦃", "⦄"),
+    "guillemets": ("« »", "«", "»"),
+    "flourish": ("꧁ ꧂", "꧁", "꧂"),
+    "tibetan": ("༺ ༻", "༺", "༻"),
+    "sparkle": ("✦ ✦", "✦", "✦"),
+    "star": ("★ ★", "★", "★"),
+    "kira": ("⋆ ⋆", "⋆", "⋆"),
+    "swords": ("⚔ ⚔", "⚔", "⚔"),
+    "bar": ("┃ prefix", "┃", ""),
+    "dot": ("・ prefix", "・", ""),
+    "thin_bar": ("︱ prefix", "︱", ""),
+    "diamond": ("❖ prefix", "❖", ""),
+    "arrow": ("➤ prefix", "➤", ""),
+    "dotted_bar": ("┊ prefix", "┊", ""),
+}
+
+
+def bracket_choices() -> list:
+    return [(k, v[0]) for k, v in BRACKETS.items()]
+
+
+def wrap_brackets(text: str, bracket) -> str:
+    if not bracket or bracket not in BRACKETS:
+        return text
+    _label, left, right = BRACKETS[bracket]
+    return f"{left}{text}{right}"
+
+
+def channel_name(text: str, key: str, hyphenate: bool = True, bracket=None) -> str:
     """Text -> a Discord-channel-safe styled name. Discord channel names are
     lowercase, so the text is lowercased BEFORE the font is applied (a
     styled capital like U+1D40F would otherwise sneak a capital past
@@ -168,4 +208,4 @@ def channel_name(text: str, key: str, hyphenate: bool = True) -> str:
     cleaned = " ".join(to_plain(text).lower().split())
     if hyphenate:
         cleaned = cleaned.replace(" ", "-")
-    return apply_style(cleaned, key)[:100]
+    return wrap_brackets(apply_style(cleaned, key), bracket)[:100]

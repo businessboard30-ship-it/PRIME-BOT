@@ -31,7 +31,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modules.text_styles import STYLES, apply_style, channel_name, style_choices
+from modules.text_styles import BRACKETS, STYLES, apply_style, bracket_choices, channel_name, style_choices
 from modules.ai_features import ai_chat, check_ai_usage_limit
 from modules.superbot_adapter import get_user_tier
 
@@ -131,7 +131,7 @@ class _WizFontSelect(discord.ui.Select):
                 label=label, value=key, default=(key == wiz.font),
                 # Live preview of the user's own text in each font. NO emoji=
                 # (Discord rejects non-emoji glyphs there with a 400).
-                description=(channel_name(base, key, hy)[:100] or None) if base else None,
+                description=(channel_name(base, key, hy, wiz.bracket)[:100] or None) if base else None,
             )
             for key, label, _sample in style_choices()
         ]
@@ -140,6 +140,30 @@ class _WizFontSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         self.wiz.font = self.values[0]
+        self.wiz.status = None
+        self.wiz.rebuild()
+        await interaction.response.edit_message(view=self.wiz)
+
+
+class _WizBracketSelect(discord.ui.Select):
+    def __init__(self, wiz: "_StyleWizard"):
+        base = wiz.base_text
+        hy = _hyphenate(wiz.channel) if wiz.channel else True
+        font = wiz.font or "bold"
+        options = [
+            discord.SelectOption(
+                label=label, value=key, default=(key == (wiz.bracket or "none")),
+                description=(channel_name(base, font, hy, key)[:100] or None) if base else None,
+            )
+            for key, label in bracket_choices()
+        ]
+        super().__init__(placeholder="3 \u00b7 Brackets / decoration (optional)\u2026", options=options,
+                         min_values=1, max_values=1)
+        self.wiz = wiz
+
+    async def callback(self, interaction: discord.Interaction):
+        v = self.values[0]
+        self.wiz.bracket = None if v == "none" else v
         self.wiz.status = None
         self.wiz.rebuild()
         await interaction.response.edit_message(view=self.wiz)
@@ -246,7 +270,7 @@ class _WizAllFontsButton(discord.ui.Button):
             await interaction.response.edit_message(view=self.wiz)
             return
         hy = _hyphenate(self.wiz.channel) if self.wiz.channel else True
-        lines = [f"**{label}** \u2014 {channel_name(base, key, hy)}" for key, label, _s in style_choices()]
+        lines = [f"**{label}** \u2014 {channel_name(base, key, hy, self.wiz.bracket)}" for key, label, _s in style_choices()]
         chunks, cur = [], ""
         for ln in lines:
             if len(cur) + len(ln) + 1 > 1800:
@@ -292,6 +316,7 @@ class _StyleWizard(discord.ui.LayoutView):
         self.channel = channel
         self.text = text          # None => use the channel's current name
         self.font = font
+        self.bracket: Optional[str] = None
         self.ideas: list = []
         self.status: Optional[str] = None
         self.rebuild()
@@ -303,7 +328,7 @@ class _StyleWizard(discord.ui.LayoutView):
         return self.channel.name if self.channel else ""
 
     def result_name(self) -> str:
-        return channel_name(self.base_text, self.font, _hyphenate(self.channel) if self.channel else True)
+        return channel_name(self.base_text, self.font, _hyphenate(self.channel) if self.channel else True, self.bracket)
 
     def rebuild(self) -> None:
         self.clear_items()
@@ -321,6 +346,7 @@ class _StyleWizard(discord.ui.LayoutView):
             f"**Channel** \u2014 {ch}",
             f"**Text** \u2014 {txt}",
             f"**Font** \u2014 {font}",
+            f"**Brackets** \u2014 {BRACKETS[self.bracket][0] if self.bracket else '*none*'}",
         ]
         if self.base_text and self.font:
             lines += ["", "**Preview**", self.result_name()]
@@ -330,6 +356,7 @@ class _StyleWizard(discord.ui.LayoutView):
         container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.ActionRow(_WizChannelSelect(self)))
         container.add_item(discord.ui.ActionRow(_WizFontSelect(self)))
+        container.add_item(discord.ui.ActionRow(_WizBracketSelect(self)))
         if self.ideas:
             container.add_item(discord.ui.ActionRow(_WizIdeaSelect(self)))
         container.add_item(discord.ui.ActionRow(
