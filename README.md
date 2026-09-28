@@ -56,7 +56,6 @@ Set these in Railway (or your host)'s environment settings — there's no
 - `DISCORD_DEV_GUILD_ID` — set during development for near-instant slash-command sync to one guild; leave unset for global sync (~1hr propagation)
 - `DISCORD_OAUTH_CLIENT_ID` / `DISCORD_OAUTH_CLIENT_SECRET` — only needed for the Discord-login/dashboard OAuth flow (`api/discover_oauth_join.py`), separate from bot-invite OAuth
 - `OWNER_GUILD_ID` / `OWNER_BROADCAST_CHANNEL_ID` — main bot's own support server broadcast target
-- `TOPGG_WEBHOOK_AUTH` — top.gg vote webhook verification
 
 See `config.py` for the full, current list — it's the single source of
 truth for every variable this project reads.
