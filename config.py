@@ -36,14 +36,6 @@ SITE_URL = os.getenv("NEXT_PUBLIC_SITE_URL", "https://prime-bot.example.com")
 # does this automatically when this env var is set) or as query param ?secret=.
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
-# HMAC signing key for the self-hosted proof-of-work captcha on the server
-# listing submit form (api/server_listings.py). No external captcha vendor
-# involved — this key just signs/verifies challenges this backend issues to
-# itself, same trust model as CRON_SECRET above. Falls back to CRON_SECRET
-# if unset so there's a working default in dev, but set a dedicated value
-# in production.
-POW_SECRET_KEY = os.getenv("POW_SECRET_KEY", "") or CRON_SECRET
-
 # Temporary data directory (only for ephemeral cache, NOT production data)
 # All persistent data MUST go to DATABASE_URL (Postgres)
 DATA_DIR = os.getenv("DATA_DIR", "/tmp/data")
@@ -199,35 +191,17 @@ DISCOVER_CAP_TIERS = [
 # Separate application registration from the bot's own token — this is a
 # standard OAuth2 "Authorization Code" web flow (identify scope only, no
 # bot scope), used solely to learn who clicked an invite link so
-# api/discover_oauth_join.py can join them server-side. Get these from the
+# the Discord login flow can identify them. Get these from the
 # same Discord Developer Portal application as the bot, under OAuth2.
 DISCORD_OAUTH_CLIENT_ID = os.getenv("DISCORD_OAUTH_CLIENT_ID", "1534579332528472246")  # public application ID
 DISCORD_OAUTH_CLIENT_SECRET = os.getenv("DISCORD_OAUTH_CLIENT_SECRET", "")
-# Must exactly match a Redirect URI configured in the Developer Portal.
-# api/discover_oauth_join.py is served by api_server.py (PUBLIC_BASE_URL's
-# domain), NOT the Next.js dashboard site (DASHBOARD_BASE_URL) — those are
-# two different Railway services/domains in this deployment.
-DISCORD_OAUTH_REDIRECT_URI = os.getenv(
-    "DISCORD_OAUTH_REDIRECT_URI",
-    f"{_PUBLIC_BASE}/api/discover_oauth_join"
-)
-
-# Separate Redirect URI for /bump bot's ownership-verification flow (see
+# Redirect URI for /bump bot's ownership-verification flow (see
 # api/bump_oauth.py). Discord requires each redirect URI used by an OAuth
-# app to be registered individually in the Developer Portal — this one
-# must be added there alongside DISCORD_OAUTH_REDIRECT_URI above, same
+# app to be registered individually in the Developer Portal — same
 # application, same client id/secret.
 BUMP_OAUTH_REDIRECT_URI = os.getenv(
     "BUMP_OAUTH_REDIRECT_URI",
     f"{_PUBLIC_BASE}/api/bump_oauth"
-)
-
-# Separate Redirect URI for the /servers directory's vote sign-in (see
-# api/server_listing_vote_oauth.py). Same Developer Portal application/
-# client id/secret as the two above — just another registered redirect URI.
-SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI = os.getenv(
-    "SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI",
-    f"{_PUBLIC_BASE}/api/server_listing_vote_oauth"
 )
 
 # Redirect URI for "Sign in with Discord" on the landing page (see
