@@ -242,6 +242,26 @@ class RenameChannelModal(discord.ui.Modal, title="Rename suggested channel"):
 _PANEL_PLAIN = "__plain__"
 
 
+async def _resolve_member(interaction: discord.Interaction, guild_id: int):
+    """(guild, member) for whoever tapped. In a server both come off the
+    interaction; from the join DM there is no interaction.guild, so look the
+    guild up by id and fetch the user as a member of it. Kept local so this
+    file doesn't depend on any other cog's private helpers."""
+    guild = interaction.guild or interaction.client.get_guild(guild_id)
+    if guild is None:
+        return None, None
+    if interaction.guild is not None and isinstance(interaction.user, discord.Member):
+        return guild, interaction.user
+    member = guild.get_member(interaction.user.id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(interaction.user.id)
+        except discord.HTTPException:
+            member = None
+    return guild, member
+
+
+
 def _styled_name(base: str, font, bracket) -> str:
     """base -> final channel name. font/bracket None = leave that part alone.
     Text channels can't hold spaces or capitals, so this hyphenates/lowercases
@@ -404,9 +424,9 @@ class _PSaveButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         panel = self.panel
-        from discord_bot.cogs.style import _premium_flags, _resolve
+        from discord_bot.cogs.style import _premium_flags
         clone_id = _clone_id_of(interaction.client)
-        guild, member = await _resolve(interaction, panel)
+        guild, member = await _resolve_member(interaction, panel.guild_id)
         if guild is not None and member is not None:
             # Re-check at click time: premium status may have changed.
             panel.premium_active, panel.can_manage = await _premium_flags(member, guild, clone_id)
@@ -449,9 +469,9 @@ async def _show_suggestions(interaction: discord.Interaction, guild_id: int, pag
 
 
 async def open_name_panel(interaction: discord.Interaction, guild_id: int, key: str, page: int, current_name: str):
-    from discord_bot.cogs.style import _premium_flags, _resolve
+    from discord_bot.cogs.style import _premium_flags
     panel = _NamePanel(guild_id, key, page, current_name, v2=is_v2_message(interaction))
-    guild, member = await _resolve(interaction, panel)
+    guild, member = await _resolve_member(interaction, panel.guild_id)
     if guild is not None and member is not None:
         panel.premium_active, panel.can_manage = await _premium_flags(
             member, guild, _clone_id_of(interaction.client))
