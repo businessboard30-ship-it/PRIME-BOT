@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "unlock-pages/**"
+      - "redirector/**"
       - ".github/workflows/deploy-unlock-pages.yml"
   workflow_dispatch: {}
 
@@ -44,6 +45,13 @@ jobs:
           # deploys as a project page. Leave the variable unset/empty for a
           # user/org page or a custom domain.
           BASE_PATH: ${{ vars.UNLOCK_PAGES_BASE_PATH }}
+      # A repo has ONE Pages site, so the stable-URL redirector (redirector/,
+      # see redirector/README.md) ships in the same artifact as the unlock page.
+      - name: Add redirector to the site
+        working-directory: .
+        run: |
+          cp -r redirector/. unlock-pages/out/
+          rm -f unlock-pages/out/test_r.js unlock-pages/out/README.md
       - uses: actions/upload-pages-artifact@v3
         with:
           path: unlock-pages/out
