@@ -390,7 +390,7 @@ async def _unlock_xp_boost(reference: str, buyer_id: int, guild_id: Optional[int
 
 
 async def _unlock_premium(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
-    """$5/month per-server Premium (see config.PREMIUM_* and
+    """Monthly per-server Premium (see config.PREMIUM_* and
     db.activate_guild_premium). guild_id is required. Fires for a Paystack
     payment (30 days each time, renewed by paying again), and for the FIRST
     Gumroad membership charge; Gumroad's later renewal charges are handled in

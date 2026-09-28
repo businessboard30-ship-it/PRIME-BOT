@@ -1,6 +1,6 @@
 # path: discord_bot/cogs/_views_premium.py
 
-"""Premium ($5/month per server): the "Go Premium" pitch and its Subscribe
+"""Premium (config.PREMIUM_FEE_USD per month, per server): the "Go Premium" pitch and its Subscribe
 button. Used by the join-DM's Go Premium button (_views_join_dm.py) and by
 the renewal reminder DM (guild_premium.py).
 

@@ -183,7 +183,7 @@ SCHEMA_VERSION = "35"
 # transcript_channel_id, custom_close_message) on both config tables.
 # "25" -> "26": 016_hardcore_roast — discord_hardcore_roast_pending table +
 # discord_roast_battles.hardcore column for per-battle paid hardcore mode.
-# discord_custom_roles.via_premium) for the $5/month per-server Premium tier.
+# discord_custom_roles.via_premium) for the monthly per-server Premium tier.
 # "23" -> "24": discord_welcome_config.card_pack_trial_admin_id column was added
 # to _create_tables() without a bump, so the ALTER never ran on existing DBs
 # ("column card_pack_trial_admin_id does not exist" in the trial-expiry loop).
@@ -7426,7 +7426,7 @@ class Database:
                 guild_id, clone_id, is_pro, activated_by,
             )
 
-    # --- Premium subscription ($5/month per server) ------------------------
+    # --- Premium subscription (monthly, per server) ------------------------
     # See database/migrations/015_guild_premium.sql and config.PREMIUM_*.
     # Premium is an OVERLAY: it never flips the individual one-time flags
     # (card_pack_unlocked, discord_pro_guilds, ...), the readers below just

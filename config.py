@@ -314,7 +314,7 @@ GUMROAD_PRODUCT_LINKS = {
     "xp_boost": "https://boardmaster87.gumroad.com/l/nmgkns",
     "xp_server_boost": "https://boardmaster87.gumroad.com/l/slwtmv",
     "xp_server_boost_month": "https://boardmaster87.gumroad.com/l/abnbyt",
-    # Premium is a Gumroad MEMBERSHIP ($5/month) created by hand in the
+    # Premium is a Gumroad MEMBERSHIP ($2/month) created by hand in the
     # Gumroad dashboard (the API can't create memberships) — paste its link
     # / product id via these env vars (or edit here) once it exists.
     "premium": os.getenv("GUMROAD_PREMIUM_LINK", "https://boardmaster87.gumroad.com/l/naceb"),
@@ -349,7 +349,7 @@ GUMROAD_PRODUCT_IDS = {
 AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "10"))
 
 # ─────────────────────────────────────────────────────────────────────
-# Premium: $5/month PER SERVER, unlocks every current and future package
+# Premium: $2/month PER SERVER, unlocks every current and future package
 # (welcome card pack, ultra welcome pack, custom roles, Music Pro, ...).
 # Deliberately NOT included: Discord Clone activation / clone monetization
 # (they cost real hosting) and the temporary XP boosts (consumables).
@@ -359,7 +359,7 @@ AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "10"))
 # 31 days never cause a gap. PREMIUM_GRACE_DAYS keeps features on briefly
 # after expiry so a slow renewal doesn't cut anyone off mid-payment.
 # ─────────────────────────────────────────────────────────────────────
-PREMIUM_FEE_USD = 5
+PREMIUM_FEE_USD = 2
 PREMIUM_DAYS = 30
 PREMIUM_SUB_DAYS = 33
 PREMIUM_GRACE_DAYS = 3

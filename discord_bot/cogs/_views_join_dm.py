@@ -1612,7 +1612,7 @@ async def _open_style_wizard(interaction: discord.Interaction, guild: discord.Gu
 
 
 async def _open_premium_pitch(interaction: discord.Interaction, guild: discord.Guild, clone_id):
-    """"Go Premium" — not a toggle: explains the $5/month per-server tier and
+    """"Go Premium" — not a toggle: explains the per-server monthly tier and
     offers the Subscribe button (see _views_premium.py). Already deferred by
     _FeatureToggleButton; returns None/None so the button never flips to
     "On:" and can be tapped again to renew."""
@@ -1634,7 +1634,7 @@ async def _open_premium_pitch(interaction: discord.Interaction, guild: discord.G
 FEATURE_TOGGLES = {
     "go_premium": ("Go Premium", "💎", _open_premium_pitch, None,
                    "Unlock EVERY package — welcome cards, custom roles, Music Pro, Hardcore Roast, Roblox alerts, "
-                   "custom bot branding — plus all future features, for just $5/month per server. Tap to see everything you get."),
+                   f"custom bot branding — plus all future features, for just ${_cfg.PREMIUM_FEE_USD:g}/month per server. Tap to see everything you get."),
     "welcome": ("Welcome messages", "👋", _enable_welcome, None,
                 "Greet new members automatically in a channel of your choice."),
     "tickets": ("Support tickets", "🎫", _enable_tickets, None,
