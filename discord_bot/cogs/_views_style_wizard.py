@@ -25,7 +25,7 @@ import logging
 import discord
 from discord.ext import commands
 
-from modules.text_styles import STYLES, apply_style, style_choices
+from modules.text_styles import STYLES, apply_style, channel_name, style_choices
 from modules.ai_features import ai_chat, check_ai_usage_limit
 from modules.superbot_adapter import get_user_tier
 
@@ -169,7 +169,7 @@ class _StyleApplySelectView(discord.ui.View):
             options=[
                 discord.SelectOption(
                     label=label, value=key,
-                    description=apply_style(base_name, key)[:100] or label,
+                    description=channel_name(base_name, key)[:100] or label,
                 )
                 for key, label, _sample in style_choices()
             ],
@@ -179,7 +179,6 @@ class _StyleApplySelectView(discord.ui.View):
 
     async def _on_select(self, interaction: discord.Interaction):
         style_key = self.select.values[0]
-        styled_name = apply_style(self.base_name, style_key)
         font_label = STYLES[style_key][0]
 
         guild = interaction.client.get_guild(self.guild_id)
@@ -193,6 +192,13 @@ class _StyleApplySelectView(discord.ui.View):
                 "I don't have **Manage Channels** permission there \u2014 grant it and try again.", ephemeral=True,
             )
             return
+
+        # Discord channel names are lowercase (and text channels can't hold
+        # spaces) — see text_styles.channel_name. Voice/stage keep spaces.
+        styled_name = channel_name(
+            self.base_name, style_key,
+            hyphenate=not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)),
+        )
 
         # Acknowledge instantly AND show which font was picked: the chosen
         # option stays highlighted in the dropdown and the message text

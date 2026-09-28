@@ -74,9 +74,10 @@ AI_COMMANDS = (
     AICommandSpec("language", "discord_bot.cogs.language", True, "Choose the language the bot replies in"),
     AICommandSpec(
         "style", "discord_bot.cogs.style", True,
-        "Convert text into fancy unicode fonts (text only = preview of every font), or rename a channel "
-        "using one: set `font` and `channel` (channel = #mention/ID/name, or 'this' for the channel the "
-        "user is chatting in). Needs the user to have Manage Channels.",
+        "Rename a channel using a fancy unicode font. Args: `channel` (#mention/ID/name, or 'this' for the "
+        "channel the user is chatting in), `font` (e.g. bold, script, kanji), `text` (optional \u2014 defaults to "
+        "the channel's current name; channel names are always lowercased). With font+channel it renames "
+        "after the user confirms; with just channel it opens the style wizard. Needs Manage Channels.",
         confirm_only_with=("font", "channel"),
     ),
 

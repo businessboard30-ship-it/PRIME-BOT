@@ -1,29 +1,28 @@
 # path: discord_bot/cogs/style.py
 
-"""/style — the ONLY command in this cog. Type text once (a normal
-slash-command argument, not a popup), then everything else — convert to
-fonts, ask AI for name ideas, apply the styled result to a channel — is
-buttons/a select on that one result view. No discord.ui.Modal anywhere
-in this file, and no second/third slash command: renaming used to be its
-own /stylerename command, but that's now just the "Apply to a channel"
-select on this same result view (_StyleApplyChannelSelect ->
-_StyleApplySelectView, both below) — one command, one wizard, everything
-lives there.
+"""/style — opens straight into ONE wizard panel. No typing required:
 
-The channel-name/font wizard reachable from the combined owner join DM's
-"styles" feature button (_views_join_dm.py) is a SEPARATE, unrelated
-entry point — it still lives in _views_style_wizard.py and still uses
-modals there, since it has no slash-command argument to source text
-from and isn't in scope here; nothing in this file touches it.
+  1. pick a channel (its current name becomes the text),
+  2. pick a font (every option previews your text in that font),
+  3. hit Apply.
 
-Because /stylerename no longer exists as an independently-runnable slash
-command, it's also gone from modules/ai_command_allowlist.py's
-AI_COMMANDS — /aichat can no longer natural-language-trigger a channel
-rename directly. That's an intentional tradeoff of "only one command":
-the allowlist mechanism calls a real slash command's callback, and there
-isn't a standalone rename command left to call. If AI-triggered renames
-are wanted back later, that needs its own command again (or a tool-call
-path into this wizard), not a decision to make silently here."""
+The panel shows your choices + a live preview of the final name as you go.
+Text only comes from a modal if you tap "Edit text" (or "AI ideas") — never
+from a slash-command text box. /style's options (text/font/channel) are all
+optional; they just prefill the wizard, or (font + channel) apply directly,
+which is also the path the AI chat uses.
+
+Discord channel names are lowercase, so text is lowercased before the font
+is applied (and spaces become hyphens on text/forum channels) — see
+modules.text_styles.channel_name.
+
+The channel-name wizard reachable from the join DM's "styles" button
+(_views_style_wizard.py) is a separate entry point and is untouched here.
+
+AI chat: 'style' is in modules/ai_command_allowlist.py; a call that passes
+font/channel needs the Confirm click (AI_CONFIRMED_HANDLERS /
+AI_CONFIRM_PROMPTS below).
+"""
 
 import logging
 from typing import Optional, Union
@@ -32,8 +31,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from discord_bot.cogs._views_style_wizard import _StyleApplySelectView
-from modules.text_styles import STYLES, apply_style, style_choices
+from modules.text_styles import STYLES, apply_style, channel_name, style_choices
 from modules.ai_features import ai_chat, check_ai_usage_limit
 from modules.superbot_adapter import get_user_tier
 
@@ -49,7 +47,20 @@ AI_PROMPT_CONTEXT = (
 
 _FONT_CHOICES = [app_commands.Choice(name=label, value=key) for key, label, _sample in style_choices()]
 _RENAMABLE = (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel)
+_CHANNEL_TYPES = [
+    discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.voice,
+    discord.ChannelType.stage_voice, discord.ChannelType.forum,
+]
 _MAX_TEXT = 60
+
+
+def _hyphenate(channel) -> bool:
+    """Text/forum channels can't hold spaces; voice/stage can."""
+    return not isinstance(channel, (discord.VoiceChannel, discord.StageChannel))
+
+
+def _md(text: str) -> str:
+    return text.replace("`", "'")
 
 
 def _normalize_font(value) -> Optional[str]:
@@ -67,176 +78,313 @@ def _normalize_font(value) -> Optional[str]:
     return None
 
 
-async def _apply_font_to_channel(interaction: discord.Interaction, text: str, style_key: str, channel) -> None:
-    """Rename `channel` to `text` in font `style_key`. Shared by the slash
-    command and the AI handler. Assumes interaction.response is already
-    used (deferred, or consumed by the AI Confirm click) — always replies
-    via followup. Re-checks both the user's and the bot's Manage Channels
-    on THAT channel, since this is the one place a rename actually happens."""
+async def _rename(user, guild, channel, new_name: str) -> tuple:
+    """(ok, message). The one place a rename actually happens — re-checks the
+    USER's and the BOT's Manage Channels on THAT channel."""
     if not isinstance(channel, _RENAMABLE):
-        await interaction.followup.send("\u274c I can only rename text, voice, stage and forum channels.", ephemeral=True)
-        return
-    if not channel.permissions_for(interaction.user).manage_channels:
-        await interaction.followup.send(f"\u274c You need **Manage Channels** on {channel.mention} to rename it.", ephemeral=True)
-        return
-    if not channel.permissions_for(interaction.guild.me).manage_channels:
-        await interaction.followup.send(
-            f"\u274c I don't have **Manage Channels** on {channel.mention} \u2014 grant it and try again.", ephemeral=True,
-        )
-        return
-    styled = apply_style(text, style_key)[:100]
-    if not styled.strip():
-        await interaction.followup.send("\u274c Nothing to rename it to \u2014 give me some text.", ephemeral=True)
-        return
+        return False, "\u274c I can only rename text, voice, stage and forum channels."
+    if not channel.permissions_for(user).manage_channels:
+        return False, f"\u274c You need **Manage Channels** on {channel.mention} to rename it."
+    if not channel.permissions_for(guild.me).manage_channels:
+        return False, f"\u274c I don't have **Manage Channels** on {channel.mention} \u2014 grant it and try again."
+    if not new_name.strip():
+        return False, "\u274c Nothing to rename it to."
     try:
-        await channel.edit(name=styled, reason=f"Styled via /style by {interaction.user}")
+        await channel.edit(name=new_name[:100], reason=f"Styled via /style by {user}")
     except discord.HTTPException as e:
-        await interaction.followup.send(f"\u274c Discord rejected that name: {e.text}", ephemeral=True)
-        return
-    await interaction.followup.send(
-        f"\u2705 {channel.mention} renamed using **{STYLES[style_key][0]}**:\n{styled}", ephemeral=True,
-    )
+        return False, f"\u274c Discord rejected that name: {e.text}"
+    return True, f"\u2705 {channel.mention} renamed to **{new_name[:100]}**"
 
 
-class _StyleAIButton(discord.ui.Button):
-    """Runs the AI vibe->channel-name-ideas flow straight off the text the
-    user already typed into /style — no modal asking them to re-type it.
-    Not a DynamicItem: this only needs to live for the few minutes the
-    ephemeral result message is on screen, not survive a restart."""
-    def __init__(self, text: str, guild_id: int, clone_id):
-        super().__init__(label="Ask AI for name ideas", style=discord.ButtonStyle.secondary, emoji="\u2728")
-        self.text = text
-        self.guild_id = guild_id
-        self.clone_id = clone_id
+# ── wizard components ───────────────────────────────────────────────────────
+
+class _WizChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, wiz: "_StyleWizard"):
+        defaults = ([discord.SelectDefaultValue(id=wiz.channel.id, type=discord.SelectDefaultValueType.channel)]
+                    if wiz.channel else [])
+        super().__init__(
+            placeholder="1 \u00b7 Pick the channel to rename\u2026",
+            channel_types=_CHANNEL_TYPES, min_values=1, max_values=1, default_values=defaults,
+        )
+        self.wiz = wiz
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        wiz = self.wiz
+        picked = self.values[0]
+        real = interaction.guild.get_channel(picked.id) if interaction.guild else None
+        if real is None or not isinstance(real, _RENAMABLE):
+            wiz.status = "\u274c I can't see that channel."
+        elif not real.permissions_for(interaction.user).manage_channels:
+            wiz.status = f"\u274c You need **Manage Channels** on {real.mention} to rename it."
+        else:
+            wiz.channel = real
+            wiz.status = None
+        wiz.rebuild()
+        await interaction.response.edit_message(view=wiz)
+
+
+class _WizFontSelect(discord.ui.Select):
+    def __init__(self, wiz: "_StyleWizard"):
+        base = wiz.base_text
+        hy = _hyphenate(wiz.channel) if wiz.channel else True
+        options = [
+            discord.SelectOption(
+                label=label, value=key, default=(key == wiz.font),
+                # Live preview of the user's own text in each font. NO emoji=
+                # (Discord rejects non-emoji glyphs there with a 400).
+                description=(channel_name(base, key, hy)[:100] or None) if base else None,
+            )
+            for key, label, _sample in style_choices()
+        ]
+        super().__init__(placeholder="2 \u00b7 Pick a font\u2026", options=options, min_values=1, max_values=1)
+        self.wiz = wiz
+
+    async def callback(self, interaction: discord.Interaction):
+        self.wiz.font = self.values[0]
+        self.wiz.status = None
+        self.wiz.rebuild()
+        await interaction.response.edit_message(view=self.wiz)
+
+
+class _WizIdeaSelect(discord.ui.Select):
+    def __init__(self, wiz: "_StyleWizard"):
+        super().__init__(
+            placeholder="\u2728 Pick an AI idea to use as the text\u2026",
+            options=[discord.SelectOption(label=idea[:100], value=str(i)) for i, idea in enumerate(wiz.ideas)],
+        )
+        self.wiz = wiz
+
+    async def callback(self, interaction: discord.Interaction):
+        idx = int(self.values[0])
+        if 0 <= idx < len(self.wiz.ideas):
+            self.wiz.text = self.wiz.ideas[idx][:_MAX_TEXT]
+        self.wiz.ideas = []
+        self.wiz.status = None
+        self.wiz.rebuild()
+        await interaction.response.edit_message(view=self.wiz)
+
+
+class _WizTextModal(discord.ui.Modal, title="Edit the text"):
+    def __init__(self, wiz: "_StyleWizard"):
+        super().__init__()
+        self.wiz = wiz
+        self.field = discord.ui.TextInput(
+            label="Text to style (lowercased for you)", style=discord.TextStyle.short,
+            max_length=_MAX_TEXT, required=True, default=wiz.base_text[:_MAX_TEXT],
+        )
+        self.add_item(self.field)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.wiz.text = str(self.field.value).strip()[:_MAX_TEXT] or None
+        self.wiz.status = None
+        self.wiz.rebuild()
+        await interaction.response.edit_message(view=self.wiz)
+
+
+class _WizAIModal(discord.ui.Modal, title="AI channel-name ideas"):
+    def __init__(self, wiz: "_StyleWizard"):
+        super().__init__()
+        self.wiz = wiz
+        self.theme = discord.ui.TextInput(
+            label="What's the channel about?", style=discord.TextStyle.short,
+            max_length=200, required=True, placeholder="e.g. sharing funny anime clips",
+        )
+        self.add_item(self.theme)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        wiz = self.wiz
+        await interaction.response.defer()  # AI call can take >3s
         user_id = interaction.user.id
         tier = await get_user_tier(user_id)
         allowed, warning = await check_ai_usage_limit(user_id, tier, "messages")
         if not allowed:
-            await interaction.followup.send(f"\u274c {warning}", ephemeral=True)
-            return
-
-        reply = await ai_chat(
-            user_id, self.text, tier=tier,
-            command_context=AI_PROMPT_CONTEXT, guild_id=self.guild_id, kind="style_wizard",
-        )
-        if not reply:
-            await interaction.followup.send("\u274c AI is having trouble right now — try again shortly.", ephemeral=True)
-            return
-
-        ideas = [line.strip("-\u2022 ") for line in reply.splitlines() if line.strip()][:5]
-        if not ideas:
-            await interaction.followup.send("Couldn't parse a suggestion out of that — try rephrasing.", ephemeral=True)
-            return
-
-        preview_keys = ["bold", "small_caps", "sans"]
-        blocks = []
-        for idea in ideas:
-            styled = " \u2022 ".join(apply_style(idea, k) for k in preview_keys)
-            blocks.append(f"**{idea}**\n{styled}")
-        await interaction.followup.send(
-            f"**Ideas for \u201c{self.text}\u201d:**\n\n" + "\n\n".join(blocks) +
-            "\n\n-# Like one? Run /style again with that text, then use **Apply to a channel** below.",
-            ephemeral=True,
-        )
+            wiz.status = f"\u274c {warning}"
+        else:
+            reply = await ai_chat(
+                user_id, str(self.theme.value), tier=tier,
+                command_context=AI_PROMPT_CONTEXT, guild_id=wiz.guild_id, kind="style_wizard",
+            )
+            ideas = [ln.strip("-\u2022 ") for ln in (reply or "").splitlines() if ln.strip()][:5]
+            if not reply:
+                wiz.status = "\u274c AI is having trouble right now \u2014 try again shortly."
+            elif not ideas:
+                wiz.status = "Couldn't parse a suggestion out of that \u2014 try rephrasing."
+            else:
+                wiz.ideas = ideas
+                wiz.status = "\u2728 Ideas ready \u2014 pick one below to use as the text."
+        wiz.rebuild()
+        await interaction.edit_original_response(view=wiz)
 
 
-class _StyleApplyChannelSelect(discord.ui.ChannelSelect):
-    """The entire former /stylerename command, folded into this one
-    select: pick a channel here, it goes straight to the font Select
-    below (_StyleApplySelectView, already modal-free) using the text
-    from /style as the base name. No separate command, no "type the
-    base name" modal — this IS /stylerename now."""
-    def __init__(self, text: str, guild_id: int, clone_id):
-        super().__init__(
-            placeholder="\ud83c\udfaf Apply to a channel\u2026",
-            channel_types=[discord.ChannelType.text, discord.ChannelType.voice, discord.ChannelType.forum],
-            min_values=1, max_values=1,
-        )
-        self.text = text
-        self.guild_id = guild_id
-        self.clone_id = clone_id
+class _WizEditTextButton(discord.ui.Button):
+    def __init__(self, wiz):
+        super().__init__(label="Edit text", emoji="\u270f\ufe0f", style=discord.ButtonStyle.secondary)
+        self.wiz = wiz
 
     async def callback(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.manage_channels:
-            await interaction.response.send_message(
-                "You need **Manage Channels** to rename a channel.", ephemeral=True,
-            )
+        await interaction.response.send_modal(_WizTextModal(self.wiz))
+
+
+class _WizAIButton(discord.ui.Button):
+    def __init__(self, wiz):
+        super().__init__(label="AI ideas", emoji="\u2728", style=discord.ButtonStyle.secondary)
+        self.wiz = wiz
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(_WizAIModal(self.wiz))
+
+
+class _WizAllFontsButton(discord.ui.Button):
+    def __init__(self, wiz):
+        super().__init__(label="All fonts", emoji="\U0001f440", style=discord.ButtonStyle.secondary)
+        self.wiz = wiz
+
+    async def callback(self, interaction: discord.Interaction):
+        base = self.wiz.base_text
+        if not base:
+            self.wiz.status = "Pick a channel (or Edit text) first, then I can show every font."
+            self.wiz.rebuild()
+            await interaction.response.edit_message(view=self.wiz)
             return
-        channel = self.values[0]
-        view = _StyleApplySelectView(self.guild_id, self.clone_id, channel.id, self.text)
-        await interaction.response.send_message(
-            f"Pick a font to rename {channel.mention} to **{self.text}** styled:", view=view, ephemeral=True,
-        )
+        hy = _hyphenate(self.wiz.channel) if self.wiz.channel else True
+        lines = [f"**{label}** \u2014 {channel_name(base, key, hy)}" for key, label, _s in style_choices()]
+        chunks, cur = [], ""
+        for ln in lines:
+            if len(cur) + len(ln) + 1 > 1800:
+                chunks.append(cur)
+                cur = ""
+            cur += ln + "\n"
+        chunks.append(cur)
+        await interaction.response.send_message(chunks[0], ephemeral=True)
+        for extra in chunks[1:]:
+            await interaction.followup.send(extra, ephemeral=True)
 
 
-class _StyleResultView(discord.ui.LayoutView):
-    """The whole /style result — every field it needs (the text) was
-    already typed as the command's own argument, so nothing here ever
-    needs to pop up a text box, and there's no second command to run
-    for any of it: fonts, AI ideas, and the channel rename are all right
-    here."""
-    def __init__(self, text: str, guild_id: int, clone_id):
-        super().__init__(timeout=300)
-        lines = [f"{emoji} **{label}** — {apply_style(text, key)}" for key, label, emoji in style_choices()]
+class _WizApplyButton(discord.ui.Button):
+    def __init__(self, wiz):
+        ready = bool(wiz.channel and wiz.base_text and wiz.font)
+        super().__init__(label="Apply", emoji="\u2705", style=discord.ButtonStyle.success, disabled=not ready)
+        self.wiz = wiz
+
+    async def callback(self, interaction: discord.Interaction):
+        wiz = self.wiz
+        if not (wiz.channel and wiz.base_text and wiz.font):
+            return
+        new_name = wiz.result_name()
+        # Ack instantly + show progress; Discord rate-limits renames to
+        # 2 per 10 min per channel, so the edit below can take a while.
+        wiz.status = f"\u23f3 Renaming {wiz.channel.mention}\u2026"
+        wiz.rebuild()
+        await interaction.response.edit_message(view=wiz)
+        ok, msg = await _rename(interaction.user, interaction.guild, wiz.channel, new_name)
+        wiz.status = msg
+        wiz.rebuild()
+        await interaction.edit_original_response(view=wiz)
+
+
+class _StyleWizard(discord.ui.LayoutView):
+    """The whole /style experience — one panel, state shown live."""
+
+    def __init__(self, guild_id: int, clone_id, *, channel=None, text: Optional[str] = None,
+                 font: Optional[str] = None):
+        super().__init__(timeout=600)
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.channel = channel
+        self.text = text          # None => use the channel's current name
+        self.font = font
+        self.ideas: list = []
+        self.status: Optional[str] = None
+        self.rebuild()
+
+    @property
+    def base_text(self) -> str:
+        if self.text:
+            return self.text.strip()
+        return self.channel.name if self.channel else ""
+
+    def result_name(self) -> str:
+        return channel_name(self.base_text, self.font, _hyphenate(self.channel) if self.channel else True)
+
+    def rebuild(self) -> None:
+        self.clear_items()
         container = discord.ui.Container(accent_colour=discord.Color.blurple())
-        container.add_item(discord.ui.TextDisplay(
-            f"## \ud83d\udd24 \u201c{text}\u201d in every font\n" + "\n".join(lines)
+
+        ch = self.channel.mention if self.channel else "*not picked yet*"
+        if self.base_text:
+            note = "" if self.text else " *(its current name)*"
+            txt = f"`{_md(self.base_text)}`{note}"
+        else:
+            txt = "*pick a channel, or tap Edit text*"
+        font = f"**{STYLES[self.font][0]}**" if self.font else "*not picked yet*"
+        lines = [
+            "## \U0001f524 Style a channel",
+            f"**Channel** \u2014 {ch}",
+            f"**Text** \u2014 {txt}",
+            f"**Font** \u2014 {font}",
+        ]
+        if self.base_text and self.font:
+            lines += ["", "**Preview**", self.result_name()]
+        if self.status:
+            lines += ["", self.status]
+        container.add_item(discord.ui.TextDisplay("\n".join(lines)))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.ActionRow(_WizChannelSelect(self)))
+        container.add_item(discord.ui.ActionRow(_WizFontSelect(self)))
+        if self.ideas:
+            container.add_item(discord.ui.ActionRow(_WizIdeaSelect(self)))
+        container.add_item(discord.ui.ActionRow(
+            _WizEditTextButton(self), _WizAIButton(self), _WizAllFontsButton(self), _WizApplyButton(self),
         ))
-        container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.ActionRow(_StyleAIButton(text, guild_id, clone_id)))
-        container.add_item(discord.ui.ActionRow(_StyleApplyChannelSelect(text, guild_id, clone_id)))
-        container.add_item(discord.ui.Separator())
         container.add_item(discord.ui.TextDisplay(
-            "-# Asking AI only runs when you tap the button \u2014 nothing is generated automatically."
+            "-# Discord channel names are lowercase \u2014 your text is lowercased for you."
         ))
         self.add_item(container)
 
+
+# ── cog ─────────────────────────────────────────────────────────────────────
 
 class StyleCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    # AI tool-calling (/aichat + reply chat): renaming a channel mutates the
-    # server, so ai_command_allowlist marks /style requires_confirmation for
-    # any call that passes font/channel (a bare preview needs none). The
-    # AIConfirmView click has already consumed the interaction's response,
-    # so the confirmed call goes to ai_style (followup-only) instead of the
-    # slash callback, and ai_style_prompt writes the confirm text + refuses
-    # early (no confirm button) when it could never succeed.
+    # AI tool-calling: a /style call that passes font/channel renames a
+    # channel, so ai_command_allowlist requires a Confirm click for it (a
+    # bare call needs none). The Confirm click already used the
+    # interaction's response, so the confirmed call runs ai_style
+    # (followup-only), and ai_style_prompt writes the confirm text and
+    # refuses early when it could never succeed.
     AI_CONFIRMED_HANDLERS = {"style": "ai_style"}
     AI_CONFIRM_PROMPTS = {"style": "ai_style_prompt"}
 
     def _ai_check(self, interaction, text, font, channel):
-        """(error_or_None, clean_text, style_key_or_None) for an AI call."""
-        text = (text or "").strip()[:_MAX_TEXT]
-        if not text:
-            return "\u274c What text should I style?", text, None
+        """(error_or_None, text_or_None, style_key_or_None). text None means
+        'use the channel's current name'."""
+        if channel is None:
+            return ("\u274c Which channel? Mention it (#channel), give its name, or say \u201cthis channel\u201d."), None, None
+        if not isinstance(channel, _RENAMABLE):
+            return "\u274c I can only rename text, voice, stage and forum channels.", None, None
         style_key = None
         if font not in (None, ""):
             style_key = _normalize_font(font)
             if style_key is None:
-                return f"\u274c I don't know a font called \u201c{font}\u201d.", text, None
-        if channel is None:
-            return ("\u274c Which channel? Mention it (#channel), give its name, or say \u201cthis channel\u201d."), text, style_key
-        if not isinstance(channel, _RENAMABLE):
-            return "\u274c I can only rename text, voice, stage and forum channels.", text, style_key
+                return f"\u274c I don't know a font called \u201c{font}\u201d.", None, None
         if not channel.permissions_for(interaction.user).manage_channels:
-            return f"\u274c You need **Manage Channels** on {channel.mention} to rename it.", text, style_key
+            return f"\u274c You need **Manage Channels** on {channel.mention} to rename it.", None, style_key
         if not channel.permissions_for(interaction.guild.me).manage_channels:
-            return f"\u274c I don't have **Manage Channels** on {channel.mention}.", text, style_key
+            return f"\u274c I don't have **Manage Channels** on {channel.mention}.", None, style_key
+        text = (text or "").strip()[:_MAX_TEXT] or None
         return None, text, style_key
 
     async def ai_style_prompt(self, interaction, text=None, font=None, channel=None, **_ignored):
         err, text, style_key = self._ai_check(interaction, text, font, channel)
         if err:
             return False, err
+        base = text or channel.name
         if style_key is None:
-            return True, f"Open the font picker to rename {channel.mention} using **{text}**?"
-        styled = apply_style(text, style_key)[:100]
-        return True, f"Rename {channel.mention} to **{styled}** ({STYLES[style_key][0]})?"
+            return True, f"Open the style wizard for {channel.mention} (text: **{base}**)?"
+        new_name = channel_name(base, style_key, _hyphenate(channel))
+        return True, f"Rename {channel.mention} to **{new_name}** ({STYLES[style_key][0]})?"
 
     async def ai_style(self, interaction, text=None, font=None, channel=None, **_ignored):
         err, text, style_key = self._ai_check(interaction, text, font, channel)
@@ -244,64 +392,52 @@ class StyleCog(commands.Cog):
             await interaction.followup.send(err, ephemeral=True)
             return
         if style_key is None:
-            clone_id = getattr(self.bot, "clone_id", None)
-            view = _StyleApplySelectView(interaction.guild.id, clone_id, channel.id, text)
-            await interaction.followup.send(
-                f"Pick a font to rename {channel.mention} to **{text}** styled:", view=view, ephemeral=True,
-            )
+            wiz = _StyleWizard(interaction.guild.id, getattr(self.bot, "clone_id", None), channel=channel, text=text)
+            await interaction.followup.send(view=wiz, ephemeral=True)
             return
-        await _apply_font_to_channel(interaction, text, style_key, channel)
+        new_name = channel_name(text or channel.name, style_key, _hyphenate(channel))
+        _ok, msg = await _rename(interaction.user, interaction.guild, channel, new_name)
+        await interaction.followup.send(f"{msg} ({STYLES[style_key][0]})" if _ok else msg, ephemeral=True)
 
     @app_commands.command(
         name="style",
-        description="Style text into fancy fonts, get AI channel-name ideas from it, or apply it to a channel",
+        description="Restyle a channel's name with fancy fonts \u2014 pick channel, pick font, done",
     )
     @app_commands.describe(
-        text="The text to style (a channel base name, or a vibe/theme for AI ideas)",
-        font="Rename a channel with this font right away (needs channel). Leave empty to preview every font",
-        channel="Channel to rename (leave font empty to pick the font from a menu)",
+        text="Optional: text to style (default: the channel's current name)",
+        font="Optional: apply this font right away (needs channel)",
+        channel="Optional: channel to rename",
     )
     @app_commands.choices(font=_FONT_CHOICES)
     async def style(
-        self, interaction: discord.Interaction, text: str,
+        self, interaction: discord.Interaction,
+        text: Optional[str] = None,
         font: Optional[app_commands.Choice[str]] = None,
         channel: Optional[Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel]] = None,
     ):
-        guild_id = interaction.guild.id if interaction.guild else None
-        clone_id = getattr(self.bot, "clone_id", None)
-        if guild_id is None:
-            await interaction.response.send_message(
-                "Run this in a server \u2014 applying to a channel needs one, and AI ideas need a "
-                "server to reply in.", ephemeral=True,
-            )
+        if interaction.guild is None:
+            await interaction.response.send_message("Run this in a server.", ephemeral=True)
             return
-        text = text[:_MAX_TEXT].strip()
-        if not text:
-            await interaction.response.send_message("Give me some text to style.", ephemeral=True)
+        clone_id = getattr(self.bot, "clone_id", None)
+        text = (text or "").strip()[:_MAX_TEXT] or None
+
+        if channel is not None and not channel.permissions_for(interaction.user).manage_channels:
+            await interaction.response.send_message(
+                f"You need **Manage Channels** on {channel.mention} to rename it.", ephemeral=True,
+            )
             return
 
-        if font is None and channel is None:
-            await interaction.response.send_message(
-                view=_StyleResultView(text, guild_id, clone_id), ephemeral=True,
-            )
-        elif font is None:
-            # channel only -> font picker for that channel
-            if not channel.permissions_for(interaction.user).manage_channels:
-                await interaction.response.send_message(
-                    f"You need **Manage Channels** on {channel.mention} to rename it.", ephemeral=True,
-                )
-                return
-            await interaction.response.send_message(
-                f"Pick a font to rename {channel.mention} to **{text}** styled:",
-                view=_StyleApplySelectView(guild_id, clone_id, channel.id, text), ephemeral=True,
-            )
-        elif channel is None:
-            await interaction.response.send_message(
-                "Pick which channel to rename with the `channel` option.", ephemeral=True,
-            )
-        else:
+        if font is not None and channel is not None:
+            # Fully specified -> no wizard needed.
             await interaction.response.defer(ephemeral=True)
-            await _apply_font_to_channel(interaction, text, font.value, channel)
+            new_name = channel_name(text or channel.name, font.value, _hyphenate(channel))
+            _ok, msg = await _rename(interaction.user, interaction.guild, channel, new_name)
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+
+        wiz = _StyleWizard(interaction.guild.id, clone_id, channel=channel, text=text,
+                           font=font.value if font is not None else None)
+        await interaction.response.send_message(view=wiz, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

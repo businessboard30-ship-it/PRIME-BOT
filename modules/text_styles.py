@@ -134,3 +134,16 @@ def apply_style(text: str, key: str) -> str:
 def style_choices() -> list:
     """[(key, label, emoji), ...] in STYLE_ORDER, for building a select menu."""
     return [(key, STYLES[key][0], STYLES[key][1]) for key in STYLE_ORDER]
+
+
+def channel_name(text: str, key: str, hyphenate: bool = True) -> str:
+    """Text -> a Discord-channel-safe styled name. Discord channel names are
+    lowercase, so the text is lowercased BEFORE the font is applied (a
+    styled capital like U+1D40F would otherwise sneak a capital past
+    Discord's own lowercasing, which only touches plain A-Z). Text/forum
+    channels also can't hold spaces, so runs of whitespace become single
+    hyphens (voice/stage channels keep spaces: hyphenate=False)."""
+    cleaned = " ".join(text.lower().split())
+    if hyphenate:
+        cleaned = cleaned.replace(" ", "-")
+    return apply_style(cleaned, key)[:100]
