@@ -136,6 +136,28 @@ def style_choices() -> list:
     return [(key, STYLES[key][0], STYLES[key][1]) for key in STYLE_ORDER]
 
 
+_REVERSE = None
+
+
+def to_plain(text: str) -> str:
+    """Undo any fancy font so text can be restyled from scratch. Without this,
+    a channel already named in (say) Fraktur passes through every other font
+    unchanged, because the char maps only know plain A-Z/0-9."""
+    import unicodedata
+    global _REVERSE
+    if _REVERSE is None:
+        rev = {}
+        for _label, _emoji, mapping in STYLES.values():
+            for plain, fancy in mapping.items():
+                base = fancy[0]
+                if base != plain and ord(base) > 127:
+                    rev.setdefault(base, plain.lower())
+        _REVERSE = rev
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(_REVERSE.get(ch, ch) for ch in text)
+    return "".join(ch for ch in text if ch not in ("\u0336", "\u0332"))
+
+
 def channel_name(text: str, key: str, hyphenate: bool = True) -> str:
     """Text -> a Discord-channel-safe styled name. Discord channel names are
     lowercase, so the text is lowercased BEFORE the font is applied (a
@@ -143,7 +165,7 @@ def channel_name(text: str, key: str, hyphenate: bool = True) -> str:
     Discord's own lowercasing, which only touches plain A-Z). Text/forum
     channels also can't hold spaces, so runs of whitespace become single
     hyphens (voice/stage channels keep spaces: hyphenate=False)."""
-    cleaned = " ".join(text.lower().split())
+    cleaned = " ".join(to_plain(text).lower().split())
     if hyphenate:
         cleaned = cleaned.replace(" ", "-")
     return apply_style(cleaned, key)[:100]

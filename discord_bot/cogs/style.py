@@ -45,7 +45,6 @@ AI_PROMPT_CONTEXT = (
     "extra commentary, no markdown — just the 5 lines."
 )
 
-_FONT_CHOICES = [app_commands.Choice(name=label, value=key) for key, label, _sample in style_choices()]
 _RENAMABLE = (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel)
 _CHANNEL_TYPES = [
     discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.voice,
@@ -401,42 +400,13 @@ class StyleCog(commands.Cog):
 
     @app_commands.command(
         name="style",
-        description="Restyle a channel's name with fancy fonts \u2014 pick channel, pick font, done",
+        description="Restyle a channel's name with fancy fonts \u2014 opens a wizard",
     )
-    @app_commands.describe(
-        text="Optional: text to style (default: the channel's current name)",
-        font="Optional: apply this font right away (needs channel)",
-        channel="Optional: channel to rename",
-    )
-    @app_commands.choices(font=_FONT_CHOICES)
-    async def style(
-        self, interaction: discord.Interaction,
-        text: Optional[str] = None,
-        font: Optional[app_commands.Choice[str]] = None,
-        channel: Optional[Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel]] = None,
-    ):
+    async def style(self, interaction: discord.Interaction):
         if interaction.guild is None:
             await interaction.response.send_message("Run this in a server.", ephemeral=True)
             return
-        clone_id = getattr(self.bot, "clone_id", None)
-        text = (text or "").strip()[:_MAX_TEXT] or None
-
-        if channel is not None and not channel.permissions_for(interaction.user).manage_channels:
-            await interaction.response.send_message(
-                f"You need **Manage Channels** on {channel.mention} to rename it.", ephemeral=True,
-            )
-            return
-
-        if font is not None and channel is not None:
-            # Fully specified -> no wizard needed.
-            await interaction.response.defer(ephemeral=True)
-            new_name = channel_name(text or channel.name, font.value, _hyphenate(channel))
-            _ok, msg = await _rename(interaction.user, interaction.guild, channel, new_name)
-            await interaction.followup.send(msg, ephemeral=True)
-            return
-
-        wiz = _StyleWizard(interaction.guild.id, clone_id, channel=channel, text=text,
-                           font=font.value if font is not None else None)
+        wiz = _StyleWizard(interaction.guild.id, getattr(self.bot, "clone_id", None))
         await interaction.response.send_message(view=wiz, ephemeral=True)
 
 
