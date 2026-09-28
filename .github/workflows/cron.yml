@@ -1,0 +1,63 @@
+name: Cron pings
+
+# Calls the api/cron_*.py endpoints on the backend named in redirector/config.json
+# (the one place the real host lives). Needs repo secret CRON_SECRET (same value as
+# on the backend). GitHub schedules can run a few minutes late and are the fastest
+# allowed at every 5 minutes. Turn off any other scheduler hitting these URLs.
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # announcements + owner broadcast
+    - cron: "17 * * * *"    # ad placement
+    - cron: "23 3 * * *"    # daily: expire monetization, yandex renew, pending-payment cleanup
+  workflow_dispatch:
+    inputs:
+      group:
+        description: "Which group to run"
+        type: choice
+        options: [frequent, hourly, daily]
+        default: frequent
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cron-${{ github.event.schedule || github.event.inputs.group }}
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: redirector/config.json
+          sparse-checkout-cone-mode: false
+      - name: Call endpoints
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          SCHEDULE: ${{ github.event.schedule }}
+          GROUP: ${{ github.event.inputs.group }}
+        run: |
+          set -u
+          [ -n "$CRON_SECRET" ] || { echo "::error::Repo secret CRON_SECRET is not set"; exit 1; }
+          BASE="$(jq -r .backend_url redirector/config.json | sed 's#/*$##')"
+          case "$BASE" in https://*) ;; *) echo "::error::backend_url must be https"; exit 1;; esac
+          case "${SCHEDULE:-}" in
+            "*/5 * * * *") GROUP=frequent ;;
+            "17 * * * *")  GROUP=hourly ;;
+            "23 3 * * *")  GROUP=daily ;;
+          esac
+          case "${GROUP:-frequent}" in
+            frequent) EPS="cron_discord_announcements cron_discord_owner_broadcast" ;;
+            hourly)   EPS="cron_ad_placement" ;;
+            daily)    EPS="cron_expire_monetization cron_renew_yandex_search cron_cleanup_pending_payments" ;;
+          esac
+          fail=0
+          for ep in $EPS; do
+            code=$(curl -sS -o /tmp/out -w '%{http_code}' -X POST --max-time 90 --retry 2 --retry-delay 5 \
+                   -H "Authorization: Bearer $CRON_SECRET" "$BASE/api/$ep" || echo 000)
+            echo "$ep -> HTTP $code"
+            case "$code" in 2*) ;; *) head -c 300 /tmp/out; echo; fail=1 ;; esac
+          done
+          exit $fail

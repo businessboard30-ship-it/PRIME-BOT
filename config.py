@@ -10,6 +10,11 @@ load_dotenv()
 _DEFAULT_PUBLIC_BASE_URL = "https://web-production-9dd98.up.railway.app"
 _PUBLIC_BASE = os.getenv("PUBLIC_BASE_URL", _DEFAULT_PUBLIC_BASE_URL).rstrip("/")
 
+# Stable, host-independent address = the GitHub Pages redirector (redirector/).
+# Set STABLE_BASE_URL (e.g. https://<user>.github.io/PRIME-BOT) once you've registered
+# the /oauth/... URLs with Discord/Google; blank keeps the old backend-host behaviour.
+STABLE_BASE_URL = os.getenv("STABLE_BASE_URL", "").strip().rstrip("/")
+
 # Bot Configuration
 BOT_TOKEN = os.getenv("SINOBANED2_BOT_TOKEN", "your_token_here")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # 0 = unset (matches current Railway value)
@@ -167,7 +172,7 @@ DISCORD_DEV_GUILD_ID = 0
 # Base URL of the Next.js site (app/ dir) this repo also deploys — used to
 # build the /automod dashboard link. Defaults to the marketing site's own
 # domain convention; override if the dashboard is deployed separately.
-DASHBOARD_BASE_URL = "https://prime-bot-sigma.vercel.app"
+DASHBOARD_BASE_URL = os.getenv("DASHBOARD_BASE_URL", "https://prime-bot-sigma.vercel.app").rstrip("/")
 
 # Separate, explicitly-whitelisted base for the /unlock page ONLY, used
 # when that page is hosted standalone on GitHub Pages instead of living
@@ -232,7 +237,8 @@ SERVER_LISTING_VOTE_OAUTH_REDIRECT_URI = os.getenv(
 # Developer Portal if Discord complains about an invalid scope.
 DISCORD_LOGIN_OAUTH_REDIRECT_URI = os.getenv(
     "DISCORD_LOGIN_OAUTH_REDIRECT_URI",
-    f"{_PUBLIC_BASE}/api/discord_login_oauth"
+    f"{STABLE_BASE_URL}/oauth/discord-login/" if STABLE_BASE_URL
+    else f"{_PUBLIC_BASE}/api/discord_login_oauth"
 )
 
 

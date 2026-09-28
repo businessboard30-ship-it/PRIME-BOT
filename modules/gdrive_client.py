@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "")  # e.g. https://yourapp.vercel.app/api/oauth_gdrive
+_STABLE = os.getenv("STABLE_BASE_URL", "").strip().rstrip("/")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "") or (f"{_STABLE}/oauth/gdrive/" if _STABLE else "")
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=10)

@@ -1,0 +1,10 @@
+require("./r.js");
+const assert = require("assert");
+const cfg = { backend_url: "https://a.up.railway.app/", dashboard_url: "https://d.vercel.app" };
+assert.strictEqual(buildTarget(cfg, "backend:/api/discord_login_oauth", "?code=1&state=x", ""), "https://a.up.railway.app/api/discord_login_oauth?code=1&state=x");
+assert.strictEqual(buildTarget(cfg, "dashboard:/manual", "", "#moderation"), "https://d.vercel.app/manual#moderation");
+assert.throws(() => buildTarget({ backend_url: "http://insecure.com" }, "backend:/x", "", ""));
+assert.throws(() => buildTarget({ backend_url: "javascript:alert(1)" }, "backend:/x", "", ""));
+assert.throws(() => buildTarget(cfg, "https://evil.com", "", ""));
+assert.throws(() => buildTarget({}, "backend:/x", "", ""));
+console.log("redirector tests OK");
