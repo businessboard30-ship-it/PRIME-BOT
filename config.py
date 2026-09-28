@@ -5,10 +5,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Non-secret deployment settings live here (env var still overrides if set).
-# Only real secrets (tokens, API keys, DB URL, encryption key) belong in Railway.
-_DEFAULT_PUBLIC_BASE_URL = "https://web-production-9dd98.up.railway.app"
-_PUBLIC_BASE = os.getenv("PUBLIC_BASE_URL", _DEFAULT_PUBLIC_BASE_URL).rstrip("/")
+# Public URL of the API/web service (api_server.py). Set PUBLIC_BASE_URL in the
+# environment of BOTH the API service and the bot worker. Deliberately not
+# hardcoded: blank means "not configured" and dependent features fail loudly.
+_PUBLIC_BASE = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
 # Stable, host-independent address = the GitHub Pages redirector (redirector/).
 # Set STABLE_BASE_URL (e.g. https://<user>.github.io/PRIME-BOT) once you've registered
