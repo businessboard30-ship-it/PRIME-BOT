@@ -8022,12 +8022,17 @@ class Database:
         the level-up didn't touch the top 5 at all, or only reshuffled
         people who already hold seats)."""
         await self.ensure_clan_seats(guild_id, clone_id=clone_id)
+        from config import CHIEF_MIN_LEVEL
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # Only members at/above CHIEF_MIN_LEVEL are eligible for a seat:
+            # the "top 5" here is the top 5 ELIGIBLE members, so a level-1/2
+            # member can't hold a seat even if the server is tiny.
             top5 = await conn.fetch(
                 "SELECT user_id FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
-                "AND total_xp > 0 ORDER BY total_xp DESC, last_xp_at ASC NULLS LAST LIMIT 5",
-                guild_id, clone_id,
+                "AND total_xp > 0 AND level >= $3 "
+                "ORDER BY total_xp DESC, last_xp_at ASC NULLS LAST LIMIT 5",
+                guild_id, clone_id, CHIEF_MIN_LEVEL,
             )
             top5_ids = [r["user_id"] for r in top5]
             seats = await conn.fetch(
@@ -8050,6 +8055,25 @@ class Database:
             newcomers = [uid for uid in top5_ids if uid not in seat_holder_ids]
 
             changes = []
+            # Seats left over after filling (fewer eligible newcomers than
+            # vacated seats): if the current holder is below the minimum
+            # level (e.g. they held a seat before the level-3 rule existed,
+            # or an admin reset levels), free the seat instead of letting an
+            # ineligible member keep it. Silent — no announcement.
+            for seat in vacated_seats[len(newcomers):]:
+                if seat["user_id"] is None:
+                    continue
+                holder_level = await conn.fetchval(
+                    "SELECT level FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                    "AND user_id = $3",
+                    guild_id, clone_id, seat["user_id"],
+                )
+                if (holder_level or 0) < CHIEF_MIN_LEVEL:
+                    await conn.execute(
+                        "UPDATE discord_clan_chiefs SET user_id = NULL, since = NULL "
+                        "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND seat_rank = $3",
+                        guild_id, clone_id, seat["seat_rank"],
+                    )
             for seat, new_user_id in zip(vacated_seats, newcomers):
                 old_user_id = seat["user_id"]
                 await conn.execute(

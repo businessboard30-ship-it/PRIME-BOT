@@ -114,7 +114,7 @@ BOT_RULES = (
     "9. /levelrole giftboost exists but is bot-owner only — never suggest it to anyone as a way to get an XP "
     "boost. If asked how to boost XP, only mention the Boost XP button.\n"
     "10. Clans: every member is auto-locked to one of 5 random clans, shown on a flavor card every 3 levels. "
-    "5 clan-chief seats exist per server, held by whoever is rank #1-5 on that server's XP leaderboard — "
+    "5 clan-chief seats exist per server, held by whoever is rank #1-5 on that server's XP leaderboard AND at least level 3 — "
     "overtaking a chief takes their exact seat and title, even if it's a different clan than your own. Chief "
     "status shows on /rank and /leaderboard. Chiefs get their clan card every level-up instead of every 3. "
     "IMPORTANT — this means the SAME PERSON can see two different clan names mentioned for themselves, and "

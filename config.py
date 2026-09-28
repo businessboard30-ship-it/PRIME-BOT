@@ -346,6 +346,10 @@ AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "10"))
 # ─────────────────────────────────────────────────────────────────────
 PREMIUM_FEE_USD = 2
 
+# Minimum XP level a member needs before they can hold a clan-chief seat
+# (top-5 on the XP leaderboard is necessary but no longer sufficient).
+CHIEF_MIN_LEVEL = 3
+
 # Shown on every payment screen.
 PAYMENT_SUPPORT_LINE = "❤️ Your payment helps keep this bot alive."
 PREMIUM_DAYS = 30
