@@ -45,17 +45,33 @@ AI_PROMPT_CONTEXT = (
     "extra commentary, no markdown — just the 5 lines."
 )
 
-_RENAMABLE = (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel)
+_RENAMABLE = (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel,
+              discord.CategoryChannel)
 _CHANNEL_TYPES = [
     discord.ChannelType.text, discord.ChannelType.news, discord.ChannelType.voice,
     discord.ChannelType.stage_voice, discord.ChannelType.forum,
 ]
+_CATEGORY_TYPES = [discord.ChannelType.category]
+AI_PROMPT_CONTEXT_CATEGORY = (
+    "You are suggesting Discord CATEGORY names. The user will describe a theme or purpose for a "
+    "category. Reply with EXACTLY 5 short category-name ideas, one per line, each 1-3 words, in "
+    "UPPERCASE with spaces (e.g. 'COMMUNITY HUB'), each prefixed with a single fitting emoji. "
+    "No numbering, no extra commentary, no markdown \u2014 just the 5 lines."
+)
 _MAX_TEXT = 60
 
 
 def _hyphenate(channel) -> bool:
-    """Text/forum channels can't hold spaces; voice/stage can."""
-    return not isinstance(channel, (discord.VoiceChannel, discord.StageChannel))
+    """Text/forum channels can't hold spaces; voice/stage/categories can."""
+    return not isinstance(channel, (discord.VoiceChannel, discord.StageChannel, discord.CategoryChannel))
+
+
+def _name(text: str, key: str, channel=None, bracket=None, mode: str = "channel") -> str:
+    """The one place a styled name is built. Categories keep their case and
+    spaces (Discord only lowercases/hyphenates text-type channels)."""
+    is_cat = isinstance(channel, discord.CategoryChannel) if channel else (mode == "category")
+    hy = _hyphenate(channel) if channel else (mode != "category")
+    return channel_name(text, key, hy, bracket, lower=not is_cat)
 
 
 def _md(text: str) -> str:
@@ -97,7 +113,7 @@ async def _rename(user, guild, channel, new_name: str) -> tuple:
     """(ok, message). The one place a rename actually happens — re-checks the
     USER's and the BOT's Manage Channels on THAT channel."""
     if not isinstance(channel, _RENAMABLE):
-        return False, "\u274c I can only rename text, voice, stage and forum channels."
+        return False, "\u274c I can only rename text, voice, stage, forum channels and categories."
     if not channel.permissions_for(user).manage_channels:
         return False, f"\u274c You need **Manage Channels** on {channel.mention} to rename it."
     if not channel.permissions_for(guild.me).manage_channels:
@@ -118,8 +134,9 @@ class _WizChannelSelect(discord.ui.ChannelSelect):
         defaults = ([discord.SelectDefaultValue(id=wiz.channel.id, type=discord.SelectDefaultValueType.channel)]
                     if wiz.channel else [])
         super().__init__(
-            placeholder="1 \u00b7 Pick the channel to rename\u2026",
-            channel_types=_CHANNEL_TYPES, min_values=1, max_values=1, default_values=defaults,
+            placeholder=("1 \u00b7 Pick the category to rename\u2026" if wiz.mode == "category"
+                         else "1 \u00b7 Pick the channel to rename\u2026"),
+            channel_types=(_CATEGORY_TYPES if wiz.mode == "category" else _CHANNEL_TYPES), min_values=1, max_values=1, default_values=defaults,
         )
         self.wiz = wiz
 
@@ -129,6 +146,8 @@ class _WizChannelSelect(discord.ui.ChannelSelect):
         real = interaction.guild.get_channel(picked.id) if interaction.guild else None
         if real is None or not isinstance(real, _RENAMABLE):
             wiz.status = "\u274c I can't see that channel."
+        elif isinstance(real, discord.CategoryChannel) != (wiz.mode == "category"):
+            wiz.status = "\u274c That's the wrong kind \u2014 use the Categories / Channels button to switch."
         elif not real.permissions_for(interaction.user).manage_channels:
             wiz.status = f"\u274c You need **Manage Channels** on {real.mention} to rename it."
         else:
@@ -141,13 +160,12 @@ class _WizChannelSelect(discord.ui.ChannelSelect):
 class _WizFontSelect(discord.ui.Select):
     def __init__(self, wiz: "_StyleWizard"):
         base = wiz.base_text
-        hy = _hyphenate(wiz.channel) if wiz.channel else True
         options = [
             discord.SelectOption(
                 label=label, value=key, default=(key == wiz.font),
                 # Live preview of the user's own text in each font. NO emoji=
                 # (Discord rejects non-emoji glyphs there with a 400).
-                description=(channel_name(base, key, hy, wiz.bracket)[:100] or None) if base else None,
+                description=(_name(base, key, wiz.channel, wiz.bracket, wiz.mode)[:100] or None) if base else None,
             )
             for key, label, _sample in style_choices()
         ]
@@ -164,12 +182,11 @@ class _WizFontSelect(discord.ui.Select):
 class _WizBracketSelect(discord.ui.Select):
     def __init__(self, wiz: "_StyleWizard"):
         base = wiz.base_text
-        hy = _hyphenate(wiz.channel) if wiz.channel else True
         font = wiz.font or "bold"
         options = [
             discord.SelectOption(
                 label=label, value=key, default=(key == (wiz.bracket or "none")),
-                description=(channel_name(base, font, hy, key)[:100] or None) if base else None,
+                description=(_name(base, font, wiz.channel, key, wiz.mode)[:100] or None) if base else None,
             )
             for key, label in bracket_choices()
         ]
@@ -241,7 +258,7 @@ class _WizAIModal(discord.ui.Modal, title="AI channel-name ideas"):
         else:
             reply = await ai_chat(
                 user_id, str(self.theme.value), tier=tier,
-                command_context=AI_PROMPT_CONTEXT, guild_id=wiz.guild_id, kind="style_wizard",
+                command_context=(AI_PROMPT_CONTEXT_CATEGORY if wiz.mode == "category" else AI_PROMPT_CONTEXT), guild_id=wiz.guild_id, kind="style_wizard",
             )
             ideas = [ln.strip("-\u2022 ") for ln in (reply or "").splitlines() if ln.strip()][:5]
             if not reply:
@@ -285,8 +302,8 @@ class _WizAllFontsButton(discord.ui.Button):
             self.wiz.rebuild()
             await interaction.response.edit_message(view=self.wiz)
             return
-        hy = _hyphenate(self.wiz.channel) if self.wiz.channel else True
-        lines = [f"**{label}** \u2014 {channel_name(base, key, hy, self.wiz.bracket)}" for key, label, _s in style_choices()]
+        w = self.wiz
+        lines = [f"**{label}** \u2014 {_name(base, key, w.channel, w.bracket, w.mode)}" for key, label, _s in style_choices()]
         chunks, cur = [], ""
         for ln in lines:
             if len(cur) + len(ln) + 1 > 1800:
@@ -297,6 +314,23 @@ class _WizAllFontsButton(discord.ui.Button):
         await interaction.response.send_message(chunks[0], ephemeral=True)
         for extra in chunks[1:]:
             await interaction.followup.send(extra, ephemeral=True)
+
+
+class _WizModeButton(discord.ui.Button):
+    def __init__(self, wiz):
+        cat = wiz.mode == "category"
+        super().__init__(label="Channels" if cat else "Categories",
+                         emoji="#\ufe0f\u20e3" if cat else "\U0001f4c1", style=discord.ButtonStyle.primary)
+        self.wiz = wiz
+
+    async def callback(self, interaction: discord.Interaction):
+        wiz = self.wiz
+        wiz.mode = "channel" if wiz.mode == "category" else "category"
+        wiz.channel = None
+        wiz.ideas = []
+        wiz.status = None
+        wiz.rebuild()
+        await interaction.response.edit_message(view=wiz)
 
 
 class _WizApplyButton(discord.ui.Button):
@@ -327,6 +361,7 @@ class _StyleWizard(discord.ui.LayoutView):
     def __init__(self, guild_id: int, clone_id, *, channel=None, text: Optional[str] = None,
                  font: Optional[str] = None, bracket: Optional[str] = None):
         super().__init__(timeout=600)
+        self.mode = "category" if isinstance(channel, discord.CategoryChannel) else "channel"
         self.guild_id = guild_id
         self.clone_id = clone_id
         self.channel = channel
@@ -344,7 +379,7 @@ class _StyleWizard(discord.ui.LayoutView):
         return self.channel.name if self.channel else ""
 
     def result_name(self) -> str:
-        return channel_name(self.base_text, self.font, _hyphenate(self.channel) if self.channel else True, self.bracket)
+        return _name(self.base_text, self.font, self.channel, self.bracket, self.mode)
 
     def rebuild(self) -> None:
         self.clear_items()
@@ -358,8 +393,8 @@ class _StyleWizard(discord.ui.LayoutView):
             txt = "*pick a channel, or tap Edit text*"
         font = f"**{STYLES[self.font][0]}**" if self.font else "*not picked yet*"
         lines = [
-            "## \U0001f524 Style a channel",
-            f"**Channel** \u2014 {ch}",
+            "## \U0001f524 Style a category" if self.mode == "category" else "## \U0001f524 Style a channel",
+            f"**{'Category' if self.mode == 'category' else 'Channel'}** \u2014 {ch}",
             f"**Text** \u2014 {txt}",
             f"**Font** \u2014 {font}",
             f"**Brackets** \u2014 {BRACKETS[self.bracket][0] if self.bracket else '*none*'}",
@@ -376,10 +411,11 @@ class _StyleWizard(discord.ui.LayoutView):
         if self.ideas:
             container.add_item(discord.ui.ActionRow(_WizIdeaSelect(self)))
         container.add_item(discord.ui.ActionRow(
-            _WizEditTextButton(self), _WizAIButton(self), _WizAllFontsButton(self), _WizApplyButton(self),
+            _WizEditTextButton(self), _WizAIButton(self), _WizAllFontsButton(self), _WizModeButton(self),
+            _WizApplyButton(self),
         ))
         container.add_item(discord.ui.TextDisplay(
-            "-# Discord channel names are lowercase \u2014 your text is lowercased for you."
+            ("-# Category names keep your capitals." if self.mode == "category" else "-# Discord channel names are lowercase \u2014 your text is lowercased for you.")
         ))
         self.add_item(container)
 
@@ -405,7 +441,7 @@ class StyleCog(commands.Cog):
         if channel is None:
             return ("\u274c Which channel? Mention it (#channel), give its name, or say \u201cthis channel\u201d."), None, None
         if not isinstance(channel, _RENAMABLE):
-            return "\u274c I can only rename text, voice, stage and forum channels.", None, None
+            return "\u274c I can only rename text, voice, stage, forum channels and categories.", None, None
         style_key = None
         if font not in (None, ""):
             style_key = _normalize_font(font)
@@ -427,7 +463,7 @@ class StyleCog(commands.Cog):
         base = text or channel.name
         if style_key is None:
             return True, f"Open the style wizard for {channel.mention} (text: **{base}**)?"
-        new_name = channel_name(base, style_key, _hyphenate(channel), _normalize_bracket(bracket) or None)
+        new_name = _name(base, style_key, channel, _normalize_bracket(bracket) or None)
         return True, f"Rename {channel.mention} to **{new_name}** ({STYLES[style_key][0]})?"
 
     async def ai_style(self, interaction, text=None, font=None, channel=None, bracket=None, **_ignored):
@@ -440,7 +476,7 @@ class StyleCog(commands.Cog):
                                bracket=_normalize_bracket(bracket) or None)
             await interaction.followup.send(view=wiz, ephemeral=True)
             return
-        new_name = channel_name(text or channel.name, style_key, _hyphenate(channel), _normalize_bracket(bracket) or None)
+        new_name = _name(text or channel.name, style_key, channel, _normalize_bracket(bracket) or None)
         _ok, msg = await _rename(interaction.user, interaction.guild, channel, new_name)
         await interaction.followup.send(f"{msg} ({STYLES[style_key][0]})" if _ok else msg, ephemeral=True)
 

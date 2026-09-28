@@ -198,14 +198,15 @@ def wrap_brackets(text: str, bracket) -> str:
     return f"{left}{text}{right}"
 
 
-def channel_name(text: str, key: str, hyphenate: bool = True, bracket=None) -> str:
+def channel_name(text: str, key: str, hyphenate: bool = True, bracket=None, lower: bool = True) -> str:
     """Text -> a Discord-channel-safe styled name. Discord channel names are
     lowercase, so the text is lowercased BEFORE the font is applied (a
     styled capital like U+1D40F would otherwise sneak a capital past
     Discord's own lowercasing, which only touches plain A-Z). Text/forum
     channels also can't hold spaces, so runs of whitespace become single
     hyphens (voice/stage channels keep spaces: hyphenate=False)."""
-    cleaned = " ".join(to_plain(text).lower().split())
+    plain = to_plain(text)
+    cleaned = " ".join((plain.lower() if lower else plain).split())
     if hyphenate:
         cleaned = cleaned.replace(" ", "-")
     return wrap_brackets(apply_style(cleaned, key), bracket)[:100]
