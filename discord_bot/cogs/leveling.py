@@ -48,6 +48,9 @@ CHIEF_LOST_SEAT_GIFS = [
     "https://media.tenor.com/NY_LEh5VX3wAAAAM/tiffany-j-kick-tj-kick.gif",
     "https://media.tenor.com/QnTJ2AH5uyIAAAAM/flying-kick-common-side-effects.gif",
     "https://media.tenor.com/aDZHwZaw9t4AAAAM/anime-kick.gif",
+    "https://media.tenor.com/gyDQEjsKwPEAAAAM/hit-smack.gif",
+    "https://media.tenor.com/VdFHxh9L1QgAAAAM/penguin-slap.gif",
+    "https://media.tenor.com/YKC7AtMCKt4AAAAM/flying-kick-axel.gif",
 ]
 from modules.level_card import (
     render_level_card, render_level_card_evolved,
