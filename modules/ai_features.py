@@ -556,7 +556,11 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
             "model": AI_CHAT_MODEL,
             "messages": messages,
             "temperature": 0.7,
-            "max_completion_tokens": 400,
+            # gpt-oss spends part of this budget on reasoning tokens; with
+            # tools attached, 400 was often exhausted before the tool call
+            # finished -> Groq 400 "tool_use_failed" (a non-retryable status,
+            # so the backup key was never tried). Give tool turns more room.
+            "max_completion_tokens": 1024 if tools else 400,
             "reasoning_effort": "low",
             "top_p": 1.0
         }
@@ -567,6 +571,21 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
         # Call Groq API — _groq_post tries GROQ_API_KEY_BACKUP if the
         # primary key comes back with an auth/rate-limit/server error.
         status, data, error_text = await _groq_post(payload, timeout_seconds=30)
+
+        # Tool-calling failures (400 tool_use_failed, 413 request too large
+        # because the tool schema list is big, 429 TPM on both keys, ...)
+        # would fail identically on the backup key. Degrade gracefully:
+        # log the real cause, then retry once as a plain chat turn with no
+        # tools so the user gets an answer instead of "AI service error".
+        if status != 200 and tools:
+            logger.error(
+                f"[v0] Groq tool-calling request failed (HTTP {status}, {len(tools)} tools): "
+                f"{(error_text or '')[:400]} — retrying without tools"
+            )
+            plain = {k: v for k, v in payload.items() if k not in ("tools", "tool_choice")}
+            plain["max_completion_tokens"] = 400
+            tools = None
+            status, data, error_text = await _groq_post(plain, timeout_seconds=30)
 
         if status == 200:
             msg = data.get('choices', [{}])[0].get('message', {})
@@ -604,6 +623,8 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                 await log_ai_usage(user_id, "messages", message, response_text=response_text,
                                    session_id=session_id, guild_id=guild_id, kind=kind)
                 return response_text
+            ai_chat.last_error = "Groq returned HTTP 200 but empty content and no usable tool call (likely reasoning consumed the token budget)."
+            logger.error(f"[v0] {ai_chat.last_error}")
         else:
             ai_chat.last_error = f"Groq API HTTP {status}: {(error_text or '')[:300]}"
             logger.error(f"[v0] Groq API error: {error_text}")
