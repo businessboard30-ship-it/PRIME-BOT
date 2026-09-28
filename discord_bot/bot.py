@@ -36,6 +36,39 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from config import DISCORD_BOT_TOKEN, DISCORD_DEV_GUILD_ID, DISCORD_CLONE_ADMIN_IDS
+
+
+# ── optional send tracer ────────────────────────────────────────────────────
+# Set the Railway variable TRACE_CHANNEL_ID=<channel id> to log WHICH code path
+# is posting into that channel (one line per message: the bot-code call chain).
+# Unset (the default) = this does nothing at all. Remove the variable when done.
+def _install_send_tracer():
+    raw = os.getenv("TRACE_CHANNEL_ID", "").strip()
+    if not raw.isdigit():
+        return
+    import traceback
+    from discord.http import HTTPClient
+    target_id = int(raw)
+    tlog = logging.getLogger("send_tracer")
+    orig = HTTPClient.request
+
+    async def traced(self, route, *args, **kwargs):
+        try:
+            if route.method == "POST" and route.path == "/channels/{channel_id}/messages" and route.channel_id == target_id:
+                frames = [
+                    f"{os.path.basename(f.filename)}:{f.lineno}:{f.name}"
+                    for f in traceback.extract_stack()
+                    if "/discord_bot/" in f.filename or "/modules/" in f.filename
+                ]
+                tlog.warning("POST to %s from: %s", raw, " > ".join(frames[-6:]) or "(no bot frames)")
+        except Exception:
+            pass
+        return await orig(self, route, *args, **kwargs)
+
+    HTTPClient.request = traced
+
+
+_install_send_tracer()
 from database import db
 from discord_bot.cogs.ai_store import VerifyCreditsView, VerifyBoostView, AIStoreMenuView
 from discord_bot.cogs._dm_support import GUILD_ONLY_MESSAGE
