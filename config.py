@@ -301,8 +301,8 @@ GUMROAD_PRODUCT_LINKS = {
     # the price in XP_BOOST_BUNDLES below, then paste the link/id here or set
     # the env vars. A bundle is only offered in the Boost XP picker once its
     # link is set, so nothing changes for buyers until then.
-    "xp_boost_3": os.getenv("GUMROAD_XP_BOOST_3_LINK", ""),
-    "xp_boost_5": os.getenv("GUMROAD_XP_BOOST_5_LINK", ""),
+    "xp_boost_3": os.getenv("GUMROAD_XP_BOOST_3_LINK", "https://boardmaster87.gumroad.com/l/gdnxf"),
+    "xp_boost_5": os.getenv("GUMROAD_XP_BOOST_5_LINK", "https://boardmaster87.gumroad.com/l/bubsuj"),
     "xp_server_boost": "https://boardmaster87.gumroad.com/l/slwtmv",
     "xp_server_boost_month": "https://boardmaster87.gumroad.com/l/abnbyt",
     # Premium is a Gumroad MEMBERSHIP ($2/month) created by hand in the
