@@ -31,22 +31,26 @@ from modules.superbot_adapter import get_user_tier
 
 logger = logging.getLogger(__name__)
 
-# custom_id shape: style_<action>:<guild_id>:<clone_id or "-">[:extra]
-_ID_RE = re.compile(r"^style_(\w+):(\d+):(-|\d+)(?::(\d+))?$")
+# custom_id shape: style_<action>:<guild_id>:<clone_id or "-">
+# Each DynamicItem gets its OWN template with the action baked in. They used
+# to share one generic pattern, so discord.py routed every tap to whichever
+# class registered last, and _decode read the action word as the guild id
+# (int("chan") -> ValueError -> "Welcome Bot didn't respond in time").
+_ID_CONVERT_RE = re.compile(r"^style_convert:(\d+):(-|\d+)$")
+_ID_AI_RE = re.compile(r"^style_ai:(\d+):(-|\d+)$")
+_ID_CHAN_RE = re.compile(r"^style_chan:(\d+):(-|\d+)$")
 
 
-def _encode(action: str, guild_id: int, clone_id, extra: int = None) -> str:
+def _encode(action: str, guild_id: int, clone_id) -> str:
     clone_part = "-" if clone_id is None else str(clone_id)
-    base = f"style_{action}:{guild_id}:{clone_part}"
-    return f"{base}:{extra}" if extra is not None else base
+    return f"style_{action}:{guild_id}:{clone_part}"
 
 
 def _decode(match: "re.Match"):
     guild_id = int(match.group(1))
     clone_part = match.group(2)
     clone_id = None if clone_part == "-" else int(clone_part)
-    extra = int(match.group(3)) if match.group(3) else None
-    return guild_id, clone_id, extra
+    return guild_id, clone_id
 
 
 AI_PROMPT_CONTEXT = (
@@ -223,7 +227,7 @@ class _StyleApplySelectView(discord.ui.View):
         self.stop()
 
 
-class _StyleConvertButton(discord.ui.DynamicItem[discord.ui.Button], template=_ID_RE.pattern):
+class _StyleConvertButton(discord.ui.DynamicItem[discord.ui.Button], template=_ID_CONVERT_RE.pattern):
     def __init__(self, guild_id: int, clone_id):
         self.guild_id = guild_id
         self.clone_id = clone_id
@@ -234,14 +238,14 @@ class _StyleConvertButton(discord.ui.DynamicItem[discord.ui.Button], template=_I
 
     @classmethod
     async def from_custom_id(cls, interaction, item, match):
-        guild_id, clone_id, _ = _decode(match)
+        guild_id, clone_id = _decode(match)
         return cls(guild_id, clone_id)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(_ConvertTextModal(self.guild_id, self.clone_id))
 
 
-class _StyleAIButton(discord.ui.DynamicItem[discord.ui.Button], template=_ID_RE.pattern):
+class _StyleAIButton(discord.ui.DynamicItem[discord.ui.Button], template=_ID_AI_RE.pattern):
     def __init__(self, guild_id: int, clone_id):
         self.guild_id = guild_id
         self.clone_id = clone_id
@@ -252,14 +256,14 @@ class _StyleAIButton(discord.ui.DynamicItem[discord.ui.Button], template=_ID_RE.
 
     @classmethod
     async def from_custom_id(cls, interaction, item, match):
-        guild_id, clone_id, _ = _decode(match)
+        guild_id, clone_id = _decode(match)
         return cls(guild_id, clone_id)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(_StyleAIModal(self.guild_id, self.clone_id))
 
 
-class _StyleChannelSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], template=_ID_RE.pattern):
+class _StyleChannelSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], template=_ID_CHAN_RE.pattern):
     def __init__(self, guild_id: int, clone_id):
         self.guild_id = guild_id
         self.clone_id = clone_id
@@ -272,7 +276,7 @@ class _StyleChannelSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], temp
 
     @classmethod
     async def from_custom_id(cls, interaction, item, match):
-        guild_id, clone_id, _ = _decode(match)
+        guild_id, clone_id = _decode(match)
         return cls(guild_id, clone_id)
 
     async def callback(self, interaction: discord.Interaction):
