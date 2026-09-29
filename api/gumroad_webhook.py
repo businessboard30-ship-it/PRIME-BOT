@@ -7,10 +7,12 @@ import asyncio
 import hmac
 import json
 import logging
+import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 logger = logging.getLogger(__name__)
+_last_forbidden_alert = 0.0
 
 
 class handler(BaseHTTPRequestHandler):
@@ -25,6 +27,19 @@ class handler(BaseHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         given = (qs.get("secret") or [""])[0]
         if not config.GUMROAD_WEBHOOK_SECRET or not hmac.compare_digest(given, config.GUMROAD_WEBHOOK_SECRET):
+            logger.warning("[gumroad] ping rejected: missing/wrong secret in Ping URL")
+            global _last_forbidden_alert
+            if time.time() - _last_forbidden_alert > 900:  # at most one alert per 15 min
+                _last_forbidden_alert = time.time()
+                from gumroad_payments import _alert_owner
+                try:
+                    asyncio.run(_alert_owner(
+                        "\u26a0\ufe0f A Gumroad ping was REJECTED (missing/wrong secret). "
+                        "Fix the Ping URL in Gumroad -> Settings -> Advanced: "
+                        "https://<api-host>/api/gumroad_webhook?secret=<GUMROAD_WEBHOOK_SECRET>. "
+                        "Sales in the meantime were not unlocked."))
+                except Exception:
+                    logger.exception("[gumroad] forbidden alert failed")
             self._reply(403, "forbidden")
             return
 

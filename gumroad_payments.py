@@ -199,7 +199,7 @@ async def _process_premium_renewal(fields: dict, subscription_id: str, accept_te
     return 200, "ok"
 
 
-async def process_gumroad_ping(fields: dict) -> tuple:
+async def _process_gumroad_ping_inner(fields: dict) -> tuple:
     """Returns (http_status, message). 200 = handled/ignored (don't retry);
     500 = unlock failed after claim (claim reverted, Gumroad may retry)."""
     import os
@@ -282,3 +282,49 @@ async def process_gumroad_ping(fields: dict) -> tuple:
     await _dm(row["user_id"], row.get("clone_id"),
               f"✅ Your Gumroad payment for **{payment_type}** was confirmed and applied — enjoy!")
     return 200, "ok"
+
+
+# Outcomes that mean "a real sale may have been paid but NOT unlocked" —
+# every one of these used to just log a warning and return 200, so the owner
+# only found out when a buyer complained. Now each one DMs the owner.
+_ALERT_MESSAGES = {
+    "no reference": "The buyer paid WITHOUT the bot's checkout button (no order reference), so nothing can be matched. Unlock them manually.",
+    "unknown reference": "The order reference on this sale isn't in payment_logs as a pending Gumroad row (already handled, wrong provider, or stale).",
+    "product mismatch": "The Gumroad product bought doesn't match the product for that order. Check GUMROAD_*_LINK / *_ID settings.",
+    "underpaid": "The buyer paid less than the expected price.",
+    "sale not verified": "Gumroad's API could not confirm this sale (bad/missing GUMROAD_ACCESS_TOKEN, refunded, or API error).",
+    "unlock failed": "Payment was valid but the unlock handler crashed. Gumroad will retry; check the api logs.",
+    "unknown subscription": "A recurring Premium charge arrived for a subscription the bot has no record of.",
+    "refund/dispute noted": "A refund or dispute ping arrived. Review manually.",
+}
+
+
+async def _alert_owner(text: str) -> None:
+    try:
+        from discord_bot.dm_send import dm_user
+        token = config.DISCORD_BOT_TOKEN
+        if not token:
+            return
+        for owner_id in config.DISCORD_OWNER_BROADCAST_IDS:
+            await dm_user(int(owner_id), text, token)
+    except Exception:
+        logger.exception("[gumroad] owner alert failed")
+
+
+async def process_gumroad_ping(fields: dict) -> tuple:
+    code, msg = await _process_gumroad_ping_inner(fields)
+    if code >= 500 or msg in _ALERT_MESSAGES:
+        detail = _ALERT_MESSAGES.get(msg, "Webhook processing failed.")
+        await _alert_owner(
+            "\u26a0\ufe0f **Gumroad sale needs attention** (result: `%s`)\n"
+            "Sale: `%s` \u2022 Product: %s \u2022 Price: %s cents \u2022 Buyer: %s \u2022 Reference: `%s`\n%s" % (
+                msg,
+                fields.get("sale_id", "?"),
+                fields.get("product_name", "?"),
+                fields.get("price", "?"),
+                fields.get("email", "?"),
+                fields.get("url_params[reference]") or fields.get("reference") or "none",
+                detail,
+            )
+        )
+    return code, msg
