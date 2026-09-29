@@ -395,6 +395,30 @@ class AdminCog(commands.Cog):
             value="\n".join(breakdown_lines) if breakdown_lines else "No payments logged yet.",
             inline=False,
         )
+
+        # Which servers paid. Name comes from discord_guilds; if that has none
+        # (e.g. a clone's guild), try the live gateway cache, then fall back to the id.
+        try:
+            paid_servers = await db.get_paid_servers(list(self._DISCORD_PAYMENT_TYPES.keys()), limit=10)
+        except Exception:
+            logger.exception("[admin revenue] couldn't load paid servers")
+            paid_servers = []
+        if paid_servers:
+            server_lines = []
+            for srv in paid_servers:
+                name = srv.get("guild_name")
+                if not name:
+                    live = interaction.client.get_guild(int(srv["guild_id"]))
+                    name = live.name if live else f"Unknown server ({srv['guild_id']})"
+                name = discord.utils.escape_markdown(name)[:40]
+                server_lines.append(
+                    f"• **{name}** — GHS {srv['completed_total']:g} ({srv['completed_count']} paid)"
+                )
+            value = "\n".join(server_lines)
+            if len(value) > 1024:
+                value = value[:1020] + "…"
+            embed.add_field(name="Paid servers", value=value, inline=False)
+
         embed.set_footer(text="Excludes commission splits — see /admin commissions for that breakdown. Use /admin pending for per-checkout detail.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 

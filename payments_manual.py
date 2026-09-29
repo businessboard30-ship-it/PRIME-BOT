@@ -14,7 +14,9 @@ payments.py/resolve_gateway()); everyone else pays through Gumroad
 Every path ends in the same UNLOCK_HANDLERS entry for the payment_type, so
 what "paid" means never diverges between providers. The admin
 Approve/Reject buttons and /approvepayment, /rejectpayment stay as a
-provider-agnostic manual override.
+manual override; /approvepayment and /rejectpayment also work on Paystack
+and Gumroad payments still 'pending' because the gateway's automatic
+confirmation never landed.
 """
 
 import logging
@@ -71,6 +73,51 @@ class ManualPaymentResolution:
         self.row = row
 
 
+_GATEWAY_PROVIDERS = ("paystack", "gumroad")
+
+
+def _is_pending_gateway_row(row: dict) -> bool:
+    """A Paystack/Gumroad payment still waiting on its gateway's automatic
+    confirmation (Paystack verify / Gumroad ping). These never reach
+    'awaiting_review', so /approvepayment and /rejectpayment need this
+    second path to act on them."""
+    return row.get("status") == "pending" and row.get("provider") in _GATEWAY_PROVIDERS
+
+
+async def _approve_pending_gateway_payment(bot: discord.Client, row: dict,
+                                           amount: Optional[float]) -> "ManualPaymentResolution":
+    """Admin override for a Paystack/Gumroad payment the gateway never
+    confirmed. Claims the row atomically (pending -> completed) BEFORE
+    unlocking, exactly like the Gumroad webhook does, so a webhook arriving
+    at the same moment can't unlock it a second time. If the unlock handler
+    fails, the claim is reverted so the payment isn't left 'completed' with
+    nothing delivered. Calls the handler the way the automatic paths do
+    (clone_id as the last argument)."""
+    handler = UNLOCK_HANDLERS.get(row["payment_type"])
+    if handler is None:
+        return ManualPaymentResolution(
+            False, f"No unlock handler wired for `{row['payment_type']}` yet — approve manually in code.", row
+        )
+
+    claimed = await db.claim_gateway_payment_for_approval(row["payment_id"], amount)
+    if not claimed:
+        return ManualPaymentResolution(False, "This payment's already been resolved or wasn't found.", row)
+
+    try:
+        await handler(claimed["paystack_reference"], claimed["user_id"], claimed.get("chat_id"), claimed.get("clone_id"))
+    except Exception:
+        logger.exception(f"[approvepayment] unlock failed for {claimed['paystack_reference']}; reverting claim")
+        await db.revert_gateway_payment_claim(claimed["payment_id"])
+        return ManualPaymentResolution(
+            False, f"Unlock failed for `{claimed['payment_type']}` — the payment is back to pending, check the logs and retry.", row
+        )
+
+    await _notify_buyer(bot, claimed["user_id"], claimed["payment_type"], approved=True)
+    return ManualPaymentResolution(
+        True, f"Approved and unlocked `{claimed['payment_type']}` ({claimed['provider']}) for <@{claimed['user_id']}>.", claimed
+    )
+
+
 async def resolve_manual_payment_approval(bot: discord.Client, payment_id: int, amount: Optional[float] = None) -> ManualPaymentResolution:
     """Shared by _ManualPayApproveButton's click and the /approvepayment
     slash command — same lookup, same UNLOCK_HANDLERS dispatch, same
@@ -87,6 +134,8 @@ async def resolve_manual_payment_approval(bot: discord.Client, payment_id: int, 
     payment still gets approved/unlocked, just with the old amount-blind
     behavior."""
     row = await db.get_payment_row_by_id(payment_id)
+    if row and _is_pending_gateway_row(row):
+        return await _approve_pending_gateway_payment(bot, row, amount)
     if not row or row.get("status") != "awaiting_review":
         return ManualPaymentResolution(False, "This payment's already been resolved or wasn't found.", row)
 
@@ -109,6 +158,11 @@ async def resolve_manual_payment_rejection(bot: discord.Client, payment_id: int)
     """Reject counterpart to resolve_manual_payment_approval — see that
     function's docstring for the shared-logic rationale."""
     row = await db.get_payment_row_by_id(payment_id)
+    if row and _is_pending_gateway_row(row):
+        if not await db.reject_pending_gateway_payment(payment_id):
+            return ManualPaymentResolution(False, "This payment's already been resolved or wasn't found.", row)
+        await _notify_buyer(bot, row["user_id"], row["payment_type"], approved=False)
+        return ManualPaymentResolution(True, f"Rejected the `{row['payment_type']}` payment from <@{row['user_id']}>.", row)
     if not row or row.get("status") != "awaiting_review":
         return ManualPaymentResolution(False, "This payment's already been resolved or wasn't found.", row)
 

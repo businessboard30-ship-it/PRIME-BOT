@@ -817,13 +817,20 @@ class CloneAdminCog(commands.Cog):
         reference="The payment reference (buyer's or from the approval DM)",
         amount="Real amount paid in GHS, confirmed against the payment provider's dashboard (not the buyer's claim)",
     )
-    async def approvepayment(self, interaction: discord.Interaction, reference: str, amount: float):
+    async def approvepayment(self, interaction: discord.Interaction, reference: str, amount: Optional[float] = None):
         await interaction.response.defer(ephemeral=True, thinking=True)
         row = await db.get_payment_row_by_reference(reference)
         if not row:
             await interaction.followup.send("No payment found with that reference.", ephemeral=True)
             return
         if not await self._authorized_approver_or_deny(interaction, row):
+            return
+        # Paystack/Gumroad rows already carry their real logged amount, so
+        # amount is optional for them; the older manual-review rows still need it.
+        if amount is None and row.get("status") == "awaiting_review":
+            await interaction.followup.send(
+                "This payment needs the real amount paid — re-run with the `amount` option.", ephemeral=True
+            )
             return
 
         result = await resolve_manual_payment_approval(interaction.client, row["payment_id"], amount=amount)
