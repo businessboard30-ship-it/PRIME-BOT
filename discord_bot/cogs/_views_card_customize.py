@@ -505,7 +505,10 @@ class CardUnlockButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template
             await interaction.followup.send("✅ Already unlocked — tap **Customize Card** again to open the editor.", ephemeral=True)
             return
         from discord_bot.views_card_pack import start_ultra_pack_payment
-        await start_ultra_pack_payment(interaction)
+        # Pass the guild explicitly: this button can be pressed from a DM
+        # copy of the wizard, where interaction.guild_id is None and the
+        # payment row would be logged with chat_id NULL (unlock then fails).
+        await start_ultra_pack_payment(interaction, guild_id=self.guild_id)
 
 
 # ── heading / member number / reset ───────────────────────────────────────
