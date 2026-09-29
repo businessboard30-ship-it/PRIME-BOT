@@ -7850,7 +7850,8 @@ class Database:
             return dict(row) if row else None
 
     async def activate_xp_boost(self, guild_id: int, user_id: int, multiplier: float,
-                                 duration_days: int, clone_id: Optional[int] = None) -> Dict:
+                                 duration_days: int, clone_id: Optional[int] = None,
+                                 stack: bool = False) -> Dict:
         """Called from payments_manual.py's UNLOCK_HANDLERS["xp_boost"] on
         approval. ON CONFLICT re-activates: a second purchase (e.g. buying
         again after a previous boost expired, or topping up before it does)
@@ -7860,6 +7861,23 @@ class Database:
         rather than accumulate."""
         pool = await get_pool()
         async with pool.acquire() as conn:
+            if stack:
+                # Bundles: ADD the purchased time onto whatever the member has
+                # left (or onto NOW() if the old boost already expired), so
+                # buying a bundle mid-boost never throws away paid days.
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO discord_xp_boosts (guild_id, user_id, clone_id, multiplier, expires_at, activated_at)
+                    VALUES ($1, $2, $3, $4, NOW() + ($5 * INTERVAL '1 day'), NOW())
+                    ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO UPDATE
+                        SET multiplier = $4,
+                            expires_at = GREATEST(discord_xp_boosts.expires_at, NOW()) + ($5 * INTERVAL '1 day'),
+                            activated_at = NOW()
+                    RETURNING *
+                    """,
+                    guild_id, user_id, clone_id, multiplier, duration_days
+                )
+                return dict(row)
             row = await conn.fetchrow(
                 """
                 INSERT INTO discord_xp_boosts (guild_id, user_id, clone_id, multiplier, expires_at, activated_at)

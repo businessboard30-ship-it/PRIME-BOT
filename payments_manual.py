@@ -391,6 +391,22 @@ async def _unlock_xp_boost(reference: str, buyer_id: int, guild_id: Optional[int
     await db.activate_xp_boost(guild_id, buyer_id, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS, clone_id=clone_id)
 
 
+def _make_unlock_xp_boost_bundle(bundle_key: str):
+    """One handler per config.XP_BOOST_BUNDLES entry. Same 2x multiplier as a
+    single boost, but boosts x XP_BOOST_DURATION_DAYS of time, stacked onto
+    any time the buyer already has left (stack=True)."""
+    async def _handler(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+        from config import XP_BOOST_BUNDLES, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS
+        if not guild_id:
+            raise RuntimeError("xp boost bundle payment has no guild_id")
+        bundle = XP_BOOST_BUNDLES[bundle_key]
+        await db.activate_xp_boost(
+            guild_id, buyer_id, XP_BOOST_MULTIPLIER,
+            bundle["boosts"] * XP_BOOST_DURATION_DAYS, clone_id=clone_id, stack=True,
+        )
+    return _handler
+
+
 async def _unlock_premium(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
     """Monthly per-server Premium (see config.PREMIUM_* and
     db.activate_guild_premium). guild_id is required. Fires for a Paystack
@@ -471,6 +487,8 @@ UNLOCK_HANDLERS = {
     "music_pro": _unlock_music_pro,
     "premium": _unlock_premium,
     "xp_boost": _unlock_xp_boost,
+    "xp_boost_3": _make_unlock_xp_boost_bundle("xp_boost_3"),
+    "xp_boost_5": _make_unlock_xp_boost_bundle("xp_boost_5"),
     "xp_server_boost": _make_unlock_xp_server_boost_tier("xp_server_boost"),
     "xp_server_boost_month": _make_unlock_xp_server_boost_tier("xp_server_boost_month"),
     "hardcore_roast": _unlock_hardcore_roast,

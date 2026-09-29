@@ -51,7 +51,10 @@ def expected_price_usd(payment_type: str) -> Optional[float]:
     if payment_type in _PRICE_ATTRS:
         return float(getattr(config, _PRICE_ATTRS[payment_type]))
     tier = config.XP_SERVER_BOOST_TIERS.get(payment_type)
-    return float(tier["fee_usd"]) if tier else None
+    if tier:
+        return float(tier["fee_usd"])
+    bundle = config.XP_BOOST_BUNDLES.get(payment_type)
+    return float(bundle["fee_usd"]) if bundle else None
 
 
 def new_reference(payment_type: str, user_id: int) -> str:

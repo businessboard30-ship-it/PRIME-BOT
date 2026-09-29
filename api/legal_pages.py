@@ -33,7 +33,7 @@ OPERATOR_LOCATION = "Ghana"
 from config import (
     WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, DISCORD_CLONE_ACTIVATION_FEE_USD,
     CLONE_MONETIZATION_FEE_USD, CUSTOM_ROLE_FEE_USD, MUSIC_PRO_PRICE_LABEL,
-    XP_BOOST_FEE_USD, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS,
+    XP_BOOST_FEE_USD, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS, XP_BOOST_BUNDLES, GUMROAD_PRODUCT_LINKS,
     XP_SERVER_BOOST_TIERS, PREMIUM_FEE_USD,
 )
 
@@ -44,6 +44,22 @@ h1{margin-bottom:0.25rem}
 .updated{color:#666;font-size:0.9rem;margin-bottom:2rem}
 h2{margin-top:2rem}
 """
+
+
+def _boost_bundle_items() -> str:
+    """<li> rows for XP boost bundles — only bundles whose Gumroad product is
+    configured, so the public pricing page never advertises something that
+    can't be bought yet."""
+    rows = []
+    for key, b in XP_BOOST_BUNDLES.items():
+        if not GUMROAD_PRODUCT_LINKS.get(key):
+            continue
+        days = b["boosts"] * XP_BOOST_DURATION_DAYS
+        rows.append(
+            f"\n<li>${b['fee_usd']:g} — {b['label']}: {b['boosts']} boosts, "
+            f"{XP_BOOST_MULTIPLIER:g}x XP for {days} days, just for you</li>"
+        )
+    return "".join(rows)
 
 
 def _page(title: str, body_html: str) -> bytes:
@@ -194,7 +210,7 @@ ${CLONE_MONETIZATION_FEE_USD:g}</li>
 <h2>XP Boost (personal)</h2>
 <ul>
 <li>${XP_BOOST_FEE_USD:g} — {XP_BOOST_MULTIPLIER:g}x XP for {XP_BOOST_DURATION_DAYS} days,
-just for you</li>
+just for you</li>{_boost_bundle_items()}
 </ul>
 
 <h2>XP Server Boost (whole-server multiplier)</h2>

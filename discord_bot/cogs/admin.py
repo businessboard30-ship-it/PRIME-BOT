@@ -352,6 +352,8 @@ class AdminCog(commands.Cog):
         "custom_role": "Custom role",
         "music_pro": "Music Pro activations",
         "xp_boost": "XP boosts",
+        "xp_boost_3": "XP boost 3-packs",
+        "xp_boost_5": "XP boost 5-packs",
         "xp_server_boost": "XP server boost (24h)",
         "xp_server_boost_month": "XP server boost (1 month)",
     }

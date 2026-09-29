@@ -297,6 +297,12 @@ GUMROAD_PRODUCT_LINKS = {
     "discord_clone": "https://boardmaster87.gumroad.com/l/xflgg",
     "discord_clone_monetization": "https://boardmaster87.gumroad.com/l/qvnjx",
     "xp_boost": "https://boardmaster87.gumroad.com/l/nmgkns",
+    # XP boost bundles — create each as its own one-time Gumroad product at
+    # the price in XP_BOOST_BUNDLES below, then paste the link/id here or set
+    # the env vars. A bundle is only offered in the Boost XP picker once its
+    # link is set, so nothing changes for buyers until then.
+    "xp_boost_3": os.getenv("GUMROAD_XP_BOOST_3_LINK", ""),
+    "xp_boost_5": os.getenv("GUMROAD_XP_BOOST_5_LINK", ""),
     "xp_server_boost": "https://boardmaster87.gumroad.com/l/slwtmv",
     "xp_server_boost_month": "https://boardmaster87.gumroad.com/l/abnbyt",
     # Premium is a Gumroad MEMBERSHIP ($2/month) created by hand in the
@@ -321,6 +327,8 @@ GUMROAD_PRODUCT_IDS = {
     "discord_clone": "QkcS5nOux44_S7E6dAJzMA==",
     "discord_clone_monetization": "KMgdTObX25DHkJ2lXgxyHQ==",
     "xp_boost": "da0vEe8BMQWcxPSAJG5Jzg==",
+    "xp_boost_3": os.getenv("GUMROAD_XP_BOOST_3_ID", ""),
+    "xp_boost_5": os.getenv("GUMROAD_XP_BOOST_5_ID", ""),
     "xp_server_boost": "Wnvy9M0rXGlqZwVjUltlRQ==",
     "xp_server_boost_month": "Otjay_g0whBiQhfwXCnJIQ==",
     "premium": os.getenv("GUMROAD_PREMIUM_PRODUCT_ID", ""),
@@ -382,6 +390,18 @@ HARDCORE_ROAST_FEE_USD = 1.00
 HARDCORE_ROAST_FEE_GHS = 15  # ~$1 in GHS
 XP_BOOST_MULTIPLIER = 2.0
 XP_BOOST_DURATION_DAYS = 14
+
+# XP boost bundles: N single boosts for a discounted price. Same multiplier as
+# a single boost (XP_BOOST_MULTIPLIER) — a bundle only adds TIME (boosts x
+# XP_BOOST_DURATION_DAYS), and stacks onto any boost time the member already
+# has, so the multiplier never exceeds a single boost's and MAX_XP_MULTIPLIER
+# is unaffected. Each bundle is its own Gumroad product / payment_type (a
+# Gumroad product has one fixed price); the fixed 50c Gumroad fee is charged
+# once per sale, which is why bundles keep a bigger share than $1 singles.
+XP_BOOST_BUNDLES = {
+    "xp_boost_3": {"fee_usd": 2, "boosts": 3, "label": "3-Pack"},
+    "xp_boost_5": {"fee_usd": 3, "boosts": 5, "label": "5-Pack"},
+}
 
 # ─────────────────────────────────────────────────────────────────────────
 # Boost Wallet — REMOVED. This used to be a flat, giftable XP credit
