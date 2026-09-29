@@ -5,7 +5,6 @@ marketplace — all wired into a single `discord.py` application.
 
 **Status:** Live | **Platform:** Discord (gateway) | **Host:** Railway (or any
 always-on process host — NOT Vercel/serverless, see note below)1
-
 ---
 d
 ## Why not Vercel / serverless
