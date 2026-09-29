@@ -184,6 +184,11 @@ def _get_handler_class(path):
 class Dispatcher(BaseHTTPRequestHandler):
     def _dispatch(self, method):
         path = urlparse(self.path).path
+        if path == "/" and method == "POST":
+            # Gumroad Ping URL set to the bare domain used to hit the landing
+            # page and get a silent 200. Route it to the real handler, which
+            # checks the secret and alerts the owner if it's wrong/missing.
+            path = "/api/gumroad_webhook"
         if path == "/health":
             self.send_response(200)
             self.end_headers()

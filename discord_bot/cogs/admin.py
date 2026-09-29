@@ -356,6 +356,10 @@ class AdminCog(commands.Cog):
         "xp_boost_5": "XP boost 5-packs",
         "xp_server_boost": "XP server boost (24h)",
         "xp_server_boost_month": "XP server boost (1 month)",
+        # Gumroad-sold types that were missing, so paid sales never showed here:
+        "premium": "Premium subscriptions",
+        "hardcore_roast": "Hardcore roast",
+        "ad_placement": "Ad placements",
     }
 
     @admin.command(name="revenue", description="[Owner] Revenue dashboard across all paid features")
