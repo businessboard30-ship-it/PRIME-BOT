@@ -142,6 +142,21 @@ class LookupCog(commands.Cog):
         if row["joined_at"]:
             embed.add_field(name="Joined", value=str(row["joined_at"]), inline=True)
 
+        # ── stored invite link(s): the directory/bump listing link first, then
+        # any cached invite codes. Works even after the bot has left, since
+        # these rows live in Postgres. Cached codes may have expired. ──
+        try:
+            links = []
+            listing = await db.get_server_listing(guild_id)
+            if listing and listing.get("invite_url"):
+                links.append(f"{listing['invite_url']} (listing)")
+            cache = await db.get_invite_cache(guild_id, row["clone_id"])
+            for code in list(cache or {})[:5]:
+                links.append(f"https://discord.gg/{code} (cached)")
+            embed.add_field(name="Invite link", value="\n".join(links)[:1024] if links else "None stored", inline=False)
+        except Exception:
+            logger.exception("/find: couldn't read invite link for guild %s", guild_id)
+
         # ── deeper: what this server owns + what's been paid for it ──
         try:
             cfg = await db._get_welcome_config_raw(guild_id, row["clone_id"])
