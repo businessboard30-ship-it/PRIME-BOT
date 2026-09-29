@@ -39,6 +39,17 @@ def _is_clone_admin(user_id: int) -> bool:
     return user_id in DISCORD_CLONE_ADMIN_IDS
 
 
+def _format_payments(rows, show_user: bool = False) -> str:
+    """One compact line per payment_logs row for /find embeds."""
+    lines = []
+    for r in rows or []:
+        when = r["created_date"].strftime("%Y-%m-%d") if r.get("created_date") else "?"
+        who = f" by <@{r['user_id']}>" if show_user and r.get("user_id") else ""
+        where = f" in {r['chat_id']}" if not show_user and r.get("chat_id") else ""
+        lines.append(f"`{r['status']}` {r.get('payment_type') or '?'} — {r['amount']:g} ({r.get('provider') or 'paystack'}){who}{where} — {when}")
+    return "\n".join(lines)[:1024]
+
+
 class LookupCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -73,13 +84,32 @@ class LookupCog(commands.Cog):
     async def _find_autocomplete(self, interaction: discord.Interaction, current: str):
         if not _is_clone_admin(interaction.user.id):
             return []
+        current = (current or "").strip()
         if not current:
             return []
 
+        choices = []
+        # Numeric input = the admin is pasting an ID. Names never match digits,
+        # so search the ID columns (prefix match) instead of just names.
+        if current.isdigit():
+            all_rows = await db.get_all_guilds_with_managers(include_left=True)
+            guild_rows = [r for r in all_rows if str(r["guild_id"]).startswith(current)][:10]
+            user_rows = await db.search_cached_users_by_id_prefix(current, limit=10)
+            for r in guild_rows:
+                bot_label = "Main bot" if r["clone_id"] is None else f"Clone #{r['clone_id']} ({r['bot_username'] or 'unknown'})"
+                left = " [left]" if r["left_at"] else ""
+                label = f"🏠 {r['guild_name'] or 'Unknown'}{left} — {bot_label} ({r['guild_id']})"
+                choices.append(app_commands.Choice(name=label[:100], value=f"g:{r['guild_id']}"))
+            for r in user_rows:
+                choices.append(app_commands.Choice(name=f"🧑 {r['username']} ({r['user_id']})"[:100], value=f"u:{r['user_id']}"))
+            # A full-length ID we have no record of can still be a real Discord
+            # user (resolved via the API), so always offer to look it up.
+            if len(current) >= 17 and not any(c.value.endswith(f":{current}") for c in choices):
+                choices.append(app_commands.Choice(name=f"🔎 Look up ID {current}"[:100], value=f"i:{current}"))
+            return choices[:25]
+
         guild_rows = await db.search_discord_guilds(current, limit=15)
         user_rows = await db.search_cached_usernames(current, limit=10)
-
-        choices = []
         for r in guild_rows:
             bot_label = "Main bot" if r["clone_id"] is None else f"Clone #{r['clone_id']} ({r['bot_username'] or 'unknown'})"
             label = f"🏠 {r['guild_name'] or 'Unknown'} — {bot_label} ({r['member_count'] or '?'} members)"
@@ -87,7 +117,6 @@ class LookupCog(commands.Cog):
         for r in user_rows:
             label = f"🧑 {r['username']} ({r['user_id']})"
             choices.append(app_commands.Choice(name=label[:100], value=f"u:{r['user_id']}"))
-
         return choices[:25]
 
     # ── result views ──────────────────────────────────────────────────
@@ -113,11 +142,40 @@ class LookupCog(commands.Cog):
         if row["joined_at"]:
             embed.add_field(name="Joined", value=str(row["joined_at"]), inline=True)
 
+        # ── deeper: what this server owns + what's been paid for it ──
+        try:
+            cfg = await db._get_welcome_config_raw(guild_id, row["clone_id"])
+            premium = await db.is_guild_premium_active(guild_id, row["clone_id"])
+            owns = [
+                f"Card Pack: {'✅' if cfg.get('card_pack_unlocked') else '❌'}",
+                f"Customize Card: {'✅' if cfg.get('ultra_pack_unlocked') else '❌'}",
+                f"Premium: {'✅ active' if premium else '❌'}",
+            ]
+            embed.add_field(name="Unlocks", value=" • ".join(owns), inline=False)
+        except Exception:
+            logger.exception("/find: couldn't read unlock state for guild %s", guild_id)
+        try:
+            pays = await db.get_payments_for_guild(guild_id, limit=6)
+            embed.add_field(name="Payments for this server",
+                            value=_format_payments(pays, show_user=True) or "None on record", inline=False)
+        except Exception:
+            logger.exception("/find: couldn't read payments for guild %s", guild_id)
+
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _show_person(self, interaction: discord.Interaction, user_id: int):
         name = await self._resolve_username(user_id)
         owned = await db.get_guilds_owned_by(user_id)
+        try:
+            clones = await db.get_clones_managed_by(user_id)
+        except Exception:
+            logger.exception("/find: couldn't read clones for %s", user_id)
+            clones = []
+        try:
+            pays = await db.get_payments_for_user(user_id, limit=8)
+        except Exception:
+            logger.exception("/find: couldn't read payments for %s", user_id)
+            pays = []
 
         embed = discord.Embed(title=name, color=discord.Color.green())
         embed.add_field(name="User ID", value=str(user_id), inline=False)
@@ -129,8 +187,33 @@ class LookupCog(commands.Cog):
             embed.add_field(name=f"Owns {len(owned)} server(s)", value="\n".join(lines)[:1024], inline=False)
         else:
             embed.add_field(name="Owns", value="No servers on record", inline=False)
-
+        if clones:
+            embed.add_field(
+                name=f"Manages {len(clones)} clone bot(s)",
+                value="\n".join(f"#{c['clone_id']} {c['bot_username'] or 'unknown'} ({c['status']})" for c in clones)[:1024],
+                inline=False)
+        embed.add_field(name="Recent payments", value=_format_payments(pays) or "None on record", inline=False)
+        embed.set_footer(text="Shows servers they OWN and payments/clones on record — not every server they're merely a member of.")
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _show_id(self, interaction: discord.Interaction, raw_id: int):
+        """A pasted numeric ID: known server (incl. ones the bot left) first,
+        otherwise treat it as a user and say so plainly if nothing is known."""
+        all_rows = await db.get_all_guilds_with_managers(include_left=True)
+        if any(r["guild_id"] == raw_id for r in all_rows):
+            await self._show_guild(interaction, raw_id)
+            return
+        name = await self._resolve_username(raw_id)
+        owned = await db.get_guilds_owned_by(raw_id)
+        clones = await db.get_clones_managed_by(raw_id)
+        pays = await db.get_payments_for_user(raw_id, limit=1)
+        if name.startswith("unknown") and not (owned or clones or pays):
+            await interaction.followup.send(
+                f"`{raw_id}` isn't a server any of the bots have been in, and Discord doesn't resolve it as a user. "
+                f"It may be a server the bots were never added to, a channel/role/message ID, or a typo.",
+                ephemeral=True)
+            return
+        await self._show_person(interaction, raw_id)
 
     # ── the command itself ────────────────────────────────────────────
     @app_commands.command(
@@ -144,25 +227,21 @@ class LookupCog(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
 
-        if query.startswith("g:"):
-            await self._show_guild(interaction, int(query[2:]))
-            return
-        if query.startswith("u:"):
-            await self._show_person(interaction, int(query[2:]))
+        query = query.strip()
+        prefix, _, rest = query.partition(":")
+        if prefix in ("g", "u", "i") and rest.isdigit():
+            raw_id = int(rest)
+            if prefix == "g":
+                await self._show_guild(interaction, raw_id)
+            elif prefix == "u":
+                await self._show_person(interaction, raw_id)
+            else:
+                await self._show_id(interaction, raw_id)
             return
 
-        # A raw numeric ID (guild ID or user ID) typed directly — check
-        # whether it's a known guild first, then fall back to treating it
-        # as a user ID (Discord user IDs are always resolvable via the API
-        # even if we've never cached a username for them).
-        stripped = query.strip()
-        if stripped.isdigit():
-            raw_id = int(stripped)
-            all_rows = await db.get_all_guilds_with_managers(include_left=True)
-            if any(r["guild_id"] == raw_id for r in all_rows):
-                await self._show_guild(interaction, raw_id)
-                return
-            await self._show_person(interaction, raw_id)
+        # A raw numeric ID (guild ID or user ID) typed/pasted directly.
+        if query.isdigit():
+            await self._show_id(interaction, int(query))
             return
 
         # They typed free text instead of picking a suggestion — search
