@@ -6342,6 +6342,17 @@ class Database:
             )
             return dict(row) if row else None
 
+    async def set_payment_chat_id(self, reference: str, chat_id: int) -> None:
+        """Records which server a payment was finally applied to — used when
+        an owner assigns a paid-but-unassigned payment to a server by hand
+        (/assignpayment), same update the buyer's Choose-server picker does."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE payment_logs SET chat_id = $2 WHERE paystack_reference = $1",
+                reference, chat_id,
+            )
+
     async def revert_gateway_payment_claim(self, payment_id: int) -> None:
         """Undo claim_gateway_payment_for_approval when the unlock handler
         raised, so the payment goes back to 'pending' and can be retried
@@ -7094,6 +7105,19 @@ class Database:
                 "DELETE FROM discord_new_guild_claims WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id,
             )
+
+    async def get_owned_guild_ids(self, owner_id: int, clone_id: Optional[int] = None) -> List[int]:
+        """Servers this user owns that the given bot (main bot when clone_id is
+        None, else that clone) is currently in. Used to guess where to post a
+        fallback message for a payment that arrived with no server attached."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT guild_id FROM discord_guilds "
+                "WHERE owner_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND left_at IS NULL",
+                owner_id, clone_id,
+            )
+            return [int(r["guild_id"]) for r in rows]
 
     async def mark_discord_guild_left(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Called from on_guild_remove. Keeps the row (left_at set) rather

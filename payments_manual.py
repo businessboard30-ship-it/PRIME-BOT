@@ -99,6 +99,14 @@ async def _approve_pending_gateway_payment(bot: discord.Client, row: dict,
             False, f"No unlock handler wired for `{row['payment_type']}` yet — approve manually in code.", row
         )
 
+    from gumroad_payments import _GUILD_SCOPED_TYPES
+    if row["payment_type"] in _GUILD_SCOPED_TYPES and not row.get("chat_id"):
+        return ManualPaymentResolution(
+            False,
+            f"`{row['payment_type']}` unlocks a specific server, and this payment has none attached. "
+            f"Use `/assignpayment` with this reference and the server ID instead.", row,
+        )
+
     claimed = await db.claim_gateway_payment_for_approval(row["payment_id"], amount)
     if not claimed:
         return ManualPaymentResolution(False, "This payment's already been resolved or wasn't found.", row)

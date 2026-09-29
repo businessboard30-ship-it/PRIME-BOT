@@ -871,6 +871,93 @@ class CloneAdminCog(commands.Cog):
             return
         await interaction.followup.send(view=view, ephemeral=True)
 
+    # ── /assignpayment — owner override: apply a paid purchase to a server ─
+    # For guild-scoped purchases (card pack, Customize Card, custom role,
+    # Music Pro, Premium) that were paid but never got a server — the buyer
+    # never tapped "Choose server", their DMs are closed, or the checkout
+    # started with no server attached (payment_logs.chat_id NULL). Runs the
+    # same UNLOCK_HANDLERS entry the buyer's picker would, on the server ID
+    # you give, then records it on the payment and closes the buyer's
+    # pending picker so the button can't unlock a second server.
+    @app_commands.command(name="assignpayment", description="[Owner] Apply a paid purchase to a server by ID (override for the Choose-server step)")
+    @app_commands.describe(
+        reference="The payment reference (e.g. gum_ultra_welcome_pack_123_ab12cd34)",
+        server_id="The server (guild) ID to unlock it on — right-click the server with Developer Mode on",
+    )
+    async def assignpayment(self, interaction: discord.Interaction, reference: str, server_id: str):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not _is_clone_admin(interaction.user.id):
+            await interaction.followup.send("This command is restricted to bot owners.", ephemeral=True)
+            return
+        server_id = server_id.strip()
+        if not server_id.isdigit():
+            await interaction.followup.send("`server_id` must be the numeric server ID.", ephemeral=True)
+            return
+        guild_id = int(server_id)
+
+        row = await db.get_payment_row_by_reference(reference.strip())
+        if not row:
+            await interaction.followup.send("No payment found with that reference.", ephemeral=True)
+            return
+
+        from gumroad_payments import _GUILD_SCOPED_TYPES
+        from payments_manual import UNLOCK_HANDLERS, _notify_buyer
+        from discord_bot.cogs._views_gumroad_claim import _take_claim, _put_claim_back
+        ptype = row["payment_type"]
+        handler = UNLOCK_HANDLERS.get(ptype)
+        if ptype not in _GUILD_SCOPED_TYPES or handler is None:
+            await interaction.followup.send(
+                f"`{ptype}` isn't a server-scoped purchase, so there's nothing to assign a server to.", ephemeral=True
+            )
+            return
+
+        status, provider, existing_chat = row.get("status"), row.get("provider"), row.get("chat_id")
+        claim_record = None
+        reverted_status = None
+        if status == "completed" and not existing_chat:
+            # Paid, verified, waiting on a server. Close the buyer's picker first
+            # (single-use) so it can't also unlock a different server.
+            claim_record = await _take_claim(row["paystack_reference"])
+        elif status == "pending" and provider in ("paystack", "gumroad"):
+            # Gateway never confirmed it: same atomic claim /approvepayment uses.
+            claimed = await db.claim_gateway_payment_for_approval(row["payment_id"], None)
+            if not claimed:
+                await interaction.followup.send("That payment was just resolved by something else — check its status.", ephemeral=True)
+                return
+            reverted_status = "pending"
+        else:
+            where = f" on server `{existing_chat}`" if existing_chat else ""
+            await interaction.followup.send(
+                f"Can't assign this one — status is `{status}`{where}. Only paid-but-unassigned "
+                f"(`completed` with no server) or still-`pending` Paystack/Gumroad payments can be assigned.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await handler(row["paystack_reference"], row["user_id"], guild_id, row.get("clone_id"))
+            await db.set_payment_chat_id(row["paystack_reference"], guild_id)
+            sub_id = (claim_record or {}).get("subscription_id")
+            if ptype == "premium" and sub_id:
+                await db.set_premium_subscription_id(guild_id, row.get("clone_id"), sub_id)
+        except Exception:
+            logger.exception(f"[assignpayment] unlock failed for {reference} on guild {guild_id}")
+            if claim_record:
+                await _put_claim_back(row["paystack_reference"], claim_record)
+            if reverted_status:
+                await db.revert_gateway_payment_claim(row["payment_id"])
+            await interaction.followup.send(
+                "Unlock failed — nothing was changed, so you can retry. Check the logs.", ephemeral=True
+            )
+            return
+
+        await _notify_buyer(interaction.client, row["user_id"], ptype, approved=True)
+        await interaction.followup.send(
+            f"✅ `{ptype}` from <@{row['user_id']}> is now applied to server `{guild_id}`"
+            + (" (buyer's Choose-server button closed)." if claim_record else "."),
+            ephemeral=True,
+        )
+
     # ── /ownermonetize — one-shot owner shortcut ─────────────────────────
     # Suggested as "/admin monetize <clone_id>" but the existing top-level
     # "admin" group lives in discord_bot/cogs/admin.py (a separate cog) and
