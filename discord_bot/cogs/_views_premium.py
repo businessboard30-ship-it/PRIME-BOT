@@ -139,3 +139,23 @@ class PremiumPitchButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
 
 
 DYNAMIC_ITEMS = (PremiumSubscribeButton, PremiumPitchButton)
+
+
+# Payment types whose perks are already included in Go Premium — their pay
+# messages get a "Go Premium" option next to the pay buttons.
+PREMIUM_INCLUDES = {"welcome_card_pack", "ultra_welcome_pack"}
+
+
+def add_go_premium_option(view: discord.ui.View, interaction: discord.Interaction,
+                          payment_type: str, guild_id) -> None:
+    """Adds the Go Premium button to `view` when the purchase is a card/ultra
+    pack for a real guild. Safe to call from any payment path."""
+    if payment_type not in PREMIUM_INCLUDES or not guild_id:
+        return
+    # Reuse the persistent PremiumSubscribeButton (custom_id carries guild/clone,
+    # registered via DYNAMIC_ITEMS) so it survives restarts, even on the
+    # no-timeout Gumroad message. Only the label/row differ.
+    btn = PremiumSubscribeButton(int(guild_id), getattr(interaction.client, "clone_id", None))
+    btn.item.label = f"Go Premium — ${config.PREMIUM_FEE_USD:g}/month (everything)"
+    btn.item.row = 1
+    view.add_item(btn)

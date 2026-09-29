@@ -542,6 +542,8 @@ async def start_geo_payment(interaction: discord.Interaction, *, payment_type: s
         view.add_item(discord.ui.Button(label="Gumroad — International", emoji="🌍", url=gumroad_url, style=discord.ButtonStyle.link))
     if not paystack_url:
         view.remove_item(view.verify)
+    from discord_bot.cogs._views_premium import add_go_premium_option
+    add_go_premium_option(view, interaction, payment_type, guild_id)
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -718,6 +720,8 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
     )
     view = _GenericVerifyPaymentView(payment_type, guild_id)
     view.add_item(discord.ui.Button(label="💳 Pay Now", url=payment_link, style=discord.ButtonStyle.link))
+    from discord_bot.cogs._views_premium import add_go_premium_option
+    add_go_premium_option(view, interaction, payment_type, guild_id)
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 

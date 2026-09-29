@@ -147,6 +147,8 @@ async def start_card_pack_payment(interaction: discord.Interaction, force_mode: 
     )
     view = VerifyCardPackPaymentView()
     view.add_item(discord.ui.Button(label="💳 Pay Now", url=payment_link, style=discord.ButtonStyle.link))
+    from discord_bot.cogs._views_premium import add_go_premium_option
+    add_go_premium_option(view, interaction, PAYMENT_TYPE, guild_id)
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -256,6 +258,8 @@ async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: i
     )
     view = VerifyUltraPackPaymentView()
     view.add_item(discord.ui.Button(label="💳 Pay Now", url=payment_link, style=discord.ButtonStyle.link))
+    from discord_bot.cogs._views_premium import add_go_premium_option
+    add_go_premium_option(view, interaction, ULTRA_PAYMENT_TYPE, guild_id)
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 

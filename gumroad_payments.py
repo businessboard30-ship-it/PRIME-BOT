@@ -97,6 +97,8 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
     )
     view = discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label="💳 Pay on Gumroad", url=link, style=discord.ButtonStyle.link))
+    from discord_bot.cogs._views_premium import add_go_premium_option
+    add_go_premium_option(view, interaction, payment_type, guild_id)
     prefix = f"{intro}\n\n" if intro else ""
     await interaction.followup.send(
         f"{prefix}Pay **{amount_display}** on Gumroad using the button below. "
