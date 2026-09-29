@@ -7060,6 +7060,51 @@ class Database:
             """, user_id)
             return [dict(r) for r in rows]
 
+    async def search_cached_users_by_id_prefix(self, prefix: str, limit: int = 10) -> list:
+        """/find autocomplete when the admin pastes (part of) a numeric ID."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT user_id, username FROM discord_username_cache
+                WHERE user_id::text LIKE $1 || '%'
+                ORDER BY user_id ASC LIMIT $2
+            """, prefix, limit)
+            return [dict(r) for r in rows]
+
+    async def get_payments_for_user(self, user_id: int, limit: int = 8) -> list:
+        """Newest-first payment_logs rows for a buyer (any status)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT paystack_reference, amount, status, payment_type, chat_id,
+                       provider, clone_id, created_date
+                FROM payment_logs WHERE user_id = $1
+                ORDER BY created_date DESC LIMIT $2
+            """, user_id, limit)
+            return [dict(r) for r in rows]
+
+    async def get_payments_for_guild(self, guild_id: int, limit: int = 8) -> list:
+        """Newest-first payment_logs rows tied to a server (chat_id = guild)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT paystack_reference, amount, status, payment_type, user_id,
+                       provider, clone_id, created_date
+                FROM payment_logs WHERE chat_id = $1
+                ORDER BY created_date DESC LIMIT $2
+            """, guild_id, limit)
+            return [dict(r) for r in rows]
+
+    async def get_clones_managed_by(self, user_id: int) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT clone_id, bot_username, status
+                FROM discord_cloned_bots WHERE owner_id = $1
+                ORDER BY clone_id ASC
+            """, user_id)
+            return [dict(r) for r in rows]
+
     async def cache_username(self, user_id: int, username: str) -> None:
         """Opportunistic write — called wherever a user_id is already
         being resolved to a name for some other reason (see lookup.py and
