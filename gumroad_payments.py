@@ -47,6 +47,11 @@ _PRICE_ATTRS = {
 }
 
 
+# Products that unlock something for one specific server; their unlock handler
+# needs the guild id stored in payment_logs.chat_id.
+_GUILD_SCOPED_TYPES = {"welcome_card_pack", "ultra_welcome_pack", "custom_role", "music_pro", "premium"}
+
+
 def expected_price_usd(payment_type: str) -> Optional[float]:
     if payment_type in _PRICE_ATTRS:
         return float(getattr(config, _PRICE_ATTRS[payment_type]))
@@ -250,6 +255,10 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
         logger.warning(f"[gumroad] sale verification failed for {reference}")
         return 200, "sale not verified"
 
+    if payment_type in _GUILD_SCOPED_TYPES and not row.get("chat_id"):
+        logger.error(f"[gumroad] {reference}: {payment_type} order has no guild id (chat_id NULL) - left pending for manual unlock")
+        return 200, "no guild"
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         claimed = await conn.fetchrow(
@@ -293,6 +302,7 @@ _ALERT_MESSAGES = {
     "product mismatch": "The Gumroad product bought doesn't match the product for that order. Check GUMROAD_*_LINK / *_ID settings.",
     "underpaid": "The buyer paid less than the expected price.",
     "sale not verified": "Gumroad's API could not confirm this sale (bad/missing GUMROAD_ACCESS_TOKEN, refunded, or API error).",
+    "no guild": "The order has no server (guild) attached, so a per-server unlock can't be applied. It was NOT unlocked and NOT retried. Find the server ID and unlock it by hand.",
     "unlock failed": "Payment was valid but the unlock handler crashed. Gumroad will retry; check the api logs.",
     "unknown subscription": "A recurring Premium charge arrived for a subscription the bot has no record of.",
     "refund/dispute noted": "A refund or dispute ping arrived. Review manually.",
