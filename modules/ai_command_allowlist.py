@@ -149,7 +149,7 @@ BANNED_COG_MODULE_MARKERS = (
 BANNED_OWNER_ONLY_COMMANDS = frozenset({
     "ownerbroadcast", "broadcaststatus", "ownermonetize", "paymentmode",
     "set-storage-channel", "hostingchannel",
-    "approvepayment", "rejectpayment", "pendingpayments",
+    "approvepayment", "rejectpayment", "pendingpayments", "assignpayment",
 })
 
 

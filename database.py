@@ -6319,6 +6319,65 @@ class Database:
             )
             return result.endswith(" 1")
 
+    async def claim_gateway_payment_for_approval(self, payment_id: int, amount: Optional[float] = None) -> Optional[Dict]:
+        """Atomically flips a still-'pending' Paystack/Gumroad payment to
+        'completed' for /approvepayment — the manual override for when the
+        gateway's own confirmation (Paystack verify / Gumroad ping) never
+        landed. Same claim pattern gumroad_payments.py's webhook uses
+        (UPDATE ... WHERE status = 'pending' RETURNING *), so if the webhook
+        and an admin race, exactly one of them gets the row back and the
+        unlock can only fire once. The logged amount is only overwritten
+        when it's missing/zero — gateway rows already carry the real amount
+        (Gumroad's is in USD), so an admin-typed GHS figure must not
+        clobber it. Returns None if the row isn't a pending gateway payment.
+        """
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE payment_logs SET status = 'completed', "
+                "amount = CASE WHEN COALESCE(amount, 0) = 0 AND $2::float8 IS NOT NULL THEN $2::float8 ELSE amount END "
+                "WHERE payment_id = $1 AND status = 'pending' AND provider IN ('paystack', 'gumroad') "
+                "RETURNING *",
+                payment_id, amount,
+            )
+            return dict(row) if row else None
+
+    async def set_payment_chat_id(self, reference: str, chat_id: int) -> None:
+        """Records which server a payment was finally applied to — used when
+        an owner assigns a paid-but-unassigned payment to a server by hand
+        (/assignpayment), same update the buyer's Choose-server picker does."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE payment_logs SET chat_id = $2 WHERE paystack_reference = $1",
+                reference, chat_id,
+            )
+
+    async def revert_gateway_payment_claim(self, payment_id: int) -> None:
+        """Undo claim_gateway_payment_for_approval when the unlock handler
+        raised, so the payment goes back to 'pending' and can be retried
+        (by the webhook or another /approvepayment) instead of being marked
+        completed with nothing unlocked."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE payment_logs SET status = 'pending' WHERE payment_id = $1 AND status = 'completed'",
+                payment_id,
+            )
+
+    async def reject_pending_gateway_payment(self, payment_id: int) -> bool:
+        """/rejectpayment counterpart for still-'pending' Paystack/Gumroad
+        rows. Once 'rejected', the Gumroad ping's status != 'pending' guard
+        makes a late webhook a no-op."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE payment_logs SET status = 'rejected' "
+                "WHERE payment_id = $1 AND status = 'pending' AND provider IN ('paystack', 'gumroad')",
+                payment_id,
+            )
+            return result.endswith(" 1")
+
     async def get_latest_pending_selar_payment(self, user_id: int, payment_type: str) -> Optional[Dict]:
         """Used by api/selar_submit.py's OAuth-based confirmation flow —
         Selar's redirect back to /unlock carries no dynamic buyer data at
@@ -6487,6 +6546,43 @@ class Database:
                 ORDER BY completed_total DESC
                 """,
                 payment_types,
+            )
+            return [dict(r) for r in rows]
+
+    async def get_paid_servers(self, payment_types: List[str], limit: int = 15) -> List[Dict]:
+        """Servers (chat_id = guild id) that have at least one completed
+        payment, with their name from discord_guilds — used by /admin
+        revenue to show WHICH servers paid, not just the totals. Payments
+        with no chat_id (account-level purchases) are skipped. Servers the
+        bot has no name for (e.g. a clone's guild that was never recorded)
+        come back with guild_name None so the caller can fall back to the id.
+        Ordered by total paid, then most recent payment."""
+        if not payment_types:
+            return []
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    p.chat_id AS guild_id,
+                    g.guild_name,
+                    COUNT(*) AS completed_count,
+                    COALESCE(SUM(p.amount), 0) AS completed_total,
+                    MAX(p.created_date) AS last_paid
+                FROM payment_logs p
+                LEFT JOIN (
+                    SELECT guild_id, MAX(guild_name) AS guild_name
+                    FROM discord_guilds
+                    GROUP BY guild_id
+                ) g ON g.guild_id = p.chat_id
+                WHERE p.status = 'completed'
+                  AND p.chat_id IS NOT NULL
+                  AND p.payment_type = ANY($1::text[])
+                GROUP BY p.chat_id, g.guild_name
+                ORDER BY completed_total DESC, last_paid DESC
+                LIMIT $2
+                """,
+                payment_types, limit,
             )
             return [dict(r) for r in rows]
 
@@ -7009,6 +7105,19 @@ class Database:
                 "DELETE FROM discord_new_guild_claims WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id,
             )
+
+    async def get_owned_guild_ids(self, owner_id: int, clone_id: Optional[int] = None) -> List[int]:
+        """Servers this user owns that the given bot (main bot when clone_id is
+        None, else that clone) is currently in. Used to guess where to post a
+        fallback message for a payment that arrived with no server attached."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT guild_id FROM discord_guilds "
+                "WHERE owner_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND left_at IS NULL",
+                owner_id, clone_id,
+            )
+            return [int(r["guild_id"]) for r in rows]
 
     async def mark_discord_guild_left(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Called from on_guild_remove. Keeps the row (left_at set) rather

@@ -180,6 +180,46 @@ async def _dm_with_button(user_id: int, clone_id, text: str, button: dict) -> bo
     return False
 
 
+async def _bot_token_for(clone_id) -> Optional[str]:
+    """Token of the bot that carried out the checkout: the clone's own when the
+    payment belongs to a clone, else the main bot's."""
+    token = config.DISCORD_BOT_TOKEN
+    if clone_id:
+        clone = await db.get_discord_clone(int(clone_id))
+        if clone:
+            from utils.crypto import secret_manager
+            token = secret_manager.decrypt(clone["bot_token_encrypted"])
+    return token
+
+
+async def _post_claim_in_server(row: dict, button: dict, text: str) -> Optional[int]:
+    """Fallback for a buyer whose DMs are closed: post the same message + button
+    in a server, as the same bot (clone token for clone payments). Uses the
+    server on the payment when there is one; otherwise, if the buyer owns exactly
+    one server this bot is in, uses that. Anything less certain returns None
+    rather than posting in a server we're guessing at. Returns the guild id
+    posted in, or None."""
+    try:
+        clone_id = row.get("clone_id")
+        guild_id = row.get("chat_id")
+        if not guild_id:
+            owned = await db.get_owned_guild_ids(int(row["user_id"]), int(clone_id) if clone_id else None)
+            if len(owned) != 1:
+                return None
+            guild_id = owned[0]
+        token = await _bot_token_for(clone_id)
+        if not token:
+            return None
+        from discord_bot.dm_send import post_in_guild_with_buttons
+        ok = await post_in_guild_with_buttons(
+            int(guild_id), text, [button], token, mention_user_id=int(row["user_id"])
+        )
+        return int(guild_id) if ok else None
+    except Exception:
+        logger.exception("[gumroad] server fallback post failed")
+        return None
+
+
 async def _hold_for_server_choice(row: dict, reference: str, paid_cents: int,
                                   subscription_id, fields: dict) -> tuple:
     """Verified sale, guild-scoped product, but payment_logs.chat_id is NULL.
@@ -212,21 +252,33 @@ async def _hold_for_server_choice(row: dict, reference: str, paid_cents: int,
 
     from discord_bot.cogs._views_gumroad_claim import custom_id_for, _PRODUCT_LABELS
     label = _PRODUCT_LABELS.get(payment_type, payment_type)
+    button = {"label": "Choose server", "style": 3, "custom_id": custom_id_for(reference)}
     sent = await _dm_with_button(
         row["user_id"], row.get("clone_id"),
         f"✅ Payment received for **{label}** — thank you!\n"
         f"Tap the button below to choose which server to unlock it on. "
         f"You can do this any time; the button keeps working.",
-        {"label": "Choose server", "style": 3, "custom_id": custom_id_for(reference)},
+        button,
     )
-    logger.info(f"[gumroad] {reference} paid with no guild; server picker DM sent={sent}")
+    posted_in = None
+    if not sent:
+        # DMs closed: post the picker in the server instead, as the same bot.
+        posted_in = await _post_claim_in_server(
+            row, button,
+            f"<@{row['user_id']}> ✅ Payment received for **{label}** — thank you! "
+            f"I couldn't DM you, so tap the button below to choose which server to unlock it on. "
+            f"Only you can use it, and it keeps working.",
+        )
+    logger.info(f"[gumroad] {reference} paid with no guild; picker DM sent={sent}, server fallback={posted_in}")
     await _alert_owner(
         "\U0001F4B0 **Gumroad sale received - waiting for buyer to pick a server**\n"
         "Sale: `%s` \u2022 Product: %s \u2022 Price: %s cents \u2022 Buyer: <@%s> (%s) \u2022 Reference: `%s`\n%s" % (
             fields.get("sale_id", "?"), label, fields.get("price", "?"), row["user_id"],
             fields.get("email", "?"), reference,
             "The buyer was DMed a server picker." if sent else
-            "\u26a0\ufe0f Couldn't DM the buyer (DMs closed?) - they can't pick a server until you reach them.",
+            (f"Couldn't DM the buyer (DMs closed), so the server picker was posted in server {posted_in} instead."
+             if posted_in else
+             "\u26a0\ufe0f Couldn't DM the buyer (DMs closed?) and couldn't work out which server to post in - they can't pick a server until you reach them."),
         )
     )
     return 200, "awaiting server choice"

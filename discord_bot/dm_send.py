@@ -115,3 +115,70 @@ async def dm_user_with_buttons(user_id: int, content: str, buttons: list[dict], 
     except (aiohttp.ClientError, TimeoutError) as e:
         logger.warning(f"[discord] Network error DMing {user_id} with buttons: {e}")
         return False
+
+
+async def post_in_guild_with_buttons(guild_id: int, content: str, buttons: list[dict], bot_token: str,
+                                     mention_user_id: int | None = None, max_channels: int = 6) -> bool:
+    """Fallback for when a buyer's DMs are closed: posts `content` + buttons
+    in a channel of the server, as the bot that owns bot_token (for a clone
+    payment, that clone's own token — so the click routes back to the same
+    clone, exactly like the DM version).
+
+    REST-only for the same reason as dm_user_with_buttons. Tries the server's
+    system channel first, then its text channels in position order, moving on
+    when the bot can't send in one (403) — up to max_channels attempts.
+    Only mention_user_id is pinged, nobody else. Returns True once one post
+    succeeds.
+
+    Buttons are the same dicts dm_user_with_buttons takes. A button like the
+    Choose-server one is safe to post publicly because its callback re-checks
+    that the clicker is the recorded buyer."""
+    if not bot_token or not guild_id or not buttons:
+        logger.warning("[discord] post_in_guild_with_buttons called with missing bot_token, guild_id or buttons")
+        return False
+
+    headers = {"Authorization": f"Bot {bot_token}", "Content-Type": "application/json"}
+    components = [{"type": 1, "components": [
+        {"type": 2, "style": b["style"], "label": b["label"],
+         **({"custom_id": b["custom_id"]} if "custom_id" in b else {}),
+         **({"url": b["url"]} if "url" in b else {})}
+        for b in buttons
+    ]}]
+    payload = {
+        "content": content,
+        "components": components,
+        "allowed_mentions": {"parse": [], "users": [str(mention_user_id)] if mention_user_id else []},
+    }
+    try:
+        async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
+            candidates: list[str] = []
+            async with session.get(f"{DISCORD_API_BASE}/guilds/{guild_id}", headers=headers) as resp:
+                if resp.status == 200:
+                    system_channel = (await resp.json()).get("system_channel_id")
+                    if system_channel:
+                        candidates.append(str(system_channel))
+                else:
+                    logger.warning(f"[discord] Couldn't read guild {guild_id}: HTTP {resp.status}")
+                    return False
+            async with session.get(f"{DISCORD_API_BASE}/guilds/{guild_id}/channels", headers=headers) as resp:
+                if resp.status == 200:
+                    text_channels = sorted(
+                        (c for c in await resp.json() if c.get("type") == 0),
+                        key=lambda c: c.get("position", 0),
+                    )
+                    candidates += [str(c["id"]) for c in text_channels if str(c["id"]) not in candidates]
+
+            for channel_id in candidates[:max_channels]:
+                async with session.post(
+                    f"{DISCORD_API_BASE}/channels/{channel_id}/messages", headers=headers, json=payload
+                ) as resp:
+                    if resp.status in (200, 201):
+                        return True
+                    if resp.status != 403:
+                        body = await resp.text()
+                        logger.warning(f"[discord] Couldn't post in guild {guild_id} channel {channel_id}: HTTP {resp.status} {body}")
+            logger.warning(f"[discord] No channel in guild {guild_id} accepted the fallback post")
+            return False
+    except (aiohttp.ClientError, TimeoutError) as e:
+        logger.warning(f"[discord] Network error posting in guild {guild_id}: {e}")
+        return False
