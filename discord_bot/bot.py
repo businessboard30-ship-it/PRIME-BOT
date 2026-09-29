@@ -112,6 +112,7 @@ from discord_bot.cogs._views_leveling_boost import DYNAMIC_ITEMS as LEVELING_BOO
 from discord_bot.cogs._views_leveling_wallet import DYNAMIC_ITEMS as LEVELING_WALLET_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_leaderboard import DYNAMIC_ITEMS as LEVELING_LEADERBOARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_pending_payments import DYNAMIC_ITEMS as PENDING_PAYMENTS_DYNAMIC_ITEMS
+from discord_bot.cogs._views_gumroad_claim import DYNAMIC_ITEMS as GUMROAD_CLAIM_DYNAMIC_ITEMS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -226,6 +227,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*LEVELING_WALLET_DYNAMIC_ITEMS)
         self.add_dynamic_items(*LEVELING_LEADERBOARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*PENDING_PAYMENTS_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*GUMROAD_CLAIM_DYNAMIC_ITEMS)
 
         await self.load_extension("discord_bot.cogs.help")
         # archive / archive_automation dropped: feature retired to free up

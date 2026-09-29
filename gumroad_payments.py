@@ -18,6 +18,7 @@ is set) the sale is re-fetched from Gumroad's API and must exist and not be
 refunded. The claim is a conditional UPDATE, so duplicate pings are no-ops.
 """
 
+import json
 import logging
 import secrets
 from typing import Optional
@@ -161,6 +162,76 @@ async def _dm(user_id: int, clone_id, text: str) -> None:
         logger.exception("[gumroad] buyer DM failed (payment already applied)")
 
 
+async def _dm_with_button(user_id: int, clone_id, text: str, button: dict) -> bool:
+    """Like _dm but attaches one persistent button. Uses the clone's own
+    token for clone-scoped payments so the click reaches the right bot."""
+    try:
+        from discord_bot.dm_send import dm_user_with_buttons
+        token = config.DISCORD_BOT_TOKEN
+        if clone_id:
+            clone = await db.get_discord_clone(int(clone_id))
+            if clone:
+                from utils.crypto import secret_manager
+                token = secret_manager.decrypt(clone["bot_token_encrypted"])
+        if token:
+            return await dm_user_with_buttons(int(user_id), text, [button], token)
+    except Exception:
+        logger.exception("[gumroad] buyer DM (with button) failed")
+    return False
+
+
+async def _hold_for_server_choice(row: dict, reference: str, paid_cents: int,
+                                  subscription_id, fields: dict) -> tuple:
+    """Verified sale, guild-scoped product, but payment_logs.chat_id is NULL.
+    Claim the row (-> completed, so revenue counts it and Gumroad stops
+    retrying), remember what to unlock under `gumguild:<reference>`, and DM
+    the buyer a persistent Choose-server button
+    (discord_bot/cogs/_views_gumroad_claim.py handles the click)."""
+    payment_type = row["payment_type"]
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        claimed = await conn.fetchrow(
+            "UPDATE payment_logs SET status = 'completed', amount = $2 "
+            "WHERE paystack_reference = $1 AND status = 'pending' RETURNING *",
+            reference, paid_cents / 100.0,
+        )
+    if not claimed:
+        return 200, "already processed"
+
+    record = {
+        "user_id": int(row["user_id"]), "payment_type": payment_type,
+        "clone_id": row.get("clone_id"), "subscription_id": subscription_id,
+    }
+    try:
+        await db.set_global_setting(f"gumguild:{reference}", json.dumps(record))
+    except Exception:
+        logger.exception(f"[gumroad] couldn't store server-claim for {reference}; reverting")
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE payment_logs SET status = 'pending' WHERE paystack_reference = $1", reference)
+        return 500, "unlock failed"
+
+    from discord_bot.cogs._views_gumroad_claim import custom_id_for, _PRODUCT_LABELS
+    label = _PRODUCT_LABELS.get(payment_type, payment_type)
+    sent = await _dm_with_button(
+        row["user_id"], row.get("clone_id"),
+        f"✅ Payment received for **{label}** — thank you!\n"
+        f"Tap the button below to choose which server to unlock it on. "
+        f"You can do this any time; the button keeps working.",
+        {"label": "Choose server", "style": 3, "custom_id": custom_id_for(reference)},
+    )
+    logger.info(f"[gumroad] {reference} paid with no guild; server picker DM sent={sent}")
+    await _alert_owner(
+        "\U0001F4B0 **Gumroad sale received - waiting for buyer to pick a server**\n"
+        "Sale: `%s` \u2022 Product: %s \u2022 Price: %s cents \u2022 Buyer: <@%s> (%s) \u2022 Reference: `%s`\n%s" % (
+            fields.get("sale_id", "?"), label, fields.get("price", "?"), row["user_id"],
+            fields.get("email", "?"), reference,
+            "The buyer was DMed a server picker." if sent else
+            "\u26a0\ufe0f Couldn't DM the buyer (DMs closed?) - they can't pick a server until you reach them.",
+        )
+    )
+    return 200, "awaiting server choice"
+
+
 async def _process_premium_renewal(fields: dict, subscription_id: str, accept_test: bool) -> tuple:
     """A recurring Premium charge. Same safety layers as a first purchase
     (product match, price >= $5, sale re-verified via the API), plus
@@ -256,8 +327,9 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
         return 200, "sale not verified"
 
     if payment_type in _GUILD_SCOPED_TYPES and not row.get("chat_id"):
-        logger.error(f"[gumroad] {reference}: {payment_type} order has no guild id (chat_id NULL) - left pending for manual unlock")
-        return 200, "no guild"
+        # Paid + verified but no server attached: don't strand the sale. Mark
+        # it completed and DM the buyer a persistent server picker.
+        return await _hold_for_server_choice(row, reference, paid_cents, subscription_id, fields)
 
     pool = await get_pool()
     async with pool.acquire() as conn:
