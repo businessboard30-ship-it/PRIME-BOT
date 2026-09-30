@@ -50,10 +50,20 @@ async def _resolve_currency(interaction: discord.Interaction) -> str:
 
 
 async def start_card_pack_payment(interaction: discord.Interaction, force_mode: str = None,
-                                   currency_override: str = None):
+                                   currency_override: str = None, guild_id: int = None):
     """Kicks off a transaction for this guild's card pack.
-    Call after interaction.response.defer(ephemeral=True, thinking=True)."""
-    guild_id = interaction.guild_id
+    Call after interaction.response.defer(ephemeral=True, thinking=True).
+    guild_id: pass explicitly when the button may be pressed from a DM copy of
+    a wizard (interaction.guild_id is None there). If it's still unknown, the
+    buyer is asked which server BEFORE any payment is created."""
+    guild_id = guild_id if guild_id is not None else interaction.guild_id
+    if guild_id is None:
+        from discord_bot.cogs._views_gumroad_claim import prompt_server_for_checkout
+        await prompt_server_for_checkout(
+            interaction, PAYMENT_TYPE,
+            lambda i, gid: start_card_pack_payment(i, force_mode, currency_override, guild_id=gid),
+        )
+        return
     user = interaction.user
 
     config = await db.get_welcome_config(guild_id, clone_id=_clone_id_of(interaction))
@@ -166,6 +176,13 @@ async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: i
     welcome.py's welcome_nudge_ultra handler), where interaction.guild_id
     is always None since the button lives on a DM, not a guild message."""
     guild_id = guild_id if guild_id is not None else interaction.guild_id
+    if guild_id is None:
+        from discord_bot.cogs._views_gumroad_claim import prompt_server_for_checkout
+        await prompt_server_for_checkout(
+            interaction, "ultra_welcome_pack",
+            lambda i, gid: start_ultra_pack_payment(i, guild_id=gid, force_mode=force_mode, currency_override=currency_override),
+        )
+        return
     user = interaction.user
 
     config = await db.get_welcome_config(guild_id, clone_id=_clone_id_of(interaction))

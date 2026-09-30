@@ -689,14 +689,14 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
                     "Tap **Buy Pack** below to unlock this look for real."
                 ),
                 file=file,
-                view=_LockedPackBuyView(),
+                view=_LockedPackBuyView(self.guild_id),
                 ephemeral=True,
             )
         except Exception:
             await interaction.followup.send(
                 "🔒 That look is part of the premium pack — tap **Buy Pack** below to unlock it "
                 "(couldn't render a live preview right now).",
-                view=_LockedPackBuyView(),
+                view=_LockedPackBuyView(self.guild_id),
                 ephemeral=True,
             )
 
@@ -709,14 +709,17 @@ class _LockedPackBuyView(discord.ui.View):
     single-use preview rather than a DynamicItem on the wizard itself
     (nothing here needs to survive a bot restart)."""
 
-    def __init__(self):
+    def __init__(self, guild_id: int = None):
         super().__init__(timeout=300)
+        # The wizard may be a DM copy (interaction.guild_id is None there), so
+        # the server it belongs to is carried in explicitly.
+        self.guild_id = guild_id
 
     @discord.ui.button(label="💳 Buy Pack", style=discord.ButtonStyle.success)
     async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         from discord_bot.views_card_pack import start_card_pack_payment
-        await start_card_pack_payment(interaction)
+        await start_card_pack_payment(interaction, guild_id=self.guild_id)
 
 
 class WelcomeCardStyleSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("style")):

@@ -565,6 +565,17 @@ async def start_geo_payment(interaction: discord.Interaction, *, payment_type: s
     Paystack (Ghana, paid in GHS) and Gumroad (everyone else). Both
     checkouts are created up front; whichever one the buyer pays is the one
     that unlocks the purchase. Call after interaction.response.defer(ephemeral=True, ...)."""
+    from gumroad_payments import _GUILD_SCOPED_TYPES
+    if guild_id is None and payment_type in _GUILD_SCOPED_TYPES:
+        from discord_bot.cogs._views_gumroad_claim import prompt_server_for_checkout
+        await prompt_server_for_checkout(
+            interaction, payment_type,
+            lambda i, gid: start_geo_payment(
+                i, payment_type=payment_type, price_usd=price_usd, product_title=product_title,
+                product_description=product_description, amount_display=amount_display,
+                guild_id=gid, extra=extra),
+        )
+        return
     clone_id = getattr(interaction.client, "clone_id", None)
     intent = {
         "payment_type": payment_type, "user_id": interaction.user.id, "guild_id": guild_id,

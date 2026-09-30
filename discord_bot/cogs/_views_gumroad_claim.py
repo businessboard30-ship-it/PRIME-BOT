@@ -102,6 +102,89 @@ async def _already_owned(payment_type: str, guild_id: int, clone_id) -> bool:
     return False
 
 
+NO_SERVER_HINT = (
+    "I couldn't find a server for you. Make sure the bot is in the server and that you have "
+    "**Manage Server** there (and that it doesn't already own this).\n"
+    "💡 **Try again from inside the server you want to unlock it for** — run the command there "
+    "and it will be tied to that server automatically."
+)
+
+
+def eligible_guilds(client: discord.Client, user_id: int, payment_type: str, clone_id) -> list:
+    """Servers this bot is in where the user has Manage Server. (Ownership of the
+    product is checked separately, async, by the caller via _already_owned.)"""
+    return [g for g in client.guilds if _can_manage(g, user_id)]
+
+
+async def _eligible_unowned(client: discord.Client, user_id: int, payment_type: str, clone_id) -> list:
+    out = []
+    for g in eligible_guilds(client, user_id, payment_type, clone_id):
+        if await _already_owned(payment_type, g.id, clone_id):
+            continue
+        out.append(g)
+    out.sort(key=lambda g: g.name.lower())
+    return out
+
+
+class _CheckoutServerSelect(discord.ui.Select):
+    def __init__(self, options, resume, buyer_id: int):
+        super().__init__(placeholder="Choose the server to unlock…", min_values=1, max_values=1, options=options)
+        self._resume = resume
+        self._buyer_id = buyer_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self._buyer_id:
+            await interaction.response.send_message("This menu isn't for you.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild_id = int(self.values[0])
+        guild = interaction.client.get_guild(guild_id)
+        if guild is None or not _can_manage(guild, interaction.user.id):
+            await interaction.followup.send("You need **Manage Server** in that server to unlock it there.", ephemeral=True)
+            return
+        await self._resume(interaction, guild_id)
+
+
+class _CheckoutServerView(discord.ui.View):
+    def __init__(self, options, resume, buyer_id: int):
+        super().__init__(timeout=300)
+        self.add_item(_CheckoutServerSelect(options, resume, buyer_id))
+
+
+async def prompt_server_for_checkout(interaction: discord.Interaction, payment_type: str, resume) -> None:
+    """A server-scoped checkout was started with no server (typically from a DM
+    copy of a wizard). Instead of logging a payment that can't unlock anything,
+    work out which server it's for FIRST:
+      - exactly one eligible server -> use it (auto-apply), and say which
+      - several -> a dropdown; picking one continues the checkout
+      - none -> explain, with the 'try it in the server' hint
+    `resume(interaction, guild_id)` is an async callable that continues the
+    original checkout for that server using the given (fresh, deferred) interaction.
+    Call after interaction.response.defer(...)."""
+    clone_id = getattr(interaction.client, "clone_id", None)
+    eligible = await _eligible_unowned(interaction.client, interaction.user.id, payment_type, clone_id)
+    label = _PRODUCT_LABELS.get(payment_type, payment_type)
+    if not eligible:
+        await interaction.followup.send(NO_SERVER_HINT, ephemeral=True)
+        return
+    if len(eligible) == 1:
+        g = eligible[0]
+        await interaction.followup.send(f"Setting up **{label}** for **{g.name}**…", ephemeral=True)
+        await resume(interaction, g.id)
+        return
+    shown = eligible[:_MAX_OPTIONS]
+    options = [
+        discord.SelectOption(label=g.name[:100], value=str(g.id), description=f"{g.member_count or 0} members")
+        for g in shown
+    ]
+    note = "" if len(eligible) <= _MAX_OPTIONS else f"\n_Showing the first {_MAX_OPTIONS} of {len(eligible)} servers. Not listed? Run this from inside the server._"
+    await interaction.followup.send(
+        f"Which server should **{label}** unlock for?{note}",
+        view=_CheckoutServerView(options, resume, interaction.user.id), ephemeral=True,
+    )
+
+
+
 class _ServerSelect(discord.ui.Select):
     def __init__(self, reference: str, options):
         super().__init__(placeholder="Choose the server to unlock…", min_values=1, max_values=1, options=options)
@@ -200,8 +283,8 @@ class ChooseServerButton(discord.ui.DynamicItem[discord.ui.Button], template=r"g
 
         if not eligible:
             await interaction.followup.send(
-                "I couldn't find a server for you. Make sure the bot is in the server and that you have "
-                "**Manage Server** there (or that it doesn't already own this). Then tap this button again.",
+                f"{NO_SERVER_HINT}\n\nAlready paid? Your reference is `{self.reference}` — send it to the "
+                f"bot owner and they can apply this purchase to your server for you.",
                 ephemeral=True)
             return
 
