@@ -599,7 +599,7 @@ async def start_geo_payment(interaction: discord.Interaction, *, payment_type: s
 
     from discord_bot.cogs._views_payment_card import order_summary, wrong_server_note, add_check_status_button
     lines = [order_summary(interaction, payment_type, amount_display, guild_id), ""]
-    wrong = wrong_server_note(guild_id)
+    wrong = wrong_server_note(guild_id, payment_type)
     if wrong:
         lines += [wrong, ""]
     lines += [product_description, "", config.PAYMENT_SUPPORT_LINE, ""]
