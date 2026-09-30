@@ -289,6 +289,10 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             # Partnership (bump network) — first page only, appended AFTER the
             # existing buttons so Connect/Advertise keep their positions.
             bottom_children.append(_PartnershipButton(guild_id, clone_id))
+            # Honeypot (premium trap channel) — first page only, appended
+            # AFTER Partnership so Connect/Advertise/Partnership keep their
+            # positions.
+            bottom_children.append(_HoneypotButton(guild_id, clone_id))
 
         # Manual + support are masked text links (not buttons), so the row below
         # only holds the action buttons (Connect / Advertise).
@@ -631,6 +635,53 @@ class _PartnershipButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
         await interaction.followup.send(
             f"🤝 Partnership setup is {note} in {channel.mention} — head there to finish it.", ephemeral=True,
         )
+
+
+class _HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_honeypot:(\d+):(-|\d+)$"):
+    """"Honeypot" — premium trap channel for spam bots / hacked accounts.
+    Same one-tap pattern as Partnership: needs Manage Server, auto-creates
+    the #honeypot channel (reusing a configured/existing one first), posts
+    the "do not post here" notice in it, and opens the settings panel as an
+    ephemeral follow-up. All the logic lives in cogs/honeypot.py
+    (open_honeypot), shared with the /honeypot slash command. Non-premium
+    servers get the Go Premium pitch instead. Grey (secondary) so it stands
+    apart from the blue/green/red buttons beside it."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(
+            discord.ui.Button(
+                label="Honeypot", style=discord.ButtonStyle.secondary,
+                emoji="🍯", custom_id=_encode("honeypot", guild_id, clone_id), row=4,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        from discord_bot.cogs.honeypot import _authorize, open_honeypot
+        try:
+            guild = await _authorize(interaction, self.guild_id)
+            if guild is None:
+                return
+            await open_honeypot(interaction, guild, self.clone_id)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("join_dm honeypot setup failed for guild %s", self.guild_id)
+            await interaction.followup.send(
+                "I couldn't set up the honeypot — check my permissions, or run `/honeypot` in your server.",
+                ephemeral=True,
+            )
+        except Exception:
+            logger.exception("join_dm honeypot setup failed for guild %s", self.guild_id)
+            await interaction.followup.send(
+                "Something went wrong — try again in a moment, or run `/honeypot` in your server.",
+                ephemeral=True,
+            )
 
 
 class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
@@ -1863,7 +1914,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 
 # Registered in discord_bot/bot.py's setup_hook via bot.add_dynamic_items(...).
 DYNAMIC_ITEMS = (
-    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
+    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton,
 )

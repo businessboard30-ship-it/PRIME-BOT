@@ -2568,6 +2568,32 @@ class Database:
             CREATE UNIQUE INDEX IF NOT EXISTS discord_ticket_config_guild_clone_key
             ON discord_ticket_config (guild_id, COALESCE(clone_id, -1))
         """)
+
+        # --- Honeypot: trap channel for spam/scam bots and hacked accounts ------
+        # One row per guild(+clone). channel_id is the trap channel; anyone who
+        # posts in it (except staff) gets `action` applied by
+        # discord_bot/cogs/honeypot.py. warning_message_id points at the
+        # "do not post here" notice so it can be edited when settings change.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_honeypot_config (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                channel_id BIGINT,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                action TEXT NOT NULL DEFAULT 'ban',
+                delete_seconds INTEGER NOT NULL DEFAULT 86400,
+                log_channel_id BIGINT,
+                warning_message_id BIGINT,
+                channel_auto_created BOOLEAN NOT NULL DEFAULT FALSE,
+                triggered_count INTEGER NOT NULL DEFAULT 0,
+                last_triggered_at TIMESTAMPTZ,
+                created_by BIGINT
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_honeypot_config_guild_clone_key
+            ON discord_honeypot_config (guild_id, COALESCE(clone_id, -1))
+        """)
         # welcome_message: shown in the embed posted inside a freshly-opened
         # ticket channel, in place of the hardcoded "Thanks for reaching
         # out..." line — same {member}/{guild} placeholder convention as
@@ -9672,6 +9698,69 @@ class Database:
                 guild_id, clone_id, approved_log_channel_id
             )
             return dict(row)
+
+    _HONEYPOT_FIELDS = (
+        "channel_id", "enabled", "action", "delete_seconds", "log_channel_id",
+        "warning_message_id", "channel_auto_created", "created_by",
+    )
+
+    async def get_honeypot_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_honeypot_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+            if row:
+                return dict(row)
+            return {
+                "guild_id": guild_id, "clone_id": clone_id, "channel_id": None, "enabled": True,
+                "action": "ban", "delete_seconds": 86400, "log_channel_id": None,
+                "warning_message_id": None, "channel_auto_created": False,
+                "triggered_count": 0, "last_triggered_at": None, "created_by": None,
+            }
+
+    async def set_honeypot_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        """Upsert-merge: any key in _HONEYPOT_FIELDS that is omitted keeps its
+        current value; pass None explicitly to clear a nullable one."""
+        current = await self.get_honeypot_config(guild_id, clone_id=clone_id)
+        merged = {k: fields.get(k, current.get(k)) for k in self._HONEYPOT_FIELDS}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_honeypot_config
+                    (guild_id, clone_id, channel_id, enabled, action, delete_seconds,
+                     log_channel_id, warning_message_id, channel_auto_created, created_by)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET channel_id = $3, enabled = $4, action = $5, delete_seconds = $6,
+                        log_channel_id = $7, warning_message_id = $8, channel_auto_created = $9,
+                        created_by = $10
+                RETURNING *
+                """,
+                guild_id, clone_id, merged["channel_id"], merged["enabled"], merged["action"],
+                merged["delete_seconds"], merged["log_channel_id"], merged["warning_message_id"],
+                merged["channel_auto_created"], merged["created_by"],
+            )
+            return dict(row)
+
+    async def bump_honeypot_triggers(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_honeypot_config SET triggered_count = triggered_count + 1, "
+                "last_triggered_at = NOW() WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+
+    async def delete_honeypot_config(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM discord_honeypot_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
 
     async def get_ticket_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
