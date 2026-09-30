@@ -53,6 +53,10 @@ def allowed_sections(user_id: int) -> set:
         out.add("broadcast")
     if user_id in DISCORD_CLONE_ADMIN_IDS:
         out.add("servers")  # servers / find / clones / monetize / commissions / subscribers
+        out.add("bump")     # /admin bump ... (bump.py gates it on DISCORD_CLONE_ADMIN_IDS)
+        out.add("system")   # submissions / envcheck / revenue / exportusers (admin.py, same list)
+    if user_id in DISCORD_OWNER_BROADCAST_IDS:
+        out.add("feedback")  # /admin feedback (feedback.py gates it on DISCORD_OWNER_BROADCAST_IDS)
     return out
 
 
@@ -173,6 +177,12 @@ class HomeView(PanelView):
             lines.append("-# Broadcast: not available to your account.")
         if "servers" not in a:
             lines.append("-# Servers & clones: not available to your account.")
+        if "bump" not in a:
+            lines.append("-# Bump: not available to your account.")
+        if "feedback" not in a:
+            lines.append("-# Feedback: not available to your account.")
+        if "system" not in a:
+            lines.append("-# System: not available to your account.")
         return lines
 
     def controls(self):
@@ -182,6 +192,9 @@ class HomeView(PanelView):
             _btn("Payments", P, self._payments, "💳", disabled="payments" not in a),
             _btn("Broadcast", P, self._broadcast, "📢", disabled="broadcast" not in a),
             _btn("Servers & clones", P, self._servers, "🏠", disabled="servers" not in a),
+            _btn("Bump", P, self._bump, "📡", disabled="bump" not in a),
+            _btn("Feedback", P, self._feedback, "📬", disabled="feedback" not in a),
+            _btn("System", P, self._system, "⚙️", disabled="system" not in a),
             _btn("Close", S, self._close, "✖️"),
         ]
 
@@ -197,6 +210,18 @@ class HomeView(PanelView):
     async def _servers(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_servers import ServersHubView  # lazy: avoids import cycle
         await self.go(i, ServersHubView(self.cog, self.owner_id, "servers"))
+
+    async def _bump(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_system import BumpHubView  # lazy: avoids import cycle
+        await self.go(i, BumpHubView(self.cog, self.owner_id, "bump"))
+
+    async def _feedback(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_system import FeedbackView
+        await self.go(i, FeedbackView(self.cog, self.owner_id, "feedback"))
+
+    async def _system(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_system import SystemView
+        await self.go(i, SystemView(self.cog, self.owner_id, "system"))
 
     async def _close(self, i: discord.Interaction):
         self.stop()
