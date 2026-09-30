@@ -88,6 +88,17 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
     at/above the product's minimum) so payment_logs reflects what they
     actually agreed to pay, not just the floor price."""
     user = interaction.user
+    if guild_id is None and payment_type in _GUILD_SCOPED_TYPES:
+        # Would log a paid-but-unassignable payment (chat_id NULL). Ask which
+        # server FIRST, then continue this same checkout for it.
+        from discord_bot.cogs._views_gumroad_claim import prompt_server_for_checkout
+        await prompt_server_for_checkout(
+            interaction, payment_type,
+            lambda i, gid: start_gumroad_payment(
+                i, payment_type, amount_display, guild_id=gid, reference=reference,
+                amount_usd=amount_usd, intro=intro),
+        )
+        return reference or ""
     reference = reference or new_reference(payment_type, user.id)
     clone_id = getattr(interaction.client, "clone_id", None)
     link = build_link(payment_type, user.id, reference)
@@ -220,6 +231,46 @@ async def _post_claim_in_server(row: dict, button: dict, text: str) -> Optional[
         return None
 
 
+async def _try_auto_apply(row: dict, reference: str, subscription_id) -> Optional[int]:
+    """A verified sale arrived with no server. If the buyer owns EXACTLY ONE
+    server this bot is in (and it doesn't already have the product), unlock
+    it there straight away instead of making them tap Choose-server. Returns
+    the guild id on success, None if it wasn't unambiguous or failed (the
+    caller then falls back to the Choose-server DM, claim untouched). Only
+    ownership counts — anyone with just Manage Server still goes through the
+    picker, so nothing is ever applied to a server on a guess."""
+    try:
+        clone_id = row.get("clone_id")
+        owned = await db.get_owned_guild_ids(int(row["user_id"]), int(clone_id) if clone_id else None)
+        if len(owned) != 1:
+            return None
+        guild_id = int(owned[0])
+        from discord_bot.cogs._views_gumroad_claim import _already_owned, _take_claim, _put_claim_back
+        payment_type = row["payment_type"]
+        if await _already_owned(payment_type, guild_id, clone_id):
+            return None
+        from payments_manual import UNLOCK_HANDLERS
+        handler = UNLOCK_HANDLERS.get(payment_type)
+        if handler is None:
+            return None
+        record = await _take_claim(reference)  # atomic: the buyer's picker can't also fire
+        if not record:
+            return None
+        try:
+            await handler(reference, int(row["user_id"]), guild_id, clone_id)
+            await db.set_payment_chat_id(reference, guild_id)
+            if payment_type == "premium" and subscription_id:
+                await db.set_premium_subscription_id(guild_id, clone_id, subscription_id)
+        except Exception:
+            logger.exception(f"[gumroad] auto-apply failed for {reference}; falling back to the picker")
+            await _put_claim_back(reference, record)
+            return None
+        return guild_id
+    except Exception:
+        logger.exception(f"[gumroad] auto-apply check failed for {reference}")
+        return None
+
+
 async def _hold_for_server_choice(row: dict, reference: str, paid_cents: int,
                                   subscription_id, fields: dict) -> tuple:
     """Verified sale, guild-scoped product, but payment_logs.chat_id is NULL.
@@ -253,6 +304,18 @@ async def _hold_for_server_choice(row: dict, reference: str, paid_cents: int,
     from discord_bot.cogs._views_gumroad_claim import custom_id_for, _PRODUCT_LABELS
     label = _PRODUCT_LABELS.get(payment_type, payment_type)
     button = {"label": "Choose server", "style": 3, "custom_id": custom_id_for(reference)}
+
+    applied_to = await _try_auto_apply(row, reference, subscription_id)
+    if applied_to:
+        logger.info(f"[gumroad] {reference} auto-applied to the buyer's only server ({applied_to})")
+        await _dm(row["user_id"], row.get("clone_id"),
+                  f"✅ Payment received for **{label}** — it's now unlocked on your server. Enjoy!")
+        await _alert_owner(
+            "\U0001F4B0 **Gumroad sale auto-applied**\n"
+            "Sale: `%s` \u2022 Product: %s \u2022 Price: %s cents \u2022 Buyer: <@%s> \u2022 Server: `%s` \u2022 Reference: `%s`" % (
+                fields.get("sale_id", "?"), label, fields.get("price", "?"), row["user_id"], applied_to, reference))
+        return 200, "auto-applied"
+
     sent = await _dm_with_button(
         row["user_id"], row.get("clone_id"),
         f"✅ Payment received for **{label}** — thank you!\n"
