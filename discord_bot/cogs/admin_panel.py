@@ -27,6 +27,16 @@ class AdminPanelCog(commands.Cog):
         """Looked up lazily so load order between the two cogs doesn't matter."""
         return self.bot.get_cog("CloneAdminCog")
 
+    @property
+    def admin_cog(self):
+        """AdminCog: owns /admin commissions, subscribers and clones."""
+        return self.bot.get_cog("AdminCog")
+
+    @property
+    def lookup(self):
+        """LookupCog: owns /admin find."""
+        return self.bot.get_cog("LookupCog")
+
     async def cog_load(self):
         mount_admin_command(
             self.bot, self.panel, name="panel",
