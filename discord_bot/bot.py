@@ -319,8 +319,7 @@ class AnimeBotDiscord(commands.Bot):
 
         self.join_dm_reminder_loop.start()
         self.payment_reminder_loop.start()
-        if self.clone_id is None:
-            self.status_rotation_loop.start()
+        self.status_rotation_loop.start()  # main bot and all clones
 
         # Slash command sync: to a single dev guild (near-instant propagation)
         # if DISCORD_DEV_GUILD_ID is set, otherwise global (works everywhere
@@ -965,7 +964,9 @@ class AnimeBotDiscord(commands.Bot):
     # ── rotating status ("the text under the bot's name that keeps changing") ──
     # Bots can't use custom-status text, but they can show "Playing / Watching /
     # Listening to ..." and change it on a timer. Discord rate-limits presence
-    # updates (about 5 per 20s), so keep the interval at 20s or more.
+    # updates (about 5 per 20s), so keep the interval at 20s or more. Runs on the
+    # main bot AND every clone (each clone process has its own gateway connection,
+    # so the rate limit is per bot, not shared).
     _status_index = 0
 
     def _status_messages(self):
