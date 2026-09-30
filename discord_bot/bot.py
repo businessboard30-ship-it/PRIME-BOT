@@ -257,6 +257,10 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.verification")
         await self.load_extension("discord_bot.cogs.giveaways")
         await self.load_extension("discord_bot.cogs.schedule")
+        # admin MUST load before welcome/bump/feedback/clone_admin/lookup: they
+        # mount their owner commands under the /admin group in cog_load
+        # (see cogs/_admin_mount.py) to save global slash-command slots.
+        await self.load_extension("discord_bot.cogs.admin")
         await self.load_extension("discord_bot.cogs.welcome")
         await self.load_extension("discord_bot.cogs.invites")
         await self.load_extension("discord_bot.cogs.quickstart")
@@ -295,7 +299,6 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.feedback")
         # discover_players dropped: feature retired to free up global
         # slash-command slots. Re-add the line above to restore.
-        await self.load_extension("discord_bot.cogs.admin")
         # DISABLED: server listing dropped
         # await self.load_extension("discord_bot.cogs.server_listing")
         # await self.load_extension("discord_bot.cogs.listing_snapshots")

@@ -163,7 +163,7 @@ class BumpBotStartView(discord.ui.View):
 
 class BumpReviewView(discord.ui.View):
     """Approve/reject buttons attached to each pending listing shown by
-    /bumpadmin review. timeout=None since a moderator might not act on it
+    /admin bump review. timeout=None since a moderator might not act on it
     the same session it was posted."""
 
     def __init__(self, listing_id: int):

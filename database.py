@@ -1914,7 +1914,7 @@ class Database:
         await conn.execute("""
             ALTER TABLE discord_guilds ADD COLUMN IF NOT EXISTS invite_url TEXT
         """)
-        # Migration: owner_id added so /ownerbroadcast can target server
+        # Migration: owner_id added so /admin broadcast send can target server
         # owners directly — nullable since existing rows (and any guild
         # upserted before the bot backfills it, e.g. a stale cached Guild
         # object with no owner_id populated yet) won't have it.
@@ -1929,7 +1929,7 @@ class Database:
         # Cross-clone + main-bot username cache for /find's person-name
         # search (discord_bot/cogs/lookup.py). Populated opportunistically
         # — whenever any code path already resolves a user_id to a name
-        # (clone_admin.py's /allservers, lookup.py's /find itself, member
+        # (clone_admin.py's /admin servers, lookup.py's /admin find itself, member
         # join events) it also writes here, so this fills in over time
         # rather than needing a one-off backfill. No history before this
         # table existed, by nature of "opportunistic" — that's expected.
@@ -3090,7 +3090,7 @@ class Database:
         # owner's support server) that /welcome custombg re-uploads images
         # to when an admin uploads a file instead of pasting a URL, so that
         # channel doubles as free, permanent-ish image hosting. Set via the
-        # owner-only /hostingchannel command (discord_bot/cogs/welcome.py),
+        # owner-only /admin hostingchannel command (discord_bot/cogs/welcome.py),
         # run directly in the channel that should be used.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS bot_global_settings (
@@ -3449,7 +3449,7 @@ class Database:
                 completed_at TIMESTAMPTZ
             )
         """)
-        # image_url: optional attachment dragged/uploaded onto /ownerbroadcast,
+        # image_url: optional attachment dragged/uploaded onto /admin broadcast send,
         # sent as an embed image alongside the text (see clone_admin.py and
         # api/cron_discord_owner_broadcast.py). We store Discord's own CDN
         # URL for the attachment rather than re-hosting it ourselves — see
@@ -3505,7 +3505,7 @@ class Database:
         """)
         # recipient_kind: 'user' (default, unchanged behavior — user_id is a
         # Discord user id, DMed by the cron sender) or 'channel' (added for
-        # /ownerbroadcast's "Mod-log channels" target — user_id column
+        # /admin broadcast send's "Mod-log channels" target — user_id column
         # holds a CHANNEL id instead, and the cron sender posts straight
         # into that channel rather than opening a DM). Reusing the same
         # column for both rather than adding a separate channel_id column
@@ -6353,7 +6353,7 @@ class Database:
 
     async def claim_gateway_payment_for_approval(self, payment_id: int, amount: Optional[float] = None) -> Optional[Dict]:
         """Atomically flips a still-'pending' Paystack/Gumroad payment to
-        'completed' for /approvepayment — the manual override for when the
+        'completed' for /admin payments approve — the manual override for when the
         gateway's own confirmation (Paystack verify / Gumroad ping) never
         landed. Same claim pattern gumroad_payments.py's webhook uses
         (UPDATE ... WHERE status = 'pending' RETURNING *), so if the webhook
@@ -6392,7 +6392,7 @@ class Database:
     async def set_payment_chat_id(self, reference: str, chat_id: int) -> None:
         """Records which server a payment was finally applied to — used when
         an owner assigns a paid-but-unassigned payment to a server by hand
-        (/assignpayment), same update the buyer's Choose-server picker does."""
+        (/admin payments assign), same update the buyer's Choose-server picker does."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
@@ -6403,7 +6403,7 @@ class Database:
     async def revert_gateway_payment_claim(self, payment_id: int) -> None:
         """Undo claim_gateway_payment_for_approval when the unlock handler
         raised, so the payment goes back to 'pending' and can be retried
-        (by the webhook or another /approvepayment) instead of being marked
+        (by the webhook or another /admin payments approve) instead of being marked
         completed with nothing unlocked."""
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -6413,7 +6413,7 @@ class Database:
             )
 
     async def reject_pending_gateway_payment(self, payment_id: int) -> bool:
-        """/rejectpayment counterpart for still-'pending' Paystack/Gumroad
+        """/admin payments reject counterpart for still-'pending' Paystack/Gumroad
         rows. Once 'rejected', the Gumroad ping's status != 'pending' guard
         makes a late webhook a no-op."""
         pool = await get_pool()
@@ -6476,7 +6476,7 @@ class Database:
     async def get_pending_manual_payments_count(self) -> int:
         """Count counterpart to get_pending_manual_payments — same
         count-query-plus-paged-fetch shape as get_xp_leaderboard_count/
-        get_xp_leaderboard, used by /pendingpayments to size its pager."""
+        get_xp_leaderboard, used by /admin payments pending to size its pager."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             return await conn.fetchval(
@@ -6486,7 +6486,7 @@ class Database:
     async def get_pending_manual_payments(self, limit: int = 100, offset: int = 0) -> List[Dict]:
         """Every payment_logs row currently sitting in the manual-review
         queue, across the whole bot (every guild and every clone) — used
-        by /pendingpayments' admin/owner-facing global view, NOT scoped to
+        by /admin payments pending' admin/owner-facing global view, NOT scoped to
         one guild like get_xp_leaderboard is. Oldest first (created_date
         ASC) — same "First In" priority as other queue-style listings in
         this codebase, so the payment that's been waiting longest surfaces
@@ -6908,7 +6908,7 @@ class Database:
 
     async def list_active_discord_clones(self) -> List[Dict]:
         """Discord equivalent of list_active_clones() — used by /admin
-        clones and /ownerbroadcast. Callers read clone_id, bot_username,
+        clones and /admin broadcast send. Callers read clone_id, bot_username,
         owner_id, and (for /admin clones' avatar/name lookup) bot_user_id,
         so those are the only columns selected — same reasoning as
         get_active_discord_clones() above."""
@@ -6922,7 +6922,7 @@ class Database:
 
     async def get_discord_clone_owner_ids(self) -> List[int]:
         """Distinct owner_id of every currently-active clone — the "admins"
-        pool for /ownerbroadcast's target option (clone operators, not
+        pool for /admin broadcast send's target option (clone operators, not
         regular bot members). All of these users are known to the MAIN bot
         (they DM'd it to run /registerclone), so callers can always send
         via clone_id=None regardless of which clone(s) they own."""
@@ -7309,7 +7309,7 @@ class Database:
     async def get_all_guilds_with_managers(self, include_left: bool = False) -> list:
         """Every server the main bot AND every clone are currently in (or
         have been in, if include_left), one row each, joined against
-        discord_cloned_bots so /allservers (clone_admin.py) can show who
+        discord_cloned_bots so /admin servers (clone_admin.py) can show who
         manages each bot alongside who owns each server. clone_id IS NULL
         rows are the main bot itself — LEFT JOIN so those still come back
         with bot_username/manager_id as NULL rather than being dropped.
@@ -12243,7 +12243,7 @@ class Database:
 
     async def add_owner_broadcast_channel_recipients(self, broadcast_id: int, clone_id: Optional[int], channel_ids: List[int]) -> None:
         """Same fan-out as add_owner_broadcast_recipients, but for
-        /ownerbroadcast's "Mod-log channels" target — each row's user_id
+        /admin broadcast send's "Mod-log channels" target — each row's user_id
         column holds a CHANNEL id and recipient_kind='channel', so the cron
         sender posts directly into that channel instead of DMing a user."""
         if not channel_ids:
@@ -12261,7 +12261,7 @@ class Database:
 
     async def get_discord_modlog_channels(self, clone_id: Optional[int]) -> List[Dict]:
         """Every (guild_id, log_channel_id) pair currently configured for
-        this bot/clone, used by /ownerbroadcast's "Mod-log channels" target
+        this bot/clone, used by /admin broadcast send's "Mod-log channels" target
         to fan a broadcast straight out into each server's own mod-log
         channel instead of DMing individuals. Guilds with no log channel
         set are simply absent from this list — nothing to post into."""
@@ -12281,7 +12281,7 @@ class Database:
             return dict(row) if row else None
 
     async def get_latest_owner_broadcast(self, created_by: int) -> Optional[Dict]:
-        """Used by /broadcaststatus when no id is given — the most recent
+        """Used by /admin broadcast status when no id is given — the most recent
         broadcast THIS owner queued, so one owner checking status doesn't
         surface another owner's broadcast by accident."""
         pool = await get_pool()

@@ -25,6 +25,7 @@ from discord.ext import commands
 
 from config import DISCORD_OWNER_BROADCAST_IDS
 from database import db
+from discord_bot.cogs._admin_mount import mount_admin_command
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,10 @@ class Feedback(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def cog_load(self):
+        mount_admin_command(self.bot, self.viewfeedback, name="feedback",
+                            description="View recent feedback (owner only)")
 
     @app_commands.command(name="feedback", description="Send feedback or a suggestion to the bot owner")
     @app_commands.describe(
@@ -99,7 +104,7 @@ class Feedback(commands.Cog):
 
         await self._notify_admins(confirm_interaction, message, attachment)
 
-    @app_commands.command(name="viewfeedback", description="View recent feedback (owner only)")
+    # Mounted as /admin feedback (see cog_load).
     @app_commands.describe(limit="How many recent entries to show (max 25)")
     async def viewfeedback(self, interaction: discord.Interaction, limit: app_commands.Range[int, 1, 25] = 10):
         """Owner-only readback of discord_user_feedback — mainly to catch

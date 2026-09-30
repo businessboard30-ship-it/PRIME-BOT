@@ -43,6 +43,7 @@ from discord.ext import commands, tasks
 
 from config import DISCORD_CLONE_ADMIN_IDS
 from database import db
+from discord_bot.cogs._admin_mount import mount_admin_group
 from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 from discord_bot.cogs._views_bump_link import (
     DYNAMIC_ITEMS as BUMP_LINK_DYNAMIC_ITEMS, has_link, build_flag, find_existing_invite,
@@ -54,7 +55,7 @@ logger = logging.getLogger(__name__)
 # Free tier: fixed cooldown/intensity, matching the "free = fixed default,
 # paid = adjustable" spec agreed on earlier. DEFAULT_COOLDOWN_SECONDS is
 # only the fallback — the live value is owner-editable via
-# `/bumpadmin cooldown` and stored in admin_config (key: bump_cooldown_seconds),
+# `/admin bump cooldown` and stored in admin_config (key: bump_cooldown_seconds),
 # same generic key/value table admin.py already uses for other bot-wide
 # settings. Per-clone: each clone reads its own admin_config row set by its
 # own owner, since clones are separate bot instances with separate owners.
@@ -922,6 +923,15 @@ class BumpCog(commands.Cog):
             self.bump_reminder_worker.start()
 
     async def cog_load(self):
+        # Move the bot-owner group from top-level /bumpadmin to /admin bump so
+        # it stops using a global slash-command slot. discord.py runs cog_load
+        # BEFORE it adds this cog's commands to the tree, so dropping the group
+        # from the cog's command list here keeps it from also registering
+        # top-level. Mounted first so a missing AdminCog fails before any
+        # background task below is started.
+        self.__cog_app_commands__ = [c for c in self.__cog_app_commands__ if c is not self.bumpadmin]
+        mount_admin_group(self.bot, self.bumpadmin, name="bump")
+
         # One background pass per boot; see _auto_restore_bump_channels.
         self._restore_task = asyncio.create_task(self._auto_restore_bump_channels())
         self._general_task = asyncio.create_task(self._move_bump_out_of_general())
@@ -1253,7 +1263,7 @@ class BumpCog(commands.Cog):
         return "created" if created else "reused"
 
     async def _cooldown_seconds(self) -> int:
-        """Owner-editable via /bumpadmin cooldown — falls back to
+        """Owner-editable via /admin bump cooldown — falls back to
         DEFAULT_COOLDOWN_SECONDS if never set."""
         raw = await db.get_config("bump_cooldown_seconds")
         if raw is None:
@@ -1274,9 +1284,11 @@ class BumpCog(commands.Cog):
         except Exception:
             logger.exception("[bump] failed to clear config for departed guild %s", guild.id)
 
-    # --- /bumpadmin (bot owner only) --------------------------------
+    # --- /admin bump (bot owner only) --------------------------------
 
-    bumpadmin = app_commands.Group(name="bumpadmin", description="Bot-owner controls for the bump network")
+    # Mounted as /admin bump (see cog_load) — kept as a cog-level group so the
+    # @bumpadmin.command methods below stay bound to this cog.
+    bumpadmin = app_commands.Group(name="bumpadmin", description="[Owner] Controls for the bump network")
 
     @bumpadmin.command(name="cooldown", description="View or set the global bump cooldown (owner only)")
     @app_commands.describe(minutes="New cooldown in minutes. Leave blank to just view the current value.")
@@ -1366,7 +1378,7 @@ class BumpCog(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
         # Also DM the owner directly, same "so you don't have to go dig
-        # for it" convenience as /viewfeedback — best-effort, doesn't
+        # for it" convenience as /admin feedback — best-effort, doesn't
         # fail the command if DMs are closed.
         try:
             await interaction.user.send(embed=embed)

@@ -2,7 +2,7 @@
 
 """
 OPTIONAL cron-triggered endpoint that DMs out pending owner broadcasts,
-queued by /ownerbroadcast in discord_bot/cogs/clone_admin.py.
+queued by /admin broadcast send in discord_bot/cogs/clone_admin.py.
 
 Why this is a stateless serverless endpoint rather than a loop inside the
 always-on gateway process: recipients span the main bot AND every
@@ -163,7 +163,7 @@ async def _dm_user(session: aiohttp.ClientSession, token: str, user_id: int, con
 async def _post_to_channel(session: aiohttp.ClientSession, token: str, channel_id: int, content: str,
                             image_url: Optional[str] = None, attachment_filename: Optional[str] = None) -> Optional[str]:
     """Same shape/return convention as _dm_user, but posts straight into a
-    channel (no DM-channel-open step) — used for /ownerbroadcast's
+    channel (no DM-channel-open step) — used for /admin broadcast send's
     "Mod-log channels" target, where the recipient row's user_id column
     actually holds a channel id (see recipient_kind on
     discord_owner_broadcast_recipients). A channel the bot no longer has

@@ -39,6 +39,7 @@ from config import (
     CLONE_MONETIZATION_FEE_GHS, CLONE_MONETIZATION_FEE_USD, CLONE_MONETIZATION_DAYS, PRICE_REGISTRY,
     DISCORD_OWNER_BROADCAST_IDS,
 )
+from discord_bot.cogs._admin_mount import mount_admin_command
 from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 from discord_bot.cogs._views_pending_payments import build_pending_payments_view
 
@@ -222,6 +223,30 @@ class CloneAdminCog(commands.Cog):
         # pattern in discord_bot/cogs/image_search.py.
         self._pending_monetize: dict[int, dict] = {}
 
+    async def cog_load(self):
+        # Owner/admin commands share the single global /admin slot instead of
+        # taking one top-level slot each (Discord caps global commands at 100).
+        # Each command keeps its own authorization check in its body.
+        m = self.bot
+        mount_admin_command(m, self.allservers, name="servers",
+                            description="[Admin] List every server across the main bot and all clones, with owners/managers")
+        mount_admin_command(m, self.ownermonetize, name="monetize",
+                            description="[Owner] Force-activate monetization on any clone, no payment")
+        mount_admin_command(m, self.approvepayment, name="approve", subgroup="payments",
+                            description="[Admin] Approve a pending manual payment by reference — any paid feature")
+        mount_admin_command(m, self.rejectpayment, name="reject", subgroup="payments",
+                            description="[Admin] Reject a pending manual payment by reference")
+        mount_admin_command(m, self.pendingpayments, name="pending", subgroup="payments",
+                            description="[Admin] List all payments awaiting review")
+        mount_admin_command(m, self.assignpayment, name="assign", subgroup="payments",
+                            description="[Owner] Apply a paid purchase to a server by ID (override for the Choose-server step)")
+        mount_admin_command(m, self.paymentmode, name="mode", subgroup="payments",
+                            description="[Owner] Set payment routing: auto-split by country, Paystack only, or Gumroad only")
+        mount_admin_command(m, self.ownerbroadcast, name="send", subgroup="broadcast",
+                            description="[Owner] DM an announcement to bot users or clone admins")
+        mount_admin_command(m, self.broadcaststatus, name="status", subgroup="broadcast",
+                            description="[Owner] Check whether an /admin broadcast send actually went out")
+
     # ── /registerclone ───────────────────────────────────────────────────
     @app_commands.command(
         name="registerclone",
@@ -316,16 +341,13 @@ class CloneAdminCog(commands.Cog):
             ephemeral=True,
         )
 
-    # ── /allservers ───────────────────────────────────────────────────────
+    # ── /admin servers ───────────────────────────────────────────────────────
     # Admin-only cross-bot roster: every server the main bot AND every
     # clone are currently in, with the server's own owner and (for clones)
     # who manages that clone — one row per server. Rendered as a monospace
     # table since Discord has no native table component; also attached as
     # CSV since the table gets truncated once the roster is large.
-    @app_commands.command(
-        name="allservers",
-        description="[Admin] List every server across the main bot and all clones, with owners/managers",
-    )
+    # Mounted as /admin servers (see cog_load).
     @app_commands.describe(include_left="Include servers the bot/clone has since left (default: no)")
     async def allservers(self, interaction: discord.Interaction, include_left: bool = False):
         if not _is_clone_admin(interaction.user.id):
@@ -783,7 +805,7 @@ class CloneAdminCog(commands.Cog):
         await _notify_buyer(interaction.client, row["user_id"], row["payment_type"], approved=True)
         await interaction.followup.send(f"✅ Confirmed and unlocked for <@{row['user_id']}>.", ephemeral=True)
 
-    # ── /approvepayment, /rejectpayment — command form of the DM card ────
+    # ── /admin payments approve, /admin payments reject — command form of the DM card ────
     # Same review this admin would otherwise do by tapping Approve/Reject
     # on the DM card payments_manual.py sends (see that module's
     # send_manual_payment_approval_dms) — this just lets it be done by
@@ -792,7 +814,7 @@ class CloneAdminCog(commands.Cog):
     # ANY payment_type wired into UNLOCK_HANDLERS (welcome_card_pack,
     # ultra_welcome_pack, discord_clone, discord_clone_monetization,
     # custom_role, music_pro, xp_boost, and anything added later), unlike
-    # /verify (premium.py, premium groups only) or /ownermonetize (clone
+    # /verify (premium.py, premium groups only) or /admin monetize (clone
     # monetization only) — those stay as-is for their own narrower cases.
     #
     # Authorization mirrors payments_manual._resolve_approvers exactly —
@@ -812,7 +834,7 @@ class CloneAdminCog(commands.Cog):
             return False
         return True
 
-    @app_commands.command(name="approvepayment", description="[Admin] Approve a pending manual payment by reference — any paid feature")
+    # Mounted as /admin payments approve (see cog_load).
     @app_commands.describe(
         reference="The payment reference (buyer's or from the approval DM)",
         amount="Real amount paid in GHS, confirmed against the payment provider's dashboard (not the buyer's claim)",
@@ -838,7 +860,7 @@ class CloneAdminCog(commands.Cog):
             f"✅ {result.message}" if result.ok else result.message, ephemeral=True
         )
 
-    @app_commands.command(name="rejectpayment", description="[Admin] Reject a pending manual payment by reference")
+    # Mounted as /admin payments reject (see cog_load).
     @app_commands.describe(reference="The payment reference (buyer's or from the approval DM)")
     async def rejectpayment(self, interaction: discord.Interaction, reference: str):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -854,15 +876,15 @@ class CloneAdminCog(commands.Cog):
             f"❌ {result.message}" if result.ok else result.message, ephemeral=True
         )
 
-    # ── /pendingpayments — browse the whole manual-review queue ──────────
-    # Companion to /approvepayment and /rejectpayment above: those need a
+    # ── /admin payments pending — browse the whole manual-review queue ──────────
+    # Companion to /admin payments approve and /admin payments reject above: those need a
     # reference already in hand (from the buyer, or from a DM card that
     # might have scrolled away); this browses every payment_logs row
     # currently `awaiting_review`, globally, without needing one. Same
     # authorization scope as the two commands above — see
     # _views_pending_payments.py's module docstring for how a clone
     # owner's view is filtered down to only their own clone's rows.
-    @app_commands.command(name="pendingpayments", description="[Admin] List all payments awaiting review")
+    # Mounted as /admin payments pending (see cog_load).
     async def pendingpayments(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         view = await build_pending_payments_view(interaction.client, interaction.user.id, page=0)
@@ -871,7 +893,7 @@ class CloneAdminCog(commands.Cog):
             return
         await interaction.followup.send(view=view, ephemeral=True)
 
-    # ── /assignpayment — owner override: apply a paid purchase to a server ─
+    # ── /admin payments assign — owner override: apply a paid purchase to a server ─
     # For guild-scoped purchases (card pack, Customize Card, custom role,
     # Music Pro, Premium) that were paid but never got a server — the buyer
     # never tapped "Choose server", their DMs are closed, or the checkout
@@ -879,7 +901,7 @@ class CloneAdminCog(commands.Cog):
     # same UNLOCK_HANDLERS entry the buyer's picker would, on the server ID
     # you give, then records it on the payment and closes the buyer's
     # pending picker so the button can't unlock a second server.
-    @app_commands.command(name="assignpayment", description="[Owner] Apply a paid purchase to a server by ID (override for the Choose-server step)")
+    # Mounted as /admin payments assign (see cog_load).
     @app_commands.describe(
         reference="The payment reference (e.g. gum_ultra_welcome_pack_123_ab12cd34)",
         server_id="The server (guild) ID to unlock it on — right-click the server with Developer Mode on",
@@ -919,7 +941,7 @@ class CloneAdminCog(commands.Cog):
             # (single-use) so it can't also unlock a different server.
             claim_record = await _take_claim(row["paystack_reference"])
         elif status == "pending" and provider in ("paystack", "gumroad"):
-            # Gateway never confirmed it: same atomic claim /approvepayment uses.
+            # Gateway never confirmed it: same atomic claim /admin payments approve uses.
             claimed = await db.claim_gateway_payment_for_approval(row["payment_id"], None)
             if not claimed:
                 await interaction.followup.send("That payment was just resolved by something else — check its status.", ephemeral=True)
@@ -958,13 +980,13 @@ class CloneAdminCog(commands.Cog):
             ephemeral=True,
         )
 
-    # ── /ownermonetize — one-shot owner shortcut ─────────────────────────
+    # ── /admin monetize — one-shot owner shortcut ─────────────────────────
     # Suggested as "/admin monetize <clone_id>" but the existing top-level
     # "admin" group lives in discord_bot/cogs/admin.py (a separate cog) and
     # app_commands doesn't let two cogs share a group name, so this is a
     # standalone command instead. Same effect: force-activate without the
     # payment/verify button flow — for testing or comping specific clones.
-    @app_commands.command(name="ownermonetize", description="[Owner] Force-activate monetization on any clone, no payment")
+    # Mounted as /admin monetize (see cog_load).
     @app_commands.describe(clone_id="The clone id to activate (see /myclones)")
     async def ownermonetize(self, interaction: discord.Interaction, clone_id: int):
         await interaction.response.defer(ephemeral=True)
@@ -982,7 +1004,7 @@ class CloneAdminCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="paymentmode", description="[Owner] Set payment routing: auto-split by country, Paystack only, or Gumroad only")
+    # Mounted as /admin payments mode (see cog_load).
     @app_commands.describe(
         mode="split = Ghana pays via Paystack, others via Gumroad. Or force one provider for everyone.",
         clone_id="Restrict the switch to one clone (see /myclones) — omit to change the main bot",
@@ -1031,7 +1053,7 @@ class CloneAdminCog(commands.Cog):
         )
 
 
-    # ── /ownerbroadcast — DM every user of the main bot + every clone ────
+    # ── /admin broadcast send — DM every user of the main bot + every clone ────
     # Fan-out only: this command just resolves recipients and queues the
     # job (fast, so the slash command can respond immediately). The actual
     # DMing happens out-of-band in api/cron_discord_owner_broadcast.py,
@@ -1051,7 +1073,7 @@ class CloneAdminCog(commands.Cog):
             if current in str(c["clone_id"]) or current in c["bot_username"].lower()
         ][:25]
 
-    @app_commands.command(name="ownerbroadcast", description="[Owner] DM an announcement to bot users or clone admins")
+    # Mounted as /admin broadcast send (see cog_load).
     @app_commands.describe(
         message="The announcement text — sent as-is, signed with your configured brand name",
         target="Who receives this DM — regular bot users (default), clone admins/operators, or server owners",
@@ -1125,7 +1147,7 @@ class CloneAdminCog(commands.Cog):
         # expires (currently ~24h). Broadcasts normally send within
         # minutes via the cron sender, so this is fine in practice; it
         # only bites if a broadcast sits queued for a long time (see
-        # /broadcaststatus's "stuck" diagnosis below) with a file attached.
+        # /admin broadcast status's "stuck" diagnosis below) with a file attached.
         image_url = attachment.url if attachment is not None else None
         attachment_filename = attachment.filename if attachment is not None else None
 
@@ -1263,19 +1285,19 @@ class CloneAdminCog(commands.Cog):
             f".\n"
             f"It'll go out shortly via the broadcast sender — DMs trickle out gradually to stay well under "
             f"Discord's rate limits, so a large broadcast can take a while to fully land.\n"
-            f"Check progress any time with `/broadcaststatus id:{broadcast_id}`.",
+            f"Check progress any time with `/admin broadcast status id:{broadcast_id}`.",
             ephemeral=True,
         )
 
-    # ── /broadcaststatus — did /ownerbroadcast actually go out? ──────────
+    # ── /admin broadcast status — did /admin broadcast send actually go out? ──────────
     # Exists because the cron sender (api/cron_discord_owner_broadcast.py)
-    # runs completely out-of-band from the slash command — /ownerbroadcast
+    # runs completely out-of-band from the slash command — /admin broadcast send
     # only ever confirms the job was QUEUED, never that DMs actually sent.
     # If nothing's hitting that cron endpoint (not wired to a scheduler
     # yet, wrong CRON_SECRET, scheduler paused, etc.) a broadcast can sit
     # at 0 sent forever with no visible error anywhere else.
-    @app_commands.command(name="broadcaststatus", description="[Owner] Check whether an /ownerbroadcast actually went out")
-    @app_commands.describe(id="Broadcast id shown when you ran /ownerbroadcast. Leave blank for the most recent one.")
+    # Mounted as /admin broadcast status (see cog_load).
+    @app_commands.describe(id="Broadcast id shown when you ran /admin broadcast send. Leave blank for the most recent one.")
     async def broadcaststatus(self, interaction: discord.Interaction, id: Optional[int] = None):
         await interaction.response.defer(ephemeral=True)
         if interaction.user.id not in DISCORD_OWNER_BROADCAST_IDS:
@@ -1285,7 +1307,7 @@ class CloneAdminCog(commands.Cog):
         if id is None:
             broadcast = await db.get_latest_owner_broadcast(interaction.user.id)
             if not broadcast:
-                await interaction.followup.send("You haven't run `/ownerbroadcast` yet.", ephemeral=True)
+                await interaction.followup.send("You haven't run `/admin broadcast send` yet.", ephemeral=True)
                 return
         else:
             broadcast = await db.get_owner_broadcast(id)
@@ -1301,7 +1323,7 @@ class CloneAdminCog(commands.Cog):
 
         if attempted == 0 and broadcast["status"] == "pending":
             diagnosis = (
-                "⚠️ **Nothing has gone out yet, and it's likely stuck.** `/ownerbroadcast` only queues the job — "
+                "⚠️ **Nothing has gone out yet, and it's likely stuck.** `/admin broadcast send` only queues the job — "
                 "actually sending it is api/cron_discord_owner_broadcast.py, which has to be hit by an external "
                 "scheduler (Vercel Cron, cron-job.org, etc.) every minute or so. Zero attempts after a while "
                 "usually means: that endpoint isn't wired to a scheduler yet, the scheduler is hitting the wrong "

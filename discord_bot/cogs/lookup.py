@@ -1,6 +1,6 @@
 # path: discord_bot/cogs/lookup.py
 
-"""/find — admin-only wizard: start typing a server name, a person's
+"""/admin find — admin-only wizard: start typing a server name, a person's
 name, OR paste a raw server/user ID directly, and get live autocomplete
 suggestions searched across the main bot AND every clone (discord_guilds
 is the shared cross-process registry all of
@@ -11,7 +11,7 @@ share).
 
 Person-name search is backed by discord_username_cache, a small table
 that fills in opportunistically rather than from a one-off backfill:
-every time this cog (or clone_admin.py's /allservers) resolves a user_id
+every time this cog (or clone_admin.py's /admin servers) resolves a user_id
 to a name, it also writes it here, and on_member_join below caches
 everyone as they join. That means there's no search history for anyone
 who joined before this shipped and hasn't been resolved by anything
@@ -30,6 +30,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from database import db
+from discord_bot.cogs._admin_mount import mount_admin_command
 from config import DISCORD_CLONE_ADMIN_IDS
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ def _is_clone_admin(user_id: int) -> bool:
 
 
 def _format_payments(rows, show_user: bool = False) -> str:
-    """One compact line per payment_logs row for /find embeds."""
+    """One compact line per payment_logs row for /admin find embeds."""
     lines = []
     for r in rows or []:
         when = r["created_date"].strftime("%Y-%m-%d") if r.get("created_date") else "?"
@@ -53,6 +54,13 @@ def _format_payments(rows, show_user: bool = False) -> str:
 class LookupCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def cog_load(self):
+        mount_admin_command(
+            self.bot, self.find, name="find",
+            description="[Admin] Start typing a server name, person's name, or paste a server/user ID",
+            autocompletes={"query": self.find_query_autocomplete},
+        )
 
     # ── opportunistic username-cache population ─────────────────────────
     @commands.Cog.listener()
@@ -155,7 +163,7 @@ class LookupCog(commands.Cog):
                 links.append(f"https://discord.gg/{code} (cached)")
             embed.add_field(name="Invite link", value="\n".join(links)[:1024] if links else "None stored", inline=False)
         except Exception:
-            logger.exception("/find: couldn't read invite link for guild %s", guild_id)
+            logger.exception("/admin find: couldn't read invite link for guild %s", guild_id)
 
         # ── deeper: what this server owns + what's been paid for it ──
         try:
@@ -168,13 +176,13 @@ class LookupCog(commands.Cog):
             ]
             embed.add_field(name="Unlocks", value=" • ".join(owns), inline=False)
         except Exception:
-            logger.exception("/find: couldn't read unlock state for guild %s", guild_id)
+            logger.exception("/admin find: couldn't read unlock state for guild %s", guild_id)
         try:
             pays = await db.get_payments_for_guild(guild_id, limit=6)
             embed.add_field(name="Payments for this server",
                             value=_format_payments(pays, show_user=True) or "None on record", inline=False)
         except Exception:
-            logger.exception("/find: couldn't read payments for guild %s", guild_id)
+            logger.exception("/admin find: couldn't read payments for guild %s", guild_id)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -184,12 +192,12 @@ class LookupCog(commands.Cog):
         try:
             clones = await db.get_clones_managed_by(user_id)
         except Exception:
-            logger.exception("/find: couldn't read clones for %s", user_id)
+            logger.exception("/admin find: couldn't read clones for %s", user_id)
             clones = []
         try:
             pays = await db.get_payments_for_user(user_id, limit=8)
         except Exception:
-            logger.exception("/find: couldn't read payments for %s", user_id)
+            logger.exception("/admin find: couldn't read payments for %s", user_id)
             pays = []
 
         embed = discord.Embed(title=name, color=discord.Color.green())
@@ -231,10 +239,7 @@ class LookupCog(commands.Cog):
         await self._show_person(interaction, raw_id)
 
     # ── the command itself ────────────────────────────────────────────
-    @app_commands.command(
-        name="find",
-        description="[Admin] Start typing a server name, person's name, or paste a server/user ID",
-    )
+    # Mounted as /admin find (see cog_load).
     @app_commands.describe(query="Server/user ID, or start typing a name — suggestions search live across all bots")
     async def find(self, interaction: discord.Interaction, query: str):
         if not _is_clone_admin(interaction.user.id):
@@ -272,7 +277,6 @@ class LookupCog(commands.Cog):
             return
         await interaction.followup.send(f"Nothing matching **{query}** found.", ephemeral=True)
 
-    @find.autocomplete("query")
     async def find_query_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self._find_autocomplete(interaction, current)
 

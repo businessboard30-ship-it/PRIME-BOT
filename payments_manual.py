@@ -6,15 +6,15 @@ Buyers in Ghana pay through Paystack (the automatic gateway path in
 payments.py/resolve_gateway()); everyone else pays through Gumroad
 (gumroad_payments.py, confirmed automatically by its ping webhook).
 
-/paymentmode picks how a purchase is routed:
+/admin payments mode picks how a purchase is routed:
   - "split"   (default) the buyer chooses Ghana (Paystack) or International (Gumroad)
   - "auto"    everyone goes through Paystack/Stripe
   - "gumroad" everyone goes through Gumroad
 
 Every path ends in the same UNLOCK_HANDLERS entry for the payment_type, so
 what "paid" means never diverges between providers. The admin
-Approve/Reject buttons and /approvepayment, /rejectpayment stay as a
-manual override; /approvepayment and /rejectpayment also work on Paystack
+Approve/Reject buttons and /admin payments approve, /admin payments reject stay as a
+manual override; /admin payments approve and /admin payments reject also work on Paystack
 and Gumroad payments still 'pending' because the gateway's automatic
 confirmation never landed.
 """
@@ -79,7 +79,7 @@ _GATEWAY_PROVIDERS = ("paystack", "gumroad")
 def _is_pending_gateway_row(row: dict) -> bool:
     """A Paystack/Gumroad payment still waiting on its gateway's automatic
     confirmation (Paystack verify / Gumroad ping). These never reach
-    'awaiting_review', so /approvepayment and /rejectpayment need this
+    'awaiting_review', so /admin payments approve and /admin payments reject need this
     second path to act on them."""
     return row.get("status") == "pending" and row.get("provider") in _GATEWAY_PROVIDERS
 
@@ -104,7 +104,7 @@ async def _approve_pending_gateway_payment(bot: discord.Client, row: dict,
         return ManualPaymentResolution(
             False,
             f"`{row['payment_type']}` unlocks a specific server, and this payment has none attached. "
-            f"Use `/assignpayment` with this reference and the server ID instead.", row,
+            f"Use `/admin payments assign` with this reference and the server ID instead.", row,
         )
 
     claimed = await db.claim_gateway_payment_for_approval(row["payment_id"], amount)
@@ -127,7 +127,7 @@ async def _approve_pending_gateway_payment(bot: discord.Client, row: dict,
 
 
 async def resolve_manual_payment_approval(bot: discord.Client, payment_id: int, amount: Optional[float] = None) -> ManualPaymentResolution:
-    """Shared by _ManualPayApproveButton's click and the /approvepayment
+    """Shared by _ManualPayApproveButton's click and the /admin payments approve
     slash command — same lookup, same UNLOCK_HANDLERS dispatch, same
     buyer DM, so a payment approved from a command is applied identically
     to one approved from the DM card. Does NOT touch the DM card's own
@@ -702,7 +702,7 @@ async def start_dual_mode_payment(interaction: discord.Interaction, *, payment_t
                                    currency_override: Optional[str] = None) -> None:
     """Single entry point for a one-time paid feature that supports BOTH
     the Gumroad (international) and Paystack (Ghana) paths,
-    switched live via /paymentmode instead of a hardcoded choice — call
+    switched live via /admin payments mode instead of a hardcoded choice — call
     this instead of calling start_manual_payment directly, so a feature
     never has to hand-roll the automatic-gateway half itself (that used to
     mean copy-pasting ~40 lines per feature — see views_card_pack.py's
