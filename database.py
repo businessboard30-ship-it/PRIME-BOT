@@ -139,7 +139,13 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "35"
+SCHEMA_VERSION = "36"
+# "35" -> "36" adds discord_honeypot_config (CREATE TABLE + unique index) for
+# the premium honeypot trap channel — see discord_bot/cogs/honeypot.py. It
+# shipped WITHOUT this bump, so every DB already stamped '35' skipped the DDL
+# pass and the table was never created (UndefinedTableError on every
+# get_honeypot_config call). Same bump-or-it-never-runs trap as every entry
+# below.
 # "34" -> "35" adds 019_godhood.sql (discord_godhood_trials +
 # discord_godhood_hall_of_fame tables) for the 5-god ascension gauntlet —
 # see modules/godhood_cards.py and database.py's
