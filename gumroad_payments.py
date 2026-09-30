@@ -114,14 +114,17 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
     )
     view = discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label="💳 Pay on Gumroad", url=link, style=discord.ButtonStyle.link))
+    from discord_bot.cogs._views_payment_card import (
+        order_summary, auto_unlock_note, add_check_status_button,
+    )
+    add_check_status_button(view, user.id, payment_type, guild_id)
     from discord_bot.cogs._views_premium import add_go_premium_option
     add_go_premium_option(view, interaction, payment_type, guild_id)
     prefix = f"{intro}\n\n" if intro else ""
     await interaction.followup.send(
-        f"{prefix}Pay **{amount_display}** on Gumroad using the button below. "
-        f"Use this exact button — it carries your order reference. "
-        f"Your purchase is confirmed and unlocked automatically within a few seconds of paying; "
-        f"you'll get a DM when it's done.",
+        f"{prefix}{order_summary(interaction, payment_type, amount_display, guild_id, reference)}\n\n"
+        f"Pay with the button below — use this exact one, it carries your order reference.\n"
+        f"{auto_unlock_note(guild_id)}",
         view=view, ephemeral=True,
     )
     return reference
