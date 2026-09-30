@@ -124,7 +124,7 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
     await interaction.followup.send(
         f"{prefix}{order_summary(interaction, payment_type, amount_display, guild_id, reference)}\n\n"
         f"Pay with the button below — use this exact one, it carries your order reference.\n"
-        f"{auto_unlock_note(guild_id)}",
+        f"{auto_unlock_note(guild_id, payment_type)}",
         view=view, ephemeral=True,
     )
     return reference

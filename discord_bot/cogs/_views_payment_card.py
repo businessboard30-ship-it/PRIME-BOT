@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 _STATUS_RE = re.compile(r"^paystatus:(?P<user_id>\d+):(?P<ptype>[a-z0-9_]+):(?P<guild_id>\d+)$")
 
 
+# Products whose purchase isn't about a particular server even though the
+# checkout was started inside one (the ad runs across bots, not on that server),
+# so the card must not show a server or the "wrong server?" hint for them.
+_SERVERLESS_DISPLAY = {"ad_placement"}
+
+
 def product_label(payment_type: str) -> str:
     from discord_bot.cogs._views_gumroad_claim import _PRODUCT_LABELS
     return _PRODUCT_LABELS.get(payment_type) or payment_type.replace("_", " ").title()
@@ -62,7 +68,7 @@ def order_summary(interaction: discord.Interaction, payment_type: str, price_dis
         f"**Product:** {product_label(payment_type)}",
         f"**Price:** {_price_text(payment_type, price_display)}",
     ]
-    if guild_id:
+    if guild_id and payment_type not in _SERVERLESS_DISPLAY:
         lines.append(f"**Server:** {_server_name(interaction, int(guild_id))}")
     else:
         lines.append("**Server:** not tied to a server (account purchase)")
@@ -74,16 +80,16 @@ def order_summary(interaction: discord.Interaction, payment_type: str, price_dis
     return "\n".join(lines)
 
 
-def wrong_server_note(guild_id: Optional[int]) -> str:
-    if not guild_id:
+def wrong_server_note(guild_id: Optional[int], payment_type: Optional[str] = None) -> str:
+    if not guild_id or payment_type in _SERVERLESS_DISPLAY:
         return ""
     return "Wrong server? Close this and run the command in the server you want."
 
 
-def auto_unlock_note(guild_id: Optional[int]) -> str:
+def auto_unlock_note(guild_id: Optional[int], payment_type: Optional[str] = None) -> str:
     """Reassurance line for checkouts that confirm by themselves (Gumroad)."""
     parts = ["⚡ Unlocks automatically within seconds of paying, and you'll get a DM."]
-    wrong = wrong_server_note(guild_id)
+    wrong = wrong_server_note(guild_id, payment_type)
     if wrong:
         parts.append(wrong)
     return "\n".join(parts)
