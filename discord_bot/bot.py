@@ -319,6 +319,8 @@ class AnimeBotDiscord(commands.Bot):
 
         self.join_dm_reminder_loop.start()
         self.payment_reminder_loop.start()
+        if self.clone_id is None:
+            self.status_rotation_loop.start()
 
         # Slash command sync: to a single dev guild (near-instant propagation)
         # if DISCORD_DEV_GUILD_ID is set, otherwise global (works everywhere
@@ -958,6 +960,41 @@ class AnimeBotDiscord(commands.Bot):
         stronger liveness signal."""
         if self.clone_id is not None:
             await db.touch_discord_clone_heartbeat(self.clone_id)
+
+
+    # ── rotating status ("the text under the bot's name that keeps changing") ──
+    # Bots can't use custom-status text, but they can show "Playing / Watching /
+    # Listening to ..." and change it on a timer. Discord rate-limits presence
+    # updates (about 5 per 20s), so keep the interval at 20s or more.
+    _status_index = 0
+
+    def _status_messages(self):
+        servers = len(self.guilds)
+        members = sum((g.member_count or 0) for g in self.guilds)
+        return [
+            discord.Activity(type=discord.ActivityType.watching, name=f"{servers} servers"),
+            discord.Activity(type=discord.ActivityType.watching, name=f"{members:,} members"),
+            discord.Activity(type=discord.ActivityType.playing, name="/help for commands"),
+            discord.Activity(type=discord.ActivityType.listening, name="your anime requests"),
+            discord.Activity(type=discord.ActivityType.playing, name="/aichat to chat with me"),
+            discord.Activity(type=discord.ActivityType.playing, name="Leveling • /levelrole setup"),
+            discord.Activity(type=discord.ActivityType.watching, name="Honeypot LIVE • /honeypot"),
+            discord.Activity(type=discord.ActivityType.playing, name="Welcome setup • /welcome setup"),
+        ]
+
+    @tasks.loop(seconds=30)
+    async def status_rotation_loop(self):
+        try:
+            messages = self._status_messages()
+            activity = messages[self._status_index % len(messages)]
+            self._status_index += 1
+            await self.change_presence(status=discord.Status.online, activity=activity)
+        except Exception:
+            logger.debug("[status] rotation skipped", exc_info=True)
+
+    @status_rotation_loop.before_loop
+    async def _before_status_rotation_loop(self):
+        await self.wait_until_ready()
 
 
 async def _resolve_token(clone_id: int = None) -> str:
