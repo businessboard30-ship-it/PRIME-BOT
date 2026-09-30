@@ -1,0 +1,500 @@
+"""
+Owner control panel — buttons, select menus and modals only, no typed slash
+arguments. Opened with `/admin panel`.
+
+Design rules (see the plan in the PR description):
+
+* The panel is a thin UI shell. Every action calls the SAME cog coroutine the
+  matching `/admin ...` command calls (`cog.approvepayment(interaction, ...)`
+  etc.), so auth checks, DB writes and replies are identical and there is no
+  second copy of the logic to drift. The old slash commands stay mounted as a
+  fallback until the panel covers everything.
+* Only the person who opened a panel can use it, and access is re-checked on
+  EVERY click (an allowlist edit takes effect immediately).
+* Money / fan-out actions are two-step (button -> explicit Confirm).
+* Every action writes one `[admin-panel-audit]` log line.
+* Discord limits respected: <=5 buttons per row, <=25 select options, <=5
+  modal fields, TextInput <=4000 chars.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Callable, Dict, List, Optional
+
+import discord
+from discord import app_commands
+
+from config import DISCORD_CLONE_ADMIN_IDS, DISCORD_OWNER_BROADCAST_IDS
+from database import db
+
+logger = logging.getLogger(__name__)
+
+PANEL_TIMEOUT = 600  # seconds of inactivity before buttons stop working
+
+PAYMENT_MODES = [
+    ("split", "Split — Ghana via Paystack, others via Gumroad"),
+    ("auto", "Paystack only"),
+    ("gumroad", "Gumroad only"),
+    ("inherit", "Follow main bot (clones only)"),
+]
+
+
+# ── access ───────────────────────────────────────────────────────────────
+
+def allowed_sections(user_id: int) -> set:
+    """Which panel sections this user may open. Mirrors the two allowlists
+    the slash commands already use (DISCORD_CLONE_ADMIN_IDS for payments,
+    DISCORD_OWNER_BROADCAST_IDS for broadcasts)."""
+    out = set()
+    if user_id in DISCORD_CLONE_ADMIN_IDS:
+        out.add("payments")
+    if user_id in DISCORD_OWNER_BROADCAST_IDS:
+        out.add("broadcast")
+    return out
+
+
+def can_open_panel(user_id: int) -> bool:
+    return bool(allowed_sections(user_id))
+
+
+def audit(interaction: discord.Interaction, action: str, **details) -> None:
+    logger.info("[admin-panel-audit] user=%s guild=%s action=%s %s",
+                interaction.user.id, interaction.guild_id, action,
+                " ".join(f"{k}={v!r}" for k, v in details.items()))
+
+
+# ── base view ────────────────────────────────────────────────────────────
+
+class PanelView(discord.ui.LayoutView):
+    """One screen of the panel. Subclasses fill `body()` and `controls()`."""
+
+    title = "Owner panel"
+    accent = discord.Color.blurple()
+
+    def __init__(self, cog, owner_id: int, section: Optional[str] = None):
+        super().__init__(timeout=PANEL_TIMEOUT)
+        self.cog = cog                # AdminPanelCog
+        self.owner_id = owner_id
+        self.section = section        # None = home; else needs allowed_sections()
+        self._build()
+
+    # subclasses override
+    def body(self) -> List[str]:
+        return []
+
+    def controls(self) -> List[discord.ui.Item]:
+        """Items (buttons/selects). Selects take a full row; buttons are
+        packed 5 per row."""
+        return []
+
+    def _build(self) -> None:
+        self.clear_items()
+        children: list = [discord.ui.TextDisplay("\n".join([f"### {self.title}", *self.body()]))]
+        items = self.controls()
+        if items:
+            children.append(discord.ui.Separator())
+            row: list = []
+            for it in items:
+                if isinstance(it, discord.ui.Select):
+                    if row:
+                        children.append(discord.ui.ActionRow(*row)); row = []
+                    children.append(discord.ui.ActionRow(it))
+                else:
+                    row.append(it)
+                    if len(row) == 5:
+                        children.append(discord.ui.ActionRow(*row)); row = []
+            if row:
+                children.append(discord.ui.ActionRow(*row))
+        self.add_item(discord.ui.Container(*children, accent_colour=self.accent))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("This panel belongs to someone else.", ephemeral=True)
+            return False
+        allowed = allowed_sections(interaction.user.id)
+        if not allowed or (self.section and self.section not in allowed):
+            await interaction.response.send_message("You're no longer authorized for this.", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.walk_children():
+            if hasattr(child, "disabled"):
+                child.disabled = True
+
+    async def soft_refresh(self, interaction: discord.Interaction) -> None:
+        """Re-render this panel AFTER a cog method has already used the
+        interaction's response (so edit_message is no longer allowed). Best
+        effort: a failure here must never hide the action's real result."""
+        try:
+            self._build()
+            if interaction.message is not None:
+                await interaction.followup.edit_message(interaction.message.id, view=self)
+        except Exception:
+            logger.debug("[admin-panel] soft refresh skipped", exc_info=True)
+
+    # navigation helper
+    async def go(self, interaction: discord.Interaction, view: "PanelView") -> None:
+        await interaction.response.edit_message(view=view)
+
+
+def _btn(label: str, style: discord.ButtonStyle, cb: Callable, emoji: str = None,
+         disabled: bool = False) -> discord.ui.Button:
+    b = discord.ui.Button(label=label, style=style, emoji=emoji, disabled=disabled)
+    b.callback = cb
+    return b
+
+
+# ── home ─────────────────────────────────────────────────────────────────
+
+class HomeView(PanelView):
+    title = "🛠️ Owner panel"
+
+    def body(self) -> List[str]:
+        a = allowed_sections(self.owner_id)
+        lines = ["Pick an area. Everything here uses buttons and forms — no typed commands."]
+        if "payments" not in a:
+            lines.append("-# Payments: not available to your account.")
+        if "broadcast" not in a:
+            lines.append("-# Broadcast: not available to your account.")
+        return lines
+
+    def controls(self):
+        a = allowed_sections(self.owner_id)
+        P, S = discord.ButtonStyle.primary, discord.ButtonStyle.secondary
+        return [
+            _btn("Payments", P, self._payments, "💳", disabled="payments" not in a),
+            _btn("Broadcast", P, self._broadcast, "📢", disabled="broadcast" not in a),
+            _btn("Close", S, self._close, "✖️"),
+        ]
+
+    async def _payments(self, i: discord.Interaction):
+        await self.go(i, PaymentsView(self.cog, self.owner_id, "payments"))
+
+    async def _broadcast(self, i: discord.Interaction):
+        view = BroadcastView(self.cog, self.owner_id, "broadcast", in_dm=i.guild_id is None)
+        await view._ensure_clones()
+        view._build()
+        await self.go(i, view)
+
+    async def _close(self, i: discord.Interaction):
+        self.stop()
+        await i.response.edit_message(content="Panel closed.", view=None)
+
+
+# ── payments ─────────────────────────────────────────────────────────────
+
+class ReferenceModal(discord.ui.Modal):
+    """Generic 'enter a payment reference (+ optional extra)' form used by
+    Approve / Reject / Assign."""
+
+    def __init__(self, clone_admin, kind: str):
+        """`clone_admin` is the CloneAdminCog (or None if it isn't loaded)."""
+        titles = {"approve": "Approve payment", "reject": "Reject payment", "assign": "Assign payment to a server"}
+        super().__init__(title=titles[kind], timeout=PANEL_TIMEOUT)
+        self.clone_admin, self.kind = clone_admin, kind
+        self.reference = discord.ui.TextInput(label="Payment reference", max_length=200)
+        self.add_item(self.reference)
+        self.amount = self.server_id = None
+        if kind == "approve":
+            self.amount = discord.ui.TextInput(
+                label="Amount paid in GHS (only if required)", required=False, max_length=20,
+                placeholder="Leave blank for Paystack/Gumroad rows")
+            self.add_item(self.amount)
+        elif kind == "assign":
+            self.server_id = discord.ui.TextInput(label="Server (guild) ID", max_length=25)
+            self.add_item(self.server_id)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        clone = self.clone_admin
+        if clone is None:
+            await interaction.response.send_message("Payments module isn't loaded.", ephemeral=True)
+            return
+        ref = self.reference.value.strip()
+        if self.kind == "approve":
+            amount = None
+            raw = (self.amount.value or "").strip().replace(",", "")
+            if raw:
+                try:
+                    amount = float(raw)
+                except ValueError:
+                    await interaction.response.send_message("Amount must be a number, e.g. `150` or `149.50`.", ephemeral=True)
+                    return
+            audit(interaction, "payment.approve", reference=ref, amount=amount)
+            await clone.approvepayment(interaction, reference=ref, amount=amount)
+        elif self.kind == "reject":
+            audit(interaction, "payment.reject", reference=ref)
+            await clone.rejectpayment(interaction, reference=ref)
+        else:
+            audit(interaction, "payment.assign", reference=ref, server_id=self.server_id.value.strip())
+            await clone.assignpayment(interaction, reference=ref, server_id=self.server_id.value)
+
+
+class PaymentsView(PanelView):
+    title = "💳 Payments"
+
+    def body(self):
+        return ["Review the queue, or act on a payment by reference.",
+                "-# Approve/Reject keep their per-payment approver check; Assign and Mode are owner-only."]
+
+    def controls(self):
+        P, S, G, D = (discord.ButtonStyle.primary, discord.ButtonStyle.secondary,
+                      discord.ButtonStyle.success, discord.ButtonStyle.danger)
+        return [
+            _btn("Pending queue", P, self._pending, "📋"),
+            _btn("Approve", G, self._approve, "✅"),
+            _btn("Reject", D, self._reject, "❌"),
+            _btn("Assign to server", S, self._assign, "🔗"),
+            _btn("Payment mode", S, self._mode, "⚙️"),
+            _btn("Back", S, self._back, "⬅️"),
+        ]
+
+    async def _pending(self, i: discord.Interaction):
+        clone = self.cog.clone_admin
+        if clone is None:
+            await i.response.send_message("Payments module isn't loaded.", ephemeral=True)
+            return
+        audit(i, "payment.pending_view")
+        # Opens the existing paged approve/reject queue as its own ephemeral
+        # message (it is a separate Components-v2 view with its own buttons).
+        await clone.pendingpayments(i)
+
+    async def _approve(self, i): await i.response.send_modal(ReferenceModal(self.cog.clone_admin, "approve"))
+    async def _reject(self, i): await i.response.send_modal(ReferenceModal(self.cog.clone_admin, "reject"))
+    async def _assign(self, i): await i.response.send_modal(ReferenceModal(self.cog.clone_admin, "assign"))
+
+    async def _mode(self, i: discord.Interaction):
+        clones = await db.list_active_discord_clones()
+        await self.go(i, PaymentModeView(self.cog, self.owner_id, "payments", clones))
+
+    async def _back(self, i): await self.go(i, HomeView(self.cog, self.owner_id))
+
+
+class PaymentModeView(PanelView):
+    title = "⚙️ Payment mode"
+
+    def __init__(self, cog, owner_id, section, clones: List[dict]):
+        self.clones = clones[:23]  # 25 select options minus "main" and "all"
+        self.mode: Optional[str] = None
+        self.scope: str = "main"     # "main" | "all" | "clone:<id>"
+        self._confirm = False
+        super().__init__(cog, owner_id, section)
+
+    def body(self):
+        mode = dict(PAYMENT_MODES).get(self.mode, "— not chosen —")
+        if self.scope == "main":
+            scope = "Main bot"
+        elif self.scope == "all":
+            scope = "Every active clone (not the main bot)"
+        else:
+            scope = f"Clone `#{self.scope.split(':')[1]}`"
+        lines = [f"**Mode:** {mode}", f"**Applies to:** {scope}"]
+        if len(self.clones) < 1:
+            lines.append("-# No active clones found.")
+        if self._confirm:
+            lines.append("⚠️ **Press Confirm to apply.** This changes how every purchase is routed, immediately.")
+        return lines
+
+    def controls(self):
+        mode_sel = discord.ui.Select(
+            placeholder="Choose payment mode",
+            options=[discord.SelectOption(label=label[:100], value=v, default=(v == self.mode))
+                     for v, label in PAYMENT_MODES])
+        mode_sel.callback = self._pick_mode
+        scope_opts = [discord.SelectOption(label="Main bot", value="main", default=self.scope == "main"),
+                      discord.SelectOption(label="All active clones", value="all", default=self.scope == "all")]
+        for c in self.clones:
+            v = f"clone:{c['clone_id']}"
+            scope_opts.append(discord.SelectOption(
+                label=f"Clone #{c['clone_id']} — {c['bot_username']}"[:100], value=v, default=self.scope == v))
+        scope_sel = discord.ui.Select(placeholder="Apply to…", options=scope_opts)
+        scope_sel.callback = self._pick_scope
+        S, G = discord.ButtonStyle.secondary, discord.ButtonStyle.success
+        return [
+            mode_sel, scope_sel,
+            _btn("Confirm" if self._confirm else "Apply", G if self._confirm else discord.ButtonStyle.primary,
+                 self._apply, "✅", disabled=self.mode is None),
+            _btn("Back", S, self._back, "⬅️"),
+        ]
+
+    async def _refresh(self, i):
+        self._confirm = False
+        self._build()
+        await i.response.edit_message(view=self)
+
+    async def _pick_mode(self, i: discord.Interaction):
+        self.mode = i.data["values"][0]
+        await self._refresh(i)
+
+    async def _pick_scope(self, i: discord.Interaction):
+        self.scope = i.data["values"][0]
+        await self._refresh(i)
+
+    async def _apply(self, i: discord.Interaction):
+        if not self._confirm:
+            self._confirm = True
+            self._build()
+            await i.response.edit_message(view=self)
+            return
+        clone = self.cog.clone_admin
+        label = dict(PAYMENT_MODES)[self.mode]
+        choice = app_commands.Choice(name=label, value=self.mode)
+        audit(i, "payment.mode", mode=self.mode, scope=self.scope)
+        kwargs = {}
+        if self.scope == "all":
+            kwargs["all_clones"] = True
+        elif self.scope.startswith("clone:"):
+            kwargs["clone_id"] = int(self.scope.split(":")[1])
+        self._confirm = False
+        await clone.paymentmode(i, mode=choice, **kwargs)  # defers + replies via followup
+        await self.soft_refresh(i)                          # reset the Confirm button
+
+    async def _back(self, i): await self.go(i, PaymentsView(self.cog, self.owner_id, "payments"))
+
+
+# ── broadcast ────────────────────────────────────────────────────────────
+
+BROADCAST_TARGETS = [
+    ("users", "Users — everyone across main bot + clones"),
+    ("admins", "Admins — clone owners/operators only"),
+    ("servers", "Server owners — owner of every server"),
+    ("modlogs", "Mod-log channels — post into each server's mod-log"),
+]
+
+
+class BroadcastComposeModal(discord.ui.Modal, title="Compose broadcast"):
+    def __init__(self, view: "BroadcastView"):
+        super().__init__(timeout=PANEL_TIMEOUT)
+        self.bview = view
+        self.message = discord.ui.TextInput(
+            label="Announcement text", style=discord.TextStyle.paragraph, max_length=2000,
+            default=view.message or None)
+        self.add_item(self.message)
+        self.upload = discord.ui.FileUpload(required=False, min_values=0, max_values=1)
+        self.add_item(discord.ui.Label(text="Attachment (optional)", component=self.upload))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.bview.message = self.message.value
+        files = list(getattr(self.upload, "values", []) or [])
+        self.bview.attachment = files[0] if files else self.bview.attachment
+        self.bview._confirm = False
+        self.bview._build()
+        await interaction.response.edit_message(view=self.bview)
+
+
+class BroadcastView(PanelView):
+    title = "📢 Broadcast"
+
+    def __init__(self, cog, owner_id, section, in_dm: bool):
+        self.in_dm = in_dm
+        self.message: Optional[str] = None
+        self.attachment: Optional[discord.Attachment] = None
+        self.target: str = "users"
+        self.clone_id: Optional[int] = None
+        self.clones: List[dict] = []
+        self._confirm = False
+        super().__init__(cog, owner_id, section)
+
+    def body(self):
+        if not self.in_dm:
+            return ["Broadcasts can only be sent from a **DM with the bot** (a safety rule carried over from "
+                    "the slash command). Run `/admin panel` in a DM to use this screen.",
+                    "-# You can still check delivery status below."]
+        preview = (self.message[:600] + ("…" if len(self.message) > 600 else "")) if self.message else "— no text yet —"
+        tgt = dict(BROADCAST_TARGETS)[self.target]
+        scope = f"clone `#{self.clone_id}` only" if self.clone_id else "main bot + all clones"
+        lines = [f"**Target:** {tgt}", f"**Scope:** {scope}",
+                 f"**Attachment:** {self.attachment.filename if self.attachment else 'none'}",
+                 "**Message:**", f"> {preview}".replace("\n", "\n> ")]
+        if self.target == "admins" and self.clone_id:
+            lines.append("⚠️ The clone filter doesn't apply to *Admins* — pick another target or clear the clone.")
+        if self._confirm:
+            lines.append("⚠️ **Press Confirm to queue this broadcast.** It goes to real users.")
+        return lines
+
+    def controls(self):
+        S, P, G, D = (discord.ButtonStyle.secondary, discord.ButtonStyle.primary,
+                      discord.ButtonStyle.success, discord.ButtonStyle.danger)
+        items: list = []
+        if self.in_dm:
+            tsel = discord.ui.Select(
+                placeholder="Who receives it?",
+                options=[discord.SelectOption(label=l[:100], value=v, default=v == self.target)
+                         for v, l in BROADCAST_TARGETS])
+            tsel.callback = self._pick_target
+            items.append(tsel)
+            copts = [discord.SelectOption(label="Main bot + all clones", value="none", default=self.clone_id is None)]
+            for c in self.clones[:24]:
+                copts.append(discord.SelectOption(
+                    label=f"Clone #{c['clone_id']} — {c['bot_username']}"[:100], value=str(c["clone_id"]),
+                    default=self.clone_id == c["clone_id"]))
+            csel = discord.ui.Select(placeholder="Restrict to a clone?", options=copts)
+            csel.callback = self._pick_clone
+            items.append(csel)
+            ready = bool(self.message) and not (self.target == "admins" and self.clone_id)
+            items += [
+                _btn("Write / edit message", P, self._compose, "✍️"),
+                _btn("Confirm & send" if self._confirm else "Send…", G if self._confirm else P,
+                     self._send, "📤", disabled=not ready),
+            ]
+        items += [_btn("Delivery status", S, self._status, "📊"), _btn("Back", S, self._back, "⬅️")]
+        return items
+
+    async def _ensure_clones(self):
+        if not self.clones:
+            try:
+                self.clones = await db.list_active_discord_clones()
+            except Exception:
+                logger.exception("[admin-panel] couldn't load clones")
+
+    async def _refresh(self, i):
+        self._confirm = False
+        self._build()
+        await i.response.edit_message(view=self)
+
+    async def _pick_target(self, i):
+        self.target = i.data["values"][0]
+        await self._refresh(i)
+
+    async def _pick_clone(self, i):
+        v = i.data["values"][0]
+        self.clone_id = None if v == "none" else int(v)
+        await self._refresh(i)
+
+    async def _compose(self, i: discord.Interaction):
+        await i.response.send_modal(BroadcastComposeModal(self))
+
+    async def _send(self, i: discord.Interaction):
+        if not self.message:
+            # Draft was already consumed (double-click / stale button): never re-send.
+            await i.response.send_message("Nothing to send — that broadcast was already queued. "
+                                          "Write a new message to send another.", ephemeral=True)
+            return
+        if not self._confirm:
+            self._confirm = True
+            self._build()
+            await i.response.edit_message(view=self)
+            return
+        clone = self.cog.clone_admin
+        choice = app_commands.Choice(name=dict(BROADCAST_TARGETS)[self.target], value=self.target)
+        audit(i, "broadcast.send", target=self.target, clone=self.clone_id,
+              chars=len(self.message), attachment=bool(self.attachment))
+        message, attachment = self.message, self.attachment
+        # Consume the draft BEFORE the slow call so a double-click can't re-send.
+        self.message, self.attachment, self._confirm = None, None, False
+        await clone.ownerbroadcast(
+            i, message=message, target=choice, attachment=attachment,
+            clone=str(self.clone_id) if self.clone_id else None)
+        await self.soft_refresh(i)
+
+    async def _status(self, i: discord.Interaction):
+        audit(i, "broadcast.status")
+        await self.cog.clone_admin.broadcaststatus(i)
+
+    async def _back(self, i): await self.go(i, HomeView(self.cog, self.owner_id))
+
+
+async def open_home(cog, interaction: discord.Interaction) -> None:
+    view = HomeView(cog, interaction.user.id)
+    await interaction.response.send_message(view=view, ephemeral=True)
