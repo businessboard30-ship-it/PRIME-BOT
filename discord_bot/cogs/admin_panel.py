@@ -37,6 +37,21 @@ class AdminPanelCog(commands.Cog):
         """LookupCog: owns /admin find."""
         return self.bot.get_cog("LookupCog")
 
+    @property
+    def bump(self):
+        """BumpCog: owns /admin bump (cooldown, list, review, cleanup)."""
+        return self.bot.get_cog("BumpCog")
+
+    @property
+    def feedback_cog(self):
+        """Feedback cog: owns /admin feedback."""
+        return self.bot.get_cog("Feedback")
+
+    @property
+    def welcome(self):
+        """WelcomeCog: owns /admin hostingchannel."""
+        return self.bot.get_cog("WelcomeCog")
+
     async def cog_load(self):
         mount_admin_command(
             self.bot, self.panel, name="panel",
