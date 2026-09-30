@@ -6342,6 +6342,21 @@ class Database:
             )
             return dict(row) if row else None
 
+    async def get_order_payments(self, user_id: int, payment_type: str, chat_id: Optional[int],
+                                 limit: int = 5) -> List[Dict]:
+        """Newest-first payments for one order shape (buyer + product + server;
+        chat_id None matches account-level rows). Backs the checkout card's
+        'Check status' button."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT paystack_reference, status, provider, chat_id, created_date FROM payment_logs "
+                "WHERE user_id = $1 AND payment_type = $2 AND chat_id IS NOT DISTINCT FROM $3::bigint "
+                "ORDER BY created_date DESC LIMIT $4",
+                user_id, payment_type, chat_id, limit,
+            )
+            return [dict(r) for r in rows]
+
     async def set_payment_chat_id(self, reference: str, chat_id: int) -> None:
         """Records which server a payment was finally applied to — used when
         an owner assigns a paid-but-unassigned payment to a server by hand

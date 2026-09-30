@@ -597,7 +597,12 @@ async def start_geo_payment(interaction: discord.Interaction, *, payment_type: s
         await interaction.followup.send("Couldn't start checkout right now — please try again shortly.", ephemeral=True)
         return
 
-    lines = [f"**Price:** {amount_display}", "", product_description, "", config.PAYMENT_SUPPORT_LINE, ""]
+    from discord_bot.cogs._views_payment_card import order_summary, wrong_server_note, add_check_status_button
+    lines = [order_summary(interaction, payment_type, amount_display, guild_id), ""]
+    wrong = wrong_server_note(guild_id)
+    if wrong:
+        lines += [wrong, ""]
+    lines += [product_description, "", config.PAYMENT_SUPPORT_LINE, ""]
     if paystack_url:
         lines.append("🇬🇭 **Ghana** — Paystack (MoMo / local cards). After paying, tap **Verify**.")
     if gumroad_url:
@@ -615,6 +620,7 @@ async def start_geo_payment(interaction: discord.Interaction, *, payment_type: s
         view.add_item(discord.ui.Button(label="Gumroad — International", emoji="🌍", url=gumroad_url, style=discord.ButtonStyle.link))
     if not paystack_url:
         view.remove_item(view.verify)
+    add_check_status_button(view, interaction.user.id, payment_type, guild_id)
     from discord_bot.cogs._views_premium import add_go_premium_option
     add_go_premium_option(view, interaction, payment_type, guild_id)
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
