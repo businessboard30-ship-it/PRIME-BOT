@@ -1,7 +1,7 @@
 # path: discord_bot/cogs/_views_pending_payments.py
 
 """
-Components-v2 view backing /pendingpayments (clone_admin.py) — a global,
+Components-v2 view backing /admin payments pending (clone_admin.py) — a global,
 paged queue of every payment_logs row currently `status = 'awaiting_review'`
 across the whole bot (every guild, every clone), not scoped to the
 invoking guild. Same paged-Container shape as
@@ -11,12 +11,12 @@ DynamicItem custom_id convention as _views_leveling_wizard.py
 (colon-delimited fields, "-" for a None slot) — see _encode/_decode below.
 
 Authorization is per-row, not per-command: this file doesn't gate who can
-run /pendingpayments (any admin can try), it gates what they SEE and can
+run /admin payments pending (any admin can try), it gates what they SEE and can
 ACT ON. Every row is checked against payments_manual._resolve_approvers
 (main-bot admins always; a clone's owner only for that clone's own
 payments; discord_clone payment_type rows only ever visible to
 DISCORD_CLONE_ADMIN_IDS) and an unauthorized row is hidden entirely
-rather than shown read-only — this matches /approvepayment's existing
+rather than shown read-only — this matches /admin payments approve's existing
 behavior (deny with a message) more closely than a read-only row would,
 since a clone owner currently has no way to even look up another clone's
 reference to begin with.
@@ -157,7 +157,7 @@ async def _authorized_rows(bot: discord.Client, invoker_id: int) -> list[dict]:
 
 
 async def build_pending_payments_view(bot: discord.Client, invoker_id: int, page: int = 0) -> "discord.ui.LayoutView | None":
-    """Shared builder for /pendingpayments and every button callback below
+    """Shared builder for /admin payments pending and every button callback below
     — exactly one place assembles the Container so both stay in sync.
     Returns None when there's nothing this invoker is authorized to
     review right now (either the queue is empty, or every row in it
@@ -232,7 +232,7 @@ async def _deny_if_not_invoker(interaction: discord.Interaction, invoker_id: int
     does."""
     if interaction.user.id != invoker_id:
         await interaction.response.send_message(
-            "This isn't your view — run `/pendingpayments` yourself.", ephemeral=True,
+            "This isn't your view — run `/admin payments pending` yourself.", ephemeral=True,
         )
         return True
     return False
@@ -267,7 +267,7 @@ class _PendingPaymentsApproveAmountModal(discord.ui.Modal, title="Confirm amount
     resolve_manual_payment_approval underneath — this exists as its own
     class only because the two callers edit different things afterward:
     the DM card's modal disables/edits that one DM message in place,
-    while this one re-renders the whole /pendingpayments page (since the
+    while this one re-renders the whole /admin payments pending page (since the
     resolved row needs to disappear from a shared, multi-row list, not
     just have its own two buttons disabled)."""
 

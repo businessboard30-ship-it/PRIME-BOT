@@ -1061,7 +1061,7 @@ class AutomodCog(GuildOnlyCog):
     )
     async def owner_cleanup_reminders(self, interaction: discord.Interaction):
         """One-off + ongoing cleanup, same spirit as bump.py's
-        /bumpadmin cleanup_reminders: deletes both
+        /admin bump cleanup_reminders: deletes both
 
           1. Combined reminder DMs this cog tracks in
              discord_automod_reminder_batches (exact message ids — see

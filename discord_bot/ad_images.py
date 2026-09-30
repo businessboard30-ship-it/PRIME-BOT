@@ -2,7 +2,7 @@
 
 Discord attachment CDN URLs are signed and expire, so an ad's image is
 re-posted once into the bot's image-hosting channel (the same channel
-/welcome custombg uses — set with the owner-only /hostingchannel command or
+/welcome custombg uses — set with the owner-only /admin hostingchannel command or
 the IMAGE_HOST_CHANNEL_ID env var). Only (channel_id, message_id) is stored;
 a live URL is re-fetched from that message whenever the ad is displayed.
 """
@@ -45,7 +45,7 @@ async def upload_ad_image(bot, attachment: discord.Attachment, user: discord.abc
         return None, None, f"that image is over the {AD_IMAGE_MAX_BYTES // (1024 * 1024)}MB limit"
     host = await _host_channel(bot)
     if host is None:
-        return None, None, "image uploads aren't set up yet — the bot owner needs to run `/hostingchannel` in a channel first"
+        return None, None, "image uploads aren't set up yet — the bot owner needs to run `/admin hostingchannel` in a channel first"
     try:
         data = await attachment.read()
         posted = await host.send(

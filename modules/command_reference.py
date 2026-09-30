@@ -124,8 +124,7 @@ COMMANDS: list[tuple[str, str, str, Optional[str]]] = [
     ("/botmanager", "/botmanager ...", "Manage Discord bots you own by token", None),
 
     # --- Owner-only (bot owner, not server admin) ---
-    ("/admin", "/admin ...", "[Owner] Bot administration", "owner_only"),
-    ("/ownermonetize", "/ownermonetize ...", "[Owner] Force-activate monetization on any clone, no payment", "owner_only"),
+    ("/admin", "/admin ...", "[Owner] Bot administration — servers, find, monetize, feedback, hostingchannel, payments (approve/reject/assign/pending/mode), broadcast (send/status), bump", "owner_only"),
     ("/autopost", "/autopost ...", "Periodic bot self-promo posts in this server", "owner_only"),
     ("/autopostcontent", "/autopostcontent ...", "[Owner] Manage the shared autopost content library", "owner_only"),
 ]

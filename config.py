@@ -154,7 +154,7 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 # Optional: restrict slash-command sync to one guild for instant propagation
 # during development. Leave blank for global sync (can take up to 1hr to
 # propagate on Discord's side, but works across every guild the bot is in,
-# and is required for DM-invokable commands like /ownerbroadcast to work at all).
+# and is required for DM-invokable commands like /admin broadcast send to work at all).
 # Was an env var; hardcoded OFF (empty) for production — dev-guild-only sync
 # was silently limiting all new slash commands to guild 1534576875983339621
 # and breaking DM commands. Set to 1534576875983339621 locally if you need
@@ -261,10 +261,10 @@ ULTRA_PACK_FEE_USD = 1
 # png/jpeg directly instead of pasting a URL, and the bot re-posts it to
 # this channel (in the owner's own support server) so the message's
 # attachment doubles as free image hosting for the welcome card. Normally
-# set at runtime via the owner-only /hostingchannel command (persisted in
+# set at runtime via the owner-only /admin hostingchannel command (persisted in
 # the bot_global_settings DB table), which takes priority over this env
 # var — this is just a bootstrap default so the feature works before that
-# command has ever been run. Leave blank/0 to require /hostingchannel.
+# command has ever been run. Leave blank/0 to require /admin hostingchannel.
 IMAGE_HOST_CHANNEL_ID = int(os.getenv("IMAGE_HOST_CHANNEL_ID", "0") or "0")
 
 # Comma-separated Discord user IDs that bypass the /registerclone payment gate
@@ -278,7 +278,7 @@ DISCORD_CLONE_ADMIN_IDS = {1534574875274903562}
 # ─────────────────────────────────────────────────────────────────────
 # Payment routing
 # ─────────────────────────────────────────────────────────────────────
-# How paid features are routed (changeable live with /paymentmode).
+# How paid features are routed (changeable live with /admin payments mode).
 # "split" (default) = buyer picks Ghana (Paystack) or International
 # (Gumroad). "auto" = Paystack/Stripe only. "gumroad" = Gumroad only.
 # A legacy "manual" value is treated as "split".
@@ -504,7 +504,7 @@ def _build_custom_role_palette() -> dict:
 
 CUSTOM_ROLE_COLOR_PALETTE = _build_custom_role_palette()
 
-# Who's allowed to run /ownerbroadcast (DM every user across the main bot
+# Who's allowed to run /admin broadcast send (DM every user across the main bot
 # and every Discord clone). Deliberately separate from DISCORD_CLONE_ADMIN_IDS
 # even though it'll usually be the same person(s) — that set is about who
 # skips the clone registration fee, this one is about who can mass-DM every
@@ -514,7 +514,7 @@ DISCORD_OWNER_BROADCAST_IDS = {1534574875274903562} or DISCORD_CLONE_ADMIN_IDS
 
 # How the owner broadcast signs itself, e.g. "Announcement from PrimeBot HQ".
 # Shown as a header line above the message body in every DM sent by
-# /ownerbroadcast (see discord_bot/cogs/clone_admin.py and
+# /admin broadcast send (see discord_bot/cogs/clone_admin.py and
 # api/cron_discord_owner_broadcast.py).
 # Hardcoded (was DISCORD_OWNER_BRAND_NAME env var) — static branding text.
 DISCORD_OWNER_BRAND_NAME = "the bot owner"

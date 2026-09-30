@@ -22,6 +22,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from discord_bot.cogs._admin_mount import mount_admin_command
 from discord_bot.cogs._dm_support import GuildOnlyCog
 
 import config as bot_config
@@ -166,7 +167,7 @@ async def _fetch_custom_bg_bytes(
 async def _get_image_host_channel(bot: commands.Bot) -> discord.TextChannel | None:
     """Resolves the channel /welcome custombg's `image` upload re-posts
     to, so that channel doubles as free image hosting. DB setting (set via
-    the owner-only /hostingchannel command) takes priority over the
+    the owner-only /admin hostingchannel command) takes priority over the
     IMAGE_HOST_CHANNEL_ID env var, which is just a bootstrap default."""
     channel_id_str = await db.get_global_setting("image_host_channel_id")
     channel_id = int(channel_id_str) if channel_id_str and channel_id_str.isdigit() else bot_config.IMAGE_HOST_CHANNEL_ID
@@ -200,7 +201,7 @@ async def _upload_custom_bg(
     host_channel = await _get_image_host_channel(bot)
     if host_channel is None:
         return None, None, None, (
-            "image uploads aren't set up yet — the bot owner needs to run `/hostingchannel` "
+            "image uploads aren't set up yet — the bot owner needs to run `/admin hostingchannel` "
             "in a channel first (or you can paste a direct image URL instead)"
         )
 
@@ -492,6 +493,10 @@ class WelcomeCog(GuildOnlyCog):
         self._recent_joins = {}  # Track recent joins to prevent duplicate welcome messages
 
     async def cog_load(self):
+        mount_admin_command(
+            self.bot, self.hostingchannel, name="hostingchannel",
+            description="[Bot owner] Use THIS channel to host images uploaded via /welcome custombg",
+        )
         await self._ensure_spider_table()
         self._nudge_owners.start()
         self._announce_card_features.start()
@@ -1528,7 +1533,7 @@ class WelcomeCog(GuildOnlyCog):
         await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
         await interaction.followup.send(f"✅ Welcome card background set to your image: {url}", ephemeral=True)
 
-    @app_commands.command(name="hostingchannel", description="[Bot owner] Use THIS channel to host images uploaded via /welcome custombg")
+    # Mounted as /admin hostingchannel (see cog_load).
     async def hostingchannel(self, interaction: discord.Interaction):
         if interaction.user.id not in bot_config.DISCORD_OWNER_BROADCAST_IDS:
             await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
