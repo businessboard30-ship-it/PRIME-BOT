@@ -44,13 +44,15 @@ PAYMENT_MODES = [
 
 def allowed_sections(user_id: int) -> set:
     """Which panel sections this user may open. Mirrors the two allowlists
-    the slash commands already use (DISCORD_CLONE_ADMIN_IDS for payments,
-    DISCORD_OWNER_BROADCAST_IDS for broadcasts)."""
+    the slash commands already use (DISCORD_CLONE_ADMIN_IDS for payments and
+    servers/clones, DISCORD_OWNER_BROADCAST_IDS for broadcasts)."""
     out = set()
     if user_id in DISCORD_CLONE_ADMIN_IDS:
         out.add("payments")
     if user_id in DISCORD_OWNER_BROADCAST_IDS:
         out.add("broadcast")
+    if user_id in DISCORD_CLONE_ADMIN_IDS:
+        out.add("servers")  # servers / find / clones / monetize / commissions / subscribers
     return out
 
 
@@ -62,6 +64,17 @@ def audit(interaction: discord.Interaction, action: str, **details) -> None:
     logger.info("[admin-panel-audit] user=%s guild=%s action=%s %s",
                 interaction.user.id, interaction.guild_id, action,
                 " ".join(f"{k}={v!r}" for k, v in details.items()))
+
+
+async def call_cmd(owner_cog, name: str, interaction: discord.Interaction, **kwargs):
+    """Run an existing command of `owner_cog` exactly as the slash command
+    would. Methods mounted via mount_admin_command are plain coroutines;
+    `@admin.command(...)` ones are app_commands.Command objects whose
+    `.callback` needs the cog as first argument."""
+    attr = getattr(owner_cog, name)
+    if isinstance(attr, app_commands.Command):
+        return await attr.callback(getattr(attr, "binding", None) or owner_cog, interaction, **kwargs)
+    return await attr(interaction, **kwargs)
 
 
 # ── base view ────────────────────────────────────────────────────────────
@@ -158,6 +171,8 @@ class HomeView(PanelView):
             lines.append("-# Payments: not available to your account.")
         if "broadcast" not in a:
             lines.append("-# Broadcast: not available to your account.")
+        if "servers" not in a:
+            lines.append("-# Servers & clones: not available to your account.")
         return lines
 
     def controls(self):
@@ -166,6 +181,7 @@ class HomeView(PanelView):
         return [
             _btn("Payments", P, self._payments, "💳", disabled="payments" not in a),
             _btn("Broadcast", P, self._broadcast, "📢", disabled="broadcast" not in a),
+            _btn("Servers & clones", P, self._servers, "🏠", disabled="servers" not in a),
             _btn("Close", S, self._close, "✖️"),
         ]
 
@@ -177,6 +193,10 @@ class HomeView(PanelView):
         await view._ensure_clones()
         view._build()
         await self.go(i, view)
+
+    async def _servers(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_servers import ServersHubView  # lazy: avoids import cycle
+        await self.go(i, ServersHubView(self.cog, self.owner_id, "servers"))
 
     async def _close(self, i: discord.Interaction):
         self.stop()
