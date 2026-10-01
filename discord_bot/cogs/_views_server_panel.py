@@ -35,6 +35,7 @@ AUTOMOD_FILTERS = [
     ("anti_mention_enabled", "Mention spam"),
     ("spam_enabled", "Flood spam"),
 ]
+SELECT_TYPES = (discord.ui.Select, discord.ui.ChannelSelect, discord.ui.RoleSelect)
 AUTOMOD_ACTIONS = ["delete", "warn", "timeout", "kick"]  # automod.VALID_ACTIONS
 
 
@@ -111,7 +112,7 @@ class ServerPanelView(discord.ui.LayoutView):
             children.append(discord.ui.Separator())
             row: list = []
             for it in items:
-                if isinstance(it, (discord.ui.Select, discord.ui.ChannelSelect)):
+                if isinstance(it, SELECT_TYPES):
                     if row:
                         children.append(discord.ui.ActionRow(*row)); row = []
                     children.append(discord.ui.ActionRow(it))
@@ -139,6 +140,15 @@ class ServerPanelView(discord.ui.LayoutView):
         async def cb(interaction: discord.Interaction):
             await interaction.response.defer()
             view = await view_cls.create(interaction)
+            await interaction.edit_original_response(view=view)
+        return cb
+
+    def nav_p2(self, name: str) -> Callable:
+        """Navigate to a Phase 2 screen by class name (lazy import avoids a cycle)."""
+        async def cb(interaction: discord.Interaction):
+            from discord_bot.cogs import _views_server_panel_p2 as p2
+            await interaction.response.defer()
+            view = await getattr(p2, name).create(interaction)
             await interaction.edit_original_response(view=view)
         return cb
 
@@ -188,6 +198,9 @@ class HomeView(ServerPanelView):
             _btn("Setup", P, self.nav(SetupView), "📋"),
             _btn("Welcome & verification", P, self.nav(WelcomeView), "👋"),
             _btn("Moderation", P, self.nav(ModerationView), "🛡️"),
+            _btn("Community", P, self.nav_p2("CommunityView"), "🌱"),
+            _btn("Tickets", P, self.nav_p2("TicketsView"), "🎫"),
+            _btn("Channels & logs", P, self.nav_p2("ChannelsLogsView"), "📚"),
             _btn("Premium", S, self.nav(PremiumView), "💎"),
             _btn("Quick enable", S, self._legacy, "⚡"),
         ]
@@ -255,7 +268,8 @@ class SetupView(ServerPanelView):
             "welcome": self.nav(WelcomeView), "verification": self.nav(VerificationView),
             "automod": self.nav(ModerationView), "modlog": self.nav(ModerationView),
             "premium": self.nav(PremiumView),
-            "leveling": self._leveling, "tickets": self._tickets, "channels": self._channels,
+            "leveling": self.nav_p2("LevelingView"), "tickets": self.nav_p2("TicketsView"),
+            "channels": self.nav_p2("ChannelsLogsView"),
         }
         short = {"welcome": "Welcome", "verification": "Verification", "automod": "Auto-mod",
                  "modlog": "Mod-log", "leveling": "Leveling", "tickets": "Tickets",
@@ -264,35 +278,6 @@ class SetupView(ServerPanelView):
                for i in self.data.get("items", []) if not i.done]
         out.append(self.back_button())
         return out
-
-    async def _leveling(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            "Leveling already counts XP. Pick a level-up channel with `/levelrole setup`.", ephemeral=True)
-
-    async def _tickets(self, interaction: discord.Interaction):
-        from discord_bot.cogs._views_join_dm import _enable_tickets
-        await interaction.response.defer(ephemeral=True)
-        ok, msg = await _enable_tickets(interaction, interaction.guild, clone_id_of(interaction))
-        if msg:
-            await interaction.followup.send(msg, ephemeral=True)
-        await sp.record_change(interaction.guild_id, clone_id_of(interaction), interaction.user.id,
-                               "tickets.enable", None, bool(ok))
-
-    async def _channels(self, interaction: discord.Interaction):
-        from discord_bot.cogs.setup_channels import (
-            SetupSuggestView, build_suggestions_embed, scan_missing_channels)
-        if not getattr(interaction.permissions, "manage_channels", False):
-            await interaction.response.send_message(
-                "You need the **Manage Channels** permission to create channels.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        missing = await scan_missing_channels(interaction.guild, clone_id_of(interaction))
-        embed = build_suggestions_embed(interaction.guild, missing)
-        if missing:
-            await interaction.followup.send(embed=embed, view=SetupSuggestView(interaction.guild_id, missing),
-                                            ephemeral=True)
-        else:
-            await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # ── welcome & verification ───────────────────────────────────────────────

@@ -191,3 +191,92 @@ async def set_honeypot(guild_id: int, clone_id: Optional[int], actor_id: int, **
     await db.set_honeypot_config(guild_id, clone_id=clone_id, **fields)
     for k, v in fields.items():
         await record_change(guild_id, clone_id, actor_id, f"honeypot.{k}", old.get(k), v)
+
+
+# ── Phase 2 writes: community, tickets, logs ─────────────────────────────
+
+MODLOG_CATEGORY_FIELDS = {
+    "server": "log_server_enabled", "channels": "log_channels_enabled",
+    "roles": "log_roles_enabled", "members": "log_members_enabled",
+    "moderation": "log_moderation_enabled", "voice": "log_voice_enabled",
+    "invites": "log_invites_enabled",
+}
+XP_RATES = ("slow", "default", "fast")
+STAR_THRESHOLDS = (1, 2, 3, 5, 7, 10, 15, 20, 25)
+
+
+async def _audited(guild_id, clone_id, actor_id, prefix, old: dict, fields: dict) -> None:
+    for k, v in fields.items():
+        await record_change(guild_id, clone_id, actor_id, f"{prefix}.{k}", (old or {}).get(k), v)
+
+
+async def set_leveling(guild_id, clone_id, actor_id, **fields) -> None:
+    from database import db
+    old = await db.get_leveling_config(guild_id, clone_id)
+    await db.set_leveling_config(guild_id, clone_id=clone_id, **fields)
+    await _audited(guild_id, clone_id, actor_id, "leveling", old, fields)
+
+
+async def set_voice_xp(guild_id, clone_id, actor_id, **fields) -> None:
+    from database import db
+    old = await db.get_voice_xp_config(guild_id, clone_id)
+    await db.set_voice_xp_config(guild_id, clone_id=clone_id, **fields)
+    await _audited(guild_id, clone_id, actor_id, "voice_xp", old, fields)
+
+
+async def set_starboard(guild_id, clone_id, actor_id, **fields) -> None:
+    from database import db
+    old = await db.get_starboard_config(guild_id, clone_id)
+    await db.set_starboard_config(guild_id, clone_id=clone_id, **fields)
+    await _audited(guild_id, clone_id, actor_id, "starboard", old, fields)
+
+
+async def set_suggestions(guild_id, clone_id, actor_id, approved_log_channel_id) -> None:
+    from database import db
+    old = await db.get_suggestion_config(guild_id, clone_id)
+    await db.set_suggestion_config(guild_id, clone_id=clone_id, approved_log_channel_id=approved_log_channel_id)
+    await _audited(guild_id, clone_id, actor_id, "suggestions", old,
+                   {"approved_log_channel_id": approved_log_channel_id})
+
+
+async def set_tickets(guild_id, clone_id, actor_id, **fields) -> None:
+    from database import db
+    old = await db.get_ticket_config(guild_id, clone_id)
+    await db.set_ticket_config(guild_id, clone_id=clone_id, **fields)
+    await _audited(guild_id, clone_id, actor_id, "tickets", old, fields)
+
+
+def role_blocked_reason(guild, role) -> Optional[str]:
+    """Why a role can't be handed out as a reward, or None. Mirrors /levelrole add."""
+    if role is None:
+        return "Pick a role first."
+    if getattr(role, "is_default", lambda: False)() or getattr(role, "managed", False):
+        return "That role can't be assigned (everyone/bot-managed roles are not allowed)."
+    me = getattr(guild, "me", None)
+    if me is not None and role >= me.top_role:
+        return "That role is above (or equal to) my own top role — move my role above it first."
+    return None
+
+
+async def add_level_role(guild_id, clone_id, actor_id, level: int, role_id: int) -> bool:
+    from database import db
+    ok = await db.add_level_role(guild_id, level, role_id, clone_id=clone_id)
+    if ok:
+        await record_change(guild_id, clone_id, actor_id, f"level_role.{level}", None, role_id)
+    return bool(ok)
+
+
+async def remove_level_role(guild_id, clone_id, actor_id, level: int) -> bool:
+    from database import db
+    roles = await db.get_level_roles(guild_id, clone_id)
+    old = next((r["role_id"] for r in roles if r["level"] == level), None)
+    ok = await db.remove_level_role(guild_id, level, clone_id=clone_id)
+    if ok:
+        await record_change(guild_id, clone_id, actor_id, f"level_role.{level}", old, None)
+    return bool(ok)
+
+
+async def set_modlog_categories(guild_id, clone_id, actor_id, selected: set) -> None:
+    """Turn exactly `selected` categories on and the rest off, in one write."""
+    fields = {col: (cat in selected) for cat, col in MODLOG_CATEGORY_FIELDS.items()}
+    await set_automod(guild_id, clone_id, actor_id, **fields)
