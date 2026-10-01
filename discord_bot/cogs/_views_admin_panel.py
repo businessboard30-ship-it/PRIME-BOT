@@ -60,6 +60,7 @@ def allowed_sections(user_id: int) -> set:
         out.update({"watchlist", "reports", "status", "honeypot"})  # Batch 3 (_views_admin_panel_safety.py), owner-only
         out.add("money")                                            # Batch 4 (_views_admin_panel_money.py), owner-only
         out.add("ads")                                              # Batch 5 (_views_admin_panel_ads.py), owner-only (same gate as /ad manage)
+        out.update({"health", "inspect"})                           # Batch 6 (_views_admin_panel_inspect.py), owner-only, not grantable
     if user_id in DISCORD_OWNER_BROADCAST_IDS:
         out.add("feedback")  # /admin feedback (feedback.py gates it on DISCORD_OWNER_BROADCAST_IDS)
     # Helpers: extra people the owner let into SOME sections (only the grantable
@@ -245,6 +246,9 @@ class HomeView(PanelView):
             _btn("Honeypot", P, self._honeypot, "🍯", disabled="honeypot" not in a),
             _btn("Money", P, self._money, "💰", disabled="money" not in a),
             _btn("Ads", P, self._ads, "📣", disabled="ads" not in a),
+            _btn("Health", P, self._health, "🩺", disabled="health" not in a),
+            _btn("Inspect server", P, self._inspect_server, "🔍", disabled="inspect" not in a),
+            _btn("Inspect user", P, self._inspect_user, "🧑", disabled="inspect" not in a),
             _btn("Close", S, self._close, "✖️"),
         ]
 
@@ -354,6 +358,20 @@ class HomeView(PanelView):
         view = AdsView(self.cog, self.owner_id)
         await view.load()
         await self.go(i, view)
+
+    async def _health(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_inspect import HealthView
+        view = HealthView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _inspect_server(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_inspect import LookupModal
+        await i.response.send_modal(LookupModal(self.cog, "server"))
+
+    async def _inspect_user(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_inspect import LookupModal
+        await i.response.send_modal(LookupModal(self.cog, "user"))
 
     async def _close(self, i: discord.Interaction):
         self.stop()
