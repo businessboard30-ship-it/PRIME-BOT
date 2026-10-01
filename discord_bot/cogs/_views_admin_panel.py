@@ -55,6 +55,7 @@ def allowed_sections(user_id: int) -> set:
         out.add("servers")  # servers / find / clones / monetize / commissions / subscribers
         out.add("bump")     # /admin bump ... (bump.py gates it on DISCORD_CLONE_ADMIN_IDS)
         out.add("system")   # submissions / envcheck / revenue / exportusers (admin.py, same list)
+        out.update({"controls", "blacklist", "premium", "audit"})  # Batch 1 (_views_admin_panel_controls.py)
     if user_id in DISCORD_OWNER_BROADCAST_IDS:
         out.add("feedback")  # /admin feedback (feedback.py gates it on DISCORD_OWNER_BROADCAST_IDS)
     return out
@@ -64,10 +65,24 @@ def can_open_panel(user_id: int) -> bool:
     return bool(allowed_sections(user_id))
 
 
+_audit_tasks: set = set()   # keeps fire-and-forget DB writes from being garbage-collected mid-flight
+
+
 def audit(interaction: discord.Interaction, action: str, **details) -> None:
+    detail_text = " ".join(f"{k}={v!r}" for k, v in details.items())
     logger.info("[admin-panel-audit] user=%s guild=%s action=%s %s",
-                interaction.user.id, interaction.guild_id, action,
-                " ".join(f"{k}={v!r}" for k, v in details.items()))
+                interaction.user.id, interaction.guild_id, action, detail_text)
+    # Also keep a copy in the database for the panel's Audit log screen. Best
+    # effort: the log line above is the source of truth if this can't be saved.
+    try:
+        import asyncio
+        from modules import admin_controls
+        task = asyncio.get_running_loop().create_task(
+            admin_controls.record_audit(interaction.user.id, action, interaction.guild_id, detail_text))
+        _audit_tasks.add(task)
+        task.add_done_callback(_audit_tasks.discard)
+    except Exception:
+        logger.debug("[admin-panel] audit row not scheduled", exc_info=True)
 
 
 async def call_cmd(owner_cog, name: str, interaction: discord.Interaction, **kwargs):
@@ -195,6 +210,10 @@ class HomeView(PanelView):
             _btn("Bump", P, self._bump, "📡", disabled="bump" not in a),
             _btn("Feedback", P, self._feedback, "📬", disabled="feedback" not in a),
             _btn("System", P, self._system, "⚙️", disabled="system" not in a),
+            _btn("Kill switches", P, self._controls, "🎚️", disabled="controls" not in a),
+            _btn("Blacklist", P, self._blacklist, "🚫", disabled="blacklist" not in a),
+            _btn("Premium", P, self._premium, "💎", disabled="premium" not in a),
+            _btn("Audit log", P, self._audit_log, "📜", disabled="audit" not in a),
             _btn("Close", S, self._close, "✖️"),
         ]
 
@@ -222,6 +241,30 @@ class HomeView(PanelView):
     async def _system(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_system import SystemView
         await self.go(i, SystemView(self.cog, self.owner_id, "system"))
+
+    async def _controls(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_controls import ControlsView  # lazy: avoids import cycle
+        view = ControlsView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _blacklist(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_controls import BlacklistView
+        view = BlacklistView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _premium(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_controls import PremiumView
+        view = PremiumView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _audit_log(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_controls import AuditView
+        view = AuditView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
 
     async def _close(self, i: discord.Interaction):
         self.stop()

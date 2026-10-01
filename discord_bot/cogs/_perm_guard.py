@@ -103,10 +103,28 @@ class TooManyPrivilegedMembers(app_commands.CheckFailure):
         super().__init__(f"{count} privileged members (limit {limit})")
 
 
+class ControlBlocked(app_commands.CheckFailure):
+    """Raised when the owner panel has blocked this command: the user or
+    server is blacklisted, maintenance mode is on, or the feature's kill
+    switch is pulled. `message` is shown to the user by bot.py's
+    _on_app_command_error. See modules/admin_controls.py."""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
 async def global_interaction_check(interaction: discord.Interaction) -> bool:
     """Assigned to bot.tree.interaction_check in bot.py. Runs before every
     slash command, in every guild. DMs (interaction.guild is None) are
     left untouched here — GuildOnlyCog / guild_only() already handle those."""
+    # Owner-panel controls first (blacklist, maintenance, kill switches). These
+    # also apply in DMs, so they run before the guild-only early return below.
+    from modules.admin_controls import block_reason
+    reason = await block_reason(interaction)
+    if reason:
+        raise ControlBlocked(reason)
+
     guild = interaction.guild
     if guild is None:
         return True

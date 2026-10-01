@@ -72,7 +72,7 @@ _install_send_tracer()
 from database import db
 from discord_bot.cogs.ai_store import VerifyCreditsView, VerifyBoostView, AIStoreMenuView
 from discord_bot.cogs._dm_support import GUILD_ONLY_MESSAGE
-from discord_bot.cogs._perm_guard import global_interaction_check, TooManyPrivilegedMembers, GUARD_MESSAGE
+from discord_bot.cogs._perm_guard import global_interaction_check, TooManyPrivilegedMembers, ControlBlocked, GUARD_MESSAGE
 from discord_bot.cogs._views_join_dm import build_join_dm_view, DYNAMIC_ITEMS
 from discord_bot.cogs._views_style_wizard import STYLE_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
@@ -375,6 +375,10 @@ class AnimeBotDiscord(commands.Bot):
         if isinstance(error, app_commands.NoPrivateMessage):
             if not interaction.response.is_done():
                 await interaction.response.send_message(GUILD_ONLY_MESSAGE, ephemeral=True)
+            return
+        if isinstance(error, ControlBlocked):
+            if not interaction.response.is_done():
+                await interaction.response.send_message(error.message, ephemeral=True)
             return
         if isinstance(error, TooManyPrivilegedMembers):
             if not interaction.response.is_done():
