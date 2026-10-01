@@ -218,16 +218,17 @@ class AutomationCog(GuildOnlyCog):
     @app_commands.guild_only()
     async def serversetup(self, interaction: discord.Interaction):
         lang = await get_lang(interaction)
-        if not _require_perm(interaction, "manage_guild"):
+        # The server owner or anyone with Manage Server may open the panel
+        # (SERVER_PANEL_PLAN.md decision 2); open_home re-checks access and
+        # the _perm_guard lockout itself. The old one-tap wizard is still
+        # reachable from the panel's "Quick enable" button.
+        from modules.server_panel import access_denied_reason
+        if access_denied_reason(interaction.guild, interaction.user.id, interaction.permissions) \
+                and not _require_perm(interaction, "manage_guild"):
             await _deny(interaction, "Manage Server", lang)
             return
-        msg = await tr(
-            "**Welcome to setup!** Tap each feature you want to turn on — you can always "
-            "reconfigure later with its own slash command.", lang
-        )
-        await interaction.response.send_message(
-            msg, view=ServerSetupView(_clone_id_of(interaction), lang), ephemeral=True
-        )
+        from discord_bot.cogs._views_server_panel import open_home
+        await open_home(interaction)
 
     # AI-executed "serversetup" (requires_confirmation=True in
     # ai_command_allowlist.py) arrives here via execute_ai_command with an
