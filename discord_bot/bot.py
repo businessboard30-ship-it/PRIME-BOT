@@ -994,10 +994,25 @@ class AnimeBotDiscord(commands.Bot):
     @tasks.loop(seconds=30)
     async def status_rotation_loop(self):
         try:
-            messages = self._status_messages()
-            activity = messages[self._status_index % len(messages)]
+            # Owner-panel status editor (modules/admin_safety.py). No custom
+            # entries (or any DB problem) = exactly the built-in rotation below.
+            from modules.admin_safety import load_status_rotation, render_status_text
+            custom, presence = await load_status_rotation()
+            presence_status = {
+                "idle": discord.Status.idle, "dnd": discord.Status.dnd,
+            }.get(presence, discord.Status.online)
+            if custom:
+                kind, text = custom[self._status_index % len(custom)]
+                servers = len(self.guilds)
+                members = sum((g.member_count or 0) for g in self.guilds)
+                activity = discord.Activity(
+                    type=getattr(discord.ActivityType, kind, discord.ActivityType.playing),
+                    name=render_status_text(text, servers, members) or "online")
+            else:
+                messages = self._status_messages()
+                activity = messages[self._status_index % len(messages)]
             self._status_index += 1
-            await self.change_presence(status=discord.Status.online, activity=activity)
+            await self.change_presence(status=presence_status, activity=activity)
         except Exception:
             logger.debug("[status] rotation skipped", exc_info=True)
 

@@ -57,6 +57,7 @@ def allowed_sections(user_id: int) -> set:
         out.add("system")   # submissions / envcheck / revenue / exportusers (admin.py, same list)
         out.update({"controls", "blacklist", "premium", "audit"})  # Batch 1 (_views_admin_panel_controls.py)
         out.update({"access", "logs", "config", "database"})       # Batch 2 (_views_admin_panel_ops.py)
+        out.update({"watchlist", "reports", "status", "honeypot"})  # Batch 3 (_views_admin_panel_safety.py), owner-only
     if user_id in DISCORD_OWNER_BROADCAST_IDS:
         out.add("feedback")  # /admin feedback (feedback.py gates it on DISCORD_OWNER_BROADCAST_IDS)
     # Helpers: extra people the owner let into SOME sections (only the grantable
@@ -236,6 +237,10 @@ class HomeView(PanelView):
             _btn("Log tail", P, self._logs, "📋", disabled="logs" not in a),
             _btn("Config", P, self._config, "🧾", disabled="config" not in a),
             _btn("Database", P, self._database, "🗄️", disabled="database" not in a),
+            _btn("Watchlist", P, self._watchlist, "🕵️", disabled="watchlist" not in a),
+            _btn("Reports", P, self._reports, "🚩", disabled="reports" not in a),
+            _btn("Status", P, self._status, "🎭", disabled="status" not in a),
+            _btn("Honeypot", P, self._honeypot, "🍯", disabled="honeypot" not in a),
             _btn("Close", S, self._close, "✖️"),
         ]
 
@@ -306,6 +311,30 @@ class HomeView(PanelView):
     async def _database(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_ops import DatabaseView
         view = DatabaseView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _watchlist(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_safety import WatchlistView
+        view = WatchlistView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _reports(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_safety import ReportsView
+        view = ReportsView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _status(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_safety import StatusView
+        view = StatusView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _honeypot(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_safety import HoneypotView
+        view = HoneypotView(self.cog, self.owner_id)
         await view.load()
         await self.go(i, view)
 
