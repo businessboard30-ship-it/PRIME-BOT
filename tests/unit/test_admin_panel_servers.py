@@ -66,6 +66,7 @@ def cog():
     c.admin_cog.commissions = AsyncMock()
     c.admin_cog.subscribers = AsyncMock()
     c.admin_cog.clones = AsyncMock()
+    c.admin_cog.guilds = AsyncMock()
     c.lookup.find = AsyncMock()
     return c
 
@@ -150,6 +151,22 @@ def test_commissions_and_subscribers_call_the_slash_command_code(vp):
         c.admin_cog.commissions.assert_awaited_once_with(i)
         i2 = I(); await buttons(v)["Subscribers"].callback(i2)
         c.admin_cog.subscribers.assert_awaited_once_with(i2)
+    run(go())
+
+
+def test_join_dates_button_calls_guilds_command(vp):
+    async def go():
+        c = cog(); v = vp.ServersHubView(c, OWNER)
+        i = I(); await buttons(v)["Join dates"].callback(i)
+        c.admin_cog.guilds.assert_awaited_once_with(i)
+    run(go())
+
+
+def test_join_dates_reports_missing_module(vp):
+    async def go():
+        c = cog(); c.admin_cog = None; v = vp.ServersHubView(c, OWNER)
+        i = I(); await buttons(v)["Join dates"].callback(i)
+        i.response.send_message.assert_awaited_once()
     run(go())
 
 

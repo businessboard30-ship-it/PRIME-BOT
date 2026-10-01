@@ -56,7 +56,7 @@ def cog():
     for n in ("bumpadmin_cooldown", "bumpadmin_list", "bumpadmin_review", "bumpadmin_cleanup_reminders"):
         setattr(c.bump, n, AsyncMock())
     c.feedback_cog.viewfeedback = AsyncMock()
-    for n in ("submissions", "revenue", "envcheck", "exportusers"):
+    for n in ("submissions", "revenue", "envcheck", "exportusers", "stats", "pending", "aidebug"):
         setattr(c.admin_cog, n, AsyncMock())
     c.welcome.hostingchannel = AsyncMock()
     return c
@@ -260,3 +260,29 @@ def test_screens_render_within_discord_limits(vp):
     for v in (vp.BumpHubView(cog(), OWNER), vp.FeedbackView(cog(), OWNER), vp.SystemView(cog(), OWNER)):
         assert count(v) < 40
         assert len(buttons(v)) <= 10
+
+
+# ── quick wins: stats / pending checkouts / AI debug ─────────────────────
+
+@pytest.mark.parametrize("label,cmd", [("Stats", "stats"), ("Pending checkouts", "pending"), ("AI debug", "aidebug")])
+def test_system_quick_wins_call_the_slash_command_code(vp, label, cmd):
+    async def go():
+        c = cog(); v = vp.SystemView(c, OWNER); i = I()
+        await buttons(v)[label].callback(i)
+        getattr(c.admin_cog, cmd).assert_awaited_once_with(i)
+    run(go())
+
+
+def test_system_quick_wins_report_missing_module(vp):
+    async def go():
+        c = cog(); c.admin_cog = None; v = vp.SystemView(c, OWNER)
+        for label in ("Stats", "Pending checkouts", "AI debug"):
+            i = I(); await buttons(v)[label].callback(i)
+            i.response.send_message.assert_awaited_once()
+    run(go())
+
+
+def test_system_view_still_within_discord_limits_with_new_buttons(vp):
+    v = vp.SystemView(cog(), OWNER)
+    assert len(buttons(v)) == 9
+    assert v.to_components()

@@ -188,7 +188,7 @@ class SystemView(PanelView):
         super().__init__(cog, owner_id, section)
 
     def body(self):
-        lines = ["Submissions, uploads hosting, health checks, revenue and data export.",
+        lines = ["Analytics, submissions, revenue, pending checkouts, AI/env health checks, uploads hosting and data export.",
                  "-# Each button runs the same command as its `/admin ...` slash command."]
         if self._confirm == "hosting":
             lines.append("⚠️ **Press Confirm to use THIS channel for hosting uploaded welcome backgrounds.** "
@@ -206,9 +206,12 @@ class SystemView(PanelView):
         hosting_on = self._confirm == "hosting"
         export_on = self._confirm == "export"
         return [
+            _btn("Stats", P, self._stats, "📈"),
             _btn("Submissions", P, self._submissions, "🗂️"),
             _btn("Revenue", P, self._revenue, "💵"),
+            _btn("Pending checkouts", P, self._pending, "⏳"),
             _btn("Env check", S, self._envcheck, "🩺"),
+            _btn("AI debug", S, self._aidebug, "🤖"),
             _btn("Confirm hosting channel" if hosting_on else "Set hosting channel",
                  G if hosting_on else S, self._hosting, "✅" if hosting_on else "🖼️", disabled=not hosting_ok),
             _btn("Confirm export" if export_on else "Export users",
@@ -223,6 +226,9 @@ class SystemView(PanelView):
         audit(i, action)
         await call_cmd(owner_cog, name, i)
 
+    async def _stats(self, i): await self._plain(i, self.cog.admin_cog, "Admin module", "stats", "system.stats")
+    async def _pending(self, i): await self._plain(i, self.cog.admin_cog, "Admin module", "pending", "system.pending")
+    async def _aidebug(self, i): await self._plain(i, self.cog.admin_cog, "Admin module", "aidebug", "system.aidebug")
     async def _submissions(self, i): await self._plain(i, self.cog.admin_cog, "Admin module", "submissions", "system.submissions")
     async def _revenue(self, i): await self._plain(i, self.cog.admin_cog, "Admin module", "revenue", "system.revenue")
     async def _envcheck(self, i): await self._plain(i, self.cog.admin_cog, "Admin module", "envcheck", "system.envcheck")

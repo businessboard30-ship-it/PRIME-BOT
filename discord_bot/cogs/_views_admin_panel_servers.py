@@ -145,6 +145,7 @@ class ServersHubView(PanelView):
         P, S = discord.ButtonStyle.primary, discord.ButtonStyle.secondary
         return [
             _btn("All servers", P, self._servers, "🏠"),
+            _btn("Join dates", P, self._guilds, "📅"),
             _btn("Include left: on" if self.include_left else "Include left: off", S, self._toggle_left, "🚪"),
             _btn("Find server / person", P, self._find, "🔎"),
             _btn("Clones", P, self._clones, "🤖"),
@@ -160,6 +161,14 @@ class ServersHubView(PanelView):
             return
         audit(i, "servers.list", include_left=self.include_left)
         await call_cmd(clone, "allservers", i, include_left=self.include_left)
+
+    async def _guilds(self, i: discord.Interaction):
+        admin = self.cog.admin_cog
+        if admin is None:
+            await _module_missing(i, "Admin module")
+            return
+        audit(i, "guilds.list")
+        await call_cmd(admin, "guilds", i)
 
     async def _toggle_left(self, i: discord.Interaction):
         self.include_left = not self.include_left
