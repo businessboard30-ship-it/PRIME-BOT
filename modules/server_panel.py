@@ -280,3 +280,259 @@ async def set_modlog_categories(guild_id, clone_id, actor_id, selected: set) -> 
     """Turn exactly `selected` categories on and the rest off, in one write."""
     fields = {col: (cat in selected) for cat, col in MODLOG_CATEGORY_FIELDS.items()}
     await set_automod(guild_id, clone_id, actor_id, **fields)
+
+
+# ── Phase 3: stats, history, reset, copy settings, reports ───────────────
+
+async def server_stats(guild, clone_id: Optional[int]) -> dict:
+    """Same numbers as /serveranalytics (reuses its age formatter and growth
+    tips), plus the setup score. Each read is isolated."""
+    from database import db
+    active = await _safe(db.count_active_members(guild.id, days=7, clone_id=clone_id), None)
+    items = await setup_items(guild, clone_id)
+    done, total = setup_score(items)
+    age, tips = "N/A", []
+    try:
+        from discord_bot.cogs.analytics import AnalyticsCog, GROWTH_TIPS
+        age = AnalyticsCog._age_str(guild.created_at)
+        tips = [f"{emoji} {name}" + (f" — `{cmd}`" if cmd else "") for emoji, name, cmd, _ in GROWTH_TIPS[:3]]
+    except Exception:
+        logger.debug("[server-panel] analytics helpers unavailable", exc_info=True)
+    channels = list(getattr(guild, "channels", []) or [])
+    return {
+        "members": getattr(guild, "member_count", None), "active_7d": active, "age": age,
+        "text": sum(1 for c in channels if getattr(c, "type", None) == _CT_TEXT),
+        "voice": sum(1 for c in channels if getattr(c, "type", None) == _CT_VOICE),
+        "roles": max(len(getattr(guild, "roles", []) or []) - 1, 0),
+        "setup_done": done, "setup_total": total, "tips": tips,
+    }
+
+
+def _channel_types():
+    import discord
+    return discord.ChannelType.text, discord.ChannelType.voice
+
+
+_CT_TEXT, _CT_VOICE = _channel_types()
+
+
+def _clip(v: Any, n: int = 30) -> str:
+    s = "∅" if v is None else str(v).replace("`", "'").replace("\n", " ")
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def format_history(rows: List[dict]) -> List[str]:
+    """One short line per audit row, newest first."""
+    out = []
+    for r in rows:
+        ts = r.get("created_at")
+        when = f"<t:{int(ts.timestamp())}:R>" if ts else "?"
+        out.append(f"{when} <@{r.get('actor_id')}> `{_clip(r.get('setting_key'), 40)}`: "
+                   f"{_clip(r.get('old_value'))} → {_clip(r.get('new_value'))}")
+    return out
+
+
+# -- reset to defaults ----------------------------------------------------
+
+RESET_GROUPS = {
+    "welcome": "Welcome", "verification": "Verification", "automod": "Auto-mod filters",
+    "modlog": "Mod-log categories", "leveling": "Leveling and voice XP", "starboard": "Starboard",
+    "suggestions": "Suggestions", "tickets": "Tickets", "honeypot": "Honeypot",
+}
+RESET_NOTES = {
+    "leveling": "Level-role rewards are kept (remove them in Community).",
+    "tickets": "A ticket panel already posted stays in its channel.",
+    "verification": "A gate message already posted stays in its channel.",
+    "honeypot": "The honeypot configuration is deleted; a posted warning message stays.",
+}
+_WELCOME_DEFAULTS = {
+    "enabled": False, "channel_id": None, "card_style": "gif", "avatar_shape": "circle",
+    "delivery_mode": "channel", "message_template": "Welcome {member} to {guild}! You are member #{count}.",
+}
+_VERIFICATION_DEFAULTS = {
+    "enabled": False, "mode": "button", "channel_id": None, "unverified_role_id": None,
+    "verified_role_id": None, "timeout_seconds": 300, "max_attempts": 3,
+}
+_AUTOMOD_RESET = {
+    "action": "delete", "timeout_minutes": 10, "log_channel_id": None, "word_filter_enabled": False,
+    "banned_words": [], "anti_invite_enabled": False, "anti_mention_enabled": False,
+    "anti_mention_threshold": 5, "spam_enabled": False, "spam_flood_threshold": 10,
+    "spam_flood_window_seconds": 10, "min_account_age_hours": 0,
+}
+_LEVELING_DEFAULTS = {
+    "announce_channel_id": None, "xp_rate": "default", "card_style": "card",
+    "leaderboard_autopost_channel_id": None,
+}
+_VOICE_XP_DEFAULTS = {"enabled": True, "xp_per_minute": 10, "afk_channel_excluded": True}
+_STARBOARD_DEFAULTS = {"channel_id": None, "threshold": 5, "emoji": "⭐"}
+_TICKET_DEFAULTS = {"support_role_id": None, "category_id": None, "panel_channel_id": None}
+
+
+async def reset_feature(guild_id: int, clone_id: Optional[int], actor_id: int, key: str) -> None:
+    """Put one feature's panel-visible settings back to defaults. Goes through
+    the audited setters, so every field change is logged, plus one summary line."""
+    if key not in RESET_GROUPS:
+        raise ValueError(f"unknown feature {key!r}")
+    g, c, a = guild_id, clone_id, actor_id
+    if key == "welcome":
+        await set_welcome(g, c, a, **_WELCOME_DEFAULTS)
+    elif key == "verification":
+        await set_verification(g, c, a, **_VERIFICATION_DEFAULTS)
+    elif key == "automod":
+        await set_automod(g, c, a, **_AUTOMOD_RESET)
+    elif key == "modlog":
+        await set_modlog_categories(g, c, a, set())
+    elif key == "leveling":
+        await set_leveling(g, c, a, **_LEVELING_DEFAULTS)
+        await set_voice_xp(g, c, a, **_VOICE_XP_DEFAULTS)
+    elif key == "starboard":
+        await set_starboard(g, c, a, **_STARBOARD_DEFAULTS)
+    elif key == "suggestions":
+        await set_suggestions(g, c, a, None)
+    elif key == "tickets":
+        await set_tickets(g, c, a, **_TICKET_DEFAULTS)
+    elif key == "honeypot":
+        from database import db
+        old = await db.get_honeypot_config(g, c)
+        await db.delete_honeypot_config(g, clone_id=c)
+        await _audited(g, c, a, "honeypot", old, {k: None for k in ("channel_id", "enabled")})
+    await record_change(g, c, a, f"reset.{key}", None, "defaults")
+
+
+# -- copy settings between servers ---------------------------------------
+
+COPY_FEATURES = ("automod", "welcome", "leveling", "starboard")
+COPY_EXCLUDED = ("verification, tickets, honeypot, suggestions and reaction roles "
+                 "(they depend on messages already posted in the other server)")
+_AUTOMOD_COPY = ("action", "timeout_minutes", "word_filter_enabled", "banned_words", "anti_invite_enabled",
+                 "anti_mention_enabled", "anti_mention_threshold", "spam_enabled", "spam_flood_threshold",
+                 "spam_flood_window_seconds", "min_account_age_hours")
+
+
+def map_channel(src_guild, dst_guild, channel_id) -> Optional[int]:
+    """Channel in dst with the same name and type as src's, or None. IDs are
+    never copied across servers."""
+    ch = src_guild.get_channel(channel_id) if channel_id else None
+    if ch is None:
+        return None
+    for c in getattr(dst_guild, "channels", []) or []:
+        if c.name == ch.name and getattr(c, "type", None) == getattr(ch, "type", None):
+            return c.id
+    return None
+
+
+def map_role(src_guild, dst_guild, role_id) -> Optional[int]:
+    """Assignable role in dst with the same name as src's, or None."""
+    role = src_guild.get_role(role_id) if role_id else None
+    if role is None:
+        return None
+    for r in getattr(dst_guild, "roles", []) or []:
+        if r.name == role.name and role_blocked_reason(dst_guild, r) is None:
+            return r.id
+    return None
+
+
+async def manages_guild(guild, user_id: int, permissions=None) -> bool:
+    """Live owner/Manage Server check (same rule as the panel itself). When the
+    member isn't cached, fetches them rather than guessing."""
+    if guild is None:
+        return False
+    if access_denied_reason(guild, user_id, permissions) is None:
+        return True
+    if permissions is None and guild.get_member(user_id) is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except Exception:
+            return False
+        return access_denied_reason(guild, user_id, member.guild_permissions) is None
+    return False
+
+
+def copyable_guilds(bot, current_guild, user_id: int, limit: int = 25) -> List[tuple]:
+    """(id, name) of other servers the bot is in where the user is owner or
+    Manage Server, from cached data only. Re-verified live on confirm."""
+    out = []
+    for g in getattr(bot, "guilds", []) or []:
+        if g.id != current_guild.id and access_denied_reason(g, user_id) is None:
+            out.append((g.id, g.name))
+    return sorted(out, key=lambda t: t[1].lower())[:limit]
+
+
+@dataclass
+class CopyReport:
+    copied: List[str]
+    repick: List[str]
+
+
+async def copy_settings(src, dst, clone_id: Optional[int], actor_id: int,
+                        features=COPY_FEATURES) -> CopyReport:
+    """Copy plain settings from src to dst (both guild objects). Channels and
+    roles are matched by name; anything with no match is left as it is in dst
+    and listed in `repick` for the owner to set. Each feature is isolated."""
+    from database import db
+    rep = CopyReport([], [])
+    g, c, a = dst.id, clone_id, actor_id
+
+    async def chan(label, cid):
+        m = map_channel(src, dst, cid)
+        if cid and m is None:
+            rep.repick.append(f"{label}: no channel with the same name")
+        return m
+
+    for feat in features:
+        try:
+            if feat == "automod":
+                cfg = await db.get_automod_config(src.id, clone_id)
+                await set_automod(g, c, a, **{k: cfg.get(k) for k in _AUTOMOD_COPY if k in cfg})
+                await set_modlog_categories(g, c, a, {cat for cat, col in MODLOG_CATEGORY_FIELDS.items() if cfg.get(col)})
+                m = await chan("Mod-log channel", cfg.get("log_channel_id"))
+                if m:
+                    await set_automod(g, c, a, log_channel_id=m)
+            elif feat == "welcome":
+                cfg = await db.get_welcome_config(src.id, clone_id)
+                await set_welcome(g, c, a, **{k: cfg.get(k) for k in
+                                              ("message_template", "card_style", "avatar_shape", "delivery_mode") if cfg.get(k)})
+                m = await chan("Welcome channel", cfg.get("channel_id"))
+                if m:
+                    await set_welcome(g, c, a, channel_id=m, enabled=bool(cfg.get("enabled")))
+                elif cfg.get("enabled"):
+                    rep.repick.append("Welcome: left as it was (pick a channel, then turn it on)")
+            elif feat == "leveling":
+                cfg = await db.get_leveling_config(src.id, clone_id)
+                await set_leveling(g, c, a, xp_rate=cfg.get("xp_rate", "default"), card_style=cfg.get("card_style", "card"))
+                vx = await db.get_voice_xp_config(src.id, clone_id)
+                await set_voice_xp(g, c, a, enabled=vx.get("enabled"), xp_per_minute=vx.get("xp_per_minute"),
+                                   afk_channel_excluded=vx.get("afk_channel_excluded"))
+                for label, field in (("Level-up channel", "announce_channel_id"),
+                                     ("Leaderboard channel", "leaderboard_autopost_channel_id")):
+                    m = await chan(label, cfg.get(field))
+                    if m:
+                        await set_leveling(g, c, a, **{field: m})
+                for lr in await db.get_level_roles(src.id, clone_id):
+                    rid = map_role(src, dst, lr["role_id"])
+                    if rid is None:
+                        rep.repick.append(f"Level {lr['level']} reward: no matching assignable role")
+                    else:
+                        await add_level_role(g, c, a, lr["level"], rid)
+            elif feat == "starboard":
+                cfg = await db.get_starboard_config(src.id, clone_id)
+                await set_starboard(g, c, a, threshold=cfg.get("threshold"), emoji=cfg.get("emoji"))
+                m = await chan("Starboard channel", cfg.get("channel_id"))
+                if m:
+                    await set_starboard(g, c, a, channel_id=m)
+            rep.copied.append(RESET_GROUPS.get(feat, feat))
+        except Exception:
+            logger.exception("[server-panel] copy of %s failed", feat)
+            rep.repick.append(f"{feat}: copy failed, nothing more was changed for it")
+    await record_change(g, c, a, "copy_settings", src.id, ",".join(rep.copied))
+    return rep
+
+
+# -- help / report --------------------------------------------------------
+
+REPORT_KINDS = {"problem": "Problem report", "idea": "Feature idea"}
+REPORT_MAX = 900  # feedback limit is 1000 and the tag below stays under 40
+
+
+def format_report(kind: str, text: str) -> str:
+    return f"[Server panel · {REPORT_KINDS.get(kind, 'Feedback')}] {text.strip()}"
