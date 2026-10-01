@@ -59,6 +59,7 @@ def allowed_sections(user_id: int) -> set:
         out.update({"access", "logs", "config", "database"})       # Batch 2 (_views_admin_panel_ops.py)
         out.update({"watchlist", "reports", "status", "honeypot"})  # Batch 3 (_views_admin_panel_safety.py), owner-only
         out.add("money")                                            # Batch 4 (_views_admin_panel_money.py), owner-only
+        out.add("ads")                                              # Batch 5 (_views_admin_panel_ads.py), owner-only (same gate as /ad manage)
     if user_id in DISCORD_OWNER_BROADCAST_IDS:
         out.add("feedback")  # /admin feedback (feedback.py gates it on DISCORD_OWNER_BROADCAST_IDS)
     # Helpers: extra people the owner let into SOME sections (only the grantable
@@ -243,6 +244,7 @@ class HomeView(PanelView):
             _btn("Status", P, self._status, "🎭", disabled="status" not in a),
             _btn("Honeypot", P, self._honeypot, "🍯", disabled="honeypot" not in a),
             _btn("Money", P, self._money, "💰", disabled="money" not in a),
+            _btn("Ads", P, self._ads, "📣", disabled="ads" not in a),
             _btn("Close", S, self._close, "✖️"),
         ]
 
@@ -343,6 +345,12 @@ class HomeView(PanelView):
     async def _money(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_money import MoneyHubView
         await self.go(i, MoneyHubView(self.cog, self.owner_id))
+
+    async def _ads(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_ads import AdsView
+        view = AdsView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
 
     async def _close(self, i: discord.Interaction):
         self.stop()
