@@ -457,9 +457,27 @@ class WelcomeView(ServerPanelView):
             _btn("Turn off" if c.get("enabled") else "Turn on",
                  discord.ButtonStyle.danger if c.get("enabled") else discord.ButtonStyle.success, self._toggle),
             _btn("Edit message", discord.ButtonStyle.primary, self._edit, "✏️"),
+            _btn("Cards & themes", discord.ButtonStyle.primary, self._open_wizard, "🎴"),
+            _btn("Customize card", discord.ButtonStyle.primary, self._open_card_customizer, "🎨"),
             _btn("Verification", discord.ButtonStyle.primary, self.nav(VerificationView), "🔐"),
             self.back_button(),
         ]
+
+    async def _open_wizard(self, interaction: discord.Interaction):
+        """Full welcome wizard: theme, card look/style, avatar shape, sticker,
+        delivery mode, preview and the premium packs."""
+        from database import db
+        from discord_bot.cogs import _views_welcome as vw
+        await interaction.response.defer(ephemeral=True)
+        cfg = await db.get_welcome_config(interaction.guild_id, clone_id=self.clone_id)
+        view = vw.build_wizard_view(interaction.guild_id, self.clone_id, interaction.user.id, cfg)
+        await interaction.followup.send(view=view, ephemeral=True)
+
+    async def _open_card_customizer(self, interaction: discord.Interaction):
+        """Card customizer: banner, background, colors, shapes, heading text, preview."""
+        from discord_bot.cogs import _views_card_customize as cc
+        await interaction.response.defer(ephemeral=True)
+        await cc.open_customize_wizard(interaction, interaction.guild_id, self.clone_id)
 
     async def _toggle(self, interaction: discord.Interaction):
         c = self.data.get("cfg", {})
@@ -594,6 +612,8 @@ class ModerationView(ServerPanelView):
             out.append(_btn("Honeypot: on" if hp.get("enabled") else "Honeypot: off",
                             discord.ButtonStyle.success if hp.get("enabled") else discord.ButtonStyle.secondary,
                             self._toggle_honeypot, "🍯"))
+        out.append(_btn("Honeypot settings" if hp.get("channel_id") else "Set up honeypot",
+                        discord.ButtonStyle.primary, self._open_honeypot, "🍯"))
         out.append(self.back_button())
         return out
 
@@ -620,6 +640,13 @@ class ModerationView(ServerPanelView):
 
     async def _words(self, interaction: discord.Interaction):
         await interaction.response.send_modal(BannedWordsModal(interaction.user.id))
+
+    async def _open_honeypot(self, interaction: discord.Interaction):
+        """Full honeypot panel (creates the trap channel if none exists yet):
+        action, history window, log channel, pause/repost/remove, premium extras."""
+        from discord_bot.cogs.honeypot import open_honeypot
+        await interaction.response.defer(ephemeral=True)
+        await open_honeypot(interaction, interaction.guild, self.clone_id)
 
     async def _toggle_honeypot(self, interaction: discord.Interaction):
         await interaction.response.defer()
