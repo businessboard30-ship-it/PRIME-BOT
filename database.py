@@ -139,7 +139,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "41"
+SCHEMA_VERSION = "42"
+# "41" -> "42" adds 024_server_panel.sql (server_panel_audit) for the Server
+# Owners Panel change history — see modules/server_panel.py. Same
+# bump-or-it-never-runs trap as every entry below.
 # "40" -> "41" adds discord_invite_tracker_config.leaderboard_autopost_channel_id
 # and .leaderboard_last_posted_at (ALTER TABLE ADD COLUMN IF NOT EXISTS, next to
 # the wizard_due_at ALTER) for the daily invite-leaderboard post — see
@@ -4931,6 +4934,12 @@ class Database:
         admin_money_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "023_admin_money.sql"
         if admin_money_migration.exists():
             await conn.execute(admin_money_migration.read_text())
+
+        # Server Owners Panel (Phase 1): per-server change history. See
+        # modules/server_panel.py. Additive/idempotent.
+        server_panel_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "024_server_panel.sql"
+        if server_panel_migration.exists():
+            await conn.execute(server_panel_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
