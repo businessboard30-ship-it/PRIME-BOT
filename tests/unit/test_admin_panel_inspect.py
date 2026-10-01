@@ -222,6 +222,23 @@ def test_health_refresh_defers_then_edits_and_back_goes_home(vp, monkeypatch):
     run(go())
 
 
+def test_health_log_tail_button_opens_the_log_view(vp, monkeypatch):
+    async def go():
+        ai = vp.ai
+        monkeypatch.setattr(ai, "db_ping", AsyncMock(return_value=5.0))
+        monkeypatch.setattr(ai, "clone_heartbeats", AsyncMock(return_value=[]))
+        v = vp.HealthView(cog(), OWNER)
+        await v.load()
+        i = I()
+        await buttons(v)["Log tail"].callback(i)
+        nxt = i.response.edit_message.await_args.kwargs["view"]
+        assert type(nxt).__name__ == "LogsView"
+        i2 = I()
+        await buttons(nxt)["Back"].callback(i2)
+        assert isinstance(i2.response.edit_message.await_args.kwargs["view"], vp.main.HomeView)
+    run(go())
+
+
 def test_loop_report_counts_running_and_stopped(vp):
     from discord.ext import tasks
 
