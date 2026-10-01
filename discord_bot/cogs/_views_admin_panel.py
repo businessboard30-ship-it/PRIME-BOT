@@ -314,9 +314,12 @@ class HomeView(PanelView):
 
     async def _database(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_ops import DatabaseView
+        # Counting rows can outlast Discord's 3-second reply window on a big or
+        # remote database, so acknowledge first and edit once the numbers are in.
+        await i.response.defer()
         view = DatabaseView(self.cog, self.owner_id)
         await view.load()
-        await self.go(i, view)
+        await i.edit_original_response(view=view)
 
     async def _watchlist(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_safety import WatchlistView

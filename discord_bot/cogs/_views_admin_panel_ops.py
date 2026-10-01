@@ -389,8 +389,12 @@ class DatabaseView(PanelView):
             return "?" if v is None else str(v)
         lines.append(f"**Connection pool:** {fmt(p['busy'])} busy · {fmt(p['idle'])} idle · "
                      f"{fmt(p['size'])} open (limit {fmt(p['max'])})")
-        rows = [f"`{t}` {'n/a' if n is None else format(n, ',')}" for t, n in self.info["counts"]]
+        approx = self.info.get("approx") or set()
+        rows = [f"`{t}` {'n/a' if n is None else ('~' if t in approx else '') + format(n, ',')}"
+                for t, n in self.info["counts"]]
         lines.append("**Rows:** " + " · ".join(rows))
+        if approx:
+            lines.append("-# ~ = estimate (an exact count was too slow on this database).")
         lines.append(f"**Stale checkouts:** {self.stale} pending for more than {ops.STALE_HOURS}h")
         if self._confirm:
             lines.append(f"⚠️ **Press Confirm to mark {self.stale} abandoned checkout(s) as expired.** "
@@ -408,8 +412,11 @@ class DatabaseView(PanelView):
     async def _refresh(self, i: discord.Interaction):
         self._confirm = False
         self.notice = None
+        # Counting rows can take longer than Discord's 3-second reply window, so
+        # acknowledge first, then edit the message when the numbers are ready.
+        await i.response.defer()
         await self.load()
-        await i.response.edit_message(view=self)
+        await i.edit_original_response(view=self)
 
     async def _cleanup(self, i: discord.Interaction):
         if not self._confirm:
@@ -418,15 +425,16 @@ class DatabaseView(PanelView):
             await i.response.edit_message(view=self)
             return
         self._confirm = False
+        await i.response.defer()
         try:
             n = await ops.run_stale_payment_cleanup()
         except Exception:
             logger.exception("[admin-panel] stale payment cleanup failed")
-            await i.response.send_message("Cleanup failed (database problem). Nothing was changed.", ephemeral=True)
+            await i.followup.send("Cleanup failed (database problem). Nothing was changed.", ephemeral=True)
             return
         audit(i, "database.cleanup_stale_payments", expired=n, older_than_hours=ops.STALE_HOURS)
         self.notice = f"✅ Marked {n} stale checkout(s) as expired."
         await self.load()
-        await i.response.edit_message(view=self)
+        await i.edit_original_response(view=self)
 
     async def _back(self, i): await _home(self, i)

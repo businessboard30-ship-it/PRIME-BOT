@@ -325,7 +325,7 @@ class StatusAddModal(discord.ui.Modal, title="Add status text"):
         self.cog, self.kind = cog, kind
         self.text = discord.ui.TextInput(
             label=f"{safety.STATUS_KINDS.get(kind, kind)} …", max_length=safety.STATUS_TEXT_MAX,
-            placeholder="e.g. {servers} servers  ({servers} and {members} are filled in live)")
+            placeholder="e.g. {members} members  ({members} is filled in live)")
         self.add_item(self.text)
 
     async def on_submit(self, interaction: discord.Interaction):

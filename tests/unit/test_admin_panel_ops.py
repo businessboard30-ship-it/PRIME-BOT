@@ -715,8 +715,11 @@ def test_cleanup_is_two_step_and_calls_existing_sweep(vp, monkeypatch):
     run(v._cleanup(I()))
     sweep.assert_not_awaited()                       # first press only asks to confirm
     assert "Press Confirm" in text_of(v)
-    run(v._cleanup(I()))
+    i2 = I(); i2.edit_original_response = AsyncMock()
+    run(v._cleanup(i2))
+    i2.response.defer.assert_awaited_once()          # acknowledged before the slow work
     sweep.assert_awaited_once_with(72)
+    i2.edit_original_response.assert_awaited_once()
     assert logged == [("database.cleanup_stale_payments", {"expired": 4, "older_than_hours": 72})]
     assert "Marked 4 stale" in text_of(v)
 
@@ -730,9 +733,82 @@ def test_cleanup_failure_reports_and_does_not_audit(vp, monkeypatch):
     run(v.load())
     run(v._cleanup(I())); i = I()
     run(v._cleanup(i))
-    assert "Nothing was changed" in i.response.send_message.call_args[0][0] and logged == []
+    assert "Nothing was changed" in i.followup.send.call_args[0][0] and logged == []
 
 
 def test_database_view_is_owner_only(vp):
     grant(vp, HELPER, *vp.ac.GRANTABLE)
     assert run(vp.DatabaseView(cog(), HELPER).interaction_check(I(user=HELPER))) is False
+
+
+# ── slow database: the button must answer Discord first, and never hang ──
+
+class SlowConn(FakeConn):
+    """Exact COUNT(*) on the named tables times out, like a huge table on a remote DB."""
+    def __init__(self, slow=(), estimates=None, **kw):
+        super().__init__(**kw)
+        self.slow, self.estimates = set(slow), estimates or {}
+
+    async def fetchval(self, sql, *a, **kw):
+        if "pg_class" in sql:
+            return self.estimates.get(a[0], -1)
+        for t in self.slow:
+            if f'"{t}"' in sql:
+                raise asyncio.TimeoutError()
+        return await super().fetchval(sql, *a, **kw)
+
+
+def test_slow_count_falls_back_to_estimate_and_is_marked_approximate(vp):
+    conn = SlowConn(slow={"users"}, estimates={"users": 987654}, counts={"discord_guilds": 7})
+    approx = set()
+    counts = dict(run(vp.ops.table_counts(conn, approx)))
+    assert counts["users"] == 987654 and approx == {"users"}
+    assert counts["discord_guilds"] == 7
+
+
+def test_slow_count_without_stats_is_n_a_not_zero(vp):
+    conn = SlowConn(slow={"users"}, estimates={})            # reltuples -1 = never analysed
+    approx = set()
+    assert dict(run(vp.ops.table_counts(conn, approx)))["users"] is None and approx == set()
+
+
+def test_missing_table_is_still_n_a_not_an_estimate(vp):
+    conn = SlowConn(estimates={"bot_blacklist": 5}, counts={"bot_blacklist": None})
+    approx = set()
+    assert dict(run(vp.ops.table_counts(conn, approx)))["bot_blacklist"] is None
+    assert approx == set()
+
+
+def test_view_marks_estimates(vp, monkeypatch):
+    patch_pool(vp, SlowConn(slow={"users"}, estimates={"users": 1500000}, stale=0), monkeypatch)
+    v = vp.DatabaseView(cog(), OWNER)
+    run(v.load())
+    t = text_of(v)
+    assert "`users` ~1,500,000" in t and "estimate" in t
+
+
+def test_home_database_button_defers_before_loading(vp, monkeypatch):
+    order = []
+    patch_pool(vp, FakeConn(counts={"users": 5}, stale=0), monkeypatch)
+    home = vp.main.HomeView(cog(), OWNER)
+    i = I()
+    i.response.defer = AsyncMock(side_effect=lambda *a, **k: order.append("defer"))
+    i.edit_original_response = AsyncMock(side_effect=lambda **k: order.append("edit"))
+    orig = vp.ops.db_overview
+    async def spy():
+        order.append("load")
+        return await orig()
+    monkeypatch.setattr(vp.ops, "db_overview", spy)
+    run(home._database(i))
+    assert order == ["defer", "load", "edit"]
+    i.response.edit_message.assert_not_awaited()
+
+
+def test_refresh_defers_before_loading(vp, monkeypatch):
+    patch_pool(vp, FakeConn(counts={"users": 5}, stale=0), monkeypatch)
+    v = vp.DatabaseView(cog(), OWNER)
+    run(v.load())
+    i = I(); i.edit_original_response = AsyncMock()
+    run(v._refresh(i))
+    i.response.defer.assert_awaited_once()
+    i.edit_original_response.assert_awaited_once()

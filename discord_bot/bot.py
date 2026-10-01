@@ -978,10 +978,8 @@ class AnimeBotDiscord(commands.Bot):
     _status_index = 0
 
     def _status_messages(self):
-        servers = len(self.guilds)
         members = sum((g.member_count or 0) for g in self.guilds)
         return [
-            discord.Activity(type=discord.ActivityType.watching, name=f"{servers} servers"),
             discord.Activity(type=discord.ActivityType.watching, name=f"{members:,} members"),
             discord.Activity(type=discord.ActivityType.playing, name="/help for commands"),
             discord.Activity(type=discord.ActivityType.listening, name="your anime requests"),

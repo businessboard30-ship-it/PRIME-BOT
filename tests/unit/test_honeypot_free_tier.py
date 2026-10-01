@@ -384,3 +384,50 @@ def test_effective_config_is_pure(hp):
     assert out["action"] == "ban" and out["delete_seconds"] == 86400 and out["log_channel_id"] is None
     assert saved["action"] == "kick" and saved["log_channel_id"] == 9      # caller's copy untouched
     assert hp.effective_config(saved, True) is saved
+
+
+# ── setup reply: Components v2 messages must not carry plain `content` ───
+
+def test_open_honeypot_sends_view_only_no_content(hp, monkeypatch):
+    chan = MagicMock(); chan.mention = "<#6000>"
+    async def fake_ensure(guild, clone_id, user):
+        return dict(hp.fake.cfg), chan, True, None
+    monkeypatch.setattr(hp, "ensure_honeypot", fake_ensure)
+    i, guild = make_interaction()
+    run(hp.open_honeypot(i, guild, None))
+    sent = i.followup.send.await_args
+    assert sent.args == () and "content" not in sent.kwargs         # v2 views reject content
+    assert sent.kwargs["ephemeral"] is True
+    view = sent.kwargs["view"]
+    text = "\n".join(c.content for c in view.walk_children() if isinstance(c, discord.ui.TextDisplay))
+    assert "Created <#6000>" in text and "Honeypot" in text
+
+
+def test_open_honeypot_existing_channel_note(hp, monkeypatch):
+    chan = MagicMock(); chan.mention = "<#6000>"
+    async def fake_ensure(guild, clone_id, user):
+        return dict(hp.fake.cfg), chan, False, None
+    monkeypatch.setattr(hp, "ensure_honeypot", fake_ensure)
+    i, guild = make_interaction()
+    run(hp.open_honeypot(i, guild, None))
+    text = "\n".join(c.content for c in i.followup.send.await_args.kwargs["view"].walk_children()
+                     if isinstance(c, discord.ui.TextDisplay))
+    assert "Honeypot is live in <#6000>" in text
+
+
+def test_open_honeypot_error_is_plain_text_without_a_view(hp, monkeypatch):
+    async def fake_ensure(guild, clone_id, user):
+        return None, None, False, "I need Manage Channels."
+    monkeypatch.setattr(hp, "ensure_honeypot", fake_ensure)
+    i, guild = make_interaction()
+    run(hp.open_honeypot(i, guild, None))
+    assert i.followup.send.await_args.args == ("I need Manage Channels.",)
+    assert "view" not in i.followup.send.await_args.kwargs
+
+
+@pytest.mark.parametrize("premium", [True, False])
+def test_panel_with_note_serializes_as_components_v2(hp, premium):
+    view = hp.build_panel(guild_for_panel(), None, dict(hp.fake.cfg), premium, note="🍯 note")
+    comps = view.to_components()            # real discord.py serialization
+    assert comps and view.has_components_v2()
+    assert len(list(view.walk_children())) <= 40

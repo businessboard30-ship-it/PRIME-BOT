@@ -462,13 +462,15 @@ def _status_lines(guild: discord.Guild, cfg: dict, premium: bool) -> list:
     return lines
 
 
-def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool) -> discord.ui.LayoutView:
+def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: str = "") -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
     if cfg.get("enabled"):
         color = discord.Color.green()
     else:
         color = discord.Color.orange()
     container = discord.ui.Container(accent_colour=color)
+    if note:   # a Components v2 message can't carry plain `content`, so the note lives inside the panel
+        container.add_item(discord.ui.TextDisplay(note))
     container.add_item(discord.ui.TextDisplay(
         "### 🍯 Honeypot\n"
         + "\n".join(perm_check.lines(guild.id, clone_id) + _status_lines(guild, cfg, premium))
@@ -569,10 +571,10 @@ async def open_honeypot(interaction: discord.Interaction, guild: discord.Guild, 
         await interaction.followup.send(error, ephemeral=True)
         return
     premium = await is_premium(guild.id, clone_id)
-    view = build_panel(guild, clone_id, cfg, premium)
     note = (f"🍯 Created {channel.mention} and posted the warning notice in it."
             if created else f"🍯 Honeypot is live in {channel.mention}.")
-    await interaction.followup.send(note, view=view, ephemeral=True)
+    view = build_panel(guild, clone_id, cfg, premium, note=note)
+    await interaction.followup.send(view=view, ephemeral=True)   # no `content=`: v2 views reject it
 
 
 # ── dynamic items ─────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ hide it": a harmless setting shown as masked is fine, a token shown is not.
 from __future__ import annotations
 
 import logging
+import asyncio
 import re
 import time
 from collections import deque
@@ -214,7 +215,8 @@ COUNT_TABLES = (
 )
 _TABLE_OK = re.compile(r"^[a-z_][a-z0-9_]*$")
 STALE_HOURS = 72   # same window db.expire_old_pending_payments() already uses
-COUNT_TIMEOUT = 5.0
+COUNT_TIMEOUT = 2.5      # per table; a slow exact COUNT(*) falls back to Postgres' own estimate
+STALE_TIMEOUT = 10.0
 
 
 async def _pool():
@@ -236,7 +238,21 @@ def pool_status(pool: Any) -> dict:
             "min": call("get_min_size"), "max": call("get_max_size")}
 
 
-async def table_counts(conn: Any) -> List[Tuple[str, Optional[int]]]:
+async def _estimate(conn: Any, table: str) -> Optional[int]:
+    """Postgres' own row estimate (instant, from planner stats). None when the
+    table has never been analysed (reltuples = -1) or the lookup fails."""
+    try:
+        n = await conn.fetchval("SELECT reltuples::bigint FROM pg_class WHERE relname = $1", table, timeout=COUNT_TIMEOUT)
+        return int(n) if n is not None and int(n) >= 0 else None
+    except Exception:
+        return None
+
+
+async def table_counts(conn: Any, approx: Optional[set] = None) -> List[Tuple[str, Optional[int]]]:
+    """Row counts. A table whose exact COUNT(*) TIMES OUT (big table, slow
+    database) falls back to the planner estimate and is added to `approx` so
+    the screen can mark it with "~". A missing table or any other error is
+    "n/a", exactly as before."""
     out: List[Tuple[str, Optional[int]]] = []
     for table in COUNT_TABLES:
         if not _TABLE_OK.match(table):
@@ -244,6 +260,11 @@ async def table_counts(conn: Any) -> List[Tuple[str, Optional[int]]]:
         try:
             n = await conn.fetchval(f'SELECT COUNT(*) FROM "{table}"', timeout=COUNT_TIMEOUT)
             out.append((table, int(n)))
+        except asyncio.TimeoutError:
+            est = await _estimate(conn, table)
+            if est is not None and approx is not None:
+                approx.add(table)
+            out.append((table, est))
         except Exception:
             out.append((table, None))
     return out
@@ -251,12 +272,13 @@ async def table_counts(conn: Any) -> List[Tuple[str, Optional[int]]]:
 
 async def db_overview() -> dict:
     pool = await _pool()
+    approx: set = set()
     async with pool.acquire() as conn:
-        counts = await table_counts(conn)
+        counts = await table_counts(conn, approx)
         stale = await conn.fetchval(
             "SELECT COUNT(*) FROM payment_logs WHERE status = 'pending' "
-            "AND created_date < NOW() - ($1 || ' hours')::INTERVAL", str(STALE_HOURS))
-    return {"pool": pool_status(pool), "counts": counts, "stale_payments": int(stale or 0)}
+            "AND created_date < NOW() - ($1 || ' hours')::INTERVAL", str(STALE_HOURS), timeout=STALE_TIMEOUT)
+    return {"pool": pool_status(pool), "counts": counts, "approx": approx, "stale_payments": int(stale or 0)}
 
 
 async def run_stale_payment_cleanup() -> int:
