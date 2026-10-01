@@ -519,7 +519,9 @@ def test_migration_is_additive_and_idempotent_and_schema_is_bumped():
     assert code.count("CREATE INDEX") == code.count("CREATE INDEX IF NOT EXISTS")
     assert code.count("ADD COLUMN") == code.count("ADD COLUMN IF NOT EXISTS")
     src = (ROOT / "database.py").read_text()
-    assert 'SCHEMA_VERSION = "40"' in src and "023_admin_money.sql" in src
+    import re as _re
+    assert int(_re.search(r'^SCHEMA_VERSION = "(\d+)"', src, _re.M).group(1)) >= 40   # bumped at least once for this migration
+    assert "023_admin_money.sql" in src
 
 
 # ── webhook hooks never break the webhook ────────────────────────────────

@@ -132,14 +132,22 @@ class InvitesCog(GuildOnlyCog):
 
     @tasks.loop(minutes=SCHEDULER_INTERVAL_MINUTES)
     async def _scheduler_loop(self):
-        """Posts the auto-wizard for any guild whose WIZARD_POST_DELAY has
-        elapsed and hasn't had one posted yet (wizard_message_id still
-        NULL). Checked on an interval rather than a per-guild asyncio
-        timer so a guild that joined right before a restart doesn't lose
-        its scheduled post — it's just picked up on the next tick once
-        due, exactly like automod's _reminder_loop."""
+        """Two jobs, each isolated so one failing can never stop the other or
+        kill the loop (discord.ext.tasks permanently ends a loop on the first
+        non-network exception): posting the auto-wizard for guilds whose
+        WIZARD_POST_DELAY has elapsed, and the daily invite leaderboard."""
         try:
-            clone_id = _clone_id_of(self.bot)
+            await self._run_due_wizards()
+        except Exception:
+            logger.exception("[invites] scheduler: wizard pass failed")
+        try:
+            await self._run_due_leaderboards()
+        except Exception:
+            logger.exception("[invite-leaderboard] scheduler: leaderboard pass failed")
+
+    async def _run_due_wizards(self):
+        clone_id = _clone_id_of(self.bot)
+        try:
             due_guild_ids = await db.get_due_invite_wizard_guilds(clone_id)
         except Exception:
             logger.exception("[invites] scheduler: failed to list due guilds")
@@ -152,6 +160,32 @@ class InvitesCog(GuildOnlyCog):
                 await self.post_setup_wizard_on_join(guild)
             except Exception:
                 logger.exception(f"[invites] scheduler: failed to post wizard for guild {guild_id}")
+
+    async def _run_due_leaderboards(self):
+        from discord_bot.cogs._views_invites import post_invite_leaderboard
+        clone_id = _clone_id_of(self.bot)
+        due = await db.get_due_invite_leaderboard_autoposts(clone_id, limit=10)
+        if due:
+            logger.info("[invite-leaderboard] %d guild(s) due", len(due))
+        for cfg in due:
+            guild = self.bot.get_guild(cfg["guild_id"])
+            if guild is None:
+                continue   # another process owns this guild
+            try:
+                ok, reason = await post_invite_leaderboard(self.bot, guild, cfg["clone_id"], cfg["post_channel_id"])
+                if ok:
+                    logger.info("[invite-leaderboard] posted for guild %s", guild.id)
+                else:
+                    logger.warning("[invite-leaderboard] not posted for guild %s: %s", guild.id, reason)
+            except Exception:
+                logger.exception("[invite-leaderboard] failed for guild %s", cfg["guild_id"])
+            finally:
+                # Once a day even when it fails (reason is logged and shown by the
+                # wizard's Post-now button), so a broken channel isn't retried every 5 minutes.
+                try:
+                    await db.mark_invite_leaderboard_posted(cfg["guild_id"], cfg["clone_id"])
+                except Exception:
+                    logger.exception("[invite-leaderboard] couldn't mark guild %s as posted", cfg["guild_id"])
 
     @_scheduler_loop.before_loop
     async def _before_scheduler_loop(self):

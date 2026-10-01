@@ -48,6 +48,7 @@ accessory (a Section always needs exactly one).
 """
 
 import asyncio
+import logging
 import math
 import re
 
@@ -57,6 +58,8 @@ from database import db
 from modules import leveling
 from discord_bot.cogs._views_leveling_boost import BoostXPButton
 from discord_bot.cogs._views_leveling_wallet import build_boost_wallet_row
+
+logger = logging.getLogger(__name__)
 
 PAGE_SIZE = 10
 MODES = ("local", "global")
@@ -398,6 +401,40 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
 
     view.add_item(container)
     return view
+
+
+async def post_leaderboard_to_channel(bot, guild: discord.Guild, clone_id, channel_id) -> tuple:
+    """The ONE place the daily XP leaderboard is posted — used by the autopost
+    loop and the wizard's "Post it now" button, so a test post proves the real
+    thing works. Never raises. Returns (ok, reason) where reason is a short,
+    human-readable explanation when ok is False (it is shown to the admin and
+    logged), or "" when the post went out."""
+    channel = guild.get_channel(channel_id) if channel_id else None
+    if channel is None:
+        return False, "I can't find the channel it should post in — pick one in the wizard."
+    if not hasattr(channel, "send"):
+        return False, f"{getattr(channel, 'mention', '#channel')} isn't a text channel I can post in."
+    me = guild.me
+    if me is not None:
+        perms = channel.permissions_for(me)
+        missing = [n for n, ok in (("View Channel", perms.view_channel), ("Send Messages", perms.send_messages)) if not ok]
+        if missing:
+            return False, f"I'm missing **{' and '.join(missing)}** in {channel.mention}."
+    try:
+        view = await build_leaderboard_view(bot, guild, clone_id, mode="local", page=0)
+    except Exception:
+        logger.exception("[leaderboard-autopost] couldn't build the leaderboard for guild %s", guild.id)
+        return False, "I couldn't build the leaderboard (database problem). It will try again."
+    if view is None:
+        return False, "Nobody has earned XP yet, so there's nothing to post."
+    try:
+        await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
+    except discord.Forbidden:
+        return False, f"Discord refused the post in {channel.mention} — check my channel permissions."
+    except Exception:
+        logger.exception("[leaderboard-autopost] send failed for guild %s channel %s", guild.id, channel_id)
+        return False, "Discord rejected the post. It will try again."
+    return True, ""
 
 
 async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, mode: str, page: int):

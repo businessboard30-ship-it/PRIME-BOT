@@ -754,64 +754,59 @@ class LevelingCog(GuildOnlyCog):
     async def _leaderboard_autopost_loop(self):
         """Wakes up every 30 min and asks the DB for guilds whose daily post
         is actually due (one batched query — see get_due_leaderboard_
-        autoposts — never a per-guild query in a loop), so this stays cheap
-        even with many guilds configured. A 30-min check interval against a
-        24h post interval means posts land within ~30 min of "once a day",
-        which is close enough — it doesn't need to be exact to the minute.
+        autoposts). Posts land within ~30 min of "once a day".
 
-        This stays a live in-process loop rather than an external cron
-        endpoint (like api/cron_expire_monetization.py) because posting
-        needs build_leaderboard_view's Components-v2 view, which needs a
-        connected discord.py Client with a populated member/guild cache —
-        that only exists inside the running bot process, not a stateless
-        serverless function."""
+        This stays a live in-process loop (not a cron endpoint) because
+        posting needs build_leaderboard_view's Components-v2 view, which needs
+        a connected discord.py client with a populated member cache.
+
+        NOTHING may escape this method. discord.ext.tasks only retries a
+        short list of network errors; anything else (a database error, say)
+        ends the loop for the rest of the process's life, and the old error
+        handler's restart never actually fired (see below). So every failure is
+        caught, logged with its traceback, and costs at most one cycle."""
         try:
             await self._run_due_leaderboard_autoposts()
-        except Exception as e:
-            # Anything escaping here would otherwise hit tasks.loop's
-            # default error handling, which just logs once and lets the
-            # loop DIE PERMANENTLY — no auto-retry, no restart, and nothing
-            # visibly wrong until someone asks "why has this never posted".
-            # See the .error handler below for what actually restarts it.
-            logger.error(f"[v0] _leaderboard_autopost_loop iteration failed: {e}")
-            raise
+        except Exception:
+            logger.exception("[leaderboard-autopost] iteration failed; will retry next cycle")
 
     async def _run_due_leaderboard_autoposts(self):
+        from discord_bot.cogs._views_leveling_leaderboard import post_leaderboard_to_channel
         clone_id = getattr(self.bot, "clone_id", None)
         due = await db.get_due_leaderboard_autoposts(clone_id, limit=10)
+        if due:
+            logger.info("[leaderboard-autopost] %d guild(s) due", len(due))
         for cfg in due:
             guild = self.bot.get_guild(cfg["guild_id"])
             if guild is None:
-                continue
-            channel = guild.get_channel(cfg["post_channel_id"])
-            if channel is None:
-                continue
+                continue   # another process (main bot / a clone) owns this guild
             try:
-                view = await build_leaderboard_view(self.bot, guild, cfg["clone_id"], mode="local", page=0)
-                if view is not None:
-                    await channel.send(view=view)
-            except discord.Forbidden:
-                pass
-            except Exception as e:
-                logger.error(f"[v0] Failed to post daily leaderboard for guild {cfg['guild_id']}: {e}")
+                ok, reason = await post_leaderboard_to_channel(self.bot, guild, cfg["clone_id"], cfg["post_channel_id"])
+                if ok:
+                    logger.info("[leaderboard-autopost] posted for guild %s", guild.id)
+                else:
+                    logger.warning("[leaderboard-autopost] not posted for guild %s: %s", guild.id, reason)
+            except Exception:
+                logger.exception("[leaderboard-autopost] failed for guild %s", cfg["guild_id"])
             finally:
-                # Mark posted even on a failure above (missing perms, etc.)
-                # so a permanently-broken channel doesn't get retried every
-                # 30 minutes forever — same reasoning as autopost's
-                # failure-count pattern, just simplified to "try once a day".
-                await db.mark_leaderboard_posted(cfg["guild_id"], cfg["clone_id"])
+                # Mark posted even on failure so a permanently-broken channel is
+                # tried once a day, not every 30 minutes. The reason is logged
+                # above and shown by the wizard's "Post it now" button.
+                try:
+                    await db.mark_leaderboard_posted(cfg["guild_id"], cfg["clone_id"])
+                except Exception:
+                    logger.exception("[leaderboard-autopost] couldn't mark guild %s as posted", cfg["guild_id"])
 
     @_leaderboard_autopost_loop.error
     async def _leaderboard_autopost_loop_error(self, error: Exception):
-        """discord.ext.tasks silently stops a loop forever the first time
-        an iteration raises — no built-in retry. That's almost certainly
-        why this has never visibly autoposted: one transient failure
-        (a DB hiccup, a bad channel lookup, anything) and it went quiet
-        with nothing louder than a log line buried in startup noise.
-        Log it loudly and restart the loop so a one-off failure costs at
-        most one missed cycle instead of the feature dying silently for
-        the rest of the process's life."""
-        logger.error(f"[v0] _leaderboard_autopost_loop crashed, restarting it: {error}")
+        """Safety net only — the loop body catches everything, so this should
+        never run. If it somehow does, the task is still 'running' at this
+        moment (so calling .start() here would silently do nothing — that was
+        the old bug), so schedule the restart for just after the task ends."""
+        logger.error("[leaderboard-autopost] loop crashed, restarting in 5s: %r", error)
+        asyncio.get_running_loop().call_later(5, self._restart_leaderboard_autopost)
+
+    def _restart_leaderboard_autopost(self):
         if not self._leaderboard_autopost_loop.is_running():
             self._leaderboard_autopost_loop.start()
 

@@ -139,7 +139,11 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "40"
+SCHEMA_VERSION = "41"
+# "40" -> "41" adds discord_invite_tracker_config.leaderboard_autopost_channel_id
+# and .leaderboard_last_posted_at (ALTER TABLE ADD COLUMN IF NOT EXISTS, next to
+# the wizard_due_at ALTER) for the daily invite-leaderboard post — see
+# discord_bot/cogs/invites.py. Same bump-or-it-never-runs trap as every entry below.
 # "39" -> "40" adds 023_admin_money.sql (payment_failures, discount_codes,
 # payment_logs.reversed_at/reversed_by) for the owner panel's Money hub — see
 # modules/admin_money.py. Same bump-or-it-never-runs trap as every entry below.
@@ -2397,6 +2401,15 @@ class Database:
         # brought up manually via /invites setup before the delay elapsed.
         await conn.execute(
             "ALTER TABLE discord_invite_tracker_config ADD COLUMN IF NOT EXISTS wizard_due_at TIMESTAMPTZ"
+        )
+        # Daily invite-leaderboard post (same three-state idea as leveling's):
+        # NULL = post to the announce channel (when announcements are on),
+        # -1 = admin turned it off, a real id = a channel they picked.
+        await conn.execute(
+            "ALTER TABLE discord_invite_tracker_config ADD COLUMN IF NOT EXISTS leaderboard_autopost_channel_id BIGINT"
+        )
+        await conn.execute(
+            "ALTER TABLE discord_invite_tracker_config ADD COLUMN IF NOT EXISTS leaderboard_last_posted_at TIMESTAMPTZ"
         )
 
         # Live cache of each active invite's use-count/inviter, refreshed on
@@ -10951,7 +10964,10 @@ class Database:
                 SELECT guild_id, clone_id,
                        COALESCE(NULLIF(leaderboard_autopost_channel_id, -1), announce_channel_id) AS post_channel_id
                 FROM discord_leveling_config
-                WHERE COALESCE(leaderboard_autopost_channel_id, -1) != -1
+                -- NULL (the default) must pass: it means "use the announce channel".
+                -- The old COALESCE(..., -1) != -1 turned NULL into -1 and then excluded
+                -- it, so only servers that had explicitly PICKED a channel ever got a post.
+                WHERE COALESCE(leaderboard_autopost_channel_id, 0) != -1
                 AND COALESCE(NULLIF(leaderboard_autopost_channel_id, -1), announce_channel_id) IS NOT NULL
                 AND COALESCE(clone_id, -1) = COALESCE($1, -1)
                 AND (
@@ -11080,6 +11096,7 @@ class Database:
                 "enabled": True, "channel_id": None, "channel_auto_created": False,
                 "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
                 "wizard_due_at": None,
+                "leaderboard_autopost_channel_id": None, "leaderboard_last_posted_at": None,
             }
 
     async def set_invite_tracker_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
@@ -11104,6 +11121,58 @@ class Database:
                 guild_id, clone_id, merged["enabled"], merged["channel_id"], merged["channel_auto_created"],
                 merged["wizard_channel_id"], merged["wizard_message_id"], merged["wizard_invoker_id"],
                 merged["wizard_due_at"],
+            )
+
+    async def set_invite_leaderboard_autopost_channel(self, guild_id: int, clone_id: Optional[int], channel_id: Optional[int]) -> None:
+        """NULL = default (announce channel), -1 = off, else a channel id. Upserts,
+        and touches ONLY this column so it can't clobber the rest of the config."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_invite_tracker_config (guild_id, clone_id, leaderboard_autopost_channel_id, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
+                    leaderboard_autopost_channel_id = $3, updated_at = NOW()
+                """,
+                guild_id, clone_id, channel_id,
+            )
+
+    async def get_due_invite_leaderboard_autoposts(self, clone_id: Optional[int], limit: int = 10) -> list:
+        """Guilds whose daily invite-leaderboard post is due (never posted, or 24h
+        ago). Channel = the picked one; with none picked, the announce channel —
+        but only while join announcements are on. -1 = never. One batched query."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT guild_id, clone_id,
+                       CASE WHEN leaderboard_autopost_channel_id > 0 THEN leaderboard_autopost_channel_id
+                            WHEN leaderboard_autopost_channel_id IS NULL AND COALESCE(enabled, TRUE) THEN channel_id
+                       END AS post_channel_id
+                FROM discord_invite_tracker_config
+                WHERE COALESCE(leaderboard_autopost_channel_id, 0) != -1
+                  AND clone_id IS NOT DISTINCT FROM $1
+                  AND (leaderboard_last_posted_at IS NULL OR NOW() - leaderboard_last_posted_at >= INTERVAL '24 hours')
+                  AND CASE WHEN leaderboard_autopost_channel_id > 0 THEN leaderboard_autopost_channel_id
+                           WHEN leaderboard_autopost_channel_id IS NULL AND COALESCE(enabled, TRUE) THEN channel_id
+                      END IS NOT NULL
+                ORDER BY leaderboard_last_posted_at NULLS FIRST
+                LIMIT $2
+                """,
+                clone_id, limit,
+            )
+            return [dict(r) for r in rows]
+
+    async def mark_invite_leaderboard_posted(self, guild_id: int, clone_id: Optional[int]) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE discord_invite_tracker_config SET leaderboard_last_posted_at = NOW()
+                WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                """,
+                guild_id, clone_id,
             )
 
     async def get_due_invite_wizard_guilds(self, clone_id: Optional[int] = None) -> list:

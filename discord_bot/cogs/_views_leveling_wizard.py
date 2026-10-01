@@ -13,6 +13,7 @@ main wizard message. The level number rides along inside that RoleSelect
 component's own custom_id.
 """
 
+import logging
 import re
 
 import discord
@@ -129,6 +130,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, role_ro
     if config.get("leaderboard_autopost_channel_id") != -1:
         autopost_disable_row = discord.ui.ActionRow()
         autopost_disable_row.add_item(LevelingLeaderboardAutopostDisableButton(guild_id, clone_id, invoker_id))
+        autopost_disable_row.add_item(LevelingLeaderboardPostNowButton(guild_id, clone_id, invoker_id))
         items.append(autopost_disable_row)
     else:
         autopost_enable_row = discord.ui.ActionRow()
@@ -202,6 +204,8 @@ async def refresh_posted_wizard(bot, guild_id: int, clone_id=None) -> None:
     except (discord.Forbidden, discord.HTTPException):
         pass
 
+
+logger = logging.getLogger(__name__)
 
 class LevelingXpRateSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("rate")):
     def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
@@ -377,6 +381,58 @@ class LevelingLeaderboardAutopostEnableButton(discord.ui.DynamicItem[discord.ui.
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+class LevelingLeaderboardPostNowButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("lbpostnow")):
+    """Posts the leaderboard to the autopost channel right now, through the very
+    same code the daily post uses — so one tap proves it works, or says exactly
+    why not (missing permission, no channel, no XP yet)."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        super().__init__(discord.ui.Button(
+            label="Post it now (test)", emoji="📤", style=discord.ButtonStyle.primary,
+            custom_id=_encode("lbpostnow", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        await interaction.response.defer(ephemeral=True)
+        from discord_bot.cogs._views_leveling_leaderboard import post_leaderboard_to_channel
+        guild = interaction.client.get_guild(self.guild_id) or interaction.guild
+        try:
+            config = await db.get_leveling_config(self.guild_id, clone_id=self.clone_id)
+        except Exception:
+            logger.exception("[leaderboard-autopost] post-now couldn't read config for guild %s", self.guild_id)
+            await interaction.followup.send("Couldn't read the settings (database problem). Nothing was posted.", ephemeral=True)
+            return
+        picked = config.get("leaderboard_autopost_channel_id")
+        if picked == -1:
+            await interaction.followup.send("The daily post is turned off. Turn it back on first.", ephemeral=True)
+            return
+        channel_id = picked or config.get("announce_channel_id")
+        if not channel_id:
+            await interaction.followup.send(
+                "There's no channel to post in yet. Pick one in the **daily leaderboard** menu above "
+                "(or let leveling create its announce channel first).", ephemeral=True)
+            return
+        ok, reason = await post_leaderboard_to_channel(interaction.client, guild, self.clone_id, channel_id)
+        if ok:
+            try:
+                await db.mark_leaderboard_posted(self.guild_id, self.clone_id)   # the daily one waits a full day
+            except Exception:
+                logger.exception("[leaderboard-autopost] post-now couldn't mark guild %s", self.guild_id)
+            await interaction.followup.send(f"✅ Posted in <#{channel_id}>. The next automatic post is in 24 hours.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Not posted: {reason}", ephemeral=True)
+
+
 class LevelingRewardLevelModal(discord.ui.Modal, title="Add a level-up role reward"):
     def __init__(self, guild_id: int, clone_id, invoker_id):
         super().__init__()
@@ -468,5 +524,5 @@ DYNAMIC_ITEMS = (
     LevelingXpRateSelect, LevelingAnnounceChannelSelect, LevelingCardStyleSelect,
     LevelingAddRewardButton, LevelingRewardRoleSelect,
     LevelingLeaderboardAutopostChannelSelect, LevelingLeaderboardAutopostDisableButton,
-    LevelingLeaderboardAutopostEnableButton,
+    LevelingLeaderboardAutopostEnableButton, LevelingLeaderboardPostNowButton,
 )

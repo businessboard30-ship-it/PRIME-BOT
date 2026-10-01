@@ -21,6 +21,7 @@ into the message at render time, so a click on a wizard message posted
 before a restart still works identically after one.
 """
 
+import logging
 import re
 
 import discord
@@ -28,6 +29,8 @@ import discord
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 
+
+logger = logging.getLogger(__name__)
 
 def _clone_id_of(interaction: discord.Interaction):
     return getattr(interaction.client, "clone_id", None)
@@ -58,6 +61,66 @@ def _decode(match: "re.Match"):
     return guild_id, clone_id, invoker_id
 
 
+def resolve_leaderboard_channel(config: dict):
+    """Where the daily invite leaderboard goes: None = off or nowhere to post."""
+    lb = config.get("leaderboard_autopost_channel_id")
+    if lb == -1:
+        return None
+    if lb:
+        return lb
+    return config.get("channel_id") if config.get("enabled", True) else None
+
+
+def build_invite_leaderboard_view(guild_name: str, rows: list) -> discord.ui.LayoutView:
+    """Shared by the daily post, the wizard's Post-now button and (as text) the
+    existing 🏆 button. rows = [(inviter_id, joins, net), ...]."""
+    lines = []
+    for i, (inviter_id, joins, net) in enumerate(rows, start=1):
+        left = joins - net
+        left_note = f", {left} left" if left else ""
+        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"**{i}.**")
+        lines.append(f"{medal} <@{inviter_id}> — **{net}** invite{'s' if net != 1 else ''}{left_note}")
+    view = discord.ui.LayoutView(timeout=None)
+    container = discord.ui.Container(accent_colour=discord.Color.blurple())
+    container.add_item(discord.ui.TextDisplay(f"### 🏆 Invite Leaderboard\n**{discord.utils.escape_markdown(guild_name)}**"))
+    container.add_item(discord.ui.Separator())
+    container.add_item(discord.ui.TextDisplay("\n".join(lines)[:3500]))
+    container.add_item(discord.ui.TextDisplay("-# Counts members still in the server who joined through each person's invites."))
+    view.add_item(container)
+    return view
+
+
+async def post_invite_leaderboard(bot, guild: discord.Guild, clone_id, channel_id) -> tuple:
+    """The ONE place the invite leaderboard is posted (daily loop + Post-now
+    button). Never raises. Returns (ok, reason)."""
+    channel = guild.get_channel(channel_id) if channel_id else None
+    if channel is None:
+        return False, "I can't find the channel it should post in — pick one in the wizard."
+    if not hasattr(channel, "send"):
+        return False, f"{getattr(channel, 'mention', '#channel')} isn't a text channel I can post in."
+    if guild.me is not None:
+        perms = channel.permissions_for(guild.me)
+        missing = [n for n, ok in (("View Channel", perms.view_channel), ("Send Messages", perms.send_messages)) if not ok]
+        if missing:
+            return False, f"I'm missing **{' and '.join(missing)}** in {channel.mention}."
+    try:
+        rows = await db.get_invite_leaderboard(guild.id, clone_id=clone_id, limit=10)
+    except Exception:
+        logger.exception("[invite-leaderboard] couldn't read the leaderboard for guild %s", guild.id)
+        return False, "I couldn't read the leaderboard (database problem). It will try again."
+    if not rows:
+        return False, "Nobody has joined through a trackable invite yet, so there's nothing to post."
+    try:
+        await channel.send(view=build_invite_leaderboard_view(guild.name, rows),
+                           allowed_mentions=discord.AllowedMentions.none())
+    except discord.Forbidden:
+        return False, f"Discord refused the post in {channel.mention} — check my channel permissions."
+    except Exception:
+        logger.exception("[invite-leaderboard] send failed for guild %s", guild.id)
+        return False, "Discord rejected the post. It will try again."
+    return True, ""
+
+
 def render_status_lines(config: dict) -> list:
     channel_id = config.get("channel_id")
     enabled = config.get("enabled", True)
@@ -70,6 +133,12 @@ def render_status_lines(config: dict) -> list:
         f"{'✅' if enabled else '🚫'} **Join announcements** — "
         f"{'on' if enabled else 'off (invites are still tracked quietly for the leaderboard)'}"
     )
+    if config.get("leaderboard_autopost_channel_id") == -1:
+        lines.append("🚫 **Daily leaderboard post** — off")
+    else:
+        target = resolve_leaderboard_channel(config)
+        lines.append(f"✅ **Daily leaderboard post** — <#{target}>, once every 24h" if target else
+                     "⬜ **Daily leaderboard post** — waiting for an announce channel (or pick one below)")
     return lines
 
 
@@ -109,6 +178,8 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, intro: 
     button_row = discord.ui.ActionRow()
     button_row.add_item(InviteToggleButton(guild_id, clone_id, invoker_id, config))
     button_row.add_item(InviteLeaderboardButton(guild_id, clone_id, invoker_id))
+    button_row.add_item(InviteDailyToggleButton(guild_id, clone_id, invoker_id, config))
+    button_row.add_item(InvitePostNowButton(guild_id, clone_id, invoker_id))
     container.add_item(button_row)
 
     view.add_item(container)
@@ -279,6 +350,87 @@ class InviteLeaderboardButton(discord.ui.DynamicItem[discord.ui.Button], templat
         await interaction.followup.send("🏆 **Invite leaderboard**\n" + "\n".join(lines), ephemeral=True)
 
 
+class InviteDailyToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("lbdaily")):
+    def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        off = config.get("leaderboard_autopost_channel_id") == -1
+        super().__init__(discord.ui.Button(
+            label=("Turn daily post on" if off else "Turn daily post off"),
+            style=(discord.ButtonStyle.success if off else discord.ButtonStyle.secondary),
+            custom_id=_encode("lbdaily", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match"):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id, {})
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        await interaction.response.defer()
+        try:
+            config = await db.get_invite_tracker_config(self.guild_id, clone_id=self.clone_id)
+            off = config.get("leaderboard_autopost_channel_id") == -1
+            await db.set_invite_leaderboard_autopost_channel(self.guild_id, self.clone_id, None if off else -1)
+        except Exception:
+            logger.exception("[invite-leaderboard] toggle failed for guild %s", self.guild_id)
+            await interaction.followup.send("Couldn't save that (database problem). Nothing was changed.", ephemeral=True)
+            return
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class InvitePostNowButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("lbnow")):
+    """Posts the leaderboard right now through the same code as the daily post,
+    so one tap proves it works — or says exactly why not."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        super().__init__(discord.ui.Button(
+            label="Post it now (test)", emoji="📤", style=discord.ButtonStyle.primary,
+            custom_id=_encode("lbnow", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: "re.Match"):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.client.get_guild(self.guild_id) or interaction.guild
+        try:
+            config = await db.get_invite_tracker_config(self.guild_id, clone_id=self.clone_id)
+        except Exception:
+            logger.exception("[invite-leaderboard] post-now couldn't read config for guild %s", self.guild_id)
+            await interaction.followup.send("Couldn't read the settings (database problem). Nothing was posted.", ephemeral=True)
+            return
+        if config.get("leaderboard_autopost_channel_id") == -1:
+            await interaction.followup.send("The daily post is turned off. Turn it back on first.", ephemeral=True)
+            return
+        channel_id = resolve_leaderboard_channel(config)
+        if not channel_id:
+            await interaction.followup.send(
+                "There's no channel to post in yet. Set up the announce channel above first.", ephemeral=True)
+            return
+        ok, reason = await post_invite_leaderboard(interaction.client, guild, self.clone_id, channel_id)
+        if ok:
+            try:
+                await db.mark_invite_leaderboard_posted(self.guild_id, self.clone_id)
+            except Exception:
+                logger.exception("[invite-leaderboard] post-now couldn't mark guild %s", self.guild_id)
+            await interaction.followup.send(f"✅ Posted in <#{channel_id}>. The next automatic post is in 24 hours.", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ Not posted: {reason}", ephemeral=True)
+
+
 DYNAMIC_ITEMS = (
     InviteCreateChannelButton, InviteChannelSelect, InviteToggleButton, InviteLeaderboardButton,
+    InviteDailyToggleButton, InvitePostNowButton,
 )
