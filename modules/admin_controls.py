@@ -79,6 +79,13 @@ async def _refresh(force: bool = False) -> None:
         logger.debug("[admin-controls] snapshot refresh failed; keeping the last good one", exc_info=True)
 
 
+async def current_switches() -> Set[str]:
+    """Engaged kill-switch keys from the cached snapshot (reloaded at most every
+    CACHE_TTL seconds). Fails open: an empty set when nothing is known."""
+    await _refresh()
+    return set(_snapshot["switches"])
+
+
 async def block_reason(interaction) -> Optional[str]:
     """Message to show if this slash command must be refused, else None."""
     try:

@@ -17,7 +17,8 @@ slash-command slot. Same rules as the owner panel:
 from __future__ import annotations
 
 import logging
-from typing import Callable, List, Optional
+from dataclasses import dataclass
+from typing import Awaitable, Callable, List, Optional
 
 import discord
 
@@ -72,6 +73,34 @@ async def guard(interaction: discord.Interaction) -> bool:
     return True
 
 
+def read_only_ok(fn: Callable) -> Callable:
+    """Mark a callback as safe in read-only mode (navigation and refresh only)."""
+    fn.read_only_ok = True
+    return fn
+
+
+@dataclass
+class InspectContext:
+    """Owner inspection of one server's panel (Phase 4). `back` returns the
+    owner to the Server inspector in the owner panel."""
+    guild: "discord.Guild"
+    back: Callable[[discord.Interaction], Awaitable[None]]
+
+
+class InspectInteraction:
+    """The owner's real interaction, answering as the inspected server (guild,
+    guild_id) so every existing screen loads that server's data unchanged."""
+
+    def __init__(self, real: discord.Interaction, ctx: InspectContext):
+        self._real = real
+        self.inspect = ctx
+        self.guild = ctx.guild
+        self.guild_id = ctx.guild.id
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 # ── base view ────────────────────────────────────────────────────────────
 
 class ServerPanelView(discord.ui.LayoutView):
@@ -81,13 +110,36 @@ class ServerPanelView(discord.ui.LayoutView):
     title = "Server panel"
     accent = discord.Color.blurple()
 
-    def __init__(self, guild_id: int, clone_id: Optional[int], opener_id: int, data: Optional[dict] = None):
+    switch_key: Optional[str] = None      # owner kill switch that makes this whole screen read-only
+    banner_keys: tuple = ()               # extra switches to mention on this screen (hubs)
+
+    def __init__(self, guild_id: int, clone_id: Optional[int], opener_id: int, data: Optional[dict] = None,
+                 inspect: Optional[InspectContext] = None):
         super().__init__(timeout=PANEL_TIMEOUT)
         self.guild_id = guild_id
         self.clone_id = clone_id
         self.opener_id = opener_id
         self.data = data or {}
+        self.inspect = inspect
+        self._allowed_ids: set = set()
         self._build()
+
+    # kill switches (owner panel) ----------------------------------------
+    def off(self, key: str) -> bool:
+        """True when the bot owner has switched this feature off."""
+        return key in self.data.get("_engaged", ())
+
+    @property
+    def locked(self) -> bool:
+        return bool(self.switch_key) and self.off(self.switch_key)
+
+    @property
+    def read_only(self) -> bool:
+        return self.inspect is not None or self.locked
+
+    def _ctx(self, interaction: discord.Interaction):
+        """The interaction to load the next screen with (keeps inspect mode)."""
+        return InspectInteraction(interaction, self.inspect) if self.inspect is not None else interaction
 
     @classmethod
     async def load(cls, interaction: discord.Interaction) -> dict:
@@ -95,8 +147,10 @@ class ServerPanelView(discord.ui.LayoutView):
 
     @classmethod
     async def create(cls, interaction: discord.Interaction) -> "ServerPanelView":
-        data = await cls.load(interaction)
-        return cls(interaction.guild_id, clone_id_of(interaction), interaction.user.id, data)
+        ctx = interaction.inspect if isinstance(interaction, InspectInteraction) else None
+        data = dict(await cls.load(interaction) or {})
+        data["_engaged"] = set() if ctx is not None else await sp.engaged_features(interaction.user.id)
+        return cls(interaction.guild_id, clone_id_of(interaction), interaction.user.id, data, inspect=ctx)
 
     def body(self) -> List[str]:
         return []
@@ -106,8 +160,16 @@ class ServerPanelView(discord.ui.LayoutView):
 
     def _build(self) -> None:
         self.clear_items()
-        children: list = [discord.ui.TextDisplay("\n".join([f"### {self.title}", *self.body(), HINT]))]
+        notes = self._notes()
+        footer = (f"-# 🔍 Read-only view of **{self.inspect.guild.name}** — nothing here can be changed."
+                  if self.inspect is not None else HINT)
+        children: list = [discord.ui.TextDisplay("\n".join([f"### {self.title}", *notes, *self.body(), footer]))]
         items = self.controls()
+        if self.read_only:
+            # Navigation and refresh only: no writes, no modals, no selects.
+            items = [it for it in items if isinstance(it, discord.ui.Button)
+                     and getattr(it.callback, "read_only_ok", False)]
+        self._allowed_ids = {getattr(it, "custom_id", None) for it in items}
         if items:
             children.append(discord.ui.Separator())
             row: list = []
@@ -124,11 +186,40 @@ class ServerPanelView(discord.ui.LayoutView):
                 children.append(discord.ui.ActionRow(*row))
         self.add_item(discord.ui.Container(*children, accent_colour=self.accent))
 
+    def _notes(self) -> List[str]:
+        """One line per owner-disabled feature this screen touches."""
+        keys = list(self.banner_keys) + ([self.switch_key] if self.switch_key else [])
+        out = []
+        for k in dict.fromkeys(keys):
+            if self.off(k):
+                try:
+                    from modules import admin_controls as ac
+                    label = ac.FEATURES[k][0]
+                except Exception:
+                    label = k
+                out.append(f"⏸️ **{label}** is turned off by the bot owner for now"
+                           + (" — settings here are read-only." if k == self.switch_key else "."))
+        return out
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.opener_id or interaction.guild_id != self.guild_id:
+        wrong_server = self.inspect is None and interaction.guild_id != self.guild_id
+        if interaction.user.id != self.opener_id or wrong_server:
             await interaction.response.send_message("This panel belongs to someone else.", ephemeral=True)
             return False
-        return await guard(interaction)
+        if self.inspect is not None:
+            from discord_bot.cogs._views_admin_panel import allowed_sections, refresh_access
+            await refresh_access()
+            if "inspect" not in allowed_sections(interaction.user.id):
+                await interaction.response.send_message("You're no longer authorized for this.", ephemeral=True)
+                return False
+        elif not await guard(interaction):
+            return False
+        if self.read_only:
+            cid = (getattr(interaction, "data", None) or {}).get("custom_id")
+            if cid not in self._allowed_ids:
+                await interaction.response.send_message("This screen is read-only right now.", ephemeral=True)
+                return False
+        return True
 
     async def on_timeout(self) -> None:
         for child in self.walk_children():
@@ -137,27 +228,30 @@ class ServerPanelView(discord.ui.LayoutView):
 
     # navigation ---------------------------------------------------------
     def nav(self, view_cls) -> Callable:
+        @read_only_ok
         async def cb(interaction: discord.Interaction):
             await interaction.response.defer()
-            view = await view_cls.create(interaction)
+            view = await view_cls.create(self._ctx(interaction))
             await interaction.edit_original_response(view=view)
         return cb
 
     def nav_p2(self, name: str) -> Callable:
         """Navigate to a Phase 2 screen by class name (lazy import avoids a cycle)."""
+        @read_only_ok
         async def cb(interaction: discord.Interaction):
             from discord_bot.cogs import _views_server_panel_p2 as p2
             await interaction.response.defer()
-            view = await getattr(p2, name).create(interaction)
+            view = await getattr(p2, name).create(self._ctx(interaction))
             await interaction.edit_original_response(view=view)
         return cb
 
     def nav_p3(self, name: str) -> Callable:
         """Navigate to a Phase 3 screen by class name (lazy import avoids a cycle)."""
+        @read_only_ok
         async def cb(interaction: discord.Interaction):
             from discord_bot.cogs import _views_server_panel_p3 as p3
             await interaction.response.defer()
-            view = await getattr(p3, name).create(interaction)
+            view = await getattr(p3, name).create(self._ctx(interaction))
             await interaction.edit_original_response(view=view)
         return cb
 
@@ -166,7 +260,7 @@ class ServerPanelView(discord.ui.LayoutView):
 
     async def reload(self, interaction: discord.Interaction) -> None:
         """Re-render this same screen from fresh data after a write."""
-        view = await type(self).create(interaction)
+        view = await type(self).create(self._ctx(interaction))
         await interaction.edit_original_response(view=view)
 
 
@@ -203,7 +297,7 @@ class HomeView(ServerPanelView):
     def controls(self):
         P = discord.ButtonStyle.primary
         S = discord.ButtonStyle.secondary
-        return [
+        out = [
             _btn("Setup", P, self.nav(SetupView), "📋"),
             _btn("Welcome & verification", P, self.nav(WelcomeView), "👋"),
             _btn("Moderation", P, self.nav(ModerationView), "🛡️"),
@@ -216,6 +310,15 @@ class HomeView(ServerPanelView):
             _btn("Premium", S, self.nav(PremiumView), "💎"),
             _btn("Quick enable", S, self._legacy, "⚡"),
         ]
+        if self.inspect is not None:
+            out = [b for b in out if b.label != "Help & tools"]
+            out.append(_btn("Back to owner panel", S, self._exit, "⬅️"))
+        return out
+
+    @read_only_ok
+    async def _exit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await self.inspect.back(interaction)
 
     async def _legacy(self, interaction: discord.Interaction):
         """The original one-tap enable wizard, kept until Phase 2 hubs cover it."""
@@ -518,5 +621,17 @@ async def open_home(interaction: discord.Interaction) -> None:
     if not await guard(interaction):
         return
     await interaction.response.defer(ephemeral=True)
+    await sp.record_open(interaction.guild_id, clone_id_of(interaction))   # best effort, feeds owner Health
     view = await HomeView.create(interaction)
     await interaction.followup.send(view=view, ephemeral=True)
+
+
+async def open_inspect(interaction: discord.Interaction, guild: discord.Guild,
+                       back: Callable[[discord.Interaction], Awaitable[None]]) -> None:
+    """Owner Server inspector -> this server's panel, READ-ONLY. The caller has
+    already checked the owner's 'inspect' access and that the main bot is in
+    `guild`. Edits the owner's current message in place."""
+    await interaction.response.defer()
+    ctx = InspectContext(guild=guild, back=back)
+    view = await HomeView.create(InspectInteraction(interaction, ctx))
+    await interaction.edit_original_response(view=view)

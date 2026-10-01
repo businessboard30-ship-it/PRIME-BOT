@@ -536,3 +536,64 @@ REPORT_MAX = 900  # feedback limit is 1000 and the tag below stays under 40
 
 def format_report(kind: str, text: str) -> str:
     return f"[Server panel · {REPORT_KINDS.get(kind, 'Feedback')}] {text.strip()}"
+
+
+# ── Phase 4: kill switches, usage tracking ───────────────────────────────
+
+async def engaged_features(user_id: int) -> set:
+    """Owner kill-switch keys that are engaged right now, for this person.
+    Bot owners are never locked out (same rule as the slash-command check).
+    Fails open: any problem reading them means nothing is locked."""
+    try:
+        from config import DISCORD_CLONE_ADMIN_IDS
+        if user_id in DISCORD_CLONE_ADMIN_IDS:
+            return set()
+    except Exception:
+        logger.debug("[server-panel] owner list unavailable", exc_info=True)
+    try:
+        from modules import admin_controls as ac
+        return set(await ac.current_switches())
+    except Exception:
+        logger.debug("[server-panel] kill switches unreadable; nothing locked", exc_info=True)
+        return set()
+
+
+async def record_open(guild_id: int, clone_id: Optional[int]) -> None:
+    """Count one panel open for this server. Best effort, never raises."""
+    try:
+        from database import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO server_panel_usage (guild_id, clone_id) VALUES ($1, $2) "
+                "ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE "
+                "SET last_opened_at = NOW(), opens = server_panel_usage.opens + 1",
+                guild_id, clone_id)
+    except Exception:
+        logger.debug("[server-panel] couldn't record panel open", exc_info=True)
+
+
+async def usage_stats() -> Optional[dict]:
+    """{'opened': servers that ever opened the panel, 'week': ... in the last 7
+    days, 'changed': servers that changed a setting from it}, or None when it
+    can't be read. Report/feedback rows don't count as changes."""
+    import asyncio
+
+    async def query() -> dict:
+        from database import get_pool
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            u = await conn.fetchrow(
+                "SELECT COUNT(*) AS opened, "
+                "COUNT(*) FILTER (WHERE last_opened_at > NOW() - INTERVAL '7 days') AS week "
+                "FROM server_panel_usage")
+            c = await conn.fetchval(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT guild_id, clone_id FROM server_panel_audit "
+                "WHERE setting_key NOT LIKE 'report.%') t")
+        return {"opened": int(u["opened"]), "week": int(u["week"]), "changed": int(c or 0)}
+
+    try:
+        return await asyncio.wait_for(query(), timeout=5)
+    except Exception:
+        logger.debug("[server-panel] usage stats unavailable", exc_info=True)
+        return None
