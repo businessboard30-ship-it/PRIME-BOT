@@ -453,9 +453,13 @@ def _status_lines(guild: discord.Guild, cfg: dict, premium: bool) -> list:
         caught += f" · last <t:{int(last.timestamp())}:R>"
     lines.append(caught)
     if not premium:
-        lines.append("🔒 **Free plan:** bans and wipes the last 24h of messages. Premium unlocks the action, "
-                     "history window and a dedicated log channel."
-                     + (" Your saved premium settings are paused, not lost." if _extras_paused(saved) else ""))
+        lines.append(
+            "\n💎 **Premium extras** (the trap itself stays free):\n"
+            "• Choose what happens: ban, kick or a 28-day timeout\n"
+            "• Choose how much of their message history gets wiped\n"
+            "• Send catches to a dedicated log channel\n"
+            "Free plan: ban + wipe the last 24h, logged to your mod-log. Tap **Unlock premium extras** below."
+            + ("\n-# Your saved premium settings are paused, not lost." if _extras_paused(saved) else ""))
     miss = missing_permissions(guild, action)
     if miss:
         lines.append(f"⚠️ **I'm missing:** {', '.join(miss)}")
