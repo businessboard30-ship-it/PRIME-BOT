@@ -1918,3 +1918,7 @@ DYNAMIC_ITEMS = (
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton,
 )
+
+# Compact quick-start message buttons (Open server panel / Full setup guide).
+from discord_bot.cogs._views_quickstart_pointer import DYNAMIC_ITEMS as _POINTER_ITEMS  # noqa: E402
+DYNAMIC_ITEMS = DYNAMIC_ITEMS + _POINTER_ITEMS

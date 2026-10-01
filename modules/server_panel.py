@@ -111,20 +111,29 @@ async def setup_items(guild, clone_id: Optional[int]) -> List[SetupItem]:
     """The eight-item Setup checklist (plan section 5). Each read is isolated,
     so one failing table marks that item To-do instead of breaking the screen."""
     from database import db
+    import asyncio
     gid = guild.id
-    welcome = await _safe(db.get_welcome_config(gid, clone_id), {})
-    verif = await _safe(db.get_verification_config(gid, clone_id), {})
-    honey = await _safe(db.get_honeypot_config(gid, clone_id), {})
-    automod = await _safe(db.get_automod_config(gid, clone_id), {})
-    leveling = await _safe(db.get_leveling_config(gid, clone_id), {})
-    ticket = await _safe(db.get_ticket_config(gid, clone_id), {})
-    premium = await _safe(db.is_guild_premium_active(gid, clone_id), False)
-    missing = None
-    try:
-        from discord_bot.cogs.setup_channels import scan_missing_channels
-        missing = await scan_missing_channels(guild, clone_id)
-    except Exception:
-        logger.debug("[server-panel] missing-channel scan failed", exc_info=True)
+
+    async def _scan():
+        try:
+            from discord_bot.cogs.setup_channels import scan_missing_channels
+            return await scan_missing_channels(guild, clone_id)
+        except Exception:
+            logger.debug("[server-panel] missing-channel scan failed", exc_info=True)
+            return None
+
+    # All reads are independent, so they run at the same time: total wait is
+    # the slowest single read, not the sum of all of them.
+    welcome, verif, honey, automod, leveling, ticket, premium, missing = await asyncio.gather(
+        _safe(db.get_welcome_config(gid, clone_id), {}),
+        _safe(db.get_verification_config(gid, clone_id), {}),
+        _safe(db.get_honeypot_config(gid, clone_id), {}),
+        _safe(db.get_automod_config(gid, clone_id), {}),
+        _safe(db.get_leveling_config(gid, clone_id), {}),
+        _safe(db.get_ticket_config(gid, clone_id), {}),
+        _safe(db.is_guild_premium_active(gid, clone_id), False),
+        _scan(),
+    )
 
     automod_on = any(automod.get(k) for k in ("word_filter_enabled", "anti_invite_enabled",
                                                "anti_mention_enabled", "spam_enabled"))
@@ -154,8 +163,11 @@ def setup_score(items: List[SetupItem]) -> tuple[int, int]:
 async def premium_status(guild_id: int, clone_id: Optional[int]) -> dict:
     """{'active': bool, 'expires_at': datetime|None} from the existing premium check."""
     from database import db
-    active = await _safe(db.is_guild_premium_active(guild_id, clone_id), False)
-    row = await _safe(db.get_guild_premium(guild_id, clone_id), None)
+    import asyncio
+    active, row = await asyncio.gather(
+        _safe(db.is_guild_premium_active(guild_id, clone_id), False),
+        _safe(db.get_guild_premium(guild_id, clone_id), None),
+    )
     return {"active": bool(active), "expires_at": (row or {}).get("expires_at")}
 
 
@@ -288,8 +300,11 @@ async def server_stats(guild, clone_id: Optional[int]) -> dict:
     """Same numbers as /serveranalytics (reuses its age formatter and growth
     tips), plus the setup score. Each read is isolated."""
     from database import db
-    active = await _safe(db.count_active_members(guild.id, days=7, clone_id=clone_id), None)
-    items = await setup_items(guild, clone_id)
+    import asyncio
+    active, items = await asyncio.gather(
+        _safe(db.count_active_members(guild.id, days=7, clone_id=clone_id), None),
+        setup_items(guild, clone_id),
+    )
     done, total = setup_score(items)
     age, tips = "N/A", []
     try:

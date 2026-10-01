@@ -679,12 +679,25 @@ class AnimeBotDiscord(commands.Bot):
         }
 
     async def _build_join_dm_view(self, guild: discord.Guild, clone_id, content: dict,
-                                   join_offer: dict = None) -> discord.ui.LayoutView:
+                                   join_offer: dict = None, dm: bool = False,
+                                   compact: bool = True) -> discord.ui.LayoutView:
         """Turns _build_join_dm_content's output into an actual
         JoinDMLayoutView — split out for the same reason as that method:
         one shared place both the real on-join send and the on-demand
         /start resend build from, so they can never render differently
         for the same guild state."""
+        if compact:
+            # Default: one short line + panel button. The old long guide is one
+            # tap away ("Full setup guide"), or compact=False.
+            from discord_bot.cogs._views_quickstart_pointer import QuickstartPointerView
+            jump_url = None
+            if dm:
+                from discord_bot.cogs._views_join_dm import _default_text_channel
+                channel = _default_text_channel(guild)
+                jump_url = channel.jump_url if channel is not None else f"https://discord.com/channels/{guild.id}"
+            return QuickstartPointerView(
+                guild.id, clone_id, guild_name=guild.name, jump_url=jump_url, dm=dm, join_offer=join_offer,
+            )
         from discord_bot.cogs._views_join_dm import _enabled_feature_keys, _fresh_ad_for_join_dm
         enabled = await _enabled_feature_keys(guild.id, clone_id)
         # Freshest approved sponsored ad only, rendered on the last page
@@ -758,7 +771,7 @@ class AnimeBotDiscord(commands.Bot):
         backup_join_offer = {"show_listing": show_listing, "show_invite": False} if show_listing else None
 
         try:
-            view = await self._build_join_dm_view(guild, clone_id, content, join_offer=owner_join_offer)
+            view = await self._build_join_dm_view(guild, clone_id, content, join_offer=owner_join_offer, dm=True)
             await owner.send(view=view)
             # Only recorded as "sent" once the DM actually goes out — this
             # used to fire right after building the quickstart section's

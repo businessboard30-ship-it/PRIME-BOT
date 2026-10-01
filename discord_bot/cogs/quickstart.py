@@ -133,15 +133,13 @@ class QuickstartCog(commands.Cog):
         await interaction.followup.send(view=view, ephemeral=True)
 
     def _build_embed(self, guild: discord.Guild, intro: str) -> discord.Embed:
-        embed = discord.Embed(
+        """One line pointing at the Server Owners Panel (/serversetup). The old
+        8-field feature list lives in the 'Full setup guide' on /start."""
+        return discord.Embed(
             title="🚀 Quick start",
-            description=intro,
+            description=f"{intro}\n\nRun `/serversetup` in your server to open the panel. `/start` has the full guide.",
             color=discord.Color.blurple(),
         )
-        for emoji, name, command, blurb in QUICKSTART_ITEMS:
-            embed.add_field(name=f"{emoji} {name}", value=f"`{command}`\n{blurb}", inline=False)
-        embed.set_footer(text="Run /help anytime for the full command list. This is the only reminder you'll get.")
-        return embed
 
     # ---- one-time follow-up, only if nothing's been configured ---------
 
@@ -169,7 +167,7 @@ class QuickstartCog(commands.Cog):
                 if owner:
                     embed = self._build_embed(
                         guild,
-                        intro=f"Quick nudge — **{guild.name}** hasn't set up any of these yet. Totally optional, just flagging in case it got buried:",
+                        intro=f"Quick nudge: **{guild.name}** isn't set up yet. Totally optional.",
                     )
                     await owner.send(embed=embed)
             except (discord.HTTPException, discord.Forbidden) as e:
