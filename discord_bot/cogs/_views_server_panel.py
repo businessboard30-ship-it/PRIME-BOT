@@ -152,6 +152,15 @@ class ServerPanelView(discord.ui.LayoutView):
             await interaction.edit_original_response(view=view)
         return cb
 
+    def nav_p3(self, name: str) -> Callable:
+        """Navigate to a Phase 3 screen by class name (lazy import avoids a cycle)."""
+        async def cb(interaction: discord.Interaction):
+            from discord_bot.cogs import _views_server_panel_p3 as p3
+            await interaction.response.defer()
+            view = await getattr(p3, name).create(interaction)
+            await interaction.edit_original_response(view=view)
+        return cb
+
     def back_button(self, target=None) -> discord.ui.Button:
         return _btn("Back", discord.ButtonStyle.secondary, self.nav(target or HomeView), "⬅️")
 
@@ -201,6 +210,9 @@ class HomeView(ServerPanelView):
             _btn("Community", P, self.nav_p2("CommunityView"), "🌱"),
             _btn("Tickets", P, self.nav_p2("TicketsView"), "🎫"),
             _btn("Channels & logs", P, self.nav_p2("ChannelsLogsView"), "📚"),
+            _btn("Stats", S, self.nav_p3("StatsView"), "📊"),
+            _btn("Change history", S, self.nav_p3("HistoryView"), "🕘"),
+            _btn("Help & tools", S, self.nav_p3("HelpToolsView"), "🧰"),
             _btn("Premium", S, self.nav(PremiumView), "💎"),
             _btn("Quick enable", S, self._legacy, "⚡"),
         ]
