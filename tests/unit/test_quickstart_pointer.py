@@ -40,7 +40,7 @@ def test_guild_copy_has_panel_and_guide_buttons():
     assert "/serversetup" in texts(v)
     assert "Test Guild" in texts(v)
     ls = labels(v)
-    assert "Open server panel" in ls and "Full setup guide" in ls
+    assert "Open server panel" in ls and "Full setup guide" in ls and "DM me the full guide" in ls
 
 
 def test_dm_copy_has_link_not_panel_button():
@@ -48,6 +48,7 @@ def test_dm_copy_has_link_not_panel_button():
     v = qp.QuickstartPointerView(GUILD_ID, 7, guild_name="G", jump_url="https://discord.com/channels/1/2", dm=True)
     ls = labels(v)
     assert "Go to server" in ls and "Open server panel" not in ls
+    assert "DM me the full guide" not in ls
     assert "Full setup guide" in ls
     link = next(c for c in walk(v) if isinstance(c, discord.ui.Button) and c.style == discord.ButtonStyle.link)
     assert link.url == "https://discord.com/channels/1/2"
@@ -79,7 +80,8 @@ def test_invite_offer_still_shown_when_requested():
 
 def test_custom_ids_match_templates():
     qp = importlib.import_module(QP)
-    for cls, prefix in ((qp.OpenPanelButton, "join_dm_panel"), (qp.FullGuideButton, "join_dm_full")):
+    for cls, prefix in ((qp.OpenPanelButton, "join_dm_panel"), (qp.FullGuideButton, "join_dm_full"),
+                       (qp.DmGuideButton, "join_dm_sendguide")):
         for clone in (None, 12):
             b = cls(GUILD_ID, clone)
             m = re.match(cls.__discord_ui_compiled_template__.pattern, b.item.custom_id)
@@ -152,3 +154,41 @@ def test_setup_items_reads_run_in_parallel(monkeypatch):
     took = time.perf_counter() - t
     assert len(items) == 8
     assert took < 0.4, f"setup_items took {took:.2f}s (sequential would be ~0.7s)"
+
+
+def _guild_interaction(manage=True, owner=False, dm_ok=True):
+    qp = importlib.import_module(QP)
+    user = SimpleNamespace(id=5, send=AsyncMock())
+    if not dm_ok:
+        user.send.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason="x"), "closed")
+    guild = SimpleNamespace(id=GUILD_ID, owner_id=5 if owner else 99)
+    client = SimpleNamespace(
+        _build_join_dm_content=AsyncMock(return_value={"c": 1}),
+        _build_join_dm_view=AsyncMock(return_value="VIEW"))
+    it = SimpleNamespace(
+        guild=guild, user=user, client=client, permissions=SimpleNamespace(manage_guild=manage, administrator=False),
+        response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+        followup=SimpleNamespace(send=AsyncMock()))
+    return qp, it
+
+
+def test_dm_guide_sends_full_combined_dm():
+    qp, it = _guild_interaction()
+    run(qp.DmGuideButton(GUILD_ID, 7).callback(it))
+    kw = it.client._build_join_dm_view.await_args.kwargs
+    assert kw["compact"] is False and kw["dm"] is True
+    it.user.send.assert_awaited_once_with(view="VIEW")
+    assert "Sent" in it.followup.send.await_args.args[0]
+
+
+def test_dm_guide_needs_manage_server():
+    qp, it = _guild_interaction(manage=False)
+    run(qp.DmGuideButton(GUILD_ID, 7).callback(it))
+    it.user.send.assert_not_awaited()
+    assert "Manage Server" in it.response.send_message.await_args.args[0]
+
+
+def test_dm_guide_closed_dms_handled():
+    qp, it = _guild_interaction(dm_ok=False)
+    run(qp.DmGuideButton(GUILD_ID, 7).callback(it))
+    assert "couldn't DM" in it.followup.send.await_args.args[0]

@@ -11,6 +11,8 @@ One short line pointing at the Server Owners Panel plus a few buttons:
   button instead and this button only explains where to run /serversetup.
 * Full setup guide   - swaps this same message into the old long guide
   (build_join_dm_view), so nothing from the old DM is lost.
+* DM me the guide    - sends the full combined join DM (the same one sent on
+  join) to the clicker's DMs. Server copy only; a DM already is a DM.
 
 DynamicItem buttons, like the rest of the join DM: they survive restarts and
 never time out. guild_id/clone_id live in the custom_id. Imports from
@@ -102,6 +104,53 @@ class FullGuideButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^joi
         await interaction.edit_original_response(view=view)
 
 
+class DmGuideButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_sendguide:(\d+):(-|\d+)$"):
+    """Sends the full combined join DM to the clicker's own DMs."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="DM me the full guide", style=discord.ButtonStyle.secondary, emoji="📩",
+            custom_id=f"join_dm_sendguide:{guild_id}:{_clone_part(clone_id)}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _parse(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None or guild.id != self.guild_id:
+            await interaction.response.send_message(
+                "Run `/start` in your server and tap this button there.", ephemeral=True)
+            return
+        perms = getattr(interaction, "permissions", None)
+        if not (getattr(perms, "manage_guild", False) or getattr(perms, "administrator", False)
+                or guild.owner_id == interaction.user.id):
+            await interaction.response.send_message(
+                "You need the **Manage Server** permission for this.", ephemeral=True)
+            return
+        # Defer first: building the guide reads the database.
+        await interaction.response.defer(ephemeral=True)
+        client = interaction.client
+        try:
+            content = await client._build_join_dm_content(guild, self.clone_id)
+            view = await client._build_join_dm_view(guild, self.clone_id, content, dm=True, compact=False)
+            await interaction.user.send(view=view)
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.followup.send(
+                "I couldn't DM you. Open your DM settings for this server, or tap **Full setup guide** instead.",
+                ephemeral=True)
+            return
+        except Exception:
+            logger.exception("[join-dm] DM guide failed for guild %s", self.guild_id)
+            await interaction.followup.send("Something went wrong sending the guide.", ephemeral=True)
+            return
+        await interaction.followup.send("📩 Sent. Check your DMs.", ephemeral=True)
+
+
 class QuickstartPointerView(discord.ui.LayoutView):
     """The short quick-start message. `dm=True` swaps the panel button for a
     "Go to server" link (a DM has no server to open the panel in)."""
@@ -133,8 +182,10 @@ class QuickstartPointerView(discord.ui.LayoutView):
         else:
             buttons.append(OpenPanelButton(guild_id, clone_id))
         buttons.append(FullGuideButton(guild_id, clone_id))
+        if not dm:
+            buttons.append(DmGuideButton(guild_id, clone_id))
         container.add_item(discord.ui.ActionRow(*buttons))
         self.add_item(container)
 
 
-DYNAMIC_ITEMS = (OpenPanelButton, FullGuideButton)
+DYNAMIC_ITEMS = (OpenPanelButton, FullGuideButton, DmGuideButton)
