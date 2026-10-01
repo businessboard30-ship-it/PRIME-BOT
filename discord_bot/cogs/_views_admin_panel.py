@@ -56,13 +56,30 @@ def allowed_sections(user_id: int) -> set:
         out.add("bump")     # /admin bump ... (bump.py gates it on DISCORD_CLONE_ADMIN_IDS)
         out.add("system")   # submissions / envcheck / revenue / exportusers (admin.py, same list)
         out.update({"controls", "blacklist", "premium", "audit"})  # Batch 1 (_views_admin_panel_controls.py)
+        out.update({"access", "logs", "config", "database"})       # Batch 2 (_views_admin_panel_ops.py)
     if user_id in DISCORD_OWNER_BROADCAST_IDS:
         out.add("feedback")  # /admin feedback (feedback.py gates it on DISCORD_OWNER_BROADCAST_IDS)
+    # Helpers: extra people the owner let into SOME sections (only the grantable
+    # ones, see modules/admin_controls.GRANTABLE). Reads an in-memory map.
+    try:
+        from modules import admin_controls
+        out |= admin_controls.helper_sections(user_id)
+    except Exception:
+        logger.debug("[admin-panel] helper sections unavailable", exc_info=True)
     return out
 
 
 def can_open_panel(user_id: int) -> bool:
     return bool(allowed_sections(user_id))
+
+
+async def refresh_access(force: bool = False) -> None:
+    """Reload helper accounts from the DB (cheap: TTL-gated, never raises)."""
+    try:
+        from modules import admin_controls
+        await admin_controls.refresh_helpers(force=force)
+    except Exception:
+        logger.debug("[admin-panel] helper refresh skipped", exc_info=True)
 
 
 _audit_tasks: set = set()   # keeps fire-and-forget DB writes from being garbage-collected mid-flight
@@ -144,6 +161,7 @@ class PanelView(discord.ui.LayoutView):
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message("This panel belongs to someone else.", ephemeral=True)
             return False
+        await refresh_access()
         allowed = allowed_sections(interaction.user.id)
         if not allowed or (self.section and self.section not in allowed):
             await interaction.response.send_message("You're no longer authorized for this.", ephemeral=True)
@@ -214,6 +232,10 @@ class HomeView(PanelView):
             _btn("Blacklist", P, self._blacklist, "🚫", disabled="blacklist" not in a),
             _btn("Premium", P, self._premium, "💎", disabled="premium" not in a),
             _btn("Audit log", P, self._audit_log, "📜", disabled="audit" not in a),
+            _btn("Panel access", P, self._access, "🔑", disabled="access" not in a),
+            _btn("Log tail", P, self._logs, "📋", disabled="logs" not in a),
+            _btn("Config", P, self._config, "🧾", disabled="config" not in a),
+            _btn("Database", P, self._database, "🗄️", disabled="database" not in a),
             _btn("Close", S, self._close, "✖️"),
         ]
 
@@ -263,6 +285,27 @@ class HomeView(PanelView):
     async def _audit_log(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_controls import AuditView
         view = AuditView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _access(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_ops import AccessView
+        view = AccessView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
+
+    async def _logs(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_ops import LogsView
+        await self.go(i, LogsView(self.cog, self.owner_id))
+
+    async def _config(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_ops import ConfigView
+        audit(i, "config.view")
+        await self.go(i, ConfigView(self.cog, self.owner_id))
+
+    async def _database(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_ops import DatabaseView
+        view = DatabaseView(self.cog, self.owner_id)
         await view.load()
         await self.go(i, view)
 

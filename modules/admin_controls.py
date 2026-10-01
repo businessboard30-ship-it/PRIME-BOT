@@ -223,3 +223,105 @@ async def revoke_premium(guild_id: int, clone_id: Optional[int]) -> bool:
             "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
             guild_id, clone_id, PREMIUM_GRACE_DAYS + 1)
     return not result.endswith(" 0")
+
+
+# ── helper accounts (per-section panel access) ───────────────────────────
+#
+# Real owners live in config.py and always get everything. A *helper* is an
+# extra Discord user the owner lets into SOME panel sections. Only sections
+# that the panel handles itself can be granted: screens that hand off to
+# another cog (payments, broadcast, servers, bump, feedback, system) are still
+# gated by that cog's own owner allowlist, so granting them here would only
+# show a helper buttons that then refuse. Sensitive screens (access manager,
+# config, database, kill switches) are owner-only on purpose.
+#
+# Unlike the command gate above, this FAILS CLOSED: if the helper list can't be
+# read and nothing was ever loaded, helpers get no access (owners are
+# unaffected). Changes made from the panel are written through to the
+# in-memory map at once, so a revoke applies immediately in this process.
+
+GRANTABLE: Dict[str, str] = {
+    "audit": "Audit log",
+    "blacklist": "Blacklist",
+    "premium": "Premium",
+    "logs": "Log tail",
+}
+
+_helpers: dict = {"ts": 0.0, "ok": False, "map": {}}
+
+
+def _parse_sections(raw: Optional[str]) -> Set[str]:
+    """Stored text -> set of valid grantable keys. Unknown keys (including a
+    tampered 'access') are dropped here, so they can never grant anything."""
+    return {s.strip() for s in (raw or "").split(",") if s.strip() in GRANTABLE}
+
+
+def helper_sections(user_id: int) -> Set[str]:
+    """Sections a helper may open. Sync (reads the in-memory map) so it can be
+    used from allowed_sections()."""
+    return set(_helpers["map"].get(user_id, ()))
+
+
+def invalidate_helpers() -> None:
+    _helpers["ts"] = 0.0
+
+
+async def refresh_helpers(force: bool = False) -> None:
+    """Reload the helper map from the database (at most every CACHE_TTL
+    seconds unless forced). Never raises."""
+    now = time.monotonic()
+    if not force and _helpers["ok"] and now - _helpers["ts"] < CACHE_TTL:
+        return
+    _helpers["ts"] = now   # a failed refresh also waits a full TTL
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT user_id, sections FROM admin_panel_helpers")
+        _helpers["map"] = {r["user_id"]: _parse_sections(r["sections"]) for r in rows}
+        _helpers["ok"] = True
+    except Exception:
+        logger.debug("[admin-controls] helper refresh failed; keeping the last good map", exc_info=True)
+
+
+async def list_helpers(limit: int = 25) -> List[dict]:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT user_id, sections, added_by, created_at, updated_at FROM admin_panel_helpers "
+            "ORDER BY created_at DESC LIMIT $1", limit)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["sections"] = _parse_sections(d.get("sections"))
+        out.append(d)
+    return out
+
+
+async def set_helper(user_id: int, sections: Set[str], by: int) -> Set[str]:
+    """Create or update a helper. Returns the sections actually stored (invalid
+    ones are dropped). An empty set removes the helper."""
+    clean = {s for s in sections if s in GRANTABLE}
+    if not clean:
+        await remove_helper(user_id)
+        return set()
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO admin_panel_helpers (user_id, sections, added_by)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id) DO UPDATE SET sections = $2, updated_at = NOW()
+            """,
+            user_id, ",".join(sorted(clean)), by)
+    _helpers["map"][user_id] = set(clean)   # write-through
+    invalidate_helpers()
+    return clean
+
+
+async def remove_helper(user_id: int) -> bool:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM admin_panel_helpers WHERE user_id = $1", user_id)
+    _helpers["map"].pop(user_id, None)       # write-through
+    invalidate_helpers()
+    return result.endswith(" 1")

@@ -13,7 +13,7 @@ import discord
 from discord.ext import commands
 
 from discord_bot.cogs._admin_mount import mount_admin_command
-from discord_bot.cogs._views_admin_panel import can_open_panel, open_home
+from discord_bot.cogs._views_admin_panel import can_open_panel, open_home, refresh_access
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ class AdminPanelCog(commands.Cog):
         )
 
     async def panel(self, interaction: discord.Interaction):
+        await refresh_access(force=True)   # so a freshly added helper can open the panel
         if not can_open_panel(interaction.user.id):
             await interaction.response.send_message("You're not authorized to use the owner panel.", ephemeral=True)
             return

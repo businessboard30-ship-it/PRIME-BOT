@@ -139,7 +139,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "37"
+SCHEMA_VERSION = "38"
+# "37" -> "38" adds 021_admin_access.sql (admin_panel_helpers) for the owner
+# panel's access manager — see modules/admin_controls.py. Same
+# bump-or-it-never-runs trap as every entry below.
 # "36" -> "37" adds 020_admin_controls.sql (admin_panel_audit,
 # bot_kill_switches, bot_blacklist) for the owner panel's audit log, kill
 # switches and blacklist manager — see modules/admin_controls.py. Same
@@ -4888,6 +4891,12 @@ class Database:
         admin_controls_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "020_admin_controls.sql"
         if admin_controls_migration.exists():
             await conn.execute(admin_controls_migration.read_text())
+
+        # Owner-panel helper accounts (per-section access) — admin_panel_helpers.
+        # See modules/admin_controls.py. Additive/idempotent.
+        admin_access_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "021_admin_access.sql"
+        if admin_access_migration.exists():
+            await conn.execute(admin_access_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point

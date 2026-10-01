@@ -121,6 +121,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("discord_bot")
+# Keep the latest WARNING+ records in memory for the owner panel's Log tail
+# screen (modules/admin_ops.py). Idempotent; costs one deque append per record.
+from modules.admin_ops import install_log_buffer
+install_log_buffer()
 
 # Server Members Intent is privileged — must also be turned ON in the
 # Discord Developer Portal (Bot -> Privileged Gateway Intents) or on_ready
