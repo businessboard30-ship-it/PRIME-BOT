@@ -147,9 +147,8 @@ class HealthView(PanelView):
 
     async def _logs(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_ops import LogsView
-        view = LogsView(self.cog, self.owner_id)
-        await view.load()
-        await self.go(i, view)
+        audit(i, "health.logs")
+        await self.go(i, LogsView(self.cog, self.owner_id))   # LogsView renders from the in-memory buffer, no load()
 
     async def _back(self, i): await _home(self, i)
 
