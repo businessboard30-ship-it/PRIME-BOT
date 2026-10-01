@@ -1,12 +1,14 @@
 # path: discord_bot/cogs/honeypot.py
 
 """
-Honeypot — a trap channel for spam/scam bots and hacked accounts (PREMIUM).
+Honeypot — a trap channel for spam/scam bots and hacked accounts (FREE core, premium extras).
 
 Spam bots and compromised accounts blast the same "free nitro" link into every
 channel they can see. A real member reads the warning and never posts in the
-trap channel, so ANYONE who does (except staff) is treated as compromised and
-gets the configured action applied automatically:
+trap channel, so ANYONE who does is treated as compromised. Regular members get
+the configured action applied automatically; staff (admins, mods) are NOT exempt
+but get a WARNING instead (message removed, short notice, logged) so an admin
+poking the channel is never banned by accident:
 
   ban      ban + wipe their recent messages server-wide (default)
   kick     kick; if "delete history" is on it's a soft-ban (ban+unban) so their
@@ -27,10 +29,14 @@ in its custom_id, so the panel survives bot restarts and never times out —
 same mechanism as the join DM and the other wizards. Registered via
 bot.add_dynamic_items(*DYNAMIC_ITEMS) in bot.py's setup_hook.
 
-Premium: setting up / changing the honeypot needs Go Premium (per server).
-Enforcement also only runs while the server is premium. Pausing and removing
-are always allowed so a lapsed server is never stuck with a trap it can't turn
-off.
+Free for every server: setting up the trap, enforcement (ban + wipe the last 24h
+of messages), pause/resume, repost, remove, the catch counter, and logging to the
+server's mod-log channel.
+
+Premium extras (per server): choosing the action (kick / 28-day timeout), choosing
+how much history to wipe, and a dedicated log channel. If premium lapses, the
+saved extras are kept but not used: the trap keeps protecting the server with the
+free defaults, and re-activates the saved extras when premium returns.
 """
 
 import re
@@ -65,9 +71,15 @@ DELETE_OPTIONS = {
     604800: "Delete their last 7 days of messages",
 }
 
+FREE_ACTION = "ban"            # what a non-premium server's trap does
+FREE_DELETE_SECONDS = 86400    # ...and how much history it wipes (24h)
+STAFF_WARNING_SECONDS = 15     # how long the in-channel staff warning stays up
+_STAFF_WARN_COOLDOWN = 30.0    # seconds between warnings for the same staff member
+
 _CACHE_TTL = 60.0
 _cache: dict = {}        # (guild_id, clone_id) -> (expires_at, config | None)
 _tripping: set = set()   # (guild_id, user_id) currently being actioned
+_warned: dict = {}       # (guild_id, user_id) -> monotonic time of last staff warning
 
 
 # ── small helpers ─────────────────────────────────────────────────────────
@@ -116,8 +128,27 @@ async def is_premium(guild_id: int, clone_id) -> bool:
         return False
 
 
+def effective_config(cfg: dict, premium: bool) -> dict:
+    """The settings the trap actually uses. Premium servers get what they saved;
+    free servers get the free defaults (saved extras are kept, just not used)."""
+    if premium:
+        return cfg
+    out = dict(cfg)
+    out["action"] = FREE_ACTION
+    out["delete_seconds"] = FREE_DELETE_SECONDS
+    out["log_channel_id"] = None   # falls back to the server's mod-log channel
+    return out
+
+
+def _extras_paused(cfg: dict) -> bool:
+    """True when a lapsed server has saved premium choices that aren't being used."""
+    return ((cfg.get("action") or FREE_ACTION) != FREE_ACTION
+            or int(cfg.get("delete_seconds") or 0) != FREE_DELETE_SECONDS
+            or bool(cfg.get("log_channel_id")))
+
+
 def _is_staff(member: discord.Member) -> bool:
-    """Staff are exempt so an admin poking the channel never bans themselves."""
+    """Staff are warned, not actioned, so an admin poking the channel is never banned by accident."""
     if member.id == member.guild.owner_id:
         return True
     p = member.guild_permissions
@@ -356,18 +387,56 @@ async def trip(bot, message: discord.Message, cfg: dict) -> None:
         asyncio.create_task(_release())
 
 
+async def warn_staff(bot, message: discord.Message, cfg: dict) -> None:
+    """A staff member posted in the trap. They are NOT exempt, but they are not
+    actioned either: the message is removed, they get a short notice, and it is
+    logged. Never raises."""
+    guild, member = message.guild, message.author
+    clone_id = _clone_of(bot)
+    try:
+        await message.delete()
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        pass
+    key = (guild.id, member.id)
+    now = time.monotonic()
+    last = _warned.get(key)
+    if last is not None and now - last < _STAFF_WARN_COOLDOWN:
+        return   # burst of messages: removed above, one warning is enough
+    _warned[key] = now
+    if len(_warned) > 500:   # keep the map small
+        for k in [k for k, t in _warned.items() if now - t > _STAFF_WARN_COOLDOWN]:
+            _warned.pop(k, None)
+    channel = message.channel
+    try:
+        await channel.send(
+            f"⚠️ {member.mention} this is the **honeypot** — anyone who posts here is treated as a hacked "
+            "account. You're staff, so nothing happened to you this time. "
+            "Please don't post here.",
+            delete_after=STAFF_WARNING_SECONDS,
+            allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=[member]),
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        pass
+    snippet = discord.utils.escape_markdown(discord.utils.escape_mentions(message.content or ""))[:300]
+    embed = discord.Embed(
+        title="🍯 Staff member posted in the honeypot",
+        description=(f"{member.mention} (`{member.id}`) posted in <#{cfg['channel_id']}>."
+                     + (f"\n>>> {snippet}" if snippet else "")),
+        color=discord.Color.gold(),
+    )
+    embed.add_field(name="Result", value="Warned — no action taken (staff aren't banned)", inline=False)
+    await _send_log(guild, clone_id, cfg, embed)
+
+
 # ── settings panel ────────────────────────────────────────────────────────
 
 def _status_lines(guild: discord.Guild, cfg: dict, premium: bool) -> list:
     ch = cfg.get("channel_id")
     channel = f"<#{ch}>" if ch and guild.get_channel(ch) else "*missing — tap **Repost / recreate***"
+    saved = cfg
+    cfg = effective_config(cfg, premium)
     action = cfg.get("action") or "ban"
-    if not premium:
-        state = "🔒 **Locked** — premium expired (trap is not enforcing)"
-    elif cfg.get("enabled"):
-        state = "🟢 **Active**"
-    else:
-        state = "⏸️ **Paused**"
+    state = "🟢 **Active**" if cfg.get("enabled") else "⏸️ **Paused**"
     log_id = cfg.get("log_channel_id")
     lines = [
         f"**Status:** {state}",
@@ -383,6 +452,10 @@ def _status_lines(guild: discord.Guild, cfg: dict, premium: bool) -> list:
     if last:
         caught += f" · last <t:{int(last.timestamp())}:R>"
     lines.append(caught)
+    if not premium:
+        lines.append("🔒 **Free plan:** bans and wipes the last 24h of messages. Premium unlocks the action, "
+                     "history window and a dedicated log channel."
+                     + (" Your saved premium settings are paused, not lost." if _extras_paused(saved) else ""))
     miss = missing_permissions(guild, action)
     if miss:
         lines.append(f"⚠️ **I'm missing:** {', '.join(miss)}")
@@ -391,9 +464,7 @@ def _status_lines(guild: discord.Guild, cfg: dict, premium: bool) -> list:
 
 def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
-    if not premium:
-        color = discord.Color.dark_grey()
-    elif cfg.get("enabled"):
+    if cfg.get("enabled"):
         color = discord.Color.green()
     else:
         color = discord.Color.orange()
@@ -401,28 +472,31 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool) -> dis
     container.add_item(discord.ui.TextDisplay(
         "### 🍯 Honeypot\n"
         + "\n".join(perm_check.lines(guild.id, clone_id) + _status_lines(guild, cfg, premium))
-        + "\n\n-# Anyone who posts in the trap channel gets the action below. Staff (mod/admin perms) are exempt."
+        + "\n\n-# Anyone who posts in the trap channel gets the action below. Staff (mod/admin perms) get a warning instead."
     ))
     container.add_item(discord.ui.Separator())
 
-    action_row = discord.ui.ActionRow()
-    action_row.add_item(HoneypotActionSelect(guild.id, clone_id, cfg.get("action") or "ban"))
-    container.add_item(action_row)
+    if premium:   # the extras are premium-only; free servers see an upgrade button instead
+        action_row = discord.ui.ActionRow()
+        action_row.add_item(HoneypotActionSelect(guild.id, clone_id, cfg.get("action") or "ban"))
+        container.add_item(action_row)
 
-    if (cfg.get("action") or "ban") != "timeout":
-        hist_row = discord.ui.ActionRow()
-        hist_row.add_item(HoneypotHistorySelect(guild.id, clone_id, int(cfg.get("delete_seconds") or 0)))
-        container.add_item(hist_row)
+        if (cfg.get("action") or "ban") != "timeout":
+            hist_row = discord.ui.ActionRow()
+            hist_row.add_item(HoneypotHistorySelect(guild.id, clone_id, int(cfg.get("delete_seconds") or 0)))
+            container.add_item(hist_row)
 
-    log_row = discord.ui.ActionRow()
-    log_row.add_item(HoneypotLogSelect(guild.id, clone_id))
-    container.add_item(log_row)
+        log_row = discord.ui.ActionRow()
+        log_row.add_item(HoneypotLogSelect(guild.id, clone_id))
+        container.add_item(log_row)
 
     btn_row = discord.ui.ActionRow()
     paused = not cfg.get("enabled")
     btn_row.add_item(HoneypotButton("pause", guild.id, clone_id, paused=paused))
     btn_row.add_item(HoneypotButton("repost", guild.id, clone_id))
     btn_row.add_item(HoneypotButton("remove", guild.id, clone_id))
+    if not premium:
+        btn_row.add_item(HoneypotButton("upgrade", guild.id, clone_id))
     container.add_item(btn_row)
 
     view.add_item(container)
@@ -453,9 +527,11 @@ async def _reply(interaction: discord.Interaction, text: str) -> None:
         await interaction.response.send_message(text, ephemeral=True)
 
 
-async def _authorize(interaction: discord.Interaction, guild_id: int, need_premium: bool = True):
+async def _authorize(interaction: discord.Interaction, guild_id: int, need_premium: bool = False):
     """Works from a DM (join-DM button) or a guild. Resolves the guild from the
-    custom_id, checks Manage Server, and (optionally) premium. Returns the
+    custom_id, checks Manage Server, and (optionally) premium. The honeypot itself is
+    FREE, so only the premium extras (action / history / log channel selects and
+    the upgrade button) pass need_premium=True. Returns the
     guild, or None after telling the user why."""
     guild = interaction.client.get_guild(guild_id)
     if guild is None:
@@ -470,7 +546,7 @@ async def _authorize(interaction: discord.Interaction, guild_id: int, need_premi
             await interaction.response.defer(ephemeral=True)
         from discord_bot.cogs._views_premium import send_premium_pitch
         await interaction.followup.send(
-            "🍯 The **Honeypot** is a premium feature. Here's how to unlock it for your server 👇", ephemeral=True,
+            "🍯 Choosing the action, history window and log channel are **premium** extras — the honeypot itself stays free. Here's how to unlock them 👇", ephemeral=True,
         )
         await send_premium_pitch(interaction, guild_id, _clone_of(interaction.client))
         return None
@@ -492,7 +568,7 @@ async def open_honeypot(interaction: discord.Interaction, guild: discord.Guild, 
     if error:
         await interaction.followup.send(error, ephemeral=True)
         return
-    premium = True  # _authorize already gated on it
+    premium = await is_premium(guild.id, clone_id)
     view = build_panel(guild, clone_id, cfg, premium)
     note = (f"🍯 Created {channel.mention} and posted the warning notice in it."
             if created else f"🍯 Honeypot is live in {channel.mention}.")
@@ -521,7 +597,7 @@ class HoneypotActionSelect(discord.ui.DynamicItem[discord.ui.Select], template=_
         return cls(*_ids(match))
 
     async def callback(self, interaction: discord.Interaction):
-        guild = await _authorize(interaction, self.guild_id)
+        guild = await _authorize(interaction, self.guild_id, need_premium=True)
         if guild is None:
             return
         await interaction.response.defer()
@@ -551,7 +627,7 @@ class HoneypotHistorySelect(discord.ui.DynamicItem[discord.ui.Select], template=
         return cls(*_ids(match))
 
     async def callback(self, interaction: discord.Interaction):
-        guild = await _authorize(interaction, self.guild_id)
+        guild = await _authorize(interaction, self.guild_id, need_premium=True)
         if guild is None:
             return
         await interaction.response.defer()
@@ -574,7 +650,7 @@ class HoneypotLogSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], templa
         return cls(*_ids(match))
 
     async def callback(self, interaction: discord.Interaction):
-        guild = await _authorize(interaction, self.guild_id)
+        guild = await _authorize(interaction, self.guild_id, need_premium=True)
         if guild is None:
             return
         await interaction.response.defer()
@@ -594,10 +670,11 @@ _BUTTONS = {
     "remove":    ("Remove honeypot", discord.ButtonStyle.danger, "🗑️"),
     "removeyes": ("Yes, remove it", discord.ButtonStyle.danger, "🗑️"),
     "removeno":  ("Keep it", discord.ButtonStyle.secondary, "↩️"),
+    "upgrade":   ("Unlock premium extras", discord.ButtonStyle.success, "💎"),
 }
 
 
-class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("pause|repost|remove|removeyes|removeno")):
+class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("pause|repost|remove|removeyes|removeno|upgrade")):
     def __init__(self, kind: str, guild_id: int, clone_id, paused: bool = False):
         self.kind, self.guild_id, self.clone_id = kind, guild_id, clone_id
         label, style, emoji = _BUTTONS[kind]
@@ -612,15 +689,18 @@ class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("p
         return cls(match.group("kind"), guild_id, clone_id)
 
     async def callback(self, interaction: discord.Interaction):
-        # Pausing/removing never needs premium — a lapsed server must always be
-        # able to turn the trap off.
-        needs_premium = self.kind == "repost"
-        guild = await _authorize(interaction, self.guild_id, need_premium=needs_premium)
+        # The honeypot is free: nothing here needs premium except the upgrade
+        # button, whose whole job is to show the premium pitch.
+        guild = await _authorize(interaction, self.guild_id, need_premium=(self.kind == "upgrade"))
         if guild is None:
             return
         clone_id = self.clone_id
 
-        if self.kind == "pause":
+        if self.kind == "upgrade":
+            # Reached only when the server is premium now (the pitch is shown otherwise): just refresh.
+            await _rerender(interaction, guild, clone_id)
+
+        elif self.kind == "pause":
             await interaction.response.defer()
             cfg = await db.get_honeypot_config(guild.id, clone_id=clone_id)
             await db.set_honeypot_config(guild.id, clone_id=clone_id, enabled=not cfg.get("enabled"))
@@ -687,11 +767,11 @@ class HoneypotCog(GuildOnlyCog):
     def _clone_id(self):
         return getattr(self.bot, "clone_id", None)
 
-    @app_commands.command(name="honeypot", description="Set up a trap channel that auto-actions spam bots & hacked accounts (premium)")
+    @app_commands.command(name="honeypot", description="Set up a free trap channel that auto-actions spam bots & hacked accounts")
     @app_commands.guild_only()
     async def honeypot_cmd(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        guild = await _authorize(interaction, interaction.guild_id)
+        guild = await _authorize(interaction, interaction.guild_id)   # free: Manage Server only
         if guild is None:
             return
         await open_honeypot(interaction, guild, self._clone_id())
@@ -703,11 +783,13 @@ class HoneypotCog(GuildOnlyCog):
         cfg = await _cached_config(message.guild.id, self._clone_id())
         if not cfg or not cfg.get("enabled") or message.channel.id != cfg.get("channel_id"):
             return
-        if not isinstance(message.author, discord.Member) or _is_staff(message.author):
+        if not isinstance(message.author, discord.Member):
             return
-        if not await is_premium(message.guild.id, self._clone_id()):
+        if _is_staff(message.author):          # not exempt: warned, never actioned
+            await warn_staff(self.bot, message, effective_config(cfg, await is_premium(message.guild.id, self._clone_id())))
             return
-        await trip(self.bot, message, cfg)
+        premium = await is_premium(message.guild.id, self._clone_id())
+        await trip(self.bot, message, effective_config(cfg, premium))
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):

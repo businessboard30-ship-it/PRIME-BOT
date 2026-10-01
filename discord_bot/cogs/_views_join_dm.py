@@ -289,7 +289,7 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             # Partnership (bump network) — first page only, appended AFTER the
             # existing buttons so Connect/Advertise keep their positions.
             bottom_children.append(_PartnershipButton(guild_id, clone_id))
-            # Honeypot (premium trap channel) — first page only, appended
+            # Honeypot (free trap channel) — first page only, appended
             # AFTER Partnership so Connect/Advertise/Partnership keep their
             # positions.
             bottom_children.append(_HoneypotButton(guild_id, clone_id))
@@ -638,13 +638,13 @@ class _PartnershipButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
 
 
 class _HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_honeypot:(\d+):(-|\d+)$"):
-    """"Honeypot" — premium trap channel for spam bots / hacked accounts.
+    """"Honeypot" — free trap channel for spam bots / hacked accounts.
     Same one-tap pattern as Partnership: needs Manage Server, auto-creates
     the #honeypot channel (reusing a configured/existing one first), posts
     the "do not post here" notice in it, and opens the settings panel as an
     ephemeral follow-up. All the logic lives in cogs/honeypot.py
-    (open_honeypot), shared with the /honeypot slash command. Non-premium
-    servers get the Go Premium pitch instead. Grey (secondary) so it stands
+    (open_honeypot), shared with the /honeypot slash command. Free for every
+    server; only the extras inside the panel are premium. Grey (secondary) so it stands
     apart from the blue/green/red buttons beside it."""
 
     def __init__(self, guild_id: int, clone_id=None):
