@@ -159,25 +159,29 @@ async def scan_missing_channels(guild: discord.Guild, clone_id: int | None) -> l
     dismissed. Always re-checks live state — never trusts a stale cache —
     since this is called both from the join DM and every /setup channels
     invocation, potentially long after the guild's channels changed."""
-    suggestions = await db.get_setup_suggestions(guild.id, clone_id)
+    import asyncio
+    suggestions, welcome, automod, bump_cfg, leveling_cfg = await asyncio.gather(
+        db.get_setup_suggestions(guild.id, clone_id),
+        db.get_welcome_config(guild.id, clone_id),
+        db.get_automod_config(guild.id, clone_id),
+        db.bump_get_guild_config(guild.id, clone_id),
+        db.get_leveling_config(guild.id, clone_id),
+    )
+    bump_cfg = bump_cfg or {}
     dismissed = set(suggestions["dismissed"])
     custom_names = suggestions["custom_names"]
     missing = []
 
     # --- core (DB-backed) ---
-    welcome = await db.get_welcome_config(guild.id, clone_id)
     if not welcome.get("channel_id") and "welcome" not in dismissed:
         missing.append(_entry("welcome", CORE_CHANNELS, custom_names))
 
-    automod = await db.get_automod_config(guild.id, clone_id)
     if not automod.get("log_channel_id") and "mod-logs" not in dismissed:
         missing.append(_entry("mod-logs", CORE_CHANNELS, custom_names))
 
-    bump_cfg = await db.bump_get_guild_config(guild.id, clone_id) or {}
     if not bump_cfg.get("bump_channel_id") and "bump" not in dismissed:
         missing.append(_entry("bump", CORE_CHANNELS, custom_names))
 
-    leveling_cfg = await db.get_leveling_config(guild.id, clone_id)
     if not leveling_cfg.get("announce_channel_id") and "level-ups" not in dismissed:
         missing.append(_entry("level-ups", CORE_CHANNELS, custom_names))
 

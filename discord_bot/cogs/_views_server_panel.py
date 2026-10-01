@@ -73,6 +73,10 @@ async def guard(interaction: discord.Interaction) -> bool:
     return True
 
 
+async def _no_switches() -> set:
+    return set()
+
+
 def read_only_ok(fn: Callable) -> Callable:
     """Mark a callback as safe in read-only mode (navigation and refresh only)."""
     fn.read_only_ok = True
@@ -148,8 +152,13 @@ class ServerPanelView(discord.ui.LayoutView):
     @classmethod
     async def create(cls, interaction: discord.Interaction) -> "ServerPanelView":
         ctx = interaction.inspect if isinstance(interaction, InspectInteraction) else None
-        data = dict(await cls.load(interaction) or {})
-        data["_engaged"] = set() if ctx is not None else await sp.engaged_features(interaction.user.id)
+        import asyncio
+        loaded, engaged = await asyncio.gather(
+            cls.load(interaction),
+            _no_switches() if ctx is not None else sp.engaged_features(interaction.user.id),
+        )
+        data = dict(loaded or {})
+        data["_engaged"] = engaged
         return cls(interaction.guild_id, clone_id_of(interaction), interaction.user.id, data, inspect=ctx)
 
     def body(self) -> List[str]:
@@ -272,8 +281,11 @@ class HomeView(ServerPanelView):
     @classmethod
     async def load(cls, interaction):
         cid = clone_id_of(interaction)
-        items = await sp.setup_items(interaction.guild, cid)
-        prem = await sp.premium_status(interaction.guild_id, cid)
+        import asyncio
+        items, prem = await asyncio.gather(
+            sp.setup_items(interaction.guild, cid),
+            sp.premium_status(interaction.guild_id, cid),
+        )
         done, total = sp.setup_score(items)
         return {
             "name": interaction.guild.name, "members": interaction.guild.member_count,
@@ -541,10 +553,12 @@ class ModerationView(ServerPanelView):
     async def load(cls, interaction):
         from database import db
         cid = clone_id_of(interaction)
-        return {
-            "am": await db.get_automod_config(interaction.guild_id, cid),
-            "hp": await db.get_honeypot_config(interaction.guild_id, cid),
-        }
+        import asyncio
+        am, hp = await asyncio.gather(
+            db.get_automod_config(interaction.guild_id, cid),
+            db.get_honeypot_config(interaction.guild_id, cid),
+        )
+        return {"am": am, "hp": hp}
 
     def body(self):
         am, hp = self.data.get("am", {}), self.data.get("hp", {})
@@ -621,8 +635,12 @@ async def open_home(interaction: discord.Interaction) -> None:
     if not await guard(interaction):
         return
     await interaction.response.defer(ephemeral=True)
-    await sp.record_open(interaction.guild_id, clone_id_of(interaction))   # best effort, feeds owner Health
-    view = await HomeView.create(interaction)
+    import asyncio
+    # best effort, feeds owner Health; runs alongside building the screen
+    _, view = await asyncio.gather(
+        sp.record_open(interaction.guild_id, clone_id_of(interaction)),
+        HomeView.create(interaction),
+    )
     await interaction.followup.send(view=view, ephemeral=True)
 
 

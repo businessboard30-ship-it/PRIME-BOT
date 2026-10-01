@@ -65,13 +65,15 @@ class CommunityView(ServerPanelView):
     async def load(cls, interaction):
         from database import db
         gid, cid = interaction.guild_id, clone_id_of(interaction)
-        return {
-            "lv": await db.get_leveling_config(gid, cid),
-            "sb": await db.get_starboard_config(gid, cid),
-            "sg": await db.get_suggestion_config(gid, cid),
-            "rr": await db.get_reaction_role_panels_for_guild(gid, cid),
-            "lr": await db.get_level_roles(gid, cid),
-        }
+        import asyncio
+        lv, sb, sg, rr, lr = await asyncio.gather(
+            db.get_leveling_config(gid, cid),
+            db.get_starboard_config(gid, cid),
+            db.get_suggestion_config(gid, cid),
+            db.get_reaction_role_panels_for_guild(gid, cid),
+            db.get_level_roles(gid, cid),
+        )
+        return {"lv": lv, "sb": sb, "sg": sg, "rr": rr, "lr": lr}
 
     def body(self):
         d = self.data
@@ -107,7 +109,9 @@ class LevelingView(ServerPanelView):
     async def load(cls, interaction):
         from database import db
         gid, cid = interaction.guild_id, clone_id_of(interaction)
-        return {"lv": await db.get_leveling_config(gid, cid), "vx": await db.get_voice_xp_config(gid, cid)}
+        import asyncio
+        lv, vx = await asyncio.gather(db.get_leveling_config(gid, cid), db.get_voice_xp_config(gid, cid))
+        return {"lv": lv, "vx": vx}
 
     def body(self):
         lv, vx = self.data.get("lv", {}), self.data.get("vx", {})
@@ -532,7 +536,9 @@ class ChannelsLogsView(ServerPanelView):
     async def load(cls, interaction):
         from database import db
         gid, cid = interaction.guild_id, clone_id_of(interaction)
-        return {"am": await db.get_automod_config(gid, cid), "lv": await db.get_leveling_config(gid, cid)}
+        import asyncio
+        am, lv = await asyncio.gather(db.get_automod_config(gid, cid), db.get_leveling_config(gid, cid))
+        return {"am": am, "lv": lv}
 
     def body(self):
         am, lv = self.data.get("am", {}), self.data.get("lv", {})
