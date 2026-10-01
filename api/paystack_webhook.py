@@ -12,6 +12,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Owner-panel failure recording (modules/admin_money.py). Best-effort only: if
+# the module can't even be imported, the webhook must behave exactly as before.
+try:
+    from modules.admin_money import record_failure, record_failure_sync
+except Exception:  # pragma: no cover
+    async def record_failure(*a, **k):
+        return False
+
+    def record_failure_sync(*a, **k):
+        return False
+
 
 class handler(BaseHTTPRequestHandler):
     """Handle Paystack webhook events"""
@@ -33,6 +44,7 @@ class handler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"status": "error", "message": "Unauthorized"}).encode())
+            record_failure_sync("paystack", "bad_signature", detail="signature verification failed (401)")
             return
         
         # Parse payload
@@ -42,6 +54,7 @@ class handler(BaseHTTPRequestHandler):
             logger.error("[v0] Failed to parse webhook payload JSON")
             self.send_response(400)
             self.end_headers()
+            record_failure_sync("paystack", "bad_json", detail="payload was not valid JSON (400)")
             return
         
         # Process based on event type
@@ -62,6 +75,7 @@ class handler(BaseHTTPRequestHandler):
             logger.error(f"[v0] Webhook processing error: {e}")
             self.send_response(200)  # Still return 200 so Paystack doesn't retry
             self.end_headers()
+            record_failure_sync("paystack", "webhook_error", detail=f"{type(e).__name__}: {e}")
     
     async def _handle_charge_success(self, data: dict):
         """Handle successful charge event (Task 1)"""
@@ -72,6 +86,8 @@ class handler(BaseHTTPRequestHandler):
         
         if status != 'success' or not reference:
             logger.warning(f"[v0] Invalid charge success event: {data}")
+            await record_failure("paystack", "invalid_event", reference,
+                                 f"charge.success with status={status!r} and no usable reference")
             return
         
         payment_type = metadata.get('type')
@@ -125,6 +141,7 @@ class handler(BaseHTTPRequestHandler):
                     logger.info(f"[v0] Discord clone payment {reference} confirmed — clone_id={clone_id} now active")
                 else:
                     logger.warning(f"[v0] Discord clone payment {reference} confirmed but no pending row found")
+                    await record_failure("paystack", "no_matching_row", reference, "discord_clone: paid but no pending row to complete")
 
             elif payment_type == 'ai_subscription':
                 # Activate AI subscription for user (Task 3) — scoped to
@@ -191,6 +208,7 @@ class handler(BaseHTTPRequestHandler):
                     )
                 else:
                     logger.warning(f"[v0] discover_category_upgrade payment {reference} had no matching pending row")
+                    await record_failure("paystack", "no_matching_row", reference, "discover_category_upgrade: paid but no pending row to complete")
 
             elif payment_type == 'media_connect_subscription':
                 # Activate the Jellyfin/Plex/Google Drive movie-search
@@ -217,6 +235,7 @@ class handler(BaseHTTPRequestHandler):
                     logger.info(f"[v0] discord_clone_monetization payment {reference} confirmed — clone_id={clone_id} activated")
                 else:
                     logger.warning(f"[v0] discord_clone_monetization payment {reference} confirmed but no matching pending row found")
+                    await record_failure("paystack", "no_matching_row", reference, "discord_clone_monetization: paid but no pending row to complete")
 
             elif payment_type == 'image_search_yandex':
                 # Backstop for discord_bot/cogs/image_search.py's Yandex
@@ -244,6 +263,7 @@ class handler(BaseHTTPRequestHandler):
                     )
                 else:
                     logger.warning(f"[v0] image_search_yandex payment {reference} confirmed but no matching pending row found")
+                    await record_failure("paystack", "no_matching_row", reference, "image_search_yandex: paid but no pending row to complete")
 
             elif payment_type == 'hardcore_roast':
                 # Challenger paid for a per-battle hardcore roast activation.
@@ -283,6 +303,7 @@ class handler(BaseHTTPRequestHandler):
                     )
                 else:
                     logger.warning(f"[v0] listing_boost payment {reference} confirmed but no matching pending row found")
+                    await record_failure("paystack", "no_matching_row", reference, "listing_boost: paid but no pending row to complete")
 
             elif payment_type == 'image_search_unlock':
                 # Backstop for discord_bot/cogs/image_search.py's one-off
@@ -323,9 +344,12 @@ class handler(BaseHTTPRequestHandler):
                             )
                 else:
                     logger.warning(f"[v0] image_search_unlock payment {reference} confirmed but no matching pending row found")
+                    await record_failure("paystack", "no_matching_row", reference, "image_search_unlock: paid but no pending row to complete")
 
         except Exception as e:
             logger.error(f"[v0] Error processing payment {reference}: {e}")
+            await record_failure("paystack", "handler_error", reference,
+                                 f"{payment_type}: {type(e).__name__}: {e}")
     
     def log_message(self, format, *args):
         """Suppress default HTTP server logging"""

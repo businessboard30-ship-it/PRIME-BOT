@@ -139,7 +139,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "39"
+SCHEMA_VERSION = "40"
+# "39" -> "40" adds 023_admin_money.sql (payment_failures, discount_codes,
+# payment_logs.reversed_at/reversed_by) for the owner panel's Money hub — see
+# modules/admin_money.py. Same bump-or-it-never-runs trap as every entry below.
 # "38" -> "39" adds 022_admin_safety.sql (server_listing_reports.status/reviewed_*,
 # bot_status_entries, bot_status_config) for the owner panel's report queue and
 # status editor — see modules/admin_safety.py. Same bump-or-it-never-runs trap
@@ -4908,6 +4911,13 @@ class Database:
         admin_safety_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "022_admin_safety.sql"
         if admin_safety_migration.exists():
             await conn.execute(admin_safety_migration.read_text())
+
+        # Owner-panel Batch 4 (payment failures, discount codes, reversals).
+        # See modules/admin_money.py. Additive/idempotent. Runs after the
+        # payment_logs CREATE TABLE/ALTERs earlier in this function.
+        admin_money_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "023_admin_money.sql"
+        if admin_money_migration.exists():
+            await conn.execute(admin_money_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point

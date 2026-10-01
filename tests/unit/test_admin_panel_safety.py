@@ -670,5 +670,7 @@ def test_migration_is_additive_and_idempotent():
 
 def test_schema_version_bumped_and_migration_loaded():
     src = (ROOT / "database.py").read_text()
-    assert 'SCHEMA_VERSION = "39"' in src
+    import re
+    # Batch 3 bumped to 39; later batches bump further, so only require "at least 39".
+    assert int(re.search(r'^SCHEMA_VERSION = "(\d+)"', src, re.M).group(1)) >= 39
     assert "022_admin_safety.sql" in src
