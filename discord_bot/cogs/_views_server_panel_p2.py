@@ -59,6 +59,7 @@ class _GuardedModal(discord.ui.Modal):
 
 class CommunityView(ServerPanelView):
     title = "🌱 Community"
+    banner_keys = ("leveling",)
 
     @classmethod
     async def load(cls, interaction):
@@ -86,8 +87,8 @@ class CommunityView(ServerPanelView):
 
     def controls(self):
         return [
-            _btn("Leveling", P, self.nav_p2("LevelingView"), "📈"),
-            _btn("Level roles", P, self.nav_p2("LevelRolesView"), "🏅"),
+            _btn("Leveling", P, self.nav_p2("LevelingView"), "📈", disabled=self.off("leveling")),
+            _btn("Level roles", P, self.nav_p2("LevelRolesView"), "🏅", disabled=self.off("leveling")),
             _btn("Starboard", P, self.nav_p2("StarboardView"), "⭐"),
             _btn("Suggestions", P, self.nav_p2("SuggestionsView"), "💡"),
             _btn("Giveaways", P, self.nav_p2("GiveawaysView"), "🎁"),
@@ -100,6 +101,7 @@ class CommunityView(ServerPanelView):
 
 class LevelingView(ServerPanelView):
     title = "📈 Leveling"
+    switch_key = "leveling"
 
     @classmethod
     async def load(cls, interaction):
@@ -193,6 +195,7 @@ class LevelModal(_GuardedModal):
 
 class LevelRolesView(ServerPanelView):
     title = "🏅 Level roles"
+    switch_key = "leveling"
     pending_role = None      # discord.Role chosen, waiting for a level
     pending_remove = None    # level whose reward is waiting for Confirm
 

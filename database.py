@@ -139,7 +139,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "42"
+SCHEMA_VERSION = "43"
+# "42" -> "43" adds 025_server_panel_usage.sql (server_panel_usage) so the owner
+# Health screen can count servers that opened the Server Owners Panel — see
+# modules/server_panel.py. Same bump-or-it-never-runs trap as every entry below.
 # "41" -> "42" adds 024_server_panel.sql (server_panel_audit) for the Server
 # Owners Panel change history — see modules/server_panel.py. Same
 # bump-or-it-never-runs trap as every entry below.
@@ -4940,6 +4943,12 @@ class Database:
         server_panel_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "024_server_panel.sql"
         if server_panel_migration.exists():
             await conn.execute(server_panel_migration.read_text())
+
+        # Server Owners Panel (Phase 4): panel usage counts. See
+        # modules/server_panel.py. Additive/idempotent.
+        server_panel_usage_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "025_server_panel_usage.sql"
+        if server_panel_usage_migration.exists():
+            await conn.execute(server_panel_usage_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point

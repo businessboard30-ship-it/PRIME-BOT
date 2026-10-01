@@ -29,6 +29,7 @@ from discord_bot.cogs._views_admin_panel import PANEL_TIMEOUT, PanelView, _btn, 
 from discord_bot.cogs._views_admin_panel_controls import _clip, _denied, _fit, _ts
 from modules import admin_controls as ac
 from modules import admin_inspect as ai
+from modules import server_panel as sp
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class HealthView(PanelView):
         self.running = 0
         self.stopped: List[str] = []
         self.clones: Optional[List[dict]] = None
+        self.panel_usage: Optional[dict] = None
         self.loaded = False
         super().__init__(cog, owner_id, section)
 
@@ -78,6 +80,7 @@ class HealthView(PanelView):
         self.errors = ai.error_counts()
         self.db_ms = await ai.db_ping()
         self.clones = await ai.clone_heartbeats()
+        self.panel_usage = await sp.usage_stats()
         self.loaded = True
         self._build()
 
@@ -127,6 +130,12 @@ class HealthView(PanelView):
                              f"{ai.HEARTBEAT_STALE_MIN} min — " + "; ".join(names))
             else:
                 lines.append(f"**Clones:** ✅ all {len(self.clones)} checked in recently")
+        u = self.panel_usage
+        if u is None:
+            lines.append("**Server panel:** couldn't be checked")
+        else:
+            lines.append(f"**Server panel:** {u['opened']} server(s) opened it ({u['week']} in the last 7 days) · "
+                         f"{u['changed']} changed a setting")
         lines.append("-# A stopped loop or quiet clone usually means a crash; check the Log tail.")
         return lines
 
@@ -438,9 +447,27 @@ class ServerInspectView(PanelView):
             _btn("Confirm leave" if self.confirm == "leave" else "Force-leave", D, self._leave, "🚪",
                  disabled=self._main_guild() is None),
             _btn("Message owner", S, self._message, "✉️", disabled=not (row and row.get("owner_id"))),
+            _btn("Open server panel", S, self._open_panel, "🧭",
+                 disabled=self._main_guild() is None or row is None or row.get("clone_id") is not None),
             _btn("Back", S, self._back, "⬅️"),
         ]
         return items
+
+    async def _open_panel(self, i: discord.Interaction):
+        """Read-only view of the server's own panel (main bot only: clones are
+        separate processes, so their servers can't be opened from here)."""
+        guild, row = self._main_guild(), self.current_row()
+        if guild is None or row is None or row.get("clone_id") is not None:
+            await i.response.send_message(
+                "The main bot isn't in that server, so its panel can't be opened from here.", ephemeral=True)
+            return
+        audit(i, "inspect.server_panel", target=self.guild_id)
+        from discord_bot.cogs._views_server_panel import open_inspect
+
+        async def back(j: discord.Interaction):
+            await self.load()
+            await j.edit_original_response(view=self)
+        await open_inspect(i, guild, back)
 
     async def _pick(self, i: discord.Interaction):
         self.pick = i.data["values"][0]

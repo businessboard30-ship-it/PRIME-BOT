@@ -16,7 +16,7 @@ from typing import List
 import discord
 
 from modules import server_panel as sp
-from discord_bot.cogs._views_server_panel import ServerPanelView, _btn, clone_id_of, guard
+from discord_bot.cogs._views_server_panel import ServerPanelView, _btn, clone_id_of, guard, read_only_ok
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ class StatsView(ServerPanelView):
     def controls(self):
         return [_btn("Refresh", S, self._refresh, "🔄"), self.back_button()]
 
+    @read_only_ok
     async def _refresh(self, interaction: discord.Interaction):
         await interaction.response.defer()
         await self.reload(interaction)
@@ -83,6 +84,7 @@ class HistoryView(ServerPanelView):
     def controls(self):
         return [_btn("Refresh", S, self._refresh, "🔄"), self.back_button()]
 
+    @read_only_ok
     async def _refresh(self, interaction: discord.Interaction):
         await interaction.response.defer()
         await self.reload(interaction)
