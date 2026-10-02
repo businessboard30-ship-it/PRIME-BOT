@@ -21,6 +21,7 @@ import asyncio
 import io
 import logging
 import random
+import time
 
 import aiohttp
 import discord
@@ -59,7 +60,7 @@ from modules.level_card import (
 )
 from discord_bot.cogs._views_shared import ActionButton, NavCardView
 from discord_bot.cogs._views_leveling_leaderboard import build_leaderboard_view
-from config import DISCORD_CLONE_ADMIN_IDS
+from config import DISCORD_CLONE_ADMIN_IDS, TOPGG_VOTE_MULTIPLIER
 from discord_bot.cogs._views_leveling_wizard import (
     build_wizard_view as build_leveling_wizard_view,
     remember_wizard_message as remember_leveling_wizard_message,
@@ -77,6 +78,31 @@ XP_RATE_MULTIPLIERS = {"slow": 0.5, "default": 1.0, "fast": 1.5}
 # Maximum combined XP multiplier (xp_rate * per-user boost * server boost).
 # Prevents runaway stacking from making the leaderboard uncompetitive.
 MAX_XP_MULTIPLIER = 10.0
+
+# Top.gg vote boost lookup, cached in memory so on_message (every message) pays
+# at most one DB hit per user per TTL. A fresh vote can take up to this long to
+# start applying — fine for a 12h boost. Failed lookups (e.g. table not
+# migrated yet) count as "no boost" and never break XP.
+_VOTE_CACHE_TTL_SECONDS = 60.0
+_VOTE_CACHE_MAX = 5000
+_vote_cache: dict = {}
+
+
+async def _vote_boost_multiplier(user_id: int) -> float:
+    now = time.monotonic()
+    hit = _vote_cache.get(user_id)
+    if hit is not None and now - hit[1] < _VOTE_CACHE_TTL_SECONDS:
+        active = hit[0]
+    else:
+        try:
+            active = await db.has_active_topgg_vote(user_id)
+        except Exception:
+            logger.warning("[topgg] vote boost lookup failed for %s", user_id, exc_info=True)
+            active = False
+        if len(_vote_cache) >= _VOTE_CACHE_MAX:
+            _vote_cache.clear()
+        _vote_cache[user_id] = (active, now)
+    return TOPGG_VOTE_MULTIPLIER if active else 1.0
 
 
 def _require_perm(interaction: discord.Interaction, perm: str) -> bool:
@@ -277,8 +303,12 @@ class LevelingCog(GuildOnlyCog):
         # rows (expires_at > NOW()), so no separate expiry check is needed
         # here.
         boost = await db.get_active_xp_boost(message.guild.id, message.author.id, clone_id=clone_id)
-        if boost:
-            multiplier *= float(boost["multiplier"])
+        # Top.gg vote boost is global (all clones share one listing) and is
+        # NOT stacked with the paid boost: the larger of the two applies, so
+        # voting never makes a paid boost worse and never multiplies on top.
+        paid_mult = float(boost["multiplier"]) if boost else 1.0
+        vote_mult = await _vote_boost_multiplier(message.author.id)
+        multiplier *= max(paid_mult, vote_mult)
         guild_boost = await db.get_active_guild_xp_boost(message.guild.id, clone_id=clone_id)
         if guild_boost:
             multiplier *= float(guild_boost["multiplier"])

@@ -52,6 +52,11 @@ Set these in Railway (or your host)'s environment settings — there's no
 - `PAYSTACK_SECRET_KEY` / `PAYSTACK_PUBLIC_KEY` — payments (premium, clone registration fees, boosts)
 - `PUBLIC_BASE_URL` — base URL of your deployed API server, used to build OAuth redirect/webhook URLs
 
+**Top.gg vote boost (optional):**
+- `TOPGG_WEBHOOK_SECRET` — v1 `whs_...` secret (or the v0 Authorization string) from Top.gg → your bot → Webhooks; webhook URL is `https://<api-host>/api/topgg_webhook`
+- `TOPGG_BOT_ID` — your bot's Top.gg ID; enables the "Vote for us" line on the leaderboard (or set `TOPGG_VOTE_URL` directly)
+- `TOPGG_VOTE_MULTIPLIER` (default `1.5`) / `TOPGG_VOTE_HOURS` (default `12`) — vote reward; applies in every server and clone, and never stacks with a paid boost (the larger one wins)
+
 **Optional:**
 - `DISCORD_DEV_GUILD_ID` — set during development for near-instant slash-command sync to one guild; leave unset for global sync (~1hr propagation)
 - `DISCORD_OAUTH_CLIENT_ID` / `DISCORD_OAUTH_CLIENT_SECRET` — only needed for the Discord-login/dashboard OAuth flow (`api/discord_login_oauth.py`), separate from bot-invite OAuth

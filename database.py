@@ -139,7 +139,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "46"
+SCHEMA_VERSION = "47"
+# "46" -> "47" adds topgg_votes (global Top.gg vote XP boost) via
+# 026_topgg_votes.sql — see api/topgg_webhook.py. Same bump-or-it-never-runs trap
+# as every entry below.
 # "45" -> "46" adds discord_antiraid_config (join-spike detection, lockdown, joiner
 # action, alert role/log channel) — see discord_bot/cogs/antiraid.py. Same
 # bump-or-it-never-runs trap as every entry below.
@@ -5027,6 +5030,12 @@ class Database:
         if server_panel_usage_migration.exists():
             await conn.execute(server_panel_usage_migration.read_text())
 
+        # Top.gg vote XP boost — topgg_votes (global, one row per voter). See
+        # api/topgg_webhook.py. Additive/idempotent like 001-025.
+        topgg_votes_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "026_topgg_votes.sql"
+        if topgg_votes_migration.exists():
+            await conn.execute(topgg_votes_migration.read_text())
+
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
         # is a user can pull a card in Server A and sell it to someone in
@@ -9527,6 +9536,54 @@ class Database:
                 user_ids
             )
             return {r["user_id"]: float(r["multiplier"]) for r in rows}
+
+    async def record_topgg_vote(self, user_id: int, hours: float,
+                                 vote_id: Optional[str] = None) -> Optional[Dict]:
+        """Records a Top.gg vote: the voter's boost runs `hours` from NOW. A
+        repeat vote while still boosted REFRESHES the window (never stacks).
+        Returns the row, or None when this exact vote_id was already recorded
+        (Top.gg retries failed deliveries, so the same vote can arrive twice)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO topgg_votes (user_id, expires_at, last_vote_at, vote_count, last_vote_id)
+                VALUES ($1, NOW() + ($2::double precision * INTERVAL '1 hour'), NOW(), 1, $3::text)
+                ON CONFLICT (user_id) DO UPDATE
+                    SET expires_at = NOW() + ($2::double precision * INTERVAL '1 hour'),
+                        last_vote_at = NOW(),
+                        vote_count = topgg_votes.vote_count + 1,
+                        last_vote_id = $3::text
+                    WHERE $3::text IS NULL OR topgg_votes.last_vote_id IS DISTINCT FROM $3::text
+                RETURNING *
+                """,
+                user_id, float(hours), vote_id
+            )
+            return dict(row) if row else None
+
+    async def has_active_topgg_vote(self, user_id: int) -> bool:
+        """True while the user's last Top.gg vote boost hasn't expired. Called
+        from leveling.py's on_message (behind a short in-memory cache)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT 1 FROM topgg_votes WHERE user_id = $1 AND expires_at > NOW()",
+                user_id
+            ))
+
+    async def get_active_topgg_voters(self, user_ids: list) -> set:
+        """Bulk version for one leaderboard page: which of user_ids currently
+        have an active vote boost."""
+        if not user_ids:
+            return set()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id FROM topgg_votes "
+                "WHERE user_id = ANY($1::bigint[]) AND expires_at > NOW()",
+                user_ids
+            )
+            return {r["user_id"] for r in rows}
 
     async def get_leader_link(self, guild_id: int, user_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
         pool = await get_pool()

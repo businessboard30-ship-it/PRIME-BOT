@@ -391,6 +391,20 @@ HARDCORE_ROAST_FEE_GHS = 15  # ~$1 in GHS
 XP_BOOST_MULTIPLIER = 2.0
 XP_BOOST_DURATION_DAYS = 14
 
+# Top.gg vote boost. Every clone shares ONE Top.gg listing (the main bot's), so
+# a vote boosts the voter in every server. Deliberately weaker/shorter than the
+# paid XP_BOOST_* above; leveling.py applies max(paid, vote), never the product.
+# TOPGG_WEBHOOK_SECRET is the v1 "whs_..." secret, or the v0 Authorization
+# string — api/topgg_webhook.py accepts either. The vote link on the
+# leaderboard stays hidden until TOPGG_BOT_ID (or TOPGG_VOTE_URL) is set.
+TOPGG_WEBHOOK_SECRET = os.getenv("TOPGG_WEBHOOK_SECRET", "")
+TOPGG_BOT_ID = os.getenv("TOPGG_BOT_ID", "1539561247299604610")  # public application ID
+TOPGG_VOTE_URL = os.getenv("TOPGG_VOTE_URL") or (
+    f"https://top.gg/bot/{TOPGG_BOT_ID}/vote" if TOPGG_BOT_ID else ""
+)
+TOPGG_VOTE_MULTIPLIER = float(os.getenv("TOPGG_VOTE_MULTIPLIER", "1.5"))
+TOPGG_VOTE_HOURS = float(os.getenv("TOPGG_VOTE_HOURS", "12"))
+
 # XP boost bundles: N single boosts for a discounted price. Same multiplier as
 # a single boost (XP_BOOST_MULTIPLIER) — a bundle only adds TIME (boosts x
 # XP_BOOST_DURATION_DAYS), and stacks onto any boost time the member already
