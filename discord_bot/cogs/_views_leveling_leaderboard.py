@@ -614,9 +614,9 @@ class LeaderboardClansButton(discord.ui.DynamicItem[discord.ui.Button],
 
 class LeaderboardPingButton(discord.ui.DynamicItem[discord.ui.Button],
                             template=r"^lvllb_ping:(\d+):(-|\d+)$"):
-    """Lets each member switch off @pings from level-up announcements in this
-    server (and back on). Replies ephemerally with the new state, so the
-    shared leaderboard message never changes."""
+    """Opens an ephemeral panel showing the member's current level-up ping
+    setting (ON/OFF) with a button to flip it, so the shared leaderboard
+    message never changes and checking never toggles."""
     def __init__(self, guild_id: int, clone_id):
         self.guild_id = guild_id
         self.clone_id = clone_id
@@ -631,14 +631,41 @@ class LeaderboardPingButton(discord.ui.DynamicItem[discord.ui.Button],
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        try:
+            muted = interaction.user.id in await db.get_level_ping_muted(self.guild_id, [interaction.user.id])
+        except Exception:
+            logger.exception("[leveling] ping status lookup failed")
+            await interaction.followup.send("Couldn't check your ping setting right now. Try again in a moment.", ephemeral=True)
+            return
+        view = _PingStatusView(self.guild_id, muted)
+        await interaction.followup.send(_ping_status_text(muted), view=view, ephemeral=True)
+
+
+def _ping_status_text(muted: bool) -> str:
+    if muted:
+        return ("🔕 **Level-up pings are currently OFF.**\n"
+                "Level-up announcements still appear, but I won't @ping you.")
+    return ("🔔 **Level-up pings are currently ON.**\n"
+            "I'll @ping you when you level up.")
+
+
+class _PingStatusView(discord.ui.View):
+    """Ephemeral, non-persistent panel opened by LeaderboardPingButton. Shows the
+    member's current state and lets them flip it, so checking never changes it."""
+    def __init__(self, guild_id: int, muted: bool):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+        self.toggle_btn.label = "Turn pings ON" if muted else "Turn pings OFF"
+        self.toggle_btn.emoji = "🔔" if muted else "🔕"
+        self.toggle_btn.style = discord.ButtonStyle.success if muted else discord.ButtonStyle.danger
+
+    @discord.ui.button(label="Toggle", style=discord.ButtonStyle.secondary)
+    async def toggle_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         muted = await db.toggle_level_ping_optout(self.guild_id, interaction.user.id)
-        if muted:
-            text = ("🔕 **Level-up pings are OFF.** Level-up announcements will still appear, "
-                    "but I won't @ping you. Tap the button again to turn pings back on.")
-        else:
-            text = ("🔔 **Level-up pings are ON.** I'll @ping you when you level up. "
-                    "Tap the button again to turn them off.")
-        await interaction.followup.send(text, ephemeral=True)
+        self.toggle_btn.label = "Turn pings ON" if muted else "Turn pings OFF"
+        self.toggle_btn.emoji = "🔔" if muted else "🔕"
+        self.toggle_btn.style = discord.ButtonStyle.success if muted else discord.ButtonStyle.danger
+        await interaction.response.edit_message(content=_ping_status_text(muted), view=self)
 
 
 class ClanPickSelect(discord.ui.Select):
