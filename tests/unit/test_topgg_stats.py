@@ -48,8 +48,10 @@ def test_cog_posts_metrics_and_commands_to_topgg(monkeypatch):
         bot.tree.add_command(app_commands.Command(name="admin", description="[Owner] x",
                                                   callback=_cb))
         monkeypatch.setattr(commands.Bot, "guilds", property(lambda self: [object()] * 7))
+        monkeypatch.setattr(config, "TOPGG_BOT_ID", "555")
+        monkeypatch.setattr(commands.Bot, "application_id", property(lambda self: 555))
         cog = TopggStatsCog(bot)
-        assert cog.enabled
+        assert cog.enabled and cog._is_listed_bot()
         cog._stats_loop.cancel()  # we drive it by hand; the loop waits for gateway-ready
         assert await cog.post_metrics()
         assert await cog.push_commands()
@@ -63,13 +65,23 @@ def test_cog_posts_metrics_and_commands_to_topgg(monkeypatch):
     assert [c["name"] for c in c_body] == ["ping"]  # admin hidden
 
 
-def test_clone_and_missing_token_are_disabled(monkeypatch):
+def test_only_the_listed_bot_posts_and_missing_token_is_disabled(monkeypatch):
     async def run():
         bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
         monkeypatch.setattr(config, "TOPGG_TOKEN", "tok")
-        bot.clone_id = 8
-        assert not TopggStatsCog(bot).enabled          # clones never post
+        monkeypatch.setattr(config, "TOPGG_BOT_ID", "555")
+        # main bot with a different application id must NOT post
         bot.clone_id = None
+        monkeypatch.setattr(commands.Bot, "application_id", property(lambda self: 111))
+        cog = TopggStatsCog(bot)
+        cog._stats_loop.cancel()
+        assert not cog._is_listed_bot()
+        # a clone whose application id matches the listing IS the poster
+        bot.clone_id = 8
+        monkeypatch.setattr(commands.Bot, "application_id", property(lambda self: 555))
+        cog = TopggStatsCog(bot)
+        cog._stats_loop.cancel()
+        assert cog._is_listed_bot()
         monkeypatch.setattr(config, "TOPGG_TOKEN", "")
         assert not TopggStatsCog(bot).enabled          # no token -> no-op
     asyncio.run(run())
