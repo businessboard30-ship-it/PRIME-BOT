@@ -194,7 +194,8 @@ class ResetView(ServerPanelView):
             return
         await interaction.response.defer()
         try:
-            await sp.reset_feature(interaction.guild_id, self.clone_id, interaction.user.id, key)
+            await sp.reset_feature(interaction.guild_id, self.clone_id, interaction.user.id, key,
+                                   bot=interaction.client)
             self.notice = f"✅ {sp.RESET_GROUPS[key]} is back to defaults."
         except Exception:
             logger.exception("[server-panel] reset %s failed", key)

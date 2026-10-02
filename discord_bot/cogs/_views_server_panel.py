@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, List, Optional
 
 import discord
@@ -605,12 +606,18 @@ class ModerationView(ServerPanelView):
                 return await db.get_honeypot_stats(interaction.guild_id, cid)
             except Exception:
                 return {}
-        am, hp, stats = await asyncio.gather(
+        async def _antiraid():
+            try:
+                return await db.get_antiraid_config(interaction.guild_id, cid)
+            except Exception:
+                return {}
+        am, hp, stats, ar = await asyncio.gather(
             db.get_automod_config(interaction.guild_id, cid),
             db.get_honeypot_config(interaction.guild_id, cid),
             _stats(),
+            _antiraid(),
         )
-        return {"am": am, "hp": hp, "hp_stats": stats}
+        return {"am": am, "hp": hp, "hp_stats": stats, "ar": ar}
 
     def body(self):
         am, hp = self.data.get("am", {}), self.data.get("hp", {})
@@ -623,6 +630,13 @@ class ModerationView(ServerPanelView):
             f"Mod-log channel: {_chan(None, am.get('log_channel_id'))}",
             f"Honeypot: {_onoff(hp.get('channel_id') and hp.get('enabled'))} · {_chan(None, hp.get('channel_id'))}",
         ]
+        ar = self.data.get("ar") or {}
+        if ar.get("active_until") and ar["active_until"] > datetime.now(timezone.utc):
+            lines.append(f"Anti-raid: 🚨 **RAID MODE ACTIVE** — ends <t:{int(ar['active_until'].timestamp())}:R>")
+        else:
+            lines.append(f"Anti-raid: {_onoff(ar.get('enabled'))}"
+                         + (f" · {ar.get('sensitivity', 'balanced')} · {ar.get('response', 'lockdown')}"
+                            if ar.get("enabled") else ""))
         if hp.get("channel_id"):
             st = self.data.get("hp_stats") or {}
             lines.append(f"Honeypot catches: {st.get('day', 0)} today · {st.get('week', 0)} this week · "
@@ -661,6 +675,8 @@ class ModerationView(ServerPanelView):
                         discord.ButtonStyle.primary, self._open_honeypot, "🍯"))
         if hp.get("channel_id"):
             out.append(_btn("Test honeypot", discord.ButtonStyle.success, self._test_honeypot, "🧪"))
+        out.append(_btn("Anti-raid" if not (self.data.get("ar") or {}).get("enabled") else "Anti-raid settings",
+                        discord.ButtonStyle.primary, self._open_antiraid, "🛡️"))
         out.append(self.back_button())
         return out
 
@@ -694,6 +710,12 @@ class ModerationView(ServerPanelView):
         from discord_bot.cogs.honeypot import open_honeypot
         await interaction.response.defer(ephemeral=True)
         await open_honeypot(interaction, interaction.guild, self.clone_id)
+
+    async def _open_antiraid(self, interaction: discord.Interaction):
+        """The anti-raid setup wizard (same screen as /antiraid)."""
+        from discord_bot.cogs.antiraid import open_antiraid
+        await interaction.response.defer(ephemeral=True)
+        await open_antiraid(interaction, interaction.guild, self.clone_id)
 
     async def _pick_alert_role(self, interaction: discord.Interaction):
         select = next(c for c in self.walk_children() if isinstance(c, discord.ui.RoleSelect))

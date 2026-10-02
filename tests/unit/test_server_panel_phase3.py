@@ -42,6 +42,8 @@ def env(monkeypatch):
         "announce_channel_id": 30, "xp_rate": "fast", "card_style": "card", "leaderboard_autopost_channel_id": 99})
     db.set_leveling_config = AsyncMock()
     db.delete_honeypot_config = AsyncMock()
+    db.get_antiraid_config = AsyncMock(return_value={"enabled": True, "active_until": None})
+    db.delete_antiraid_config = AsyncMock()
     db.get_welcome_extras = AsyncMock(return_value={
         "goodbye_enabled": False, "goodbye_channel_id": None,
         "goodbye_message": "{name} has left {guild}. We are now {count} members.",
@@ -214,6 +216,7 @@ def test_reset_covers_every_group_and_honeypot_deletes(env):
         for key in env.sp.RESET_GROUPS:
             await env.sp.reset_feature(GUILD_ID, CLONE, OWNER, key)
         env.db.delete_honeypot_config.assert_awaited_once_with(GUILD_ID, clone_id=CLONE)
+        env.db.delete_antiraid_config.assert_awaited_once_with(GUILD_ID, clone_id=CLONE)
         env.db.set_welcome_config.assert_awaited()
         with pytest.raises(ValueError):
             await env.sp.reset_feature(GUILD_ID, CLONE, OWNER, "economy")
