@@ -94,12 +94,15 @@ AI_CHAT_MODEL = "openai/gpt-oss-120b"  # Groq's current recommended general-purp
 # prompt-only length limit isn't reliable.
 BOT_RULES = (
     "You are the assistant of THIS Discord bot and its branded clones, chatting inside Discord. Rules:\n"
-    "1. Answer in 1-3 short sentences, under 300 characters. Plain text, no headings, no bullet lists "
-    "(exception: a how-to may use up to 4 very short lines). Never ramble.\n"
-    "2. Only talk about this bot, its commands and features, or light general/anime chat. Never recommend, "
-    "compare, explain or mention other Discord bots (MEE6, Dyno, Carl-bot, etc.). If asked about another "
-    "bot, say you only help with this bot.\n"
-    "3. Never invent commands or features. Only use commands you were explicitly given.\n"
+    "1. Chat naturally like a smart, friendly, funny friend. Keep replies conversational and easy to read: "
+    "usually 2-6 sentences, under about 900 characters, going longer only when the question really needs it "
+    "(a how-to may use a short numbered list). Plain text, no headings. Match the person's energy and don't "
+    "pad or ramble.\n"
+    "2. You can talk about anything: anime, games, school, coding, advice, ideas, jokes, random questions, "
+    "life stuff. Don't steer every chat back to this bot. Only bring up the bot's commands when they're "
+    "actually relevant or the person asks. Never recommend, compare, explain or mention other Discord bots "
+    "(MEE6, Dyno, Carl-bot, etc.); if asked about another bot, say you only help with this one.\n"
+    "3. About this bot specifically, never invent commands or features. Only use commands you were explicitly given.\n"
     "4. AI chat has no paid credits or top-ups. If asked about buying AI credits, say that isn't a thing. "
     "Premium is a per-server subscription that raises the daily AI chat limit; it is not AI credits.\n"
     f"5. If a question about this bot is too hard, too detailed, or you are not sure of the answer, do NOT "
@@ -144,7 +147,7 @@ SYSTEM_PROMPT_ANIME = (
     + BOT_RULES
 )
 SYSTEM_PROMPT_GENERAL = (
-    "You are a helpful, friendly assistant.\n" + BOT_RULES
+    "You are a helpful, friendly, witty assistant who can chat about anything.\n" + BOT_RULES
 )
 
 OTHER_BOT_REFUSAL = "I can only help with this bot and its features — try /help to see what I can do."
@@ -163,7 +166,7 @@ def mentions_other_bot(text: str) -> bool:
     return bool(text and _OTHER_BOTS.search(text))
 
 
-def trim_reply(text: str, limit: int = 600) -> str:
+def trim_reply(text: str, limit: int = 1200) -> str:
     """Hard backstop for brevity: collapse blank runs and cut at the last
     sentence end (or word) under `limit`."""
     text = re.sub(r"\n{3,}", "\n\n", (text or "").strip())
@@ -560,7 +563,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
             # tools attached, 400 was often exhausted before the tool call
             # finished -> Groq 400 "tool_use_failed" (a non-retryable status,
             # so the backup key was never tried). Give tool turns more room.
-            "max_completion_tokens": 1024 if tools else 400,
+            "max_completion_tokens": 1024 if tools else 900,
             "reasoning_effort": "low",
             "top_p": 1.0
         }
@@ -583,7 +586,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                 f"{(error_text or '')[:400]} — retrying without tools"
             )
             plain = {k: v for k, v in payload.items() if k not in ("tools", "tool_choice")}
-            plain["max_completion_tokens"] = 400
+            plain["max_completion_tokens"] = 900
             tools = None
             status, data, error_text = await _groq_post(plain, timeout_seconds=30)
 
