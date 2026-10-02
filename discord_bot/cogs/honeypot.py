@@ -595,10 +595,11 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: 
     alert_row.add_item(HoneypotAlertRoleSelect(guild.id, clone_id))
     container.add_item(alert_row)
 
+    nav_row = discord.ui.ActionRow()   # own row so the existing buttons below never move
     if cfg.get("alert_role_id"):
-        clear_row = discord.ui.ActionRow()
-        clear_row.add_item(HoneypotButton("clearalert", guild.id, clone_id))
-        container.add_item(clear_row)
+        nav_row.add_item(HoneypotButton("clearalert", guild.id, clone_id))
+    nav_row.add_item(HoneypotButton("panel", guild.id, clone_id))
+    container.add_item(nav_row)
 
     btn_row = discord.ui.ActionRow()
     paused = not cfg.get("enabled")
@@ -808,6 +809,7 @@ class HoneypotAlertRoleSelect(discord.ui.DynamicItem[discord.ui.RoleSelect], tem
 
 
 _BUTTONS = {
+    "panel":     ("Open server panel", discord.ButtonStyle.primary, "🛠️"),
     "test":      ("Send test alert", discord.ButtonStyle.success, "🧪"),
     "clearalert": ("Clear alert role", discord.ButtonStyle.secondary, "🔕"),
     "pause":     ("Pause", discord.ButtonStyle.secondary, "⏸️"),
@@ -819,7 +821,7 @@ _BUTTONS = {
 }
 
 
-class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("pause|repost|remove|removeyes|removeno|upgrade|test|clearalert")):
+class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("pause|repost|remove|removeyes|removeno|upgrade|test|clearalert|panel")):
     def __init__(self, kind: str, guild_id: int, clone_id, paused: bool = False):
         self.kind, self.guild_id, self.clone_id = kind, guild_id, clone_id
         label, style, emoji = _BUTTONS[kind]
@@ -846,6 +848,14 @@ class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("p
             ok, msg = await send_test_alert(interaction.client, guild, interaction.user)
             await interaction.followup.send(("✅ " if ok else "⚠️ ") + msg, ephemeral=True,
                                             allowed_mentions=discord.AllowedMentions.none())
+
+        elif self.kind == "panel":
+            # Same screen as /serversetup. A DM (join-DM honeypot button) has no server to open it in.
+            if interaction.guild is None or interaction.guild.id != guild.id:
+                await _reply(interaction, "Open your server and run `/serversetup` there to open the panel.")
+                return
+            from discord_bot.cogs._views_server_panel import open_home
+            await open_home(interaction)
 
         elif self.kind == "clearalert":
             await interaction.response.defer()

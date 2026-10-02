@@ -293,6 +293,11 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             # AFTER Partnership so Connect/Advertise/Partnership keep their
             # positions.
             bottom_children.append(_HoneypotButton(guild_id, clone_id))
+            # Open server panel — first page only, appended AFTER Honeypot so
+            # Connect/Advertise/Partnership/Honeypot all keep their positions
+            # (5th and last slot a row allows). Same button the /start pointer uses.
+            from discord_bot.cogs._views_quickstart_pointer import OpenPanelButton
+            bottom_children.append(OpenPanelButton(guild_id, clone_id))
 
         # Manual + support are masked text links (not buttons), so the row below
         # only holds the action buttons (Connect / Advertise).
