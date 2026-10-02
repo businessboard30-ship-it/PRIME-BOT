@@ -406,6 +406,7 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     boost_row = discord.ui.ActionRow()
     boost_row.add_item(BoostXPButton(guild.id, clone_id))
     boost_row.add_item(LeaderboardClansButton(guild.id, clone_id))
+    boost_row.add_item(LeaderboardPingButton(guild.id, clone_id))
     container.add_item(boost_row)
     container.add_item(build_boost_wallet_row(guild.id, clone_id))
 
@@ -611,6 +612,35 @@ class LeaderboardClansButton(discord.ui.DynamicItem[discord.ui.Button],
         await interaction.response.send_message("Pick a clan to view its members:", view=view, ephemeral=True)
 
 
+class LeaderboardPingButton(discord.ui.DynamicItem[discord.ui.Button],
+                            template=r"^lvllb_ping:(\d+):(-|\d+)$"):
+    """Lets each member switch off @pings from level-up announcements in this
+    server (and back on). Replies ephemerally with the new state, so the
+    shared leaderboard message never changes."""
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Level-up pings", emoji="🔔", style=discord.ButtonStyle.secondary,
+            custom_id=f"lvllb_ping:{guild_id}:{_clone_part(clone_id)}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)), _clone_from(match.group(2)))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        muted = await db.toggle_level_ping_optout(self.guild_id, interaction.user.id)
+        if muted:
+            text = ("🔕 **Level-up pings are OFF.** Level-up announcements will still appear, "
+                    "but I won't @ping you. Tap the button again to turn pings back on.")
+        else:
+            text = ("🔔 **Level-up pings are ON.** I'll @ping you when you level up. "
+                    "Tap the button again to turn them off.")
+        await interaction.followup.send(text, ephemeral=True)
+
+
 class ClanPickSelect(discord.ui.Select):
     """One-off (non-persistent) select backing the Clans button's ephemeral
     picker — see LeaderboardClansButton for why this doesn't need to be a
@@ -658,4 +688,4 @@ class _LeaderboardGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
 
 
 DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton,
-                 LeaderboardClansButton, _LeaderboardGoPremiumButton)
+                 LeaderboardClansButton, LeaderboardPingButton, _LeaderboardGoPremiumButton)

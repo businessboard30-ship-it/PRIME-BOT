@@ -2239,6 +2239,19 @@ class Database:
             ON discord_xp (guild_id, clone_id, total_xp DESC)
         """)
 
+        # Members who opted out of being @pinged by level-up announcements
+        # (level-up card, clan/godhood/chief messages). Per server, shared by
+        # the main bot and its clones in that server — the user's wish is
+        # "don't ping me here", not per-bot.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS leveling_ping_optout (
+                guild_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (guild_id, user_id)
+            )
+        """)
+
         # Level-up role rewards. Rewards STACK (a member keeps every role
         # for every level they've passed) rather than replacing the
         # previous one — simpler to reason about for both admins configuring
@@ -10713,6 +10726,34 @@ class Database:
             raise ValueError(f"mode must be 'split', 'auto', 'gumroad' or 'inherit', got {mode!r}")
         key = f"payment_mode:{clone_id if clone_id is not None else 'main'}"
         await self.set_global_setting(key, mode)
+
+    async def toggle_level_ping_optout(self, guild_id: int, user_id: int) -> bool:
+        """Flips the member's level-up ping opt-out. Returns True if they are
+        now opted OUT (won't be pinged), False if pings are back on."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                deleted = await conn.fetchval(
+                    "DELETE FROM leveling_ping_optout WHERE guild_id = $1 AND user_id = $2 RETURNING 1",
+                    guild_id, user_id)
+                if deleted:
+                    return False
+                await conn.execute(
+                    "INSERT INTO leveling_ping_optout (guild_id, user_id) VALUES ($1, $2) "
+                    "ON CONFLICT DO NOTHING", guild_id, user_id)
+                return True
+
+    async def get_level_ping_muted(self, guild_id: int, user_ids: list) -> set:
+        """Subset of user_ids that opted out of level-up pings in this server."""
+        ids = [int(u) for u in user_ids if u is not None]
+        if not ids:
+            return set()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id FROM leveling_ping_optout WHERE guild_id = $1 AND user_id = ANY($2::bigint[])",
+                guild_id, ids)
+            return {r["user_id"] for r in rows}
 
     async def get_welcome_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         """Raw config plus the Premium overlay: while the guild's Premium is

@@ -386,6 +386,19 @@ class LevelingCog(GuildOnlyCog):
             # definition of that trial type.
             await self._maybe_advance_godhood(announce_channel, message.author, new_level, clone_id=clone_id)
 
+    async def _mentions_for(self, guild_id: int, *user_ids) -> discord.AllowedMentions:
+        """AllowedMentions that ping only members who haven't opted out via the
+        leaderboard's 🔔 Level-up pings button. The @mention text still shows;
+        it just doesn't notify them. Falls back to normal pings if the lookup fails."""
+        try:
+            muted = await db.get_level_ping_muted(guild_id, list(user_ids))
+        except Exception:
+            logger.exception("[leveling] ping opt-out lookup failed")
+            muted = set()
+        return discord.AllowedMentions(
+            users=[discord.Object(id=u) for u in user_ids if u is not None and u not in muted],
+            roles=False, everyone=False)
+
     async def _announce_chief_change(self, channel, guild: discord.Guild, change: dict, clone_id=None):
         """Plain mention, no @everyone — announces both the new chief and
         whoever they just displaced (if that seat was previously held).
@@ -398,11 +411,12 @@ class LevelingCog(GuildOnlyCog):
         new_id = change["new_user_id"]
         old_id = change["old_user_id"]
         try:
+            am = await self._mentions_for(guild.id, new_id, old_id)
             if new_id is not None:
-                await channel.send(f"👑 <@{new_id}> is now **Chief of {clan_slug}**!")
+                await channel.send(f"👑 <@{new_id}> is now **Chief of {clan_slug}**!", allowed_mentions=am)
             if old_id is not None and old_id != new_id:
                 gif = random.choice(CHIEF_LOST_SEAT_GIFS)
-                await channel.send(f"<@{old_id}> has lost the **{clan_slug}** chief seat.\n{gif}")
+                await channel.send(f"<@{old_id}> has lost the **{clan_slug}** chief seat.\n{gif}", allowed_mentions=am)
         except discord.Forbidden:
             pass
         except Exception as e:
@@ -421,9 +435,10 @@ class LevelingCog(GuildOnlyCog):
         only on /leaderboard, so level-up cards don't carry it (or the
         discord_xp.boost_pitched bookkeeping/DB write that used to go with
         it — one less write per level-up)."""
+        am = await self._mentions_for(member.guild.id, member.id)
         if card_style == "text":
             try:
-                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!")
+                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", allowed_mentions=am)
             except discord.Forbidden:
                 pass
             return
@@ -467,13 +482,13 @@ class LevelingCog(GuildOnlyCog):
                     p["current_xp_in_level"], p["xp_needed_for_next_level"],
                 )
             file = discord.File(fp=io.BytesIO(card_bytes), filename="levelup.png")
-            await channel.send(content=f"🎉 {member.mention} leveled up!", file=file)
+            await channel.send(content=f"🎉 {member.mention} leveled up!", file=file, allowed_mentions=am)
         except discord.Forbidden:
             pass
         except Exception as e:
             logger.error(f"[v0] Failed to render/send level-up card for {member.id}: {e}")
             try:
-                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!")
+                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", allowed_mentions=am)
             except discord.Forbidden:
                 pass
 
@@ -516,7 +531,8 @@ class LevelingCog(GuildOnlyCog):
                 f"{member.mention} Your clan, **{announced_clan}**, is proud of you. "
                 f"Level up more to become a god. ⚡"
             )
-            await channel.send(content=caption, file=file)
+            am = await self._mentions_for(member.guild.id, member.id)
+            await channel.send(content=caption, file=file, allowed_mentions=am)
         except discord.Forbidden:
             pass
         except Exception as e:
@@ -622,6 +638,7 @@ class LevelingCog(GuildOnlyCog):
                     f"you have {godhood_cards.GODHOOD_TRIAL_DEADLINE_DAYS} days."
                 ),
                 file=file,
+                allowed_mentions=await self._mentions_for(member.guild.id, member.id),
             )
         except discord.Forbidden:
             pass
@@ -642,6 +659,7 @@ class LevelingCog(GuildOnlyCog):
                     f"you have {godhood_cards.GODHOOD_TRIAL_DEADLINE_DAYS} days."
                 ),
                 file=file,
+                allowed_mentions=await self._mentions_for(member.guild.id, member.id),
             )
         except discord.Forbidden:
             pass
@@ -660,6 +678,7 @@ class LevelingCog(GuildOnlyCog):
                     f"**Clan Chief**! A permanent seat on the Hall of Fame is theirs. ⚡"
                 ),
                 file=file,
+                allowed_mentions=await self._mentions_for(member.guild.id, member.id),
             )
         except discord.Forbidden:
             pass
@@ -873,7 +892,8 @@ class LevelingCog(GuildOnlyCog):
             label = godhood_cards.get_godhood_label(trial_row["god_filename"])
             await channel.send(
                 f"💀 <@{trial_row['user_id']}> failed to complete their trial of **{label}** in time. "
-                f"The gauntlet ends here — a new god may choose them again once they reach a higher level tier."
+                f"The gauntlet ends here — a new god may choose them again once they reach a higher level tier.",
+                allowed_mentions=await self._mentions_for(guild.id, trial_row["user_id"]),
             )
         except discord.Forbidden:
             pass
