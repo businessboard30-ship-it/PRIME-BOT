@@ -139,7 +139,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "45"
+SCHEMA_VERSION = "46"
+# "45" -> "46" adds discord_antiraid_config (join-spike detection, lockdown, joiner
+# action, alert role/log channel) — see discord_bot/cogs/antiraid.py. Same
+# bump-or-it-never-runs trap as every entry below.
 # "44" -> "45" adds discord_honeypot_catches (per-catch log for the stats screen)
 # and discord_honeypot_config.alert_role_id (staff ping) — see
 # discord_bot/cogs/honeypot.py. Same bump-or-it-never-runs trap as every entry below.
@@ -2657,6 +2660,35 @@ class Database:
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS discord_honeypot_catches_guild_idx
             ON discord_honeypot_catches (guild_id, caught_at DESC)
+        """)
+        # --- Anti-raid: join-spike detection + temporary lockdown ----------------
+        # One row per guild(+clone). A raid is `join_threshold` joins inside
+        # `join_window` seconds (picked via the `sensitivity` preset). While one
+        # is active, active_until is in the future and prev_verification holds
+        # the server's verification level from before the lockdown so it can be
+        # put back. Read/written by discord_bot/cogs/antiraid.py and the
+        # Server Owners Panel (Moderation screen).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_antiraid_config (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                sensitivity TEXT NOT NULL DEFAULT 'balanced',
+                response TEXT NOT NULL DEFAULT 'lockdown',
+                joiner_action TEXT NOT NULL DEFAULT 'none',
+                lockdown_minutes INTEGER NOT NULL DEFAULT 15,
+                log_channel_id BIGINT,
+                alert_role_id BIGINT,
+                active_until TIMESTAMPTZ,
+                prev_verification INTEGER,
+                triggered_count INTEGER NOT NULL DEFAULT 0,
+                last_triggered_at TIMESTAMPTZ,
+                created_by BIGINT
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_antiraid_config_guild_clone_key
+            ON discord_antiraid_config (guild_id, COALESCE(clone_id, -1))
         """)
         # --- Welcome extras: goodbye message + auto-roles ------------------------
         # One row per guild(+clone). Kept out of discord_welcome_config so the
@@ -9933,6 +9965,83 @@ class Database:
         async with pool.acquire() as conn:
             await conn.execute(
                 "DELETE FROM discord_honeypot_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+
+    _ANTIRAID_FIELDS = (
+        "enabled", "sensitivity", "response", "joiner_action", "lockdown_minutes",
+        "log_channel_id", "alert_role_id", "active_until", "prev_verification", "created_by",
+    )
+
+    async def get_antiraid_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_antiraid_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+            if row:
+                return dict(row)
+            return {
+                "guild_id": guild_id, "clone_id": clone_id, "enabled": False,
+                "sensitivity": "balanced", "response": "lockdown", "joiner_action": "none",
+                "lockdown_minutes": 15, "log_channel_id": None, "alert_role_id": None,
+                "active_until": None, "prev_verification": None, "triggered_count": 0,
+                "last_triggered_at": None, "created_by": None,
+            }
+
+    async def set_antiraid_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        """Upsert-merge: any key in _ANTIRAID_FIELDS that is omitted keeps its
+        current value; pass None explicitly to clear a nullable one."""
+        current = await self.get_antiraid_config(guild_id, clone_id=clone_id)
+        merged = {k: fields.get(k, current.get(k)) for k in self._ANTIRAID_FIELDS}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_antiraid_config
+                    (guild_id, clone_id, enabled, sensitivity, response, joiner_action,
+                     lockdown_minutes, log_channel_id, alert_role_id, active_until,
+                     prev_verification, created_by)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET enabled = $3, sensitivity = $4, response = $5, joiner_action = $6,
+                        lockdown_minutes = $7, log_channel_id = $8, alert_role_id = $9,
+                        active_until = $10, prev_verification = $11, created_by = $12
+                RETURNING *
+                """,
+                guild_id, clone_id, merged["enabled"], merged["sensitivity"], merged["response"],
+                merged["joiner_action"], merged["lockdown_minutes"], merged["log_channel_id"],
+                merged["alert_role_id"], merged["active_until"], merged["prev_verification"],
+                merged["created_by"],
+            )
+            return dict(row)
+
+    async def bump_antiraid_triggers(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_antiraid_config SET triggered_count = triggered_count + 1, "
+                "last_triggered_at = NOW() WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+
+    async def list_expired_antiraid(self, clone_id: Optional[int] = None) -> List[Dict]:
+        """Raid modes whose timer has run out (this bot's guilds only: same clone_id)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM discord_antiraid_config WHERE active_until IS NOT NULL "
+                "AND active_until <= NOW() AND clone_id IS NOT DISTINCT FROM $1",
+                clone_id
+            )
+        return [dict(r) for r in rows]
+
+    async def delete_antiraid_config(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM discord_antiraid_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id
             )
 

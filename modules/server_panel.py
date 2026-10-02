@@ -214,6 +214,14 @@ async def set_honeypot(guild_id: int, clone_id: Optional[int], actor_id: int, **
         await record_change(guild_id, clone_id, actor_id, f"honeypot.{k}", old.get(k), v)
 
 
+async def set_antiraid(guild_id: int, clone_id: Optional[int], actor_id: int, **fields) -> None:
+    from database import db
+    old = await db.get_antiraid_config(guild_id, clone_id)
+    await db.set_antiraid_config(guild_id, clone_id=clone_id, **fields)
+    for k, v in fields.items():
+        await record_change(guild_id, clone_id, actor_id, f"antiraid.{k}", old.get(k), v)
+
+
 # ── Phase 2 writes: community, tickets, logs ─────────────────────────────
 
 MODLOG_CATEGORY_FIELDS = {
@@ -362,12 +370,14 @@ RESET_GROUPS = {
     "welcome": "Welcome", "verification": "Verification", "automod": "Auto-mod filters",
     "modlog": "Mod-log categories", "leveling": "Leveling and voice XP", "starboard": "Starboard",
     "suggestions": "Suggestions", "tickets": "Tickets", "honeypot": "Honeypot",
+    "antiraid": "Anti-raid",
 }
 RESET_NOTES = {
     "leveling": "Level-role rewards are kept (remove them in Community).",
     "tickets": "A ticket panel already posted stays in its channel.",
     "verification": "A gate message already posted stays in its channel.",
     "honeypot": "The honeypot configuration is deleted; a posted warning message stays.",
+    "antiraid": "Anti-raid is switched off and its settings deleted; an active lockdown is ended first.",
 }
 _WELCOME_DEFAULTS = {
     "enabled": False, "channel_id": None, "card_style": "gif", "avatar_shape": "circle",
@@ -397,7 +407,7 @@ _STARBOARD_DEFAULTS = {"channel_id": None, "threshold": 5, "emoji": "⭐"}
 _TICKET_DEFAULTS = {"support_role_id": None, "category_id": None, "panel_channel_id": None}
 
 
-async def reset_feature(guild_id: int, clone_id: Optional[int], actor_id: int, key: str) -> None:
+async def reset_feature(guild_id: int, clone_id: Optional[int], actor_id: int, key: str, bot=None) -> None:
     """Put one feature's panel-visible settings back to defaults. Goes through
     the audited setters, so every field change is logged, plus one summary line."""
     if key not in RESET_GROUPS:
@@ -426,6 +436,16 @@ async def reset_feature(guild_id: int, clone_id: Optional[int], actor_id: int, k
         old = await db.get_honeypot_config(g, c)
         await db.delete_honeypot_config(g, clone_id=c)
         await _audited(g, c, a, "honeypot", old, {k: None for k in ("channel_id", "enabled")})
+    elif key == "antiraid":
+        from database import db
+        old = await db.get_antiraid_config(g, c)
+        if old.get("active_until"):   # never leave a server locked down with no settings left to end it
+            live = bot.get_guild(g) if bot is not None else None
+            if live is not None:
+                from discord_bot.cogs import antiraid
+                await antiraid.end_raid(bot, live)
+        await db.delete_antiraid_config(g, clone_id=c)
+        await _audited(g, c, a, "antiraid", old, {k: None for k in ("enabled", "log_channel_id")})
     await record_change(g, c, a, f"reset.{key}", None, "defaults")
 
 
