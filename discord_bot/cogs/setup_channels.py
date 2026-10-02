@@ -60,6 +60,8 @@ CHANNEL_EMOJIS = {
     "announcements": "📢",
     "rules": "📜",
 }
+from modules.text_styles import plain_name as _plain_name
+
 SETUP_CATEGORY_NAME = "📋 Server Setup"
 
 # key -> (default channel name w/o emoji, short description shown in the
@@ -802,7 +804,7 @@ class SetupChannelsCog(GuildOnlyCog):
             if isinstance(existing, discord.CategoryChannel):
                 return existing
         for cat in guild.categories:
-            if cat.name == SETUP_CATEGORY_NAME:
+            if _plain_name(cat.name) == _plain_name(SETUP_CATEGORY_NAME):
                 await db.set_setup_suggestions(guild.id, clone_id=clone_id, category_id=cat.id)
                 return cat
         category = await guild.create_category(SETUP_CATEGORY_NAME, reason="Server Setup wizard")

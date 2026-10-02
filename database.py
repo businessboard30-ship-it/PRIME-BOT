@@ -18,6 +18,24 @@ import asyncpg
 from config import DATABASE_URL, DASHBOARD_BASE_URL
 from utils.crypto import secret_manager
 
+
+def _name_search(rows: list, field: str, query: str, limit: int) -> list:
+    """Match `query` against rows[field] ignoring fancy fonts, brackets,
+    emoji and decoration on BOTH sides, so a server called '【𝐏𝐑𝐈𝐌𝐄】 Hub'
+    is found by typing 'prime hub' and typing the styled form works too.
+    Falls back to a plain case-insensitive substring match."""
+    from modules.text_styles import plain_name
+    raw = (query or "").strip().lower()
+    needle = plain_name(query)
+    out = []
+    for r in rows:
+        name = r.get(field) or ""
+        if (needle and needle in plain_name(name)) or (raw and raw in name.lower()):
+            out.append(r)
+            if len(out) >= limit:
+                break
+    return out
+
 logger = logging.getLogger(__name__)
 
 # Starter library for discord_autopost_content (see _create_tables) — one-time
@@ -7440,11 +7458,9 @@ class Database:
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT user_id, username FROM discord_username_cache
-                WHERE username ILIKE '%' || $1 || '%'
                 ORDER BY username ASC
-                LIMIT $2
-            """, query, limit)
-            return [dict(r) for r in rows]
+            """)
+            return _name_search([dict(r) for r in rows], "username", query, limit)
 
     async def search_discord_guilds(self, query: str, limit: int = 25) -> list:
         """Cross-clone + main-bot guild-name search (ILIKE, currently-joined
@@ -7458,11 +7474,10 @@ class Database:
                        g.joined_at, g.clone_id, c.bot_username
                 FROM discord_guilds g
                 LEFT JOIN discord_cloned_bots c ON c.clone_id = g.clone_id
-                WHERE g.left_at IS NULL AND g.guild_name ILIKE '%' || $1 || '%'
+                WHERE g.left_at IS NULL
                 ORDER BY g.guild_name ASC
-                LIMIT $2
-            """, query, limit)
-            return [dict(r) for r in rows]
+            """)
+            return _name_search([dict(r) for r in rows], "guild_name", query, limit)
 
     async def get_all_guilds_with_managers(self, include_left: bool = False) -> list:
         """Every server the main bot AND every clone are currently in (or

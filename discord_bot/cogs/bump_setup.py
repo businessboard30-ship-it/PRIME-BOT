@@ -112,7 +112,9 @@ async def get_or_create_bump_channel(guild: discord.Guild, user=None, *, name: s
                 guild.default_role: discord.PermissionOverwrite(send_messages=False),
                 guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, manage_messages=True),
             }
-            category = category or discord.utils.get(guild.categories, name="📋 Server Setup")
+            from modules.text_styles import plain_name as _plain_name
+            category = category or discord.utils.find(
+                lambda c: _plain_name(c.name) == _plain_name("📋 Server Setup"), guild.categories)
             channel = await guild.create_text_channel(
                 name, category=category, overwrites=overwrites,
                 reason=reason or f"Auto-created by /bumpsetup for {user}",
