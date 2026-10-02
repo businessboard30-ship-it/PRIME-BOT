@@ -157,7 +157,12 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "47"
+SCHEMA_VERSION = "48"
+# "47" -> "48" actually creates leveling_ping_optout (the leaderboard's
+# 🔔 Level-up pings opt-out). The CREATE TABLE was added to _create_tables without a
+# bump, so DBs stamped '47' never ran it (UndefinedTableError in
+# get_level_ping_muted / toggle_level_ping_optout). Same bump-or-it-never-runs
+# trap as every entry below.
 # "46" -> "47" adds topgg_votes (global Top.gg vote XP boost) via
 # 026_topgg_votes.sql — see api/topgg_webhook.py. Same bump-or-it-never-runs trap
 # as every entry below.
