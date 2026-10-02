@@ -12,7 +12,7 @@ https://<host>/api/topgg_webhook and put the secret in TOPGG_WEBHOOK_SECRET:
     bot edit form; it arrives verbatim in the `Authorization` header.
 
 A verified vote gives the voter a global XP boost (config.TOPGG_VOTE_MULTIPLIER
-for config.TOPGG_VOTE_HOURS). Everything unverified is rejected with 403 and
+for config.TOPGG_VOTE_HOURS) and a thank-you DM (best effort). Everything unverified is rejected with 403 and
 never touches the database.
 """
 
@@ -102,6 +102,60 @@ def extract_vote(payload: dict) -> Tuple[str, Optional[int], Optional[str]]:
     return "ignore", None, None
 
 
+DISCORD_API = "https://discord.com/api/v10"
+DM_TIMEOUT_SECONDS = 2.5  # Top.gg gives us 5s total; the vote is already saved by now
+
+
+def build_thanks_message(multiplier: float, hours: float, vote_url: str = "") -> str:
+    """The DM a voter receives. Pure function so it can be unit-tested."""
+    text = (
+        "🗳️ **Thanks for voting!**\n"
+        f"⚡ You now have **{multiplier:g}x XP** in every server for **{hours:g} hours** "
+        "(it kicks in within about a minute)."
+    )
+    if vote_url:
+        text += f"\nYou can vote again in {hours:g} hours: {vote_url}"
+    return text
+
+
+async def notify_voter(user_id: int, content: str, token: str) -> bool:
+    """Best-effort DM through Discord's REST API (the web service has no
+    gateway connection, so this can't use discord.py's client). Never raises:
+    closed DMs, rate limits and network errors just return False — a voter
+    who can't be messaged must never turn into a failed webhook."""
+    if not token:
+        return False
+    import aiohttp
+    headers = {"Authorization": f"Bot {token}"}
+    try:
+        timeout = aiohttp.ClientTimeout(total=DM_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.post(f"{DISCORD_API}/users/@me/channels",
+                                    json={"recipient_id": str(user_id)}) as r:
+                if r.status != 200:
+                    return False
+                channel_id = (await r.json())["id"]
+            async with session.post(f"{DISCORD_API}/channels/{channel_id}/messages",
+                                    json={"content": content}) as r:
+                return r.status in (200, 201)
+    except Exception:
+        logger.info("[topgg] could not DM voter %s", user_id, exc_info=True)
+        return False
+
+
+async def _record_and_thank(db, config, user_id: int, vote_id: Optional[str]):
+    row = await db.record_topgg_vote(user_id, config.TOPGG_VOTE_HOURS, vote_id)
+    if row:  # None = duplicate delivery of a vote we already thanked
+        msg = build_thanks_message(config.TOPGG_VOTE_MULTIPLIER, config.TOPGG_VOTE_HOURS,
+                                   config.TOPGG_VOTE_URL)
+        try:
+            await asyncio.wait_for(notify_voter(user_id, msg, config.DISCORD_BOT_TOKEN),
+                                   DM_TIMEOUT_SECONDS + 0.5)
+        except Exception:
+            logger.info("[topgg] voter DM timed out for %s", user_id)
+    return row
+
+
 class handler(BaseHTTPRequestHandler):
     def _reply(self, code: int, msg: str):
         self.send_response(code)
@@ -147,7 +201,7 @@ class handler(BaseHTTPRequestHandler):
             return
 
         try:
-            row = asyncio.run(db.record_topgg_vote(user_id, config.TOPGG_VOTE_HOURS, vote_id))
+            row = asyncio.run(_record_and_thank(db, config, user_id, vote_id))
         except Exception:
             logger.exception("[topgg] failed to record vote for %s", user_id)
             self._reply(500, "error")  # 5xx -> Top.gg retries

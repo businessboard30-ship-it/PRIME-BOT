@@ -62,3 +62,16 @@ def test_extract_v0_vote_and_tests_and_junk():
                                                           "user": {"platform_id": "1"}}})[0] == "ignore"
     assert extract_vote({"type": "weird"})[0] == "ignore"
     assert extract_vote([])[0] == "ignore"
+
+
+def test_thanks_message_mentions_boost_and_link():
+    from api.topgg_webhook import build_thanks_message
+    msg = build_thanks_message(1.5, 12.0, "https://top.gg/bot/1/vote")
+    assert "1.5x XP" in msg and "12 hours" in msg and "https://top.gg/bot/1/vote" in msg
+    assert "http" not in build_thanks_message(2.0, 6.0, "")
+
+
+def test_notify_voter_never_raises_without_token():
+    import asyncio
+    from api.topgg_webhook import notify_voter
+    assert asyncio.run(notify_voter(1, "hi", "")) is False
