@@ -145,6 +145,17 @@ async def _bulk_cache_members(bot, guild, mode: str, user_ids: list[int]):
         pass
 
 
+async def _safe_voters(user_ids: list) -> set:
+    """Which of these users have an active Top.gg vote boost. Best-effort: a
+    failed lookup (e.g. table not migrated yet) must never break the
+    leaderboard, so it degrades to "no voters"."""
+    try:
+        return await db.get_active_topgg_voters(user_ids)
+    except Exception:
+        logger.warning("[topgg] voter lookup failed for leaderboard", exc_info=True)
+        return set()
+
+
 async def _format_stats_text(rank_row, name: str) -> str:
     """Pure formatter — no I/O. Split out of the old _stats_lines so the
     rank DB query and the name resolution can be pipelined through the
@@ -213,19 +224,29 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
         # THEN leader_links), each paying its own round-trip latency in
         # series. Firing them together cuts that to the slowest single
         # one instead of the sum of all three.
-        boosts, chief_seats, leader_links = await asyncio.gather(
+        boosts, chief_seats, leader_links, voters = await asyncio.gather(
             db.get_active_xp_boosts_for_users(guild.id, user_ids, clone_id=clone_id),
             db.get_clan_seats(guild.id, clone_id=clone_id),
             db.get_leader_links_for_users(guild.id, user_ids, clone_id=clone_id),
+            _safe_voters(user_ids),
         )
         # Chief seats are local-only (Option B, per-server exclusive seats
         # — see database.py's recompute_clan_chiefs). Build a user_id ->
         # clan_slug map once per render rather than per row.
         chief_by_user_id = {s["user_id"]: s["clan_slug"] for s in chief_seats if s["user_id"] is not None}
     else:
-        boosts = await db.get_active_global_boosts_for_users(user_ids)
+        boosts, voters = await asyncio.gather(
+            db.get_active_global_boosts_for_users(user_ids),
+            _safe_voters(user_ids),
+        )
         chief_by_user_id = {}
         leader_links = {}
+    # Top.gg voters get the same "⚡ Nx active" badge; like leveling.py, the
+    # larger of paid/vote shows, never a product.
+    if voters:
+        import config as _tg_config
+        for uid in voters:
+            boosts[uid] = max(boosts.get(uid, 0.0), _tg_config.TOPGG_VOTE_MULTIPLIER)
 
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
@@ -359,7 +380,16 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
 
     _flush_chunk()
 
-    container.add_item(discord.ui.TextDisplay(f"-# Total players: {total}"))
+    total_line = f"-# Total players: {total}"
+    import config as _vote_config
+    if _vote_config.TOPGG_VOTE_URL:
+        # Markdown link inside the existing TextDisplay: zero extra components
+        # (this message is already close to Discord's 40-component ceiling).
+        total_line += (
+            f"\n-# 🗳️ [Vote for us on Top.gg]({_vote_config.TOPGG_VOTE_URL}) for a free "
+            f"{_vote_config.TOPGG_VOTE_MULTIPLIER:g}x XP boost ({_vote_config.TOPGG_VOTE_HOURS:g}h)"
+        )
+    container.add_item(discord.ui.TextDisplay(total_line))
     container.add_item(discord.ui.Separator())
 
     nav_row = discord.ui.ActionRow()
