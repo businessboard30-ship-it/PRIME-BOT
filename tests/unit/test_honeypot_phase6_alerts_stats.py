@@ -202,3 +202,28 @@ def test_alert_role_select_works_for_free_servers_and_rejects_everyone(hp):
     run(item.callback(i))
     assert hp.fake.writes[-1] == {"alert_role_id": ROLE}  # free: no premium gate
     assert "isn't mentionable" in i.followup.send.await_args.args[0]
+
+
+def test_honeypot_panel_has_open_server_panel_button_in_its_own_row(hp):
+    g = make_guild(make_role())
+    view = hp.build_panel(g, None, dict(hp.fake.cfg), False, stats=hp.fake.stats)
+    rows = [c for c in view.walk_children() if isinstance(c, discord.ui.ActionRow)]
+    def labels(row):
+        return [getattr(c, "label", None) or getattr(getattr(c, "item", None), "label", None) for c in row.children]
+    panel_rows = [r for r in rows if "Open server panel" in labels(r)]
+    assert len(panel_rows) == 1
+    # existing button row is untouched: pause, repost, remove, test, upgrade in that order
+    main = next(r for r in rows if "Repost / recreate" in labels(r))
+    assert labels(main) == ["Pause", "Repost / recreate", "Remove honeypot", "Send test alert", "Unlock premium extras"]
+    assert "Open server panel" not in labels(main)
+
+
+def test_honeypot_panel_button_refuses_in_dm(hp):
+    g = make_guild(make_role())
+    member = MagicMock(); member.guild_permissions.manage_guild = True
+    g.get_member = MagicMock(return_value=member)
+    i = MagicMock(); i.client.get_guild = MagicMock(return_value=g); i.client.clone_id = None
+    i.guild = None; i.user.id = 9
+    i.response.is_done = MagicMock(return_value=False); i.response.send_message = AsyncMock()
+    run(hp.HoneypotButton("panel", GUILD, None).callback(i))
+    assert "/serversetup" in i.response.send_message.await_args.args[0]
