@@ -405,6 +405,16 @@ TOPGG_VOTE_URL = os.getenv("TOPGG_VOTE_URL") or (
 TOPGG_VOTE_MULTIPLIER = float(os.getenv("TOPGG_VOTE_MULTIPLIER", "1.5"))
 TOPGG_VOTE_HOURS = float(os.getenv("TOPGG_VOTE_HOURS", "12"))
 
+# Top.gg listing sync (discord_bot/cogs/topgg_stats.py) — MAIN bot only.
+# TOPGG_TOKEN is the project token from the Top.gg dashboard (NOT the webhook
+# secret); with it unset the cog does nothing. Never commit it.
+TOPGG_TOKEN = os.getenv("TOPGG_TOKEN", "")
+TOPGG_POST_INTERVAL_MINUTES = max(5.0, float(os.getenv("TOPGG_POST_INTERVAL_MINUTES", "30")))
+# Top-level slash commands kept OFF the public Top.gg Commands tab.
+TOPGG_HIDE_COMMANDS = {
+    n.strip().lower() for n in os.getenv("TOPGG_HIDE_COMMANDS", "admin").split(",") if n.strip()
+}
+
 # XP boost bundles: N single boosts for a discounted price. Same multiplier as
 # a single boost (XP_BOOST_MULTIPLIER) — a bundle only adds TIME (boosts x
 # XP_BOOST_DURATION_DAYS), and stacks onto any boost time the member already
