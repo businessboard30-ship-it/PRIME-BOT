@@ -128,7 +128,7 @@ def _font_for_char(ch: str, size: int):
     return _load_font(size)
 
 
-def draw_text_fallback(draw: ImageDraw.ImageDraw, xy: tuple, text: str, size: int, fill) -> float:
+def draw_text_fallback(draw: ImageDraw.ImageDraw, xy: tuple, text: str, size: int, fill, **text_kwargs) -> float:
     """Like draw.text(), but for user-controlled strings (display names,
     role names): walks the fallback chain per character and draws
     consecutive same-font characters together as one run, so mixed-script
@@ -151,7 +151,7 @@ def draw_text_fallback(draw: ImageDraw.ImageDraw, xy: tuple, text: str, size: in
         next_font = _font_for_char(text[i], size) if i < len(text) else None
         if next_font is not run_font:
             run_text = text[run_start:i]
-            draw.text((x, y), run_text, font=run_font, fill=fill)
+            draw.text((x, y), run_text, font=run_font, fill=fill, **text_kwargs)
             x += draw.textlength(run_text, font=run_font)
             run_start = i
             run_font = next_font

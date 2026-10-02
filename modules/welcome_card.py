@@ -275,7 +275,8 @@ def _draw_base(username: str, subtitle: str, avatar_bytes: bytes,
     bg.paste(avatar, (avatar_x, avatar_y), mask)
 
     text_x = avatar_x + AVATAR_SIZE + 50
-    draw.text((text_x, 95), username, font=_load_font(48), fill=(255, 255, 255))
+    uname_size, uname_text = _fit_text_fallback(draw, username, CARD_WIDTH - text_x - 30, max_font_size=48, min_font_size=22)
+    _draw_text_fb(draw, (text_x, 95), uname_text, uname_size, (255, 255, 255))
     draw.text((text_x, 155), subtitle, font=_load_font(28), fill=accent_rgb)
 
     return bg
@@ -319,6 +320,35 @@ def _fit_text_to_box(draw: ImageDraw.ImageDraw, text: str, box_width: int,
     while truncated and draw.textlength(truncated + ellipsis, font=font) > box_width:
         truncated = truncated[:-1]
     return font, (truncated + ellipsis) if truncated else text
+
+
+def _fit_text_fallback(draw: ImageDraw.ImageDraw, text: str, box_width: int,
+                        max_font_size: int, min_font_size: int = 14) -> tuple:
+    """Same shrink-to-fit / ellipsis-truncate behavior as _fit_text_to_box,
+    but measures with level_card's per-character font fallback chain, and
+    returns (font_size, text_to_draw) for use with _draw_text_fb(). Use this
+    for user-controlled strings (usernames, server names, custom headings):
+    with FONT_PATH unset, _load_font() falls back to Pillow's built-in
+    bitmap font, which only covers basic Latin — any \"fancy\" Discord name
+    (mathematical-alphanumeric, fullwidth, small-caps, symbols, CJK...) came
+    out as a row of tofu boxes on the welcome card."""
+    from modules.level_card import _textlength_fallback
+    size = max_font_size
+    while size > min_font_size and _textlength_fallback(draw, text, size) > box_width:
+        size -= 2
+    if _textlength_fallback(draw, text, size) <= box_width:
+        return size, text
+    ellipsis = "..."
+    truncated = text
+    while truncated and _textlength_fallback(draw, truncated + ellipsis, size) > box_width:
+        truncated = truncated[:-1]
+    return size, (truncated + ellipsis) if truncated else text
+
+
+def _draw_text_fb(draw: ImageDraw.ImageDraw, xy: tuple, text: str, size: int, fill, **kwargs):
+    """draw.text() for user-controlled strings, via level_card's fallback chain."""
+    from modules.level_card import draw_text_fallback
+    return draw_text_fallback(draw, xy, text, size, fill, **kwargs)
 
 
 def _extract_member_number(subtitle: str) -> str:
@@ -384,8 +414,8 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     draw.text((mx + 10, my + 7), _extract_member_number(subtitle), font=_load_font(26), fill=(160, 160, 160))
     # Username: shrink-to-fit / truncate so long Discord usernames can't
     # spill out of the clear-box and over the character artwork.
-    username_font, username_text = _fit_text_to_box(draw, username, member_box_width, max_font_size=56, min_font_size=22)
-    draw.text((mx + 10, my + 45), username_text, font=username_font, fill=(255, 255, 255))
+    username_size, username_text = _fit_text_fallback(draw, username, member_box_width, max_font_size=56, min_font_size=22)
+    _draw_text_fb(draw, (mx + 10, my + 45), username_text, username_size, (255, 255, 255))
 
     # Static two-line greeting under the member box, themes that have room
     # for it (see THEME_GREETING_BOX above).
@@ -416,13 +446,13 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
         subtitle_box_width = subtitle_box[2] - subtitle_box[0]
 
         draw.rectangle(header_box, fill=TEMPLATE_TEXT_BG)
-        header_font, header_text = _fit_text_to_box(draw, guild_name.upper(), header_box_width, max_font_size=22, min_font_size=12)
-        draw.text((header_box[0], header_box[1]), header_text, font=header_font, fill=(255, 255, 255))
+        header_size, header_text = _fit_text_fallback(draw, guild_name.upper(), header_box_width, max_font_size=22, min_font_size=12)
+        _draw_text_fb(draw, (header_box[0], header_box[1]), header_text, header_size, (255, 255, 255))
 
         draw.rectangle(subtitle_box, fill=TEMPLATE_TEXT_BG)
         subtitle_text = f"TO {guild_name.upper()}!"
-        subtitle_font, subtitle_text = _fit_text_to_box(draw, subtitle_text, subtitle_box_width, max_font_size=34, min_font_size=16)
-        draw.text((subtitle_box[0], subtitle_box[1]), subtitle_text, font=subtitle_font, fill=(160, 160, 160))
+        subtitle_size, subtitle_text = _fit_text_fallback(draw, subtitle_text, subtitle_box_width, max_font_size=34, min_font_size=16)
+        _draw_text_fb(draw, (subtitle_box[0], subtitle_box[1]), subtitle_text, subtitle_size, (160, 160, 160))
 
     return bg
 
@@ -576,11 +606,11 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     if opts["show_number"]:
         draw.text((text_x, band_top + 24), _extract_member_number(subtitle),
                    font=_load_font(26), fill=(190, 190, 190), stroke_width=stroke, stroke_fill=(0, 0, 0))
-    username_font, username_text = _fit_text_to_box(
+    username_size, username_text = _fit_text_fallback(
         draw, username, text_box_width, max_font_size=52, min_font_size=22
     )
-    draw.text((text_x, band_top + 62), username_text, font=username_font, fill=color,
-               stroke_width=stroke, stroke_fill=(0, 0, 0))
+    _draw_text_fb(draw, (text_x, band_top + 62), username_text, username_size, color,
+                   stroke_width=stroke, stroke_fill=(0, 0, 0))
 
     heading = opts["heading"]
     if heading:
@@ -588,9 +618,9 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     elif guild_name:
         heading = f"Welcome to {guild_name}!"
     if heading:
-        guild_font, guild_text = _fit_text_to_box(draw, heading, text_box_width, max_font_size=28, min_font_size=14)
-        draw.text((text_x, band_bottom - 50), guild_text, font=guild_font, fill=color,
-                   stroke_width=stroke, stroke_fill=(0, 0, 0))
+        guild_size, guild_text = _fit_text_fallback(draw, heading, text_box_width, max_font_size=28, min_font_size=14)
+        _draw_text_fb(draw, (text_x, band_bottom - 50), guild_text, guild_size, color,
+                       stroke_width=stroke, stroke_fill=(0, 0, 0))
 
     return bg
 
