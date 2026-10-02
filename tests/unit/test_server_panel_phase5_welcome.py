@@ -184,3 +184,22 @@ def test_test_welcome_needs_channel(env):
     env.db.get_welcome_config = AsyncMock(return_value={"channel_id": None, "delivery_mode": "channel"})
     ok, msg = run(env.we.send_test_welcome(MagicMock(clone_id=None), member().guild, member()))
     assert not ok and "welcome channel" in msg
+
+
+def test_moderation_screen_shows_honeypot_stats_alert_and_test(env):
+    env.db.get_honeypot_config = AsyncMock(return_value={
+        "channel_id": 5, "enabled": True, "alert_role_id": 71, "triggered_count": 12})
+    env.db.get_honeypot_stats = AsyncMock(return_value={"day": 1, "week": 4, "month": 9, "total": 12})
+    v = run(env.v1.ModerationView.create(interaction()))
+    t = text_of(v)
+    assert "4 this week" in t and "12 all time" in t and "<@&71>" in t
+    assert "Test honeypot" in buttons(v)
+    assert any(isinstance(c, discord.ui.RoleSelect) for c in v.walk_children())
+    assert len(list(v.walk_children())) < 40
+
+
+def test_moderation_screen_survives_stats_failure(env):
+    env.db.get_honeypot_config = AsyncMock(return_value={"channel_id": 5, "enabled": True})
+    env.db.get_honeypot_stats = AsyncMock(side_effect=RuntimeError("db"))
+    v = run(env.v1.ModerationView.create(interaction()))
+    assert "0 today" in text_of(v)

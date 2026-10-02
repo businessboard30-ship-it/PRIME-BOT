@@ -600,11 +600,17 @@ class ModerationView(ServerPanelView):
         from database import db
         cid = clone_id_of(interaction)
         import asyncio
-        am, hp = await asyncio.gather(
+        async def _stats():
+            try:
+                return await db.get_honeypot_stats(interaction.guild_id, cid)
+            except Exception:
+                return {}
+        am, hp, stats = await asyncio.gather(
             db.get_automod_config(interaction.guild_id, cid),
             db.get_honeypot_config(interaction.guild_id, cid),
+            _stats(),
         )
-        return {"am": am, "hp": hp}
+        return {"am": am, "hp": hp, "hp_stats": stats}
 
     def body(self):
         am, hp = self.data.get("am", {}), self.data.get("hp", {})
@@ -617,6 +623,12 @@ class ModerationView(ServerPanelView):
             f"Mod-log channel: {_chan(None, am.get('log_channel_id'))}",
             f"Honeypot: {_onoff(hp.get('channel_id') and hp.get('enabled'))} · {_chan(None, hp.get('channel_id'))}",
         ]
+        if hp.get("channel_id"):
+            st = self.data.get("hp_stats") or {}
+            lines.append(f"Honeypot catches: {st.get('day', 0)} today · {st.get('week', 0)} this week · "
+                         f"{st.get('month', 0)} this month · {st.get('total', hp.get('triggered_count') or 0)} all time")
+            lines.append("Honeypot alert role: "
+                         + (f"<@&{hp['alert_role_id']}>" if hp.get("alert_role_id") else "not set"))
         return lines
 
     def controls(self):
@@ -630,6 +642,11 @@ class ModerationView(ServerPanelView):
                      for a in AUTOMOD_ACTIONS])
         act.callback = self._pick_action
         out: list = [log, act]
+        if hp.get("channel_id"):
+            alert = discord.ui.RoleSelect(placeholder="Honeypot alert role (pinged on every catch)",
+                                          min_values=1, max_values=1)
+            alert.callback = self._pick_alert_role
+            out.append(alert)
         for key, label in AUTOMOD_FILTERS:
             on = bool(am.get(key))
             out.append(_btn(f"{label}: {'on' if on else 'off'}",
@@ -642,6 +659,8 @@ class ModerationView(ServerPanelView):
                             self._toggle_honeypot, "🍯"))
         out.append(_btn("Honeypot settings" if hp.get("channel_id") else "Set up honeypot",
                         discord.ButtonStyle.primary, self._open_honeypot, "🍯"))
+        if hp.get("channel_id"):
+            out.append(_btn("Test honeypot", discord.ButtonStyle.success, self._test_honeypot, "🧪"))
         out.append(self.back_button())
         return out
 
@@ -675,6 +694,27 @@ class ModerationView(ServerPanelView):
         from discord_bot.cogs.honeypot import open_honeypot
         await interaction.response.defer(ephemeral=True)
         await open_honeypot(interaction, interaction.guild, self.clone_id)
+
+    async def _pick_alert_role(self, interaction: discord.Interaction):
+        select = next(c for c in self.walk_children() if isinstance(c, discord.ui.RoleSelect))
+        role = interaction.guild.get_role(select.values[0].id)
+        if role is None or role.is_default():
+            await interaction.response.send_message("Pick a real role — @everyone can't be the alert role.",
+                                                    ephemeral=True)
+            return
+        await interaction.response.defer()
+        await sp.set_honeypot(interaction.guild_id, self.clone_id, interaction.user.id, alert_role_id=role.id)
+        from discord_bot.cogs.honeypot import _invalidate
+        _invalidate(interaction.guild_id, self.clone_id)
+        await self.reload(interaction)
+
+    async def _test_honeypot(self, interaction: discord.Interaction):
+        """Sample alert (with the real role ping) — nobody is actioned, stats unchanged."""
+        from discord_bot.cogs.honeypot import send_test_alert
+        await interaction.response.defer(ephemeral=True)
+        ok, msg = await send_test_alert(interaction.client, interaction.guild, interaction.user)
+        await interaction.followup.send(("✅ " if ok else "⚠️ ") + msg, ephemeral=True,
+                                        allowed_mentions=discord.AllowedMentions.none())
 
     async def _toggle_honeypot(self, interaction: discord.Interaction):
         await interaction.response.defer()
