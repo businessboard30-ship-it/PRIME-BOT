@@ -119,6 +119,16 @@ class ChannelFindModal(discord.ui.Modal, title="Find a channel by name"):
             exact = [c for c in hits if plain_name(c.name) == needle]
             if len(exact) == 1:
                 hits = exact
+        if not hits and self.types:
+            other = match_channels(guild.channels, str(self.query))
+            if other:
+                kinds = {discord.ChannelType.news: "announcement channel", discord.ChannelType.voice: "voice channel",
+                         discord.ChannelType.category: "category", discord.ChannelType.forum: "forum",
+                         discord.ChannelType.stage_voice: "stage channel", discord.ChannelType.text: "text channel"}
+                listed = "\n".join(f"• {c.mention} ({kinds.get(c.type, 'other type')})" for c in other[:_MAX_LISTED])
+                await interaction.response.send_message(
+                    "I found a match, but it's a type this dropdown doesn't accept:\n" + listed, ephemeral=True)
+                return
         if not hits:
             await interaction.response.send_message(
                 f"No channel matching **{discord.utils.escape_markdown(str(self.query))}** that this "

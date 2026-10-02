@@ -440,7 +440,7 @@ class WelcomeChannelSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], tem
         self.invoker_id = invoker_id
         super().__init__(discord.ui.ChannelSelect(
             placeholder="Step 1 — pick the welcome channel",
-            channel_types=[discord.ChannelType.text],
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
             min_values=1, max_values=1,
             custom_id=_encode("chan", guild_id, clone_id, invoker_id),
         ))
