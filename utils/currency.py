@@ -7,7 +7,7 @@ flat-fee Paystack charge in this codebase (CLONE_BOT_FEE_GHS in
 clone_admin.py, discord_premium_groups.fee_ghs, botstore premium, AI
 subscription pricing, etc.) still bills a hardcoded GHS amount and was
 deliberately left alone here — that's a separate, larger pass. See
-CURRENCY_CONVERSION_HANDOFF.md at the repo root for exactly what's left
+docs/archive/CURRENCY_CONVERSION_HANDOFF.md for exactly what's left
 and a ready-to-paste prompt for doing it.
 
 Design:

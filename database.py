@@ -4822,7 +4822,7 @@ class Database:
 
         # Shared currency preference — /currency set, reused by any paywall
         # (currently just Discover Players' upgrade tiers; see
-        # CURRENCY_CONVERSION_HANDOFF.md for wiring it into the rest).
+        # docs/archive/CURRENCY_CONVERSION_HANDOFF.md for wiring it into the rest).
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS user_currency_prefs (
                 user_id BIGINT PRIMARY KEY,
