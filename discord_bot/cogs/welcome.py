@@ -31,7 +31,7 @@ from database import db
 from modules.welcome_card import render_welcome_card
 from discord_bot.cogs._views_shared import refresh_button
 from discord_bot import perm_check
-from discord_bot.cogs._views_welcome import build_wizard_view, refresh_posted_wizard
+from discord_bot.cogs._views_welcome import build_wizard_view, refresh_posted_wizard, fetch_goodbye
 
 logger = logging.getLogger(__name__)
 
@@ -552,7 +552,8 @@ class WelcomeCog(GuildOnlyCog):
                 f"👋 Thanks for adding me to **{guild.name}**! Let's start with this first — "
                 f"set up your welcome cards below (anyone with **Manage Server** can use this):"
             )
-            view = build_wizard_view(guild.id, clone_id, None, config, greeting=greeting)
+            view = build_wizard_view(guild.id, clone_id, None, config, greeting=greeting,
+                                     goodbye=await fetch_goodbye(guild.id, clone_id))
             # NOTE: LayoutView (Components V2) rejects content= alongside
             # view= — the greeting text above is rendered inside the view
             # itself instead. See build_wizard_view's greeting param.
@@ -1624,7 +1625,8 @@ class WelcomeCog(GuildOnlyCog):
             await _deny(interaction, "Manage Server")
             return
         config = await db.get_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction))
-        view = build_wizard_view(interaction.guild_id, _clone_id_of(interaction), interaction.user.id, config)
+        view = build_wizard_view(interaction.guild_id, _clone_id_of(interaction), interaction.user.id, config,
+                                 goodbye=await fetch_goodbye(interaction.guild_id, _clone_id_of(interaction)))
         # Posted publicly in-channel (not ephemeral) so anyone in the
         # server can see the wizard being configured — only the original
         # invoker can actually use its components, enforced by each

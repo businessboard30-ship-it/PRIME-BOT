@@ -185,6 +185,24 @@ def render_status_lines(config: dict) -> list:
     return lines
 
 
+async def fetch_goodbye(guild_id: int, clone_id) -> dict | None:
+    """The goodbye settings row for this server, or None if it can't be read
+    quickly (a slow DB must never delay the wizard render)."""
+    try:
+        return await asyncio.wait_for(db.get_welcome_extras(guild_id, clone_id), timeout=1.5)
+    except Exception:
+        return None
+
+
+def goodbye_status_line(goodbye: dict | None) -> str:
+    """One line for the wizard body: welcome and goodbye now live together."""
+    if goodbye is None:
+        return "-# 👋 **Goodbye** — tap the Goodbye button below to set up a message for members who leave"
+    on = bool(goodbye.get("goodbye_enabled"))
+    ch = f"<#{goodbye['goodbye_channel_id']}>" if goodbye.get("goodbye_channel_id") else "*no channel yet*"
+    return f"{'✅' if on and goodbye.get('goodbye_channel_id') else '⬜'} **Goodbye** — {'on' if on else 'off'} · {ch}"
+
+
 # ---------------------------------------------------------------------------
 # custom_id encoding shared by every dynamic item in this wizard.
 # Shape: welcome_wz_<field>:<guild_id>:<clone_id or "-">:<invoker_id or "-">
@@ -249,7 +267,8 @@ touched this wizard message since, so build_wizard_view never ran in
 this process) — see _get_config_for_modal."""
 
 
-def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, greeting: str = None) -> discord.ui.LayoutView:
+def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, greeting: str = None,
+                      goodbye: dict | None = None) -> discord.ui.LayoutView:
     """Builds a fresh wizard message from a config dict already fetched
     by the caller. Every dynamic item inside re-fetches its own current
     config on interaction rather than trusting this snapshot, so this
@@ -270,7 +289,12 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, gree
 
     greeting: optional extra line rendered above the usual header — used
     by welcome.py's post_setup_wizard_on_join for its "thanks for adding
-    me" text. This view is a LayoutView (Components V2), and Discord
+    me" text.
+
+    goodbye: the server's discord_welcome_extras row (goodbye on/off, channel,
+    message), fetched by the caller with fetch_goodbye(). Only used to show
+    the current goodbye state — the 👋 Goodbye button re-reads it on click.
+    None (e.g. a caller that didn't fetch it) just shows a generic hint. This view is a LayoutView (Components V2), and Discord
     rejects any message that combines Components V2 with a plain
     content= string, so intro text has to live inside the view itself
     rather than being passed as content on the send() call."""
@@ -294,11 +318,13 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, gree
     button_row.add_item(WelcomeToggleButton(guild_id, clone_id, invoker_id, config))
     button_row.add_item(WelcomePreviewButton(guild_id, clone_id, invoker_id))
     button_row.add_item(WelcomeUltraPackButton(guild_id, clone_id, invoker_id, config))
+    button_row.add_item(WelcomeGoodbyeButton(guild_id, clone_id, invoker_id, goodbye))
 
     mode_row = discord.ui.ActionRow()
     mode_row.add_item(WelcomeModeToggleButton(guild_id, clone_id, invoker_id, config))
 
-    header_lines = ["### 🚩 Set up welcome cards", *perm_check.lines(guild_id, clone_id), *render_status_lines(config)]
+    header_lines = ["### 🚩 Set up welcome cards", *perm_check.lines(guild_id, clone_id), *render_status_lines(config),
+                    goodbye_status_line(goodbye)]
     if greeting:
         header_lines = [greeting, "", *header_lines]
     text = discord.ui.TextDisplay("\n".join(header_lines))
@@ -340,7 +366,8 @@ async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, i
     DB round-trips — the callback's own write, then this function's read —
     stacked up before anything ever ack'd the interaction)."""
     config = await db.get_welcome_config(guild_id, clone_id=clone_id)
-    view = build_wizard_view(guild_id, clone_id, invoker_id, config)
+    goodbye = await fetch_goodbye(guild_id, clone_id)
+    view = build_wizard_view(guild_id, clone_id, invoker_id, config, goodbye=goodbye)
     await interaction.edit_original_response(view=view)
 
 
@@ -370,7 +397,8 @@ async def refresh_posted_wizard(bot, guild_id: int, clone_id=None) -> None:
         return
     invoker_raw = config.get("wizard_invoker_id")
     invoker_id = int(invoker_raw) if invoker_raw is not None else None
-    view = build_wizard_view(guild_id, clone_id, invoker_id, config)
+    view = build_wizard_view(guild_id, clone_id, invoker_id, config,
+                             goodbye=await fetch_goodbye(guild_id, clone_id))
     try:
         await message.edit(view=view)
     except (discord.Forbidden, discord.HTTPException):
@@ -1091,6 +1119,153 @@ class WelcomeUltraPackButton(discord.ui.DynamicItem[discord.ui.Button], template
         await open_customize_wizard(interaction, self.guild_id, self.clone_id)
 
 
+class _GoodbyeTextModal(discord.ui.Modal, title="Edit goodbye message"):
+    def __init__(self, panel: "GoodbyePanelView"):
+        super().__init__()
+        from discord_bot.cogs import welcome_extras as we
+        self.panel = panel
+        self.template = discord.ui.TextInput(
+            label="Message ({name} {member} {guild} {count})",
+            style=discord.TextStyle.paragraph, max_length=we.GOODBYE_MAX, required=True,
+            default=panel.extras.get("goodbye_message") or we.DEFAULT_GOODBYE)
+        self.add_item(self.template)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        text = str(self.template.value).strip()
+        if not text:
+            await interaction.response.send_message("The goodbye message can't be empty.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self.panel.save(interaction, goodbye_message=text)
+
+
+class GoodbyePanelView(discord.ui.View):
+    """Goodbye settings, opened from the welcome wizard's 👋 Goodbye button, so
+    welcome and goodbye are set up in the same place. Writes the same
+    discord_welcome_extras row (and the same audit trail) as the Server Owners
+    Panel's Goodbye & roles screen — one setting, two doors, never out of sync.
+    Ephemeral to whoever opened it; every change re-renders this message and
+    refreshes the posted wizard so its status line stays current."""
+
+    def __init__(self, guild_id: int, clone_id, opener_id: int, extras: dict):
+        super().__init__(timeout=600)
+        self.guild_id, self.clone_id, self.opener_id, self.extras = guild_id, clone_id, opener_id, extras or {}
+        on = bool(self.extras.get("goodbye_enabled"))
+        sel = discord.ui.ChannelSelect(
+            placeholder="Goodbye channel", channel_types=[discord.ChannelType.text],
+            min_values=1, max_values=1, row=0)
+        sel.callback = self._pick
+        self.add_item(sel)
+        for label, style, cb, emoji in (
+            ("Turn goodbye off" if on else "Turn goodbye on",
+             discord.ButtonStyle.danger if on else discord.ButtonStyle.success, self._toggle, None),
+            ("Edit message", discord.ButtonStyle.primary, self._edit, "✏️"),
+            ("Test goodbye", discord.ButtonStyle.primary, self._test, "🧪"),
+        ):
+            b = discord.ui.Button(label=label, style=style, emoji=emoji, row=1)
+            b.callback = cb
+            self.add_item(b)
+
+    @staticmethod
+    def text(extras: dict) -> str:
+        from discord_bot.cogs import welcome_extras as we
+        return "\n".join([
+            "### 👋 Goodbye message",
+            f"Status: {'on' if extras.get('goodbye_enabled') else 'off'}",
+            f"Channel: {'<#%s>' % extras['goodbye_channel_id'] if extras.get('goodbye_channel_id') else '*not set*'}",
+            f"Message: `{(extras.get('goodbye_message') or we.DEFAULT_GOODBYE)[:120]}`",
+            "-# Placeholders: {name} {member} {guild} {count}. Bots leaving never post a goodbye.",
+        ])
+
+    async def _allowed(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.opener_id:
+            await interaction.response.send_message("Only the person who opened this can use it.", ephemeral=True)
+            return False
+        return True
+
+    async def save(self, interaction: discord.Interaction, **fields):
+        from modules import server_panel as sp
+        await sp.set_welcome_extras(self.guild_id, self.clone_id, interaction.user.id, **fields)
+        extras = await db.get_welcome_extras(self.guild_id, self.clone_id)
+        view = GoodbyePanelView(self.guild_id, self.clone_id, self.opener_id, extras)
+        await interaction.edit_original_response(embed=discord.Embed(
+            description=self.text(extras), color=discord.Color.blurple()), view=view)
+        try:
+            await refresh_posted_wizard(interaction.client, self.guild_id, self.clone_id)
+        except Exception:
+            pass
+
+    async def _pick(self, interaction: discord.Interaction):
+        if not await self._allowed(interaction):
+            return
+        guild = interaction.client.get_guild(self.guild_id)
+        picked = interaction.data["values"][0] if interaction.data.get("values") else None
+        ch = guild.get_channel(int(picked)) if guild and picked else None
+        problem = perm_check.channel_problem(ch, guild.me, ("view_channel", "send_messages", "embed_links")) if ch else None
+        if problem:
+            await interaction.response.send_message(problem, ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self.save(interaction, goodbye_channel_id=int(picked))
+
+    async def _toggle(self, interaction: discord.Interaction):
+        if not await self._allowed(interaction):
+            return
+        turning_on = not self.extras.get("goodbye_enabled")
+        if turning_on and not self.extras.get("goodbye_channel_id"):
+            await interaction.response.send_message("Pick a goodbye channel first.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self.save(interaction, goodbye_enabled=turning_on)
+
+    async def _edit(self, interaction: discord.Interaction):
+        if not await self._allowed(interaction):
+            return
+        await interaction.response.send_modal(_GoodbyeTextModal(self))
+
+    async def _test(self, interaction: discord.Interaction):
+        if not await self._allowed(interaction):
+            return
+        from discord_bot.cogs import welcome_extras as we
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.client.get_guild(self.guild_id)
+        member = (guild.get_member(interaction.user.id) if guild else None) or interaction.user
+        ok, msg = await we.send_test_goodbye(interaction.client, guild, member)
+        await interaction.followup.send(("✅ " if ok else "⚠️ ") + msg, ephemeral=True)
+
+
+class WelcomeGoodbyeButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("goodbye")):
+    """👋 Goodbye — opens the goodbye settings (channel, on/off, message, test)
+    right inside the welcome wizard. Before this, goodbye could only be found
+    in the Server Owners Panel, so anyone setting up welcome never saw it."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, goodbye: dict | None = None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        on = bool(goodbye and goodbye.get("goodbye_enabled") and goodbye.get("goodbye_channel_id"))
+        super().__init__(discord.ui.Button(
+            label="👋 Goodbye ✅" if on else "👋 Goodbye",
+            style=discord.ButtonStyle.secondary if on else discord.ButtonStyle.primary,
+            custom_id=_encode("goodbye", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        await interaction.response.defer(ephemeral=True)
+        extras = await db.get_welcome_extras(self.guild_id, self.clone_id)
+        view = GoodbyePanelView(self.guild_id, self.clone_id, interaction.user.id, extras)
+        await interaction.followup.send(
+            embed=discord.Embed(description=GoodbyePanelView.text(extras), color=discord.Color.blurple()),
+            view=view, ephemeral=True)
+
+
 # Registered once in discord_bot/bot.py's setup_hook via
 # bot.add_dynamic_items(*DYNAMIC_ITEMS) — same mechanism as
 # _views_join_dm.py's DYNAMIC_ITEMS, so these keep working after a
@@ -1099,5 +1274,5 @@ DYNAMIC_ITEMS = (
     WelcomeChannelSelect, WelcomeCreateChannelButton, WelcomeDeliverySelect, WelcomeThemeSelect, WelcomeCardLookSelect,
     WelcomeCardStyleSelect, WelcomeAvatarShapeSelect, WelcomeStickerPresetSelect,
     WelcomeEditMessageButton, WelcomeToggleButton, WelcomePreviewButton, WelcomeModeToggleButton,
-    WelcomeUltraPackButton,
+    WelcomeUltraPackButton, WelcomeGoodbyeButton,
 )

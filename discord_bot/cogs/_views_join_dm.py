@@ -1046,10 +1046,11 @@ class _WelcomeCardOptionsButton(discord.ui.DynamicItem[discord.ui.Button], templ
         return cls(int(match.group(1)), None if clone_part == "-" else int(clone_part))
 
     async def callback(self, interaction: discord.Interaction):
-        from discord_bot.cogs._views_welcome import build_wizard_view
+        from discord_bot.cogs._views_welcome import build_wizard_view, fetch_goodbye
         await interaction.response.defer(ephemeral=interaction.guild is not None)
         config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
-        view = build_wizard_view(self.guild_id, self.clone_id, interaction.user.id, config)
+        view = build_wizard_view(self.guild_id, self.clone_id, interaction.user.id, config,
+                                 goodbye=await fetch_goodbye(self.guild_id, self.clone_id))
         await interaction.followup.send(view=view, ephemeral=interaction.guild is not None)
 
 
@@ -1292,7 +1293,8 @@ async def _enable_welcome(interaction: discord.Interaction, guild: discord.Guild
     if channel is None:
         return False, "I couldn't find a channel I'm able to post in — create one and try `/welcome setup`."
     await db.set_welcome_config(guild.id, clone_id=clone_id, enabled=True, channel_id=channel.id)
-    return True, f"Welcome messages are on in {channel.mention}. Change it anytime with `/welcome setup`."
+    return True, (f"Welcome messages are on in {channel.mention}. Change it anytime with `/welcome setup` "
+                  "— the 👋 Goodbye button there sets up a message for members who leave.")
 
 
 async def _enable_automod(interaction: discord.Interaction, guild: discord.Guild, clone_id):
