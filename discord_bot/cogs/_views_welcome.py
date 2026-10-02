@@ -42,6 +42,7 @@ from discord_bot import perm_check
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from modules.welcome_card import render_welcome_card
+from modules.text_styles import plain_name as _plain_name
 
 logger = logging.getLogger(__name__)
 
@@ -497,6 +498,15 @@ class WelcomeCreateChannelButton(discord.ui.DynamicItem[discord.ui.Button], temp
             )
             return
         await interaction.response.defer()
+
+        # A styled channel like 📣【𝐰𝐞𝐥𝐜𝐨𝐦𝐞】 is still "welcome" — reuse it
+        # instead of creating a second one next to it.
+        existing = discord.utils.find(
+            lambda c: _plain_name(c.name) == "welcome", guild.text_channels)
+        if existing is not None:
+            await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, channel_id=existing.id)
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+            return
 
         # Read-only for @everyone (view + read history, no sending) —
         # a welcome channel is meant to be announcements-style, not a chat.
