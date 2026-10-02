@@ -24,6 +24,11 @@ def make_db(premium_active=False):
         "enabled": False, "channel_id": None, "message_template": "Hi {member}",
         "card_style": "gif", "card_theme": "wolf"})
     db.set_welcome_config = AsyncMock()
+    db.get_welcome_extras = AsyncMock(return_value={
+        "goodbye_enabled": False, "goodbye_channel_id": None,
+        "goodbye_message": "{name} has left {guild}. We are now {count} members.",
+        "member_role_id": None, "bot_role_id": None})
+    db.set_welcome_extras = AsyncMock()
     db.get_verification_config = AsyncMock(return_value={
         "enabled": False, "mode": "button", "channel_id": None, "verified_role_id": None})
     db.set_verification_config = AsyncMock()

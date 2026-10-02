@@ -139,7 +139,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "43"
+SCHEMA_VERSION = "44"
+# "43" -> "44" adds discord_welcome_extras (goodbye message, auto-role for new
+# members / bots) next to the honeypot DDL — see discord_bot/cogs/welcome_extras.py.
+# Same bump-or-it-never-runs trap as every entry below.
 # "42" -> "43" adds 025_server_panel_usage.sql (server_panel_usage) so the owner
 # Health screen can count servers that opened the Server Owners Panel — see
 # modules/server_panel.py. Same bump-or-it-never-runs trap as every entry below.
@@ -2632,6 +2635,26 @@ class Database:
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS discord_honeypot_config_guild_clone_key
             ON discord_honeypot_config (guild_id, COALESCE(clone_id, -1))
+        """)
+        # --- Welcome extras: goodbye message + auto-roles ------------------------
+        # One row per guild(+clone). Kept out of discord_welcome_config so the
+        # card/theme upsert there is untouched. Read/written by
+        # discord_bot/cogs/welcome_extras.py and the Server Owners Panel.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_welcome_extras (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                goodbye_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                goodbye_channel_id BIGINT,
+                goodbye_message TEXT NOT NULL DEFAULT '{name} has left {guild}. We are now {count} members.',
+                member_role_id BIGINT,
+                bot_role_id BIGINT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_welcome_extras_guild_clone_key
+            ON discord_welcome_extras (guild_id, COALESCE(clone_id, -1))
         """)
         # welcome_message: shown in the embed posted inside a freshly-opened
         # ticket channel, in place of the hardcoded "Thanks for reaching
@@ -9839,6 +9862,50 @@ class Database:
                 "DELETE FROM discord_honeypot_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id
             )
+
+    _WELCOME_EXTRAS_FIELDS = (
+        "goodbye_enabled", "goodbye_channel_id", "goodbye_message",
+        "member_role_id", "bot_role_id",
+    )
+    _WELCOME_EXTRAS_DEFAULT_GOODBYE = "{name} has left {guild}. We are now {count} members."
+
+    async def get_welcome_extras(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_welcome_extras WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+            if row:
+                return dict(row)
+            return {
+                "guild_id": guild_id, "clone_id": clone_id, "goodbye_enabled": False,
+                "goodbye_channel_id": None, "goodbye_message": self._WELCOME_EXTRAS_DEFAULT_GOODBYE,
+                "member_role_id": None, "bot_role_id": None,
+            }
+
+    async def set_welcome_extras(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        """Upsert-merge: omitted fields keep their value; pass None explicitly
+        to clear a nullable one (channel / role ids)."""
+        current = await self.get_welcome_extras(guild_id, clone_id=clone_id)
+        merged = {k: fields.get(k, current.get(k)) for k in self._WELCOME_EXTRAS_FIELDS}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_welcome_extras
+                    (guild_id, clone_id, goodbye_enabled, goodbye_channel_id, goodbye_message,
+                     member_role_id, bot_role_id, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET goodbye_enabled = $3, goodbye_channel_id = $4, goodbye_message = $5,
+                        member_role_id = $6, bot_role_id = $7, updated_at = NOW()
+                RETURNING *
+                """,
+                guild_id, clone_id, merged["goodbye_enabled"], merged["goodbye_channel_id"],
+                merged["goodbye_message"], merged["member_role_id"], merged["bot_role_id"],
+            )
+            return dict(row)
 
     async def get_ticket_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()

@@ -181,6 +181,15 @@ async def set_welcome(guild_id: int, clone_id: Optional[int], actor_id: int, **f
         await record_change(guild_id, clone_id, actor_id, f"welcome.{k}", old.get(k), v)
 
 
+async def set_welcome_extras(guild_id: int, clone_id: Optional[int], actor_id: int, **fields) -> None:
+    """Goodbye message and auto-roles (discord_welcome_extras), audited like every panel write."""
+    from database import db
+    old = await db.get_welcome_extras(guild_id, clone_id)
+    await db.set_welcome_extras(guild_id, clone_id=clone_id, **fields)
+    for k, v in fields.items():
+        await record_change(guild_id, clone_id, actor_id, f"welcome_extras.{k}", old.get(k), v)
+
+
 async def set_automod(guild_id: int, clone_id: Optional[int], actor_id: int, **fields) -> None:
     from database import db
     old = await db.get_automod_config(guild_id, clone_id)
@@ -364,6 +373,11 @@ _WELCOME_DEFAULTS = {
     "enabled": False, "channel_id": None, "card_style": "gif", "avatar_shape": "circle",
     "delivery_mode": "channel", "message_template": "Welcome {member} to {guild}! You are member #{count}.",
 }
+_WELCOME_EXTRAS_DEFAULTS = {
+    "goodbye_enabled": False, "goodbye_channel_id": None,
+    "goodbye_message": "{name} has left {guild}. We are now {count} members.",
+    "member_role_id": None, "bot_role_id": None,
+}
 _VERIFICATION_DEFAULTS = {
     "enabled": False, "mode": "button", "channel_id": None, "unverified_role_id": None,
     "verified_role_id": None, "timeout_seconds": 300, "max_attempts": 3,
@@ -391,6 +405,7 @@ async def reset_feature(guild_id: int, clone_id: Optional[int], actor_id: int, k
     g, c, a = guild_id, clone_id, actor_id
     if key == "welcome":
         await set_welcome(g, c, a, **_WELCOME_DEFAULTS)
+        await set_welcome_extras(g, c, a, **_WELCOME_EXTRAS_DEFAULTS)
     elif key == "verification":
         await set_verification(g, c, a, **_VERIFICATION_DEFAULTS)
     elif key == "automod":

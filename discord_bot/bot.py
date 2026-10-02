@@ -266,6 +266,7 @@ class AnimeBotDiscord(commands.Bot):
         # (see cogs/_admin_mount.py) to save global slash-command slots.
         await self.load_extension("discord_bot.cogs.admin")
         await self.load_extension("discord_bot.cogs.welcome")
+        await self.load_extension("discord_bot.cogs.welcome_extras")
         await self.load_extension("discord_bot.cogs.invites")
         await self.load_extension("discord_bot.cogs.quickstart")
         await self.load_extension("discord_bot.cogs.setup_channels")

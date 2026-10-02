@@ -435,15 +435,24 @@ class WelcomeView(ServerPanelView):
     @classmethod
     async def load(cls, interaction):
         from database import db
-        return {"cfg": await db.get_welcome_config(interaction.guild_id, clone_id_of(interaction))}
+        import asyncio
+        cid = clone_id_of(interaction)
+        cfg, extras = await asyncio.gather(
+            db.get_welcome_config(interaction.guild_id, cid),
+            db.get_welcome_extras(interaction.guild_id, cid),
+        )
+        return {"cfg": cfg, "x": extras}
 
     def body(self):
         c = self.data.get("cfg", {})
+        x = self.data.get("x", {})
+        roles = [r for r in (x.get("member_role_id"), x.get("bot_role_id")) if r]
         return [
             f"Welcome card: {_onoff(c.get('enabled'))}",
             f"Channel: {_chan(None, c.get('channel_id'))}",
             f"Message: `{(c.get('message_template') or '')[:120]}`",
             f"Card style: `{c.get('card_style', 'gif')}` · theme `{c.get('card_theme', 'wolf')}`",
+            f"Goodbye: {_onoff(x.get('goodbye_enabled'))} · auto-roles: {len(roles)} set",
         ]
 
     def controls(self):
@@ -459,9 +468,28 @@ class WelcomeView(ServerPanelView):
             _btn("Edit message", discord.ButtonStyle.primary, self._edit, "✏️"),
             _btn("Cards & themes", discord.ButtonStyle.primary, self._open_wizard, "🎴"),
             _btn("Customize card", discord.ButtonStyle.primary, self._open_card_customizer, "🎨"),
+            _btn("Goodbye & roles", discord.ButtonStyle.primary, self._open_extras, "👋"),
+            _btn("Send test post", discord.ButtonStyle.success, self._test_post, "🧪"),
             _btn("Verification", discord.ButtonStyle.primary, self.nav(VerificationView), "🔐"),
             self.back_button(),
         ]
+
+    @read_only_ok
+    async def _open_extras(self, interaction: discord.Interaction):
+        """Goodbye message and auto-roles for new members / bots."""
+        from discord_bot.cogs._views_server_panel_extras import WelcomeExtrasView
+        await interaction.response.defer()
+        view = await WelcomeExtrasView.create(self._ctx(interaction))
+        await interaction.edit_original_response(view=view)
+
+    async def _test_post(self, interaction: discord.Interaction):
+        """Posts a REAL welcome card for the person who pressed it, in the
+        configured welcome channel — no alt account needed."""
+        from discord_bot.cogs import welcome_extras as we
+        await interaction.response.defer(ephemeral=True)
+        member = interaction.guild.get_member(interaction.user.id) or interaction.user
+        ok, msg = await we.send_test_welcome(interaction.client, interaction.guild, member)
+        await interaction.followup.send(("✅ " if ok else "⚠️ ") + msg, ephemeral=True)
 
     async def _open_wizard(self, interaction: discord.Interaction):
         """Full welcome wizard: theme, card look/style, avatar shape, sticker,

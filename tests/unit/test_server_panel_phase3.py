@@ -42,6 +42,11 @@ def env(monkeypatch):
         "announce_channel_id": 30, "xp_rate": "fast", "card_style": "card", "leaderboard_autopost_channel_id": 99})
     db.set_leveling_config = AsyncMock()
     db.delete_honeypot_config = AsyncMock()
+    db.get_welcome_extras = AsyncMock(return_value={
+        "goodbye_enabled": False, "goodbye_channel_id": None,
+        "goodbye_message": "{name} has left {guild}. We are now {count} members.",
+        "member_role_id": None, "bot_role_id": None})
+    db.set_welcome_extras = AsyncMock()
     db.add_discord_user_feedback = AsyncMock()
     db.get_welcome_config = AsyncMock(return_value={
         "enabled": True, "channel_id": 30, "message_template": "Hi {member}", "card_style": "gif",
