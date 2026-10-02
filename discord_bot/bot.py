@@ -76,6 +76,7 @@ from discord_bot.cogs._perm_guard import global_interaction_check, TooManyPrivil
 from discord_bot.cogs._views_join_dm import build_join_dm_view, DYNAMIC_ITEMS
 from discord_bot.cogs._views_style_wizard import STYLE_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
+from modules import channel_finder
 from discord_bot.cogs._views_card_customize import DYNAMIC_ITEMS as CARD_CUSTOMIZE_DYNAMIC_ITEMS
 from discord_bot.cogs._views_invites import DYNAMIC_ITEMS as INVITES_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_wizard import DYNAMIC_ITEMS as AUTOMOD_WIZARD_DYNAMIC_ITEMS
@@ -201,6 +202,9 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*DYNAMIC_ITEMS)
         self.add_dynamic_items(*STYLE_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*WELCOME_WIZARD_DYNAMIC_ITEMS)
+        # "Find by name" button on every wizard channel dropdown (fonts/brackets-proof).
+        channel_finder.install()
+        self.add_dynamic_items(*channel_finder.DYNAMIC_ITEMS)
         self.add_dynamic_items(*CARD_CUSTOMIZE_DYNAMIC_ITEMS)
         self.add_dynamic_items(*INVITES_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_WIZARD_DYNAMIC_ITEMS)
