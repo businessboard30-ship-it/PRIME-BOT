@@ -206,10 +206,22 @@ async def set_verification(guild_id: int, clone_id: Optional[int], actor_id: int
         await record_change(guild_id, clone_id, actor_id, f"verification.{k}", old.get(k), v)
 
 
+def _drop_honeypot_cache(guild_id: int, clone_id: Optional[int]) -> None:
+    """The honeypot listener caches each server's settings for 60s. Any write made
+    here must clear that entry, or an on/off toggle (or reset) keeps being ignored
+    until the cache expires. Best effort: never blocks the write."""
+    try:
+        from discord_bot.cogs.honeypot import _invalidate
+        _invalidate(guild_id, clone_id)
+    except Exception:
+        logger.debug("[server-panel] couldn't clear honeypot cache", exc_info=True)
+
+
 async def set_honeypot(guild_id: int, clone_id: Optional[int], actor_id: int, **fields) -> None:
     from database import db
     old = await db.get_honeypot_config(guild_id, clone_id)
     await db.set_honeypot_config(guild_id, clone_id=clone_id, **fields)
+    _drop_honeypot_cache(guild_id, clone_id)
     for k, v in fields.items():
         await record_change(guild_id, clone_id, actor_id, f"honeypot.{k}", old.get(k), v)
 
@@ -435,6 +447,7 @@ async def reset_feature(guild_id: int, clone_id: Optional[int], actor_id: int, k
         from database import db
         old = await db.get_honeypot_config(g, c)
         await db.delete_honeypot_config(g, clone_id=c)
+        _drop_honeypot_cache(g, c)
         await _audited(g, c, a, "honeypot", old, {k: None for k in ("channel_id", "enabled")})
     elif key == "antiraid":
         from database import db
