@@ -4,9 +4,10 @@ a self-service Bots Archive & Directory, Discord bot-cloning, and an ads/A
 marketplace — all wired into a single `discord.py` application.
 
 **Status:** Live | **Platform:** Discord (gateway) | **Host:** Railway (or any
-always-on process host — NOT Vercel/serverless, see note below)1
+always-on process host — NOT Vercel/serverless, see note below)
+
 ---
-d
+
 ## Why not Vercel / serverless
 
 Discord bots need a persistent WebSocket (gateway) connection — there's no
@@ -187,3 +188,11 @@ python -m discord_bot.bot
 ## License
 
 MIT
+
+---
+
+## Project history
+
+Past audit reports, handoff notes and phase write-ups live in
+[`docs/archive/`](docs/archive/). They're kept for reference and are not
+maintained; this README and `config.py` are the source of truth.
