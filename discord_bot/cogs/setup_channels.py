@@ -38,12 +38,28 @@ from discord_bot.cogs._views_download_wizard import (
 from database import db, get_pool
 from modules.text_styles import (
     STYLES, BRACKETS, FREE_FONTS, channel_name, free_style_choices, premium_style_choices,
-    free_bracket_choices, premium_bracket_choices, to_plain, strip_brackets, wrap_brackets,
+    free_bracket_choices, premium_bracket_choices, to_plain, strip_brackets, wrap_brackets, plain_name,
 )
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EMOJI = "☑️"
+# Default look of a suggested channel: its own emoji + a fancy font + brackets,
+# e.g. 👋【𝐰𝐞𝐥𝐜𝐨𝐦𝐞】. "bold" and "cjk" are both free-tier, so nothing here needs
+# Premium. The owner can still restyle any name from the font panel.
+DEFAULT_EMOJI = "☑️"  # fallback only, for a key with no entry below
+DEFAULT_FONT = "bold"
+DEFAULT_BRACKET = "cjk"
+CHANNEL_EMOJIS = {
+    "welcome": "👋",
+    "mod-logs": "🛡️",
+    "bump": "📣",
+    "level-ups": "📈",
+    "chatroom": "💬",
+    "music-room": "🎵",
+    "genz-corner": "✨",
+    "announcements": "📢",
+    "rules": "📜",
+}
 SETUP_CATEGORY_NAME = "📋 Server Setup"
 
 # key -> (default channel name w/o emoji, short description shown in the
@@ -129,11 +145,13 @@ def _clone_id_of(client) -> int | None:
 def _default_name(key: str, custom_names: dict) -> str:
     """Returns the name to actually create the channel with — a stored
     custom override if the owner has already renamed this one before, else
-    the default name with the ☑️ prefix."""
+    the default: a per-channel emoji, then the name in DEFAULT_FONT wrapped in
+    DEFAULT_BRACKET (e.g. 📣【𝐛𝐮𝐦𝐩】)."""
     if key in custom_names:
         return custom_names[key]
     base = CORE_CHANNELS.get(key, SOFT_CHANNELS.get(key))[0]
-    return f"{DEFAULT_EMOJI}{base}"
+    emoji = CHANNEL_EMOJIS.get(key, DEFAULT_EMOJI)
+    return f"{emoji}{channel_name(base, DEFAULT_FONT, True, DEFAULT_BRACKET)}"
 
 
 def _create_button_label(entry_name: str) -> str:
@@ -186,7 +204,7 @@ async def scan_missing_channels(guild: discord.Guild, clone_id: int | None) -> l
         missing.append(_entry("level-ups", CORE_CHANNELS, custom_names))
 
     # --- soft (keyword-heuristic) ---
-    existing_names = [c.name.lower() for c in guild.text_channels]
+    existing_names = [plain_name(c.name) for c in guild.text_channels]
     soft_ids = suggestions.get("soft_channel_ids") or {}
     for key, (base_name, desc, seed, keywords) in SOFT_CHANNELS.items():
         if key in dismissed:
@@ -266,23 +284,44 @@ async def _resolve_member(interaction: discord.Interaction, guild_id: int):
 
 
 
+_BRACKET_CHARS = set("".join(l + r for _k, (_lbl, l, r) in BRACKETS.items()))
+
+
+def _split_prefix(name: str) -> tuple:
+    """('👋', '【𝐰𝐞𝐥𝐜𝐨𝐦𝐞】') — the leading emoji, kept OUTSIDE any brackets, and the
+    rest. Without this, restyling a default name wrapped the emoji inside the
+    new brackets and left the old left bracket behind (【👋【𝐰𝐞𝐥𝐜𝐨𝐦𝐞】)."""
+    name = name or ""
+    i = 0
+    while i < len(name):
+        ch = name[i]
+        if to_plain(ch).isalnum() or ch in _BRACKET_CHARS or ch in "-_ ":
+            break
+        i += 1
+    return name[:i], name[i:]
+
+
 def _styled_name(base: str, font, bracket) -> str:
     """base -> final channel name. font/bracket None = leave that part alone.
     Text channels can't hold spaces or capitals, so this hyphenates/lowercases
-    the same way /style does."""
+    the same way /style does. A leading emoji stays in front of the brackets."""
     if font is None and bracket is None:
         return base
+    prefix, rest = _split_prefix(base)
     if font is None:
-        plain = strip_brackets(to_plain(base))
-        return wrap_brackets("-".join(plain.lower().split()), bracket)[:100]
-    return channel_name(base, font, True, bracket)
+        plain = strip_brackets(to_plain(rest))
+        return (prefix + wrap_brackets("-".join(plain.lower().split()), bracket))[:100]
+    return (prefix + channel_name(rest, font, True, bracket))[:100]
 
 
 class _NamePanel:
     """State for one open font panel (in memory, expires after 10 minutes)."""
 
-    def __init__(self, guild_id: int, key: str, page: int, base: str, v2: bool):
+    def __init__(self, guild_id: int, key: str, page: int, base: str, v2: bool, names: dict | None = None):
         self.guild_id, self.key, self.page, self.v2 = guild_id, key, page, v2
+        # names = {key: current name} when this panel styles EVERY suggestion
+        # at once ("Style all"); None for the one-channel panel.
+        self.names = names
         self.base = base
         self.font = None
         self.bracket = None
@@ -301,13 +340,25 @@ class _NamePanel:
     # -- rendering --------------------------------------------------------
     def _lines(self) -> list:
         font = f"**{STYLES[self.font][0]}**" if self.font else "*plain*"
-        lines = [
-            "\U0001f524 **Style this channel name**",
-            f"**Name** \u2014 `{self.base.replace(chr(96), chr(39))}`",
-            f"**Font** \u2014 {font}",
-            f"**Brackets** \u2014 {BRACKETS[self.bracket][0] if self.bracket else '*none*'}",
-            "", "**Preview**", self.result,
-        ]
+        brackets = BRACKETS[self.bracket][0] if self.bracket else "*none*"
+        if self.names:
+            lines = [
+                f"\U0001f3a8 **Style all {len(self.names)} suggested channels**",
+                "Pick a font and brackets once \u2014 every name below is restyled together "
+                "(each channel keeps its own emoji).",
+                f"**Font** \u2014 {font}",
+                f"**Brackets** \u2014 {brackets}",
+                "", "**Preview**",
+                *[_styled_name(n, self.font, self.bracket) for n in self.names.values()],
+            ]
+        else:
+            lines = [
+                "\U0001f524 **Style this channel name**",
+                f"**Name** \u2014 `{self.base.replace(chr(96), chr(39))}`",
+                f"**Font** \u2014 {font}",
+                f"**Brackets** \u2014 {brackets}",
+                "", "**Preview**", self.result,
+            ]
         lock = self.block()
         if lock and not self.status:
             lines += ["", lock]
@@ -317,10 +368,12 @@ class _NamePanel:
 
     def _items(self):
         """Rows of fresh components: [[select], [select], [select], [select], [buttons]]"""
+        buttons = [_PSaveButton(self), _PBackButton(self)] if self.names else [
+            _PEditButton(self), _PSaveButton(self), _PBackButton(self)]
         return [
             [_PFontSelect(self, False)], [_PFontSelect(self, True)],
             [_PBracketSelect(self, False)], [_PBracketSelect(self, True)],
-            [_PEditButton(self), _PSaveButton(self), _PBackButton(self)],
+            buttons,
         ]
 
     def build(self):
@@ -401,12 +454,14 @@ class _PNameModal(discord.ui.Modal, title="Edit the channel name"):
         self.panel = panel
         self.field = discord.ui.TextInput(
             label="Base name (plain text)", max_length=80, required=True,
-            default=to_plain(panel.base)[:80],
+            default=plain_name(panel.base)[:80],
         )
         self.add_item(self.field)
 
     async def on_submit(self, interaction: discord.Interaction):
-        self.panel.base = str(self.field.value).strip() or self.panel.base
+        typed = str(self.field.value).strip()
+        if typed:
+            self.panel.base = _split_prefix(self.panel.base)[0] + typed
         self.panel.status = None
         await self.panel.refresh(interaction)
 
@@ -437,6 +492,15 @@ class _PSaveButton(discord.ui.Button):
         if panel.block():
             panel.status = None
             await panel.refresh(interaction)
+            return
+        if panel.names:
+            for k, n in panel.names.items():
+                styled = _styled_name(n, panel.font, panel.bracket).strip()[:90]
+                if styled:
+                    await db.set_custom_channel_name(panel.guild_id, k, styled, clone_id=clone_id)
+            await _show_suggestions(
+                interaction, panel.guild_id, panel.page,
+                f"\n\n\u2705 Styled {len(panel.names)} channel names \u2014 tap Create when you're ready.")
             return
         name = panel.result.strip()[:90]
         if not name:
@@ -470,6 +534,26 @@ async def _show_suggestions(interaction: discord.Interaction, guild_id: int, pag
         if note:
             embed.description = (embed.description or "") + note
         await interaction.response.edit_message(embed=embed, view=SetupSuggestView(guild_id, missing, page=page))
+
+
+async def open_style_all_panel(interaction: discord.Interaction, guild_id: int, page: int):
+    """Same font + bracket pickers as the one-channel panel, applied to every
+    pending suggestion at once (uses the shared modules.text_styles engine,
+    the same one /style and the join-DM font wizard run on)."""
+    from discord_bot.cogs.style import _premium_flags
+    clone_id = _clone_id_of(interaction.client)
+    guild = interaction.client.get_guild(guild_id)
+    missing = await scan_missing_channels(guild, clone_id) if guild else []
+    if not missing:
+        await interaction.response.send_message(
+            "Nothing left to style \u2014 every suggestion is already handled.", ephemeral=True)
+        return
+    panel = _NamePanel(guild_id, "*", page, missing[0]["name"], v2=is_v2_message(interaction),
+                       names={m["key"]: m["name"] for m in missing})
+    g, member = await _resolve_member(interaction, guild_id)
+    if g is not None and member is not None:
+        panel.premium_active, panel.can_manage = await _premium_flags(member, g, clone_id)
+    await interaction.response.edit_message(**panel.build())
 
 
 async def open_name_panel(interaction: discord.Interaction, guild_id: int, key: str, page: int, current_name: str):
@@ -539,6 +623,11 @@ class SetupSuggestView(discord.ui.View):
                 label="✅ Create All Suggested", style=discord.ButtonStyle.primary,
                 custom_id=f"setupch_createall:{guild_id}:{self.page}", row=4,
             ))
+        if missing:
+            self.add_item(discord.ui.Button(
+                label="🎨 Style all", style=discord.ButtonStyle.secondary,
+                custom_id=f"setupch_styleall:{guild_id}:{self.page}", row=4,
+            ))
         if self.page > 0:
             self.add_item(discord.ui.Button(
                 label="← Prev", style=discord.ButtonStyle.secondary,
@@ -566,7 +655,8 @@ def build_suggestions_embed(guild: discord.Guild, missing: list[dict], page: int
     embed = discord.Embed(
         title=f"📋 Suggested channels for {guild.name}",
         description="Create any of these individually, or use **Create All Suggested** for the fast path. "
-                    "Pick a font or edit the name before creating with the style dropdown below.",
+                    "Pick a font or edit the name before creating with the style dropdown below, "
+            "or tap **🎨 Style all** to restyle every name at once.",
         color=discord.Color.blurple(),
     )
     for entry in page_entries:
@@ -674,6 +764,10 @@ class SetupSuggestLayoutView(discord.ui.LayoutView):
             label="✅ Create All Suggested", style=discord.ButtonStyle.primary,
             custom_id=f"setupch_createall:{guild_id}:{page}",
         ))
+        bottom.append(discord.ui.Button(
+            label="🎨 Style all", style=discord.ButtonStyle.secondary,
+            custom_id=f"setupch_styleall:{guild_id}:{page}",
+        ))
         if page > 0:
             bottom.append(discord.ui.Button(
                 label="← Prev", style=discord.ButtonStyle.secondary,
@@ -730,7 +824,7 @@ class SetupChannelsCog(GuildOnlyCog):
             from discord_bot.cogs.bump_setup import get_or_create_bump_channel
             # One shared, locked get-or-create: reuses a bump channel the server
             # already has (whatever it's called — this wizard's own name is
-            # "☑️bump", which /bumpsetup and the restore pass used to not
+            # styled (e.g. 📣【𝐛𝐮𝐦𝐩】), which /bumpsetup and the restore pass used to not
             # recognise, so each made a second one) and is bot-posting-only when
             # it does have to create one. It seeds nothing itself; _seed_channel below does.
             channel, created = await get_or_create_bump_channel(
@@ -852,6 +946,9 @@ class SetupChannelsCog(GuildOnlyCog):
                 )
                 return
             await open_name_panel(interaction, guild_id, key, page, entry["name"])
+        elif custom_id.startswith("setupch_styleall:"):
+            _, guild_id_s, page_s = custom_id.split(":", 2)
+            await open_style_all_panel(interaction, int(guild_id_s), int(page_s))
         elif custom_id.startswith("setupch_create:"):
             _, guild_id_s, key, page_s = custom_id.split(":", 3)
             guild_id, page = int(guild_id_s), int(page_s)

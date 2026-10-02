@@ -63,7 +63,11 @@ _BUMP_NAME_RE = re.compile(r"(?<![a-z0-9])bumps?(?![a-z0-9])")
 
 
 def is_bump_channel_name(name: str) -> bool:
-    return bool(_BUMP_NAME_RE.search((name or "").lower()))
+    # Fold fancy fonts/brackets back to plain text first — the Server Setup
+    # wizard names its channel in a styled font (e.g. 📣【𝐛𝐮𝐦𝐩】), which the plain
+    # a-z regex can't see, so each path would otherwise create a second #bump.
+    from modules.text_styles import plain_name
+    return bool(_BUMP_NAME_RE.search(plain_name(name)))
 
 
 def find_existing_bump_channels(guild: discord.Guild, channels=None) -> list:

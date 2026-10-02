@@ -24,6 +24,7 @@ import random
 
 import aiohttp
 import discord
+from modules.text_styles import plain_name as _plain_name
 from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -219,7 +220,7 @@ class LevelingCog(GuildOnlyCog):
 
         # A #level-ups channel may already exist (made by a process that beat
         # us to it, or after a DB reset) — adopt it instead of making a twin.
-        same_name = discord.utils.get(guild.text_channels, name="level-ups")
+        same_name = discord.utils.find(lambda c: _plain_name(c.name) == "level-ups", guild.text_channels)
         if same_name is not None and same_name.permissions_for(guild.me).send_messages:
             await db.set_leveling_config(
                 guild.id, clone_id=clone_id,

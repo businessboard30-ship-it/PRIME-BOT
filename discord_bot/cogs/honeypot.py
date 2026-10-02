@@ -51,6 +51,7 @@ import logging
 from datetime import timedelta
 
 import discord
+from modules.text_styles import plain_name as _plain_name
 from discord import app_commands
 from discord.ext import commands
 
@@ -220,7 +221,7 @@ async def _refresh_warning(guild: discord.Guild, cfg: dict) -> int | None:
 
 def _find_existing_channel(guild: discord.Guild):
     for ch in guild.text_channels:
-        if ch.name.lower().strip("-_ ") in (CHANNEL_NAME, f"{CHANNEL_NAME}s"):
+        if _plain_name(ch.name) in (CHANNEL_NAME, f"{CHANNEL_NAME}s"):
             return ch
     return None
 

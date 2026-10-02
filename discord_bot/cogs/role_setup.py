@@ -26,6 +26,7 @@ import logging
 from typing import Optional
 
 import discord
+from modules.text_styles import plain_name as _plain_name
 from discord import app_commands
 from discord.ext import commands
 
@@ -162,7 +163,7 @@ class FinishButton(discord.ui.Button):
                 return
         else:
             channel = discord.utils.find(
-                lambda c: c.name == DEFAULT_PANEL_CHANNEL_NAME, guild.text_channels
+                lambda c: _plain_name(c.name) == DEFAULT_PANEL_CHANNEL_NAME, guild.text_channels
             )
             if channel is None:
                 try:

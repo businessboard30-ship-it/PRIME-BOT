@@ -269,6 +269,16 @@ def strip_brackets(text: str) -> str:
     return text
 
 
+def plain_name(text: str) -> str:
+    """Searchable form of a (possibly styled) channel name: fancy font folded
+    back to plain letters, brackets/emoji/decoration dropped, lowercased.
+    '📣【𝐛𝐮𝐦𝐩】' -> 'bump'. Use this whenever the bot looks a channel up BY NAME —
+    a styled name never equals or contains the plain word, so a raw
+    `"bump" in channel.name` check silently finds nothing."""
+    plain = to_plain(text or "").lower()
+    return "".join(ch for ch in plain if ch.isalnum() or ch in "-_ ").strip(" -_")
+
+
 def wrap_brackets(text: str, bracket) -> str:
     if not bracket or bracket not in BRACKETS:
         return text

@@ -38,6 +38,7 @@ import re
 import time
 
 import discord
+from modules.text_styles import plain_name as _plain_name
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -112,7 +113,7 @@ def _suggest_description_and_tags(guild: discord.Guild) -> tuple[str, list[str]]
     if not description:
         description = f"{guild.name} — a Discord community with {guild.member_count or '?'} members."
 
-    names = " ".join(c.name.lower() for c in guild.channels) if guild.channels else ""
+    names = " ".join(_plain_name(c.name) for c in guild.channels) if guild.channels else ""
     names += " " + " ".join((f or "").lower() for f in getattr(guild, "features", []))
     tags = [tag for tag, keywords in TAG_KEYWORDS.items() if any(kw in names for kw in keywords)]
     if not tags:
@@ -127,9 +128,9 @@ def _suggest_perks(guild: discord.Guild) -> list[str]:
     perks: list[str] = []
     if any(c.type == discord.ChannelType.voice for c in guild.channels):
         perks.append("Custom voice channels on demand")
-    if any("event" in c.name.lower() or "tournament" in c.name.lower() for c in guild.channels):
+    if any("event" in _plain_name(c.name) or "tournament" in _plain_name(c.name) for c in guild.channels):
         perks.append("Weekly tournaments and events")
-    if any("bot" in c.name.lower() or "economy" in c.name.lower() for c in guild.channels):
+    if any("bot" in _plain_name(c.name) or "economy" in _plain_name(c.name) for c in guild.channels):
         perks.append("Custom bots for economy, music, and moderation")
     if getattr(guild, "premium_subscription_count", 0):
         perks.append(f"{guild.premium_subscription_count} server boosts and counting")
@@ -1113,10 +1114,10 @@ class BumpCog(commands.Cog):
                 if guild is None:
                     continue
                 channel = guild.get_channel(int(row["bump_channel_id"]))
-                if channel is None or "bump" in channel.name.lower():
+                if channel is None or "bump" in _plain_name(channel.name):
                     continue
                 from discord_bot.cogs._views_join_dm import _default_text_channel
-                if not (channel == _default_text_channel(guild) or "general" in channel.name.lower()):
+                if not (channel == _default_text_channel(guild) or "general" in _plain_name(channel.name)):
                     continue
                 try:
                     result = await self._restore_one_guild(guild, clone_id, row.get("configured_by"))

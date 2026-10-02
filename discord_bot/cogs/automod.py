@@ -43,6 +43,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import discord
+from modules.text_styles import plain_name as _plain_name
 from discord import app_commands
 from discord.ext import commands, tasks
 from discord_bot.cogs._dm_support import GuildOnlyCog
@@ -328,7 +329,7 @@ class AutomodCog(GuildOnlyCog):
             # create a SECOND mod-logs channel. Adopt the existing one
             # instead: treat it as ours, mark it auto-created, and surface
             # notice #1 for it, exactly as if we'd just created it.
-            existing = discord.utils.get(guild.text_channels, name=DEFAULT_LOG_CHANNEL_NAME)
+            existing = discord.utils.find(lambda c: _plain_name(c.name) == DEFAULT_LOG_CHANNEL_NAME, guild.text_channels)
             if existing is not None:
                 await db.set_automod_config(
                     guild.id, clone_id=clone_id,

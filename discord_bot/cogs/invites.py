@@ -36,6 +36,7 @@ import logging
 from datetime import timedelta
 
 import discord
+from modules.text_styles import plain_name as _plain_name
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -72,7 +73,7 @@ def _suggested_channel(guild: discord.Guild):
         return guild.system_channel
     for hint in DEFAULT_CHANNEL_NAME_HINTS:
         for channel in guild.text_channels:
-            if hint in channel.name.lower() and channel.permissions_for(guild.me).send_messages:
+            if hint in _plain_name(channel.name) and channel.permissions_for(guild.me).send_messages:
                 return channel
     for channel in guild.text_channels:
         if channel.permissions_for(guild.me).send_messages:

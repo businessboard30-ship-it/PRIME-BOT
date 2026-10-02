@@ -28,6 +28,7 @@ import logging
 import secrets
 
 import discord
+from modules.text_styles import plain_name as _plain_name
 
 from database import db
 from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, CUSTOM_ROLE_FEE_USD, AD_PLACEMENT_FEE_USD
@@ -1360,9 +1361,9 @@ def _is_general_chat_channel(guild: discord.Guild, channel) -> bool:
     """True for the channel an old version of _enable_bump used to default the
     bump network into: the server's system channel / #general. Ads and other
     servers' bumps don't belong in the main chat."""
-    if channel is None or "bump" in channel.name.lower():
+    if channel is None or "bump" in _plain_name(channel.name):
         return False
-    return channel == _default_text_channel(guild) or "general" in channel.name.lower()
+    return channel == _default_text_channel(guild) or "general" in _plain_name(channel.name)
 
 
 async def _enable_bump(interaction: discord.Interaction, guild: discord.Guild, clone_id):

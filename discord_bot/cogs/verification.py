@@ -20,6 +20,7 @@ restart mid-flow, unlike the persistent verify button which does.
 import logging
 
 import discord
+from modules.text_styles import plain_name as _plain_name
 from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands
@@ -131,7 +132,7 @@ class AutoCreateVerifyChannelButton(discord.ui.Button):
         # re-running /setupverification (a brand new WizardView with no
         # memory of the earlier click) — source of truth is the guild
         # itself, not this view.
-        existing_by_name = discord.utils.get(interaction.guild.text_channels, name="verify")
+        existing_by_name = discord.utils.find(lambda c: _plain_name(c.name) == "verify", interaction.guild.text_channels)
         if existing_by_name is not None:
             wizard.channel_id = existing_by_name.id
             wizard.auto_created_channel_id = existing_by_name.id
