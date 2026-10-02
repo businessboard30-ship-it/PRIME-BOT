@@ -33,6 +33,11 @@ Free for every server: setting up the trap, enforcement (ban + wipe the last 24h
 of messages), pause/resume, repost, remove, the catch counter, and logging to the
 server's mod-log channel.
 
+Staff alerts and stats (free): pick a role and it is pinged in the log channel on
+every catch (and on a failed action, which needs a human). The panel shows catches
+over the last 24h / 7d / 30d, and a test button sends a sample alert without
+touching anyone. Stats come from discord_honeypot_catches (90-day retention).
+
 Premium extras (per server): choosing the action (kick / 28-day timeout), choosing
 how much history to wipe, and a dedicated log channel. If premium lapses, the
 saved extras are kept but not used: the trap keeps protecting the server with the
@@ -279,7 +284,8 @@ async def ensure_honeypot(guild: discord.Guild, clone_id, user) -> tuple:
 
 # ── enforcement ───────────────────────────────────────────────────────────
 
-async def _send_log(guild: discord.Guild, clone_id, cfg: dict, embed: discord.Embed) -> None:
+async def _send_log(guild: discord.Guild, clone_id, cfg: dict, embed: discord.Embed,
+                    content: str | None = None, ping_role: discord.Role | None = None) -> bool:
     channel_id = cfg.get("log_channel_id")
     if not channel_id:
         try:
@@ -289,11 +295,30 @@ async def _send_log(guild: discord.Guild, clone_id, cfg: dict, embed: discord.Em
             channel_id = None
     channel = guild.get_channel(channel_id) if channel_id else None
     if channel is None:
-        return
+        return False
+    # Only the one configured alert role can ever be pinged; never @everyone or users.
+    allowed = (discord.AllowedMentions(everyone=False, users=False, roles=[ping_role])
+               if ping_role is not None else discord.AllowedMentions.none())
     try:
-        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await channel.send(content=content, embed=embed, allowed_mentions=allowed)
+        return True
     except (discord.Forbidden, discord.HTTPException):
-        pass
+        return False
+
+
+def alert_role_of(guild: discord.Guild, cfg: dict) -> discord.Role | None:
+    rid = cfg.get("alert_role_id")
+    role = guild.get_role(int(rid)) if rid else None
+    if role is None or role.is_default():
+        return None
+    return role
+
+
+def alert_content(role: discord.Role | None, ok: bool) -> str | None:
+    if role is None:
+        return None
+    return (f"{role.mention} 🍯 a honeypot was triggered." if ok
+            else f"{role.mention} ⚠️ a honeypot was triggered and I could NOT act — needs a human.")
 
 
 async def _apply_action(guild: discord.Guild, member: discord.Member, cfg: dict) -> tuple:
@@ -356,6 +381,10 @@ async def trip(bot, message: discord.Message, cfg: dict) -> None:
             pass
 
         ok, detail = await _apply_action(guild, member, cfg)
+        try:
+            await db.record_honeypot_catch(guild.id, clone_id, member.id, action, ok)
+        except Exception:
+            logger.exception("honeypot catch log failed for guild %s", guild.id)
         if ok:
             try:
                 await db.bump_honeypot_triggers(guild.id, clone_id=clone_id)
@@ -378,7 +407,8 @@ async def trip(bot, message: discord.Message, cfg: dict) -> None:
         if joined:
             embed.add_field(name="Joined server", value=f"<t:{joined}:R>", inline=True)
         embed.set_thumbnail(url=member.display_avatar.url)
-        await _send_log(guild, clone_id, cfg, embed)
+        role = alert_role_of(guild, cfg)
+        await _send_log(guild, clone_id, cfg, embed, content=alert_content(role, ok), ping_role=role)
     finally:
         # keep the key briefly so a burst of queued messages is still swallowed
         async def _release():
@@ -428,9 +458,68 @@ async def warn_staff(bot, message: discord.Message, cfg: dict) -> None:
     await _send_log(guild, clone_id, cfg, embed)
 
 
+# ── test alert + stats ────────────────────────────────────────────────────
+
+_TEST_COOLDOWN = 20.0
+_last_test: dict = {}   # (guild_id, clone_id) -> monotonic time
+
+
+async def send_test_alert(bot, guild: discord.Guild, tester: discord.abc.User) -> tuple:
+    """Posts a SAMPLE catch (with the real alert-role ping) to wherever real catches
+    go. Nobody is actioned and the counters are untouched. Returns (ok, message)."""
+    clone_id = _clone_of(bot)
+    cfg = await db.get_honeypot_config(guild.id, clone_id=clone_id)
+    if not cfg.get("channel_id"):
+        return False, "Set up the honeypot first — there's no trap channel yet."
+    now = time.monotonic()
+    last = _last_test.get((guild.id, clone_id))
+    if last is not None and now - last < _TEST_COOLDOWN:
+        return False, f"Easy — try again in {int(_TEST_COOLDOWN - (now - last)) + 1}s."
+    premium = await is_premium(guild.id, clone_id)
+    eff = effective_config(cfg, premium)
+    role = alert_role_of(guild, eff)
+    embed = discord.Embed(
+        title="🧪 Honeypot TEST — nobody was actioned",
+        description=(f"This is what a real catch looks like. Triggered by {tester.mention} pressing "
+                     f"**Send test alert**; nothing was banned and the stats were not changed."),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="Would have done",
+                    value=f"{ACTIONS[eff.get('action') or 'ban'][1]} {ACTIONS[eff.get('action') or 'ban'][0]}",
+                    inline=False)
+    embed.set_thumbnail(url=tester.display_avatar.url)
+    _last_test[(guild.id, clone_id)] = now
+    sent = await _send_log(guild, clone_id, eff, embed,
+                           content=(f"{role.mention} 🧪 test alert — ignore." if role else None), ping_role=role)
+    if not sent:
+        return False, ("I couldn't post it. Set a log channel (or a mod-log channel) and make sure I can "
+                       "view, send and embed links there.")
+    where = f"<#{eff['log_channel_id']}>" if eff.get("log_channel_id") else "your mod-log channel"
+    return True, f"Sent a test alert to {where}" + (f", pinging {role.mention}." if role else ". No alert role is set, so nobody was pinged.")
+
+
+def stats_lines(stats: dict) -> list:
+    last = stats.get("last_at")
+    out = [f"**Caught:** {stats.get('day', 0)} today · {stats.get('week', 0)} this week · "
+           f"{stats.get('month', 0)} this month · {stats.get('total', 0)} all time"]
+    if stats.get("failed_month"):
+        out.append(f"⚠️ **{stats['failed_month']}** catch(es) this month where I couldn't act — check my permissions.")
+    if last:
+        out.append(f"**Last catch:** <t:{int(last.timestamp())}:R>")
+    return out
+
+
+async def _safe_stats(guild_id: int, clone_id) -> dict:
+    try:
+        return await db.get_honeypot_stats(guild_id, clone_id=clone_id)
+    except Exception:
+        logger.exception("honeypot stats failed for guild %s", guild_id)
+        return {}
+
+
 # ── settings panel ────────────────────────────────────────────────────────
 
-def _status_lines(guild: discord.Guild, cfg: dict, premium: bool) -> list:
+def _status_lines(guild: discord.Guild, cfg: dict, premium: bool, stats: dict | None = None) -> list:
     ch = cfg.get("channel_id")
     channel = f"<#{ch}>" if ch and guild.get_channel(ch) else "*missing — tap **Repost / recreate***"
     saved = cfg
@@ -446,12 +535,17 @@ def _status_lines(guild: discord.Guild, cfg: dict, premium: bool) -> list:
     if action != "timeout":
         lines.append(f"**History:** {DELETE_OPTIONS.get(int(cfg.get('delete_seconds') or 0), 'custom')}")
     lines.append(f"**Log channel:** {f'<#{log_id}>' if log_id else 'server mod-log (if set)'}")
-    n = int(cfg.get("triggered_count") or 0)
-    last = cfg.get("last_triggered_at")
-    caught = f"**Caught so far:** {n}"
-    if last:
-        caught += f" · last <t:{int(last.timestamp())}:R>"
-    lines.append(caught)
+    arole = alert_role_of(guild, cfg)
+    lines.append(f"**Staff alert:** {arole.mention if arole else 'no role set — pick one below'}")
+    if stats:
+        lines.extend(stats_lines(stats))
+    else:
+        n = int(cfg.get("triggered_count") or 0)
+        last = cfg.get("last_triggered_at")
+        caught = f"**Caught so far:** {n}"
+        if last:
+            caught += f" · last <t:{int(last.timestamp())}:R>"
+        lines.append(caught)
     if not premium:
         lines.append(
             "\n💎 **Premium extras** (the trap itself stays free):\n"
@@ -466,7 +560,8 @@ def _status_lines(guild: discord.Guild, cfg: dict, premium: bool) -> list:
     return lines
 
 
-def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: str = "") -> discord.ui.LayoutView:
+def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: str = "",
+                stats: dict | None = None) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
     if cfg.get("enabled"):
         color = discord.Color.green()
@@ -477,7 +572,7 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: 
         container.add_item(discord.ui.TextDisplay(note))
     container.add_item(discord.ui.TextDisplay(
         "### 🍯 Honeypot\n"
-        + "\n".join(perm_check.lines(guild.id, clone_id) + _status_lines(guild, cfg, premium))
+        + "\n".join(perm_check.lines(guild.id, clone_id) + _status_lines(guild, cfg, premium, stats))
         + "\n\n-# Anyone who posts in the trap channel gets the action below. Staff (mod/admin perms) get a warning instead."
     ))
     container.add_item(discord.ui.Separator())
@@ -496,11 +591,21 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: 
         log_row.add_item(HoneypotLogSelect(guild.id, clone_id))
         container.add_item(log_row)
 
+    alert_row = discord.ui.ActionRow()   # free for every server: it's the core safety feature
+    alert_row.add_item(HoneypotAlertRoleSelect(guild.id, clone_id))
+    container.add_item(alert_row)
+
+    if cfg.get("alert_role_id"):
+        clear_row = discord.ui.ActionRow()
+        clear_row.add_item(HoneypotButton("clearalert", guild.id, clone_id))
+        container.add_item(clear_row)
+
     btn_row = discord.ui.ActionRow()
     paused = not cfg.get("enabled")
     btn_row.add_item(HoneypotButton("pause", guild.id, clone_id, paused=paused))
     btn_row.add_item(HoneypotButton("repost", guild.id, clone_id))
     btn_row.add_item(HoneypotButton("remove", guild.id, clone_id))
+    btn_row.add_item(HoneypotButton("test", guild.id, clone_id))
     if not premium:
         btn_row.add_item(HoneypotButton("upgrade", guild.id, clone_id))
     container.add_item(btn_row)
@@ -564,7 +669,8 @@ async def _rerender(interaction: discord.Interaction, guild: discord.Guild, clon
         await interaction.response.defer()
     cfg = await db.get_honeypot_config(guild.id, clone_id=clone_id)
     premium = await is_premium(guild.id, clone_id)
-    await interaction.edit_original_response(view=build_panel(guild, clone_id, cfg, premium))
+    stats = await _safe_stats(guild.id, clone_id)
+    await interaction.edit_original_response(view=build_panel(guild, clone_id, cfg, premium, stats=stats))
 
 
 async def open_honeypot(interaction: discord.Interaction, guild: discord.Guild, clone_id) -> None:
@@ -577,7 +683,7 @@ async def open_honeypot(interaction: discord.Interaction, guild: discord.Guild, 
     premium = await is_premium(guild.id, clone_id)
     note = (f"🍯 Created {channel.mention} and posted the warning notice in it."
             if created else f"🍯 Honeypot is live in {channel.mention}.")
-    view = build_panel(guild, clone_id, cfg, premium, note=note)
+    view = build_panel(guild, clone_id, cfg, premium, note=note, stats=await _safe_stats(guild.id, clone_id))
     await interaction.followup.send(view=view, ephemeral=True)   # no `content=`: v2 views reject it
 
 
@@ -670,7 +776,40 @@ class HoneypotLogSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], templa
         await _rerender(interaction, guild, self.clone_id)
 
 
+class HoneypotAlertRoleSelect(discord.ui.DynamicItem[discord.ui.RoleSelect], template=_pat("alertrole")):
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id, self.clone_id = guild_id, clone_id
+        super().__init__(discord.ui.RoleSelect(
+            placeholder="Staff role to ping on every catch (optional)",
+            min_values=1, max_values=1, custom_id=_cid("alertrole", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(*_ids(match))
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = await _authorize(interaction, self.guild_id)
+        if guild is None:
+            return
+        role = guild.get_role(self.item.values[0].id)
+        if role is None or role.is_default():
+            await _reply(interaction, "Pick a real role — @everyone can't be the alert role.")
+            return
+        await interaction.response.defer()
+        await db.set_honeypot_config(guild.id, clone_id=self.clone_id, alert_role_id=role.id)
+        _invalidate(guild.id, self.clone_id)
+        await _rerender(interaction, guild, self.clone_id)
+        if not role.mentionable and not guild.me.guild_permissions.mention_everyone:
+            await interaction.followup.send(
+                f"Heads up — {role.mention} isn't mentionable and I don't have **Mention Everyone**, "
+                "so Discord won't ping it. Make the role mentionable or give me that permission.",
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
 _BUTTONS = {
+    "test":      ("Send test alert", discord.ButtonStyle.success, "🧪"),
+    "clearalert": ("Clear alert role", discord.ButtonStyle.secondary, "🔕"),
     "pause":     ("Pause", discord.ButtonStyle.secondary, "⏸️"),
     "repost":    ("Repost / recreate", discord.ButtonStyle.primary, "🔁"),
     "remove":    ("Remove honeypot", discord.ButtonStyle.danger, "🗑️"),
@@ -680,7 +819,7 @@ _BUTTONS = {
 }
 
 
-class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("pause|repost|remove|removeyes|removeno|upgrade")):
+class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("pause|repost|remove|removeyes|removeno|upgrade|test|clearalert")):
     def __init__(self, kind: str, guild_id: int, clone_id, paused: bool = False):
         self.kind, self.guild_id, self.clone_id = kind, guild_id, clone_id
         label, style, emoji = _BUTTONS[kind]
@@ -702,7 +841,19 @@ class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("p
             return
         clone_id = self.clone_id
 
-        if self.kind == "upgrade":
+        if self.kind == "test":
+            await interaction.response.defer(ephemeral=True)
+            ok, msg = await send_test_alert(interaction.client, guild, interaction.user)
+            await interaction.followup.send(("✅ " if ok else "⚠️ ") + msg, ephemeral=True,
+                                            allowed_mentions=discord.AllowedMentions.none())
+
+        elif self.kind == "clearalert":
+            await interaction.response.defer()
+            await db.set_honeypot_config(guild.id, clone_id=clone_id, alert_role_id=None)
+            _invalidate(guild.id, clone_id)
+            await _rerender(interaction, guild, clone_id)
+
+        elif self.kind == "upgrade":
             # Reached only when the server is premium now (the pitch is shown otherwise): just refresh.
             await _rerender(interaction, guild, clone_id)
 
@@ -761,7 +912,7 @@ class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("p
             await interaction.edit_original_response(view=done)
 
 
-DYNAMIC_ITEMS = (HoneypotActionSelect, HoneypotHistorySelect, HoneypotLogSelect, HoneypotButton)
+DYNAMIC_ITEMS = (HoneypotActionSelect, HoneypotHistorySelect, HoneypotLogSelect, HoneypotAlertRoleSelect, HoneypotButton)
 
 
 # ── cog ───────────────────────────────────────────────────────────────────

@@ -139,7 +139,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "44"
+SCHEMA_VERSION = "45"
+# "44" -> "45" adds discord_honeypot_catches (per-catch log for the stats screen)
+# and discord_honeypot_config.alert_role_id (staff ping) — see
+# discord_bot/cogs/honeypot.py. Same bump-or-it-never-runs trap as every entry below.
 # "43" -> "44" adds discord_welcome_extras (goodbye message, auto-role for new
 # members / bots) next to the honeypot DDL — see discord_bot/cogs/welcome_extras.py.
 # Same bump-or-it-never-runs trap as every entry below.
@@ -2635,6 +2638,25 @@ class Database:
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS discord_honeypot_config_guild_clone_key
             ON discord_honeypot_config (guild_id, COALESCE(clone_id, -1))
+        """)
+        # --- Honeypot: staff alert role + per-catch log for stats ---------------
+        await conn.execute(
+            "ALTER TABLE discord_honeypot_config ADD COLUMN IF NOT EXISTS alert_role_id BIGINT"
+        )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_honeypot_catches (
+                id BIGSERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                user_id BIGINT NOT NULL,
+                action TEXT NOT NULL,
+                succeeded BOOLEAN NOT NULL DEFAULT TRUE,
+                caught_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS discord_honeypot_catches_guild_idx
+            ON discord_honeypot_catches (guild_id, caught_at DESC)
         """)
         # --- Welcome extras: goodbye message + auto-roles ------------------------
         # One row per guild(+clone). Kept out of discord_welcome_config so the
@@ -9802,7 +9824,7 @@ class Database:
 
     _HONEYPOT_FIELDS = (
         "channel_id", "enabled", "action", "delete_seconds", "log_channel_id",
-        "warning_message_id", "channel_auto_created", "created_by",
+        "warning_message_id", "channel_auto_created", "created_by", "alert_role_id",
     )
 
     async def get_honeypot_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
@@ -9819,6 +9841,7 @@ class Database:
                 "action": "ban", "delete_seconds": 86400, "log_channel_id": None,
                 "warning_message_id": None, "channel_auto_created": False,
                 "triggered_count": 0, "last_triggered_at": None, "created_by": None,
+                "alert_role_id": None,
             }
 
     async def set_honeypot_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
@@ -9832,19 +9855,69 @@ class Database:
                 """
                 INSERT INTO discord_honeypot_config
                     (guild_id, clone_id, channel_id, enabled, action, delete_seconds,
-                     log_channel_id, warning_message_id, channel_auto_created, created_by)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     log_channel_id, warning_message_id, channel_auto_created, created_by,
+                     alert_role_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
                     SET channel_id = $3, enabled = $4, action = $5, delete_seconds = $6,
                         log_channel_id = $7, warning_message_id = $8, channel_auto_created = $9,
-                        created_by = $10
+                        created_by = $10, alert_role_id = $11
                 RETURNING *
                 """,
                 guild_id, clone_id, merged["channel_id"], merged["enabled"], merged["action"],
                 merged["delete_seconds"], merged["log_channel_id"], merged["warning_message_id"],
-                merged["channel_auto_created"], merged["created_by"],
+                merged["channel_auto_created"], merged["created_by"], merged["alert_role_id"],
             )
             return dict(row)
+
+    HONEYPOT_CATCH_RETENTION_DAYS = 90
+
+    async def record_honeypot_catch(self, guild_id: int, clone_id: Optional[int], user_id: int,
+                                    action: str, succeeded: bool) -> None:
+        """One row per trip for the stats screen. Rows older than the retention
+        window for this guild are pruned on insert, so the table can't grow forever."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO discord_honeypot_catches (guild_id, clone_id, user_id, action, succeeded) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                guild_id, clone_id, user_id, action, succeeded
+            )
+            await conn.execute(
+                "DELETE FROM discord_honeypot_catches WHERE guild_id = $1 "
+                "AND caught_at < NOW() - make_interval(days => $2)",
+                guild_id, self.HONEYPOT_CATCH_RETENTION_DAYS
+            )
+
+    async def get_honeypot_stats(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Catches in the last 24h / 7d / 30d (successful actions only), the
+        lifetime counter, failed attempts in 30d, and the last catch time."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT
+                  COUNT(*) FILTER (WHERE succeeded AND caught_at > NOW() - INTERVAL '1 day')   AS d1,
+                  COUNT(*) FILTER (WHERE succeeded AND caught_at > NOW() - INTERVAL '7 days')  AS d7,
+                  COUNT(*) FILTER (WHERE succeeded AND caught_at > NOW() - INTERVAL '30 days') AS d30,
+                  COUNT(*) FILTER (WHERE NOT succeeded AND caught_at > NOW() - INTERVAL '30 days') AS failed30,
+                  MAX(caught_at) AS last_at
+                FROM discord_honeypot_catches
+                WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                """,
+                guild_id, clone_id
+            )
+            cfg = await conn.fetchrow(
+                "SELECT triggered_count, last_triggered_at FROM discord_honeypot_config "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+        return {
+            "day": int(row["d1"] or 0), "week": int(row["d7"] or 0), "month": int(row["d30"] or 0),
+            "failed_month": int(row["failed30"] or 0),
+            "total": int((cfg or {}).get("triggered_count") or 0),
+            "last_at": row["last_at"] or (cfg or {}).get("last_triggered_at"),
+        }
 
     async def bump_honeypot_triggers(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         pool = await get_pool()

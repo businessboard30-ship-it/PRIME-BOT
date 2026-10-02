@@ -404,7 +404,7 @@ def test_health_shows_panel_usage_or_that_it_could_not_be_checked(env, monkeypat
 def test_migration_is_wired_and_schema_version_bumped():
     root = Path(__file__).resolve().parents[2]
     src = (root / "database.py").read_text()
-    assert 'SCHEMA_VERSION = "44"' in src
+    assert 'SCHEMA_VERSION = "45"' in src
     assert "025_server_panel_usage.sql" in src
     sql = (root / "database" / "migrations" / "025_server_panel_usage.sql").read_text()
     assert "CREATE TABLE IF NOT EXISTS server_panel_usage" in sql
