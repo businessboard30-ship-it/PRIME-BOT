@@ -185,6 +185,7 @@ class ReferralGiveawayView(PanelView):
         self.notice: Optional[str] = None
         self.error = False
         self._confirm = False
+        self._confirm_delete = False
         super().__init__(cog, owner_id, section)
 
     # ── data ──
@@ -246,6 +247,9 @@ class ReferralGiveawayView(PanelView):
                 lines.append("No referrals yet.")
             if self._confirm:
                 lines.append("⚠️ **Press Confirm to end it now and pick the winners from the standings above.**")
+        if self._confirm_delete:
+            lines.append(f"🗑️ **Press Confirm delete to remove giveaway #{cur['id']} for good"
+                         + (" and take down its public post" if cur.get("message_id") else "") + ".**")
         elif not cur["winners"]:
             lines.append("Ended with no winners (nobody referred anyone).")
         else:
@@ -298,6 +302,8 @@ class ReferralGiveawayView(PanelView):
             _btn("Confirm end" if self._confirm else "End & pick winners", D, self._end, "🏁", disabled=not active),
             _btn("Mark prize given", G, self._mark, "✅", disabled=self.pick_winner is None),
             _btn("Retry role", S, self._retry, "🔁", disabled=not failed),
+            _btn("Confirm delete" if self._confirm_delete else "Delete giveaway", D, self._delete, "🗑️",
+                 disabled=cur is None),
             _btn("Refresh", S, self._refresh, "🔄"),
             _btn("Back", S, self._back, "⬅️"),
         ]
@@ -311,8 +317,34 @@ class ReferralGiveawayView(PanelView):
     async def _back(self, i):
         await _home(self, i)
 
+    async def _delete(self, i):
+        cur = self._current()
+        if cur is None:
+            await self._redraw(i)
+            return
+        if not self._confirm_delete:                # first press only arms the button
+            self._confirm_delete, self._confirm = True, False
+            self._build()
+            await i.response.edit_message(view=self)
+            return
+        self._confirm_delete = False
+        try:
+            gone = await rg.delete_giveaway(cur["id"])
+        except Exception:
+            logger.exception("[admin-panel] couldn't delete referral giveaway %s", cur["id"])
+            self.notice = NOTHING_CHANGED
+            await self._redraw(i)
+            return
+        if gone is None:
+            self.notice = "Nothing changed: it was already deleted."
+        else:
+            audit(i, "referral.giveaway.delete", id=cur["id"], status=cur["status"])
+            took_down = await rgp.delete_post(i.client, gone) if gone.get("message_id") else False
+            self.notice = f"🗑️ Giveaway **#{cur['id']}** deleted." + (" Public post removed." if took_down else "")
+        await self._redraw(i)
+
     async def _refresh(self, i):
-        self.notice, self._confirm = None, False
+        self.notice, self._confirm, self._confirm_delete = None, False, False
         cur = self._current()
         if cur is not None and cur.get("message_id"):
             await rgp.refresh_post(i.client, cur)
@@ -374,7 +406,7 @@ class ReferralGiveawayView(PanelView):
 
     async def _pick(self, i):
         self.selected = int(i.data["values"][0])
-        self.notice, self._confirm, self.pick_winner = None, False, None
+        self.notice, self._confirm, self._confirm_delete, self.pick_winner = None, False, False, None
         await self._redraw(i)
 
     async def _pick_winner(self, i):

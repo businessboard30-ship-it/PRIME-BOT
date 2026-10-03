@@ -260,3 +260,12 @@ async def set_role(giveaway_id: int, guild_id: Optional[int], role_id: Optional[
             "UPDATE referral_giveaways SET prize_kind = $2, guild_id = $3, role_id = $4 "
             "WHERE id = $1 AND status = 'active' RETURNING *", giveaway_id, kind, guild_id, role_id)
     return _decode(dict(row)) if row else None
+
+
+async def delete_giveaway(giveaway_id: int) -> Optional[dict]:
+    """Permanently remove a giveaway (active or ended). Returns the deleted row so the caller can
+    take down its public post, or None if it was already gone. Referral redemptions are NOT touched."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("DELETE FROM referral_giveaways WHERE id = $1 RETURNING *", giveaway_id)
+    return _decode(dict(row)) if row else None

@@ -456,3 +456,25 @@ def test_join_dm_has_referral_code_button_that_redeems(monkeypatch):
     run(m.on_submit(i))
     refs.use_referral_code.assert_awaited_once_with(i.user.id, "zz99")
     assert "doesn't match" in i.followup.send.call_args.args[0]
+
+
+def test_delete_giveaway_is_two_step_and_removes_it(vp, db, monkeypatch):
+    from unittest.mock import AsyncMock
+    gid = run(vp.rg.create_giveaway("T", "P", 7, 1, OWNER))
+    orig = db.fetchrow
+
+    async def fetchrow(sql, *a):
+        if sql.startswith("DELETE FROM referral_giveaways"):
+            return db.giveaways.pop(a[0], None)
+        return await orig(sql, *a)
+    db.fetchrow = fetchrow
+    gone_post = AsyncMock(return_value=True)
+    monkeypatch.setattr(vp.rgp, "delete_post", gone_post)
+    v = vp.ReferralGiveawayView(cog(), OWNER)
+    v.selected = gid
+    run(v.load())
+    press(v, "Delete giveaway")
+    assert gid in db.giveaways and "Confirm delete" in buttons(v)
+    press(v, "Confirm delete")
+    assert gid not in db.giveaways and vp.audit.call_args.args[1] == "referral.giveaway.delete"
+    assert "deleted" in text_of(v)

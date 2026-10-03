@@ -250,6 +250,19 @@ async def refresh_post(bot, g: dict) -> bool:
         return False
 
 
+async def delete_post(bot, g: dict) -> bool:
+    """Take the public post down. Never raises; False if it was already gone or couldn't be deleted."""
+    msg = await _fetch_message(bot, g)
+    if msg is None:
+        return False
+    try:
+        await msg.delete()
+        return True
+    except discord.HTTPException as e:
+        logger.warning("[referral-giveaway-post] couldn't delete post for #%s: %s", g.get("id"), e)
+        return False
+
+
 async def announce_winners(bot, g: dict) -> None:
     """Refresh the post into its 'ended' form and reply under it with the winners."""
     await refresh_post(bot, g)
