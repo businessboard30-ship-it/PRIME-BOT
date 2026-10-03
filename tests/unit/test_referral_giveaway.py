@@ -421,3 +421,20 @@ def test_enter_a_code_modal_redeems_and_refuses_on_ended_giveaway(vp, db, monkey
     i2.followup.send = AsyncMock()
     run(m.on_submit(i2))
     assert "ended" in i2.followup.send.call_args.args[0] and refs.use_referral_code.await_count == 1
+
+
+def test_channel_select_gets_its_own_row_and_payload_is_valid(vp, db):
+    """Regression: ChannelSelect was packed into a row with buttons, so Discord rejected the
+    edit after 'New giveaway' and the modal just kept loading."""
+    gid = run(vp.rg.create_giveaway("T", "P", 7, 1, OWNER))
+    v = vp.ReferralGiveawayView(cog(), OWNER)
+    v.selected = gid
+    run(v.load())
+    rows = [c for c in v.walk_children() if isinstance(c, discord.ui.ActionRow)]
+    for r in rows:
+        kinds = [type(c) for c in r.children]
+        if any(issubclass(k, (discord.ui.ChannelSelect, discord.ui.Select)) for k in kinds):
+            assert len(kinds) == 1
+        assert len(kinds) <= 5
+    assert any(isinstance(c, discord.ui.ChannelSelect) for c in v.walk_children())
+    v.to_components()

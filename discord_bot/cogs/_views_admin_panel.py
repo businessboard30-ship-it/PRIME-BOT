@@ -120,6 +120,12 @@ async def call_cmd(owner_cog, name: str, interaction: discord.Interaction, **kwa
 
 # ── base view ────────────────────────────────────────────────────────────
 
+# A select must sit alone in its row. ChannelSelect/RoleSelect/UserSelect/MentionableSelect are NOT
+# subclasses of discord.ui.Select, so list them all or they get packed in with buttons (Discord 400).
+_SELECTS = (discord.ui.Select, discord.ui.ChannelSelect, discord.ui.RoleSelect,
+            discord.ui.UserSelect, discord.ui.MentionableSelect)
+
+
 class PanelView(discord.ui.LayoutView):
     """One screen of the panel. Subclasses fill `body()` and `controls()`."""
 
@@ -150,7 +156,7 @@ class PanelView(discord.ui.LayoutView):
             children.append(discord.ui.Separator())
             row: list = []
             for it in items:
-                if isinstance(it, discord.ui.Select):
+                if isinstance(it, _SELECTS):
                     if row:
                         children.append(discord.ui.ActionRow(*row)); row = []
                     children.append(discord.ui.ActionRow(it))
