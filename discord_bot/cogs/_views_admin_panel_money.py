@@ -151,7 +151,7 @@ class PendingView(_MoneyView):
 
     def body(self):
         lines = ["Payment references still waiting to be confirmed (newest first).",
-                 "-# Read-only. Manual/Selar payments are approved by the payment flow, not from here."]
+                 "-# Manual/Selar payments are approved by the payment flow, not from here."]
         if self.notice:
             lines.append(self.notice)
         if self._confirm:
