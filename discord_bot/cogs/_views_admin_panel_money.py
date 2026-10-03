@@ -24,7 +24,7 @@ from typing import List, Optional
 import discord
 
 from discord_bot.cogs._views_admin_panel import PANEL_TIMEOUT, PanelView, _btn, allowed_sections, audit
-from discord_bot.cogs._views_admin_panel_controls import _clip, _denied, _fit, _home, _ts
+from discord_bot.cogs._views_admin_panel_controls import TEXT_BUDGET, _clip, _denied, _fit, _home, _ts
 from modules import admin_money as money
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,17 @@ def _code(text: Optional[str], n: int = 60) -> str:
     """Text destined for a `code span`: markdown isn't interpreted there, so only
     backticks and pings need neutralising (escaping would show literal backslashes)."""
     return discord.utils.escape_mentions(_clip((text or "").replace("`", "'"), n))
+
+
+def _age(dt) -> str:
+    """'5m ago' / '3h ago' / '2d ago' as plain text (usable inside a code block)."""
+    from datetime import datetime, timezone
+    if dt is None:
+        return "?"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    secs = max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
+    return f"{secs // 86400}d ago" if secs >= 86400 else f"{secs // 3600}h ago" if secs >= 3600 else f"{secs // 60}m ago"
 
 
 class _MoneyView(PanelView):
@@ -143,13 +154,19 @@ class PendingView(_MoneyView):
         elif not self.rows:
             lines.append("Nothing pending. 🎉")
         else:
+            # One fenced block, no inline code and no <t:> timestamps: dozens of `code` spans mixed with
+            # timestamps made the client strip them from each line and pile them up at the end.
             entries = []
             for r in self.rows:
-                srv = f" · server `{r['chat_id']}`" if r.get("chat_id") else ""
-                entries.append(f"`{_code(r['paystack_reference'], 60)}` · {_clip(_safe(r.get('payment_type') or '?'), 30)} · "
-                               f"{_safe(r.get('provider') or 'paystack')} · {(r.get('amount') or 0):g} · "
-                               f"buyer `{r['user_id']}`{srv} · {_ts(r['created_date'])}")
-            lines += _fit(entries)
+                srv = f" | server {r['chat_id']}" if r.get("chat_id") else ""
+                entries.append(f"{_code(r['paystack_reference'], 60)} | {_code(r.get('payment_type') or '?', 30)} | "
+                               f"{_code(r.get('provider') or 'paystack', 12)} | {(r.get('amount') or 0):g} | "
+                               f"buyer {r['user_id']}{srv} | {_age(r['created_date'])}")
+            shown = _fit(entries, TEXT_BUDGET - 400)
+            hidden = shown.pop() if shown and shown[-1].startswith("-# …and") else None
+            lines.append("```\n" + "\n".join(shown) + "\n```")
+            if hidden:
+                lines.append(hidden)
             if self.total > len(self.rows):
                 lines.append(f"-# Showing {len(self.rows)} of {self.total} pending.")
             else:

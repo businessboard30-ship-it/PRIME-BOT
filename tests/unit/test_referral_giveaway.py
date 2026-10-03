@@ -478,3 +478,20 @@ def test_delete_giveaway_is_two_step_and_removes_it(vp, db, monkeypatch):
     press(v, "Confirm delete")
     assert gid not in db.giveaways and vp.audit.call_args.args[1] == "referral.giveaway.delete"
     assert "deleted" in text_of(v)
+
+
+def test_pending_payments_list_is_one_code_block_without_inline_spans(monkeypatch):
+    import datetime as dt
+    from discord_bot.cogs import _views_admin_panel_money as mv
+    now = dt.datetime.now(dt.timezone.utc)
+    rows = [dict(paystack_reference=f"gum_premium_{n}_7cbeaa2e", payment_type="premium", provider="gumroad",
+                 amount=2, user_id=1500000000000000000 + n, chat_id=1400000000000000000 + n,
+                 created_date=now - dt.timedelta(hours=n)) for n in range(40)]
+    v = mv.PendingView.__new__(mv.PendingView)
+    v.rows, v.total, v.error = rows, 40, False
+    text = "\n".join(v.body())
+    assert text.count("```") == 2                      # a single fenced block
+    inner = text.split("```")[1]
+    assert "`" not in inner and "<t:" not in text
+    assert "gum_premium_0_7cbeaa2e | premium | gumroad | 2 | buyer" in inner and "3h ago" in inner
+    assert len(text) < 3600
