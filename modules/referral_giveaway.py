@@ -64,15 +64,16 @@ def parse_role_spec(text: str) -> Tuple[bool, Optional[int], Optional[int]]:
 
 async def create_giveaway(title: str, prize: str, days: int, winner_count: int, admin_id: int,
                           guild_id: Optional[int] = None, role_id: Optional[int] = None,
-                          now: Optional[datetime] = None) -> int:
+                          now: Optional[datetime] = None, description: Optional[str] = None) -> int:
     now = now or datetime.now(timezone.utc)
     kind = "role" if (guild_id and role_id) else "manual"
     pool = await _pool()
     async with pool.acquire() as conn:
         return await conn.fetchval(
             "INSERT INTO referral_giveaways (title, prize, prize_kind, guild_id, role_id, winner_count, "
-            "starts_at, ends_at, created_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
-            title[:100], prize[:200], kind, guild_id, role_id, winner_count, now, now + timedelta(days=days), admin_id)
+            "starts_at, ends_at, created_by, description) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+            title[:100], prize[:200], kind, guild_id, role_id, winner_count, now, now + timedelta(days=days), admin_id,
+            (description or "").strip()[:1000] or None)
 
 
 async def list_giveaways(limit: int = LIST_LIMIT) -> List[dict]:
@@ -183,3 +184,79 @@ async def mark_awarded(giveaway_id: int, user_id: int) -> bool:
             await conn.execute("UPDATE referral_giveaways SET winners_json = $2 WHERE id = $1",
                                giveaway_id, json.dumps(winners))
     return True
+
+
+# ── public post, editing, entries ────────────────────────────────────────
+
+async def get_giveaway(giveaway_id: int) -> Optional[dict]:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM referral_giveaways WHERE id = $1", giveaway_id)
+    return _decode(dict(row)) if row else None
+
+
+async def get_by_message(message_id: int) -> Optional[dict]:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM referral_giveaways WHERE message_id = $1", message_id)
+    return _decode(dict(row)) if row else None
+
+
+async def list_posted(active_only: bool = True) -> List[dict]:
+    """Giveaways that have a public post (used by the refresher)."""
+    pool = await _pool()
+    sql = "SELECT * FROM referral_giveaways WHERE message_id IS NOT NULL"
+    if active_only:
+        sql += " AND status = 'active'"
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql + " ORDER BY id DESC LIMIT 50")
+    return [_decode(dict(r)) for r in rows]
+
+
+async def set_post(giveaway_id: int, channel_id: Optional[int], message_id: Optional[int]) -> None:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE referral_giveaways SET channel_id = $2, message_id = $3 WHERE id = $1",
+                           giveaway_id, channel_id, message_id)
+
+
+async def update_giveaway(giveaway_id: int, title: str, prize: str, description: Optional[str],
+                          winner_count: int, ends_at: Optional[datetime] = None) -> Optional[dict]:
+    """Edit an ACTIVE giveaway. Counting window start never moves, so nobody loses referrals."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE referral_giveaways SET title = $2, prize = $3, description = $4, winner_count = $5, "
+            "ends_at = COALESCE($6, ends_at) WHERE id = $1 AND status = 'active' RETURNING *",
+            giveaway_id, title[:100], prize[:200], (description or "").strip()[:1000] or None,
+            winner_count, ends_at)
+    return _decode(dict(row)) if row else None
+
+
+async def entry_stats(giveaway: dict, user_id: int, exclude: Optional[set] = None) -> dict:
+    """How many people this user referred inside the window, and their rank (None if 0)."""
+    table = await standings(giveaway, exclude, limit=1000)
+    for n, r in enumerate(table, 1):
+        if r["user_id"] == user_id:
+            return {"count": r["count"], "rank": n, "total_referrers": len(table)}
+    return {"count": 0, "rank": None, "total_referrers": len(table)}
+
+
+async def total_entries(giveaway: dict) -> int:
+    """Total referrals redeemed inside the window (all referrers, owners included)."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(
+            "SELECT COUNT(*) FROM ad_referral_redemptions WHERE redeemed_at >= $1 AND redeemed_at <= $2",
+            giveaway["starts_at"], giveaway["ends_at"]) or 0)
+
+
+async def set_role(giveaway_id: int, guild_id: Optional[int], role_id: Optional[int]) -> Optional[dict]:
+    """Change the automatic prize role of an ACTIVE giveaway (None, None = hand the prize out yourself)."""
+    kind = "role" if (guild_id and role_id) else "manual"
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE referral_giveaways SET prize_kind = $2, guild_id = $3, role_id = $4 "
+            "WHERE id = $1 AND status = 'active' RETURNING *", giveaway_id, kind, guild_id, role_id)
+    return _decode(dict(row)) if row else None

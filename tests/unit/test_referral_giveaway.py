@@ -110,10 +110,11 @@ class FakeConn:
         assert sql.startswith("INSERT INTO referral_giveaways")
         gid = self._next
         self._next += 1
-        title, prize, kind, guild, role, wc, starts, ends, by = a
+        title, prize, kind, guild, role, wc, starts, ends, by, desc = a
         self.giveaways[gid] = dict(id=gid, title=title, prize=prize, prize_kind=kind, guild_id=guild, role_id=role,
                                    winner_count=wc, min_referrals=1, starts_at=starts, ends_at=ends,
-                                   status="active", winners_json=None, created_by=by, ended_at=None)
+                                   status="active", winners_json=None, created_by=by, ended_at=None,
+                                   description=desc, channel_id=None, message_id=None)
         return gid
 
     async def fetch(self, sql, *a):
@@ -317,11 +318,13 @@ def test_screen_db_errors_are_shown_not_raised(vp, db):
 def test_new_giveaway_modal_validates_and_creates(vp, db):
     m = vp.NewGiveawayModal(cog())
     m.name.default, m.prize.default = "Launch", "VIP role"
-    for field, value in ((m.name, "Launch"), (m.prize, "VIP"), (m.days, "7"), (m.winners, "2"), (m.role, "")):
+    for field, value in ((m.name, "Launch"), (m.prize, "VIP"), (m.description, "Invite friends!"), (m.days, "7"),
+                         (m.winners, "2")):
         field._value = value
     i = I()
     run(m.on_submit(i))
     assert db.giveaways[1]["winner_count"] == 2 and db.giveaways[1]["prize_kind"] == "manual"
+    assert db.giveaways[1]["description"] == "Invite friends!"
     assert vp.audit.call_args.args[1] == "referral.giveaway.create"
     m.days._value = "0"
     i2 = I()
@@ -364,3 +367,31 @@ def test_migration_is_additive_and_wired():
     src = (ROOT / "database.py").read_text()
     assert "027_referral_giveaway.sql" in src
     assert int(re.search(r'^SCHEMA_VERSION = "(\d+)"', src, re.M).group(1)) >= 49
+
+
+# ── public post ──────────────────────────────────────────────────────────
+
+def test_public_embed_explains_how_to_enter_and_shows_description(vp):
+    import datetime as dt
+    from discord_bot.cogs import referral_giveaway_post as post
+    g = dict(id=3, title="Big one", prize="10 Nitro", prize_kind="manual", description="Invite your friends!",
+             winner_count=2, status="active", starts_at=NOW, ends_at=NOW + dt.timedelta(days=7), ended_at=None, winners=[])
+    e = post.build_embed(g, [{"user_id": 42, "count": 5}], 9)
+    assert "Invite your friends!" in e.description
+    assert "/referral mycode" in e.description and "/referral use" in e.description
+    assert "<@42>" in e.description and "10 Nitro" in e.description and "9" in e.description
+    g.update(status="ended", ended_at=NOW, winners=[{"user_id": 42, "count": 5}])
+    done = post.build_embed(g, [], 9)
+    assert "Winners" in done.description and "How to enter" not in done.description
+
+
+def test_entry_stats_gives_count_and_rank(vp, db):
+    rg = vp.rg
+    now = NOW
+    gid = run(rg.create_giveaway("T", "P", 7, 1, 1, now=now))
+    for n, (who, by) in enumerate([(10, 1000), (11, 1000), (12, 2000)]):
+        db.redemptions.append((who, by, now + timedelta(minutes=n + 1)))
+    g = run(rg.list_giveaways())[0]
+    assert run(rg.entry_stats(g, 1000)) == {"count": 2, "rank": 1, "total_referrers": 2}
+    assert run(rg.entry_stats(g, 2000))["rank"] == 2
+    assert run(rg.entry_stats(g, 9999))["count"] == 0
