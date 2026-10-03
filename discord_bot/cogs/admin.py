@@ -222,21 +222,30 @@ class AdminCog(commands.Cog):
 
         lines = []
         for r in rows:
+            name = discord.utils.escape_markdown(discord.utils.escape_mentions(r['guild_name'] or 'Unknown'))
+            # No backticks around the ID: inline code mixed with <t:..> timestamps rendered with the IDs
+            # shoved to the end of the message and "()" left behind in the client.
             line = (
-                f"**{r['guild_name'] or 'Unknown'}** (`{r['guild_id']}`) — "
-                f"{r['member_count'] or '?'} members — joined <t:{int(r['joined_at'].timestamp())}:R>"
+                f"**{name}** · ID {r['guild_id']} · "
+                f"{r['member_count'] or '?'} members · joined <t:{int(r['joined_at'].timestamp())}:R>"
             )
-            if r['invite_url']:
-                line += f" — [invite]({r['invite_url']})"
-            else:
-                line += " — no invite on file"
+            line += f" · [invite]({r['invite_url']})" if r['invite_url'] else " · no invite on file"
             lines.append(line)
-        embed = discord.Embed(
-            title=f"🏠 Servers ({len(rows)})",
-            description="\n".join(lines)[:4000],
-            color=discord.Color.blurple(),
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Split on line boundaries so a long list never gets cut mid-link (embed description max is 4096).
+        chunks, cur = [], ""
+        for line in lines:
+            if cur and len(cur) + len(line) + 1 > 3800:
+                chunks.append(cur)
+                cur = ""
+            cur = f"{cur}\n{line}" if cur else line
+        chunks.append(cur)
+        embeds = [
+            discord.Embed(title=f"🏠 Servers ({len(rows)})" + (f" · {n}/{len(chunks)}" if len(chunks) > 1 else ""),
+                          description=chunk, color=discord.Color.blurple())
+            for n, chunk in enumerate(chunks[:10], 1)
+        ]
+        await interaction.followup.send(embeds=embeds, ephemeral=True)
 
     @admin.command(name="submissions", description="[Owner] Review pending anime submissions")
     async def submissions(self, interaction: discord.Interaction):
