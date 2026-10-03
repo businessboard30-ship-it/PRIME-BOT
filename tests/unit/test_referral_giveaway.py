@@ -378,7 +378,7 @@ def test_public_embed_explains_how_to_enter_and_shows_description(vp):
              winner_count=2, status="active", starts_at=NOW, ends_at=NOW + dt.timedelta(days=7), ended_at=None, winners=[])
     e = post.build_embed(g, [{"user_id": 42, "count": 5}], 9)
     assert "Invite your friends!" in e.description
-    assert "/referral mycode" in e.description and "/referral use" in e.description
+    assert "Get my code" in e.description and "Enter a code" in e.description
     assert "<@42>" in e.description and "10 Nitro" in e.description and "9" in e.description
     g.update(status="ended", ended_at=NOW, winners=[{"user_id": 42, "count": 5}])
     done = post.build_embed(g, [], 9)
@@ -395,3 +395,29 @@ def test_entry_stats_gives_count_and_rank(vp, db):
     assert run(rg.entry_stats(g, 1000)) == {"count": 2, "rank": 1, "total_referrers": 2}
     assert run(rg.entry_stats(g, 2000))["rank"] == 2
     assert run(rg.entry_stats(g, 9999))["count"] == 0
+
+
+def test_enter_a_code_modal_redeems_and_refuses_on_ended_giveaway(vp, db, monkeypatch):
+    import datetime as dt
+    from unittest.mock import AsyncMock, MagicMock
+    from discord_bot.cogs import referral_giveaway_post as post
+    g = dict(id=1, status="active", message_id=77)
+    monkeypatch.setattr(post.rg, "get_by_message", AsyncMock(return_value=g))
+    refreshed = AsyncMock()
+    monkeypatch.setattr(post, "refresh_post", refreshed)
+    refs = types.ModuleType("modules.referrals")
+    refs.use_referral_code = AsyncMock(return_value={"ok": True, "reason": "applied"})
+    monkeypatch.setitem(sys.modules, "modules.referrals", refs)
+    m = post.UseCodeModal(77)
+    m.code._value = " ab12cd34 "
+    i = I()
+    i.client = MagicMock()
+    i.followup.send = AsyncMock()
+    run(m.on_submit(i))
+    refs.use_referral_code.assert_awaited_once_with(i.user.id, "ab12cd34")
+    assert "Applied" in i.followup.send.call_args.args[0] and refreshed.await_count == 1
+    g["status"] = "ended"
+    i2 = I()
+    i2.followup.send = AsyncMock()
+    run(m.on_submit(i2))
+    assert "ended" in i2.followup.send.call_args.args[0] and refs.use_referral_code.await_count == 1

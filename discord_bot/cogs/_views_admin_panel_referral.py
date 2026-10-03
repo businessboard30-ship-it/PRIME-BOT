@@ -214,7 +214,7 @@ class ReferralGiveawayView(PanelView):
 
     # ── rendering ──
     def body(self):
-        lines = ["Reward the people who bring in the most users with `/referral use`. Only you can see or run this.",
+        lines = ["Reward the people who bring in the most users (codes entered with the post's **Enter a code** button or `/referral use`). Only you can see or run this.",
                  "-# Counts referrals redeemed from the moment a giveaway starts. You never win your own giveaway."]
         if self.notice:
             lines.append(self.notice)

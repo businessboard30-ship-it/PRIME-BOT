@@ -54,9 +54,10 @@ def build_embed(g: dict, top: list, total: int) -> discord.Embed:
     if not ended:
         parts.append(
             "**How to enter**\n"
-            "1️⃣ Run `/referral mycode` to get your personal code.\n"
-            "2️⃣ Share it. Every new person who runs `/referral use` with your code counts as **1 entry** for you.\n"
-            "3️⃣ The people with the most referrals when time runs out win. You can't win by using your own code."
+            "1️⃣ Press **Get my code** below to get your personal code.\n"
+            "2️⃣ Share it. Every new person who presses **Enter a code** and types yours counts as **1 entry** for you.\n"
+            "3️⃣ The people with the most referrals when time runs out win. You can't win by using your own code.\n"
+            "-# Got a code from a friend? Press **Enter a code**. Each person can only use one code, ever."
         )
     parts.append(
         f"**Prize:** {prize}\n"
@@ -91,13 +92,72 @@ async def render(g: dict) -> discord.Embed:
     return build_embed(g, top, total)
 
 
+_USE_MESSAGES = {
+    "applied": "✅ Applied! That referral is locked in. Thanks for joining!",
+    "already_set": "You've already used a referral code before. It only works once per person, ever.",
+    "self": "You can't use your own referral code.",
+    "not_found": "That code doesn't match anyone. Double-check it and try again.",
+    "error": "❌ Something went wrong. Try again.",
+}
+
+
+class UseCodeModal(discord.ui.Modal, title="Enter a referral code"):
+    def __init__(self, message_id: int):
+        super().__init__(timeout=300)
+        self.message_id = message_id
+        self.code = discord.ui.TextInput(label="Code from your friend", max_length=32, placeholder="e.g. AB12CD34")
+        self.add_item(self.code)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        g = await rg.get_by_message(self.message_id)
+        if g is None or g["status"] != "active":
+            await interaction.followup.send("This giveaway has ended, so codes can't be entered here any more.",
+                                            ephemeral=True)
+            return
+        from modules.referrals import use_referral_code
+        result = await use_referral_code(interaction.user.id, self.code.value.strip())
+        await interaction.followup.send(_USE_MESSAGES.get(result.get("reason"), _USE_MESSAGES["error"]),
+                                        ephemeral=True)
+        if result.get("ok"):
+            await refresh_post(interaction.client, g)
+
+
 class PostView(discord.ui.View):
     def __init__(self, disabled: bool = False):
         super().__init__(timeout=None)
         for item in self.children:
             item.disabled = disabled
 
-    @discord.ui.button(label="My entries", style=discord.ButtonStyle.primary, emoji="🎟️", custom_id="refgw:me")
+    @discord.ui.button(label="Get my code", style=discord.ButtonStyle.success, emoji="🔗", custom_id="refgw:code")
+    async def code(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        g = await rg.get_by_message(interaction.message.id)
+        if g is None or g["status"] != "active":
+            await interaction.followup.send("This giveaway has ended.", ephemeral=True)
+            return
+        if interaction.user.id in _owners():
+            await interaction.followup.send("The host can't win their own giveaway.", ephemeral=True)
+            return
+        from modules.referrals import get_or_create_referral_code
+        code = await get_or_create_referral_code(interaction.user.id)
+        if not code:
+            await interaction.followup.send("❌ Couldn't get a code right now. Try again.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"🔗 Your referral code: `{code}`\n"
+            f"Share it. Every new person who presses **Enter a code** on the giveaway post and types it "
+            f"counts as 1 entry for you.", ephemeral=True)
+
+    @discord.ui.button(label="Enter a code", style=discord.ButtonStyle.primary, emoji="⌨️", custom_id="refgw:use")
+    async def use(self, interaction: discord.Interaction, button: discord.ui.Button):
+        g = await rg.get_by_message(interaction.message.id)
+        if g is None or g["status"] != "active":
+            await interaction.response.send_message("This giveaway has ended.", ephemeral=True)
+            return
+        await interaction.response.send_modal(UseCodeModal(interaction.message.id))
+
+    @discord.ui.button(label="My entries", style=discord.ButtonStyle.secondary, emoji="🎟️", custom_id="refgw:me")
     async def me(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         g = await rg.get_by_message(interaction.message.id)
@@ -118,11 +178,11 @@ class PostView(discord.ui.View):
         if stats["count"]:
             await interaction.followup.send(
                 f"🎟️ You have **{stats['count']}** referral(s) and you're **#{stats['rank']}** of "
-                f"{stats['total_referrers']}. Share your code (`/referral mycode`) to climb.", ephemeral=True)
+                f"{stats['total_referrers']}. Press **Get my code** and share it to climb.", ephemeral=True)
         else:
             await interaction.followup.send(
-                "🎟️ You have **0** referrals so far. Run `/referral mycode`, share your code, and every new person "
-                "who runs `/referral use` with it counts for you.", ephemeral=True)
+                "🎟️ You have **0** referrals so far. Press **Get my code**, share it, and every new person "
+                "who presses **Enter a code** and types it counts for you.", ephemeral=True)
 
     @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.secondary, emoji="🏆", custom_id="refgw:top")
     async def top(self, interaction: discord.Interaction, button: discord.ui.Button):
