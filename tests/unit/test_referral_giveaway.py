@@ -488,7 +488,7 @@ def test_pending_payments_list_is_one_code_block_without_inline_spans(monkeypatc
                  amount=2, user_id=1500000000000000000 + n, chat_id=1400000000000000000 + n,
                  created_date=now - dt.timedelta(hours=n)) for n in range(40)]
     v = mv.PendingView.__new__(mv.PendingView)
-    v.rows, v.total, v.error = rows, 40, False
+    v.rows, v.total, v.error, v.notice, v._confirm, v.clearable = rows, 40, False, None, False, 0
     text = "\n".join(v.body())
     assert text.count("```") == 2                      # a single fenced block
     inner = text.split("```")[1]

@@ -133,6 +133,8 @@ class PendingView(_MoneyView):
     def __init__(self, cog, owner_id, section=MONEY):
         self.rows: List[dict] = []
         self.total = 0
+        self.clearable = 0
+        self._confirm = False
         self.notice = None
         self.error = False
         super().__init__(cog, owner_id, section)
@@ -141,14 +143,21 @@ class PendingView(_MoneyView):
         try:
             res = await money.list_pending()
             self.rows, self.total, self.error = res["rows"], res["total"], False
+            self.clearable = await money.count_clearable_pending()
         except Exception:
             logger.exception("[admin-panel] couldn't load pending payments")
-            self.rows, self.total, self.error = [], 0, True
+            self.rows, self.total, self.clearable, self.error = [], 0, 0, True
         self._build()
 
     def body(self):
         lines = ["Payment references still waiting to be confirmed (newest first).",
                  "-# Read-only. Manual/Selar payments are approved by the payment flow, not from here."]
+        if self.notice:
+            lines.append(self.notice)
+        if self._confirm:
+            lines.append(f"⚠️ **Press Confirm clear to mark {self.clearable} pending checkout(s) older than "
+                         f"{money.CLEAR_PENDING_HOURS}h as expired.** A buyer who pays on one of those later "
+                         "would not be unlocked automatically.")
         if self.error:
             lines.append(LOAD_FAILED)
         elif not self.rows:
@@ -174,13 +183,34 @@ class PendingView(_MoneyView):
         return lines
 
     def controls(self):
-        S = discord.ButtonStyle.secondary
+        S, D = discord.ButtonStyle.secondary, discord.ButtonStyle.danger
         return [
+            _btn("Confirm clear" if self._confirm else f"Clear old ({self.clearable})", D, self._clear, "🧹",
+                 disabled=self.clearable == 0),
             _btn("Refresh", S, self._refresh, "🔄"),
             _btn("Back", S, self._back, "⬅️"),
         ]
 
+    async def _clear(self, i):
+        if not self._confirm:                       # first press only arms the button
+            self._confirm = True
+            self._build()
+            await i.response.edit_message(view=self)
+            return
+        self._confirm = False
+        try:
+            n = await money.clear_old_pending()
+        except Exception:
+            logger.exception("[admin-panel] couldn't clear pending payments")
+            self.notice = NOTHING_CHANGED
+        else:
+            audit(i, "money.pending.clear", expired=n, older_than_hours=money.CLEAR_PENDING_HOURS)
+            self.notice = f"🧹 Cleared {n} old pending checkout(s). They're marked expired, not deleted."
+        await self.load()
+        await i.response.edit_message(view=self)
+
     async def _refresh(self, i):
+        self._confirm = False
         await self.load()
         await i.response.edit_message(view=self)
 

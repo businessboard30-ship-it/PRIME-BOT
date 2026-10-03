@@ -122,6 +122,24 @@ async def list_pending(limit: int = PENDING_LIMIT) -> Dict[str, object]:
     return {"rows": out, "total": int(total if total is not None else len(out))}
 
 
+CLEAR_PENDING_HOURS = 6   # only checkouts older than this; a buyer can still be mid-payment on a fresh one
+
+
+async def count_clearable_pending(hours: int = CLEAR_PENDING_HOURS) -> int:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return int(await conn.fetchval(
+            "SELECT COUNT(*) FROM payment_logs WHERE status = 'pending' "
+            "AND created_date < NOW() - ($1 || ' hours')::INTERVAL", str(hours)) or 0)
+
+
+async def clear_old_pending(hours: int = CLEAR_PENDING_HOURS) -> int:
+    """Marks abandoned 'pending' checkouts older than `hours` as 'expired' (rows are kept, only the
+    status changes; 'awaiting_review' is never touched). Returns how many were flipped."""
+    from database import db
+    return int(await db.expire_old_pending_payments(hours))
+
+
 # ── revenue over time ────────────────────────────────────────────────────
 # payment_logs has no "completed at" column, so buckets use created_date (when
 # the checkout started). Gumroad rows are logged in USD, everything else in

@@ -271,12 +271,27 @@ def pending(pid, ref, **kw):
                 provider="selar", chat_id=GID, created_date=NOW, **kw)
 
 
-def test_pending_lists_references_and_is_read_only(vp, db):
+def test_pending_lists_references_and_changes_nothing_until_confirmed(vp, db):
     db.pending_rows = [pending(1, "ref_pending_a"), pending(2, "ref_pending_b")]
     v = load(vp.PendingView(cog(), OWNER))
     assert "ref_pending_a" in text_of(v) and "ref_pending_b" in text_of(v)
-    assert set(buttons(v)) == {"Refresh", "Back"}
+    assert {"Refresh", "Back"} <= set(buttons(v)) and any(k.startswith("Clear old") for k in buttons(v))
     vp.audit.assert_not_called()
+
+
+def test_pending_clear_is_two_step_and_audited(vp, db, monkeypatch):
+    from unittest.mock import AsyncMock
+    db.pending_rows = [pending(1, "ref_pending_a"), pending(2, "ref_pending_b")]
+    clear = AsyncMock(return_value=2)
+    monkeypatch.setattr(vp.money, "clear_old_pending", clear)
+    v = load(vp.PendingView(cog(), OWNER))
+    label = next(k for k in buttons(v) if k.startswith("Clear old"))
+    press(v, label)
+    clear.assert_not_awaited()                       # first press only arms it
+    assert "Confirm clear" in buttons(v) and "Press Confirm clear" in text_of(v)
+    press(v, "Confirm clear")
+    clear.assert_awaited_once()
+    assert vp.audit.call_args.args[1] == "money.pending.clear" and "Cleared 2" in text_of(v)
 
 
 def test_pending_empty_and_error_states(vp, db):
