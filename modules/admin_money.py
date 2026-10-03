@@ -103,6 +103,25 @@ async def dismiss_failure(failure_id: int, admin_id: int) -> bool:
     return result.endswith(" 1")
 
 
+# ── pending / queued payments ────────────────────────────────────────────
+
+PENDING_LIMIT = 25
+
+
+async def list_pending(limit: int = PENDING_LIMIT) -> Dict[str, object]:
+    """Payments still waiting (status 'pending'), newest first. Read-only.
+    Returns {'rows': [...], 'total': N} so the screen can say when the list is cut."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT payment_id, paystack_reference, user_id, amount, payment_type, provider, chat_id, "
+            "created_date FROM payment_logs WHERE status = 'pending' "
+            "ORDER BY created_date DESC, payment_id DESC LIMIT $1", limit)
+        total = await conn.fetchval("SELECT COUNT(*) FROM payment_logs WHERE status = 'pending'")
+    out = [dict(r) for r in rows]
+    return {"rows": out, "total": int(total if total is not None else len(out))}
+
+
 # ── revenue over time ────────────────────────────────────────────────────
 # payment_logs has no "completed at" column, so buckets use created_date (when
 # the checkout started). Gumroad rows are logged in USD, everything else in

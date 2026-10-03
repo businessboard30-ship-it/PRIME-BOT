@@ -68,11 +68,12 @@ class MoneyHubView(_MoneyView):
 
     def body(self):
         return ["Payments, revenue and premium tools. Pick one.",
-                "-# Revenue and Failed payments are read-only. Reverse and Discount codes change data."]
+                "-# Pending payments, Revenue and Failed payments are read-only. Reverse and Discount codes change data."]
 
     def controls(self):
         P, S = discord.ButtonStyle.primary, discord.ButtonStyle.secondary
         return [
+            _btn("Pending payments", P, self._pending, "🕒"),
             _btn("Failed payments", P, self._failures, "⚠️"),
             _btn("Revenue trend", P, self._revenue, "📈"),
             _btn("Reverse payment", P, self._reverse, "↩️"),
@@ -83,6 +84,11 @@ class MoneyHubView(_MoneyView):
 
     async def _home_btn(self, i):
         await _home(self, i)
+
+    async def _pending(self, i):
+        v = PendingView(self.cog, self.owner_id)
+        await v.load()
+        await self.go(i, v)
 
     async def _failures(self, i):
         v = FailuresView(self.cog, self.owner_id)
@@ -106,6 +112,60 @@ class MoneyHubView(_MoneyView):
         v = ExpiriesView(self.cog, self.owner_id)
         await v.load()
         await self.go(i, v)
+
+
+# ── pending payments (references waiting in the queue) ───────────────────
+
+class PendingView(_MoneyView):
+    title = "🕒 Pending payments"
+
+    def __init__(self, cog, owner_id, section=MONEY):
+        self.rows: List[dict] = []
+        self.total = 0
+        self.notice = None
+        self.error = False
+        super().__init__(cog, owner_id, section)
+
+    async def load(self) -> None:
+        try:
+            res = await money.list_pending()
+            self.rows, self.total, self.error = res["rows"], res["total"], False
+        except Exception:
+            logger.exception("[admin-panel] couldn't load pending payments")
+            self.rows, self.total, self.error = [], 0, True
+        self._build()
+
+    def body(self):
+        lines = ["Payment references still waiting to be confirmed (newest first).",
+                 "-# Read-only. Manual/Selar payments are approved by the payment flow, not from here."]
+        if self.error:
+            lines.append(LOAD_FAILED)
+        elif not self.rows:
+            lines.append("Nothing pending. 🎉")
+        else:
+            entries = []
+            for r in self.rows:
+                srv = f" · server `{r['chat_id']}`" if r.get("chat_id") else ""
+                entries.append(f"`{_code(r['paystack_reference'], 60)}` · {_clip(_safe(r.get('payment_type') or '?'), 30)} · "
+                               f"{_safe(r.get('provider') or 'paystack')} · {(r.get('amount') or 0):g} · "
+                               f"buyer `{r['user_id']}`{srv} · {_ts(r['created_date'])}")
+            lines += _fit(entries)
+            if self.total > len(self.rows):
+                lines.append(f"-# Showing {len(self.rows)} of {self.total} pending.")
+            else:
+                lines.append(f"-# {self.total} pending.")
+        return lines
+
+    def controls(self):
+        S = discord.ButtonStyle.secondary
+        return [
+            _btn("Refresh", S, self._refresh, "🔄"),
+            _btn("Back", S, self._back, "⬅️"),
+        ]
+
+    async def _refresh(self, i):
+        await self.load()
+        await i.response.edit_message(view=self)
 
 
 # ── failed payments ──────────────────────────────────────────────────────

@@ -117,6 +117,7 @@ class FakeConn:
         self.subs = {}           # (guild_id, clone_id) -> dict(expires_at)
         self.coupons = {}        # code -> dict
         self.revenue_rows = []
+        self.pending_rows = []
         self.expiry_rows = []
         self._next = 1
         self.sleep = 0.0
@@ -162,6 +163,8 @@ class FakeConn:
             rows = [f for f in self.failures.values() if f["dismissed_at"] is None]
             rows.sort(key=lambda r: -r["id"])
             return rows[: a[0]]
+        if "FROM payment_logs" in sql and "status = 'pending'" in sql:
+            return list(self.pending_rows)[: a[0]]
         if "FROM payment_logs" in sql:
             return list(self.revenue_rows)
         if "FROM discount_codes" in sql:
@@ -188,6 +191,8 @@ class FakeConn:
 
     async def fetchval(self, sql, *a):
         self._check()
+        if sql.startswith("SELECT COUNT(*) FROM payment_logs"):
+            return len(self.pending_rows)
         if sql.startswith("UPDATE discord_guild_subscriptions"):
             s = self.subs.get((a[0], a[1]))
             if s:
@@ -257,6 +262,35 @@ def test_noisy_rejections_are_throttled_but_real_problems_are_not(vp, db):
         run(vp.money.record_failure("gumroad", "underpaid", "r"))
     kinds = [f["kind"] for f in db.failures.values()]
     assert kinds.count("bad_secret") == 1 and kinds.count("underpaid") == 5
+
+
+# ── pending payments screen ──────────────────────────────────────────────
+
+def pending(pid, ref, **kw):
+    return dict(payment_id=pid, paystack_reference=ref, user_id=42, amount=5.0, payment_type="premium",
+                provider="selar", chat_id=GID, created_date=NOW, **kw)
+
+
+def test_pending_lists_references_and_is_read_only(vp, db):
+    db.pending_rows = [pending(1, "ref_pending_a"), pending(2, "ref_pending_b")]
+    v = load(vp.PendingView(cog(), OWNER))
+    assert "ref_pending_a" in text_of(v) and "ref_pending_b" in text_of(v)
+    assert set(buttons(v)) == {"Refresh", "Back"}
+    vp.audit.assert_not_called()
+
+
+def test_pending_empty_and_error_states(vp, db):
+    assert "Nothing pending" in text_of(load(vp.PendingView(cog(), OWNER)))
+    db.fail = True
+    assert "Couldn't load" in text_of(load(vp.PendingView(cog(), OWNER)))
+
+
+def test_pending_hub_button_opens_screen_and_fits_limits(vp, db):
+    db.pending_rows = [pending(n, f"ref_{n}_" + "x" * 40) for n in range(60)]
+    hub = vp.MoneyHubView(cog(), OWNER)
+    press(hub, "Pending payments")
+    v = load(vp.PendingView(cog(), OWNER))
+    assert len(text_of(v)) < 4000
 
 
 # ── failed payments screen ───────────────────────────────────────────────
@@ -499,7 +533,7 @@ def test_home_has_a_money_button_enabled_only_for_owners(vp, db):
 
 def test_hub_buttons_fit_discord_rows(vp, db):
     hub = vp.MoneyHubView(cog(), OWNER)
-    assert set(buttons(hub)) == {"Failed payments", "Revenue trend", "Reverse payment", "Discount codes",
+    assert set(buttons(hub)) == {"Pending payments", "Failed payments", "Revenue trend", "Reverse payment", "Discount codes",
                                  "Upcoming expiries", "Back"}
     for row in (c for c in hub.walk_children() if isinstance(c, discord.ui.ActionRow)):
         assert len(row.children) <= 5
