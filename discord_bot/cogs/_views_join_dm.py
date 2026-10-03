@@ -265,6 +265,12 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             if fresh_ad.get("image_url"):
                 container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(fresh_ad["image_url"])))
 
+        if page == 0:
+            container.add_item(discord.ui.Separator())
+            ref_section = discord.ui.Section(accessory=_ReferralCodeButton(guild_id, clone_id))
+            ref_section.add_item("🎁 **Did a friend refer you?**\nEnter their referral code so they get credit.")
+            container.add_item(ref_section)
+
         footer = "Run /help anytime for the full command list."
         if total_pages > 1:
             footer = f"Page {page + 1}/{total_pages} — {footer}"
@@ -789,6 +795,50 @@ class _AdvertiseButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^jo
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(_AdvertiseModal(self.guild_id, self.clone_id))
+
+
+_REFERRAL_MESSAGES = {
+    "applied": "✅ Applied! Thanks, your friend just got credit for referring you.",
+    "already_set": "You've already used a referral code. It only works once per person, ever.",
+    "self": "You can't use your own referral code.",
+    "not_found": "That code doesn't match anyone. Double-check it and try again.",
+    "error": "❌ Something went wrong. Try again.",
+}
+
+
+class _ReferralCodeModal(discord.ui.Modal, title="Enter a referral code"):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.code = discord.ui.TextInput(label="Code from your friend", max_length=32, placeholder="e.g. AB12CD34")
+        self.add_item(self.code)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from modules.referrals import use_referral_code
+        await interaction.response.defer(ephemeral=True)
+        result = await use_referral_code(interaction.user.id, self.code.value.strip())
+        await interaction.followup.send(_REFERRAL_MESSAGES.get(result.get("reason"), _REFERRAL_MESSAGES["error"]),
+                                        ephemeral=True)
+
+
+class _ReferralCodeButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_refcode:(\d+):(-|\d+)$"):
+    """Lets whoever added the bot say who referred them. Same redemption as /referral use
+    (counts toward referral giveaways)."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(
+            discord.ui.Button(label="Enter code", style=discord.ButtonStyle.primary,
+                              emoji="🎁", custom_id=_encode("refcode", guild_id, clone_id))
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(_ReferralCodeModal())
 
 
 class _DontAskAgainButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_dismiss:(\d+):(-|\d+)$"):
@@ -1924,7 +1974,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 DYNAMIC_ITEMS = (
     _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
-    _JoinOfferInviteButton, _BuildBotPasteButton,
+    _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton,
 )
 
 # Compact quick-start message buttons (Open server panel / Full setup guide).

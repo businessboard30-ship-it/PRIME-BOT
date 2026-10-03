@@ -438,3 +438,21 @@ def test_channel_select_gets_its_own_row_and_payload_is_valid(vp, db):
         assert len(kinds) <= 5
     assert any(isinstance(c, discord.ui.ChannelSelect) for c in v.walk_children())
     v.to_components()
+
+
+def test_join_dm_has_referral_code_button_that_redeems(monkeypatch):
+    from unittest.mock import AsyncMock
+    from discord_bot.cogs import _views_join_dm as jd
+    assert jd._ReferralCodeButton in jd.DYNAMIC_ITEMS
+    b = jd._ReferralCodeButton(123, None)
+    assert b.item.custom_id == "join_dm_refcode:123:-"
+    refs = types.ModuleType("modules.referrals")
+    refs.use_referral_code = AsyncMock(return_value={"ok": False, "reason": "not_found"})
+    monkeypatch.setitem(sys.modules, "modules.referrals", refs)
+    m = jd._ReferralCodeModal()
+    m.code._value = " zz99 "
+    i = I()
+    i.followup.send = AsyncMock()
+    run(m.on_submit(i))
+    refs.use_referral_code.assert_awaited_once_with(i.user.id, "zz99")
+    assert "doesn't match" in i.followup.send.call_args.args[0]
