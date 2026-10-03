@@ -426,7 +426,7 @@ class CouponModal(discord.ui.Modal, title="New discount code"):
         self.code = discord.ui.TextInput(label="Code (letters, digits, - _)", min_length=3, max_length=24)
         self.percent = discord.ui.TextInput(label="Percent off (1-100)", max_length=3)
         self.uses = discord.ui.TextInput(label="Max uses (blank = unlimited)", required=False, max_length=6)
-        self.days = discord.ui.TextInput(label="Valid for how many days (blank = never expires)",
+        self.days = discord.ui.TextInput(label="Valid for days (blank = never expires)",
                                          required=False, max_length=4)
         for item in (self.code, self.percent, self.uses, self.days):
             self.add_item(item)

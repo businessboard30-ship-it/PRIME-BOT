@@ -49,7 +49,8 @@ class NewGiveawayModal(discord.ui.Modal, title="New referral giveaway"):
         self.prize = discord.ui.TextInput(label="Prize", max_length=200, placeholder="e.g. 1 month Premium / VIP role")
         self.days = discord.ui.TextInput(label="Runs for how many days (1-365)", max_length=3, default="7")
         self.winners = discord.ui.TextInput(label="Number of winners (1-20)", max_length=2, default="1")
-        self.role = discord.ui.TextInput(label="Auto role: SERVER_ID ROLE_ID (blank = I give it)", required=False,
+        self.role = discord.ui.TextInput(label="Auto role (optional)", required=False,
+                                         placeholder="SERVER_ID ROLE_ID  (blank = I give it manually)",
                                          max_length=60)
         for item in (self.name, self.prize, self.days, self.winners, self.role):
             self.add_item(item)
