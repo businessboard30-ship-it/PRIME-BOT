@@ -157,12 +157,15 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "48"
+SCHEMA_VERSION = "49"
 # "47" -> "48" actually creates leveling_ping_optout (the leaderboard's
 # 🔔 Level-up pings opt-out). The CREATE TABLE was added to _create_tables without a
 # bump, so DBs stamped '47' never ran it (UndefinedTableError in
 # get_level_ping_muted / toggle_level_ping_optout). Same bump-or-it-never-runs
 # trap as every entry below.
+# "48" -> "49" adds 027_referral_giveaway.sql (ad_referral_redemptions,
+# referral_giveaways) for the owner panel's referral giveaway — see
+# modules/referral_giveaway.py. Same bump-or-it-never-runs trap as every entry below.
 # "46" -> "47" adds topgg_votes (global Top.gg vote XP boost) via
 # 026_topgg_votes.sql — see api/topgg_webhook.py. Same bump-or-it-never-runs trap
 # as every entry below.
@@ -5071,6 +5074,12 @@ class Database:
         topgg_votes_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "026_topgg_votes.sql"
         if topgg_votes_migration.exists():
             await conn.execute(topgg_votes_migration.read_text())
+
+        # Owner-panel referral giveaway — ad_referral_redemptions, referral_giveaways.
+        # See modules/referral_giveaway.py. Additive/idempotent like 001-026.
+        referral_giveaway_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "027_referral_giveaway.sql"
+        if referral_giveaway_migration.exists():
+            await conn.execute(referral_giveaway_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point

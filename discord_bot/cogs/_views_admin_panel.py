@@ -59,6 +59,7 @@ def allowed_sections(user_id: int) -> set:
         out.update({"access", "logs", "config", "database"})       # Batch 2 (_views_admin_panel_ops.py)
         out.update({"watchlist", "reports", "status", "honeypot"})  # Batch 3 (_views_admin_panel_safety.py), owner-only
         out.add("money")                                            # Batch 4 (_views_admin_panel_money.py), owner-only
+        out.add("referral")                                         # Referral giveaway (_views_admin_panel_referral.py), owner-only, not grantable
         out.add("ads")                                              # Batch 5 (_views_admin_panel_ads.py), owner-only (same gate as /ad manage)
         out.update({"health", "inspect"})                           # Batch 6 (_views_admin_panel_inspect.py), owner-only, not grantable
     if user_id in DISCORD_OWNER_BROADCAST_IDS:
@@ -246,6 +247,7 @@ class HomeView(PanelView):
             _btn("Honeypot", P, self._honeypot, "🍯", disabled="honeypot" not in a),
             _btn("Money", P, self._money, "💰", disabled="money" not in a),
             _btn("Ads", P, self._ads, "📣", disabled="ads" not in a),
+            _btn("Referral giveaway", P, self._referral, "🎁", disabled="referral" not in a),
             _btn("Health", P, self._health, "🩺", disabled="health" not in a),
             _btn("Inspect server", P, self._inspect_server, "🔍", disabled="inspect" not in a),
             _btn("Inspect user", P, self._inspect_user, "🧑", disabled="inspect" not in a),
@@ -352,6 +354,12 @@ class HomeView(PanelView):
     async def _money(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_money import MoneyHubView
         await self.go(i, MoneyHubView(self.cog, self.owner_id))
+
+    async def _referral(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_referral import ReferralGiveawayView
+        view = ReferralGiveawayView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
 
     async def _ads(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_ads import AdsView

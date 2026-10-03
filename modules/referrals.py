@@ -84,6 +84,12 @@ async def use_referral_code(user_id: int, code: str) -> Dict:
                     "UPDATE users SET ad_referred_by = $1 WHERE user_id = $2",
                     owner["user_id"], user_id,
                 )
+                # Timestamp for referral giveaways (users.ad_referred_by has none).
+                await conn.execute(
+                    "INSERT INTO ad_referral_redemptions (referred_user_id, referrer_id) "
+                    "VALUES ($1, $2) ON CONFLICT (referred_user_id) DO NOTHING",
+                    user_id, owner["user_id"],
+                )
                 return {"ok": True, "reason": "applied"}
     except Exception as e:
         print(f"[v0] Error using referral code: {e}")
