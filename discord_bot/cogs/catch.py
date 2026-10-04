@@ -114,12 +114,26 @@ def build_hub_embed(category: str = "play") -> discord.Embed:
     return embed
 
 
-class CatchHubDynamicButton(discord.ui.DynamicItem[discord.ui.Button], template=r"catch:hub:(?P<action>[a-z-]+)"):
-    """Reconstruct catch hub buttons from their custom_id after a restart."""
+class CatchHubDynamicButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"catch:hub:(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)",
+):
+    """Reconstruct catch hub buttons from their custom_id after a restart.
 
-    def __init__(self, item: discord.ui.Button, *, action: str):
+    Hub buttons encode their category in the custom ID when applicable. The
+    optional group also accepts the global Home, Encounter, and Daily buttons.
+    """
+
+    def __init__(
+        self,
+        item: discord.ui.Button,
+        *,
+        action: str,
+        category: str | None = None,
+    ):
         super().__init__(item)
         self.action = action
+        self.category = category
 
     @classmethod
     async def from_custom_id(
@@ -128,7 +142,11 @@ class CatchHubDynamicButton(discord.ui.DynamicItem[discord.ui.Button], template=
         item: discord.ui.Button,
         match: re.Match[str],
     ) -> "CatchHubDynamicButton":
-        return cls(item, action=match.group("action"))
+        return cls(
+            item,
+            action=match.group("action"),
+            category=match.group("category"),
+        )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         if self.action == "home":
@@ -140,8 +158,15 @@ class CatchHubDynamicButton(discord.ui.DynamicItem[discord.ui.Button], template=
             "encounter": ("Encounter", "Find a creature"),
             "daily": ("Daily", "Claim your daily reward"),
         }
+        if self.category:
+            selected = category_for(self.category)
+            labels.update({
+                label.lower().replace(" ", "-"): (label, description)
+                for label, description in selected.actions
+            })
         label, description = labels.get(
-            self.action, (self.action.replace("-", " ").title(), "Open this catch hub section")
+            self.action,
+            (self.action.replace("-", " ").title(), "Open this catch hub section"),
         )
         await interaction.response.send_message(
             f"**{label}** is ready for this server. {description}", ephemeral=True
