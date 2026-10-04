@@ -57,6 +57,8 @@
   "catch.ui.encounter": "Encounter",
   "catch.ui.daily": "Daily",
   "catch.ui.daily_description": "Claim your daily reward",
+  "catch.ui.server_setup": "Server setup",
+  "catch.ui.home": "Home",
   "catch.encounter.rarity": "Rarity",
   "catch.encounter.level": "Level",
   "catch.encounter.footer": "Claim it before it runs away · {expires_at}"

@@ -94,10 +94,10 @@ class CatchHubView(discord.ui.View):
             button.callback = self._action(label, description)
             self.add_item(button)
 
-        setup = discord.ui.Button(label="Server setup", style=button_style("navigation"), custom_id="catch:hub:setup", row=4)
+        setup = discord.ui.Button(label=text("ui.server_setup"), style=button_style("navigation"), custom_id="catch:hub:setup", row=4)
         setup.callback = self._setup
         self.add_item(setup)
-        home = discord.ui.Button(label="Home", style=button_style("navigation"), custom_id="catch:hub:home", row=4)
+        home = discord.ui.Button(label=text("ui.home"), style=button_style("navigation"), custom_id="catch:hub:home", row=4)
         home.callback = self._home
         self.add_item(home)
 
