@@ -12,8 +12,9 @@ import re
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
+from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, load_setup, save_setup, test_spawn_payload
 from modules.catch_theme import button_style, state_color
 
@@ -321,6 +322,22 @@ class CatchSetupView(discord.ui.View):
 class CatchCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._scheduler.start()
+
+    def cog_unload(self) -> None:
+        self._scheduler.cancel()
+
+    @tasks.loop(seconds=30)
+    async def _scheduler(self) -> None:
+        batch = await run_scheduler_batch()
+        for row in batch.expired_ids:
+            # Message deletion is intentionally best-effort; the DB claim is
+            # the durable state transition that makes restarts safe.
+            del row
+
+    @_scheduler.before_loop
+    async def _before_scheduler(self) -> None:
+        await self.bot.wait_until_ready()
 
     @app_commands.command(name="catch", description="Open the creature-catching hub")
     async def catch(self, interaction: discord.Interaction) -> None:
