@@ -1,0 +1,30 @@
+{
+  "_doc": "Counter matrix (P0-05, rule 0.15). The ONE place that says which counters each new-creature source feeds. record_catch() in modules/catch_service.py reads this file; nothing else decides it. Transfers (trade, market, gift) move an existing creature and are NOT sources here. 'implemented_in' names the task that wires a counter whose tables do not exist yet; record_catch applies only counters listed in catch_service.APPLIED_COUNTERS.",
+  "counters": {
+    "ownership":    {"implemented_in": "P1-04", "meaning": "A catch_owned row is created"},
+    "dex":          {"implemented_in": "P1-04", "meaning": "catch_dex caught_count / shiny_caught / first_caught_at"},
+    "player_total": {"implemented_in": "P1-04", "meaning": "catch_players.total_catches (profile, leaderboards)"},
+    "streak":       {"implemented_in": "P1-04", "meaning": "catch_players.catch_streak / best_streak (throw-based catches only)"},
+    "egg_progress": {"implemented_in": "P4-06", "meaning": "Held eggs advance by one catch"},
+    "hunt":         {"implemented_in": "P4-07", "meaning": "Daily hunt target progress"},
+    "quest":        {"implemented_in": "P4-09", "meaning": "Daily/weekly quest progress"},
+    "achievement":  {"implemented_in": "P4-10", "meaning": "Achievement goal progress"},
+    "crew":         {"implemented_in": "P7-02", "meaning": "Crew counted-catch total"},
+    "contest":      {"implemented_in": "P7-04", "meaning": "Contest board score"}
+  },
+  "sources": {
+    "wild":        ["ownership", "dex", "player_total", "streak", "egg_progress", "hunt", "quest", "achievement", "crew", "contest"],
+    "encounter":   ["ownership", "dex", "player_total", "streak", "egg_progress", "hunt", "quest", "achievement", "crew", "contest"],
+    "fishing":     ["ownership", "dex", "player_total", "streak", "egg_progress", "hunt", "quest", "achievement", "crew", "contest"],
+    "catchbot":    ["ownership", "dex", "player_total", "quest", "achievement"],
+    "egg":         ["ownership", "dex", "player_total", "quest", "achievement"],
+    "lootbox":     ["ownership", "dex", "achievement"],
+    "swap":        ["ownership", "dex"],
+    "lottery":     ["ownership", "dex", "achievement"],
+    "giveaway":    ["ownership", "dex"],
+    "drop":        ["ownership", "dex", "player_total", "achievement"],
+    "vote":        ["ownership", "dex"],
+    "event":       ["ownership", "dex", "player_total", "quest", "achievement"],
+    "admin_grant": ["ownership", "dex"]
+  }
+}

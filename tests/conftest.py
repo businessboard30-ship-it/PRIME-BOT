@@ -14,3 +14,17 @@ if ROOT not in sys.path:
 API_DIR = os.path.join(ROOT, "api")
 if API_DIR not in sys.path:
     sys.path.insert(0, API_DIR)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _catch_open_to_all_servers_in_tests(monkeypatch):
+    """The catch game is limited to the support server in production (config
+    CATCH_SUPPORT_SERVER_ONLY). Existing tests use arbitrary guild ids, so they run with the
+    restriction off; tests/unit/test_catch_support_only.py turns it back on explicitly."""
+    import config
+
+    monkeypatch.setenv("CATCH_SUPPORT_SERVER_ONLY", "0")
+    monkeypatch.setattr(config, "CATCH_SUPPORT_SERVER_ONLY", False, raising=False)

@@ -1,0 +1,47 @@
+{
+  "_doc": "Catch game colour theme (rule 0.10, P0-08 palette, owner approval pending). Read only through modules/catch_theme.py. Rows in catch_theme (key = 'rarity:rare', 'state:success', ...) override these defaults; button roles are fixed and not editable.",
+  "button_roles": {
+    "main": "primary",
+    "selected": "primary",
+    "navigation": "secondary",
+    "unselected": "secondary",
+    "disabled": "secondary",
+    "toggle_off": "secondary",
+    "toggle_on": "success",
+    "confirm": "success",
+    "claim": "success",
+    "ready": "success",
+    "locked_in": "success",
+    "danger": "danger",
+    "destructive_confirm": "danger",
+    "link": "link"
+  },
+  "states": {
+    "success": "#57F287",
+    "danger": "#ED4245",
+    "warning": "#FEE75C",
+    "info": "#5865F2",
+    "expired": "#4F545C",
+    "disabled": "#4F545C"
+  },
+  "rarities": {
+    "common": "#9AA0A6",
+    "uncommon": "#3BA55C",
+    "rare": "#3B82F6",
+    "epic": "#9B59B6",
+    "mythic": "#F1C40F",
+    "shiny": "#FF73C6",
+    "special": "#1ABC9C"
+  },
+  "elements": {
+    "ember": "#E8590C",
+    "tide": "#1C7ED6",
+    "verdant": "#2F9E44",
+    "volt": "#FAB005",
+    "frost": "#66D9E8",
+    "stone": "#8D6E63",
+    "gale": "#A5D8FF",
+    "umbra": "#5F3DC4",
+    "lumen": "#FFE066"
+  }
+}
