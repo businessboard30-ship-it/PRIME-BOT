@@ -5,7 +5,7 @@ It is the source of truth (Discord bot, not a web game). Read it before doing an
 need the user to re-send it. If it changes, update that file in the same PR.
 
 Builder: v0 (session ran out of credit). Reviewer must be the other AI (Claude), per R.1.
-Status: `[~]` (foundation is built; unit coverage is now partial and service/concurrency coverage remains).
+Status: `[~]` (foundation and unit coverage are built; real-DB/concurrency coverage and reviewer approval remain).
 
 ```
 HANDOFF
