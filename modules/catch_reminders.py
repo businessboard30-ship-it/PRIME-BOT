@@ -121,7 +121,11 @@ async def dispatch_due_reminders(
             async with transaction(conn) as db:
                 await db.execute("UPDATE catch_reminders SET due_at = $2 WHERE id = $1", reminder.id, next_delivery_at(moment, quiet))
             continue
-        if await deliver(reminder):
+        try:
+            delivered_ok = await deliver(reminder)
+        except Exception:
+            delivered_ok = False
+        if delivered_ok:
             await mark_delivered(reminder.id, delivered_at=moment, conn=conn)
             delivered.append(reminder.id)
     return tuple(delivered)
