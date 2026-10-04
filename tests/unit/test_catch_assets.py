@@ -26,6 +26,18 @@ def test_read_manifest_rejects_non_object_entries(tmp_path):
         raise AssertionError("non-object manifest entries should fail")
 
 
+def test_read_manifest_rejects_invalid_json(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text('{"kind":', encoding="utf-8")
+
+    try:
+        read_manifest(manifest)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid JSON manifests should fail")
+
+
 def test_placeholder_is_safe_fallback():
     assert validate_ref(PLACEHOLDER).status == "placeholder"
 
