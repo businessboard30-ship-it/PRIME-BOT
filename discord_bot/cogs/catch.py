@@ -191,12 +191,14 @@ def build_hub_embed(category: str = "play") -> discord.Embed:
 
 class CatchHubDynamicButton(
     discord.ui.DynamicItem[discord.ui.Button],
-    template=r"catch:hub:(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)",
+    template=r"catch:hub:(?!category$)(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)",
 ):
     """Reconstruct catch hub buttons from their custom_id after a restart.
 
     Hub buttons encode their category in the custom ID when applicable. The
     optional group also accepts the global Home, Encounter, and Daily buttons.
+    The ``category`` custom ID belongs to the select (CatchHubDynamicSelect); discord.py
+    dispatches every matching template regardless of component type, so it is excluded here.
     """
 
     def __init__(
@@ -232,6 +234,9 @@ class CatchHubDynamicButton(
         if self.action == "encounter":
             await CatchHubView()._encounter(interaction)
             return
+        if self.action == "setup":
+            await CatchHubView()._setup(interaction)
+            return
         labels = {
             "encounter": ("Encounter", "Find a creature"),
             "daily": ("Daily", "Claim your daily reward"),
@@ -251,7 +256,34 @@ class CatchHubDynamicButton(
         )
 
 
-DYNAMIC_ITEMS = (CatchHubDynamicButton,)
+class CatchHubDynamicSelect(
+    discord.ui.DynamicItem[discord.ui.Select],
+    template=r"catch:hub:category",
+):
+    """Restart-safe category select: rebuilds the hub for the chosen category."""
+
+    def __init__(self, item: discord.ui.Select | None = None):
+        super().__init__(item or discord.ui.Select(
+            custom_id="catch:hub:category",
+            options=[discord.SelectOption(label=c.label, value=c.key) for c in CATEGORIES],
+        ))
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Select,
+        match: re.Match[str],
+    ) -> "CatchHubDynamicSelect":
+        return cls(item)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected = (interaction.data or {}).get("values", ["play"])[0]
+        view = CatchHubView(category=selected)
+        await interaction.response.edit_message(embed=build_hub_embed(view.category.key), view=view)
+
+
+DYNAMIC_ITEMS = (CatchHubDynamicButton, CatchHubDynamicSelect)
 
 
 def build_setup_embed(setup: CatchSetup) -> discord.Embed:

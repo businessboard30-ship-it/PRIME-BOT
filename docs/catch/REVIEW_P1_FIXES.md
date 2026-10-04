@@ -23,6 +23,6 @@ review from the other AI (Vo AI) or the owner before merge.
 
 ## Still NOT done (do not mark P1-08 complete yet)
 - ~~"Create #wild-zone" and "Test spawn" only sent a message~~ **Fixed:** both defer first, check Manage Server, then create/reuse #wild-zone and save it as a spawn channel (needs Manage Channels), or post a real persisted `source="test"` spawn through the shared `publish_spawn` helper. Tests: `tests/unit/test_catch_setup_actions.py`.
-- After a restart, the persistent `catch:hub:setup` button only replies with a generic "ready" message (the dynamic item handles just `home` and `encounter`), and the category select is not restartable.
+- ~~After a restart the hub Setup button and category select did nothing useful~~ **Fixed:** `CatchHubDynamicButton` now handles `setup`; new `CatchHubDynamicSelect` restores the category select. The button template excludes `catch:hub:category` because discord.py dispatches every matching template regardless of component type. Test: `test_hub_setup_button_and_category_select_survive_restart`.
 - Most hub buttons (Collection, Dex, Shop, ...) reply "is ready for this server" without doing anything. Acceptable for Phase 1 only if the owner agrees; they must not count as built features.
 - The real-Postgres migration smoke test and the Phase 2 code in #71 (spawn trigger, throw/claim) were not reviewed.

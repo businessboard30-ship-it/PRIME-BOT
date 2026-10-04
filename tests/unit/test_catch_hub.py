@@ -42,9 +42,42 @@ def test_embed_renders_each_category():
 
 
 def test_catch_dynamic_items_cover_restartable_buttons():
-    assert DYNAMIC_ITEMS == (CatchHubDynamicButton,)
+    assert DYNAMIC_ITEMS[0] is CatchHubDynamicButton
     template = CatchHubDynamicButton.__discord_ui_compiled_template__
-    assert template.pattern == r"catch:hub:(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)"
+    assert template.pattern == r"catch:hub:(?!category$)(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)"
     for custom_id in ("catch:hub:home", "catch:hub:play:encounter", "catch:hub:collect:box"):
         assert template.fullmatch(custom_id)
     assert len("catch:hub:encounter") <= 100
+
+
+def test_hub_setup_button_and_category_select_survive_restart(monkeypatch):
+    import asyncio
+    import discord
+    import re
+    from types import SimpleNamespace
+    import discord_bot.cogs.catch as catch
+
+    assert catch.CatchHubDynamicSelect in catch.DYNAMIC_ITEMS
+    assert re.fullmatch(catch.CatchHubDynamicSelect.__discord_ui_compiled_template__.pattern, "catch:hub:category")
+    # the button template must NOT claim the select's custom_id (discord.py dispatches all matches)
+    assert not catch.CatchHubDynamicButton.__discord_ui_compiled_template__.fullmatch("catch:hub:category")
+    assert catch.CatchHubDynamicButton.__discord_ui_compiled_template__.fullmatch("catch:hub:setup")
+
+    seen = []
+
+    async def fake_setup(self, interaction):
+        seen.append("setup")
+
+    monkeypatch.setattr(catch.CatchHubView, "_setup", fake_setup)
+    button = catch.CatchHubDynamicButton(discord.ui.Button(custom_id="catch:hub:setup"), action="setup")
+    asyncio.run(button.callback(SimpleNamespace()))
+    assert seen == ["setup"]
+
+    edits = []
+
+    async def edit_message(**kwargs):
+        edits.append(kwargs)
+
+    interaction = SimpleNamespace(data={"values": ["collect"]}, response=SimpleNamespace(edit_message=edit_message))
+    asyncio.run(catch.CatchHubDynamicSelect().callback(interaction))
+    assert len(edits) == 1 and edits[0]["view"].category.key == "collect"
