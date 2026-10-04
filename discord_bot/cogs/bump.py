@@ -379,6 +379,34 @@ class DynamicAddMineButton(
         await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
 
 
+async def _bump_access(user_id: int, listing_id: int, cooldown_seconds: int):
+    """(can_bump, seconds_remaining, used_vote). A live Top.gg vote cast since the last bump lets that
+    person bump straight through the cooldown, once per vote."""
+    can, remaining = await db.bump_check_cooldown(listing_id, cooldown_seconds)
+    if can:
+        return True, 0, False
+    try:
+        if await db.bump_vote_unlocks(user_id, listing_id):
+            return True, 0, True
+    except Exception:
+        logger.warning("[bump] vote check failed for user %s", user_id, exc_info=True)
+    return False, remaining, False
+
+
+def _vote_view():
+    """A one-button view that links to the Top.gg vote page (None when no vote link is configured)."""
+    from config import TOPGG_VOTE_URL
+    if not TOPGG_VOTE_URL:
+        return None
+    v = discord.ui.View(timeout=None)
+    v.add_item(discord.ui.Button(label="Vote to bump again", emoji="🗳️", style=discord.ButtonStyle.link,
+                                 url=TOPGG_VOTE_URL))
+    return v
+
+
+VOTE_HINT = "\n🗳️ **Want to bump now?** Vote for us on Top.gg, then press **Bump** again."
+
+
 class DynamicBumpPromptButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"bump:prompt:(?P<listing_id>\d+)",
@@ -430,11 +458,13 @@ class DynamicBumpPromptButton(
             )
             return
         cooldown_seconds = await cog._cooldown_seconds()
-        can_bump, remaining = await db.bump_check_cooldown(listing["id"], cooldown_seconds)
+        can_bump, remaining, _voted = await _bump_access(interaction.user.id, listing["id"], cooldown_seconds)
         if not can_bump:
+            vote_view = _vote_view()
             await interaction.followup.send(
-                f"⏳ Already bumped recently — you can bump again <t:{int(time.time()) + remaining}:R>.",
-                ephemeral=True,
+                f"⏳ Already bumped recently — you can bump again <t:{int(time.time()) + remaining}:R>."
+                + (VOTE_HINT if vote_view else ""),
+                ephemeral=True, **({"view": vote_view} if vote_view else {}),
             )
             return
         await cog._do_bump(interaction, config, listing, clone_id, owner_guild_id=owner_guild_id)
@@ -1518,9 +1548,15 @@ class BumpCog(commands.Cog):
             name = listing.get("name") or channel.guild.name
             view = discord.ui.View(timeout=None)
             view.add_item(DynamicBumpPromptButton(listing["id"]))
+            vote_btn = _vote_view()
+            if vote_btn is not None:
+                for item in vote_btn.children:
+                    view.add_item(item)
             await channel.send(
                 f"✅ **{name}** was bumped by {bumped_by.mention}!\n"
-                f"Anyone can bump it again <t:{next_ts}:R> — tap the button below once the timer's up.",
+                f"Anyone can bump it again <t:{next_ts}:R>"
+                + (" — or 🗳️ **vote for us on Top.gg** and bump again right away." if vote_btn is not None
+                   else " — tap the button below once the timer's up."),
                 view=view,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
@@ -1566,11 +1602,13 @@ class BumpCog(commands.Cog):
                         )
                         return
             cooldown_seconds = await self._cooldown_seconds()
-            can_bump, remaining = await db.bump_check_cooldown(listing["id"], cooldown_seconds)
+            can_bump, remaining, voted = await _bump_access(interaction.user.id, listing["id"], cooldown_seconds)
             if not can_bump:
                 minutes = remaining // 60
+                vote_view = _vote_view()
                 await interaction.followup.send(
-                    f"⏳ On cooldown — try again in {minutes}m {remaining % 60}s.", ephemeral=True
+                    f"⏳ On cooldown — try again in {minutes}m {remaining % 60}s." + (VOTE_HINT if vote_view else ""),
+                    ephemeral=True, **({"view": vote_view} if vote_view else {}),
                 )
                 return
 

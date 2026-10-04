@@ -15802,6 +15802,17 @@ class Database:
                 return True, 0
             return False, int(cooldown_seconds - elapsed) + 1
 
+    async def bump_vote_unlocks(self, user_id: int, listing_id: int) -> bool:
+        """True if this user has a live Top.gg vote cast AFTER the listing's last bump: one vote = one
+        bump that skips the cooldown. Bumping updates last_bump_at, which uses the vote up."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT 1 FROM topgg_votes v, bump_listings b "
+                "WHERE v.user_id = $1 AND b.id = $2 AND v.expires_at > NOW() "
+                "AND (b.last_bump_at IS NULL OR v.last_vote_at > b.last_bump_at)",
+                user_id, listing_id))
+
     async def bump_record(self, listing_id: int, streak_window_seconds: int) -> int:
         """Updates last_bump_at, bumps or resets the streak, increments the
         lifetime total_bumps counter (this one never resets — it's the
