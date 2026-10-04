@@ -323,7 +323,7 @@ def test_economy_buttons_open_the_real_shop_and_wallet_screens():
     assert catch.REAL_ACTIONS["shop"] is views.open_shop and catch.REAL_ACTIONS["wallet"] is views.open_wallet
     economy = {b.label: b.callback for b in catch.CatchHubView(category="economy").children if isinstance(b, discord.ui.Button)}
     assert economy["Shop"] is views.open_shop and economy["Wallet"] is views.open_wallet
-    assert economy["Sell"] not in (views.open_shop, views.open_wallet)
+    assert economy["Sell"] not in (views.open_shop, views.open_wallet)  # Sell has its own screen (test_catch_sell.py)
 
 
 def test_dynamic_button_routes_shop_and_wallet_after_restart(monkeypatch):

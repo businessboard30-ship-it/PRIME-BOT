@@ -8,7 +8,7 @@
 * Only items in ``CATALOG`` can be bought, and only in the quantities in ``QUANTITIES``;
   the client never chooses a price. Prices are balance numbers tuned in P11-06.
 * ``load_wallet`` reads the balance and the player's recent coin movements from
-  ``catch_audit`` (daily rewards and shop purchases).
+  ``catch_audit`` (daily rewards, shop purchases and creature sales).
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ CATALOG: dict[str, int] = {
     "goldberry": 120,
 }
 QUANTITIES: tuple[int, ...] = (1, 5, 10)
-WALLET_ACTIONS = ("daily", "shop_purchase")
+WALLET_ACTIONS = ("daily", "shop_purchase", "sell")
 WALLET_HISTORY = 10
 
 
@@ -125,6 +125,9 @@ def entry_from_row(action: str, detail, at) -> WalletEntry | None:
         total = int(data.get("total", 0))
         label = f"{item_name(str(data.get('item', 'item')))} ×{int(data.get('quantity', 0))}"
         return WalletEntry(action, -total, label, at) if total else None
+    if action == "sell":
+        coins = int(data.get("coins", 0))
+        return WalletEntry(action, coins, f"Sold {data.get('name', 'a creature')}", at) if coins else None
     return None
 
 

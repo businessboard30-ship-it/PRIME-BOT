@@ -235,3 +235,84 @@ def test_shop_concurrent_purchases_never_overspend_and_roll_back_on_failure():
         assert (poor.ok, poor.reason, poor.coins_left) == (False, "insufficient_coins", 0)
 
     run_with_pool(scenario)
+
+
+def test_sell_concurrent_taps_pay_once_and_protect_favourites_and_other_players():
+    from modules import catch_items, catch_service, catch_sell, catch_shop, catch_species
+
+    async def scenario(pool):
+        async with pool.acquire() as conn:
+            await catch_species.sync_to_db(conn)
+        await catch_items.claim_daily(U1, None)
+        await catch_items.claim_daily(U2, None)
+        coins_before = (await catch_shop.load_wallet(U1, None)).coins
+        species = catch_sell.all_species()
+        sid = next(i for i, sp in species.items() if sp["rarity"] == "rare")
+        ivs = [10, 10, 10, 10, 10]
+
+        async def make(user, key):
+            return await catch_service.record_catch(
+                user_id=user, clone_id=None, guild_id=None, source="wild", species_id=sid, level=10, ivs=ivs, idem_key=key,
+            )
+
+        a = await make(U1, "sell-a")
+        keep = await make(U1, "sell-fav")
+        lock = await make(U1, "sell-lock")
+        theirs = await make(U2, "sell-other")
+        ids = {n: (await _owned_id(pool, k)) for n, k in (("a", "sell-a"), ("fav", "sell-fav"), ("lock", "sell-lock"), ("theirs", "sell-other"))}
+        assert a and keep and lock and theirs
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_owned SET favorite = TRUE WHERE id = $1", ids["fav"])
+            await conn.execute("UPDATE catch_owned SET locked = TRUE WHERE id = $1", ids["lock"])
+        value = catch_sell.sale_value("rare")
+
+        # 6 taps that genuinely overlap: a holder keeps the creature row locked while all six
+        # sells start, then releases it, so every sell is in flight at the same moment
+        holder = await pool.acquire()
+        tx = holder.transaction()
+        await tx.start()
+        await holder.fetchval("SELECT id FROM catch_owned WHERE id = $1 FOR UPDATE", ids["a"])
+        pending = [asyncio.create_task(catch_sell.sell_creature(ids["a"], U1, None)) for _ in range(6)]
+        await asyncio.sleep(0.5)
+        assert not any(t.done() for t in pending), "sells should be waiting on the row lock"
+        await tx.commit()
+        await pool.release(holder)
+        results = await asyncio.gather(*pending)
+        assert sum(r.ok for r in results) == 1
+        assert all(r.reason == "not_found" for r in results if not r.ok)
+        assert (await catch_shop.load_wallet(U1, None)).coins == coins_before + value
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_owned WHERE id = $1", ids["a"]) == 0
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit WHERE user_id=$1 AND action='sell'", U1) == 1
+
+        # favourite, locked and someone else's creature are refused and nothing changes
+        assert (await catch_sell.sell_creature(ids["fav"], U1, None)).reason == "favorite"
+        assert (await catch_sell.sell_creature(ids["lock"], U1, None)).reason == "locked"
+        assert (await catch_sell.sell_creature(ids["theirs"], U1, None)).reason == "not_found"
+        assert (await catch_sell.sell_creature(ids["a"], U1, 3)).reason == "not_found"  # wrong clone scope
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_owned WHERE id = ANY($1::bigint[])", [ids["fav"], ids["lock"], ids["theirs"]]) == 3
+        assert (await catch_shop.load_wallet(U1, None)).coins == coins_before + value
+
+        # the sellable list hides favourites and locked creatures
+        rows, total, _ = await catch_sell.list_sellable(U1, None)
+        assert rows == [] and total == 0
+
+        # the sale shows in the wallet as a positive line
+        wallet = await catch_shop.load_wallet(U1, None)
+        assert [e.coins for e in wallet.entries if e.action == "sell"] == [value]
+
+        # a missing player row rolls the sale back: the creature is not deleted
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_owned SET favorite = FALSE WHERE id = $1", ids["fav"])
+            await conn.execute("DELETE FROM catch_players WHERE user_id = $1", U1)
+        with pytest.raises(RuntimeError):
+            await catch_sell.sell_creature(ids["fav"], U1, None)
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_owned WHERE id = $1", ids["fav"]) == 1
+
+    async def _owned_id(pool, key):
+        async with pool.acquire() as conn:
+            return await conn.fetchval("SELECT id FROM catch_owned WHERE idem_key = $1", key)
+
+    run_with_pool(scenario)
