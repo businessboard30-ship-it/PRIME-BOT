@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "51"
+SCHEMA_VERSION = "52"
+# "51" -> "52" adds 030_bump_channel_recreate_consent.sql (2 columns on bump_guild_config). Same bump-or-it-never-runs trap.
 # "50" -> "51" adds 029_scam_shield.sql (scam_shield_rules/settings/hits). Same bump-or-it-never-runs trap.
 # "49" -> "50" adds 028_referral_giveaway_post.sql (description, channel_id, message_id on
 # referral_giveaways) so the referral giveaway can be posted publicly. Same bump-or-it-never-runs trap.
@@ -5093,6 +5094,11 @@ class Database:
         scam_shield_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "029_scam_shield.sql"
         if scam_shield_migration.exists():
             await conn.execute(scam_shield_migration.read_text())
+
+        # Bump channel recreate consent (asked_at / declined on bump_guild_config). Additive/idempotent.
+        bump_recreate_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "030_bump_channel_recreate_consent.sql"
+        if bump_recreate_migration.exists():
+            await conn.execute(bump_recreate_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
@@ -15564,6 +15570,8 @@ class Database:
                     """
                     UPDATE bump_guild_config SET
                         bump_channel_id = COALESCE($3, bump_channel_id),
+                        channel_recreate_asked_at = CASE WHEN $3::bigint IS NOT NULL THEN NULL ELSE channel_recreate_asked_at END,
+                        channel_recreate_declined = CASE WHEN $3::bigint IS NOT NULL THEN FALSE ELSE channel_recreate_declined END,
                         language = COALESCE($4, language),
                         nsfw_opt_in = COALESCE($5, nsfw_opt_in),
                         intensity_level = COALESCE($6, intensity_level),
@@ -15576,6 +15584,36 @@ class Database:
                     guild_id, clone_id, bump_channel_id, language, nsfw_opt_in, intensity_level, receives_bumps, configured_by,
                 )
             return dict(row)
+
+    async def bump_claim_recreate_ask(self, guild_id: int, clone_id: Optional[int]) -> bool:
+        """Atomically claims the right to ask this server about recreating its deleted bump channel.
+        True for exactly ONE caller per deletion (and never after the owner declined), so a burst of
+        queued bumps can't send the question more than once."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "UPDATE bump_guild_config SET channel_recreate_asked_at = NOW() "
+                "WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1) "
+                "AND channel_recreate_asked_at IS NULL AND channel_recreate_declined = FALSE RETURNING 1",
+                guild_id, clone_id))
+
+    async def bump_recreate_state(self, guild_id: int, clone_id: Optional[int]) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT channel_recreate_asked_at, channel_recreate_declined, configured_by FROM bump_guild_config "
+                "WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)", guild_id, clone_id)
+        return dict(row) if row else None
+
+    async def bump_decline_recreate(self, guild_id: int, clone_id: Optional[int]) -> None:
+        """The owner said no: remember it and stop delivering bumps to this server. The old channel id is
+        deliberately kept so the boot-time auto-restore (which only looks at NULL channels) can't undo it."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE bump_guild_config SET channel_recreate_declined = TRUE, receives_bumps = FALSE, "
+                "updated_at = NOW() WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)",
+                guild_id, clone_id)
 
     async def bump_list_cleared_guilds(self, clone_id: Optional[int]) -> List[Dict]:
         """Guilds whose bump config was wiped by bump_clear_guild_config (the

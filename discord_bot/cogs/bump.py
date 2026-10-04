@@ -923,6 +923,81 @@ class BumpChannelSelectView(discord.ui.View):
         )
 
 
+class DynamicBumpRecreateButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"bump:recreate:(?P<action>yes|no):(?P<guild_id>\d+):(?P<clone_id>-|\d+)",
+):
+    """Yes / No on the DM that asks whether to recreate a deleted bump channel. Persistent (the ids live in
+    the custom_id), so it still works after a restart. Only the server's owner or someone with
+    Manage Server / Manage Channels in that server can answer."""
+
+    def __init__(self, action: str, guild_id: int, clone_id):
+        self.action, self.guild_id, self.clone_id = action, guild_id, clone_id
+        yes = action == "yes"
+        super().__init__(discord.ui.Button(
+            label="Yes, create it" if yes else "No thanks",
+            style=discord.ButtonStyle.success if yes else discord.ButtonStyle.secondary,
+            emoji="✅" if yes else None,
+            custom_id=f"bump:recreate:{action}:{guild_id}:{'-' if clone_id is None else clone_id}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Item, match: "re.Match[str]", /):
+        cid = match["clone_id"]
+        return cls(match["action"], int(match["guild_id"]), None if cid == "-" else int(cid))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        client = interaction.client
+        guild = client.get_guild(self.guild_id)
+        cog = client.get_cog("BumpCog")
+        if guild is None or cog is None or _clone_id_of(client) != self.clone_id:
+            await interaction.followup.send("I can't reach that server right now.", ephemeral=True)
+            return
+        member = guild.get_member(interaction.user.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(interaction.user.id)
+            except discord.HTTPException:
+                member = None
+        perms = member.guild_permissions if member else None
+        if member is None or not (guild.owner_id == member.id or perms.administrator
+                                  or perms.manage_guild or perms.manage_channels):
+            await interaction.followup.send(
+                "Only the server owner or someone with **Manage Server** / **Manage Channels** can answer this.",
+                ephemeral=True)
+            return
+        state = await db.bump_recreate_state(self.guild_id, self.clone_id) or {}
+        if state.get("channel_recreate_declined"):
+            await interaction.edit_original_response(content="This was already answered: no channel was created.", view=None)
+            return
+        if self.action == "no":
+            await db.bump_decline_recreate(self.guild_id, self.clone_id)
+            await interaction.edit_original_response(
+                content=f"👍 Okay, I won't create a bump channel in **{discord.utils.escape_markdown(guild.name)}**. "
+                        "Bumps are paused there. Run `/bumpsetup` in the server whenever you want it back.",
+                view=None)
+            return
+        result = await cog._restore_one_guild(guild, self.clone_id, state.get("configured_by") or interaction.user.id)
+        if result in ("created", "reused"):
+            fresh = await db.bump_get_guild_config(self.guild_id, self.clone_id) or {}
+            channel = guild.get_channel(int(fresh["bump_channel_id"])) if fresh.get("bump_channel_id") else None
+            if channel is not None and result == "created":
+                try:
+                    await channel.send(
+                        "📣 **Bump channel restored.** You approved recreating it. Other servers' and bots' ads land "
+                        "here, that's how the free partnership network works. Run `/bumpsetup` to change settings, "
+                        "or `/bump now` to send your own server out.")
+                except discord.HTTPException:
+                    pass
+            where = channel.mention if channel is not None else "the bump channel"
+            await interaction.edit_original_response(
+                content=f"✅ Done! {where} is ready in **{discord.utils.escape_markdown(guild.name)}**.", view=None)
+        else:
+            await interaction.edit_original_response(
+                content="⚠️ I couldn't create it. I need the **Manage Channels** permission in the server. "
+                        "Fix that and run `/bumpsetup`, or tap Yes again.", view=self.view)
+
+
 class BumpCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -938,6 +1013,7 @@ class BumpCog(commands.Cog):
         bot.add_dynamic_items(
             DynamicRateOpenButton, DynamicRateStarButton, DynamicAddMineButton,
             DynamicBumpAgainButton, DynamicBumpPromptButton, DynamicBumpApproveButton, DynamicBumpRejectButton,
+            DynamicBumpRecreateButton,
             *BUMP_LINK_DYNAMIC_ITEMS,
         )
         self.bump_worker.start()
@@ -1233,7 +1309,10 @@ class BumpCog(commands.Cog):
         except Exception:
             logger.exception("[bump] missing-link sweep crashed")
 
-    async def _restore_one_guild(self, guild: discord.Guild, clone_id, configured_by) -> str:
+    async def _restore_one_guild(self, guild: discord.Guild, clone_id, configured_by,
+                                  allow_create: bool = True) -> str:
+        """Re-links an existing #bump or (only when allow_create) creates one. With allow_create=False and
+        no #bump to reuse it returns "needs_permission" and touches nothing."""
         from database import get_pool
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -1267,6 +1346,8 @@ class BumpCog(commands.Cog):
                         except (discord.Forbidden, discord.HTTPException):
                             return "skipped"
                 else:
+                    if not allow_create:
+                        return "needs_permission"
                     if not me.guild_permissions.manage_channels:
                         return "skipped"
                     try:
@@ -1701,7 +1782,11 @@ class BumpCog(commands.Cog):
             except discord.HTTPException:
                 return None
             config = await db.bump_get_guild_config(guild.id, clone_id) or {}
-            result = await self._restore_one_guild(guild, clone_id, config.get("configured_by"))
+            # Re-linking an existing #bump is fine, but a NEW channel is never created without asking.
+            result = await self._restore_one_guild(guild, clone_id, config.get("configured_by"), allow_create=False)
+            if result == "needs_permission":
+                await self._ask_to_recreate(guild, clone_id, config)
+                return None
             if result not in ("created", "reused"):
                 return None
             fresh = await db.bump_get_guild_config(guild.id, clone_id) or {}
@@ -1727,6 +1812,42 @@ class BumpCog(commands.Cog):
         except Exception:
             logger.exception("[bump] couldn't recover bump channel for guild %s", row.get("target_guild_id"))
             return None
+
+    async def _ask_to_recreate(self, guild: discord.Guild, clone_id, config: dict) -> None:
+        """The server's bump channel was deleted. Ask ONCE (by DM) whether to create a new one. No answer =
+        nothing is created and nothing more is sent; the server just stops receiving bumps."""
+        try:
+            if not guild.me.guild_permissions.manage_channels:
+                return                                   # couldn't create it anyway; don't ask for nothing
+            if not await db.bump_claim_recreate_ask(guild.id, clone_id):
+                return                                   # already asked for this deletion (or declined)
+            who = []
+            configured_by = config.get("configured_by")
+            member = guild.get_member(int(configured_by)) if configured_by else None
+            if member is not None and not member.bot:
+                who.append(member)
+            if guild.owner is not None and guild.owner not in who:
+                who.append(guild.owner)
+            text = (
+                f"📣 The **bump channel** in **{discord.utils.escape_markdown(guild.name)}** was deleted, so the "
+                "server can't receive bumps right now.\n\n"
+                "Do you want me to create a new **#bump** channel? I won't create anything unless you tap Yes. "
+                "If you ignore this, I'll stay quiet and leave things as they are. "
+                "You can always run `/bumpsetup` in the server later."
+            )
+            for target in who:
+                try:
+                    view = discord.ui.View(timeout=None)
+                    view.add_item(DynamicBumpRecreateButton("yes", guild.id, clone_id))
+                    view.add_item(DynamicBumpRecreateButton("no", guild.id, clone_id))
+                    await target.send(text, view=view)
+                    logger.info("[bump] asked %s about recreating the bump channel in guild %s", target.id, guild.id)
+                    return
+                except discord.HTTPException:
+                    continue                             # DMs closed: try the next person, else stay quiet
+            logger.info("[bump] couldn't ask anyone about recreating the bump channel in guild %s", guild.id)
+        except Exception:
+            logger.exception("[bump] couldn't ask about recreating the bump channel for guild %s", guild.id)
 
     # --- worker: drains bump_queue -----------------------------------
 
