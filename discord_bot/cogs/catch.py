@@ -615,7 +615,9 @@ class SpawnClaimView(discord.ui.View):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        name = "Shiny creature" if result.shiny else "Creature"
+        species = all_species().get(result.species_id)
+        base_name = species["name"] if species else "Creature"
+        name = f"Shiny {base_name}" if result.shiny else base_name
         embed = discord.Embed(
             title=text("claim.success.title"),
             description=text("claim.success.description", name=name),

@@ -25,7 +25,7 @@ jobs:
       - name: Lint catch game (undefined names, unused imports, syntax)
         run: |
           python -m pip install ruff
-          ruff check --select F,E9 modules/catch_*.py discord_bot/cogs/catch.py discord_bot/cogs/_views_catch_collection.py discord_bot/cogs/_views_catch_items.py scripts/import_catch_assets.py tests/unit/test_catch_*.py
+          ruff check --select F,E9 modules/catch_*.py discord_bot/cogs/catch.py discord_bot/cogs/_views_catch_collection.py discord_bot/cogs/_views_catch_items.py scripts/import_catch_assets.py tests/unit/test_catch_*.py tests/integration/test_catch_*.py
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Run tests

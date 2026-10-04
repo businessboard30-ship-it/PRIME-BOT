@@ -264,3 +264,33 @@ def test_claim_without_items_gets_helpful_message(monkeypatch):
     inter.followup = SimpleNamespace(send=followup_send)
     asyncio.run(catch.SpawnClaimView(1)._claim(inter))
     assert sent == [catch.text("claim.no_items")]
+
+
+def _success_embed(monkeypatch, shiny):
+    rec = Recorder()
+    monkeypatch.setattr(catch, "check_player_allowed", gate_ok(rec))
+    monkeypatch.setattr(catch, "ensure_starter_kit", slow(rec, "starter", False))
+    result = SimpleNamespace(claimed=True, species_id=1, level=5, shiny=shiny, new_species=False)
+    monkeypatch.setattr(catch, "record_catch", slow(rec, "record", result))
+    sent = []
+
+    async def followup_send(*args, **kwargs):
+        sent.append(kwargs.get("embed"))
+
+    inter = claim_interaction(rec)
+    inter.followup = SimpleNamespace(send=followup_send)
+    asyncio.run(catch.SpawnClaimView(1)._claim(inter))
+    return sent[-1]
+
+
+def test_claim_success_shows_species_name(monkeypatch):
+    species_name = catch.all_species()[1]["name"]
+    embed = _success_embed(monkeypatch, shiny=False)
+    assert f"**{species_name}**" in embed.description
+    assert "Creature" not in embed.description
+
+
+def test_claim_success_marks_shiny_species(monkeypatch):
+    species_name = catch.all_species()[1]["name"]
+    embed = _success_embed(monkeypatch, shiny=True)
+    assert f"**Shiny {species_name}**" in embed.description
