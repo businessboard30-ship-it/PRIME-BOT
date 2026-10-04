@@ -18,6 +18,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from modules.catch_scheduler import run_scheduler_batch
+from modules.catch_reminders import Reminder, dispatch_due_reminders
 from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, load_setup, save_setup, test_spawn_payload
 from modules.catch_species import all_species
 from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
@@ -567,10 +568,26 @@ class CatchCog(commands.Cog):
         except discord.DiscordException:
             return
 
+    async def _deliver_reminder(self, reminder: Reminder) -> bool:
+        content = str(reminder.payload.get("content", "Catch reminder"))[:2000]
+        allowed_mentions = discord.AllowedMentions.none()
+        try:
+            if reminder.delivery == "channel" and reminder.channel_id:
+                channel = self.bot.get_channel(reminder.channel_id) or await self.bot.fetch_channel(reminder.channel_id)
+                await channel.send(content, allowed_mentions=allowed_mentions)
+                return True
+            user = self.bot.get_user(reminder.user_id) or await self.bot.fetch_user(reminder.user_id)
+            await user.send(content, allowed_mentions=allowed_mentions)
+            return True
+        except (discord.DiscordException, AttributeError):
+            logger.exception("Catch reminder delivery failed reminder=%s user=%s", reminder.id, reminder.user_id)
+            return False
+
     async def _process_scheduler_batch(self) -> None:
         batch = await run_scheduler_batch()
         for row in batch.expired_rows:
             await self._mark_spawn_expired(row)
+        await dispatch_due_reminders(self._deliver_reminder)
 
     @app_commands.command(name="catch", description="Open the creature-catching hub")
     async def catch(self, interaction: discord.Interaction) -> None:
