@@ -79,5 +79,22 @@
   "catch.dex.title": "Creature Dex",
   "catch.dex.empty": "No species to show yet.",
   "catch.dex.footer": "Caught {caught} · Seen {seen} · Total {total} · Page {page}/{pages}",
-  "catch.dex.error": "The Dex couldn't be loaded right now. Try again in a moment."
+  "catch.dex.error": "The Dex couldn't be loaded right now. Try again in a moment.",
+  "catch.inventory.title": "Your inventory",
+  "catch.inventory.capsules": "Capsules",
+  "catch.inventory.berries": "Berries",
+  "catch.inventory.none": "None. Claim your **Daily** reward for more.",
+  "catch.inventory.coins": "Coins",
+  "catch.inventory.catches": "Total catches",
+  "catch.inventory.daily_streak": "Daily streak",
+  "catch.inventory.starter": "Welcome! Your starter capsules have been added.",
+  "catch.inventory.error": "Your inventory couldn't be loaded right now. Try again in a moment.",
+  "catch.daily.title": "Daily reward claimed",
+  "catch.daily.claimed": "Day {streak} of your streak. Come back tomorrow to keep it going.",
+  "catch.daily.items": "Items",
+  "catch.daily.next": "Next reward ready <t:{ready_at}:R>",
+  "catch.daily.wait_title": "Daily reward not ready",
+  "catch.daily.wait": "Your next reward is ready <t:{ready_at}:R>. Current streak: {streak}.",
+  "catch.daily.error": "Your daily reward couldn't be claimed right now. Try again in a moment.",
+  "catch.claim.no_items": "You're out of that capsule or berry. Check **Inventory**, and claim your **Daily** reward for more."
 }

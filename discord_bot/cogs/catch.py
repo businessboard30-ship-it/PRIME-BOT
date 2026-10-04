@@ -18,6 +18,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from discord_bot.cogs._views_catch_collection import open_collection, open_dex
+from discord_bot.cogs._views_catch_items import open_daily, open_inventory
 from discord_bot.cogs._views_shared import user_can_manage_guild
 from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_reminders import Reminder, dispatch_due_reminders
@@ -28,6 +29,7 @@ from modules.catch_trigger import ChannelTriggerState, consider_message
 from modules.catch_encounter import EncounterOnCooldown, create_player_encounter
 from modules.catch_gate import check_player_allowed, set_feature_flag
 from modules.catch_i18n import text
+from modules.catch_items import ensure_starter_kit
 from modules.catch_service import CatchBlocked, record_catch
 from modules.catch_theme import button_style, state_color
 from modules.catch_throw import choice_label
@@ -62,7 +64,7 @@ def component_count(view: discord.ui.View) -> int:
     return sum(1 + component_count(child) for child in view.children if isinstance(child, discord.ui.View)) + len(view.children)
 
 
-REAL_ACTIONS = {"collection": open_collection, "dex": open_dex}
+REAL_ACTIONS = {"collection": open_collection, "dex": open_dex, "daily": open_daily, "inventory": open_inventory}
 
 
 class CatchHubView(discord.ui.View):
@@ -575,6 +577,7 @@ class SpawnClaimView(discord.ui.View):
             await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
             return
         try:
+            await ensure_starter_kit(interaction.user.id, getattr(interaction.client, "clone_id", None))
             result = await record_catch(
                 user_id=interaction.user.id,
                 clone_id=getattr(interaction.client, "clone_id", None),
@@ -587,7 +590,15 @@ class SpawnClaimView(discord.ui.View):
         except CatchBlocked as exc:
             await interaction.followup.send(text("claim.blocked", reason=exc.reason), ephemeral=True)
             return
+        except ValueError as exc:
+            if str(exc).endswith("is not available"):
+                await interaction.followup.send(text("claim.no_items"), ephemeral=True)
+                return
+            logger.exception("Catch claim rejected spawn=%s user=%s", self.spawn_id, interaction.user.id)
+            await interaction.followup.send(text("claim.error"), ephemeral=True)
+            return
         except Exception:
+            logger.exception("Catch claim failed spawn=%s user=%s", self.spawn_id, interaction.user.id)
             await interaction.followup.send(text("claim.error"), ephemeral=True)
             return
 
