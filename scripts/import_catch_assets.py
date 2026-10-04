@@ -24,7 +24,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate a Catch asset manifest")
     parser.add_argument("manifest", type=Path)
     args = parser.parse_args()
-    refs = import_manifest(read_manifest(args.manifest))
+    try:
+        refs = import_manifest(read_manifest(args.manifest))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        parser.error(str(exc))
     print(f"validated {len(refs)} asset version(s)")
     return 0
 
