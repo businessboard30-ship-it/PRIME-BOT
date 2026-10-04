@@ -21,6 +21,7 @@ from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name
 from modules.catch_species import all_species
 from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
 from modules.catch_trigger import ChannelTriggerState, consider_message
+from modules.catch_encounter import EncounterOnCooldown, create_player_encounter
 from modules.catch_gate import check_player_allowed, set_feature_flag
 from modules.catch_i18n import text
 from modules.catch_service import CatchBlocked, record_catch
@@ -79,7 +80,7 @@ class CatchHubView(discord.ui.View):
         self.add_item(select)
 
         pinned = discord.ui.Button(label="Encounter", style=button_style("main"), custom_id="catch:hub:encounter")
-        pinned.callback = self._action("Encounter", "Find a creature")
+        pinned.callback = self._encounter
         self.add_item(pinned)
         daily = discord.ui.Button(label="Daily", style=button_style("claim"), custom_id="catch:hub:daily")
         daily.callback = self._action("Daily", "Claim your daily reward")
@@ -105,6 +106,35 @@ class CatchHubView(discord.ui.View):
             view=CatchSetupView(setup, guild_id=guild_id),
             ephemeral=True,
         )
+
+    async def _encounter(self, interaction: discord.Interaction) -> None:
+        if interaction.guild_id is None or interaction.channel_id is None:
+            await interaction.response.send_message("Encounters are only available in a server channel.", ephemeral=True)
+            return
+        try:
+            roll = roll_spawn(list(all_species().values()), random.Random())
+            spawn_id = await create_player_encounter(
+                user_id=interaction.user.id,
+                clone_id=getattr(interaction.client, "clone_id", None),
+                guild_id=interaction.guild_id,
+                channel_id=interaction.channel_id,
+                roll=roll,
+            )
+        except EncounterOnCooldown as exc:
+            await interaction.response.send_message(
+                f"Your next encounter is ready <t:{int(exc.ready_at.timestamp())}:R>.",
+                ephemeral=True,
+            )
+            return
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        data = spawn_embed_data(roll, expires_at=expires_at)
+        embed = discord.Embed(title=data["title"], description=data["description"], colour=state_color("info"))
+        embed.add_field(name="Rarity", value=data["rarity"])
+        embed.add_field(name="Level", value=data["level"])
+        embed.set_footer(text=f"Claim it before it runs away · {data['expires_at']}")
+        await interaction.response.send_message(embed=embed, view=SpawnClaimView(spawn_id), ephemeral=True)
+        message = await interaction.original_response()
+        await attach_spawn_message(spawn_id, message.id)
 
     async def _select_category(self, interaction: discord.Interaction) -> None:
         selected = interaction.data.get("values", ["play"])[0] if interaction.data else "play"
@@ -175,6 +205,9 @@ class CatchHubDynamicButton(
             await interaction.response.send_message(
                 embed=build_hub_embed(), view=CatchHubView(), ephemeral=True
             )
+            return
+        if self.action == "encounter":
+            await CatchHubView()._encounter(interaction)
             return
         labels = {
             "encounter": ("Encounter", "Find a creature"),
