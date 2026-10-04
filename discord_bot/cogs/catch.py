@@ -16,6 +16,7 @@ from discord.ext import commands, tasks
 
 from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, load_setup, save_setup, test_spawn_payload
+from modules.catch_i18n import text
 from modules.catch_theme import button_style, state_color
 
 
@@ -118,8 +119,8 @@ class CatchHubView(discord.ui.View):
 def build_hub_embed(category: str = "play") -> discord.Embed:
     selected = category_for(category)
     embed = discord.Embed(
-        title="Catch hub",
-        description="Choose a category below to explore the Discord catch game.",
+        title=text("hub.title"),
+        description=text("hub.description"),
         colour=state_color("info"),
     )
     embed.add_field(name=selected.label, value=selected.description, inline=False)
@@ -193,8 +194,8 @@ DYNAMIC_ITEMS = (CatchHubDynamicButton,)
 def build_setup_embed(setup: CatchSetup) -> discord.Embed:
     errors = setup.validate()
     embed = discord.Embed(
-        title="Creature catching setup",
-        description="Configure the server-side spawn loop before enabling creature catching.",
+        title=text("setup.title"),
+        description=text("setup.description"),
         colour=state_color("success" if setup.enabled else "info"),
     )
     embed.add_field(name="Status", value=setup.status_line(), inline=False)
@@ -299,7 +300,7 @@ class CatchSetupView(discord.ui.View):
         values = (interaction.data or {}).get("values", [])
         channel_ids = tuple(dict.fromkeys(int(value) for value in values))
         if not channel_ids:
-            await interaction.response.send_message("Select at least one text channel.", ephemeral=True)
+            await interaction.response.send_message(text("setup.text_channel"), ephemeral=True)
             return
         self.setup = self.setup.with_spawn_channels(channel_ids)
         await self._refresh(interaction)
@@ -316,7 +317,7 @@ class CatchSetupView(discord.ui.View):
     async def _test_spawn(self, interaction: discord.Interaction) -> None:
         channel_id = self.setup.spawn_channel_ids[0] if self.setup.spawn_channel_ids else None
         payload = test_spawn_payload(channel_id=channel_id)
-        await interaction.response.send_message(f"Test spawn queued in dry-run mode: `{payload}`", ephemeral=True)
+        await interaction.response.send_message(text("setup.test_queued", payload=payload), ephemeral=True)
 
 
 class CatchCog(commands.Cog):
