@@ -2,7 +2,14 @@ import random
 
 import pytest
 
-from modules.catch_game import RARITIES, catch_chance, compute_stats, roll_ivs, roll_rarity, weighted_pick
+from modules.catch_game import (
+    RARITIES,
+    catch_chance,
+    compute_stats,
+    roll_ivs,
+    roll_rarity,
+    weighted_pick,
+)
 
 
 def test_rarity_weights_and_seeded_rolls():

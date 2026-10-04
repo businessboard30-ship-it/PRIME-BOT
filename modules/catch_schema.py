@@ -55,8 +55,10 @@ STATEMENTS: tuple[str, ...] = (
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
-    "CREATE INDEX IF NOT EXISTS catch_species_spawnable_idx ON catch_species (rarity, habitat) "
-    "WHERE enabled AND exclusive_to IS NULL",
+    (
+        "CREATE INDEX IF NOT EXISTS catch_species_spawnable_idx ON catch_species (rarity, habitat) "
+        "WHERE enabled AND exclusive_to IS NULL"
+    ),
     f"""
     CREATE TABLE IF NOT EXISTS catch_guild_config (
         guild_id BIGINT NOT NULL,
@@ -99,11 +101,15 @@ STATEMENTS: tuple[str, ...] = (
         fled BOOLEAN NOT NULL DEFAULT FALSE
     )
     """,
-    "CREATE INDEX IF NOT EXISTS catch_spawns_live_idx ON catch_spawns (expires_at) "
-    "WHERE caught_by IS NULL AND NOT fled",
+    (
+        "CREATE INDEX IF NOT EXISTS catch_spawns_live_idx ON catch_spawns (expires_at) "
+        "WHERE caught_by IS NULL AND NOT fled"
+    ),
     "CREATE INDEX IF NOT EXISTS catch_spawns_guild_idx ON catch_spawns (guild_id, clone_key, spawned_at DESC)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS catch_spawns_message_key ON catch_spawns (message_id) "
-    "WHERE message_id IS NOT NULL",
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS catch_spawns_message_key ON catch_spawns (message_id) "
+        "WHERE message_id IS NOT NULL"
+    ),
     f"""
     CREATE TABLE IF NOT EXISTS catch_owned (
         id BIGSERIAL PRIMARY KEY,

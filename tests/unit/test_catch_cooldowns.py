@@ -28,7 +28,6 @@ class _FakeConnection:
 
     async def fetchval(self, query, *args):
         self.calls.append((query, args))
-        return None
 
 
 @pytest.mark.asyncio

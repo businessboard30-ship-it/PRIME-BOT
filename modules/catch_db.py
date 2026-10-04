@@ -12,7 +12,9 @@ from contextlib import asynccontextmanager
 
 
 async def get_pool():
-    from database import get_pool as _real_get_pool  # lazy: keeps module importable in tests
+    from database import (
+        get_pool as _real_get_pool,  # lazy: keeps module importable in tests
+    )
 
     return await _real_get_pool()
 
@@ -24,9 +26,8 @@ async def transaction(conn=None):
             yield conn
         return
     pool = await get_pool()
-    async with pool.acquire() as acquired:
-        async with acquired.transaction():
-            yield acquired
+    async with pool.acquire() as acquired, acquired.transaction():
+        yield acquired
 
 
 @asynccontextmanager

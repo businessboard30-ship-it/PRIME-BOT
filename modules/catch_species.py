@@ -15,7 +15,13 @@ import logging
 from pathlib import Path
 
 from modules import catch_db
-from modules.catch_game import ELEMENTS, EXCLUSIVE_SOURCES, HABITATS, RARITY_BY_KEY, STAT_NAMES
+from modules.catch_game import (
+    ELEMENTS,
+    EXCLUSIVE_SOURCES,
+    HABITATS,
+    RARITY_BY_KEY,
+    STAT_NAMES,
+)
 
 logger = logging.getLogger(__name__)
 
