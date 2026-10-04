@@ -201,3 +201,16 @@ MIT
 Past audit reports, handoff notes and phase write-ups live in
 [`docs/archive/`](docs/archive/). They're kept for reference and are not
 maintained; this README and `config.py` are the source of truth.
+
+## Catch game
+
+The Catch feature is a long-running Discord subsystem. Its shared foundation lives in
+`modules/catch_*.py`: schema and database access stay separate from scheduling,
+reminders, localization, asset loading, rendering, and feature-gate checks. The
+Discord surface is composed in `discord_bot/cogs/catch.py`, where persistent views
+and owner setup controls are registered with the bot.
+
+Catch data files live under `data/catch/` and localized copy under `locales/`.
+Feature flags are checked before user-facing commands, and setup mutations create
+an audit entry. See [`docs/catch/ARCHITECTURE.md`](docs/catch/ARCHITECTURE.md) for
+module boundaries and restart behavior.
