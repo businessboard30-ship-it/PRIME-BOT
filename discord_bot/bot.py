@@ -180,6 +180,16 @@ class AnimeBotDiscord(commands.Bot):
         await db.init()
         logger.info("Database tables verified/created.")
 
+        # Catch game roster: data/catch/species.json is the source of truth.
+        # A broken roster file must not take the rest of the bot down, so a
+        # failure is logged and the catch game simply has no species.
+        try:
+            from modules import catch_species
+            changed = await catch_species.sync_to_db()
+            logger.info("Catch species synced (%s rows written).", changed)
+        except Exception:
+            logger.exception("Catch species sync failed; catch game has no roster this boot.")
+
         # Persistent views MUST be registered before on_ready fires, so
         # buttons on messages sent before a restart keep working immediately
         # on reconnect. These views use fixed custom_ids — that's what makes

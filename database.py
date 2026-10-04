@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "54"
+SCHEMA_VERSION = "55"
+# "54" -> "55" adds the Phase 1 catch game tables (modules/catch_schema.py: catch_species, catch_owned, catch_dex, catch_players, catch_spawns, catch_cooldowns, catch_feature_flags, catch_theme, catch_audit, ...). Same bump-or-it-never-runs trap.
 # "53" -> "54" adds discord_quarantine_config, discord_quarantined and discord_channel_locks (server panel phase 11: quarantine role with one-tap release, channel lock). Same bump-or-it-never-runs trap.
 # "52" -> "53" adds discord_join_gate_config and discord_scam_shield_guild (server panel phase 9: join gate, per-server Scam Shield switch + allowed domains). Same bump-or-it-never-runs trap.
 # "51" -> "52" adds 030_bump_channel_recreate_consent.sql (2 columns on bump_guild_config). Same bump-or-it-never-runs trap.
@@ -2831,6 +2832,9 @@ class Database:
             CREATE UNIQUE INDEX IF NOT EXISTS discord_channel_locks_guild_clone_channel_key
             ON discord_channel_locks (guild_id, COALESCE(clone_id, -1), channel_id)
         """)
+        # --- Catch game, Phase 1 (docs/catch) -----------------------------------
+        from modules import catch_schema
+        await catch_schema.create_tables(conn)
         # welcome_message: shown in the embed posted inside a freshly-opened
         # ticket channel, in place of the hardcoded "Thanks for reaching
         # out..." line — same {member}/{guild} placeholder convention as

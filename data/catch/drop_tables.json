@@ -1,0 +1,62 @@
+{
+  "_doc": "Drop tables (P0-04). Every 'weights' block is integer basis points and MUST sum to 10000 (tests/unit/test_catch_data.py enforces it). Odds shown to players are computed from these same numbers. Placeholder values, tuned in P11-06.",
+  "lootboxes": {
+    "wooden_cache": {
+      "weights": {"coins_small": 4500, "capsule_basic_x3": 2500, "honeyberry_x2": 1500, "capsule_sturdy": 1000, "creature_common": 450, "creature_uncommon": 50},
+      "rewards": {
+        "coins_small": {"coins": 150},
+        "capsule_basic_x3": {"item": "capsule_basic", "qty": 3},
+        "honeyberry_x2": {"item": "honeyberry", "qty": 2},
+        "capsule_sturdy": {"item": "capsule_sturdy", "qty": 1},
+        "creature_common": {"creature_rarity": "common"},
+        "creature_uncommon": {"creature_rarity": "uncommon"}
+      }
+    },
+    "silver_cache": {
+      "weights": {"coins_medium": 3500, "capsule_sturdy_x3": 2500, "capsule_prime": 1500, "lure_incense": 1000, "creature_uncommon": 1000, "creature_rare": 450, "creature_epic": 50},
+      "rewards": {
+        "coins_medium": {"coins": 600},
+        "capsule_sturdy_x3": {"item": "capsule_sturdy", "qty": 3},
+        "capsule_prime": {"item": "capsule_prime", "qty": 1},
+        "lure_incense": {"item": "lure_incense", "qty": 1},
+        "creature_uncommon": {"creature_rarity": "uncommon"},
+        "creature_rare": {"creature_rarity": "rare"},
+        "creature_epic": {"creature_rarity": "epic"}
+      }
+    },
+    "aurora_cache": {
+      "weights": {"coins_large": 3000, "capsule_prime_x3": 2500, "growth_candy_x3": 1700, "creature_rare": 1800, "creature_epic": 900, "capsule_sovereign": 90, "creature_mythic": 10},
+      "rewards": {
+        "coins_large": {"coins": 2000},
+        "capsule_prime_x3": {"item": "capsule_prime", "qty": 3},
+        "growth_candy_x3": {"item": "growth_candy", "qty": 3},
+        "creature_rare": {"creature_rarity": "rare"},
+        "creature_epic": {"creature_rarity": "epic"},
+        "capsule_sovereign": {"item": "capsule_sovereign", "qty": 1},
+        "creature_mythic": {"creature_rarity": "mythic"}
+      }
+    }
+  },
+  "eggs": {
+    "speckled_egg": {"catches_to_hatch": 15, "weights": {"common": 7000, "uncommon": 2600, "rare": 400}},
+    "glowing_egg":  {"catches_to_hatch": 40, "weights": {"uncommon": 5000, "rare": 3800, "epic": 1150, "mythic": 50}},
+    "verdant_egg":  {"catches_to_hatch": 80, "weights": {"rare": 6000, "epic": 3500, "mythic": 500}, "exclusive_pool": ["verdaia"]}
+  },
+  "swap": {
+    "_doc": "Trade in N creatures of one rarity for one roll. Shiny, special, favorite and locked creatures can never be swapped.",
+    "daily_cap": 10,
+    "rules": {
+      "common":   {"input_count": 5, "token_cost": 1, "weights": {"common": 2000, "uncommon": 7000, "rare": 1000}},
+      "uncommon": {"input_count": 5, "token_cost": 2, "weights": {"uncommon": 2000, "rare": 7000, "epic": 1000}},
+      "rare":     {"input_count": 4, "token_cost": 3, "weights": {"rare": 2500, "epic": 7300, "mythic": 200}}
+    }
+  },
+  "lottery": {
+    "ticket_price_coins": 250,
+    "max_tickets_per_player": 20,
+    "house_cut_bp": 1000,
+    "weights_prize_split": {"first": 6000, "second": 2500, "third": 1500},
+    "special_creature_to": "first",
+    "exclusive_pool": ["nocthrax"]
+  }
+}
