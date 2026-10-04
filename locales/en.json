@@ -152,5 +152,17 @@
   "catch.status.daily_wait": "Ready {when}",
   "catch.status.dex": "Dex",
   "catch.status.dex_value": "{caught} caught\n{seen} seen\nof {total}",
-  "catch.status.error": "Your status couldn't be loaded right now. Try again in a moment."
+  "catch.status.error": "Your status couldn't be loaded right now. Try again in a moment.",
+  "catch.guide.title": "How to play",
+  "catch.guide.intro": "Catch creatures, fill your Dex and earn coins. Everything here is private to you.",
+  "catch.guide.catching.name": "Catching",
+  "catch.guide.catching.body": "While people chat in a catch channel, wild creatures appear. Press the button on one to throw a capsule before it runs away. Check **Play > Wild zone** to see what is out there, or call your own with **Encounter** (it has a cooldown).",
+  "catch.guide.items.name": "Capsules and berries",
+  "catch.guide.items.body": "A stronger capsule gives better odds. A berry adds a little extra catch chance. If you run out, claim your **Daily** reward or buy more in the **Shop**. **Inventory** shows what you have.",
+  "catch.guide.rarity.name": "Rarity",
+  "catch.guide.rarity.body": "⚪ Common · 🟢 Uncommon · 🔵 Rare · 🟣 Epic · 🟠 Mythic. Rarer creatures are harder to catch and sell for more. ✨ Shiny creatures are special variants worth extra.",
+  "catch.guide.coins.name": "Coins",
+  "catch.guide.coins.body": "Earn coins from your **Daily** reward (keep your streak going) and by selling creatures in **Economy > Sell**. Spend them in the **Shop**. **Wallet** shows your recent activity.",
+  "catch.guide.collection.name": "Collection and Dex",
+  "catch.guide.collection.body": "**Collection** lists every creature you own. Mark one as a favourite to protect it from being sold. **Dex** tracks which species you have seen and caught. **Info > Status** shows your progress."
 }
