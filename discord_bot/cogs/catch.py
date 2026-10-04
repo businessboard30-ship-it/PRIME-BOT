@@ -533,9 +533,9 @@ class CatchCog(commands.Cog):
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=setup.despawn_seconds)
             data = spawn_embed_data(roll, expires_at=expires_at)
             embed = discord.Embed(title=data["title"], description=data["description"], colour=state_color("info"))
-            embed.add_field(name="Rarity", value=data["rarity"])
-            embed.add_field(name="Level", value=data["level"])
-            embed.set_footer(text=f"Claim it before it runs away · {data['expires_at']}")
+            embed.add_field(name=text("encounter.rarity"), value=data["rarity"])
+            embed.add_field(name=text("encounter.level"), value=data["level"])
+            embed.set_footer(text=text("encounter.footer", expires_at=data["expires_at"]))
             posted = await message.channel.send(embed=embed, view=SpawnClaimView(spawn_id))
             await attach_spawn_message(spawn_id, posted.id)
         except Exception:
@@ -609,7 +609,7 @@ class CatchCog(commands.Cog):
                 logger.exception("Catch spawn expiry handling failed spawn=%s", row.get("id"))
         await dispatch_due_reminders(self._deliver_reminder)
 
-    @app_commands.command(name="catch", description="Open the creature-catching hub")
+    @app_commands.command(name="catch", description=text("command.description"))
     async def catch(self, interaction: discord.Interaction) -> None:
         gate = await check_player_allowed(
             interaction.user.id,

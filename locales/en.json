@@ -61,5 +61,6 @@
   "catch.ui.home": "Home",
   "catch.encounter.rarity": "Rarity",
   "catch.encounter.level": "Level",
-  "catch.encounter.footer": "Claim it before it runs away · {expires_at}"
+  "catch.encounter.footer": "Claim it before it runs away · {expires_at}",
+  "catch.command.description": "Open the creature-catching hub"
 }
