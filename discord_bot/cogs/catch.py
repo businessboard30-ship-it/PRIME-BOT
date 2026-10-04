@@ -23,6 +23,7 @@ from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, 
 from modules.catch_trigger import ChannelTriggerState, consider_message
 from modules.catch_gate import check_player_allowed, set_feature_flag
 from modules.catch_i18n import text
+from modules.catch_service import CatchBlocked, record_catch
 from modules.catch_theme import button_style, state_color
 
 
@@ -337,6 +338,47 @@ class CatchSetupView(discord.ui.View):
         await interaction.response.send_message(text("setup.test_queued", payload=payload), ephemeral=True)
 
 
+class SpawnClaimView(discord.ui.View):
+    def __init__(self, spawn_id: int):
+        super().__init__(timeout=None)
+        self.spawn_id = spawn_id
+        claim = discord.ui.Button(
+            label="Claim creature",
+            style=button_style("claim"),
+            custom_id=f"catch:claim:{spawn_id}",
+        )
+        claim.callback = self._claim
+        self.add_item(claim)
+
+    async def _claim(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            result = await record_catch(
+                user_id=interaction.user.id,
+                clone_id=getattr(interaction.client, "clone_id", None),
+                guild_id=interaction.guild_id,
+                source="wild",
+                spawn_id=self.spawn_id,
+            )
+        except CatchBlocked as exc:
+            await interaction.followup.send(f"Catch is unavailable: {exc.reason}.", ephemeral=True)
+            return
+        except Exception:
+            await interaction.followup.send("That creature could not be claimed right now.", ephemeral=True)
+            return
+        if not result.claimed:
+            await interaction.followup.send("That creature has already fled or been claimed.", ephemeral=True)
+            return
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+        name = "Shiny creature" if result.shiny else "Creature"
+        await interaction.followup.send(
+            f"You claimed **{name}** (level {result.level})!",
+            ephemeral=True,
+        )
+
+
 class CatchCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -378,7 +420,7 @@ class CatchCog(commands.Cog):
             embed.add_field(name="Rarity", value=data["rarity"])
             embed.add_field(name="Level", value=data["level"])
             embed.set_footer(text=f"Claim it before it runs away · {data['expires_at']}")
-            posted = await message.channel.send(embed=embed)
+            posted = await message.channel.send(embed=embed, view=SpawnClaimView(spawn_id))
             await attach_spawn_message(spawn_id, posted.id)
         except Exception:
             state.message_count = 0
