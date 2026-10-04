@@ -474,15 +474,42 @@ class CatchCog(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def _scheduler(self) -> None:
-        batch = await run_scheduler_batch()
-        for row in batch.expired_ids:
-            # Message deletion is intentionally best-effort; the DB claim is
-            # the durable state transition that makes restarts safe.
-            del row
+        await self._process_scheduler_batch()
 
     @_scheduler.before_loop
     async def _before_scheduler(self) -> None:
         await self.bot.wait_until_ready()
+
+    async def _mark_spawn_expired(self, row: dict) -> None:
+        channel_id = row.get("channel_id")
+        message_id = row.get("message_id")
+        spawn_id = row.get("id")
+        if not channel_id or not message_id or not spawn_id:
+            return
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except discord.DiscordException:
+                return
+        try:
+            message = await channel.fetch_message(int(message_id))
+            view = SpawnClaimView(int(spawn_id))
+            for item in view.children:
+                item.disabled = True
+            embed = discord.Embed(
+                title="Creature ran away",
+                description="The creature escaped before anyone claimed it.",
+                colour=state_color("warning"),
+            )
+            await message.edit(embed=embed, view=view)
+        except discord.DiscordException:
+            return
+
+    async def _process_scheduler_batch(self) -> None:
+        batch = await run_scheduler_batch()
+        for row in batch.expired_rows:
+            await self._mark_spawn_expired(row)
 
     @app_commands.command(name="catch", description="Open the creature-catching hub")
     async def catch(self, interaction: discord.Interaction) -> None:
