@@ -14,7 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, test_spawn_payload
+from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, load_setup, save_setup, test_spawn_payload
 from modules.catch_theme import button_style, state_color
 
 
@@ -89,9 +89,11 @@ class CatchHubView(discord.ui.View):
         self.add_item(home)
 
     async def _setup(self, interaction: discord.Interaction) -> None:
+        guild_id = interaction.guild_id
+        setup = await load_setup(guild_id) if guild_id is not None else CatchSetup()
         await interaction.response.send_message(
-            embed=build_setup_embed(CatchSetup()),
-            view=CatchSetupView(),
+            embed=build_setup_embed(setup),
+            view=CatchSetupView(setup, guild_id=guild_id),
             ephemeral=True,
         )
 
@@ -218,9 +220,10 @@ def build_setup_embed(setup: CatchSetup) -> discord.Embed:
 class CatchSetupView(discord.ui.View):
     """Owner setup controls shared by the server panel and catch hub."""
 
-    def __init__(self, setup: CatchSetup | None = None):
+    def __init__(self, setup: CatchSetup | None = None, *, guild_id: int | None = None):
         super().__init__(timeout=600)
         self.setup = setup or CatchSetup()
+        self.guild_id = guild_id
         self._build()
 
     def _build(self) -> None:
@@ -246,17 +249,34 @@ class CatchSetupView(discord.ui.View):
         speed.callback = self._speed
         self.add_item(speed)
 
-        channels = discord.ui.Button(label="Pick spawn channels", style=button_style("navigation"), custom_id="catch:setup:channels", row=2)
+        channels = discord.ui.ChannelSelect(
+            placeholder="Pick spawn channels",
+            channel_types=[discord.ChannelType.text, discord.ChannelType.news],
+            min_values=1,
+            max_values=5,
+            custom_id="catch:setup:channels",
+            row=2,
+        )
         channels.callback = self._channels
         self.add_item(channels)
-        wild_zone = discord.ui.Button(label="Create wild-zone", style=button_style("navigation"), custom_id="catch:setup:wild-zone", row=2)
+        wild_zone = discord.ui.Button(label="Create wild-zone", style=button_style("navigation"), custom_id="catch:setup:wild-zone", row=3)
         wild_zone.callback = self._wild_zone
         self.add_item(wild_zone)
-        test = discord.ui.Button(label="Test spawn", style=button_style("main"), custom_id="catch:setup:test", row=2)
+        test = discord.ui.Button(label="Test spawn", style=button_style("main"), custom_id="catch:setup:test", row=3)
         test.callback = self._test_spawn
         self.add_item(test)
+        encounter = discord.ui.Button(
+            label="Disable encounters" if self.setup.encounter_channel_ids else "Enable encounters",
+            style=button_style("danger" if self.setup.encounter_channel_ids else "claim"),
+            custom_id="catch:setup:encounters",
+            row=3,
+        )
+        encounter.callback = self._toggle_encounters
+        self.add_item(encounter)
 
     async def _refresh(self, interaction: discord.Interaction) -> None:
+        if self.guild_id is not None:
+            await save_setup(self.guild_id, self.setup)
         self._build()
         await interaction.response.edit_message(embed=build_setup_embed(self.setup), view=self)
 
@@ -275,7 +295,18 @@ class CatchSetupView(discord.ui.View):
         await self._refresh(interaction)
 
     async def _channels(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_message("Channel selection will be connected to the server panel persistence layer next. For now, use the test spawn after selecting a channel in the owner panel.", ephemeral=True)
+        values = (interaction.data or {}).get("values", [])
+        channel_ids = tuple(dict.fromkeys(int(value) for value in values))
+        if not channel_ids:
+            await interaction.response.send_message("Select at least one text channel.", ephemeral=True)
+            return
+        self.setup = self.setup.with_spawn_channels(channel_ids)
+        await self._refresh(interaction)
+
+    async def _toggle_encounters(self, interaction: discord.Interaction) -> None:
+        encounter_channels = self.setup.spawn_channel_ids if not self.setup.encounter_channel_ids else ()
+        self.setup = replace(self.setup, encounter_channel_ids=encounter_channels)
+        await self._refresh(interaction)
 
     async def _wild_zone(self, interaction: discord.Interaction) -> None:
         existing = {channel.name for channel in getattr(interaction.guild, "channels", ())}

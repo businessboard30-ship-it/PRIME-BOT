@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from modules.catch_db import connection
+
 SPEED_PRESETS = {
     "slow": {"spawn_every_n_messages": 40, "min_seconds_between_spawns": 180},
     "normal": {"spawn_every_n_messages": 25, "min_seconds_between_spawns": 90},
@@ -61,6 +63,35 @@ class CatchSetup:
         state = "on" if self.enabled else "off"
         channels = len(self.spawn_channel_ids)
         return f"Creature catching: **{state}** · {channels} spawn channel{'s' if channels != 1 else ''} · {self.speed_preset.title()}"
+
+    def to_db_values(self, guild_id: int, clone_id: int | None = None) -> tuple:
+        return (
+            guild_id, clone_id, self.enabled, list(self.spawn_channel_ids),
+            list(self.encounter_channel_ids), self.announce_channel_id,
+            self.rare_ping_role_id, self.speed_preset, self.spawn_every_n_messages,
+            self.min_seconds_between_spawns, self.despawn_seconds, self.join_dm_enabled,
+        )
+
+
+async def load_setup(guild_id: int, clone_id: int | None = None, *, conn=None) -> CatchSetup:
+    async with connection(conn) as db:
+        row = await db.fetchrow(
+            "SELECT enabled, join_dm_enabled, spawn_channel_ids, encounter_channel_ids, announce_channel_id, rare_ping_role_id, speed_preset, spawn_every_n_messages, min_seconds_between_spawns, despawn_seconds FROM catch_guild_config WHERE guild_id=$1 AND clone_id IS NOT DISTINCT FROM $2",
+            guild_id, clone_id,
+        )
+    return CatchSetup.from_row(dict(row) if row else None)
+
+
+async def save_setup(guild_id: int, setup: CatchSetup, clone_id: int | None = None, *, conn=None) -> CatchSetup:
+    errors = setup.validate()
+    if errors:
+        raise ValueError("; ".join(errors))
+    async with connection(conn) as db:
+        await db.execute(
+            """INSERT INTO catch_guild_config (guild_id, clone_id, enabled, spawn_channel_ids, encounter_channel_ids, announce_channel_id, rare_ping_role_id, speed_preset, spawn_every_n_messages, min_seconds_between_spawns, despawn_seconds, join_dm_enabled) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (guild_id, clone_key) DO UPDATE SET enabled=EXCLUDED.enabled, spawn_channel_ids=EXCLUDED.spawn_channel_ids, encounter_channel_ids=EXCLUDED.encounter_channel_ids, announce_channel_id=EXCLUDED.announce_channel_id, rare_ping_role_id=EXCLUDED.rare_ping_role_id, speed_preset=EXCLUDED.speed_preset, spawn_every_n_messages=EXCLUDED.spawn_every_n_messages, min_seconds_between_spawns=EXCLUDED.min_seconds_between_spawns, despawn_seconds=EXCLUDED.despawn_seconds, join_dm_enabled=EXCLUDED.join_dm_enabled, updated_at=now()""",
+            *setup.to_db_values(guild_id, clone_id),
+        )
+    return setup
 
 
 def test_spawn_payload(*, species_id: int = 1, channel_id: int | None = None) -> dict:
