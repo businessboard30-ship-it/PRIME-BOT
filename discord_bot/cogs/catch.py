@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+import logging
 import random
 import re
 
@@ -521,11 +522,20 @@ class CatchCog(commands.Cog):
             await attach_spawn_message(spawn_id, posted.id)
         except Exception:
             state.message_count = 0
+            logger.exception(
+                "Catch spawn publish failed guild=%s channel=%s user=%s",
+                message.guild.id,
+                message.channel.id,
+                message.author.id,
+            )
             return
 
     @tasks.loop(seconds=30)
     async def _scheduler(self) -> None:
-        await self._process_scheduler_batch()
+        try:
+            await self._process_scheduler_batch()
+        except Exception:
+            logger.exception("Catch scheduler tick failed")
 
     @_scheduler.before_loop
     async def _before_scheduler(self) -> None:
