@@ -603,7 +603,10 @@ class CatchCog(commands.Cog):
     async def _process_scheduler_batch(self) -> None:
         batch = await run_scheduler_batch()
         for row in batch.expired_rows:
-            await self._mark_spawn_expired(row)
+            try:
+                await self._mark_spawn_expired(row)
+            except Exception:
+                logger.exception("Catch spawn expiry handling failed spawn=%s", row.get("id"))
         await dispatch_due_reminders(self._deliver_reminder)
 
     @app_commands.command(name="catch", description="Open the creature-catching hub")
