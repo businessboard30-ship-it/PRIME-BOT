@@ -83,4 +83,17 @@ async def create_spawn(*, guild_id: int, clone_id: int | None, channel_id: int, 
             roll.shiny, list(roll.ivs), source, expires_at,
         ))
 
-__all__ = ["DEFAULT_LIFETIME_SECONDS", "SpawnRoll", "create_spawn", "roll_spawn", "spawn_embed_data"]
+
+async def attach_spawn_message(spawn_id: int, message_id: int, *, conn=None) -> None:
+    if spawn_id <= 0 or message_id <= 0:
+        raise ValueError("spawn and message ids must be positive")
+    async with catch_db.transaction(conn) as db:
+        updated = await db.execute(
+            "UPDATE catch_spawns SET message_id=$2 WHERE id=$1 AND message_id IS NULL",
+            spawn_id, message_id,
+        )
+    if not updated.endswith("1"):
+        raise ValueError("spawn message was already attached or does not exist")
+
+
+__all__ = ["DEFAULT_LIFETIME_SECONDS", "SpawnRoll", "attach_spawn_message", "create_spawn", "roll_spawn", "spawn_embed_data"]

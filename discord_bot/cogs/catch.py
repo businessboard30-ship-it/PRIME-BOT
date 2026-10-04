@@ -8,6 +8,8 @@ the same callbacks without changing the interaction contract.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
+import random
 import re
 
 import discord
@@ -16,6 +18,9 @@ from discord.ext import commands, tasks
 
 from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, load_setup, save_setup, test_spawn_payload
+from modules.catch_species import all_species
+from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
+from modules.catch_trigger import ChannelTriggerState, consider_message
 from modules.catch_gate import check_player_allowed, set_feature_flag
 from modules.catch_i18n import text
 from modules.catch_theme import button_style, state_color
@@ -335,10 +340,49 @@ class CatchSetupView(discord.ui.View):
 class CatchCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._trigger_states: dict[tuple[int, int | None], ChannelTriggerState] = {}
         self._scheduler.start()
 
     def cog_unload(self) -> None:
         self._scheduler.cancel()
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if message.guild is None or message.author.bot:
+            return
+        setup = await load_setup(message.guild.id, getattr(self.bot, "clone_id", None))
+        key = (message.guild.id, message.channel.id)
+        state = self._trigger_states.setdefault(key, ChannelTriggerState())
+        decision = consider_message(
+            setup,
+            state,
+            channel_id=message.channel.id,
+            user_id=message.author.id,
+            content=message.content,
+            is_bot=message.author.bot,
+        )
+        if not decision.should_spawn:
+            return
+        try:
+            roll = roll_spawn(list(all_species().values()), random.Random())
+            spawn_id = await create_spawn(
+                guild_id=message.guild.id,
+                clone_id=getattr(self.bot, "clone_id", None),
+                channel_id=message.channel.id,
+                roll=roll,
+                expires_in=setup.despawn_seconds,
+            )
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=setup.despawn_seconds)
+            data = spawn_embed_data(roll, expires_at=expires_at)
+            embed = discord.Embed(title=data["title"], description=data["description"], colour=state_color("info"))
+            embed.add_field(name="Rarity", value=data["rarity"])
+            embed.add_field(name="Level", value=data["level"])
+            embed.set_footer(text=f"Claim it before it runs away · {data['expires_at']}")
+            posted = await message.channel.send(embed=embed)
+            await attach_spawn_message(spawn_id, posted.id)
+        except Exception:
+            state.message_count = 0
+            return
 
     @tasks.loop(seconds=30)
     async def _scheduler(self) -> None:
