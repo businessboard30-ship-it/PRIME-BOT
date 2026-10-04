@@ -11,5 +11,16 @@
   "download_too_large": "File too large: ~{size}MB. Max allowed: 50MB.",
   "download_error": "Couldn't process that link: {error}",
   "error_generic": "Something went wrong. Please try again in a moment.",
-  "powered_by": "Powered by"
+  "powered_by": "Powered by",
+  "catch.hub.title": "Catch hub",
+  "catch.hub.description": "Choose a category below to explore the Discord catch game.",
+  "catch.hub.footer": "Use Home to return to Play. This panel expires after 15 minutes.",
+  "catch.setup.title": "Creature catching setup",
+  "catch.setup.description": "Configure the server-side spawn loop before enabling creature catching.",
+  "catch.setup.not_selected": "Not selected",
+  "catch.setup.needs_attention": "Needs attention",
+  "catch.setup.footer": "Changes are staged in this panel until the setup is saved.",
+  "catch.setup.select_channel": "Select at least one spawn channel before enabling catching.",
+  "catch.setup.text_channel": "Select at least one text channel.",
+  "catch.setup.test_queued": "Test spawn queued in dry-run mode: `{payload}`"
 }
