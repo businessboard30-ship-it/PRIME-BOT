@@ -78,6 +78,7 @@ from discord_bot.cogs._views_style_wizard import STYLE_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
 from modules import channel_finder
 from discord_bot.cogs._views_card_customize import DYNAMIC_ITEMS as CARD_CUSTOMIZE_DYNAMIC_ITEMS
+from discord_bot.cogs.catch import DYNAMIC_ITEMS as CATCH_DYNAMIC_ITEMS
 from discord_bot.cogs._views_invites import DYNAMIC_ITEMS as INVITES_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_wizard import DYNAMIC_ITEMS as AUTOMOD_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_modlog_wizard import DYNAMIC_ITEMS as MODLOG_WIZARD_DYNAMIC_ITEMS
@@ -217,6 +218,7 @@ class AnimeBotDiscord(commands.Bot):
         channel_finder.install()
         self.add_dynamic_items(*channel_finder.DYNAMIC_ITEMS)
         self.add_dynamic_items(*CARD_CUSTOMIZE_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*CATCH_DYNAMIC_ITEMS)
         self.add_dynamic_items(*INVITES_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*MODLOG_WIZARD_DYNAMIC_ITEMS)
