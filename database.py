@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "53"
+SCHEMA_VERSION = "54"
+# "53" -> "54" adds discord_quarantine_config, discord_quarantined and discord_channel_locks (server panel phase 11: quarantine role with one-tap release, channel lock). Same bump-or-it-never-runs trap.
 # "52" -> "53" adds discord_join_gate_config and discord_scam_shield_guild (server panel phase 9: join gate, per-server Scam Shield switch + allowed domains). Same bump-or-it-never-runs trap.
 # "51" -> "52" adds 030_bump_channel_recreate_consent.sql (2 columns on bump_guild_config). Same bump-or-it-never-runs trap.
 # "50" -> "51" adds 029_scam_shield.sql (scam_shield_rules/settings/hits). Same bump-or-it-never-runs trap.
@@ -2787,6 +2788,48 @@ class Database:
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS discord_scam_shield_guild_guild_clone_key
             ON discord_scam_shield_guild (guild_id, COALESCE(clone_id, -1))
+        """)
+        # --- Quarantine + channel lock (server panel phase 11) ------------------
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_quarantine_config (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                role_id BIGINT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_quarantine_config_guild_clone_key
+            ON discord_quarantine_config (guild_id, COALESCE(clone_id, -1))
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_quarantined (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                user_id BIGINT NOT NULL,
+                saved_role_ids BIGINT[] NOT NULL DEFAULT '{}',
+                reason TEXT,
+                quarantined_by BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_quarantined_guild_clone_user_key
+            ON discord_quarantined (guild_id, COALESCE(clone_id, -1), user_id)
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_channel_locks (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                channel_id BIGINT NOT NULL,
+                prev_send TEXT NOT NULL DEFAULT 'none',
+                locked_by BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_channel_locks_guild_clone_channel_key
+            ON discord_channel_locks (guild_id, COALESCE(clone_id, -1), channel_id)
         """)
         # welcome_message: shown in the embed posted inside a freshly-opened
         # ticket channel, in place of the hardcoded "Thanks for reaching
@@ -10288,6 +10331,99 @@ class Database:
                 """,
                 guild_id, clone_id,
             )
+
+    # ── quarantine + channel locks (server panel phase 11) ─────────────────
+
+    async def get_quarantine_role(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[int]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT role_id FROM discord_quarantine_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id)
+
+    async def set_quarantine_role(self, guild_id: int, clone_id: Optional[int], role_id: Optional[int]) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_quarantine_config (guild_id, clone_id, role_id, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET role_id = $3, updated_at = NOW()
+                """,
+                guild_id, clone_id, role_id)
+
+    async def add_quarantined(self, guild_id: int, clone_id: Optional[int], user_id: int,
+                              saved_role_ids: list, reason: Optional[str], by_id: Optional[int]) -> None:
+        """Keeps the FIRST saved role list if the person is already quarantined (never overwrite it with
+        the already-stripped list, or release would restore nothing)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_quarantined (guild_id, clone_id, user_id, saved_role_ids, reason, quarantined_by)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id) DO NOTHING
+                """,
+                guild_id, clone_id, user_id, list(saved_role_ids), (reason or "")[:200] or None, by_id)
+
+    async def get_quarantined(self, guild_id: int, clone_id: Optional[int], user_id: int) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_quarantined WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3",
+                guild_id, clone_id, user_id)
+            return dict(row) if row else None
+
+    async def list_quarantined(self, guild_id: int, clone_id: Optional[int], limit: int = 25) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM discord_quarantined WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "ORDER BY created_at DESC LIMIT $3", guild_id, clone_id, limit)
+            return [dict(r) for r in rows]
+
+    async def remove_quarantined(self, guild_id: int, clone_id: Optional[int], user_id: int) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM discord_quarantined WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND user_id = $3",
+                guild_id, clone_id, user_id)
+
+    async def add_channel_lock(self, guild_id: int, clone_id: Optional[int], channel_id: int,
+                               prev_send: str, by_id: Optional[int]) -> None:
+        """First lock wins: locking an already-locked channel must not overwrite the saved original."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_channel_locks (guild_id, clone_id, channel_id, prev_send, locked_by)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), channel_id) DO NOTHING
+                """,
+                guild_id, clone_id, channel_id, prev_send, by_id)
+
+    async def get_channel_lock(self, guild_id: int, clone_id: Optional[int], channel_id: int) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_channel_locks WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND channel_id = $3",
+                guild_id, clone_id, channel_id)
+            return dict(row) if row else None
+
+    async def list_channel_locks(self, guild_id: int, clone_id: Optional[int]) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM discord_channel_locks WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "ORDER BY created_at", guild_id, clone_id)
+            return [dict(r) for r in rows]
+
+    async def remove_channel_lock(self, guild_id: int, clone_id: Optional[int], channel_id: int) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM discord_channel_locks WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND channel_id = $3",
+                guild_id, clone_id, channel_id)
 
     async def get_scam_shield_guild(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()

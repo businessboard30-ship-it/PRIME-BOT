@@ -94,6 +94,20 @@ class JoinGateCog(commands.Cog):
                 except (discord.Forbidden, discord.HTTPException):
                     perm_check.flag(guild.id, clone_id, "join_gate",
                                     f"The join gate couldn't kick someone. {perm_check.forbidden_hint(guild, 'kick_members')}")
+        quarantined: Optional[bool] = None
+        if cfg.get("action") == "quarantine":
+            quarantined = False
+            try:
+                from modules import server_panel_quarantine as spq
+                quarantined, why = await spq.quarantine_member(
+                    guild, clone_id, guild.me, member, "[join gate] " + "; ".join(reasons))
+                if quarantined:
+                    perm_check.clear(guild.id, clone_id, "join_gate")
+                else:
+                    perm_check.flag(guild.id, clone_id, "join_gate",
+                                    f"The join gate couldn't quarantine someone: {why}")
+            except Exception:
+                logger.exception("[join-gate] quarantine failed in guild %s", guild.id)
         try:
             await db.bump_join_gate_blocked(guild.id, clone_id=clone_id)
         except Exception:
@@ -102,7 +116,11 @@ class JoinGateCog(commands.Cog):
         ch = await _log_channel(guild, clone_id)
         if ch is None:
             return
-        outcome = {True: "👢 kicked", False: "⚠️ couldn't kick (check my permissions)", None: "🔔 let in — staff alerted"}[kicked]
+        if quarantined is not None:
+            outcome = ("🔒 quarantined — staff can release them in the panel" if quarantined
+                       else "⚠️ couldn't quarantine (set a quarantine role and check my permissions)")
+        else:
+            outcome = {True: "👢 kicked", False: "⚠️ couldn't kick (check my permissions)", None: "🔔 let in — staff alerted"}[kicked]
         embed = discord.Embed(title="🚪 Join gate caught a new member", color=discord.Color.orange())
         embed.add_field(name="Member", value=f"{member} (`{member.id}`)", inline=False)
         embed.add_field(name="Why", value="\n".join(f"• {r}" for r in reasons)[:1000], inline=False)

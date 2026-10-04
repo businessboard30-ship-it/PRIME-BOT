@@ -14,6 +14,7 @@ from typing import List, Optional
 ACTIONS = {
     "alert": "Alert staff only",
     "kick": "Kick and alert staff",
+    "quarantine": "Quarantine and alert staff",
 }
 MIN_AGE_CHOICES = (1, 3, 7, 14, 30)   # days; the panel offers these in one select
 MAX_AGE_DAYS = 365

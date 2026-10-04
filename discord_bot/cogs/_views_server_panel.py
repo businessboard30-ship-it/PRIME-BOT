@@ -37,7 +37,7 @@ AUTOMOD_FILTERS = [
     ("anti_mention_enabled", "Mention spam"),
     ("spam_enabled", "Flood spam"),
 ]
-SELECT_TYPES = (discord.ui.Select, discord.ui.ChannelSelect, discord.ui.RoleSelect)
+SELECT_TYPES = (discord.ui.Select, discord.ui.ChannelSelect, discord.ui.RoleSelect, discord.ui.UserSelect)
 AUTOMOD_ACTIONS = ["delete", "warn", "timeout", "kick"]  # automod.VALID_ACTIONS
 
 
@@ -292,6 +292,16 @@ class ServerPanelView(discord.ui.LayoutView):
             from discord_bot.cogs import _views_server_panel_p6 as p6
             await interaction.response.defer()
             view = await getattr(p6, name).create(self._ctx(interaction))
+            await interaction.edit_original_response(view=view)
+        return cb
+
+    def nav_p7(self, name: str) -> Callable:
+        """Navigate to a Phase 11 (quarantine / lock) screen by class name (lazy import avoids a cycle)."""
+        @read_only_ok
+        async def cb(interaction: discord.Interaction):
+            from discord_bot.cogs import _views_server_panel_p7 as p7
+            await interaction.response.defer()
+            view = await getattr(p7, name).create(self._ctx(interaction))
             await interaction.edit_original_response(view=view)
         return cb
 
@@ -716,6 +726,7 @@ class ModerationView(ServerPanelView):
         out.append(_btn("Anti-raid" if not (self.data.get("ar") or {}).get("enabled") else "Anti-raid settings",
                         discord.ButtonStyle.primary, self._open_antiraid, "🛡️"))
         out.append(_btn("Join gate & Scam Shield", discord.ButtonStyle.primary, self.nav_p5("ProtectionView"), "🚪"))
+        out.append(_btn("Quarantine & lockdown", discord.ButtonStyle.primary, self.nav_p7("ResponseView"), "🚨"))
         out.append(self.back_button())
         return out
 
