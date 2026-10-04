@@ -17,6 +17,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from discord_bot.cogs._views_catch_collection import open_collection, open_dex
 from discord_bot.cogs._views_shared import user_can_manage_guild
 from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_reminders import Reminder, dispatch_due_reminders
@@ -59,6 +60,9 @@ def category_for(key: str) -> HubCategory:
 def component_count(view: discord.ui.View) -> int:
     """Count children recursively for the Discord 25-component guard."""
     return sum(1 + component_count(child) for child in view.children if isinstance(child, discord.ui.View)) + len(view.children)
+
+
+REAL_ACTIONS = {"collection": open_collection, "dex": open_dex}
 
 
 class CatchHubView(discord.ui.View):
@@ -166,6 +170,10 @@ class CatchHubView(discord.ui.View):
         await interaction.response.edit_message(embed=build_hub_embed(self.category.key), view=self)
 
     def _action(self, label: str, description: str):
+        real = REAL_ACTIONS.get(label.lower())
+        if real is not None:
+            return real
+
         async def callback(interaction: discord.Interaction) -> None:
             await interaction.response.send_message(f"**{label}** is ready for this server. {description}", ephemeral=True)
         return callback
@@ -236,6 +244,9 @@ class CatchHubDynamicButton(
             return
         if self.action == "setup":
             await CatchHubView()._setup(interaction)
+            return
+        if self.action in REAL_ACTIONS:
+            await REAL_ACTIONS[self.action](interaction)
             return
         labels = {
             "encounter": ("Encounter", "Find a creature"),

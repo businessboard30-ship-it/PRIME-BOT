@@ -65,5 +65,19 @@
   "catch.setup.wild_zone_failed": "I couldn't create #wild-zone. Check my permissions or pick an existing channel with the selector.",
   "catch.setup.wild_zone_ready": "{channel} is now a spawn channel.",
   "catch.setup.test_posted": "Test spawn posted in {channel}. It's a real spawn: claiming it gives the creature to whoever catches it.",
-  "catch.setup.test_failed": "The test spawn could not be posted in {channel}. Check that I can send messages and embeds there."
+  "catch.setup.test_failed": "The test spawn could not be posted in {channel}. Check that I can send messages and embeds there.",
+  "catch.ui.prev": "Prev",
+  "catch.ui.next": "Next",
+  "catch.ui.not_yours": "This panel belongs to someone else. Open your own from /catch.",
+  "catch.collection.title": "Your collection",
+  "catch.collection.empty": "You haven't caught anything yet. Use **Encounter** or wait for a wild creature to appear.",
+  "catch.collection.footer": "Page {page}/{pages} · {total} creatures · {sort}",
+  "catch.collection.sort": "Sort by",
+  "catch.collection.favorite": "Toggle favourite",
+  "catch.collection.not_found": "That creature isn't in your collection.",
+  "catch.collection.error": "Your collection couldn't be loaded right now. Try again in a moment.",
+  "catch.dex.title": "Creature Dex",
+  "catch.dex.empty": "No species to show yet.",
+  "catch.dex.footer": "Caught {caught} · Seen {seen} · Total {total} · Page {page}/{pages}",
+  "catch.dex.error": "The Dex couldn't be loaded right now. Try again in a moment."
 }
