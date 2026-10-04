@@ -350,3 +350,48 @@ def test_wild_zone_lists_only_live_visible_spawns_in_this_guild():
         assert len(capped) == 1 and total == 2
 
     run_with_pool(scenario)
+
+
+def test_status_reads_only_this_player_and_clone_and_writes_nothing():
+    from modules import catch_status, catch_species
+
+    async def scenario(pool):
+        async with pool.acquire() as conn:
+            await catch_species.sync_to_db(conn)
+            sid = await conn.fetchval("SELECT id FROM catch_species ORDER BY id LIMIT 1")
+
+            async def player(user, clone, coins):
+                await conn.execute(
+                    "INSERT INTO catch_players (user_id, clone_id, coins, total_catches, catch_streak, best_streak, daily_streak) "
+                    "VALUES ($1,$2,$3,4,2,6,3)", user, clone, coins)
+
+            async def own(user, clone, *, shiny=False, favorite=False):
+                await conn.execute(
+                    "INSERT INTO catch_owned (user_id, clone_id, species_id, level, shiny, favorite, ivs, source) "
+                    "VALUES ($1,$2,$3,5,$4,$5,ARRAY[1,1,1,1,1],1)", user, clone, sid, shiny, favorite)
+
+            await player(U1, None, 250)
+            await player(U2, None, 9999)          # another player
+            await player(U1, 3, 7777)             # same user on another clone
+            await own(U1, None)
+            await own(U1, None, shiny=True, favorite=True)
+            await own(U2, None, shiny=True)       # another player's creatures
+            await own(U1, 3)                      # same user, another clone
+            await conn.execute(
+                "INSERT INTO catch_dex (user_id, clone_id, species_id, caught_count) VALUES ($1,NULL,$2,1)", U1, sid)
+            await conn.execute(
+                "INSERT INTO catch_dex (user_id, clone_id, species_id, caught_count) VALUES ($1,NULL,$2,1)", U2, sid)
+            before = await conn.fetchval("SELECT count(*) FROM catch_audit")
+        result = await catch_status.load_status(U1, None)
+        assert (result.coins, result.total_catches, result.best_streak, result.daily_streak) == (250, 4, 6, 3)
+        assert (result.owned, result.shinies, result.favourites) == (2, 1, 1)
+        assert result.dex_caught == 1 and result.dex_total >= 1
+        other_clone = await catch_status.load_status(U1, 3)
+        assert (other_clone.coins, other_clone.owned) == (7777, 1)
+        stranger = await catch_status.load_status(U3, None)
+        assert (stranger.coins, stranger.owned, stranger.dex_caught) == (0, 0, 0)
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit") == before
+            assert await conn.fetchval("SELECT count(*) FROM catch_players WHERE user_id=$1", U3) == 0
+
+    run_with_pool(scenario)

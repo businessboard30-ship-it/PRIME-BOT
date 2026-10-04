@@ -138,5 +138,19 @@
   "catch.wild.go": "Go",
   "catch.wild.yours": "only you",
   "catch.wild.more": "Showing {shown} of {total} creatures.",
-  "catch.wild.error": "The wild zone couldn't be loaded right now. Try again in a moment."
+  "catch.wild.error": "The wild zone couldn't be loaded right now. Try again in a moment.",
+  "catch.status.title": "Your status",
+  "catch.status.coins": "Coins",
+  "catch.status.catches": "Total catches",
+  "catch.status.collection": "Collection",
+  "catch.status.collection_value": "{owned:,} owned\n✨ {shinies:,} shiny\n⭐ {favourites:,} favourite",
+  "catch.status.streak": "Catch streak",
+  "catch.status.streak_value": "{current} now\nBest {best}",
+  "catch.status.daily": "Daily",
+  "catch.status.daily_value": "Streak {streak}\n{state}",
+  "catch.status.daily_ready": "Ready to claim",
+  "catch.status.daily_wait": "Ready {when}",
+  "catch.status.dex": "Dex",
+  "catch.status.dex_value": "{caught} caught\n{seen} seen\nof {total}",
+  "catch.status.error": "Your status couldn't be loaded right now. Try again in a moment."
 }
