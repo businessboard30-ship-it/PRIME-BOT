@@ -276,6 +276,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.admin")
         await self.load_extension("discord_bot.cogs.welcome")
         await self.load_extension("discord_bot.cogs.welcome_extras")
+        await self.load_extension("discord_bot.cogs.join_gate")
         await self.load_extension("discord_bot.cogs.invites")
         await self.load_extension("discord_bot.cogs.quickstart")
         await self.load_extension("discord_bot.cogs.setup_channels")

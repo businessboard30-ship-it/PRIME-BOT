@@ -3,7 +3,8 @@
 """
 Scam Shield listener: deletes known scam messages in EVERY server the bot is in and flags each catch.
 
-On by default everywhere; the owner can switch it off globally from /admin -> Scam Shield.
+On by default everywhere; the owner can switch it off globally from /admin -> Scam Shield, and each server can
+switch it off for itself or allow specific domains from /serversetup -> Moderation -> Join gate & Scam Shield.
 Rules and matching live in modules/scam_shield.py (memory-cached, no database call per message).
 
 Flow per message:
@@ -90,11 +91,23 @@ class ScamShieldCog(commands.Cog):
         try:
             if _is_trusted(message):
                 return
-            hit = ss.match_text(_text_of(message))
+            text = _text_of(message)
+            hit = ss.match_text(text)
             if hit is None and ss.has_image_rules():
                 hit = await self._match_images(message)
             if hit is None:
                 return
+            # Only now (a real match) look at this server's own settings: it can switch the shield
+            # off for itself or allow specific domains. Cached, so this is not a per-message query.
+            gs = await ss.guild_settings(message.guild.id, getattr(self.bot, "clone_id", None))
+            if not gs["enabled"]:
+                return
+            if gs["allowed_domains"] and hit[0] == "domain":
+                hit = ss.match_text(text, gs["allowed_domains"])
+                if hit is None and ss.has_image_rules():
+                    hit = await self._match_images(message)
+                if hit is None:
+                    return
             await self._act(message, *hit)
         except Exception:
             logger.exception("[scam-shield] failed while checking a message")
