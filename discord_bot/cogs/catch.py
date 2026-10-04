@@ -366,17 +366,30 @@ class SpawnClaimView(discord.ui.View):
         except Exception:
             await interaction.followup.send("That creature could not be claimed right now.", ephemeral=True)
             return
-        if not result.claimed:
-            await interaction.followup.send("That creature has already fled or been claimed.", ephemeral=True)
-            return
+
         for item in self.children:
             item.disabled = True
         await interaction.message.edit(view=self)
+
+        if not result.claimed:
+            embed = discord.Embed(
+                title="The creature got away",
+                description="This spawn was already claimed, expired, or fled.",
+                colour=state_color("danger"),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         name = "Shiny creature" if result.shiny else "Creature"
-        await interaction.followup.send(
-            f"You claimed **{name}** (level {result.level})!",
-            ephemeral=True,
+        embed = discord.Embed(
+            title="Catch successful",
+            description=f"You claimed **{name}**!",
+            colour=state_color("success"),
         )
+        embed.add_field(name="Level", value=str(result.level), inline=True)
+        if result.new_species:
+            embed.add_field(name="Dex", value="New species discovered", inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class CatchCog(commands.Cog):
