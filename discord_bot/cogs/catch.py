@@ -7,13 +7,14 @@ the same callbacks without changing the interaction contract.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, test_spawn_payload
 from modules.catch_theme import button_style, state_color
 
 
@@ -80,9 +81,19 @@ class CatchHubView(discord.ui.View):
             button.callback = self._action(label, description)
             self.add_item(button)
 
+        setup = discord.ui.Button(label="Server setup", style=button_style("navigation"), custom_id="catch:hub:setup", row=4)
+        setup.callback = self._setup
+        self.add_item(setup)
         home = discord.ui.Button(label="Home", style=button_style("navigation"), custom_id="catch:hub:home", row=4)
         home.callback = self._home
         self.add_item(home)
+
+    async def _setup(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(
+            embed=build_setup_embed(CatchSetup()),
+            view=CatchSetupView(),
+            ephemeral=True,
+        )
 
     async def _select_category(self, interaction: discord.Interaction) -> None:
         selected = interaction.data.get("values", ["play"])[0] if interaction.data else "play"
@@ -176,6 +187,106 @@ class CatchHubDynamicButton(
 DYNAMIC_ITEMS = (CatchHubDynamicButton,)
 
 
+def build_setup_embed(setup: CatchSetup) -> discord.Embed:
+    errors = setup.validate()
+    embed = discord.Embed(
+        title="Creature catching setup",
+        description="Configure the server-side spawn loop before enabling creature catching.",
+        colour=state_color("success" if setup.enabled else "info"),
+    )
+    embed.add_field(name="Status", value=setup.status_line(), inline=False)
+    embed.add_field(
+        name="Spawn channels",
+        value=", ".join(f"<#{channel_id}>" for channel_id in setup.spawn_channel_ids) or "Not selected",
+        inline=False,
+    )
+    embed.add_field(
+        name="Speed",
+        value=f"{setup.speed_preset.title()} ({setup.spawn_every_n_messages} messages / {setup.min_seconds_between_spawns}s)",
+        inline=False,
+    )
+    if setup.encounter_channel_ids:
+        embed.add_field(name="Encounter panel", value=", ".join(f"<#{channel_id}>" for channel_id in setup.encounter_channel_ids), inline=False)
+    if setup.rare_ping_role_id:
+        embed.add_field(name="Rare-spawn role", value=f"<@&{setup.rare_ping_role_id}>", inline=False)
+    if errors:
+        embed.add_field(name="Needs attention", value="\n".join(errors), inline=False)
+    embed.set_footer(text="Changes are staged in this panel until the setup is saved.")
+    return embed
+
+
+class CatchSetupView(discord.ui.View):
+    """Owner setup controls shared by the server panel and catch hub."""
+
+    def __init__(self, setup: CatchSetup | None = None):
+        super().__init__(timeout=600)
+        self.setup = setup or CatchSetup()
+        self._build()
+
+    def _build(self) -> None:
+        self.clear_items()
+        toggle = discord.ui.Button(
+            label="Turn off catching" if self.setup.enabled else "Turn on catching",
+            style=button_style("danger" if self.setup.enabled else "claim"),
+            custom_id="catch:setup:toggle",
+            row=0,
+        )
+        toggle.callback = self._toggle
+        self.add_item(toggle)
+
+        speed = discord.ui.Select(
+            placeholder=f"Spawn speed: {self.setup.speed_preset.title()}",
+            options=[
+                discord.SelectOption(label=name.title(), value=name, default=name == self.setup.speed_preset)
+                for name in SPEED_PRESETS
+            ],
+            custom_id="catch:setup:speed",
+            row=1,
+        )
+        speed.callback = self._speed
+        self.add_item(speed)
+
+        channels = discord.ui.Button(label="Pick spawn channels", style=button_style("navigation"), custom_id="catch:setup:channels", row=2)
+        channels.callback = self._channels
+        self.add_item(channels)
+        wild_zone = discord.ui.Button(label="Create wild-zone", style=button_style("navigation"), custom_id="catch:setup:wild-zone", row=2)
+        wild_zone.callback = self._wild_zone
+        self.add_item(wild_zone)
+        test = discord.ui.Button(label="Test spawn", style=button_style("main"), custom_id="catch:setup:test", row=2)
+        test.callback = self._test_spawn
+        self.add_item(test)
+
+    async def _refresh(self, interaction: discord.Interaction) -> None:
+        self._build()
+        await interaction.response.edit_message(embed=build_setup_embed(self.setup), view=self)
+
+    async def _toggle(self, interaction: discord.Interaction) -> None:
+        candidate = replace(self.setup, enabled=not self.setup.enabled)
+        errors = candidate.validate()
+        if candidate.enabled and errors:
+            await interaction.response.send_message("Select at least one spawn channel before enabling catching.", ephemeral=True)
+            return
+        self.setup = candidate
+        await self._refresh(interaction)
+
+    async def _speed(self, interaction: discord.Interaction) -> None:
+        selected = interaction.data.get("values", [self.setup.speed_preset])[0] if interaction.data else self.setup.speed_preset
+        self.setup = self.setup.with_speed(selected)
+        await self._refresh(interaction)
+
+    async def _channels(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Channel selection will be connected to the server panel persistence layer next. For now, use the test spawn after selecting a channel in the owner panel.", ephemeral=True)
+
+    async def _wild_zone(self, interaction: discord.Interaction) -> None:
+        existing = {channel.name for channel in getattr(interaction.guild, "channels", ())}
+        await interaction.response.send_message(f"Create **#{create_wild_zone_name(existing)}** in this server, then select it as a spawn channel.", ephemeral=True)
+
+    async def _test_spawn(self, interaction: discord.Interaction) -> None:
+        channel_id = self.setup.spawn_channel_ids[0] if self.setup.spawn_channel_ids else None
+        payload = test_spawn_payload(channel_id=channel_id)
+        await interaction.response.send_message(f"Test spawn queued in dry-run mode: `{payload}`", ephemeral=True)
+
+
 class CatchCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -189,7 +300,15 @@ async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(CatchCog(bot))
 
 
-__all__ = ["CATEGORIES", "CatchHubView", "build_hub_embed", "category_for", "component_count"]
+__all__ = [
+    "CATEGORIES",
+    "CatchHubView",
+    "CatchSetupView",
+    "build_hub_embed",
+    "build_setup_embed",
+    "category_for",
+    "component_count",
+]
 
 
 assert component_count(CatchHubView()) <= 25
