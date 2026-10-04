@@ -67,7 +67,7 @@ class CatchHubView(discord.ui.View):
     def _build(self) -> None:
         self.clear_items()
         select = discord.ui.Select(
-            placeholder="Choose a catch category",
+            placeholder=text("ui.choose_category"),
             options=[
                 discord.SelectOption(
                     label=item.label,
@@ -82,7 +82,7 @@ class CatchHubView(discord.ui.View):
         select.callback = self._select_category
         self.add_item(select)
 
-        pinned = discord.ui.Button(label="Encounter", style=button_style("main"), custom_id="catch:hub:encounter")
+        pinned = discord.ui.Button(label=text("ui.encounter"), style=button_style("main"), custom_id="catch:hub:encounter")
         pinned.callback = self._encounter
         self.add_item(pinned)
         daily = discord.ui.Button(label="Daily", style=button_style("claim"), custom_id="catch:hub:daily")
