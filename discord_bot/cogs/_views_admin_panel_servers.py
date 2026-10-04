@@ -175,7 +175,16 @@ class ServersHubView(PanelView):
             await _module_missing(i, "Admin module")
             return
         audit(i, "guilds.list")
-        await call_cmd(admin, "guilds", i)
+        try:
+            await call_cmd(admin, "guilds", i)
+        except Exception:
+            # Without this the button just shows "This interaction failed" and the cause is lost.
+            logger.exception("[admin-panel] Join dates failed")
+            msg = "⚠️ Couldn't load the join dates — the error is in the bot log."
+            if i.response.is_done():
+                await i.followup.send(msg, ephemeral=True)
+            else:
+                await i.response.send_message(msg, ephemeral=True)
 
     async def _toggle_left(self, i: discord.Interaction):
         self.include_left = not self.include_left

@@ -318,3 +318,50 @@ def test_clones_view_with_no_clones_and_with_many(vp):
         v = vp.ClonesView(cog(), OWNER, "servers", many)
         assert len(selects(v)[0].options) == 25 and v.total == 40
     run(go())
+
+
+# ── /admin guilds (the Join dates button runs this) ──────────────────────
+
+def _guild_rows(n, **over):
+    from datetime import datetime, timezone
+    return [{"guild_id": 1000 + k, "guild_name": "Server " + "x" * 60 + str(k), "member_count": k,
+             "invite_url": f"https://discord.gg/abc{k}", "joined_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+             "left_at": None, **over} for k in range(n)]
+
+
+def _run_guilds(rows):
+    import importlib
+    admin_mod = importlib.import_module("discord_bot.cogs.admin")
+    admin_mod._is_bot_admin = lambda uid: True
+    admin_mod.db = MagicMock()
+    admin_mod.db.list_discord_guilds = AsyncMock(return_value=rows)
+    c = admin_mod.AdminCog(MagicMock(clone_id=None))
+    i = I()
+    i.user = MagicMock(id=OWNER)
+    run(admin_mod.AdminCog.guilds.callback(c, i))
+    return i
+
+
+def test_admin_guilds_sends_each_chunk_as_its_own_message_under_discord_limits():
+    i = _run_guilds(_guild_rows(120))
+    sent = i.followup.send.await_args_list
+    assert len(sent) > 1                       # long list -> several messages, never several embeds in one
+    for call in sent:
+        assert "embeds" not in call.kwargs
+        assert len(call.kwargs["embed"].description) <= 4000
+
+
+def test_admin_guilds_survives_missing_join_date_and_invite():
+    i = _run_guilds(_guild_rows(2, joined_at=None, invite_url=None))
+    text = i.followup.send.await_args.kwargs["embed"].description
+    assert "joined unknown" in text and "no invite on file" in text
+
+
+def test_join_dates_button_shows_a_message_instead_of_failing_silently(vp):
+    async def go():
+        c = cog(); c.admin_cog.guilds.side_effect = RuntimeError("boom")
+        v = vp.ServersHubView(c, OWNER)
+        i = I(); await buttons(v)["Join dates"].callback(i)
+        i.response.send_message.assert_awaited_once()
+        assert "Couldn't load" in i.response.send_message.await_args.args[0]
+    run(go())

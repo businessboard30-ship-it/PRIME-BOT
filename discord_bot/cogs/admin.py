@@ -225,14 +225,14 @@ class AdminCog(commands.Cog):
             name = discord.utils.escape_markdown(discord.utils.escape_mentions(r['guild_name'] or 'Unknown'))
             # No backticks around the ID: inline code mixed with <t:..> timestamps rendered with the IDs
             # shoved to the end of the message and "()" left behind in the client.
-            line = (
-                f"**{name}** · ID {r['guild_id']} · "
-                f"{r['member_count'] or '?'} members · joined <t:{int(r['joined_at'].timestamp())}:R>"
-            )
-            line += f" · [invite]({r['invite_url']})" if r['invite_url'] else " · no invite on file"
-            lines.append(line)
+            joined = r.get('joined_at')
+            when = f"<t:{int(joined.timestamp())}:R>" if joined else "unknown"
+            line = f"**{name}** · ID {r['guild_id']} · {r['member_count'] or '?'} members · joined {when}"
+            line += f" · [invite]({r['invite_url']})" if r.get('invite_url') else " · no invite on file"
+            lines.append(line[:1000])
 
-        # Split on line boundaries so a long list never gets cut mid-link (embed description max is 4096).
+        # Split on line boundaries so a long list never gets cut mid-link. Discord also caps ALL embeds in
+        # one message at 6000 characters together, so every chunk goes out as its own message.
         chunks, cur = [], ""
         for line in lines:
             if cur and len(cur) + len(line) + 1 > 3800:
@@ -240,12 +240,15 @@ class AdminCog(commands.Cog):
                 cur = ""
             cur = f"{cur}\n{line}" if cur else line
         chunks.append(cur)
-        embeds = [
-            discord.Embed(title=f"🏠 Servers ({len(rows)})" + (f" · {n}/{len(chunks)}" if len(chunks) > 1 else ""),
-                          description=chunk, color=discord.Color.blurple())
-            for n, chunk in enumerate(chunks[:10], 1)
-        ]
-        await interaction.followup.send(embeds=embeds, ephemeral=True)
+        try:
+            for n, chunk in enumerate(chunks, 1):
+                embed = discord.Embed(
+                    title=f"🏠 Servers ({len(rows)})" + (f" · {n}/{len(chunks)}" if len(chunks) > 1 else ""),
+                    description=chunk, color=discord.Color.blurple())
+                await interaction.followup.send(embed=embed, ephemeral=True)
+        except discord.HTTPException:
+            logger.exception("[admin] /admin guilds could not send the server list")
+            await interaction.followup.send("⚠️ Couldn't show the server list — see the bot log.", ephemeral=True)
 
     @admin.command(name="submissions", description="[Owner] Review pending anime submissions")
     async def submissions(self, interaction: discord.Interaction):
