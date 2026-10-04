@@ -54,7 +54,6 @@ def allowed_sections(user_id: int) -> set:
     if user_id in DISCORD_CLONE_ADMIN_IDS:
         out.add("servers")  # servers / find / clones / monetize / commissions / subscribers
         out.add("bump")     # /admin bump ... (bump.py gates it on DISCORD_CLONE_ADMIN_IDS)
-        out.add("catch")    # Catch server setup is available to the same owner allowlist
         out.add("system")   # submissions / envcheck / revenue / exportusers (admin.py, same list)
         out.update({"controls", "blacklist", "premium", "audit"})  # Batch 1 (_views_admin_panel_controls.py)
         out.update({"access", "logs", "config", "database"})       # Batch 2 (_views_admin_panel_ops.py)
@@ -225,8 +224,6 @@ class HomeView(PanelView):
             lines.append("-# Servers & clones: not available to your account.")
         if "bump" not in a:
             lines.append("-# Bump: not available to your account.")
-        if "catch" not in a:
-            lines.append("-# Catch setup: not available to your account.")
         if "feedback" not in a:
             lines.append("-# Feedback: not available to your account.")
         if "system" not in a:
@@ -241,7 +238,6 @@ class HomeView(PanelView):
             _btn("Broadcast", P, self._broadcast, "📢", disabled="broadcast" not in a),
             _btn("Servers & clones", P, self._servers, "🏠", disabled="servers" not in a),
             _btn("Bump", P, self._bump, "📡", disabled="bump" not in a),
-            _btn("Catch setup", P, self._catch, "C", disabled="catch" not in a),
             _btn("Feedback", P, self._feedback, "📬", disabled="feedback" not in a),
             _btn("System", P, self._system, "⚙️", disabled="system" not in a),
             _btn("Kill switches", P, self._controls, "🎚️", disabled="controls" not in a),
@@ -281,16 +277,6 @@ class HomeView(PanelView):
     async def _bump(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_system import BumpHubView  # lazy: avoids import cycle
         await self.go(i, BumpHubView(self.cog, self.owner_id, "bump"))
-
-    async def _catch(self, i: discord.Interaction):
-        from discord_bot.cogs.catch import CatchSetupView, build_setup_embed
-        from modules.catch_setup import load_setup
-
-        await i.response.defer()
-        guild_id = i.guild_id
-        setup = await load_setup(guild_id) if guild_id is not None else None
-        view = CatchSetupView(setup, guild_id=guild_id)
-        await i.edit_original_response(embed=build_setup_embed(view.setup), view=view)
 
     async def _feedback(self, i: discord.Interaction):
         from discord_bot.cogs._views_admin_panel_system import FeedbackView
