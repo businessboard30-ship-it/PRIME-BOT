@@ -77,7 +77,12 @@ async def _enabled_feature_keys(guild_id: int, clone_id) -> set:
     one-tap actions, not toggles) so they're never reported as "on" here.
     Best-effort: a lookup failure just means that one feature falls back
     to showing as not-yet-enabled rather than blocking the rebuild."""
+    async def _catch_config():
+        from modules.catch_setup import load_setup
+        return {"enabled": (await load_setup(guild_id, clone_id)).enabled}
+
     checks = (
+        ("catch", _catch_config, "enabled"),
         ("welcome", lambda: db.get_welcome_config(guild_id, clone_id=clone_id), "enabled"),
         ("automod", lambda: db.get_automod_config(guild_id, clone_id=clone_id), "word_filter_enabled"),
         ("leveling", lambda: db.get_voice_xp_config(guild_id, clone_id=clone_id), "enabled"),
@@ -1418,6 +1423,46 @@ def _is_general_chat_channel(guild: discord.Guild, channel) -> bool:
     return channel == _default_text_channel(guild) or "general" in _plain_name(channel.name)
 
 
+def _catch_guild_allowed(guild_id: int) -> bool:
+    from modules.catch_gate import guild_allowed
+    return guild_allowed(guild_id)
+
+
+async def _enable_catch(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """Turns creature catching on, spawning in a dedicated #wild-zone channel
+    (an already-configured spawn channel is kept; an existing #wild-zone is
+    reused; otherwise it is created when the bot has Manage Channels). NEVER
+    falls back to the system channel / #general, so spawns can't bury the
+    main chat."""
+    from dataclasses import replace
+    from modules.catch_gate import SUPPORT_ONLY_REASON, set_feature_flag
+    from modules.catch_setup import load_setup, save_setup
+
+    if not _catch_guild_allowed(guild.id):
+        return False, f"Creature catching isn't open to this server yet: {SUPPORT_ONLY_REASON}."
+    setup = await load_setup(guild.id, clone_id)
+    channel = next((guild.get_channel(c) for c in setup.spawn_channel_ids if guild.get_channel(c)), None)
+    if channel is None:
+        channel = discord.utils.get(guild.text_channels, name="wild-zone")
+        if channel is None:
+            if not guild.me.guild_permissions.manage_channels:
+                return False, (
+                    "I need **Manage Channels** to create #wild-zone for the creatures. Give me that "
+                    "permission, or open `/catch` → **Server setup** and pick the spawn channels yourself."
+                )
+            channel = await guild.create_text_channel("wild-zone", reason="Creature catching setup")
+        setup = setup.with_spawn_channels([channel.id])
+    setup = replace(setup, enabled=True)
+    await save_setup(guild.id, setup, clone_id)
+    await set_feature_flag(
+        guild.id, clone_id, "game", True, updated_by=interaction.user.id, reason="Join DM toggle",
+    )
+    return True, (
+        f"Creature catching is on — wild creatures will appear in {channel.mention}. Members play with "
+        "`/catch`. Change spawn speed or channels any time from `/catch` → **Server setup**."
+    )
+
+
 async def _enable_bump(interaction: discord.Interaction, guild: discord.Guild, clone_id):
     """Turns the bump network on in a dedicated #bump channel — reuses the
     configured one (unless it's the old #general default) or an existing
@@ -1774,6 +1819,8 @@ FEATURE_TOGGLES = {
                      "Let members submit ideas for staff and members to vote on."),
     "automod": ("Auto-moderation", "🛡️", _enable_automod, _AutomodOptionsView,
                 "Filter spam, invite links, and mass-mention raids."),
+    "catch": ("Creature catching", "🐾", _enable_catch, None,
+              "Wild creatures appear while your members chat — they catch, collect and trade them with /catch."),
     "build_bot": ("Build Bot", "🤖", _start_build_bot_wizard, None,
                   "Run your own copy of this bot under your own name — takes about 2 minutes, no coding needed."),
 }
@@ -1803,12 +1850,15 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         label, emoji, _, _, _ = FEATURE_TOGGLES[feature_key]
         # Go Premium isn't a "Turn on" toggle — plain label, blue button.
         is_premium = feature_key == "go_premium"
+        # Creature catching is limited to the support server for now: dim the button everywhere
+        # else (see modules/catch_gate.py; _enable_catch refuses too for stale, older DMs).
+        locked = feature_key == "catch" and not _catch_guild_allowed(guild_id)
         super().__init__(
             discord.ui.Button(
-                label=label if is_premium else f"Turn on: {label}",
-                style=discord.ButtonStyle.primary if is_premium else discord.ButtonStyle.success,
+                label=f"{label}: support server only" if locked else (label if is_premium else f"Turn on: {label}"),
+                style=(discord.ButtonStyle.secondary if locked else discord.ButtonStyle.primary if is_premium else discord.ButtonStyle.success),
                 emoji=emoji, custom_id=f"join_dm_feat:{feature_key}:{guild_id}:{'-' if clone_id is None else clone_id}",
-                row=row,
+                row=row, disabled=locked,
             )
         )
 
@@ -1888,7 +1938,7 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
                 style=(discord.ButtonStyle.secondary if is_this_one and success else component.style),
                 emoji=(None if is_this_one and success else component.emoji),
                 custom_id=custom_id,
-                disabled=(is_this_one and bool(success)),
+                disabled=(bool(component.disabled) or (is_this_one and bool(success))),
             )
         rebuilt = _RebuiltCopyView(interaction.message.components, _patch_clicked)
         await interaction.edit_original_response(view=rebuilt)

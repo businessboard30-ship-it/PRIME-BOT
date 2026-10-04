@@ -44,6 +44,27 @@ ACTION_FEATURE: dict[str, str] = {
 }
 
 
+SUPPORT_ONLY_REASON = "the game is only open in the support server for now"
+
+
+def support_server_only() -> bool:
+    """True while the game is limited to the support server (config.CATCH_SUPPORT_SERVER_ONLY)."""
+    import config
+    return bool(config.CATCH_SUPPORT_SERVER_ONLY)
+
+
+def guild_allowed(guild_id: int | None) -> bool:
+    """May the game be used in this server? DMs and unknown servers are refused while restricted.
+
+    Fails closed: if the support server ID is not configured, nobody is allowed.
+    """
+    if not support_server_only():
+        return True
+    import config
+    support_id = int(config.DISCORD_SUPPORT_SERVER_ID or 0)
+    return bool(support_id) and guild_id == support_id
+
+
 @dataclass(frozen=True)
 class Gate:
     allowed: bool
@@ -99,6 +120,8 @@ async def check_player_allowed(
     user_id: int, guild_id: int | None, action: str, clone_id: int | None = None, conn=None
 ) -> Gate:
     """Gate for every catch action. ``user_id`` is used by sanctions (P9-05)."""
+    if not guild_allowed(guild_id):
+        return Gate(False, SUPPORT_ONLY_REASON)
     flags = await _flags(guild_id or GLOBAL_GUILD, clone_id, conn)
     return decide(flags, action)
 

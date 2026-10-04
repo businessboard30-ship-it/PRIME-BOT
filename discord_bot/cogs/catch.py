@@ -17,18 +17,30 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from discord_bot.cogs._views_catch_collection import open_collection, open_dex
+from discord_bot.cogs._views_catch_items import open_daily, open_inventory
+from discord_bot.cogs._views_catch_guide import open_guide
+from discord_bot.cogs._views_catch_rules import open_rules
+from discord_bot.cogs._views_catch_sell import open_sell
+from discord_bot.cogs._views_catch_status import open_status
+from discord_bot.cogs._views_catch_wild import open_wild_zone
+from discord_bot.cogs._views_catch_shop import open_shop, open_wallet
+from discord_bot.cogs._views_shared import user_can_manage_guild
 from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_reminders import Reminder, dispatch_due_reminders
-from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, load_setup, save_setup, test_spawn_payload
+from modules.catch_setup import CatchSetup, SPEED_PRESETS, load_setup, save_setup
 from modules.catch_species import all_species
 from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
 from modules.catch_trigger import ChannelTriggerState, consider_message
 from modules.catch_encounter import EncounterOnCooldown, create_player_encounter
-from modules.catch_gate import check_player_allowed, set_feature_flag
+from modules.catch_gate import check_player_allowed, guild_allowed, set_feature_flag
 from modules.catch_i18n import text
+from modules.catch_items import ensure_starter_kit
 from modules.catch_service import CatchBlocked, record_catch
 from modules.catch_theme import button_style, state_color
-from modules.catch_throw import ThrowChoice, choice_label
+from modules.catch_throw import choice_label
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -56,6 +68,14 @@ def category_for(key: str) -> HubCategory:
 def component_count(view: discord.ui.View) -> int:
     """Count children recursively for the Discord 25-component guard."""
     return sum(1 + component_count(child) for child in view.children if isinstance(child, discord.ui.View)) + len(view.children)
+
+
+REAL_ACTIONS = {
+    "collection": open_collection, "dex": open_dex, "daily": open_daily, "inventory": open_inventory,
+    "shop": open_shop, "wallet": open_wallet, "sell": open_sell,
+    "wild-zone": open_wild_zone, "status": open_status,
+    "guide": open_guide, "rules": open_rules,
+}
 
 
 class CatchHubView(discord.ui.View):
@@ -90,7 +110,7 @@ class CatchHubView(discord.ui.View):
         self.add_item(daily)
 
         for label, description in self.category.actions:
-            button = discord.ui.Button(label=label, style=button_style("navigation"), custom_id=f"catch:hub:{self.category.key}:{label.lower()}")
+            button = discord.ui.Button(label=label, style=button_style("navigation"), custom_id=f"catch:hub:{self.category.key}:{label.lower().replace(' ', '-')}")
             button.callback = self._action(label, description)
             self.add_item(button)
 
@@ -102,11 +122,20 @@ class CatchHubView(discord.ui.View):
         self.add_item(home)
 
     async def _setup(self, interaction: discord.Interaction) -> None:
-        guild_id = interaction.guild_id
-        setup = await load_setup(guild_id) if guild_id is not None else CatchSetup()
-        await interaction.response.send_message(
+        # Acknowledge first (3-second rule); the permission lookup may hit the API.
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send(text("encounter.server_only"), ephemeral=True)
+            return
+        if not await user_can_manage_guild(guild, interaction.user.id):
+            await interaction.followup.send(text("setup.manage_server"), ephemeral=True)
+            return
+        clone_id = getattr(interaction.client, "clone_id", None)
+        setup = await load_setup(guild.id, clone_id)
+        await interaction.followup.send(
             embed=build_setup_embed(setup),
-            view=CatchSetupView(setup, guild_id=guild_id),
+            view=CatchSetupView(setup, guild_id=guild.id, clone_id=clone_id),
             ephemeral=True,
         )
 
@@ -114,17 +143,24 @@ class CatchHubView(discord.ui.View):
         if interaction.guild_id is None or interaction.channel_id is None:
             await interaction.response.send_message(text("encounter.server_only"), ephemeral=True)
             return
+        # Acknowledge first (3-second rule): the gate check and the encounter insert hit the DB.
+        await interaction.response.defer(ephemeral=True)
+        clone_id = getattr(interaction.client, "clone_id", None)
+        gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "encounter", clone_id)
+        if not gate.allowed:
+            await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+            return
         try:
             roll = roll_spawn(list(all_species().values()), random.Random())
             spawn_id = await create_player_encounter(
                 user_id=interaction.user.id,
-                clone_id=getattr(interaction.client, "clone_id", None),
+                clone_id=clone_id,
                 guild_id=interaction.guild_id,
                 channel_id=interaction.channel_id,
                 roll=roll,
             )
         except EncounterOnCooldown as exc:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 text("encounter.cooldown", ready_at=int(exc.ready_at.timestamp())),
                 ephemeral=True,
             )
@@ -135,8 +171,9 @@ class CatchHubView(discord.ui.View):
         embed.add_field(name=text("encounter.rarity"), value=data["rarity"])
         embed.add_field(name=text("encounter.level"), value=data["level"])
         embed.set_footer(text=text("encounter.footer", expires_at=data["expires_at"]))
-        await interaction.response.send_message(embed=embed, view=SpawnClaimView(spawn_id), ephemeral=True)
-        message = await interaction.original_response()
+        message = await interaction.followup.send(
+            embed=embed, view=SpawnClaimView(spawn_id), ephemeral=True, wait=True
+        )
         await attach_spawn_message(spawn_id, message.id)
 
     async def _select_category(self, interaction: discord.Interaction) -> None:
@@ -146,6 +183,10 @@ class CatchHubView(discord.ui.View):
         await interaction.response.edit_message(embed=build_hub_embed(self.category.key), view=self)
 
     def _action(self, label: str, description: str):
+        real = REAL_ACTIONS.get(label.lower().replace(" ", "-"))
+        if real is not None:
+            return real
+
         async def callback(interaction: discord.Interaction) -> None:
             await interaction.response.send_message(f"**{label}** is ready for this server. {description}", ephemeral=True)
         return callback
@@ -171,12 +212,14 @@ def build_hub_embed(category: str = "play") -> discord.Embed:
 
 class CatchHubDynamicButton(
     discord.ui.DynamicItem[discord.ui.Button],
-    template=r"catch:hub:(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)",
+    template=r"catch:hub:(?!category$)(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)",
 ):
     """Reconstruct catch hub buttons from their custom_id after a restart.
 
     Hub buttons encode their category in the custom ID when applicable. The
     optional group also accepts the global Home, Encounter, and Daily buttons.
+    The ``category`` custom ID belongs to the select (CatchHubDynamicSelect); discord.py
+    dispatches every matching template regardless of component type, so it is excluded here.
     """
 
     def __init__(
@@ -212,6 +255,12 @@ class CatchHubDynamicButton(
         if self.action == "encounter":
             await CatchHubView()._encounter(interaction)
             return
+        if self.action == "setup":
+            await CatchHubView()._setup(interaction)
+            return
+        if self.action in REAL_ACTIONS:
+            await REAL_ACTIONS[self.action](interaction)
+            return
         labels = {
             "encounter": ("Encounter", "Find a creature"),
             "daily": ("Daily", "Claim your daily reward"),
@@ -231,7 +280,34 @@ class CatchHubDynamicButton(
         )
 
 
-DYNAMIC_ITEMS = (CatchHubDynamicButton,)
+class CatchHubDynamicSelect(
+    discord.ui.DynamicItem[discord.ui.Select],
+    template=r"catch:hub:category",
+):
+    """Restart-safe category select: rebuilds the hub for the chosen category."""
+
+    def __init__(self, item: discord.ui.Select | None = None):
+        super().__init__(item or discord.ui.Select(
+            custom_id="catch:hub:category",
+            options=[discord.SelectOption(label=c.label, value=c.key) for c in CATEGORIES],
+        ))
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Select,
+        match: re.Match[str],
+    ) -> "CatchHubDynamicSelect":
+        return cls(item)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected = (interaction.data or {}).get("values", ["play"])[0]
+        view = CatchHubView(category=selected)
+        await interaction.response.edit_message(embed=build_hub_embed(view.category.key), view=view)
+
+
+DYNAMIC_ITEMS = (CatchHubDynamicButton, CatchHubDynamicSelect)
 
 
 def build_setup_embed(setup: CatchSetup) -> discord.Embed:
@@ -263,21 +339,48 @@ def build_setup_embed(setup: CatchSetup) -> discord.Embed:
     return embed
 
 
+async def publish_spawn(channel, *, guild_id: int, clone_id: int | None, setup: CatchSetup, source: str = "chat") -> int:
+    """Roll, persist and publish one wild spawn; returns the spawn id.
+
+    Persists first so the claim button always points at a real row, then links the
+    posted message back. Raises on failure so callers can reset trigger state.
+    """
+    roll = roll_spawn(list(all_species().values()), random.Random())
+    spawn_id = await create_spawn(
+        guild_id=guild_id, clone_id=clone_id, channel_id=channel.id,
+        roll=roll, expires_in=setup.despawn_seconds, source=source,
+    )
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=setup.despawn_seconds)
+    data = spawn_embed_data(roll, expires_at=expires_at)
+    embed = discord.Embed(title=data["title"], description=data["description"], colour=state_color("info"))
+    embed.add_field(name=text("encounter.rarity"), value=data["rarity"])
+    embed.add_field(name=text("encounter.level"), value=data["level"])
+    embed.set_footer(text=text("encounter.footer", expires_at=data["expires_at"]))
+    posted = await channel.send(embed=embed, view=SpawnClaimView(spawn_id))
+    await attach_spawn_message(spawn_id, posted.id)
+    return spawn_id
+
+
 class CatchSetupView(discord.ui.View):
     """Owner setup controls shared by the server panel and catch hub."""
 
-    def __init__(self, setup: CatchSetup | None = None, *, guild_id: int | None = None):
+    def __init__(self, setup: CatchSetup | None = None, *, guild_id: int | None = None, clone_id: int | None = None):
         super().__init__(timeout=600)
         self.setup = setup or CatchSetup()
         self.guild_id = guild_id
+        self.clone_id = clone_id
         self._build()
 
     def _build(self) -> None:
         self.clear_items()
+        # While the game is limited to the support server, turning it ON elsewhere is dimmed
+        # (turning it off is always allowed). The gate refuses play in those servers regardless.
+        locked = self.guild_id is not None and not self.setup.enabled and not guild_allowed(self.guild_id)
         toggle = discord.ui.Button(
-            label=text("setup.turn_off") if self.setup.enabled else text("setup.turn_on"),
-            style=button_style("danger" if self.setup.enabled else "claim"),
+            label=text("setup.support_only") if locked else text("setup.turn_off") if self.setup.enabled else text("setup.turn_on"),
+            style=button_style("navigation") if locked else button_style("danger" if self.setup.enabled else "claim"),
             custom_id="catch:setup:toggle",
+            disabled=locked,
             row=0,
         )
         toggle.callback = self._toggle
@@ -330,22 +433,30 @@ class CatchSetupView(discord.ui.View):
 
     async def _refresh(self, interaction: discord.Interaction) -> None:
         if self.guild_id is not None:
-            if not interaction.permissions.manage_guild:
-                await interaction.response.send_message(text("setup.manage_server"), ephemeral=True)
+            # Acknowledge first (3-second rule); permission lookup and saves hit the API/DB.
+            await interaction.response.defer()
+            if not await user_can_manage_guild(interaction.guild, interaction.user.id):
+                await interaction.followup.send(text("setup.manage_server"), ephemeral=True)
                 return
-            await save_setup(self.guild_id, self.setup)
+            await save_setup(self.guild_id, self.setup, self.clone_id)
             await set_feature_flag(
                 self.guild_id,
-                None,
+                self.clone_id,
                 "game",
                 self.setup.enabled,
                 updated_by=interaction.user.id,
                 reason="Catch owner setup toggle",
             )
+            self._build()
+            await interaction.edit_original_response(embed=build_setup_embed(self.setup), view=self)
+            return
         self._build()
         await interaction.response.edit_message(embed=build_setup_embed(self.setup), view=self)
 
     async def _toggle(self, interaction: discord.Interaction) -> None:
+        if self.guild_id is not None and not self.setup.enabled and not guild_allowed(self.guild_id):
+            await interaction.response.send_message(text("setup.support_only_detail"), ephemeral=True)
+            return
         candidate = replace(self.setup, enabled=not self.setup.enabled)
         errors = candidate.validate()
         if candidate.enabled and errors:
@@ -378,13 +489,51 @@ class CatchSetupView(discord.ui.View):
         await self._refresh(interaction)
 
     async def _wild_zone(self, interaction: discord.Interaction) -> None:
-        existing = {channel.name for channel in getattr(interaction.guild, "channels", ())}
-        await interaction.response.send_message(text("setup.wild_zone", channel_name=create_wild_zone_name(existing)), ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if guild is None or self.guild_id is None:
+            await interaction.followup.send(text("encounter.server_only"), ephemeral=True)
+            return
+        if not await user_can_manage_guild(guild, interaction.user.id):
+            await interaction.followup.send(text("setup.manage_server"), ephemeral=True)
+            return
+        channel = discord.utils.get(guild.text_channels, name="wild-zone")
+        if channel is None:
+            if not guild.me.guild_permissions.manage_channels:
+                await interaction.followup.send(text("setup.need_manage_channels"), ephemeral=True)
+                return
+            try:
+                channel = await guild.create_text_channel("wild-zone", reason="Creature catching setup")
+            except (discord.Forbidden, discord.HTTPException):
+                logger.exception("Catch setup could not create #wild-zone guild=%s", guild.id)
+                await interaction.followup.send(text("setup.wild_zone_failed"), ephemeral=True)
+                return
+        self.setup = self.setup.with_spawn_channels([*self.setup.spawn_channel_ids, channel.id])
+        await save_setup(self.guild_id, self.setup, self.clone_id)
+        self._build()
+        await interaction.edit_original_response(embed=build_setup_embed(self.setup), view=self)
+        await interaction.followup.send(text("setup.wild_zone_ready", channel=channel.mention), ephemeral=True)
 
     async def _test_spawn(self, interaction: discord.Interaction) -> None:
-        channel_id = self.setup.spawn_channel_ids[0] if self.setup.spawn_channel_ids else None
-        payload = test_spawn_payload(channel_id=channel_id)
-        await interaction.response.send_message(text("setup.test_queued", payload=payload), ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if guild is None or self.guild_id is None:
+            await interaction.followup.send(text("encounter.server_only"), ephemeral=True)
+            return
+        if not await user_can_manage_guild(guild, interaction.user.id):
+            await interaction.followup.send(text("setup.manage_server"), ephemeral=True)
+            return
+        channel = next((guild.get_channel(c) for c in self.setup.spawn_channel_ids if guild.get_channel(c)), None)
+        if channel is None:
+            await interaction.followup.send(text("setup.select_channel"), ephemeral=True)
+            return
+        try:
+            await publish_spawn(channel, guild_id=guild.id, clone_id=self.clone_id, setup=self.setup, source="test")
+        except Exception:
+            logger.exception("Catch test spawn failed guild=%s channel=%s", guild.id, channel.id)
+            await interaction.followup.send(text("setup.test_failed", channel=channel.mention), ephemeral=True)
+            return
+        await interaction.followup.send(text("setup.test_posted", channel=channel.mention), ephemeral=True)
 
 
 class SpawnClaimView(discord.ui.View):
@@ -446,6 +595,7 @@ class SpawnClaimView(discord.ui.View):
             await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
             return
         try:
+            await ensure_starter_kit(interaction.user.id, getattr(interaction.client, "clone_id", None))
             result = await record_catch(
                 user_id=interaction.user.id,
                 clone_id=getattr(interaction.client, "clone_id", None),
@@ -458,7 +608,15 @@ class SpawnClaimView(discord.ui.View):
         except CatchBlocked as exc:
             await interaction.followup.send(text("claim.blocked", reason=exc.reason), ephemeral=True)
             return
+        except ValueError as exc:
+            if str(exc).endswith("is not available"):
+                await interaction.followup.send(text("claim.no_items"), ephemeral=True)
+                return
+            logger.exception("Catch claim rejected spawn=%s user=%s", self.spawn_id, interaction.user.id)
+            await interaction.followup.send(text("claim.error"), ephemeral=True)
+            return
         except Exception:
+            logger.exception("Catch claim failed spawn=%s user=%s", self.spawn_id, interaction.user.id)
             await interaction.followup.send(text("claim.error"), ephemeral=True)
             return
 
@@ -475,7 +633,9 @@ class SpawnClaimView(discord.ui.View):
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
-        name = "Shiny creature" if result.shiny else "Creature"
+        species = all_species().get(result.species_id)
+        base_name = species["name"] if species else "Creature"
+        name = f"Shiny {base_name}" if result.shiny else base_name
         embed = discord.Embed(
             title=text("claim.success.title"),
             description=text("claim.success.description", name=name),
@@ -522,22 +682,12 @@ class CatchCog(commands.Cog):
         if not decision.should_spawn:
             return
         try:
-            roll = roll_spawn(list(all_species().values()), random.Random())
-            spawn_id = await create_spawn(
+            await publish_spawn(
+                message.channel,
                 guild_id=message.guild.id,
                 clone_id=getattr(self.bot, "clone_id", None),
-                channel_id=message.channel.id,
-                roll=roll,
-                expires_in=setup.despawn_seconds,
+                setup=setup,
             )
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=setup.despawn_seconds)
-            data = spawn_embed_data(roll, expires_at=expires_at)
-            embed = discord.Embed(title=data["title"], description=data["description"], colour=state_color("info"))
-            embed.add_field(name=text("encounter.rarity"), value=data["rarity"])
-            embed.add_field(name=text("encounter.level"), value=data["level"])
-            embed.set_footer(text=text("encounter.footer", expires_at=data["expires_at"]))
-            posted = await message.channel.send(embed=embed, view=SpawnClaimView(spawn_id))
-            await attach_spawn_message(spawn_id, posted.id)
         except Exception:
             state.message_count = 0
             logger.exception(
@@ -611,18 +761,21 @@ class CatchCog(commands.Cog):
 
     @app_commands.command(name="catch", description=text("command.description"))
     async def catch(self, interaction: discord.Interaction) -> None:
+        # Acknowledge first (3-second rule); the gate reads feature flags from the DB.
+        await interaction.response.defer(ephemeral=True)
         gate = await check_player_allowed(
             interaction.user.id,
             interaction.guild_id,
             "view",
+            getattr(interaction.client, "clone_id", None),
         )
         if not gate.allowed:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 text("unavailable", reason=gate.reason or "disabled"),
                 ephemeral=True,
             )
             return
-        await interaction.response.send_message(embed=build_hub_embed(), view=CatchHubView(), ephemeral=True)
+        await interaction.followup.send(embed=build_hub_embed(), view=CatchHubView(), ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

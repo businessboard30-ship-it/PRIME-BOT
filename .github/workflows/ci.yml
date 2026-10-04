@@ -22,6 +22,10 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+      - name: Lint catch game (undefined names, unused imports, syntax)
+        run: |
+          python -m pip install ruff
+          ruff check --select F,E9 modules/catch_*.py discord_bot/cogs/catch.py discord_bot/cogs/_views_catch_collection.py discord_bot/cogs/_views_catch_items.py discord_bot/cogs/_views_catch_shop.py discord_bot/cogs/_views_catch_sell.py discord_bot/cogs/_views_catch_wild.py discord_bot/cogs/_views_catch_status.py discord_bot/cogs/_views_catch_guide.py discord_bot/cogs/_views_catch_rules.py scripts/import_catch_assets.py tests/unit/test_catch_*.py tests/integration/test_catch_*.py
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Run tests
