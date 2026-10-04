@@ -275,6 +275,16 @@ class ServerPanelView(discord.ui.LayoutView):
             await interaction.edit_original_response(view=view)
         return cb
 
+    def nav_p5(self, name: str) -> Callable:
+        """Navigate to a Phase 9 (protection) screen by class name (lazy import avoids a cycle)."""
+        @read_only_ok
+        async def cb(interaction: discord.Interaction):
+            from discord_bot.cogs import _views_server_panel_p5 as p5
+            await interaction.response.defer()
+            view = await getattr(p5, name).create(self._ctx(interaction))
+            await interaction.edit_original_response(view=view)
+        return cb
+
     def back_button(self, target=None) -> discord.ui.Button:
         return _btn("Back", discord.ButtonStyle.secondary, self.nav(target or HomeView), "⬅️")
 
@@ -689,6 +699,7 @@ class ModerationView(ServerPanelView):
             out.append(_btn("Test honeypot", discord.ButtonStyle.success, self._test_honeypot, "🧪"))
         out.append(_btn("Anti-raid" if not (self.data.get("ar") or {}).get("enabled") else "Anti-raid settings",
                         discord.ButtonStyle.primary, self._open_antiraid, "🛡️"))
+        out.append(_btn("Join gate & Scam Shield", discord.ButtonStyle.primary, self.nav_p5("ProtectionView"), "🚪"))
         out.append(self.back_button())
         return out
 

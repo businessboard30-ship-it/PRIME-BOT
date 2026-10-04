@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "52"
+SCHEMA_VERSION = "53"
+# "52" -> "53" adds discord_join_gate_config and discord_scam_shield_guild (server panel phase 9: join gate, per-server Scam Shield switch + allowed domains). Same bump-or-it-never-runs trap.
 # "51" -> "52" adds 030_bump_channel_recreate_consent.sql (2 columns on bump_guild_config). Same bump-or-it-never-runs trap.
 # "50" -> "51" adds 029_scam_shield.sql (scam_shield_rules/settings/hits). Same bump-or-it-never-runs trap.
 # "49" -> "50" adds 028_referral_giveaway_post.sql (description, channel_id, message_id on
@@ -2755,6 +2756,37 @@ class Database:
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS discord_welcome_extras_guild_clone_key
             ON discord_welcome_extras (guild_id, COALESCE(clone_id, -1))
+        """)
+        # --- Join gate + per-server Scam Shield (server panel phase 9) ----------
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_join_gate_config (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                min_age_days INTEGER NOT NULL DEFAULT 7,
+                block_default_avatar BOOLEAN NOT NULL DEFAULT FALSE,
+                action TEXT NOT NULL DEFAULT 'alert',
+                blocked_count INTEGER NOT NULL DEFAULT 0,
+                last_blocked_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_join_gate_config_guild_clone_key
+            ON discord_join_gate_config (guild_id, COALESCE(clone_id, -1))
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_scam_shield_guild (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                allowed_domains TEXT[] NOT NULL DEFAULT '{}',
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_scam_shield_guild_guild_clone_key
+            ON discord_scam_shield_guild (guild_id, COALESCE(clone_id, -1))
         """)
         # welcome_message: shown in the embed posted inside a freshly-opened
         # ticket channel, in place of the hardcoded "Thanks for reaching
@@ -10206,6 +10238,90 @@ class Database:
                 merged["goodbye_message"], merged["member_role_id"], merged["bot_role_id"],
             )
             return dict(row)
+
+    _JOIN_GATE_FIELDS = ("enabled", "min_age_days", "block_default_avatar", "action")
+
+    async def get_join_gate_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_join_gate_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+            if row:
+                return dict(row)
+            return {
+                "guild_id": guild_id, "clone_id": clone_id, "enabled": False, "min_age_days": 7,
+                "block_default_avatar": False, "action": "alert", "blocked_count": 0, "last_blocked_at": None,
+            }
+
+    async def set_join_gate_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        """Upsert-merge: omitted fields keep their value. Never touches the counters."""
+        current = await self.get_join_gate_config(guild_id, clone_id=clone_id)
+        merged = {k: fields.get(k, current.get(k)) for k in self._JOIN_GATE_FIELDS}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_join_gate_config
+                    (guild_id, clone_id, enabled, min_age_days, block_default_avatar, action, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET enabled = $3, min_age_days = $4, block_default_avatar = $5, action = $6, updated_at = NOW()
+                RETURNING *
+                """,
+                guild_id, clone_id, merged["enabled"], merged["min_age_days"],
+                merged["block_default_avatar"], merged["action"],
+            )
+            return dict(row)
+
+    async def bump_join_gate_blocked(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        """Counts one caught joiner. Touches ONLY the counters."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO discord_join_gate_config (guild_id, clone_id, blocked_count, last_blocked_at)
+                VALUES ($1, $2, 1, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET blocked_count = discord_join_gate_config.blocked_count + 1, last_blocked_at = NOW()
+                """,
+                guild_id, clone_id,
+            )
+
+    async def get_scam_shield_guild(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_scam_shield_guild WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id
+            )
+            if row:
+                d = dict(row)
+                d["allowed_domains"] = list(d.get("allowed_domains") or [])
+                return d
+            return {"guild_id": guild_id, "clone_id": clone_id, "enabled": True, "allowed_domains": []}
+
+    async def set_scam_shield_guild(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        """Upsert-merge of this server's Scam Shield switch and allowed-domain list."""
+        current = await self.get_scam_shield_guild(guild_id, clone_id=clone_id)
+        enabled = fields.get("enabled", current["enabled"])
+        allowed = list(fields.get("allowed_domains", current["allowed_domains"]))
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_scam_shield_guild (guild_id, clone_id, enabled, allowed_domains, updated_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET enabled = $3, allowed_domains = $4, updated_at = NOW()
+                RETURNING *
+                """,
+                guild_id, clone_id, enabled, allowed,
+            )
+            d = dict(row)
+            d["allowed_domains"] = list(d.get("allowed_domains") or [])
+            return d
 
     async def get_ticket_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()

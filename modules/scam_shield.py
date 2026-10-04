@@ -167,8 +167,14 @@ async def load(force: bool = False) -> None:
 
 # ── matching ─────────────────────────────────────────────────────────────
 
-def match_text(text: str) -> Optional[Tuple[str, str, Optional[int]]]:
-    """Returns (kind, what matched, rule id) or None. Pure and fast."""
+def is_allowed_domain(domain: str, allowed) -> bool:
+    """True when `domain` is one of this server's allowed domains or a subdomain of one."""
+    return any(domain == a or domain.endswith("." + a) for a in allowed or ())
+
+
+def match_text(text: str, allowed=()) -> Optional[Tuple[str, str, Optional[int]]]:
+    """Returns (kind, what matched, rule id) or None. Pure and fast. `allowed` is the
+    server's own allowed-domain list: those domains never match (words/heuristics still do)."""
     if not text:
         return None
     t = normalize(text)
@@ -182,6 +188,8 @@ def match_text(text: str) -> Optional[Tuple[str, str, Optional[int]]]:
         for h in hosts_in(text):
             for rid, d in _c.domains:
                 if h == d or h.endswith("." + d):
+                    if is_allowed_domain(h, allowed):
+                        continue
                     return "domain", d, rid
     if any(b in t for b in _BEAST) and any(b in t for b in _BAIT):
         return "heuristic", "MrBeast + casino/bonus bait", None
@@ -281,3 +289,57 @@ async def hit_total() -> int:
     pool = await _pool()
     async with pool.acquire() as conn:
         return int(await conn.fetchval("SELECT COUNT(*) FROM scam_shield_hits") or 0)
+
+
+# ── per-server settings (server panel phase 9) ───────────────────────────
+# Each server can switch Scam Shield off for itself and allow specific domains. Read only AFTER a
+# message already matched (the rare path), and cached, so a clean message still costs no database call.
+
+GUILD_CACHE_SECONDS = 300
+MAX_ALLOWED_DOMAINS = 50
+_DEFAULT_GUILD = {"enabled": True, "allowed_domains": ()}
+_guild_cache: Dict[Tuple[int, Optional[int]], Tuple[float, dict]] = {}
+
+
+def invalidate_guild(guild_id: int, clone_id: Optional[int] = None) -> None:
+    _guild_cache.pop((guild_id, clone_id), None)
+
+
+async def guild_settings(guild_id: int, clone_id: Optional[int] = None) -> dict:
+    """{'enabled': bool, 'allowed_domains': tuple}. Falls back to the defaults (on, nothing allowed)
+    if the database can't be read, so a failure never switches protection off."""
+    key = (guild_id, clone_id)
+    now = time.monotonic()
+    hit = _guild_cache.get(key)
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT enabled, allowed_domains FROM discord_scam_shield_guild "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", guild_id, clone_id)
+        value = ({"enabled": bool(row["enabled"]),
+                  "allowed_domains": tuple(d.lower() for d in (row["allowed_domains"] or []))}
+                 if row else dict(_DEFAULT_GUILD))
+        ttl = GUILD_CACHE_SECONDS
+    except Exception:
+        logger.debug("[scam-shield] couldn't read server settings", exc_info=True)
+        value, ttl = dict(_DEFAULT_GUILD), 30
+    if len(_guild_cache) > 5000:
+        _guild_cache.clear()
+    _guild_cache[key] = (now + ttl, value)
+    return value
+
+
+async def guild_hit_count(guild_id: int, clone_id: Optional[int] = None) -> int:
+    """How many scam messages were caught in this server (all time)."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            return int(await conn.fetchval(
+                "SELECT COUNT(*) FROM scam_shield_hits WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id) or 0)
+    except Exception:
+        logger.debug("[scam-shield] couldn't count server hits", exc_info=True)
+        return 0
