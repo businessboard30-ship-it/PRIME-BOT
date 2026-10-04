@@ -231,8 +231,8 @@ def _id_pattern(field: str) -> str:
     return rf"^welcome_wz_{field}:(\d+):(-|\d+):(-|\d+)$"
 
 
-async def _check_access(interaction: discord.Interaction, invoker_id) -> bool:
-    return await check_wizard_access(interaction, invoker_id, "welcome", "manage_guild", "Manage Server")
+async def _check_access(interaction: discord.Interaction, invoker_id, guild_id: int | None = None) -> bool:
+    return await check_wizard_access(interaction, invoker_id, "welcome", "manage_guild", "Manage Server", guild_id=guild_id)
 
 
 async def _get_config_for_modal(guild_id: int, clone_id) -> dict:
@@ -451,7 +451,7 @@ class WelcomeChannelSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], tem
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         channel = self.item.values[0]
@@ -483,7 +483,7 @@ class WelcomeCreateChannelButton(discord.ui.DynamicItem[discord.ui.Button], temp
         return cls(guild_id, clone_id, invoker_id)
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         guild = (interaction.guild or interaction.client.get_guild(self.guild_id))
         if guild is None:
@@ -567,7 +567,7 @@ class WelcomeDeliverySelect(discord.ui.DynamicItem[discord.ui.Select], template=
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, delivery_mode=self.item.values[0])
@@ -593,7 +593,7 @@ class WelcomeThemeSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         bg, accent = THEMES[self.item.values[0]]
@@ -668,7 +668,7 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         chosen = self.item.values[0]
@@ -781,7 +781,7 @@ class WelcomeCardStyleSelect(discord.ui.DynamicItem[discord.ui.Select], template
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, card_style=self.item.values[0])
@@ -821,7 +821,7 @@ class WelcomeAvatarShapeSelect(discord.ui.DynamicItem[discord.ui.Select], templa
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         # Unlike theme/sticker/style, avatar_shape renders in BOTH card
@@ -876,7 +876,7 @@ class WelcomeStickerPresetSelect(discord.ui.DynamicItem[discord.ui.Select], temp
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         if self.item.values[0] == "__custom__":
             config = await _get_config_for_modal(self.guild_id, self.clone_id)
@@ -926,7 +926,7 @@ class WelcomeEditMessageButton(discord.ui.DynamicItem[discord.ui.Button], templa
         return cls(guild_id, clone_id, invoker_id)
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         # Debug logging for the "preview shows the wrong person" reports —
         # logs exactly who clicked vs. who the wizard was opened by, plus
@@ -977,7 +977,7 @@ class WelcomeToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_i
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
         new_state = not config.get("enabled")
@@ -1025,7 +1025,7 @@ class WelcomeModeToggleButton(discord.ui.DynamicItem[discord.ui.Button], templat
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
@@ -1050,7 +1050,7 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         return cls(guild_id, clone_id, invoker_id)
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer(ephemeral=True)
         try:
@@ -1118,7 +1118,7 @@ class WelcomeUltraPackButton(discord.ui.DynamicItem[discord.ui.Button], template
         return cls(guild_id, clone_id, invoker_id, {})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         # Opens the Customize Card wizard (look, avatar shape, custom
         # background, preview). Buying is now a step INSIDE that wizard
@@ -1157,15 +1157,37 @@ class GoodbyePanelView(discord.ui.View):
     Ephemeral to whoever opened it; every change re-renders this message and
     refreshes the posted wizard so its status line stays current."""
 
-    def __init__(self, guild_id: int, clone_id, opener_id: int, extras: dict):
+    def __init__(self, guild_id: int, clone_id, opener_id: int, extras: dict, dm: bool = False, bot=None):
         super().__init__(timeout=600)
         self.guild_id, self.clone_id, self.opener_id, self.extras = guild_id, clone_id, opener_id, extras or {}
+        self.dm, self.bot = dm, bot
         on = bool(self.extras.get("goodbye_enabled"))
-        sel = discord.ui.ChannelSelect(
-            placeholder="Goodbye channel", channel_types=[discord.ChannelType.text],
-            min_values=1, max_values=1, row=0)
-        sel.callback = self._pick
-        self.add_item(sel)
+        guild = bot.get_guild(guild_id) if (dm and bot is not None) else None
+        if dm and guild is not None:
+            # Discord's ChannelSelect only lists channels of the guild the
+            # interaction happened in — in a DM there is none, so it renders
+            # empty and the pick just "fails". Use a plain Select of the
+            # server's text channels instead.
+            options = []
+            for ch in guild.text_channels:
+                if ch.permissions_for(guild.me).send_messages:
+                    options.append(discord.SelectOption(label=f"#{ch.name}"[:100], value=str(ch.id)))
+                if len(options) >= 25:
+                    break
+            if options:
+                sel = discord.ui.Select(placeholder="Goodbye channel", options=options,
+                                        min_values=1, max_values=1, row=0)
+                sel.callback = self._pick
+                self.add_item(sel)
+            mk = discord.ui.Button(label="Create #goodbye", emoji="➕", style=discord.ButtonStyle.secondary, row=2)
+            mk.callback = self._create_channel
+            self.add_item(mk)
+        else:
+            sel = discord.ui.ChannelSelect(
+                placeholder="Goodbye channel", channel_types=[discord.ChannelType.text],
+                min_values=1, max_values=1, row=0)
+            sel.callback = self._pick
+            self.add_item(sel)
         for label, style, cb, emoji in (
             ("Turn goodbye off" if on else "Turn goodbye on",
              discord.ButtonStyle.danger if on else discord.ButtonStyle.success, self._toggle, None),
@@ -1197,7 +1219,7 @@ class GoodbyePanelView(discord.ui.View):
         from modules import server_panel as sp
         await sp.set_welcome_extras(self.guild_id, self.clone_id, interaction.user.id, **fields)
         extras = await db.get_welcome_extras(self.guild_id, self.clone_id)
-        view = GoodbyePanelView(self.guild_id, self.clone_id, self.opener_id, extras)
+        view = GoodbyePanelView(self.guild_id, self.clone_id, self.opener_id, extras, dm=self.dm, bot=self.bot)
         await interaction.edit_original_response(embed=discord.Embed(
             description=self.text(extras), color=discord.Color.blurple()), view=view)
         try:
@@ -1217,6 +1239,35 @@ class GoodbyePanelView(discord.ui.View):
             return
         await interaction.response.defer()
         await self.save(interaction, goodbye_channel_id=int(picked))
+
+    async def _create_channel(self, interaction: discord.Interaction):
+        if not await self._allowed(interaction):
+            return
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.response.send_message("I'm not in that server anymore.", ephemeral=True)
+            return
+        if not guild.me.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "I need the **Manage Channels** permission to create the channel — grant it, or pick an existing one.",
+                ephemeral=True)
+            return
+        await interaction.response.defer()
+        channel = discord.utils.find(lambda c: _plain_name(c.name) == "goodbye", guild.text_channels)
+        if channel is None:
+            try:
+                channel = await guild.create_text_channel(
+                    "goodbye", reason=f"Auto-created by PRIME-BOT goodbye setup (requested by {interaction.user})",
+                    overwrites={
+                        guild.default_role: discord.PermissionOverwrite(
+                            view_channel=True, send_messages=False, read_message_history=True),
+                        guild.me: discord.PermissionOverwrite(
+                            view_channel=True, send_messages=True, embed_links=True, read_message_history=True),
+                    })
+            except (discord.Forbidden, discord.HTTPException):
+                await interaction.followup.send("Couldn't create the channel — pick an existing one instead.", ephemeral=True)
+                return
+        await self.save(interaction, goodbye_channel_id=channel.id)
 
     async def _toggle(self, interaction: discord.Interaction):
         if not await self._allowed(interaction):
@@ -1266,11 +1317,12 @@ class WelcomeGoodbyeButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         return cls(guild_id, clone_id, invoker_id)
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer(ephemeral=True)
         extras = await db.get_welcome_extras(self.guild_id, self.clone_id)
-        view = GoodbyePanelView(self.guild_id, self.clone_id, interaction.user.id, extras)
+        view = GoodbyePanelView(self.guild_id, self.clone_id, interaction.user.id, extras,
+                                dm=interaction.guild is None, bot=interaction.client)
         await interaction.followup.send(
             embed=discord.Embed(description=GoodbyePanelView.text(extras), color=discord.Color.blurple()),
             view=view, ephemeral=True)

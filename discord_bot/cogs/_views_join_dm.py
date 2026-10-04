@@ -41,6 +41,7 @@ from gumroad_payments import start_gumroad_payment
 # _views_registry_invite_consent.py / _views_combined_join_offer.py use,
 # so there's exactly one place each of those actions is actually performed.
 from discord_bot.cogs._views_registry_invite_consent import _create_invite_for_registry
+from discord_bot.cogs._views_shared import user_can_manage_guild
 
 logger = logging.getLogger(__name__)
 
@@ -587,8 +588,7 @@ class _PartnershipButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
         if guild is None:
             await interaction.followup.send("I'm not in that server anymore.", ephemeral=True)
             return
-        member = guild.get_member(interaction.user.id)
-        if member is None or not (member.guild_permissions.manage_guild or member == guild.owner):
+        if not await user_can_manage_guild(guild, interaction.user.id):
             await interaction.followup.send(
                 "You need Manage Server permission in that server to set up partnership.", ephemeral=True,
             )
@@ -1836,8 +1836,7 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         if guild is None or not isinstance(interaction.user, discord.abc.User):
             await interaction.followup.send("I'm not in that server anymore.", ephemeral=True)
             return
-        member = guild.get_member(interaction.user.id)
-        if member is None or not (member.guild_permissions.manage_guild or member == guild.owner):
+        if not await user_can_manage_guild(guild, interaction.user.id):
             await interaction.followup.send(
                 "You need Manage Server permission in that server to turn this on.", ephemeral=True,
             )

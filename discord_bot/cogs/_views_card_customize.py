@@ -79,8 +79,8 @@ def _id_pattern(field: str) -> str:
     return rf"^cardwz_{field}:(\d+):(-|\d+):(-|\d+)$"
 
 
-async def _check_access(interaction: discord.Interaction, invoker_id) -> bool:
-    return await check_wizard_access(interaction, invoker_id, "welcome", "manage_guild", "Manage Server")
+async def _check_access(interaction: discord.Interaction, invoker_id, guild_id: int | None = None) -> bool:
+    return await check_wizard_access(interaction, invoker_id, "welcome", "manage_guild", "Manage Server", guild_id=guild_id)
 
 
 # ── drafts (unpaid servers only; memory only) ─────────────────────────────
@@ -308,7 +308,7 @@ class _OptionSelectMixin:
         await _save_option(self.guild_id, self.clone_id, user_id, **{self.FIELD: value})
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         await self._save(self.item.values[0], interaction.user.id)
@@ -458,7 +458,7 @@ class CardBackgroundButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], temp
     FIELD, LABEL, STYLE = "setbg", "🖼️ Set background", discord.ButtonStyle.success
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         # The modal must be the first response (3s window); the unlocked
         # check happens again in on_submit, which is what gates the write.
@@ -473,7 +473,7 @@ class CardClearBackgroundButton(_Btn, discord.ui.DynamicItem[discord.ui.Button],
     FIELD, LABEL = "clearbg", "🗑️ Clear background"
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
@@ -497,7 +497,7 @@ class CardUnlockButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template
         return f"🔒 Unlock Customize Card (${bot_config.ULTRA_PACK_FEE_USD:g})"
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
@@ -536,7 +536,7 @@ class CardHeadingButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templat
     FIELD, LABEL = "heading", "✍️ Heading text"
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         cfg = await vw._get_config_for_modal(self.guild_id, self.clone_id)
         cfg = _effective_config(cfg, self.guild_id, self.clone_id, interaction.user.id)
@@ -559,7 +559,7 @@ class CardNumberToggleButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], te
         return "🔢 Member #: on" if shown else "🔢 Member #: off"
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
@@ -573,7 +573,7 @@ class CardResetButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=
     FIELD, LABEL = "reset", "↩️ Reset layout"
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
@@ -603,7 +603,7 @@ class CardPreviewButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templat
     FIELD, LABEL, STYLE = "preview", "👁️ Preview", discord.ButtonStyle.primary
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer(ephemeral=True)
         now = time.monotonic()
@@ -659,7 +659,7 @@ class CardDoneButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_
     FIELD, LABEL = "done", "✅ Done"
 
     async def callback(self, interaction: discord.Interaction):
-        if not await _check_access(interaction, self.invoker_id):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         done = discord.ui.LayoutView(timeout=None)

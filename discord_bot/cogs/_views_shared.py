@@ -20,6 +20,28 @@ navigation to something else), success (green, confirm/positive), danger
 import discord
 
 
+async def user_can_manage_guild(guild, user_id: int, permission: str = "manage_guild") -> bool:
+    """True if `user_id` owns `guild` or holds `permission` in it.
+
+    Works from DMs, where interaction.permissions / interaction.guild are useless
+    (a DM click carries no guild permissions, so the owner used to be told they
+    lacked Manage Server). Owner is matched by id, so it doesn't depend on the
+    member cache; the member is fetched from the API when it isn't cached."""
+    if guild is None:
+        return False
+    if user_id == getattr(guild, "owner_id", None):
+        return True
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.HTTPException:
+            return False
+    perms = member.guild_permissions
+    return bool(perms.administrator or getattr(perms, permission, False))
+
+
+
 async def check_wizard_access(
     interaction: discord.Interaction,
     invoker_id,
@@ -27,6 +49,7 @@ async def check_wizard_access(
     permission: str = "manage_guild",
     permission_label: str = "Manage Server",
     admin_override: bool = False,
+    guild_id: int | None = None,
 ) -> bool:
     """Shared invoker/permission gate for the wizard dynamic items
     (automod, economy, community, giveaway, welcome, ticket, leveling).
@@ -53,6 +76,11 @@ async def check_wizard_access(
     work first — this must work regardless of that prior ack state).
     """
     has_permission = getattr(interaction.permissions, permission, False)
+    if not has_permission and interaction.guild is None and guild_id is not None:
+        # Clicked from a DM (e.g. the join-DM wizard): look the user up in the
+        # target guild instead of trusting DM permissions.
+        has_permission = await user_can_manage_guild(
+            interaction.client.get_guild(guild_id), interaction.user.id, permission)
 
     async def _deny(msg: str):
         if interaction.response.is_done():
