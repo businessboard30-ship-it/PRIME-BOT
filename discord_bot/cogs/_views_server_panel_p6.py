@@ -40,9 +40,19 @@ class FeaturesView(ServerPanelView):
     async def load(cls, interaction):
         import asyncio
         gid, cid = interaction.guild_id, clone_id_of(interaction)
-        bump, role, auto = await asyncio.gather(
-            spf.bump_state(gid, cid), spf.custom_role_state(gid, cid), spf.autopost_state(gid, cid))
-        return {"bump": bump, "role": role, "auto": auto}
+        async def _catch_status():
+            # Best-effort: a catch lookup failure must not break the whole Features screen.
+            try:
+                from modules.catch_setup import load_setup
+                return await load_setup(gid, cid)
+            except Exception:
+                logger.exception("Features hub: catch setup lookup failed (guild %s)", gid)
+                return None
+
+        bump, role, auto, catch = await asyncio.gather(
+            spf.bump_state(gid, cid), spf.custom_role_state(gid, cid), spf.autopost_state(gid, cid),
+            _catch_status())
+        return {"bump": bump, "role": role, "auto": auto, "catch": catch}
 
     def body(self) -> List[str]:
         bump = self.data.get("bump", {})
@@ -53,8 +63,11 @@ class FeaturesView(ServerPanelView):
                 "receiving bumps" if bump.get("receives_bumps", True) else "⏸️ paused")
         else:
             bump_line = "Bump: not set up"
+        catch = self.data.get("catch")
+        catch_line = catch.status_line() if catch is not None else "Creature catching: unavailable right now"
         return [
             bump_line,
+            catch_line,
             f"Custom role perk: {_onoff(not role.get('disabled'))}",
             f"Autopost: {_onoff(cfg.get('enabled'))}" + (
                 f" · {_chan(None, cfg.get('channel_id'))} every {cfg.get('interval_hours')}h"
@@ -66,9 +79,23 @@ class FeaturesView(ServerPanelView):
             _btn("Bump", P, self.nav_p6("BumpView"), "📣"),
             _btn("Custom role", P, self.nav_p6("CustomRoleView"), "🎨"),
             _btn("Autopost", P, self.nav_p6("AutopostView"), "📰"),
+            _btn("Creature catching", P, self._catch, "🐾"),
             _btn("Permission check", P, self.nav_p6("HealthView"), "🩺"),
             self.back_button(HomeView),
         ]
+
+    async def _catch(self, interaction: discord.Interaction):
+        """Opens the catch setup screen as its own ephemeral message (it is a classic
+        View with a channel select, so it can't live inside this layout panel)."""
+        from discord_bot.cogs.catch import CatchSetupView, build_setup_embed
+        from modules.catch_setup import load_setup
+        await interaction.response.defer(ephemeral=True)
+        setup = await load_setup(interaction.guild_id, self.clone_id)
+        await interaction.followup.send(
+            embed=build_setup_embed(setup),
+            view=CatchSetupView(setup, guild_id=interaction.guild_id, clone_id=self.clone_id),
+            ephemeral=True,
+        )
 
 
 # ── bump ─────────────────────────────────────────────────────────────────
