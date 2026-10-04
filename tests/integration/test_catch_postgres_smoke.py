@@ -184,3 +184,54 @@ def test_collection_favourite_ownership_and_sorts():
         assert rows[0].favorite is True
 
     run_with_pool(scenario)
+
+
+def test_shop_concurrent_purchases_never_overspend_and_roll_back_on_failure():
+    import pytest
+
+    from modules import catch_items, catch_shop
+
+    async def scenario(pool):
+        # one daily claim gives the player a known balance
+        daily = await catch_items.claim_daily(U1, None)
+        coins = daily.reward.coins
+        price = catch_shop.CATALOG["capsule_basic"]
+        affordable = coins // price
+        assert affordable >= 1, "test needs a balance that can afford at least one capsule"
+        before = (await catch_items.load_inventory(U1, None)).get("capsule_basic", 0)
+
+        # a failure after the coins were taken rolls the whole purchase back (player CAN afford it)
+        original = catch_shop.grant_items
+
+        async def broken(*args, **kwargs):
+            raise RuntimeError("grant failed")
+
+        catch_shop.grant_items = broken
+        try:
+            with pytest.raises(RuntimeError):
+                await catch_shop.purchase(U1, None, "capsule_basic", 1)
+        finally:
+            catch_shop.grant_items = original
+        assert (await catch_shop.load_wallet(U1, None)).coins == coins
+        assert (await catch_items.load_inventory(U1, None)).get("capsule_basic", 0) == before
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit WHERE user_id=$1 AND action='shop_purchase'", U1) == 0
+
+        # concurrent purchases: exactly as many succeed as the balance affords
+        results = await asyncio.gather(*(catch_shop.purchase(U1, None, "capsule_basic", 1) for _ in range(affordable + 4)))
+        assert sum(r.ok for r in results) == affordable
+        assert all(r.reason == "insufficient_coins" for r in results if not r.ok)
+        wallet = await catch_shop.load_wallet(U1, None)
+        assert wallet.coins == coins - affordable * price >= 0
+        assert (await catch_items.load_inventory(U1, None)).get("capsule_basic", 0) - before == affordable
+        async with pool.acquire() as conn:
+            audits = await conn.fetchval("SELECT count(*) FROM catch_audit WHERE user_id=$1 AND action='shop_purchase'", U1)
+        assert audits == affordable
+        spent = [e.coins for e in wallet.entries if e.action == "shop_purchase"]
+        assert spent == [-price] * affordable
+
+        # a refused purchase changes nothing
+        poor = await catch_shop.purchase(U2, None, "capsule_prime", 10)
+        assert (poor.ok, poor.reason, poor.coins_left) == (False, "insufficient_coins", 0)
+
+    run_with_pool(scenario)

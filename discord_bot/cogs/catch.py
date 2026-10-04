@@ -19,6 +19,7 @@ from discord.ext import commands, tasks
 
 from discord_bot.cogs._views_catch_collection import open_collection, open_dex
 from discord_bot.cogs._views_catch_items import open_daily, open_inventory
+from discord_bot.cogs._views_catch_shop import open_shop, open_wallet
 from discord_bot.cogs._views_shared import user_can_manage_guild
 from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_reminders import Reminder, dispatch_due_reminders
@@ -64,7 +65,10 @@ def component_count(view: discord.ui.View) -> int:
     return sum(1 + component_count(child) for child in view.children if isinstance(child, discord.ui.View)) + len(view.children)
 
 
-REAL_ACTIONS = {"collection": open_collection, "dex": open_dex, "daily": open_daily, "inventory": open_inventory}
+REAL_ACTIONS = {
+    "collection": open_collection, "dex": open_dex, "daily": open_daily, "inventory": open_inventory,
+    "shop": open_shop, "wallet": open_wallet,
+}
 
 
 class CatchHubView(discord.ui.View):
