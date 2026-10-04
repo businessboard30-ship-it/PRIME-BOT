@@ -131,5 +131,12 @@
   "catch.sell.unknown": "That creature can't be priced right now, so nothing was sold.",
   "catch.sell.no_selection": "Choose a creature first.",
   "catch.sell.error": "The sale couldn't be completed right now. Nothing was sold and you were not paid; try again in a moment.",
-  "catch.sell.load_error": "Sell couldn't be opened right now. Try again in a moment."
+  "catch.sell.load_error": "Sell couldn't be opened right now. Try again in a moment.",
+  "catch.wild.title": "Wild zone",
+  "catch.wild.description": "Creatures you can still catch in this server, soonest to leave first.",
+  "catch.wild.empty": "Nothing is hiding in the wild right now. Keep chatting in a catch channel and one will appear, or try **Encounter**.",
+  "catch.wild.go": "Go",
+  "catch.wild.yours": "only you",
+  "catch.wild.more": "Showing {shown} of {total} creatures.",
+  "catch.wild.error": "The wild zone couldn't be loaded right now. Try again in a moment."
 }

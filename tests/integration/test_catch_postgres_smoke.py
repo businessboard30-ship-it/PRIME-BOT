@@ -316,3 +316,37 @@ def test_sell_concurrent_taps_pay_once_and_protect_favourites_and_other_players(
             return await conn.fetchval("SELECT id FROM catch_owned WHERE idem_key = $1", key)
 
     run_with_pool(scenario)
+
+
+def test_wild_zone_lists_only_live_visible_spawns_in_this_guild():
+    from modules import catch_species, catch_wild
+
+    async def scenario(pool):
+        async with pool.acquire() as conn:
+            await catch_species.sync_to_db(conn)
+            sid = (await conn.fetchval("SELECT id FROM catch_species ORDER BY id LIMIT 1"))
+
+            async def add(guild, *, owner=None, caught_by=None, fled=False, expires=3600, clone_id=None):
+                return await conn.fetchval(
+                    "INSERT INTO catch_spawns (guild_id, clone_id, channel_id, message_id, species_id, level, ivs, "
+                    "owner_user_id, caught_by, fled, expires_at) VALUES ($1,$2,6,NULL,$3,5,ARRAY[1,1,1,1,1],$4,$5,$6, now() + make_interval(secs => $7)) RETURNING id",
+                    guild, clone_id, sid, owner, caught_by, fled, float(expires),
+                )
+
+            visible = await add(GUILD)
+            mine = await add(GUILD, owner=U1, expires=7200)
+            await add(GUILD, owner=U2)                    # someone else's personal spawn
+            await add(GUILD, caught_by=U2)                # already caught
+            await add(GUILD, fled=True)                   # fled
+            await add(GUILD, expires=-60)                 # expired
+            await add(GUILD + 1)                          # another server
+            await add(GUILD, clone_id=3)                  # another bot clone
+        spawns, total = await catch_wild.list_active_spawns(GUILD, U1, None)
+        assert total == 2 and [s.id for s in spawns] == [visible, mine]
+        assert [s.personal for s in spawns] == [False, True]
+        spawns, total = await catch_wild.list_active_spawns(GUILD, U3, None)
+        assert total == 1 and [s.id for s in spawns] == [visible]
+        capped, total = await catch_wild.list_active_spawns(GUILD, U1, None, limit=1)
+        assert len(capped) == 1 and total == 2
+
+    run_with_pool(scenario)

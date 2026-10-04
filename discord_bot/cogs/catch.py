@@ -20,6 +20,7 @@ from discord.ext import commands, tasks
 from discord_bot.cogs._views_catch_collection import open_collection, open_dex
 from discord_bot.cogs._views_catch_items import open_daily, open_inventory
 from discord_bot.cogs._views_catch_sell import open_sell
+from discord_bot.cogs._views_catch_wild import open_wild_zone
 from discord_bot.cogs._views_catch_shop import open_shop, open_wallet
 from discord_bot.cogs._views_shared import user_can_manage_guild
 from modules.catch_scheduler import run_scheduler_batch
@@ -69,6 +70,7 @@ def component_count(view: discord.ui.View) -> int:
 REAL_ACTIONS = {
     "collection": open_collection, "dex": open_dex, "daily": open_daily, "inventory": open_inventory,
     "shop": open_shop, "wallet": open_wallet, "sell": open_sell,
+    "wild-zone": open_wild_zone,
 }
 
 
@@ -104,7 +106,7 @@ class CatchHubView(discord.ui.View):
         self.add_item(daily)
 
         for label, description in self.category.actions:
-            button = discord.ui.Button(label=label, style=button_style("navigation"), custom_id=f"catch:hub:{self.category.key}:{label.lower()}")
+            button = discord.ui.Button(label=label, style=button_style("navigation"), custom_id=f"catch:hub:{self.category.key}:{label.lower().replace(' ', '-')}")
             button.callback = self._action(label, description)
             self.add_item(button)
 
@@ -177,7 +179,7 @@ class CatchHubView(discord.ui.View):
         await interaction.response.edit_message(embed=build_hub_embed(self.category.key), view=self)
 
     def _action(self, label: str, description: str):
-        real = REAL_ACTIONS.get(label.lower())
+        real = REAL_ACTIONS.get(label.lower().replace(" ", "-"))
         if real is not None:
             return real
 
