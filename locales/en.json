@@ -48,5 +48,10 @@
   "catch.unavailable": "Catch is currently unavailable: {reason}.",
   "catch.reminder.default": "Catch reminder",
   "catch.ui.choose_category": "Choose a catch category",
-  "catch.ui.encounter": "Encounter"
+  "catch.ui.encounter": "Encounter",
+  "catch.ui.daily": "Daily",
+  "catch.ui.daily_description": "Claim your daily reward",
+  "catch.encounter.rarity": "Rarity",
+  "catch.encounter.level": "Level",
+  "catch.encounter.footer": "Claim it before it runs away · {expires_at}"
 }

@@ -85,8 +85,8 @@ class CatchHubView(discord.ui.View):
         pinned = discord.ui.Button(label=text("ui.encounter"), style=button_style("main"), custom_id="catch:hub:encounter")
         pinned.callback = self._encounter
         self.add_item(pinned)
-        daily = discord.ui.Button(label="Daily", style=button_style("claim"), custom_id="catch:hub:daily")
-        daily.callback = self._action("Daily", "Claim your daily reward")
+        daily = discord.ui.Button(label=text("ui.daily"), style=button_style("claim"), custom_id="catch:hub:daily")
+        daily.callback = self._action(text("ui.daily"), text("ui.daily_description"))
         self.add_item(daily)
 
         for label, description in self.category.actions:
@@ -132,9 +132,9 @@ class CatchHubView(discord.ui.View):
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         data = spawn_embed_data(roll, expires_at=expires_at)
         embed = discord.Embed(title=data["title"], description=data["description"], colour=state_color("info"))
-        embed.add_field(name="Rarity", value=data["rarity"])
-        embed.add_field(name="Level", value=data["level"])
-        embed.set_footer(text=f"Claim it before it runs away · {data['expires_at']}")
+        embed.add_field(name=text("encounter.rarity"), value=data["rarity"])
+        embed.add_field(name=text("encounter.level"), value=data["level"])
+        embed.set_footer(text=text("encounter.footer", expires_at=data["expires_at"]))
         await interaction.response.send_message(embed=embed, view=SpawnClaimView(spawn_id), ephemeral=True)
         message = await interaction.original_response()
         await attach_spawn_message(spawn_id, message.id)
