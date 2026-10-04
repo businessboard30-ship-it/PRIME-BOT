@@ -26,6 +26,7 @@ from modules.catch_gate import check_player_allowed, set_feature_flag
 from modules.catch_i18n import text
 from modules.catch_service import CatchBlocked, record_catch
 from modules.catch_theme import button_style, state_color
+from modules.catch_throw import ThrowChoice, choice_label
 
 
 @dataclass(frozen=True)
@@ -375,13 +376,48 @@ class SpawnClaimView(discord.ui.View):
     def __init__(self, spawn_id: int):
         super().__init__(timeout=None)
         self.spawn_id = spawn_id
-        claim = discord.ui.Button(
-            label="Claim creature",
-            style=button_style("claim"),
-            custom_id=f"catch:claim:{spawn_id}",
+        self.ball = "capsule_basic"
+        self.bait: str | None = None
+        ball_select = discord.ui.Select(
+            placeholder="Choose a capsule",
+            options=[
+                discord.SelectOption(label=choice_label(key), value=key, default=key == self.ball)
+                for key in ("capsule_basic", "capsule_sturdy", "capsule_prime", "capsule_sovereign")
+            ],
+            custom_id=f"catch:ball:{spawn_id}",
+            row=0,
         )
-        claim.callback = self._claim
-        self.add_item(claim)
+        ball_select.callback = self._select_ball
+        self.add_item(ball_select)
+        bait_select = discord.ui.Select(
+            placeholder="Optional berry",
+            options=[
+                discord.SelectOption(label="No berry", value="none", default=True),
+                discord.SelectOption(label="Honeyberry", value="honeyberry"),
+                discord.SelectOption(label="Goldberry", value="goldberry"),
+            ],
+            custom_id=f"catch:bait:{spawn_id}",
+            row=1,
+        )
+        bait_select.callback = self._select_bait
+        self.add_item(bait_select)
+        throw = discord.ui.Button(
+            label="Throw ball",
+            style=button_style("claim"),
+            custom_id=f"catch:throw:{spawn_id}",
+            row=2,
+        )
+        throw.callback = self._claim
+        self.add_item(throw)
+
+    async def _select_ball(self, interaction: discord.Interaction) -> None:
+        self.ball = (interaction.data or {}).get("values", [self.ball])[0]
+        await interaction.response.edit_message(view=self)
+
+    async def _select_bait(self, interaction: discord.Interaction) -> None:
+        value = (interaction.data or {}).get("values", ["none"])[0]
+        self.bait = None if value == "none" else value
+        await interaction.response.edit_message(view=self)
 
     async def _claim(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -392,6 +428,8 @@ class SpawnClaimView(discord.ui.View):
                 guild_id=interaction.guild_id,
                 source="wild",
                 spawn_id=self.spawn_id,
+                ball=self.ball,
+                bait=self.bait,
             )
         except CatchBlocked as exc:
             await interaction.followup.send(f"Catch is unavailable: {exc.reason}.", ephemeral=True)
