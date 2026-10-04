@@ -34,5 +34,6 @@
   "catch.claim.fled.description": "This spawn was already claimed, expired, or fled.",
   "catch.claim.success.title": "Catch successful",
   "catch.claim.success.description": "You claimed **{name}**!",
-  "catch.claim.new_species": "New species discovered"
+  "catch.claim.new_species": "New species discovered",
+  "catch.unavailable": "Catch is currently unavailable: {reason}."
 }

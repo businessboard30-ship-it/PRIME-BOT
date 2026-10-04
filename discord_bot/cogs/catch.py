@@ -436,6 +436,15 @@ class SpawnClaimView(discord.ui.View):
 
     async def _claim(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
+        gate = await check_player_allowed(
+            interaction.user.id,
+            interaction.guild_id,
+            "catch",
+            getattr(interaction.client, "clone_id", None),
+        )
+        if not gate.allowed:
+            await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+            return
         try:
             result = await record_catch(
                 user_id=interaction.user.id,
@@ -490,6 +499,14 @@ class CatchCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.guild is None or message.author.bot:
+            return
+        gate = await check_player_allowed(
+            message.author.id,
+            message.guild.id,
+            "spawn",
+            getattr(self.bot, "clone_id", None),
+        )
+        if not gate.allowed:
             return
         setup = await load_setup(message.guild.id, getattr(self.bot, "clone_id", None))
         key = (message.guild.id, message.channel.id)
