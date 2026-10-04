@@ -21,7 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from modules import catch_db, catch_gate
-from modules.catch_game import IV_MAX, LEVEL_MAX, LEVEL_MIN, SOURCES, STAT_NAMES
+from modules.catch_game import BAIT_BONUS, BALLS, IV_MAX, LEVEL_MAX, LEVEL_MIN, SOURCES, STAT_NAMES
 
 MATRIX_PATH = Path(__file__).resolve().parent.parent / "data" / "catch" / "counter_matrix.json"
 APPLIED_COUNTERS = frozenset({"ownership", "dex", "player_total", "streak"})
@@ -93,10 +93,16 @@ async def record_catch(
     special: bool = False,
     spawn_id: int | None = None,
     idem_key: str | None = None,
+    ball: str = "capsule_basic",
+    bait: str | None = None,
     conn=None,
 ) -> CatchResult:
     if source not in SOURCES:
         raise KeyError(f"unknown source: {source}")
+    if ball not in BALLS:
+        raise ValueError(f"unknown ball: {ball}")
+    if bait is not None and bait not in BAIT_BONUS:
+        raise ValueError(f"unknown bait: {bait}")
     feeds = counters_for(source)
     if (spawn_id is None) == (idem_key is None):
         raise ValueError("pass exactly one of spawn_id or idem_key")
@@ -129,6 +135,17 @@ async def record_catch(
             # The spawn row is the truth; never trust caller-supplied rolls here.
             species_id, level, shiny = spawn["species_id"], spawn["level"], spawn["shiny"]
             ivs, guild_id = list(spawn["ivs"]), spawn["guild_id"]
+            for item_key in [ball] + ([bait] if bait else []):
+                consumed = await c.fetchval(
+                    """
+                    UPDATE catch_inventory SET quantity = quantity - 1, updated_at = now()
+                    WHERE user_id = $1 AND clone_key = $2 AND item_key = $3 AND quantity > 0
+                    RETURNING item_key
+                    """,
+                    user_id, catch_db.clone_key(clone_id), item_key,
+                )
+                if consumed is None:
+                    raise ValueError(f"{item_key} is not available")
         else:
             if species_id is None or level is None or ivs is None:
                 raise ValueError("species_id, level and ivs are required without a spawn")

@@ -21,6 +21,8 @@ from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name
 from modules.catch_species import all_species
 from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
 from modules.catch_trigger import ChannelTriggerState, consider_message
+from modules.catch_throw import choice_label
+from modules.catch_encounter import EncounterOnCooldown, create_player_encounter
 from modules.catch_gate import check_player_allowed, set_feature_flag
 from modules.catch_i18n import text
 from modules.catch_service import CatchBlocked, record_catch
@@ -79,7 +81,7 @@ class CatchHubView(discord.ui.View):
         self.add_item(select)
 
         pinned = discord.ui.Button(label="Encounter", style=button_style("main"), custom_id="catch:hub:encounter")
-        pinned.callback = self._action("Encounter", "Find a creature")
+        pinned.callback = self._encounter
         self.add_item(pinned)
         daily = discord.ui.Button(label="Daily", style=button_style("claim"), custom_id="catch:hub:daily")
         daily.callback = self._action("Daily", "Claim your daily reward")
@@ -105,6 +107,35 @@ class CatchHubView(discord.ui.View):
             view=CatchSetupView(setup, guild_id=guild_id),
             ephemeral=True,
         )
+
+    async def _encounter(self, interaction: discord.Interaction) -> None:
+        if interaction.guild_id is None or interaction.channel_id is None:
+            await interaction.response.send_message("Encounters are only available in a server channel.", ephemeral=True)
+            return
+        try:
+            roll = roll_spawn(list(all_species().values()), random.Random())
+            spawn_id = await create_player_encounter(
+                user_id=interaction.user.id,
+                clone_id=getattr(interaction.client, "clone_id", None),
+                guild_id=interaction.guild_id,
+                channel_id=interaction.channel_id,
+                roll=roll,
+            )
+        except EncounterOnCooldown as exc:
+            await interaction.response.send_message(
+                f"Your next encounter is ready <t:{int(exc.ready_at.timestamp())}:R>.",
+                ephemeral=True,
+            )
+            return
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        data = spawn_embed_data(roll, expires_at=expires_at)
+        embed = discord.Embed(title=data["title"], description=data["description"], colour=state_color("info"))
+        embed.add_field(name="Rarity", value=data["rarity"])
+        embed.add_field(name="Level", value=data["level"])
+        embed.set_footer(text=f"Claim it before it runs away · {data['expires_at']}")
+        await interaction.response.send_message(embed=embed, view=SpawnClaimView(spawn_id), ephemeral=True)
+        message = await interaction.original_response()
+        await attach_spawn_message(spawn_id, message.id)
 
     async def _select_category(self, interaction: discord.Interaction) -> None:
         selected = interaction.data.get("values", ["play"])[0] if interaction.data else "play"
@@ -175,6 +206,9 @@ class CatchHubDynamicButton(
             await interaction.response.send_message(
                 embed=build_hub_embed(), view=CatchHubView(), ephemeral=True
             )
+            return
+        if self.action == "encounter":
+            await CatchHubView()._encounter(interaction)
             return
         labels = {
             "encounter": ("Encounter", "Find a creature"),
@@ -342,6 +376,22 @@ class SpawnClaimView(discord.ui.View):
     def __init__(self, spawn_id: int):
         super().__init__(timeout=None)
         self.spawn_id = spawn_id
+        self.ball = "capsule_basic"
+        self.bait = None
+        ball_select = discord.ui.Select(
+            placeholder="Choose a capsule",
+            options=[discord.SelectOption(label=choice_label(key), value=key, default=key == self.ball) for key in ("capsule_basic", "capsule_sturdy", "capsule_prime", "capsule_sovereign")],
+            custom_id=f"catch:ball:{spawn_id}",
+        )
+        ball_select.callback = self._select_ball
+        self.add_item(ball_select)
+        bait_select = discord.ui.Select(
+            placeholder="Optional berry",
+            options=[discord.SelectOption(label="No berry", value="none", default=True), discord.SelectOption(label="Honeyberry", value="honeyberry"), discord.SelectOption(label="Goldberry", value="goldberry")],
+            custom_id=f"catch:bait:{spawn_id}",
+        )
+        bait_select.callback = self._select_bait
+        self.add_item(bait_select)
         claim = discord.ui.Button(
             label="Claim creature",
             style=button_style("claim"),
@@ -349,6 +399,15 @@ class SpawnClaimView(discord.ui.View):
         )
         claim.callback = self._claim
         self.add_item(claim)
+
+    async def _select_ball(self, interaction: discord.Interaction) -> None:
+        self.ball = (interaction.data or {}).get("values", [self.ball])[0]
+        await interaction.response.edit_message(view=self)
+
+    async def _select_bait(self, interaction: discord.Interaction) -> None:
+        value = (interaction.data or {}).get("values", ["none"])[0]
+        self.bait = None if value == "none" else value
+        await interaction.response.edit_message(view=self)
 
     async def _claim(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -359,6 +418,8 @@ class SpawnClaimView(discord.ui.View):
                 guild_id=interaction.guild_id,
                 source="wild",
                 spawn_id=self.spawn_id,
+                ball=self.ball,
+                bait=self.bait,
             )
         except CatchBlocked as exc:
             await interaction.followup.send(f"Catch is unavailable: {exc.reason}.", ephemeral=True)
@@ -366,17 +427,30 @@ class SpawnClaimView(discord.ui.View):
         except Exception:
             await interaction.followup.send("That creature could not be claimed right now.", ephemeral=True)
             return
-        if not result.claimed:
-            await interaction.followup.send("That creature has already fled or been claimed.", ephemeral=True)
-            return
+
         for item in self.children:
             item.disabled = True
         await interaction.message.edit(view=self)
+
+        if not result.claimed:
+            embed = discord.Embed(
+                title="The creature got away",
+                description="This spawn was already claimed, expired, or fled.",
+                colour=state_color("danger"),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         name = "Shiny creature" if result.shiny else "Creature"
-        await interaction.followup.send(
-            f"You claimed **{name}** (level {result.level})!",
-            ephemeral=True,
+        embed = discord.Embed(
+            title="Catch successful",
+            description=f"You claimed **{name}**!",
+            colour=state_color("success"),
         )
+        embed.add_field(name="Level", value=str(result.level), inline=True)
+        if result.new_species:
+            embed.add_field(name="Dex", value="New species discovered", inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class CatchCog(commands.Cog):
@@ -428,28 +502,42 @@ class CatchCog(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def _scheduler(self) -> None:
-        batch = await run_scheduler_batch()
-        for row in batch.expired_rows:
-            channel = self.bot.get_channel(row["channel_id"])
-            if channel is None or row["message_id"] is None:
-                continue
-            try:
-                message = await channel.fetch_message(row["message_id"])
-                view = SpawnClaimView(row["id"])
-                for item in view.children:
-                    item.disabled = True
-                embed = discord.Embed(
-                    title="Creature ran away",
-                    description="The creature escaped before anyone claimed it.",
-                    colour=state_color("warning"),
-                )
-                await message.edit(embed=embed, view=view)
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                continue
+        await self._process_scheduler_batch()
 
     @_scheduler.before_loop
     async def _before_scheduler(self) -> None:
         await self.bot.wait_until_ready()
+
+    async def _mark_spawn_expired(self, row: dict) -> None:
+        channel_id = row.get("channel_id")
+        message_id = row.get("message_id")
+        spawn_id = row.get("id")
+        if not channel_id or not message_id or not spawn_id:
+            return
+        channel = self.bot.get_channel(int(channel_id))
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except discord.DiscordException:
+                return
+        try:
+            message = await channel.fetch_message(int(message_id))
+            view = SpawnClaimView(int(spawn_id))
+            for item in view.children:
+                item.disabled = True
+            embed = discord.Embed(
+                title="Creature ran away",
+                description="The creature escaped before anyone claimed it.",
+                colour=state_color("warning"),
+            )
+            await message.edit(embed=embed, view=view)
+        except discord.DiscordException:
+            return
+
+    async def _process_scheduler_batch(self) -> None:
+        batch = await run_scheduler_batch()
+        for row in batch.expired_rows:
+            await self._mark_spawn_expired(row)
 
     @app_commands.command(name="catch", description="Open the creature-catching hub")
     async def catch(self, interaction: discord.Interaction) -> None:
