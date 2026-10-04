@@ -22,8 +22,14 @@ def test_unknown_category_falls_back_to_play():
 
 def test_hub_stays_under_discord_component_limit():
     view = CatchHubView()
-    assert component_count(view) == 7
+    # select + Encounter + Daily + 3 category actions + Server setup + Home
+    assert component_count(view) == 8
     assert component_count(view) <= 25
+    # discord.py auto-places items with no explicit row, so check the payload Discord will receive
+    action_rows = view.to_components()
+    assert len(action_rows) <= 5
+    assert all(len(row["components"]) <= 5 for row in action_rows)
+    assert all(len(child.custom_id) <= 100 for child in view.children)
     assert all(child.style in {ButtonStyle.primary, ButtonStyle.secondary, ButtonStyle.success} for child in view.children if hasattr(child, "style"))
 
 
@@ -37,5 +43,8 @@ def test_embed_renders_each_category():
 
 def test_catch_dynamic_items_cover_restartable_buttons():
     assert DYNAMIC_ITEMS == (CatchHubDynamicButton,)
-    assert CatchHubDynamicButton.template.pattern == r"catch:hub:(?P<action>[a-z-]+)"
+    template = CatchHubDynamicButton.__discord_ui_compiled_template__
+    assert template.pattern == r"catch:hub:(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)"
+    for custom_id in ("catch:hub:home", "catch:hub:play:encounter", "catch:hub:collect:box"):
+        assert template.fullmatch(custom_id)
     assert len("catch:hub:encounter") <= 100

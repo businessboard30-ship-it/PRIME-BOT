@@ -1,3 +1,4 @@
+import pytest
 from scripts.import_catch_assets import read_manifest
 from modules.catch_assets import AssetRef, PLACEHOLDER, import_manifest, validate_ref
 
@@ -30,12 +31,8 @@ def test_read_manifest_rejects_invalid_json(tmp_path):
     manifest = tmp_path / "manifest.json"
     manifest.write_text('{"kind":', encoding="utf-8")
 
-    try:
+    with pytest.raises(ValueError):
         read_manifest(manifest)
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("invalid JSON manifests should fail")
 
 
 def test_placeholder_is_safe_fallback():
