@@ -33,6 +33,35 @@ from discord_bot.cogs._views_verification import (
 )
 from database import db
 
+
+async def _fresh_role_positions(guild, role):
+    """(role_position, bot_top_position) read live from Discord, not the cache.
+
+    Role positions in discord.py's cache go stale the moment a role is created or
+    moved (Discord shifts every role above the insertion point but doesn't send an
+    update for each one). Comparing cached numbers is what made the bot create a
+    role and then claim it was "above" itself. role_position is None if the role
+    is gone."""
+    roles = await guild.fetch_roles()
+    by_id = {r.id: r for r in roles}
+    mine = max((by_id[r.id].position for r in guild.me.roles if r.id in by_id), default=0)
+    target = by_id.get(role.id)
+    return (target.position if target is not None else None), mine
+
+
+async def _ensure_below_bot(guild, role) -> bool:
+    """True if `role` sits below the bot's top role. Discord already creates new
+    roles directly above @everyone (below the bot), so normally nothing is moved;
+    only if the live check says it isn't below do we try one reposition."""
+    pos, bot_pos = await _fresh_role_positions(guild, role)
+    if pos is not None and pos >= bot_pos:
+        try:
+            await guild.edit_role_positions(positions={role: max(bot_pos - 1, 1)})
+        except discord.HTTPException:
+            logger.warning("verification: couldn't reposition role %s in guild %s", role.id, guild.id)
+        pos, bot_pos = await _fresh_role_positions(guild, role)
+    return pos is not None and pos < bot_pos
+
 logger = logging.getLogger(__name__)
 
 
@@ -252,7 +281,6 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
 
         wizard._creating_role = True
         guild = interaction.guild
-        bot_member = guild.me
 
         try:
             role = await guild.create_role(
@@ -299,35 +327,7 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
         # repositioning the new role changes that. Tell the owner to
         # move the BOT's role up instead of quietly creating a
         # role that's doomed to end up misplaced.
-        if bot_member.top_role.position <= 1:
-            wizard.unverified_role_id = role.id
-            wizard.auto_created_role_id = role.id
-            wizard.unverified_role_select.default_values = [role]
-            wizard._creating_role = False
-            await wizard.refresh(interaction)
-            await interaction.followup.send(
-                f"✅ Created {role.mention}, but my own highest role is already at (or near) the "
-                "bottom of your server's role list, so there's no room to slot this — or any role "
-                "— below me. Go to **Server Settings → Roles** and drag my bot's role up above "
-                "**Unverified** (and above whatever else you want me to manage), then run "
-                "/setupverification again.",
-                ephemeral=True,
-            )
-            return
-
-        target_position = bot_member.top_role.position - 1
-        try:
-            await guild.edit_role_positions(positions={role: target_position})
-        except discord.HTTPException:
-            # Non-fatal — the role still works for permission overwrites,
-            # it just may need manual repositioning if it ended up above
-            # the bot's top role. The Finish-step check below (and this
-            # button's own confirmation message) still catch that case
-            # and tell the owner what to do about it.
-            logger.warning(
-                "verification: auto-created Unverified role %s in guild %s but failed to reposition it",
-                role.id, guild.id,
-            )
+        below = await _ensure_below_bot(guild, role)
 
         wizard.unverified_role_id = role.id
         wizard.auto_created_role_id = role.id
@@ -335,17 +335,10 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
         wizard._creating_role = False
         await wizard.refresh(interaction)
 
-        # Re-fetch the role rather than trusting the pre-edit `role`
-        # object's cached position — confirms the reposition actually
-        # landed instead of just assuming edit_role_positions succeeded,
-        # so the owner hears about a misplaced role NOW, from the button
-        # that caused it, instead of only later at the Finish step.
-        moved_role = guild.get_role(role.id) or role
-        if moved_role.position >= bot_member.top_role.position:
+        if not below:
             await interaction.followup.send(
-                f"⚠️ Created {role.mention}, but I couldn't slot it below my own role — it's still "
-                "at or above me, so I won't be able to assign/remove it. Move it below my role in "
-                "**Server Settings → Roles**, then run /setupverification again.",
+                f"⚠️ Created {role.mention}, but it isn't below my own role, so I can't assign/remove it. "
+                "In **Server Settings → Roles** drag my bot's role above it, then run /setupverification again.",
                 ephemeral=True,
             )
             return
@@ -414,22 +407,16 @@ class AutoCreateVerifiedButton(discord.ui.Button):
             await interaction.response.send_message(f"Couldn't create the role: {e}", ephemeral=True)
             return
 
-        bot_member = guild.me
-        if bot_member.top_role.position > 1:
-            try:
-                await guild.edit_role_positions(positions={role: bot_member.top_role.position - 1})
-            except discord.HTTPException:
-                logger.warning("verification: auto-created Verified role %s in guild %s but failed to reposition it", role.id, guild.id)
+        below = await _ensure_below_bot(guild, role)
 
         wizard.verified_role_id = role.id
         wizard.verified_role_select.default_values = [role]
         wizard._creating_role = False
         await wizard.refresh(interaction)
 
-        moved = guild.get_role(role.id) or role
-        if moved.position >= bot_member.top_role.position:
+        if not below:
             await interaction.followup.send(
-                f"⚠️ Created {role.mention}, but it's at or above my highest role, so I can't hand it out. "
+                f"⚠️ Created {role.mention}, but it isn't below my own role, so I can't hand it out. "
                 "Drag my role above it in **Server Settings → Roles**.",
                 ephemeral=True,
             )
@@ -458,7 +445,8 @@ class FinishButton(discord.ui.Button):
             await interaction.followup.send("That role or channel no longer exists — please pick again.", ephemeral=True)
             return
 
-        if unverified_role.position >= guild.me.top_role.position:
+        role_pos, bot_pos = await _fresh_role_positions(guild, unverified_role)
+        if role_pos is None or role_pos >= bot_pos:
             await interaction.followup.send(
                 f"⚠️ {unverified_role.mention} is positioned at or above my highest role, so I won't be able to "
                 "assign/remove it on join/verify. Move it below my role in Server Settings → Roles, then run "
@@ -466,6 +454,22 @@ class FinishButton(discord.ui.Button):
                 ephemeral=True,
             )
             return
+
+        if wizard.verified_role_id:
+            verified_role = guild.get_role(wizard.verified_role_id)
+            if verified_role is None:
+                await interaction.followup.send(
+                    "The Verified role you picked no longer exists — pick it again (or clear it).", ephemeral=True)
+                return
+            v_pos, v_bot_pos = await _fresh_role_positions(guild, verified_role)
+            if v_pos is None or v_pos >= v_bot_pos or verified_role.managed:
+                await interaction.followup.send(
+                    f"⚠️ {verified_role.mention} is at or above my highest role (or is managed by an integration), "
+                    "so I won't be able to give it to members when they verify. Drag my bot's role above it in "
+                    "Server Settings → Roles, then run /setupverification again.",
+                    ephemeral=True,
+                )
+                return
 
         touched = await lockdown_guild_channels(guild, unverified_role, wizard.channel_id)
 
