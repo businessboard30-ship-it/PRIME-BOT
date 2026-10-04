@@ -240,6 +240,7 @@ def build_setup_embed(setup: CatchSetup) -> discord.Embed:
         colour=state_color("success" if setup.enabled else "info"),
     )
     embed.add_field(name="Status", value=setup.status_line(), inline=False)
+    embed.add_field(name="Join DMs", value="Enabled" if setup.join_dm_enabled else "Disabled", inline=True)
     embed.add_field(
         name="Spawn channels",
         value=", ".join(f"<#{channel_id}>" for channel_id in setup.spawn_channel_ids) or "Not selected",
@@ -316,6 +317,14 @@ class CatchSetupView(discord.ui.View):
         )
         encounter.callback = self._toggle_encounters
         self.add_item(encounter)
+        join_dm = discord.ui.Button(
+            label="Disable join DMs" if self.setup.join_dm_enabled else "Enable join DMs",
+            style=button_style("danger" if self.setup.join_dm_enabled else "claim"),
+            custom_id="catch:setup:join-dm",
+            row=4,
+        )
+        join_dm.callback = self._toggle_join_dm
+        self.add_item(join_dm)
 
     async def _refresh(self, interaction: discord.Interaction) -> None:
         if self.guild_id is not None:
@@ -360,6 +369,10 @@ class CatchSetupView(discord.ui.View):
     async def _toggle_encounters(self, interaction: discord.Interaction) -> None:
         encounter_channels = self.setup.spawn_channel_ids if not self.setup.encounter_channel_ids else ()
         self.setup = replace(self.setup, encounter_channel_ids=encounter_channels)
+        await self._refresh(interaction)
+
+    async def _toggle_join_dm(self, interaction: discord.Interaction) -> None:
+        self.setup = replace(self.setup, join_dm_enabled=not self.setup.join_dm_enabled)
         await self._refresh(interaction)
 
     async def _wild_zone(self, interaction: discord.Interaction) -> None:
