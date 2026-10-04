@@ -285,6 +285,16 @@ class ServerPanelView(discord.ui.LayoutView):
             await interaction.edit_original_response(view=view)
         return cb
 
+    def nav_p6(self, name: str) -> Callable:
+        """Navigate to a Phase 10 (features / permission check) screen by class name (lazy import avoids a cycle)."""
+        @read_only_ok
+        async def cb(interaction: discord.Interaction):
+            from discord_bot.cogs import _views_server_panel_p6 as p6
+            await interaction.response.defer()
+            view = await getattr(p6, name).create(self._ctx(interaction))
+            await interaction.edit_original_response(view=view)
+        return cb
+
     def back_button(self, target=None) -> discord.ui.Button:
         return _btn("Back", discord.ButtonStyle.secondary, self.nav(target or HomeView), "⬅️")
 
@@ -338,6 +348,7 @@ class HomeView(ServerPanelView):
             _btn("Tickets", P, self.nav_p2("TicketsView"), "🎫"),
             _btn("Channels & logs", P, self.nav_p2("ChannelsLogsView"), "📚"),
             _btn("Tools", P, self.nav_p4("ToolsView"), "🧰"),
+            _btn("More features", P, self.nav_p6("FeaturesView"), "✨"),
             _btn("Stats", S, self.nav_p3("StatsView"), "📊"),
             _btn("Change history", S, self.nav_p3("HistoryView"), "🕘"),
             _btn("Help & tools", S, self.nav_p3("HelpToolsView"), "🧰"),
@@ -423,8 +434,13 @@ class SetupView(ServerPanelView):
         short = {"welcome": "Welcome", "verification": "Verification", "automod": "Auto-mod",
                  "modlog": "Mod-log", "leveling": "Leveling", "tickets": "Tickets",
                  "channels": "Create channels", "premium": "Premium"}
-        out = [_btn(short[i.key], discord.ButtonStyle.primary, targets[i.key])
-               for i in self.data.get("items", []) if not i.done]
+        items = self.data.get("items", [])
+        out = []
+        first = next((i for i in items if not i.done), None)
+        if first is not None:
+            out.append(_btn("Fix next", discord.ButtonStyle.success, targets[first.key], "➡️"))
+        out += [_btn(short[i.key], discord.ButtonStyle.primary, targets[i.key])
+                for i in items if not i.done]
         out.append(self.back_button())
         return out
 
