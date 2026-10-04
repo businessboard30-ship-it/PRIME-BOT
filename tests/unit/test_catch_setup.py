@@ -17,6 +17,11 @@ def test_enabled_requires_spawn_channel():
     assert CatchSetup(enabled=True).validate() == ["at least one spawn channel is required"]
 
 
+def test_channel_ids_must_be_positive():
+    setup = CatchSetup(spawn_channel_ids=(0,), encounter_channel_ids=(-4,))
+    assert setup.validate() == ["channel IDs must be positive"]
+
+
 def test_wild_zone_name_is_unique():
     assert create_wild_zone_name({"general"}) == "wild-zone"
     assert create_wild_zone_name({"wild-zone", "wild-zone-2"}) == "wild-zone-3"

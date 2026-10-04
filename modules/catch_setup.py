@@ -55,6 +55,8 @@ class CatchSetup:
             errors.append("invalid speed preset")
         if self.enabled and not self.spawn_channel_ids:
             errors.append("at least one spawn channel is required")
+        if any(channel_id <= 0 for channel_id in (*self.spawn_channel_ids, *self.encounter_channel_ids)):
+            errors.append("channel IDs must be positive")
         if self.despawn_seconds <= 0:
             errors.append("despawn_seconds must be positive")
         return errors
