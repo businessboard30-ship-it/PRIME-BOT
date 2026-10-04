@@ -1,0 +1,334 @@
+"""Scam Shield: matching, the message listener, the panel screen and the migration."""
+import asyncio
+import io
+import re
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+import pytest
+
+from modules import scam_shield as ss
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def run(c):
+    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(c)
+
+
+@pytest.fixture(autouse=True)
+def rules(monkeypatch):
+    ss._c.words = [(1, "fatowin")]
+    ss._c.domains = [(2, "fatowin.com")]
+    ss._c.images = []
+    ss._c.enabled = True
+    ss._c.loaded_at = 10 ** 12          # never "stale" during a test
+    ss._last_hit.clear()
+    monkeypatch.setattr(ss.time, "monotonic", lambda: 10 ** 12)
+    yield
+
+
+# ── text matching ────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "go to FatoWin and use code GIFT",
+    "fato win . com  free $3500",
+    "F.A.T.O.W.I.N",
+    "claim at https://www.fatowin.com/bonus",
+    "http://promo.fatowin.com",
+    "f\u200ba\u200bt\u200bo\u200bwin",
+])
+def test_scam_text_is_caught(text):
+    assert ss.match_text(text) is not None
+
+
+def test_mrbeast_casino_bait_is_caught_without_any_stored_rule():
+    ss._c.words, ss._c.domains = [], []
+    hit = ss.match_text("MrBeast launched his own crypto casino, promo code GIFT")
+    assert hit and hit[0] == "heuristic"
+
+
+@pytest.mark.parametrize("text", [
+    "my brother loves mrbeast videos",
+    "did you see the new casino royale film",
+    "the withdrawal from the bank went through",
+    "check https://example.com/fato",
+    "",
+])
+def test_normal_chat_is_not_caught(text):
+    ss._c.words, ss._c.domains = [(1, "fatowin")], [(2, "fatowin.com")]
+    assert ss.match_text(text) is None
+
+
+def test_lookalike_domain_is_not_a_subdomain_match():
+    ss._c.words = []
+    assert ss.match_text("https://notfatowin.com") is None
+    assert ss.match_text("https://a.b.fatowin.com") is not None
+
+
+def test_classify_and_parse_domain():
+    assert ss.classify("https://www.FatoWin.com/x?y=1") == ("domain", "fatowin.com")
+    assert ss.classify("free nitro gift") == ("word", "free nitro gift")
+    assert ss.classify("hello.") [0] == "word"
+
+
+# ── images ───────────────────────────────────────────────────────────────
+
+def _img(size=(300, 200), seed=0, fmt="PNG", quality=None):
+    from PIL import Image, ImageDraw
+    im = Image.new("RGB", size, (20 + seed, 40, 90))
+    d = ImageDraw.Draw(im)
+    for n in range(0, size[0], 25):
+        d.rectangle([n, (n * 7 + seed * 13) % size[1], n + 18, size[1]], fill=(200 - n % 120, 60 + seed, 10 + n % 200))
+    d.ellipse([size[0] // 4, size[1] // 4, size[0] // 2, size[1] // 2], fill=(250, 250, 250))
+    buf = io.BytesIO()
+    im.save(buf, fmt, **({"quality": quality} if quality else {}))
+    return buf.getvalue()
+
+
+def test_known_image_matches_even_when_resized_and_recompressed_but_other_images_do_not():
+    original = _img()
+    ss._c.images = [(9, ss.dhash(original))]
+    assert ss.match_image(original)[0] == "image"
+    from PIL import Image
+    small = io.BytesIO()
+    Image.open(io.BytesIO(original)).resize((150, 100)).convert("RGB").save(small, "JPEG", quality=40)
+    assert ss.match_image(small.getvalue()) is not None
+    other = _img(size=(300, 200), seed=50)          # a genuinely different layout (seed 200 is just a recolour)
+    assert ss.hamming(ss.dhash(original), ss.dhash(other)) > ss.IMAGE_MAX_DISTANCE
+    assert ss.match_image(other) is None
+
+
+def test_unreadable_bytes_never_match_or_crash():
+    ss._c.images = [(9, 123)]
+    assert ss.match_image(b"not an image") is None
+
+
+def test_seeded_hashes_in_migration_are_valid_64bit_hex():
+    sql = (ROOT / "database/migrations/029_scam_shield.sql").read_text()
+    hashes = re.findall(r"'image',\s*'([0-9a-f]+)'", sql)
+    assert len(hashes) == 4 and all(len(h) == 16 and int(h, 16) >= 0 for h in hashes)
+
+
+# ── the listener ─────────────────────────────────────────────────────────
+
+def _msg(content="", staff=False, attachments=(), webhook=False):
+    from discord_bot.cogs import scam_shield as cog_mod
+    guild = SimpleNamespace(id=555, owner_id=1, get_channel=lambda cid: None)
+    if webhook:
+        author = SimpleNamespace(id=42, __str__=lambda s: "hook")
+    else:
+        perms = SimpleNamespace(administrator=False, manage_guild=False, manage_messages=staff)
+        author = MagicMock(spec=discord.Member)
+        author.id, author.guild_permissions = 42, perms
+    m = MagicMock()
+    m.guild, m.author, m.content, m.embeds, m.attachments = guild, author, content, [], list(attachments)
+    m.type = discord.MessageType.default
+    m.channel = SimpleNamespace(id=7, mention="#c")
+    m.delete = AsyncMock()
+    return m
+
+
+@pytest.fixture()
+def cog(monkeypatch):
+    from discord_bot.cogs import scam_shield as cog_mod
+    bot = MagicMock()
+    bot.user = SimpleNamespace(id=999)
+    c = cog_mod.ScamShieldCog.__new__(cog_mod.ScamShieldCog)
+    c.bot = bot
+    log = AsyncMock()
+    monkeypatch.setattr(cog_mod.ss, "log_hit", log)
+    monkeypatch.setattr(cog_mod.ss, "load", AsyncMock())
+    monkeypatch.setattr(c, "_flag", AsyncMock(), raising=False)
+    c.log = log
+    return c
+
+
+def test_scam_message_is_deleted_and_flagged(cog):
+    m = _msg("free $3500 at fatowin.com use GIFT")
+    run(cog._inspect(m))
+    m.delete.assert_awaited_once()
+    cog.log.assert_awaited_once()
+    args = cog.log.await_args.args
+    assert args[:3] == (555, 7, 42) and args[7] is True          # guild, channel, user ... deleted=True
+    cog._flag.assert_awaited_once()
+
+
+def test_normal_message_untouched(cog):
+    m = _msg("anyone up for a game tonight?")
+    run(cog._inspect(m))
+    m.delete.assert_not_awaited()
+    cog.log.assert_not_awaited()
+
+
+def test_staff_are_never_checked(cog):
+    m = _msg("fatowin.com", staff=True)
+    run(cog._inspect(m))
+    m.delete.assert_not_awaited()
+
+
+def test_webhook_posts_get_no_free_pass(cog):
+    m = _msg("fatowin.com", webhook=True)
+    run(cog._inspect(m))
+    m.delete.assert_awaited_once()
+
+
+def test_switched_off_does_nothing(cog):
+    ss._c.enabled = False
+    m = _msg("fatowin.com")
+    run(cog._inspect(m))
+    m.delete.assert_not_awaited()
+
+
+def test_dms_and_own_messages_are_ignored(cog):
+    m = _msg("fatowin.com")
+    m.guild = None
+    run(cog._inspect(m))
+    m.delete.assert_not_awaited()
+    m2 = _msg("fatowin.com")
+    m2.author.id = 999
+    run(cog._inspect(m2))
+    m2.delete.assert_not_awaited()
+
+
+def test_raid_flood_deletes_every_message_but_logs_once(cog):
+    msgs = [_msg("fatowin.com") for _ in range(5)]
+    for m in msgs:
+        run(cog._inspect(m))
+    assert all(m.delete.await_count == 1 for m in msgs)
+    assert cog.log.await_count == 1
+
+
+def test_failed_delete_is_still_flagged_as_not_deleted(cog):
+    m = _msg("fatowin.com")
+    m.delete.side_effect = discord.HTTPException(MagicMock(status=403, reason="x"), "no perms")
+    run(cog._inspect(m))
+    assert cog.log.await_args.args[7] is False                    # recorded as NOT deleted
+
+
+def test_images_are_not_downloaded_when_there_are_no_image_rules(cog):
+    att = MagicMock(content_type="image/png", filename="a.png", size=1000)
+    att.read = AsyncMock(return_value=_img())
+    m = _msg("hello", attachments=[att])
+    run(cog._inspect(m))
+    att.read.assert_not_awaited()
+
+
+def test_known_scam_image_is_caught_and_big_files_are_skipped(cog):
+    data = _img()
+    ss._c.images = [(9, ss.dhash(data))]
+    att = MagicMock(content_type="image/png", filename="x.png", size=1000)
+    att.read = AsyncMock(return_value=data)
+    m = _msg("look", attachments=[att])
+    run(cog._inspect(m))
+    m.delete.assert_awaited_once()
+    big = MagicMock(content_type="image/png", filename="x.png", size=ss.IMAGE_MAX_BYTES + 1)
+    big.read = AsyncMock(return_value=data)
+    m2 = _msg("look", attachments=[big])
+    m2.author.id = 43
+    run(cog._inspect(m2))
+    big.read.assert_not_awaited()
+    m2.delete.assert_not_awaited()
+
+
+# ── migration / wiring ───────────────────────────────────────────────────
+
+def test_migration_is_additive_idempotent_and_schema_is_bumped():
+    sql = (ROOT / "database/migrations/029_scam_shield.sql").read_text()
+    code = "\n".join(l for l in sql.splitlines() if not l.strip().startswith("--")).upper()
+    assert "DROP " not in code and "DELETE " not in code and "TRUNCATE" not in code
+    assert code.count("CREATE TABLE") == code.count("CREATE TABLE IF NOT EXISTS") == 3
+    assert "ON CONFLICT (KIND, PATTERN) DO NOTHING" in code
+    src = (ROOT / "database.py").read_text()
+    assert int(re.search(r'^SCHEMA_VERSION = "(\d+)"', src, re.M).group(1)) >= 51
+    assert "029_scam_shield.sql" in src
+    assert 'discord_bot.cogs.scam_shield' in (ROOT / "discord_bot/bot.py").read_text()
+
+
+# ── the /admin screen ────────────────────────────────────────────────────
+
+def _panel(monkeypatch, rules=None, hits=None, enabled=True):
+    from discord_bot.cogs import _views_admin_panel_scamshield as pv
+    from datetime import datetime, timezone
+    monkeypatch.setattr(pv.ss, "load", AsyncMock())
+    monkeypatch.setattr(pv.ss, "is_enabled", lambda: enabled)
+    monkeypatch.setattr(pv.ss, "list_rules", AsyncMock(return_value=rules if rules is not None else [
+        dict(id=1, kind="word", pattern="fatowin", note="scam", created_at=None),
+        dict(id=4, kind="image", pattern="3734283e39391d31", note="shot #1", created_at=None)]))
+    monkeypatch.setattr(pv.ss, "recent_hits", AsyncMock(return_value=hits if hits is not None else [
+        dict(guild_id=5, user_id=6, kind="word", matched="fatowin", deleted=True,
+             created_at=datetime.now(timezone.utc))]))
+    monkeypatch.setattr(pv.ss, "hit_total", AsyncMock(return_value=3))
+    v = pv.ScamShieldView(MagicMock(), 1)
+    run(v.load())
+    return pv, v
+
+
+def _text(v):
+    return "\n".join(c.content for c in v.walk_children() if isinstance(c, discord.ui.TextDisplay))
+
+
+def test_panel_shows_status_rules_and_catches_in_one_code_block_each(monkeypatch):
+    pv, v = _panel(monkeypatch)
+    t = _text(v)
+    assert "ON" in t and "every server" in t and "#1 word" in t and "image 3734283e" in t and "Caught so far: **3**" in t
+    assert t.count("```") == 4 and "<t:" not in t
+    assert "NOT DELETED" not in t
+
+
+def test_panel_flags_catches_that_could_not_be_deleted_and_handles_empty(monkeypatch):
+    from datetime import datetime, timezone
+    pv, v = _panel(monkeypatch, hits=[dict(guild_id=5, user_id=6, kind="image", matched="x", deleted=False,
+                                           created_at=datetime.now(timezone.utc))])
+    assert "NOT DELETED" in _text(v)
+    pv, v = _panel(monkeypatch, rules=[], hits=[])
+    assert "none yet" in _text(v)
+    assert next(c for c in v.walk_children() if getattr(c, "label", None) == "Remove rule").disabled
+
+
+def test_panel_toggle_flips_the_global_switch_and_is_audited(monkeypatch):
+    pv, v = _panel(monkeypatch, enabled=True)
+    set_enabled = AsyncMock()
+    monkeypatch.setattr(pv.ss, "set_enabled", set_enabled)
+    monkeypatch.setattr(pv, "audit", MagicMock())
+    i = MagicMock()
+    i.response.edit_message = AsyncMock()
+    run(v._toggle(i))
+    set_enabled.assert_awaited_once_with(False)
+    pv.audit.assert_called_once()
+
+
+def test_add_modal_refuses_tiny_words_and_unauthorised_users(monkeypatch):
+    pv, v = _panel(monkeypatch)
+    add = AsyncMock(return_value=7)
+    monkeypatch.setattr(pv.ss, "add_rule", add)
+    monkeypatch.setattr(pv, "audit", MagicMock())
+    monkeypatch.setattr(pv, "allowed_sections", lambda uid: {pv.SECTION})
+    m = pv.AddRuleModal(v)
+    i = MagicMock()
+    i.user.id = 1
+    i.response.edit_message = AsyncMock()
+    m.text._value = "hi"
+    run(m.on_submit(i))
+    add.assert_not_awaited()
+    m.text._value = "https://Free-Nitro.example/claim"
+    run(m.on_submit(i))
+    add.assert_awaited_once_with("domain", "free-nitro.example", 1)
+    monkeypatch.setattr(pv, "allowed_sections", lambda uid: set())
+    pv._denied = AsyncMock()
+    add.reset_mock()
+    run(m.on_submit(i))
+    add.assert_not_awaited()
+
+
+def test_servers_hub_has_the_scam_shield_button_and_rows_still_fit(monkeypatch):
+    from discord_bot.cogs import _views_admin_panel_servers as sv
+    monkeypatch.setattr(sv, "allowed_sections", lambda uid: {"servers", "scamshield"})
+    hub = sv.ServersHubView(MagicMock(), 1)
+    labels = [getattr(c, "label", None) for c in hub.walk_children()]
+    assert "Scam Shield" in labels
+    for row in (c for c in hub.walk_children() if isinstance(c, discord.ui.ActionRow)):
+        assert len(row.children) <= 5
+    hub.to_components()

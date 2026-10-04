@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "50"
+SCHEMA_VERSION = "51"
+# "50" -> "51" adds 029_scam_shield.sql (scam_shield_rules/settings/hits). Same bump-or-it-never-runs trap.
 # "49" -> "50" adds 028_referral_giveaway_post.sql (description, channel_id, message_id on
 # referral_giveaways) so the referral giveaway can be posted publicly. Same bump-or-it-never-runs trap.
 # "47" -> "48" actually creates leveling_ping_optout (the leaderboard's
@@ -5087,6 +5088,11 @@ class Database:
         referral_giveaway_post_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "028_referral_giveaway_post.sql"
         if referral_giveaway_post_migration.exists():
             await conn.execute(referral_giveaway_post_migration.read_text())
+
+        # Scam Shield tables + starter rules. Additive/idempotent.
+        scam_shield_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "029_scam_shield.sql"
+        if scam_shield_migration.exists():
+            await conn.execute(scam_shield_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point

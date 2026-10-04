@@ -151,8 +151,15 @@ class ServersHubView(PanelView):
             _btn("Clones", P, self._clones, "🤖"),
             _btn("Commissions", S, self._commissions, "💰"),
             _btn("Subscribers", S, self._subscribers, "👥"),
+            _btn("Scam Shield", P, self._scamshield, "🛡️", disabled="scamshield" not in allowed_sections(self.owner_id)),
             _btn("Back", S, self._back, "⬅️"),
         ]
+
+    async def _scamshield(self, i: discord.Interaction):
+        from discord_bot.cogs._views_admin_panel_scamshield import ScamShieldView  # lazy: avoids import cycle
+        view = ScamShieldView(self.cog, self.owner_id)
+        await view.load()
+        await self.go(i, view)
 
     async def _servers(self, i: discord.Interaction):
         clone = self.cog.clone_admin

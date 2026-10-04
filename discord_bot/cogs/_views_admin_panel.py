@@ -59,6 +59,7 @@ def allowed_sections(user_id: int) -> set:
         out.update({"access", "logs", "config", "database"})       # Batch 2 (_views_admin_panel_ops.py)
         out.update({"watchlist", "reports", "status", "honeypot"})  # Batch 3 (_views_admin_panel_safety.py), owner-only
         out.add("money")                                            # Batch 4 (_views_admin_panel_money.py), owner-only
+        out.add("scamshield")                                       # Scam Shield (_views_admin_panel_scamshield.py), owner-only, not grantable
         out.add("referral")                                         # Referral giveaway (_views_admin_panel_referral.py), owner-only, not grantable
         out.add("ads")                                              # Batch 5 (_views_admin_panel_ads.py), owner-only (same gate as /ad manage)
         out.update({"health", "inspect"})                           # Batch 6 (_views_admin_panel_inspect.py), owner-only, not grantable
