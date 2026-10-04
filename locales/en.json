@@ -32,12 +32,10 @@
   "catch.setup.enable_join_dms": "Enable join DMs",
   "catch.setup.select_channel": "Select at least one spawn channel before enabling catching.",
   "catch.setup.text_channel": "Select at least one text channel.",
-  "catch.setup.test_queued": "Test spawn queued in dry-run mode: `{payload}`",
   "catch.encounter.server_only": "Encounters are only available in a server channel.",
   "catch.encounter.cooldown": "Your next encounter is ready <t:{ready_at}:R>.",
   "catch.setup.manage_server": "Only members with Manage Server can change Catch setup.",
   "catch.setup.enable_channel": "Select at least one spawn channel before enabling catching.",
-  "catch.setup.wild_zone": "Create **#{channel_name}** in this server, then select it as a spawn channel.",
   "catch.claim.blocked": "Catch is unavailable: {reason}.",
   "catch.claim.error": "That creature could not be claimed right now.",
   "catch.claim.fled.title": "The creature got away",
@@ -62,5 +60,10 @@
   "catch.encounter.rarity": "Rarity",
   "catch.encounter.level": "Level",
   "catch.encounter.footer": "Claim it before it runs away · {expires_at}",
-  "catch.command.description": "Open the creature-catching hub"
+  "catch.command.description": "Open the creature-catching hub",
+  "catch.setup.need_manage_channels": "I need **Manage Channels** to create #wild-zone. Give me that permission, or pick spawn channels with the selector above.",
+  "catch.setup.wild_zone_failed": "I couldn't create #wild-zone. Check my permissions or pick an existing channel with the selector.",
+  "catch.setup.wild_zone_ready": "{channel} is now a spawn channel.",
+  "catch.setup.test_posted": "Test spawn posted in {channel}. It's a real spawn: claiming it gives the creature to whoever catches it.",
+  "catch.setup.test_failed": "The test spawn could not be posted in {channel}. Check that I can send messages and embeds there."
 }

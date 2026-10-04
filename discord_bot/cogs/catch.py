@@ -20,7 +20,7 @@ from discord.ext import commands, tasks
 from discord_bot.cogs._views_shared import user_can_manage_guild
 from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_reminders import Reminder, dispatch_due_reminders
-from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, load_setup, save_setup, test_spawn_payload
+from modules.catch_setup import CatchSetup, SPEED_PRESETS, load_setup, save_setup
 from modules.catch_species import all_species
 from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
 from modules.catch_trigger import ChannelTriggerState, consider_message
@@ -283,6 +283,28 @@ def build_setup_embed(setup: CatchSetup) -> discord.Embed:
     return embed
 
 
+async def publish_spawn(channel, *, guild_id: int, clone_id: int | None, setup: CatchSetup, source: str = "chat") -> int:
+    """Roll, persist and publish one wild spawn; returns the spawn id.
+
+    Persists first so the claim button always points at a real row, then links the
+    posted message back. Raises on failure so callers can reset trigger state.
+    """
+    roll = roll_spawn(list(all_species().values()), random.Random())
+    spawn_id = await create_spawn(
+        guild_id=guild_id, clone_id=clone_id, channel_id=channel.id,
+        roll=roll, expires_in=setup.despawn_seconds, source=source,
+    )
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=setup.despawn_seconds)
+    data = spawn_embed_data(roll, expires_at=expires_at)
+    embed = discord.Embed(title=data["title"], description=data["description"], colour=state_color("info"))
+    embed.add_field(name=text("encounter.rarity"), value=data["rarity"])
+    embed.add_field(name=text("encounter.level"), value=data["level"])
+    embed.set_footer(text=text("encounter.footer", expires_at=data["expires_at"]))
+    posted = await channel.send(embed=embed, view=SpawnClaimView(spawn_id))
+    await attach_spawn_message(spawn_id, posted.id)
+    return spawn_id
+
+
 class CatchSetupView(discord.ui.View):
     """Owner setup controls shared by the server panel and catch hub."""
 
@@ -404,13 +426,51 @@ class CatchSetupView(discord.ui.View):
         await self._refresh(interaction)
 
     async def _wild_zone(self, interaction: discord.Interaction) -> None:
-        existing = {channel.name for channel in getattr(interaction.guild, "channels", ())}
-        await interaction.response.send_message(text("setup.wild_zone", channel_name=create_wild_zone_name(existing)), ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if guild is None or self.guild_id is None:
+            await interaction.followup.send(text("encounter.server_only"), ephemeral=True)
+            return
+        if not await user_can_manage_guild(guild, interaction.user.id):
+            await interaction.followup.send(text("setup.manage_server"), ephemeral=True)
+            return
+        channel = discord.utils.get(guild.text_channels, name="wild-zone")
+        if channel is None:
+            if not guild.me.guild_permissions.manage_channels:
+                await interaction.followup.send(text("setup.need_manage_channels"), ephemeral=True)
+                return
+            try:
+                channel = await guild.create_text_channel("wild-zone", reason="Creature catching setup")
+            except (discord.Forbidden, discord.HTTPException):
+                logger.exception("Catch setup could not create #wild-zone guild=%s", guild.id)
+                await interaction.followup.send(text("setup.wild_zone_failed"), ephemeral=True)
+                return
+        self.setup = self.setup.with_spawn_channels([*self.setup.spawn_channel_ids, channel.id])
+        await save_setup(self.guild_id, self.setup, self.clone_id)
+        self._build()
+        await interaction.edit_original_response(embed=build_setup_embed(self.setup), view=self)
+        await interaction.followup.send(text("setup.wild_zone_ready", channel=channel.mention), ephemeral=True)
 
     async def _test_spawn(self, interaction: discord.Interaction) -> None:
-        channel_id = self.setup.spawn_channel_ids[0] if self.setup.spawn_channel_ids else None
-        payload = test_spawn_payload(channel_id=channel_id)
-        await interaction.response.send_message(text("setup.test_queued", payload=payload), ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        if guild is None or self.guild_id is None:
+            await interaction.followup.send(text("encounter.server_only"), ephemeral=True)
+            return
+        if not await user_can_manage_guild(guild, interaction.user.id):
+            await interaction.followup.send(text("setup.manage_server"), ephemeral=True)
+            return
+        channel = next((guild.get_channel(c) for c in self.setup.spawn_channel_ids if guild.get_channel(c)), None)
+        if channel is None:
+            await interaction.followup.send(text("setup.select_channel"), ephemeral=True)
+            return
+        try:
+            await publish_spawn(channel, guild_id=guild.id, clone_id=self.clone_id, setup=self.setup, source="test")
+        except Exception:
+            logger.exception("Catch test spawn failed guild=%s channel=%s", guild.id, channel.id)
+            await interaction.followup.send(text("setup.test_failed", channel=channel.mention), ephemeral=True)
+            return
+        await interaction.followup.send(text("setup.test_posted", channel=channel.mention), ephemeral=True)
 
 
 class SpawnClaimView(discord.ui.View):
@@ -548,22 +608,12 @@ class CatchCog(commands.Cog):
         if not decision.should_spawn:
             return
         try:
-            roll = roll_spawn(list(all_species().values()), random.Random())
-            spawn_id = await create_spawn(
+            await publish_spawn(
+                message.channel,
                 guild_id=message.guild.id,
                 clone_id=getattr(self.bot, "clone_id", None),
-                channel_id=message.channel.id,
-                roll=roll,
-                expires_in=setup.despawn_seconds,
+                setup=setup,
             )
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=setup.despawn_seconds)
-            data = spawn_embed_data(roll, expires_at=expires_at)
-            embed = discord.Embed(title=data["title"], description=data["description"], colour=state_color("info"))
-            embed.add_field(name=text("encounter.rarity"), value=data["rarity"])
-            embed.add_field(name=text("encounter.level"), value=data["level"])
-            embed.set_footer(text=text("encounter.footer", expires_at=data["expires_at"]))
-            posted = await message.channel.send(embed=embed, view=SpawnClaimView(spawn_id))
-            await attach_spawn_message(spawn_id, posted.id)
         except Exception:
             state.message_count = 0
             logger.exception(

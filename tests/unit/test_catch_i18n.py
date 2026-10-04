@@ -23,6 +23,4 @@ def test_encounter_and_claim_messages_format_values():
     clear_cache()
     assert text("encounter.cooldown", ready_at=123) == "Your next encounter is ready <t:123:R>."
     assert text("claim.success.description", name="Mossling") == "You claimed **Mossling**!"
-    assert text("setup.wild_zone", channel_name="wild-zone") == (
-        "Create **#wild-zone** in this server, then select it as a spawn channel."
-    )
+    assert text("setup.wild_zone_ready", channel="<#5>") == "<#5> is now a spawn channel."
