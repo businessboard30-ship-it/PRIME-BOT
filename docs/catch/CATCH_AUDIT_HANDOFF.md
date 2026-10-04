@@ -15,13 +15,18 @@ Catch has a substantial Phase 1 foundation implemented:
 - Asset manifest validation and friendly importer errors
 - Catch UI localization for hub, setup, encounter, selector, and navigation controls
 - Owner admin-panel entry for Catch setup
+- Persistent DynamicItem registration for restart-safe buttons, with duplicate-registration protection
+- Spawn persistence regression coverage
 
 Recent pushed commits include:
 
+- `c97d809` — avoid duplicate dynamic registration
+- `4628b39` — spawn persistence regression coverage
+- `4802a32` — register persistent dynamic buttons
 - `bfc50cf` — Catch owner-panel controls
 - `debd52d` — isolate spawn expiry failures
 - `d970585` — scheduler batch regression coverage
-- `52b3d7e` — encounter metadata localization (current known tip)
+- `52b3d7e` — encounter metadata localization
 
 ## Validation status
 
