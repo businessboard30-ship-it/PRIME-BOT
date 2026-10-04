@@ -66,7 +66,7 @@ def spawn_embed_data(roll: SpawnRoll, *, expires_at: datetime) -> dict[str, str]
             "asset_key": f"creature:{roll.asset_key}:{'shiny' if roll.shiny else 'normal'}"}
 
 async def create_spawn(*, guild_id: int, clone_id: int | None, channel_id: int, roll: SpawnRoll,
-                       expires_in: int = DEFAULT_LIFETIME_SECONDS, source: str = "chat", conn=None) -> int:
+                       expires_in: int = DEFAULT_LIFETIME_SECONDS, source: str = "chat", owner_user_id: int | None = None, conn=None) -> int:
     """Persist a rolled spawn and return its id before publishing the message."""
     if guild_id <= 0 or channel_id <= 0 or expires_in <= 0:
         raise ValueError("guild, channel, and expiry must be positive")
@@ -76,11 +76,11 @@ async def create_spawn(*, guild_id: int, clone_id: int | None, channel_id: int, 
     async with catch_db.transaction(conn) as db:
         return int(await db.fetchval(
             """INSERT INTO catch_spawns
-                (guild_id, clone_id, channel_id, species_id, level, shiny, ivs, source, expires_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                (guild_id, clone_id, channel_id, species_id, level, shiny, ivs, source, owner_user_id, expires_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
              RETURNING id""",
             guild_id, clone_id, channel_id, roll.species_id, roll.level,
-            roll.shiny, list(roll.ivs), source, expires_at,
+            roll.shiny, list(roll.ivs), source, owner_user_id, expires_at,
         ))
 
 

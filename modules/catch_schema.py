@@ -165,6 +165,7 @@ STATEMENTS: tuple[str, ...] = (
         swap_tokens INTEGER NOT NULL DEFAULT 0 CHECK (swap_tokens >= 0),
         fishing_tokens INTEGER NOT NULL DEFAULT 0 CHECK (fishing_tokens >= 0),
         buddy_id BIGINT,
+        encounter_ready_at TIMESTAMPTZ,
         settings JSONB NOT NULL DEFAULT '{{}}'::jsonb,
         disclaimer_accepted_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -172,6 +173,7 @@ STATEMENTS: tuple[str, ...] = (
         PRIMARY KEY (user_id, clone_key)
     )
     """,
+    "ALTER TABLE catch_players ADD COLUMN IF NOT EXISTS encounter_ready_at TIMESTAMPTZ",
     f"""
     CREATE TABLE IF NOT EXISTS catch_inventory (
         user_id BIGINT NOT NULL,
