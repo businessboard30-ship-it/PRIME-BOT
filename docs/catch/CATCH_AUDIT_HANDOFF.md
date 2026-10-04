@@ -86,6 +86,27 @@ Implement and test these as separate focused slices:
 - Do not introduce localStorage, mock persistence, or hardcoded production data.
 - Continue from the next incomplete Phase 1 item before starting Phase 2.
 
+## Latest audit update — 2026-10-04
+
+The Phase 2 spawn slice is now wired through the live Catch cog, not only exposed as standalone primitives:
+
+- `on_message` checks the player gate and configured channel trigger state.
+- A spawn roll is persisted with `create_spawn` before the Discord message is published.
+- The published claim view is linked back with `attach_spawn_message`.
+- Spawn expiry is handled by the scheduler path, with per-row failure isolation.
+- `record_catch` is the atomic claim boundary and rejects expired, fled, already-claimed, wrong-clone, and player-owned-by-another-user claims.
+- Restart-safe dynamic hub buttons are registered once through `setup_hook` and covered by regression tests.
+
+This audit confirms the spawn trigger → persistence → publish → claim path is present in the current branch. The remaining verification gap is environmental: pytest is not installed in the repository environment, so unit tests still need to run in CI or an environment with the test dependencies installed.
+
+## Remaining build priorities
+
+1. Add focused tests for the live cog spawn trigger and claim callback, including publish failure cleanup behavior.
+2. Finish the owner-panel end-to-end setup flow and verify permissions/DM behavior against Discord.
+3. Complete the asset-manager UI/import flow and document the operational import command.
+4. Run the full CI suite, stub scan, and database migration/version checks.
+5. Continue Phase 2 with ball/berry inventory consumption, catch result rendering, and encounter-panel recovery.
+
 ## Recommended next action
 
-Audit CI, DynamicItem registration, owner-panel integration, and asset-manager UI against the roadmap. Commit only concrete fixes or tests, then begin Phase 2 spawn creation with database-backed atomic state transitions.
+Implement focused cog-level tests around the already-wired spawn pipeline, then make the smallest concrete fix exposed by those tests. Keep the atomic `record_catch` service as the only ownership boundary, commit each coherent change, and refresh this handoff with command evidence before pushing.
