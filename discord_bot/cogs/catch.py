@@ -275,7 +275,7 @@ class CatchSetupView(discord.ui.View):
     def _build(self) -> None:
         self.clear_items()
         toggle = discord.ui.Button(
-            label="Turn off catching" if self.setup.enabled else "Turn on catching",
+            label=text("setup.turn_off") if self.setup.enabled else text("setup.turn_on"),
             style=button_style("danger" if self.setup.enabled else "claim"),
             custom_id="catch:setup:toggle",
             row=0,
@@ -284,7 +284,7 @@ class CatchSetupView(discord.ui.View):
         self.add_item(toggle)
 
         speed = discord.ui.Select(
-            placeholder=f"Spawn speed: {self.setup.speed_preset.title()}",
+            placeholder=text("setup.spawn_speed", speed=self.setup.speed_preset.title()),
             options=[
                 discord.SelectOption(label=name.title(), value=name, default=name == self.setup.speed_preset)
                 for name in SPEED_PRESETS
@@ -296,7 +296,7 @@ class CatchSetupView(discord.ui.View):
         self.add_item(speed)
 
         channels = discord.ui.ChannelSelect(
-            placeholder="Pick spawn channels",
+            placeholder=text("setup.pick_channels"),
             channel_types=[discord.ChannelType.text, discord.ChannelType.news],
             min_values=1,
             max_values=5,
@@ -305,14 +305,14 @@ class CatchSetupView(discord.ui.View):
         )
         channels.callback = self._channels
         self.add_item(channels)
-        wild_zone = discord.ui.Button(label="Create wild-zone", style=button_style("navigation"), custom_id="catch:setup:wild-zone", row=3)
+        wild_zone = discord.ui.Button(label=text("setup.create_wild_zone"), style=button_style("navigation"), custom_id="catch:setup:wild-zone", row=3)
         wild_zone.callback = self._wild_zone
         self.add_item(wild_zone)
-        test = discord.ui.Button(label="Test spawn", style=button_style("main"), custom_id="catch:setup:test", row=3)
+        test = discord.ui.Button(label=text("setup.test_spawn"), style=button_style("main"), custom_id="catch:setup:test", row=3)
         test.callback = self._test_spawn
         self.add_item(test)
         encounter = discord.ui.Button(
-            label="Disable encounters" if self.setup.encounter_channel_ids else "Enable encounters",
+            label=text("setup.disable_encounters") if self.setup.encounter_channel_ids else text("setup.enable_encounters"),
             style=button_style("danger" if self.setup.encounter_channel_ids else "claim"),
             custom_id="catch:setup:encounters",
             row=3,
@@ -320,7 +320,7 @@ class CatchSetupView(discord.ui.View):
         encounter.callback = self._toggle_encounters
         self.add_item(encounter)
         join_dm = discord.ui.Button(
-            label="Disable join DMs" if self.setup.join_dm_enabled else "Enable join DMs",
+            label=text("setup.disable_join_dms") if self.setup.join_dm_enabled else text("setup.enable_join_dms"),
             style=button_style("danger" if self.setup.join_dm_enabled else "claim"),
             custom_id="catch:setup:join-dm",
             row=4,
