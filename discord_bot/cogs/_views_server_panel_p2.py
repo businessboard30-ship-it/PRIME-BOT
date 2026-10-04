@@ -101,6 +101,28 @@ class CommunityView(ServerPanelView):
 
 # ── leveling ─────────────────────────────────────────────────────────────
 
+class VoiceRateModal(_GuardedModal):
+    rate = discord.ui.TextInput(label="XP per minute in voice (1-25)", max_length=2)
+
+    def __init__(self, current, opener_id: int):
+        super().__init__("Voice XP rate", opener_id)
+        if current:
+            self.rate.default = str(current)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await self.allowed(interaction):
+            return
+        from modules.server_panel_tools import validate_voice_rate
+        value, err = validate_voice_rate(self.rate.value)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        await interaction.response.defer()
+        await sp.set_voice_xp(interaction.guild_id, clone_id_of(interaction), interaction.user.id,
+                              xp_per_minute=value)
+        await interaction.edit_original_response(view=await LevelingView.create(interaction))
+
+
 class LevelingView(ServerPanelView):
     title = "📈 Leveling"
     switch_key = "leveling"
@@ -119,7 +141,7 @@ class LevelingView(ServerPanelView):
             "Members earn XP as they chat — leveling is always on.",
             f"Level-up announcements: {_chan(None, lv.get('announce_channel_id'))}",
             f"XP rate: `{lv.get('xp_rate', 'default')}`",
-            f"Voice XP: {_onoff(vx.get('enabled'))} · AFK channel excluded: {_onoff(vx.get('afk_channel_excluded'))}",
+            f"Voice XP: {_onoff(vx.get('enabled'))} · {vx.get('xp_per_minute', 10)} XP/min · AFK channel excluded: {_onoff(vx.get('afk_channel_excluded'))}",
         ]
 
     def controls(self):
@@ -137,9 +159,14 @@ class LevelingView(ServerPanelView):
                  self._voice, "🎙️"),
             _btn("AFK excluded: yes" if vx.get("afk_channel_excluded") else "AFK excluded: no",
                  G if vx.get("afk_channel_excluded") else S, self._afk),
+            _btn("Voice XP rate", P, self._voice_rate, "⚙️"),
             _btn("Level roles", P, self.nav_p2("LevelRolesView"), "🏅"),
             self.back_button(CommunityView),
         ]
+
+    async def _voice_rate(self, interaction):
+        await interaction.response.send_modal(
+            VoiceRateModal(self.data.get("vx", {}).get("xp_per_minute"), interaction.user.id))
 
     async def _announce(self, interaction, channel_id):
         await interaction.response.defer()
