@@ -1,66 +1,35 @@
 # Catch architecture
 
-Catch is a persistent Discord game subsystem. The bot process owns the gateway and
-background loops; PostgreSQL is the source of truth for configuration, spawns,
-reminders, and audit data.
+Catch is implemented as small, restart-safe services behind the Discord cog. The database is the source of truth for configuration, live spawns, player state, reminders, feature flags, assets, and audit records.
 
 ## Module boundaries
 
-- `modules/catch_schema.py` defines the Phase 1 tables and schema version.
-- `modules/catch_db.py` owns database-facing helpers and transaction boundaries.
-- `modules/catch_setup.py` models server setup state and validated owner mutations.
-- `modules/catch_gate.py` is the kill-switch boundary. Commands check it before
-  opening game surfaces or performing game actions.
-- `modules/catch_scheduler.py` selects due work, applies retention rules, and
-  exposes the state needed to resume after a restart.
-- `modules/catch_reminders.py` creates and dispatches deduplicated reminders while
-  respecting configured quiet hours.
-- `modules/catch_i18n.py` resolves `catch.*` keys and falls back to English when a
-  locale is incomplete.
-- `modules/catch_assets.py` loads published art and returns a safe placeholder when
-  an asset is missing.
-- `modules/catch_renderer.py` renders placeholder cards off the event loop and
-  caches output by asset id and version.
-- `discord_bot/cogs/catch.py` contains the slash command, persistent components,
-  owner setup screen, and localized Discord presentation.
+- `modules/catch_schema.py` — idempotent Phase 1 schema statements and table list.
+- `modules/catch_db.py` — connection and transaction helpers.
+- `modules/catch_setup.py` — owner setup mutations, channel configuration, speed presets, and audit entries.
+- `modules/catch_gate.py` — cached global/guild feature flags and the shared action gate.
+- `modules/catch_scheduler.py` — persistent due-row scheduling, expiry handling, and retention cleanup.
+- `modules/catch_reminders.py` — reminder deduplication, quiet-hour checks, and due reminder claiming.
+- `modules/catch_i18n.py` — `catch.*` translation lookup with English fallback.
+- `modules/catch_assets.py` — Discord vault references, placeholder fallback, draft-to-live publishing, and missing-art queries.
+- `modules/catch_renderer.py` — Pillow placeholder card rendering with `asyncio.to_thread` and versioned caching.
+- `discord_bot/cogs/catch.py` — Discord commands, persistent views, setup controls, encounters, claims, and reminder dispatch.
+- `scripts/import_catch_assets.py` — validates an asset manifest before import.
 
-## Runtime flow
+## Data files
 
-1. `/catch` checks the feature gate and opens the hub.
-2. Persistent components read the current server setup and route to the selected
-   screen.
-3. Spawn and reminder work is persisted before background dispatch, so a process
-   restart can resume from due rows rather than in-memory state.
-4. Asset loading and rendering are defensive: missing or unpublished art uses the
-   placeholder path instead of failing the Discord interaction.
-5. Configuration changes update the feature flag and append an audit record.
+- `data/catch/` contains species and other game data.
+- `locales/*.json` contains user-facing translations; missing keys fall back to English.
+- `docs/catch/` contains product decisions, the task ledger, and this module map.
 
-## Restart and safety rules
+## Persistence and restart behavior
 
-Background loops must be single-owner per bot process, claim due rows before work,
-and leave live rows untouched during retention cleanup. Every user-facing action
-must re-check the gate because an administrator can disable Catch immediately.
-Database writes should remain idempotent so retries after a disconnect do not create
-duplicate setup, reminder, or audit records.
+Player- and guild-scoped rows include `clone_id` through generated `clone_key`. Mutations use transactions and database uniqueness constraints for idempotency. Scheduler and reminder work is selected by `due_at`/`expires_at`, so interrupted work resumes after restart. Persistent Discord views are registered during bot setup and callbacks re-read database state.
 
-## Data and localization
+## Safety controls
 
-Catch-specific data files are kept under `data/catch/`; translations are stored in
-`locales/<locale>.json` under `catch.*` keys. English is the fallback catalog. New
-copy should be added to the catalog before it is referenced by the Discord cog.
+User-facing actions call the shared feature gate before doing work. Owner/admin changes are permission-checked, audited, and invalidate the gate cache. Asset binaries are referenced by vault channel/message IDs; missing or unpublished art resolves to a placeholder.
 
-## Operational checklist
+## Checks
 
-- Run the compile check before deployment.
-- Run the Catch unit tests when the repository test dependencies are installed.
-- Keep the bot on an always-on host; Discord gateway and scheduler work are not
-  compatible with request-only serverless execution.
-- Review audit records when changing setup or feature flags.
-
-This document describes the current Phase 1 foundation; later phases may add spawn,
-catch, inventory, and economy services without moving persistence into the cog.
-
-## Related documents
-
-- [`CATCH_GAME_PLAN.md`](CATCH_GAME_PLAN.md)
-- [`AUDIT_P1-02_to_P1-05.md`](AUDIT_P1-02_to_P1-05.md)
+For Catch changes, run targeted `pytest` coverage, Python compilation, JSON validation for changed data, and `git diff --check`.
