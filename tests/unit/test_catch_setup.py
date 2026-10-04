@@ -22,6 +22,20 @@ def test_channel_ids_must_be_positive():
     assert setup.validate() == ["channel IDs must be positive"]
 
 
+def test_setup_limits_and_optional_ids_must_be_positive():
+    setup = CatchSetup(
+        announce_channel_id=0,
+        rare_ping_role_id=-1,
+        spawn_every_n_messages=0,
+        min_seconds_between_spawns=-1,
+    )
+    assert setup.validate() == [
+        "announce and rare-ping IDs must be positive",
+        "spawn_every_n_messages must be positive",
+        "min_seconds_between_spawns must be positive",
+    ]
+
+
 def test_wild_zone_name_is_unique():
     assert create_wild_zone_name({"general"}) == "wild-zone"
     assert create_wild_zone_name({"wild-zone", "wild-zone-2"}) == "wild-zone-3"

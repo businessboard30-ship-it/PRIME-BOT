@@ -57,6 +57,12 @@ class CatchSetup:
             errors.append("at least one spawn channel is required")
         if any(channel_id <= 0 for channel_id in (*self.spawn_channel_ids, *self.encounter_channel_ids)):
             errors.append("channel IDs must be positive")
+        if any(value is not None and value <= 0 for value in (self.announce_channel_id, self.rare_ping_role_id)):
+            errors.append("announce and rare-ping IDs must be positive")
+        if self.spawn_every_n_messages <= 0:
+            errors.append("spawn_every_n_messages must be positive")
+        if self.min_seconds_between_spawns <= 0:
+            errors.append("min_seconds_between_spawns must be positive")
         if self.despawn_seconds <= 0:
             errors.append("despawn_seconds must be positive")
         return errors
