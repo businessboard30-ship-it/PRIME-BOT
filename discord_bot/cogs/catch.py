@@ -577,8 +577,8 @@ class CatchCog(commands.Cog):
             for item in view.children:
                 item.disabled = True
             embed = discord.Embed(
-                title="Creature ran away",
-                description="The creature escaped before anyone claimed it.",
+                title=text("claim.fled.title"),
+                description=text("claim.fled.description"),
                 colour=state_color("warning"),
             )
             await message.edit(embed=embed, view=view)
@@ -586,7 +586,7 @@ class CatchCog(commands.Cog):
             return
 
     async def _deliver_reminder(self, reminder: Reminder) -> bool:
-        content = str(reminder.payload.get("content", "Catch reminder"))[:2000]
+        content = str(reminder.payload.get("content", text("reminder.default")))[:2000]
         allowed_mentions = discord.AllowedMentions.none()
         try:
             if reminder.delivery == "channel" and reminder.channel_id:
@@ -615,7 +615,7 @@ class CatchCog(commands.Cog):
         )
         if not gate.allowed:
             await interaction.response.send_message(
-                f"Catch is currently unavailable: {gate.reason or 'disabled'}.",
+                text("unavailable", reason=gate.reason or "disabled"),
                 ephemeral=True,
             )
             return

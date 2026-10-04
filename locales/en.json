@@ -35,5 +35,6 @@
   "catch.claim.success.title": "Catch successful",
   "catch.claim.success.description": "You claimed **{name}**!",
   "catch.claim.new_species": "New species discovered",
-  "catch.unavailable": "Catch is currently unavailable: {reason}."
+  "catch.unavailable": "Catch is currently unavailable: {reason}.",
+  "catch.reminder.default": "Catch reminder"
 }
