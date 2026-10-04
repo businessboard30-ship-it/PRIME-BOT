@@ -112,7 +112,7 @@ class CatchHubView(discord.ui.View):
 
     async def _encounter(self, interaction: discord.Interaction) -> None:
         if interaction.guild_id is None or interaction.channel_id is None:
-            await interaction.response.send_message("Encounters are only available in a server channel.", ephemeral=True)
+            await interaction.response.send_message(text("encounter.server_only"), ephemeral=True)
             return
         try:
             roll = roll_spawn(list(all_species().values()), random.Random())
@@ -125,7 +125,7 @@ class CatchHubView(discord.ui.View):
             )
         except EncounterOnCooldown as exc:
             await interaction.response.send_message(
-                f"Your next encounter is ready <t:{int(exc.ready_at.timestamp())}:R>.",
+                text("encounter.cooldown", ready_at=int(exc.ready_at.timestamp())),
                 ephemeral=True,
             )
             return
@@ -331,7 +331,7 @@ class CatchSetupView(discord.ui.View):
     async def _refresh(self, interaction: discord.Interaction) -> None:
         if self.guild_id is not None:
             if not interaction.permissions.manage_guild:
-                await interaction.response.send_message("Only members with Manage Server can change Catch setup.", ephemeral=True)
+                await interaction.response.send_message(text("setup.manage_server"), ephemeral=True)
                 return
             await save_setup(self.guild_id, self.setup)
             await set_feature_flag(
@@ -349,7 +349,7 @@ class CatchSetupView(discord.ui.View):
         candidate = replace(self.setup, enabled=not self.setup.enabled)
         errors = candidate.validate()
         if candidate.enabled and errors:
-            await interaction.response.send_message("Select at least one spawn channel before enabling catching.", ephemeral=True)
+            await interaction.response.send_message(text("setup.enable_channel"), ephemeral=True)
             return
         self.setup = candidate
         await self._refresh(interaction)
@@ -379,7 +379,7 @@ class CatchSetupView(discord.ui.View):
 
     async def _wild_zone(self, interaction: discord.Interaction) -> None:
         existing = {channel.name for channel in getattr(interaction.guild, "channels", ())}
-        await interaction.response.send_message(f"Create **#{create_wild_zone_name(existing)}** in this server, then select it as a spawn channel.", ephemeral=True)
+        await interaction.response.send_message(text("setup.wild_zone", channel_name=create_wild_zone_name(existing)), ephemeral=True)
 
     async def _test_spawn(self, interaction: discord.Interaction) -> None:
         channel_id = self.setup.spawn_channel_ids[0] if self.setup.spawn_channel_ids else None
@@ -447,10 +447,10 @@ class SpawnClaimView(discord.ui.View):
                 bait=self.bait,
             )
         except CatchBlocked as exc:
-            await interaction.followup.send(f"Catch is unavailable: {exc.reason}.", ephemeral=True)
+            await interaction.followup.send(text("claim.blocked", reason=exc.reason), ephemeral=True)
             return
         except Exception:
-            await interaction.followup.send("That creature could not be claimed right now.", ephemeral=True)
+            await interaction.followup.send(text("claim.error"), ephemeral=True)
             return
 
         for item in self.children:
@@ -459,8 +459,8 @@ class SpawnClaimView(discord.ui.View):
 
         if not result.claimed:
             embed = discord.Embed(
-                title="The creature got away",
-                description="This spawn was already claimed, expired, or fled.",
+                title=text("claim.fled.title"),
+                description=text("claim.fled.description"),
                 colour=state_color("danger"),
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -468,13 +468,13 @@ class SpawnClaimView(discord.ui.View):
 
         name = "Shiny creature" if result.shiny else "Creature"
         embed = discord.Embed(
-            title="Catch successful",
-            description=f"You claimed **{name}**!",
+            title=text("claim.success.title"),
+            description=text("claim.success.description", name=name),
             colour=state_color("success"),
         )
         embed.add_field(name="Level", value=str(result.level), inline=True)
         if result.new_species:
-            embed.add_field(name="Dex", value="New species discovered", inline=True)
+            embed.add_field(name="Dex", value=text("claim.new_species"), inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 

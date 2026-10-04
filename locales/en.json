@@ -22,5 +22,17 @@
   "catch.setup.footer": "Changes are staged in this panel until the setup is saved.",
   "catch.setup.select_channel": "Select at least one spawn channel before enabling catching.",
   "catch.setup.text_channel": "Select at least one text channel.",
-  "catch.setup.test_queued": "Test spawn queued in dry-run mode: `{payload}`"
+  "catch.setup.test_queued": "Test spawn queued in dry-run mode: `{payload}`",
+  "catch.encounter.server_only": "Encounters are only available in a server channel.",
+  "catch.encounter.cooldown": "Your next encounter is ready <t:{ready_at}:R>.",
+  "catch.setup.manage_server": "Only members with Manage Server can change Catch setup.",
+  "catch.setup.enable_channel": "Select at least one spawn channel before enabling catching.",
+  "catch.setup.wild_zone": "Create **#{channel_name}** in this server, then select it as a spawn channel.",
+  "catch.claim.blocked": "Catch is unavailable: {reason}.",
+  "catch.claim.error": "That creature could not be claimed right now.",
+  "catch.claim.fled.title": "The creature got away",
+  "catch.claim.fled.description": "This spawn was already claimed, expired, or fled.",
+  "catch.claim.success.title": "Catch successful",
+  "catch.claim.success.description": "You claimed **{name}**!",
+  "catch.claim.new_species": "New species discovered"
 }
