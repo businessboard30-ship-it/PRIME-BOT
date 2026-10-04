@@ -75,3 +75,26 @@ def test_notify_voter_never_raises_without_token():
     import asyncio
     from api.topgg_webhook import notify_voter
     assert asyncio.run(notify_voter(1, "hi", "")) is False
+
+
+def test_voter_is_dmed_only_on_their_first_vote():
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+    from api import topgg_webhook as w
+    cfg = SimpleNamespace(TOPGG_VOTE_HOURS=12.0, TOPGG_VOTE_MULTIPLIER=1.5, TOPGG_VOTE_URL="", DISCORD_BOT_TOKEN="t")
+
+    def vote(count):
+        db = SimpleNamespace(record_topgg_vote=AsyncMock(return_value={"vote_count": count} if count else None))
+        with patch.object(w, "notify_voter", AsyncMock(return_value=True)) as dm:
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(w._record_and_thank(db, cfg, 5, "v"))
+            finally:
+                loop.close()
+            return dm.await_count
+
+    assert vote(1) == 1      # first vote: thank them
+    assert vote(2) == 0      # repeat voter: recorded, no DM
+    assert vote(9) == 0
+    assert vote(0) == 0      # duplicate delivery: nothing

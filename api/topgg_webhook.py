@@ -145,7 +145,10 @@ async def notify_voter(user_id: int, content: str, token: str) -> bool:
 
 async def _record_and_thank(db, config, user_id: int, vote_id: Optional[str]):
     row = await db.record_topgg_vote(user_id, config.TOPGG_VOTE_HOURS, vote_id)
-    if row:  # None = duplicate delivery of a vote we already thanked
+    # DM only on a person's FIRST vote ever (vote_count is 1 only then). Later votes still count and
+    # still give the boost / bump unlock, they just don't message the voter again.
+    # row is None = duplicate delivery of a vote we already recorded.
+    if row and int(row.get("vote_count") or 0) <= 1:
         msg = build_thanks_message(config.TOPGG_VOTE_MULTIPLIER, config.TOPGG_VOTE_HOURS,
                                    config.TOPGG_VOTE_URL)
         try:
