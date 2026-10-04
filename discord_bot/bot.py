@@ -691,15 +691,16 @@ class AnimeBotDiscord(commands.Bot):
 
     async def _build_join_dm_view(self, guild: discord.Guild, clone_id, content: dict,
                                    join_offer: dict = None, dm: bool = False,
-                                   compact: bool = True) -> discord.ui.LayoutView:
+                                   compact: bool = False) -> discord.ui.LayoutView:
         """Turns _build_join_dm_content's output into an actual
         JoinDMLayoutView — split out for the same reason as that method:
         one shared place both the real on-join send and the on-demand
         /start resend build from, so they can never render differently
         for the same guild state."""
         if compact:
-            # Default: one short line + panel button. The old long guide is one
-            # tap away ("Full setup guide"), or compact=False.
+            # Opt-in only (compact=True): one short line + panel button, with the long guide one
+            # tap away ("Full setup guide"). The default is the FULL guide, which opens by itself
+            # on join, on the backup send and on /start.
             from discord_bot.cogs._views_quickstart_pointer import QuickstartPointerView
             jump_url = None
             if dm:
