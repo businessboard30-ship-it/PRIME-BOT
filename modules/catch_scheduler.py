@@ -13,6 +13,7 @@ from modules.catch_db import transaction
 
 @dataclass(frozen=True)
 class SchedulerBatch:
+    expired_rows: tuple[dict, ...] = ()
     expired_ids: tuple[int, ...] = ()
     purged_ids: tuple[int, ...] = ()
 
@@ -64,6 +65,7 @@ async def run_scheduler_batch(*, expire_limit: int = 100, purge_limit: int = 100
     expired = await claim_expired_spawns(limit=expire_limit, conn=conn)
     purged = await purge_spawn_history(retention_days=retention_days, limit=purge_limit, conn=conn)
     return SchedulerBatch(
+        expired_rows=expired,
         expired_ids=tuple(int(row["id"]) for row in expired),
         purged_ids=purged,
     )
