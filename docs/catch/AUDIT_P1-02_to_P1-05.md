@@ -1,5 +1,9 @@
 # Catch game — Audit / Handoff: P1-02 to P1-05 (Phase 1 foundation, partial)
 
+**The full building plan is in this repo: [`docs/catch/CATCH_GAME_PLAN.md`](./CATCH_GAME_PLAN.md).**
+It is the source of truth (Discord bot, not a web game). Read it before doing anything; you do not
+need the user to re-send it. If it changes, update that file in the same PR.
+
 Builder: v0 (session ran out of credit). Reviewer must be the other AI (Claude), per R.1.
 Status for every task below: `[~]` (built, NOT complete: unit tests are missing).
 
