@@ -394,7 +394,7 @@ class SpawnClaimView(discord.ui.View):
         self.ball = "capsule_basic"
         self.bait: str | None = None
         ball_select = discord.ui.Select(
-            placeholder="Choose a capsule",
+            placeholder=text("ui.choose_capsule"),
             options=[
                 discord.SelectOption(label=choice_label(key), value=key, default=key == self.ball)
                 for key in ("capsule_basic", "capsule_sturdy", "capsule_prime", "capsule_sovereign")
@@ -405,11 +405,11 @@ class SpawnClaimView(discord.ui.View):
         ball_select.callback = self._select_ball
         self.add_item(ball_select)
         bait_select = discord.ui.Select(
-            placeholder="Optional berry",
+            placeholder=text("ui.optional_berry"),
             options=[
-                discord.SelectOption(label="No berry", value="none", default=True),
-                discord.SelectOption(label="Honeyberry", value="honeyberry"),
-                discord.SelectOption(label="Goldberry", value="goldberry"),
+                discord.SelectOption(label=text("ui.no_berry"), value="none", default=True),
+                discord.SelectOption(label=text("ui.honeyberry"), value="honeyberry"),
+                discord.SelectOption(label=text("ui.goldberry"), value="goldberry"),
             ],
             custom_id=f"catch:bait:{spawn_id}",
             row=1,
@@ -417,7 +417,7 @@ class SpawnClaimView(discord.ui.View):
         bait_select.callback = self._select_bait
         self.add_item(bait_select)
         throw = discord.ui.Button(
-            label="Throw ball",
+            label=text("ui.throw_ball"),
             style=button_style("claim"),
             custom_id=f"catch:throw:{spawn_id}",
             row=2,
