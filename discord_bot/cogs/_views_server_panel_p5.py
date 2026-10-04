@@ -164,6 +164,14 @@ class JoinGateView(ServerPanelView):
         await self._write(interaction, enabled=turning_on)
 
     async def _action(self, interaction, action):
+        if action == "quarantine":
+            from modules import server_panel_quarantine as spq
+            st = await spq.quarantine_state(interaction.guild, self.clone_id)
+            if not st.get("role") or st.get("problem"):
+                await interaction.response.send_message(
+                    "Set up a working **quarantine role** first (Moderation → Quarantine & lockdown)"
+                    + (f" — {st['problem']}" if st.get("problem") else "."), ephemeral=True)
+                return
         if action == "kick":
             me = interaction.guild.me
             if me is None or not me.guild_permissions.kick_members:
