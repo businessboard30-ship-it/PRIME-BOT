@@ -18,7 +18,7 @@ Known problems: see "Known problems / risks".
 Commands to run to see the current state:
   git fetch origin && git checkout feat/catch-p1-01-05-foundation
   python -m venv .venv && .venv/bin/pip install -r requirements.txt pytest
-  .venv/bin/python -m pytest -q                       # expect 841 passed, 21 skipped
+  .venv/bin/python -m pytest -q                       # expect 931 passed, 21 skipped (at the review-fix commit; earlier tips had fewer)
   .venv/bin/python -m compileall -q modules/catch_*.py database.py discord_bot/bot.py
   .venv/bin/python -c "from modules import catch_species as s; print(len(s.load_file()), s.validate(s.load_file()))"
                                                       # expect: 48 []
