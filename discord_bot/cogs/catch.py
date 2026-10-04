@@ -16,6 +16,7 @@ from discord.ext import commands, tasks
 
 from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_setup import CatchSetup, SPEED_PRESETS, create_wild_zone_name, load_setup, save_setup, test_spawn_payload
+from modules.catch_gate import check_player_allowed, set_feature_flag
 from modules.catch_i18n import text
 from modules.catch_theme import button_style, state_color
 
@@ -278,7 +279,18 @@ class CatchSetupView(discord.ui.View):
 
     async def _refresh(self, interaction: discord.Interaction) -> None:
         if self.guild_id is not None:
+            if not interaction.permissions.manage_guild:
+                await interaction.response.send_message("Only members with Manage Server can change Catch setup.", ephemeral=True)
+                return
             await save_setup(self.guild_id, self.setup)
+            await set_feature_flag(
+                self.guild_id,
+                None,
+                "game",
+                self.setup.enabled,
+                updated_by=interaction.user.id,
+                reason="Catch owner setup toggle",
+            )
         self._build()
         await interaction.response.edit_message(embed=build_setup_embed(self.setup), view=self)
 
@@ -342,6 +354,17 @@ class CatchCog(commands.Cog):
 
     @app_commands.command(name="catch", description="Open the creature-catching hub")
     async def catch(self, interaction: discord.Interaction) -> None:
+        gate = await check_player_allowed(
+            interaction.user.id,
+            interaction.guild_id,
+            "view",
+        )
+        if not gate.allowed:
+            await interaction.response.send_message(
+                f"Catch is currently unavailable: {gate.reason or 'disabled'}.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_message(embed=build_hub_embed(), view=CatchHubView(), ephemeral=True)
 
 
