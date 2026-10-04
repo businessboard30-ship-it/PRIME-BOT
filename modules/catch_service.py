@@ -144,11 +144,22 @@ async def record_catch(
             INSERT INTO catch_owned (user_id, clone_id, species_id, level, shiny, special,
                 ivs, source, caught_in_guild, spawn_id, idem_key)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT DO NOTHING
             RETURNING id
             """,
             user_id, clone_id, species_id, level, shiny, special, ivs,
             SOURCES[source], guild_id, spawn_id, idem_key,
         )
+        if owned_id is None:
+            conflict_key = spawn_id if spawn_id is not None else idem_key
+            existing = await c.fetchrow(
+                "SELECT id, user_id FROM catch_owned "
+                f"WHERE {'spawn_id' if spawn_id is not None else 'idem_key'} = $1",
+                conflict_key,
+            )
+            if existing is not None and existing["user_id"] == user_id:
+                return await _owned_result(c, existing["id"], replay=True)
+            return CatchResult(claimed=False, reason="already_claimed")
 
         new_species = False
         if "dex" in feeds:
