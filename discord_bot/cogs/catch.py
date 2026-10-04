@@ -33,7 +33,7 @@ from modules.catch_species import all_species
 from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
 from modules.catch_trigger import ChannelTriggerState, consider_message
 from modules.catch_encounter import EncounterOnCooldown, create_player_encounter
-from modules.catch_gate import check_player_allowed, set_feature_flag
+from modules.catch_gate import check_player_allowed, guild_allowed, set_feature_flag
 from modules.catch_i18n import text
 from modules.catch_items import ensure_starter_kit
 from modules.catch_service import CatchBlocked, record_catch
@@ -373,10 +373,14 @@ class CatchSetupView(discord.ui.View):
 
     def _build(self) -> None:
         self.clear_items()
+        # While the game is limited to the support server, turning it ON elsewhere is dimmed
+        # (turning it off is always allowed). The gate refuses play in those servers regardless.
+        locked = self.guild_id is not None and not self.setup.enabled and not guild_allowed(self.guild_id)
         toggle = discord.ui.Button(
-            label=text("setup.turn_off") if self.setup.enabled else text("setup.turn_on"),
-            style=button_style("danger" if self.setup.enabled else "claim"),
+            label=text("setup.support_only") if locked else text("setup.turn_off") if self.setup.enabled else text("setup.turn_on"),
+            style=button_style("navigation") if locked else button_style("danger" if self.setup.enabled else "claim"),
             custom_id="catch:setup:toggle",
+            disabled=locked,
             row=0,
         )
         toggle.callback = self._toggle
@@ -450,6 +454,9 @@ class CatchSetupView(discord.ui.View):
         await interaction.response.edit_message(embed=build_setup_embed(self.setup), view=self)
 
     async def _toggle(self, interaction: discord.Interaction) -> None:
+        if self.guild_id is not None and not self.setup.enabled and not guild_allowed(self.guild_id):
+            await interaction.response.send_message(text("setup.support_only_detail"), ephemeral=True)
+            return
         candidate = replace(self.setup, enabled=not self.setup.enabled)
         errors = candidate.validate()
         if candidate.enabled and errors:

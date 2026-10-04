@@ -395,3 +395,30 @@ def test_status_reads_only_this_player_and_clone_and_writes_nothing():
             assert await conn.fetchval("SELECT count(*) FROM catch_players WHERE user_id=$1", U3) == 0
 
     run_with_pool(scenario)
+
+
+def test_failed_catch_schema_does_not_break_the_surrounding_migration_transaction():
+    import database
+    from modules import catch_schema
+
+    async def scenario(pool):
+        async def bad_create_tables(conn):
+            await conn.execute("CREATE TABLE catch_guard_partial (id INT)")   # rolled back with the savepoint
+            await conn.execute("THIS IS NOT SQL")
+
+        original = catch_schema.create_tables
+        catch_schema.create_tables = bad_create_tables
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("CREATE TABLE catch_guard_before (id INT)")
+                    await database.Database.__new__(database.Database)._create_catch_tables(conn)
+                    await conn.execute("CREATE TABLE catch_guard_after (id INT)")   # must still work
+        finally:
+            catch_schema.create_tables = original
+        async with pool.acquire() as conn:
+            names = {r["tablename"] for r in await conn.fetch("SELECT tablename FROM pg_tables WHERE tablename LIKE 'catch_guard%'")}
+            await conn.execute("DROP TABLE IF EXISTS catch_guard_before, catch_guard_after")
+        assert names == {"catch_guard_before", "catch_guard_after"}
+
+    run_with_pool(scenario)

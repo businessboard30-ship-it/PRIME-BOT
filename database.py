@@ -688,6 +688,25 @@ class Database:
             ",".join(existing), category_id
         )
 
+    async def _create_catch_tables(self, conn):
+        """Create the catch game tables without ever being able to stop the bot starting.
+
+        The catch schema is a new, optional feature. If its DDL fails on the live database,
+        the rest of the bot must still boot, so the failure is logged instead of raised. It
+        runs in its own savepoint: a failed statement rolls back only the catch tables and
+        leaves the surrounding migration transaction usable for the tables created after it.
+
+        NOTE: the schema-version marker is still recorded afterwards, so a failed catch
+        schema is not retried on the next boot. Fix the cause, then bump the version in
+        ``SCHEMA_VERSION`` so the DDL pass runs again.
+        """
+        try:
+            from modules import catch_schema
+            async with conn.transaction():
+                await catch_schema.create_tables(conn)
+        except Exception:
+            logger.exception("Catch game schema failed; the catch game is unavailable until it is fixed. The rest of the bot keeps running.")
+
     async def _create_tables(self, conn):
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -2833,8 +2852,7 @@ class Database:
             ON discord_channel_locks (guild_id, COALESCE(clone_id, -1), channel_id)
         """)
         # --- Catch game, Phase 1 (docs/catch) -----------------------------------
-        from modules import catch_schema
-        await catch_schema.create_tables(conn)
+        await self._create_catch_tables(conn)
         # welcome_message: shown in the embed posted inside a freshly-opened
         # ticket channel, in place of the hardcoded "Thanks for reaching
         # out..." line — same {member}/{guild} placeholder convention as

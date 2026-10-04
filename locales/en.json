@@ -182,5 +182,7 @@
   "catch.rules.more": "and {count} more",
   "catch.rules.minutes": "{count} min",
   "catch.rules.seconds": "{count} sec",
-  "catch.rules.error": "The server rules couldn't be loaded right now. Try again in a moment."
+  "catch.rules.error": "The server rules couldn't be loaded right now. Try again in a moment.",
+  "catch.setup.support_only": "Support server only",
+  "catch.setup.support_only_detail": "Creature catching is only open in the support server for now. It will open to other servers later."
 }
