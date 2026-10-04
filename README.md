@@ -61,6 +61,8 @@ Set these in Railway (or your host)'s environment settings — there's no
 - `DISCORD_DEV_GUILD_ID` — set during development for near-instant slash-command sync to one guild; leave unset for global sync (~1hr propagation)
 - `DISCORD_OAUTH_CLIENT_ID` / `DISCORD_OAUTH_CLIENT_SECRET` — only needed for the Discord-login/dashboard OAuth flow (`api/discord_login_oauth.py`), separate from bot-invite OAuth
 - `OWNER_GUILD_ID` / `OWNER_BROADCAST_CHANNEL_ID` — main bot's own support server broadcast target
+- `DISCORD_SUPPORT_SERVER_ID` — the support server's guild ID. While the creature-catching game is limited to the support server (the default, see [Catch game](#catch-game)), this is the only server where it works
+- `CATCH_SUPPORT_SERVER_ONLY` (default `1`) — set to `0` / `false` / `no` / `off` to open the creature-catching game to every server. No code change or migration needed, just redeploy
 
 See `config.py` for the full, current list — it's the single source of
 truth for every variable this project reads.
@@ -103,12 +105,14 @@ PRIME-BOT/
 │       ├── ai_tools.py / ai_store.py / external_tools.py / crypto_alerts.py
 │       ├── discover.py           # Anime discovery (trending/latest/ongoing/seasonal)
 │       ├── ads_marketplace.py / referrals.py / bot_manager.py
+│       ├── catch.py + _views_catch_*.py  # /catch — creature catching game (see Catch game below)
 │       └── ... (see discord_bot/bot.py's setup_hook for the full, current list)
 │
 ├── modules/                      # Shared business logic — no Discord/Telegram-specific code
 │   ├── archive_adapter.py        # Bots Archive DB layer, risk scoring, Discord RPC lookups
 │   ├── botstore_adapter.py
 │   ├── superbot_adapter.py       # Tier/premium checks
+│   ├── catch_*.py                # Creature catching game logic (schema, spawns, economy, gate, ...)
 │   ├── ai_features.py            # Groq client wrapper
 │   └── ...
 │
@@ -135,6 +139,8 @@ PRIME-BOT/
 - **Bot Directory** (`/botstore`) — lighter-weight member-submitted bot listings
 - **Moderation** — kick/ban/timeout, automod, reaction roles, welcome messages
 - **Leveling & Economy** — XP, levels, currency
+- **Creature catching** (`/catch`) — wild creatures spawn while members chat; catch, collect, sell and
+  shop for them. Currently limited to the support server — see [Catch game](#catch-game)
 
 ### AI
 - AI-powered recommendations, summaries, and tools (`/ai`) — via Groq, degrades gracefully if unset
@@ -204,13 +210,62 @@ maintained; this README and `config.py` are the source of truth.
 
 ## Catch game
 
-The Catch feature is a long-running Discord subsystem. Its shared foundation lives in
-`modules/catch_*.py`: schema and database access stay separate from scheduling,
-reminders, localization, asset loading, rendering, and feature-gate checks. The
-Discord surface is composed in `discord_bot/cogs/catch.py`, where persistent views
-and owner setup controls are registered with the bot.
+A creature-catching game played with `/catch`: wild creatures spawn while members chat in a
+server's catch channels, and players throw capsules to catch them, fill a Dex, earn coins and
+shop. It is built in phases; Phase 1 is live and the rest is being added screen by screen.
 
-Catch data files live under `data/catch/` and localized copy under `locales/`.
-Feature flags are checked before user-facing commands, and setup mutations create
-an audit entry. See [`docs/catch/ARCHITECTURE.md`](docs/catch/ARCHITECTURE.md) for
-module boundaries and restart behavior.
+**Availability.** For now the game works **only in the support server**
+(`DISCORD_SUPPORT_SERVER_ID`). Everywhere else, including DMs, `/catch` replies that the game is only
+open in the support server, and the "Creature catching" button in the join DM and the owner setup
+panel's "Turn on" are greyed out. To open it to every server later, set
+`CATCH_SUPPORT_SERVER_ONLY=0` and redeploy. It fails closed: if the support server ID is not
+configured, nobody can use it.
+
+**What works today** (`/catch` hub, six categories):
+
+| Category | Live | Not built yet |
+|---|---|---|
+| Play | Encounter, Daily, Wild zone | |
+| Collect | Collection, Dex, Inventory | |
+| Economy | Shop, Sell, Wallet | |
+| Info | Guide, Rules, Status | |
+| Social | | Trade, Gifts, Leaderboard |
+| Battle | | Team, Battle, Moves |
+
+The not-built buttons reply "is ready for this server" and do nothing else. Owners configure the
+game from `/catch` setup (spawn channels, speed, encounter channels, join DMs) or the join-DM
+quickstart; spawns only appear in channels the owner picked.
+
+**Where things live**
+- `modules/catch_*.py` — logic: schema, database access, species, spawns, throws, items, shop, sell,
+  wild zone, status, scheduling, reminders, localization, rendering and the feature gate. No Discord UI.
+- `discord_bot/cogs/catch.py` — the `/catch` command, hub, setup panel and spawn trigger;
+  `discord_bot/cogs/_views_catch_*.py` — one file per screen.
+- `data/catch/` — species roster (48 species, five rarities), drop tables, theme. `locales/en.json` — all
+  player-facing text under `catch.*` keys.
+- Tables (`catch_*`) are created on first boot by `database.py` through `modules/catch_schema.py`. That step
+  is isolated: if it ever fails it is logged (`Catch game schema failed`) and the rest of the bot still
+  starts. After fixing the cause, bump `SCHEMA_VERSION` in `database.py` so it runs again.
+
+**Safety rules the code follows**
+- Every screen answers the interaction first, then checks the feature gate, then reads or writes.
+- Anything that moves coins or creatures (daily, shop, sell, catching) is one database transaction with
+  row locks and an audit row; the client never sends a price.
+- The gate (`modules/catch_gate.py`) is checked before every action: global kill switch, per-server
+  flags, and the support-server restriction above.
+- Buttons use restart-safe custom IDs, so old hub messages keep working after a restart.
+
+**Tests**
+```bash
+python -m pytest -q                      # unit tests; the real-database tests are skipped
+# Real PostgreSQL tests: point at a DISPOSABLE database. They drop and recreate every catch_* table.
+CATCH_TEST_DSN=postgresql://user:pass@localhost:5432/scratch \
+  python -m pytest -q tests/integration/test_catch_postgres_smoke.py
+```
+CI also lints the catch files; add any new `_views_catch_*.py` to the `ruff` line in
+`.github/workflows/ci.yml`.
+
+**More detail:** [`docs/catch/ARCHITECTURE.md`](docs/catch/ARCHITECTURE.md) (module boundaries, restart
+behavior), [`docs/catch/CATCH_GAME_PLAN.md`](docs/catch/CATCH_GAME_PLAN.md) (the full plan),
+[`docs/catch/REVIEW_P1_FIXES.md`](docs/catch/REVIEW_P1_FIXES.md) (what each fix changed and how it was tested),
+[`docs/catch/CATCH_AUDIT_HANDOFF.md`](docs/catch/CATCH_AUDIT_HANDOFF.md) (open audit items).
