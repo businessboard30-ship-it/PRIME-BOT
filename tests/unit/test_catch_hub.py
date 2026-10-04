@@ -1,6 +1,8 @@
 from discord import ButtonStyle
 
 from discord_bot.cogs.catch import (
+    DYNAMIC_ITEMS,
+    CatchHubDynamicButton,
     CATEGORIES,
     CatchHubView,
     build_hub_embed,
@@ -31,3 +33,9 @@ def test_embed_renders_each_category():
         assert embed.title == "Catch hub"
         assert embed.fields[0].name == category.label
         assert category.description in embed.fields[0].value
+
+
+def test_catch_dynamic_items_cover_restartable_buttons():
+    assert DYNAMIC_ITEMS == (CatchHubDynamicButton,)
+    assert CatchHubDynamicButton.template.pattern == r"catch:hub:(?P<action>[a-z-]+)"
+    assert len("catch:hub:encounter") <= 100

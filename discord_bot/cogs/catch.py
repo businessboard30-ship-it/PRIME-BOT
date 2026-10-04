@@ -8,6 +8,7 @@ the same callbacks without changing the interaction contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 import discord
 from discord import app_commands
@@ -111,6 +112,43 @@ def build_hub_embed(category: str = "play") -> discord.Embed:
     embed.add_field(name="Available now", value="\n".join(f"**{label}** — {description}" for label, description in selected.actions), inline=False)
     embed.set_footer(text="Use Home to return to Play. This panel expires after 15 minutes.")
     return embed
+
+
+class CatchHubDynamicButton(discord.ui.DynamicItem[discord.ui.Button], template=r"catch:hub:(?P<action>[a-z-]+)"):
+    """Reconstruct catch hub buttons from their custom_id after a restart."""
+
+    def __init__(self, item: discord.ui.Button, *, action: str):
+        super().__init__(item)
+        self.action = action
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction,
+        item: discord.ui.Button,
+        match: re.Match[str],
+    ) -> "CatchHubDynamicButton":
+        return cls(item, action=match.group("action"))
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if self.action == "home":
+            await interaction.response.send_message(
+                embed=build_hub_embed(), view=CatchHubView(), ephemeral=True
+            )
+            return
+        labels = {
+            "encounter": ("Encounter", "Find a creature"),
+            "daily": ("Daily", "Claim your daily reward"),
+        }
+        label, description = labels.get(
+            self.action, (self.action.replace("-", " ").title(), "Open this catch hub section")
+        )
+        await interaction.response.send_message(
+            f"**{label}** is ready for this server. {description}", ephemeral=True
+        )
+
+
+DYNAMIC_ITEMS = (CatchHubDynamicButton,)
 
 
 class CatchCog(commands.Cog):

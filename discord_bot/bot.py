@@ -116,6 +116,7 @@ from discord_bot.cogs._views_leveling_wallet import DYNAMIC_ITEMS as LEVELING_WA
 from discord_bot.cogs._views_leveling_leaderboard import DYNAMIC_ITEMS as LEVELING_LEADERBOARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_pending_payments import DYNAMIC_ITEMS as PENDING_PAYMENTS_DYNAMIC_ITEMS
 from discord_bot.cogs._views_gumroad_claim import DYNAMIC_ITEMS as GUMROAD_CLAIM_DYNAMIC_ITEMS
+from discord_bot.cogs.catch import DYNAMIC_ITEMS as CATCH_DYNAMIC_ITEMS
 from discord_bot.cogs._views_payment_card import DYNAMIC_ITEMS as PAYMENT_CARD_DYNAMIC_ITEMS
 
 logging.basicConfig(
@@ -252,6 +253,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*PENDING_PAYMENTS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*GUMROAD_CLAIM_DYNAMIC_ITEMS)
         self.add_dynamic_items(*PAYMENT_CARD_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*CATCH_DYNAMIC_ITEMS)
 
         await self.load_extension("discord_bot.cogs.catch")
         await self.load_extension("discord_bot.cogs.help")
