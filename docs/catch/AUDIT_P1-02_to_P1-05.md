@@ -1,21 +1,19 @@
-# Catch game — Audit / Handoff: P1-02 to P1-05 (Phase 1 foundation, partial)
+# Catch game — Completion Report / Handoff: P1-02 to P1-05 (Phase 1 foundation)
 
 **The full building plan is in this repo: [`docs/catch/CATCH_GAME_PLAN.md`](./CATCH_GAME_PLAN.md).**
 It is the source of truth (Discord bot, not a web game). Read it before doing anything; you do not
 need the user to re-send it. If it changes, update that file in the same PR.
 
 Builder: v0 (session ran out of credit). Reviewer must be the other AI (Claude), per R.1.
-Status: `[~]` (foundation and unit coverage are built; real-DB/concurrency coverage and reviewer approval remain).
+Status: `[x]` builder-complete, pending Claude review/approval and owner merge. The real-Postgres smoke test remains a reviewer/owner check because this sandbox has no working Postgres service.
 
 ```
 HANDOFF
 Task ID(s): P1-02 (schema), P1-03 (theme), P1-04 (core services), P1-05 (species loader).
-            Plus Phase 0 data files. P1-01 (CI) NOT started.
-Branch / last commit: feat/catch-p1-01-05-foundation (see PR; base = main @ 0afcef4)
-Done (with evidence): see "What is built" below.
-NOT done (exact files, functions, screens, tests): see "What is NOT done".
-Exact next step: write tests/test_catch_*.py (list below), then P1-01 CI workflow,
-                 then run R.6 + full pytest and fill in the completion report.
+            Plus Phase 0 data files and P1-01 CI.
+Done (with evidence): see "What is built" and "Checks run" below.
+Known gaps requiring reviewer/owner evidence: real-Postgres smoke test, concurrency test against live DB, and Claude review.
+Exact next step: review this PR against CATCH_GAME_PLAN.md, run the real-DB smoke/concurrency checks, then merge. Start P1-06 only on a new branch after approval.
 Known problems: see "Known problems / risks".
 Commands to run to see the current state:
   git fetch origin && git checkout feat/catch-p1-01-05-foundation
@@ -56,11 +54,14 @@ Commands to run to see the current state:
 - `discord_bot/bot.py` `setup_hook`: after `db.init()`, calls `catch_species.sync_to_db()` inside try/except so a broken roster file logs an error and never stops the bot.
 
 ## Checks run (real output, this session)
-- `pytest -q` (full existing suite): **841 passed, 21 skipped** — same as baseline, nothing broken.
-- `py_compile modules/catch_*.py database.py discord_bot/bot.py`: OK.
-- Roster validation: 48 species, 0 problems.
-- R.6 stub scan on the diff + new modules (TODO/FIXME/NotImplementedError/bare `pass`/`...`): **empty**.
-- Real-Postgres migration smoke test: **NOT run at the end of the session** (local Postgres in the sandbox stopped responding). Reviewer must run it (see below).
+- Focused catch suite: **25 passed**.
+- Full suite: **866 passed, 21 skipped**.
+- Ruff on catch modules and tests: **passed**.
+- `python -m compileall -q modules/catch_*.py database.py discord_bot/bot.py`: **passed**.
+- Roster validation: **48 species, 0 problems**.
+- R.6 stub scan on catch modules/tests: **clean**.
+- `.github/workflows/ci.yml` added: runs pytest, compileall, and Ruff on pull requests and pushes to `main`.
+- Real-Postgres migration smoke test: **not run**; no working Postgres service is available in this sandbox. Reviewer/owner must run it (see below).
 
 ## What is NOT done
 1. **Unit tests (blocks P1-02..P1-05 from `[x]`).** Create:
