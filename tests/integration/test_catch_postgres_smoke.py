@@ -706,3 +706,83 @@ def test_phase3_item_evolution_spends_exactly_one_item_and_rolls_back_on_failure
             return await conn.fetchval("SELECT species_id FROM catch_owned WHERE id = $1", owned_id)
 
     run_with_pool(scenario)
+
+
+def test_collection_filters_search_and_paging_against_real_sql():
+    from modules import catch_collection as cc
+    from modules import catch_db
+    from modules.catch_service import record_catch
+
+    async def scenario(pool):
+        from modules import catch_species
+
+        async with pool.acquire() as conn:
+            await catch_species.sync_to_db(conn)
+        ids = {}
+        # species: 1 common ember | 2 uncommon ember+stone | 3 rare ember | 6 rare tide+lumen
+        #          16 epic stone+ember | 23 common stone+tide
+        for tag, species in (("A", 1), ("B", 2), ("C", 3), ("D", 6), ("E", 16), ("F", 23)):
+            res = await record_catch(
+                user_id=U1, clone_id=None, guild_id=GUILD, source="giveaway",
+                species_id=species, level=5, ivs=[10] * 5, idem_key=f"box-{tag}",
+            )
+            ids[tag] = res.owned_id
+        other_user = await record_catch(user_id=U2, clone_id=None, guild_id=GUILD, source="giveaway",
+                                        species_id=3, level=5, ivs=[10] * 5, idem_key="box-u2")
+        other_clone = await record_catch(user_id=U1, clone_id=2, guild_id=GUILD, source="giveaway",
+                                         species_id=3, level=5, ivs=[10] * 5, idem_key="box-clone")
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_owned SET shiny=TRUE, favorite=TRUE, nickname='Sparky_100%' WHERE id=$1", ids["A"])
+            await conn.execute("UPDATE catch_owned SET favorite=TRUE WHERE id=$1", ids["C"])
+            await conn.execute("UPDATE catch_owned SET shiny=TRUE WHERE id=$1", ids["D"])
+            await conn.execute("UPDATE catch_owned SET nickname='Cinder' WHERE id=$1", ids["F"])
+            # the same flags on the other player / other clone must never leak into U1's box
+            await conn.execute("UPDATE catch_owned SET shiny=TRUE, favorite=TRUE, nickname='Sparky_100%' WHERE id = ANY($1::bigint[])",
+                               [other_user.owned_id, other_clone.owned_id])
+
+        async def found(flt, **kw):
+            rows, total, page = await cc.list_owned(U1, None, flt=flt, per_page=50, **kw)
+            assert total == len(rows)
+            return {t for t, i in ids.items() if i in {r.id for r in rows}}
+
+        F = cc.CollectionFilter
+        assert await found(None) == set("ABCDEF") and await found(F()) == set("ABCDEF")
+        assert await found(F(rarity="common")) == {"A", "F"}
+        assert await found(F(rarity="rare")) == {"C", "D"}
+        assert await found(F(rarity="epic")) == {"E"} and await found(F(rarity="mythic")) == set()
+        assert await found(F(element="ember")) == {"A", "B", "C", "E"}  # E is ember only as its second element
+        assert await found(F(element="stone")) == {"B", "E", "F"}
+        assert await found(F(element="lumen")) == {"D"}
+        assert await found(F(shiny=True)) == {"A", "D"}
+        assert await found(F(favorite=True)) == {"A", "C"}
+        assert await found(F(rarity="rare", shiny=True)) == {"D"}
+        assert await found(F(rarity="rare", element="ember", favorite=True)) == {"C"}
+        assert await found(F(search="cind")) == {"A", "F"}  # species name Cindrop and nickname Cinder
+        assert await found(F(search="SPARKY")) == {"A"}
+        assert await found(F(search="%")) == {"A"} and await found(F(search="_")) == {"A"}  # wildcards are literal
+        assert await found(F(search="100%")) == {"A"} and await found(F(search="\\")) == set()
+        assert await found(F(search="'; DROP TABLE catch_owned; --")) == set()
+        assert await found(F(rarity="legendary", element="plasma")) == set("ABCDEF")  # invalid values are dropped
+        assert await found(F(favorite=True), sort="rarity") == {"A", "C"}
+
+        # paging runs over the filtered total, and an out-of-range page clamps
+        flt = F(element="ember")
+        seen = []
+        for page in range(2):
+            rows, total, got = await cc.list_owned(U1, None, flt=flt, per_page=2, page=page)
+            assert total == 4 and got == page and len(rows) == 2
+            seen += [r.id for r in rows]
+        assert len(set(seen)) == 4
+        rows, total, got = await cc.list_owned(U1, None, flt=flt, per_page=2, page=99)
+        assert total == 4 and got == 1 and len(rows) == 2
+        rows, total, got = await cc.list_owned(U1, None, flt=F(rarity="mythic"), per_page=2, page=5)
+        assert (rows, total, got) == ([], 0, 0)
+
+        # other player / other clone stay separate
+        rows, total, _ = await cc.list_owned(U2, None, flt=F(shiny=True, favorite=True, search="sparky"))
+        assert total == 1 and rows[0].id == other_user.owned_id
+        rows, total, _ = await cc.list_owned(U1, 2, flt=F(shiny=True))
+        assert total == 1 and rows[0].id == other_clone.owned_id
+        assert catch_db.clone_key(None) != catch_db.clone_key(2)
+
+    run_with_pool(scenario)

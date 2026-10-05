@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from modules import catch_db, catch_emoji
+from modules.catch_game import ELEMENTS, RARITY_BY_KEY
 from modules.catch_species import all_species
 
 COLLECTION_PAGE_SIZE = 10
@@ -24,6 +25,82 @@ SORTS: dict[str, str] = {
     "favorites": "o.favorite DESC, o.caught_at DESC, o.id DESC",
 }
 RARITY_MARK = catch_emoji.RARITY  # one shared table: restyle it in modules/catch_emoji.py
+SEARCH_MAX = 24
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionFilter:
+    """Box filters. Every field is validated by ``clean`` before it reaches SQL."""
+
+    rarity: str | None = None
+    element: str | None = None
+    shiny: bool = False
+    favorite: bool = False
+    search: str = ""
+
+    @property
+    def active(self) -> bool:
+        return bool(self.rarity or self.element or self.shiny or self.favorite or self.search)
+
+    def clean(self) -> "CollectionFilter":
+        search = " ".join(str(self.search or "").split())[:SEARCH_MAX]
+        return CollectionFilter(
+            self.rarity if self.rarity in RARITY_BY_KEY else None,
+            self.element if self.element in ELEMENTS else None,
+            bool(self.shiny), bool(self.favorite), search,
+        )
+
+
+def _like_pattern(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def filter_sql(flt: CollectionFilter | None, start: int) -> tuple[str, list]:
+    """AND-clauses (leading ``AND``) and their params, numbered from ``$start``.
+
+    Only whitelisted values become parameters; nothing from the player is interpolated.
+    """
+    if flt is None:
+        return "", []
+    flt = flt.clean()
+    clauses: list[str] = []
+    params: list = []
+
+    def add(sql: str, value) -> None:
+        params.append(value)
+        clauses.append(sql.replace("$N", f"${start + len(params) - 1}"))
+
+    if flt.rarity:
+        add("s.rarity = $N::smallint", RARITY_BY_KEY[flt.rarity].code)
+    if flt.element:
+        add("(s.element = $N OR s.element2 = $N)", flt.element)
+    if flt.shiny:
+        clauses.append("o.shiny")
+    if flt.favorite:
+        clauses.append("o.favorite")
+    if flt.search:
+        add("(o.nickname ILIKE $N ESCAPE '\\' OR s.name ILIKE $N ESCAPE '\\')", _like_pattern(flt.search))
+    return "".join(f" AND {c}" for c in clauses), params
+
+
+def filter_summary(flt: CollectionFilter | None) -> str:
+    """Short plain-text description of the active filters (empty when none)."""
+    if flt is None or not flt.active:
+        return ""
+    flt = flt.clean()
+    parts = []
+    if flt.rarity:
+        parts.append(flt.rarity.title())
+    if flt.element:
+        parts.append(flt.element.title())
+    if flt.shiny:
+        parts.append("Shiny")
+    if flt.favorite:
+        parts.append("Favourite")
+    if flt.search:
+        parts.append(f'"{flt.search}"')
+    return ", ".join(parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,21 +147,29 @@ def _species_info(species_id: int) -> tuple[str, str]:
 
 async def list_owned(
     user_id: int, clone_id: int | None, *, page: int = 0, sort: str = "recent",
-    per_page: int = COLLECTION_PAGE_SIZE, conn=None,
+    per_page: int = COLLECTION_PAGE_SIZE, flt: CollectionFilter | None = None, conn=None,
 ) -> tuple[list[OwnedRow], int, int]:
-    """Return (rows, total, page) with the page clamped into range."""
+    """Return (rows, total, page) with the page clamped into range.
+
+    ``total`` counts the creatures that match ``flt`` (all of them when it is None).
+    """
     order = SORTS.get(sort, SORTS["recent"])
+    key = catch_db.clone_key(clone_id)
+    count_extra, count_params = filter_sql(flt, 3)
+    list_extra, list_params = filter_sql(flt, 5)
     async with catch_db.connection(conn) as db:
         total = int(await db.fetchval(
-            "SELECT count(*) FROM catch_owned WHERE user_id=$1 AND clone_key=$2",
-            user_id, catch_db.clone_key(clone_id),
+            "SELECT count(*) FROM catch_owned o JOIN catch_species s ON s.id = o.species_id "
+            f"WHERE o.user_id=$1 AND o.clone_key=$2{count_extra}",  # noqa: S608 - clauses are whitelisted
+            user_id, key, *count_params,
         ) or 0)
         page = clamp_page(page, total, per_page)
         records = await db.fetch(
             "SELECT o.id, o.species_id, o.level, o.nickname, o.shiny, o.special, o.favorite, o.locked "
             "FROM catch_owned o JOIN catch_species s ON s.id = o.species_id "
-            f"WHERE o.user_id=$1 AND o.clone_key=$2 ORDER BY {order} LIMIT $3 OFFSET $4",  # noqa: S608 - order is whitelisted
-            user_id, catch_db.clone_key(clone_id), per_page, page * per_page,
+            f"WHERE o.user_id=$1 AND o.clone_key=$2{list_extra} "  # noqa: S608
+            f"ORDER BY {order} LIMIT $3 OFFSET $4",  # noqa: S608 - order is whitelisted
+            user_id, key, per_page, page * per_page, *list_params,
         )
     rows = []
     for rec in records:
@@ -162,7 +247,7 @@ def dex_page(entries: list[DexEntry], page: int, per_page: int = DEX_PAGE_SIZE) 
 
 
 __all__ = [
-    "COLLECTION_PAGE_SIZE", "DEX_PAGE_SIZE", "DexEntry", "OwnedRow", "SORTS", "clamp_page",
-    "dex_page", "dex_summary", "format_dex_line", "format_owned_line", "list_owned", "load_dex",
-    "page_count", "set_favorite",
+    "COLLECTION_PAGE_SIZE", "CollectionFilter", "DEX_PAGE_SIZE", "DexEntry", "OwnedRow", "SEARCH_MAX",
+    "SORTS", "clamp_page", "dex_page", "dex_summary", "filter_sql", "filter_summary",
+    "format_dex_line", "format_owned_line", "list_owned", "load_dex", "page_count", "set_favorite",
 ]
