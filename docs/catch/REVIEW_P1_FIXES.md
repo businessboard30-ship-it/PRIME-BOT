@@ -60,3 +60,15 @@ Wiring (additive): `creature_embed` is unchanged. `creature_message(detail, pv)`
 Tests: `tests/unit/test_catch_card.py` (18). Mutation-checked, each trips a test: stat field kept, release confirm keeps card, evolve confirm keeps card, back-to-list keeps card, fallback still sets image.
 
 Not verified: how the image looks on a real Discord client (mobile crop, dark/light theme). Cards are drawn only with the bundled DejaVu font; element sigils are simple geometry, meant to be replaced by real art later.
+
+## Visual pass 2: trainer card and wild/caught cards
+
+Same approach as pass 1 (drawn from game data, `catch_theme` colours, no locale keys, no database change beyond two optional fields). `catch_card` now shares `_backdrop` and `_medallion` between all cards.
+
+* Trainer card (`trainer_card_png`, `profile_message`): buddy (else rarest) medallion, six stat tiles (catches, streak, daily, owned, shiny, special) and a dex bar with caught and seen. The embed keeps every field. `ProfileCreature` gained optional `element` and `element2` (defaults keep the 7-argument form valid); `_creature` fills them from the species table, so SQL is unchanged. A creature with no element known draws as a neutral stone sigil. The player's display name is not drawn (the embed title has it).
+* Wild/caught card (`encounter_card_png`, `catch.card_parts`): used on the public spawn post, the ephemeral encounter message and the successful claim result. A failure to draw returns `{}` and the message is the old plain embed. The expired-spawn edit passes `attachments=[]`. The failed-claim message has no card.
+* Card text ("TRAINER CARD", "WILD ENCOUNTER", "GOTCHA!", "NEW DEX ENTRY", "SHINY", stat names) is drawn in English and is not in the locale file.
+
+Tests: `tests/unit/test_catch_card_screens.py` (17). Mutation-checked, each trips a test: public spawn drops card, claim success drops card, expired spawn keeps card, profile loses elements, profile fallback sets image. Result: 1286 passed, 21 skipped with real Postgres; ruff and compileall clean.
+
+Not verified on a real client: image rendering, attachment behaviour of ephemeral follow-ups with `file=`, and the expiry edit removing the image from the public message.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+import io
 import logging
 import random
 import re
@@ -30,6 +31,7 @@ from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_reminders import Reminder, dispatch_due_reminders
 from modules.catch_setup import CatchSetup, SPEED_PRESETS, load_setup, save_setup
 from modules.catch_species import all_species
+from modules.catch_card import encounter_card_png
 from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
 from modules.catch_trigger import ChannelTriggerState, consider_message
 from modules.catch_encounter import EncounterOnCooldown, create_player_encounter
@@ -172,8 +174,10 @@ class CatchHubView(discord.ui.View):
         embed.add_field(name=text("encounter.rarity"), value=data["rarity"])
         embed.add_field(name=text("encounter.level"), value=data["level"])
         embed.set_footer(text=text("encounter.footer", expires_at=data["expires_at"]))
+        parts = await card_parts(embed, "wild", getattr(roll, "species_id", 0), level=getattr(roll, "level", 1),
+                                 shiny=getattr(roll, "shiny", False))
         message = await interaction.followup.send(
-            embed=embed, view=SpawnClaimView(spawn_id), ephemeral=True, wait=True
+            embed=embed, view=SpawnClaimView(spawn_id), ephemeral=True, wait=True, **parts
         )
         await attach_spawn_message(spawn_id, message.id)
 
@@ -340,6 +344,27 @@ def build_setup_embed(setup: CatchSetup) -> discord.Embed:
     return embed
 
 
+SPAWN_CARD_FILE = "creature.png"
+
+
+async def card_parts(embed: discord.Embed, kind: str, species_id, *, level, shiny: bool = False, new_species: bool = False) -> dict:
+    """Draw the wild/caught card and point ``embed`` at it; returns ``send`` kwargs.
+
+    Returns ``{}`` (embed untouched) when the card cannot be drawn, so the message is the
+    plain text embed it always was.
+    """
+    try:
+        species = all_species().get(int(species_id))
+        if species is None:
+            return {}
+        data = await encounter_card_png(kind, species, level=int(level), shiny=bool(shiny), new_species=bool(new_species))
+    except Exception:
+        logger.warning("Catch %s card not drawn", kind, exc_info=True)
+        return {}
+    embed.set_image(url=f"attachment://{SPAWN_CARD_FILE}")
+    return {"file": discord.File(io.BytesIO(data), filename=SPAWN_CARD_FILE)}
+
+
 async def publish_spawn(channel, *, guild_id: int, clone_id: int | None, setup: CatchSetup, source: str = "chat") -> int:
     """Roll, persist and publish one wild spawn; returns the spawn id.
 
@@ -357,7 +382,9 @@ async def publish_spawn(channel, *, guild_id: int, clone_id: int | None, setup: 
     embed.add_field(name=text("encounter.rarity"), value=data["rarity"])
     embed.add_field(name=text("encounter.level"), value=data["level"])
     embed.set_footer(text=text("encounter.footer", expires_at=data["expires_at"]))
-    posted = await channel.send(embed=embed, view=SpawnClaimView(spawn_id))
+    parts = await card_parts(embed, "wild", getattr(roll, "species_id", 0), level=getattr(roll, "level", 1),
+                             shiny=getattr(roll, "shiny", False))
+    posted = await channel.send(embed=embed, view=SpawnClaimView(spawn_id), **parts)
     await attach_spawn_message(spawn_id, posted.id)
     return spawn_id
 
@@ -647,7 +674,9 @@ class SpawnClaimView(discord.ui.View):
             embed.add_field(name="Dex", value=text("claim.new_species"), inline=True)
         if not getattr(result, "replay", False) and getattr(result, "owned_id", None) is not None:
             await self._add_buddy_xp(embed, interaction, result)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        parts = await card_parts(embed, "caught", result.species_id or 0, level=result.level or 1,
+                                 shiny=result.shiny, new_species=result.new_species)
+        await interaction.followup.send(embed=embed, ephemeral=True, **parts)
 
     async def _add_buddy_xp(self, embed: discord.Embed, interaction: discord.Interaction, result) -> None:
         """Best effort: a buddy XP problem must never undo or hide a finished catch."""
@@ -756,7 +785,7 @@ class CatchCog(commands.Cog):
                 description=text("claim.fled.description"),
                 colour=state_color("warning"),
             )
-            await message.edit(embed=embed, view=view)
+            await message.edit(embed=embed, view=view, attachments=[])
         except discord.DiscordException:
             return
 

@@ -158,12 +158,7 @@ def _glow(base: Image.Image, cx: float, cy: float, r: float, colour, strength: i
     return Image.alpha_composite(base.convert("RGBA"), layer).convert("RGB")
 
 
-def _draw_card(*, species_id: int, name: str, rarity: str, element: str, element2: str | None, level: int,
-               xp: int, shiny: bool, special: bool, stats: tuple[int, ...], creature_id: int) -> bytes:
-    c1 = _rgb(catch_theme.element_color(element))
-    c2 = _rgb(catch_theme.element_color(element2)) if element2 else c1
-    rar = _rgb(catch_theme.rarity_color(rarity, shiny=shiny, special=special))
-
+def _backdrop(c1, c2, seed: int):
     img = Image.new("RGB", (W * SCALE, H * SCALE), _INK)
     draw = ImageDraw.Draw(img)
     top, bottom = _mix(c1, _INK, 0.80), _mix(c2, _INK, 0.90)
@@ -172,32 +167,44 @@ def _draw_card(*, species_id: int, name: str, rarity: str, element: str, element
     img = _glow(img, 175, 200, 190, c1, 150)
     img = _glow(img, 640, 380, 200, c2, 90)
     draw = ImageDraw.Draw(img)
-
-    rng = random.Random(species_id * 1009 + level)
+    rng = random.Random(seed)
     for _ in range(26):  # faint background dots
         x, y, rr = rng.uniform(0, W), rng.uniform(0, H), rng.uniform(1.2, 3)
         draw.ellipse((_s(x - rr), _s(y - rr), _s(x + rr), _s(y + rr)), fill=_mix(top, _WHITE, 0.14))
+    return img, draw, rng
 
-    # medallion
-    mx, my, mr = 175, 200, 112
+
+def _medallion(img, draw, rng, element, element2, c1, c2, rar, mx, my, mr, *, sparkles: bool):
+    """Ring + element sigil (+ second-type badge, + sparkles). Returns the draw handle."""
     draw.ellipse((_s(mx - mr), _s(my - mr), _s(mx + mr), _s(my + mr)), fill=_mix(c1, _INK, 0.62))
     draw.ellipse((_s(mx - mr), _s(my - mr), _s(mx + mr), _s(my + mr)), outline=rar, width=_s(7))
     draw.ellipse((_s(mx - mr + 14), _s(my - mr + 14), _s(mx + mr - 14), _s(my + mr - 14)),
                  outline=_mix(rar, _INK, 0.55), width=_s(2))
     _sigil(draw, img, element, mx, my, 62, _mix(c1, _WHITE, 0.55), _mix(c1, _INK, 0.5))
     draw = ImageDraw.Draw(img)
-    if element2:  # second type as a small badge on the ring
+    if element2:
         bx, by = mx + 78, my + 78
         draw.ellipse((_s(bx - 26), _s(by - 26), _s(bx + 26), _s(by + 26)), fill=_mix(c2, _INK, 0.55),
                      outline=rar, width=_s(3))
         _sigil(draw, img, element2, bx, by, 15, _mix(c2, _WHITE, 0.6), _mix(c2, _INK, 0.5))
         draw = ImageDraw.Draw(img)
-    if shiny or special:
-        spark = rar
+    if sparkles:
         for _ in range(9):
             a = rng.uniform(0, math.tau)
             d = rng.uniform(mr + 6, mr + 46)
-            _sparkle(draw, mx + math.cos(a) * d, my + math.sin(a) * d, rng.uniform(5, 11), spark)
+            _sparkle(draw, mx + math.cos(a) * d, my + math.sin(a) * d, rng.uniform(5, 11), rar)
+    return draw
+
+
+def _draw_card(*, species_id: int, name: str, rarity: str, element: str, element2: str | None, level: int,
+               xp: int, shiny: bool, special: bool, stats: tuple[int, ...], creature_id: int) -> bytes:
+    c1 = _rgb(catch_theme.element_color(element))
+    c2 = _rgb(catch_theme.element_color(element2)) if element2 else c1
+    rar = _rgb(catch_theme.rarity_color(rarity, shiny=shiny, special=special))
+    img, draw, rng = _backdrop(c1, c2, species_id * 1009 + level)
+
+    mx, my, mr = 175, 200, 112
+    draw = _medallion(img, draw, rng, element, element2, c1, c2, rar, mx, my, mr, sparkles=shiny or special)
 
     # text panel
     px = 335
@@ -262,8 +269,130 @@ async def creature_card_png(detail) -> bytes:
     return await asyncio.to_thread(_cached, _key(detail))
 
 
+# --- trainer card ------------------------------------------------------------------------
+
+def _draw_trainer(*, hero: tuple | None, hero_label: str, nums: tuple[int, ...], dex: tuple[int, int, int]) -> bytes:
+    """``hero`` = (species_id, name, rarity, element, element2, level, shiny, special) or None."""
+    species_id, name, rarity, element, element2, level, shiny, special = hero or (0, "", "common", "stone", None, 0, False, False)
+    c1 = _rgb(catch_theme.element_color(element))
+    c2 = _rgb(catch_theme.element_color(element2)) if element2 else c1
+    rar = _rgb(catch_theme.rarity_color(rarity, shiny=shiny, special=special))
+    img, draw, rng = _backdrop(c1, c2, species_id * 31 + level)
+    draw = _medallion(img, draw, rng, element if hero else "none", element2, c1, c2, rar, 175, 200, 112,
+                      sparkles=shiny or special)
+
+    px = 335
+    draw.text((_s(px), _s(46)), "TRAINER CARD", font=_font(32), fill=_WHITE, anchor="lm")
+    if hero:
+        x = _pill(draw, px, 84, hero_label, rar, size=13, h=26)
+        label = f"{name}  \u00b7  LV {level}"
+        draw.text((_s(x + 4), _s(97)), label, font=_fit_font(draw, label, W - 24 - (x + 4), 18, 12), fill=_WHITE, anchor="lm")
+    else:
+        draw.text((_s(px), _s(97)), "No buddy yet", font=_font(16), fill=_MUTED, anchor="lm")
+
+    names = ("CATCHES", "STREAK", "DAILY", "OWNED", "SHINY", "SPECIAL")
+    tw, th, gap = 112, 64, 10
+    for i, (label, value) in enumerate(zip(names, nums)):
+        x0, y0 = px + (i % 3) * (tw + gap), 132 + (i // 3) * (th + gap)
+        draw.rounded_rectangle((_s(x0), _s(y0), _s(x0 + tw), _s(y0 + th)), radius=_s(12), fill=_mix(_INK, _WHITE, 0.09))
+        draw.text((_s(x0 + tw / 2), _s(y0 + 25)), f"{value:,}", font=_fit_font(draw, f"{value:,}", tw - 14, 26, 14),
+                  fill=_WHITE, anchor="mm")
+        draw.text((_s(x0 + tw / 2), _s(y0 + 49)), label, font=_font(11), fill=_MUTED, anchor="mm")
+
+    caught, seen, total = dex
+    pct = 0 if total <= 0 else int(100 * caught / total)
+    yb = 306
+    draw.text((_s(px), _s(yb)), f"DEX  {caught:,} / {total:,}", font=_font(13), fill=_MUTED, anchor="lm")
+    draw.text((_s(W - 24), _s(yb)), f"{pct}%", font=_font(15), fill=_WHITE, anchor="rm")
+    draw.rounded_rectangle((_s(px), _s(yb + 14), _s(W - 24), _s(yb + 26)), radius=_s(6), fill=_mix(_INK, _WHITE, 0.10))
+    if pct > 0:
+        seen_x = px + (W - 24 - px) * min(1.0, (caught + max(0, seen)) / total) if total > 0 else px
+        draw.rounded_rectangle((_s(px), _s(yb + 14), _s(seen_x), _s(yb + 26)), radius=_s(6), fill=_mix(rar, _INK, 0.55))
+        draw.rounded_rectangle((_s(px), _s(yb + 14), _s(px + (W - 24 - px) * pct / 100), _s(yb + 26)),
+                               radius=_s(6), fill=_mix(rar, _WHITE, 0.15))
+
+    out = io.BytesIO()
+    img.resize((W, H), Image.LANCZOS).save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+@lru_cache(maxsize=64)
+def _cached_trainer(key: tuple) -> bytes:
+    hero, hero_label, nums, dex = key
+    return _draw_trainer(hero=hero, hero_label=hero_label, nums=nums, dex=dex)
+
+
+def _trainer_key(p) -> tuple:
+    top, label = (p.buddy, "BUDDY") if p.buddy else (p.rarest, "RAREST")
+    hero = None
+    if top is not None:
+        hero = (top.id, top.name, top.rarity, top.element or "stone", top.element2, int(top.level),
+                bool(top.shiny), bool(top.special))
+    return (hero, label, (int(p.total_catches), int(p.catch_streak), int(p.daily_streak), int(p.owned),
+                          int(p.shinies), int(p.specials)), (int(p.dex_caught), int(p.dex_seen), int(p.dex_total)))
+
+
+async def trainer_card_png(profile) -> bytes:
+    """PNG bytes for a ``TrainerProfile``. Raises on failure: callers fall back to text."""
+    return await asyncio.to_thread(_cached_trainer, _trainer_key(profile))
+
+
+# --- wild / caught card --------------------------------------------------------------------
+
+_KIND_LABEL = {"wild": "WILD ENCOUNTER", "caught": "GOTCHA!"}
+_KIND_LINE = {"wild": "Claim it before it runs away.", "caught": "Added to your collection."}
+
+
+def _draw_encounter(*, kind: str, species_id: int, name: str, rarity: str, element: str, element2: str | None,
+                    level: int, shiny: bool, new_species: bool) -> bytes:
+    c1 = _rgb(catch_theme.element_color(element))
+    c2 = _rgb(catch_theme.element_color(element2)) if element2 else c1
+    rar = _rgb(catch_theme.rarity_color(rarity, shiny=shiny))
+    img, draw, rng = _backdrop(c1, c2, species_id * 17 + level)
+    draw = _medallion(img, draw, rng, element, element2, c1, c2, rar, 175, 200, 112, sparkles=shiny or kind == "caught")
+
+    px = 335
+    draw.text((_s(px), _s(70)), _KIND_LABEL.get(kind, "WILD ENCOUNTER"), font=_font(24), fill=_mix(rar, _WHITE, 0.35), anchor="lm")
+    draw.text((_s(px), _s(138)), name, font=_fit_font(draw, name, W - px - 24, 54, 22), fill=_WHITE, anchor="lm")
+    x = _pill(draw, px, 186, f"LV {level}", _mix(_WHITE, c1, 0.15))
+    x = _pill(draw, x, 186, rarity.upper(), rar)
+    x = _pill(draw, x, 186, element.upper(), c1)
+    if element2:
+        x = _pill(draw, x, 186, element2.upper(), c2)
+    x = px
+    if shiny:
+        x = _pill(draw, x, 246, "SHINY", _rgb(catch_theme.rarity_color("shiny", shiny=True)), size=14)
+    if new_species:
+        x = _pill(draw, x, 246, "NEW DEX ENTRY", _rgb(catch_theme.state_color("success")), size=14)
+    draw.text((_s(px), _s(318)), _KIND_LINE.get(kind, ""), font=_font(16), fill=_MUTED, anchor="lm")
+
+    out = io.BytesIO()
+    img.resize((W, H), Image.LANCZOS).save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+@lru_cache(maxsize=64)
+def _cached_encounter(key: tuple) -> bytes:
+    kind, species_id, name, rarity, element, element2, level, shiny, new_species = key
+    return _draw_encounter(kind=kind, species_id=species_id, name=name, rarity=rarity, element=element,
+                           element2=element2, level=level, shiny=shiny, new_species=new_species)
+
+
+async def encounter_card_png(kind: str, species: dict, *, level: int, shiny: bool = False, new_species: bool = False) -> bytes:
+    """PNG for a wild spawn (``kind="wild"``) or a finished catch (``"caught"``).
+
+    ``species`` is one entry of ``catch_species.all_species()``. Raises on bad input; callers
+    treat that as "no card" and send the plain embed.
+    """
+    key = (kind, int(species["id"]), str(species["name"]), str(species["rarity"]), str(species["element"]),
+           species.get("element2") or None, int(level), bool(shiny), bool(new_species))
+    return await asyncio.to_thread(_cached_encounter, key)
+
+
 def clear_card_cache() -> None:
     _cached.cache_clear()
+    _cached_trainer.cache_clear()
+    _cached_encounter.cache_clear()
 
 
-__all__ = ["H", "W", "clear_card_cache", "creature_card_png"]
+__all__ = ["H", "W", "clear_card_cache", "creature_card_png", "encounter_card_png", "trainer_card_png"]
