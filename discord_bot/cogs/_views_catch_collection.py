@@ -169,7 +169,7 @@ class CollectionBrowseView(CollectionView):
             return
         self._build()
         await interaction.edit_original_response(
-            content=None, embed=_collection_embed(self.rows, self.total, self.page, self.sort, self.flt), view=self,
+            content=None, embed=_collection_embed(self.rows, self.total, self.page, self.sort, self.flt), view=self, attachments=[],
         )
 
     async def _open_creature(self, interaction: discord.Interaction) -> None:
