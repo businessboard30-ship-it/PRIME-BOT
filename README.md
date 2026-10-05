@@ -226,7 +226,7 @@ configured, nobody can use it.
 | Category | Live | Not built yet |
 |---|---|---|
 | Play | Encounter, Daily, Wild zone | |
-| Collect | Collection, Dex, Inventory | |
+| Collect | Collection (creature detail, lock, nickname, buddy, evolve, trainer card), Dex, Inventory | |
 | Economy | Shop, Sell, Wallet | |
 | Info | Guide, Rules, Status | |
 | Social | | Trade, Gifts, Leaderboard |
@@ -238,7 +238,9 @@ quickstart; spawns only appear in channels the owner picked.
 
 **Where things live**
 - `modules/catch_*.py` — logic: schema, database access, species, spawns, throws, items, shop, sell,
-  wild zone, status, scheduling, reminders, localization, rendering and the feature gate. No Discord UI.
+  wild zone, status, creature actions, evolution, trainer profile, emoji table (`catch_emoji.py`: every
+  emoji the game shows, edit there to restyle), scheduling, reminders, localization, rendering and the
+  feature gate. No Discord UI.
 - `discord_bot/cogs/catch.py` — the `/catch` command, hub, setup panel and spawn trigger;
   `discord_bot/cogs/_views_catch_*.py` — one file per screen.
 - `data/catch/` — species roster (48 species, five rarities), drop tables, theme. `locales/en.json` — all
