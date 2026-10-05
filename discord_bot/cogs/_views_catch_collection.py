@@ -11,17 +11,18 @@ import logging
 
 import discord
 
-from discord_bot.cogs._views_catch_creature import open_creature_detail
+from discord_bot.cogs._views_catch_creature import open_creature_detail, stat_lines
 from discord_bot.cogs._views_catch_profile import open_profile
 from modules import catch_emoji
 from modules.catch_collection import (
     SEARCH_MAX, SORTS, CollectionFilter, dex_page, dex_summary, filter_summary, format_dex_line,
     format_owned_line, list_owned, load_dex, page_count, set_favorite,
 )
+from modules.catch_dex import SpeciesInfo, rarity_completion, species_info
 from modules.catch_game import ELEMENTS, RARITIES
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
-from modules.catch_theme import button_style, state_color
+from modules.catch_theme import button_style, rarity_color, state_color
 
 logger = logging.getLogger(__name__)
 
@@ -454,6 +455,112 @@ class DexView(discord.ui.View):
         await self._turn(interaction, 1)
 
 
+def species_embed(info: SpeciesInfo) -> discord.Embed:
+    """The species info page. Only what the player has discovered is shown."""
+    mark = catch_emoji.mark("rarity", info.rarity)
+    elements = " / ".join(
+        f"{catch_emoji.mark('element', e)} {e.title()}" for e in (info.element, info.element2) if e
+    )
+    embed = discord.Embed(
+        title=text("dex.info.title", number=f"{info.species_id:03d}", name=info.name),
+        colour=rarity_color(info.rarity),
+    )
+    embed.add_field(name=text("dex.info.rarity"), value=f"{mark} {info.rarity.title()}", inline=True)
+    embed.add_field(name=text("dex.info.types"), value=elements, inline=True)
+    if not info.caught:
+        embed.description = text("dex.info.locked")
+        return embed
+    if info.habitat:
+        embed.add_field(name=text("dex.info.habitat"), value=info.habitat.title(), inline=True)
+    shiny = text("dex.info.shiny", shiny=info.shiny_caught) if info.shiny_caught else ""
+    embed.add_field(name=text("dex.info.record"), value=text("dex.info.caught_count", count=info.caught_count) + shiny, inline=False)
+    if info.stats:
+        embed.add_field(name=text("dex.info.stats"), value=stat_lines(info.stats), inline=False)
+    lines = []
+    if info.evolves_from:
+        lines.append(text("dex.info.evo_from", name=info.evolves_from))
+    if info.evolves_to is None:
+        lines.append(text("dex.info.evo_final"))
+    elif info.evolve_item:
+        lines.append(text("dex.info.evo_item", to=info.evolves_to, item=info.evolve_item.replace("_", " ").title()))
+    elif info.evolve_level:
+        lines.append(text("dex.info.evo_level", to=info.evolves_to, level=info.evolve_level))
+    else:
+        lines.append(text("dex.info.evo_other", to=info.evolves_to))
+    embed.add_field(name=text("dex.info.evolution"), value="\n".join(lines), inline=False)
+    return embed
+
+
+class DexBrowseView(DexView):
+    """The Dex plus per-rarity completion and an \"Open a species\" select.
+
+    Added on top of ``DexView`` (its Prev/Next buttons and paging are unchanged). The
+    species page needs no database work: it is built from the entries already loaded.
+    """
+
+    def _build(self) -> None:
+        super()._build()
+        chunk, _ = dex_page(self.entries, self.page)
+        known = [e for e in chunk if e.seen or e.caught]
+        if known:
+            pick = discord.ui.Select(
+                placeholder=text("dex.pick"), row=1,
+                options=[
+                    discord.SelectOption(
+                        label=f"{e.species_id:03d} {e.name}"[:100], value=str(e.species_id),
+                        emoji=catch_emoji.mark("rarity", e.rarity),
+                    )
+                    for e in known
+                ],
+            )
+            pick.callback = self._open_species
+            self.add_item(pick)
+
+    def embed(self) -> discord.Embed:
+        embed = super().embed()
+        lines = [
+            text("dex.completion_line", mark=catch_emoji.mark("rarity", p.rarity), rarity=p.rarity.title(),
+                 caught=p.caught, total=p.total, bar=catch_emoji.bar(p.caught, p.total))
+            for p in rarity_completion(self.entries)
+        ]
+        if lines:
+            embed.add_field(name=text("dex.completion"), value="\n".join(lines), inline=False)
+        return embed
+
+    async def _open_species(self, interaction: discord.Interaction) -> None:
+        try:
+            species_id = int(((interaction.data or {}).get("values") or [""])[0])
+        except ValueError:
+            species_id = 0
+        info = species_info(self.entries, species_id)
+        if info is None:
+            await interaction.response.send_message(text("dex.info.not_found"), ephemeral=True)
+            return
+        screen = DexInfoView(self)
+        await interaction.response.edit_message(embed=species_embed(info), view=screen)
+
+
+class DexInfoView(discord.ui.View):
+    def __init__(self, dex: DexBrowseView):
+        super().__init__(timeout=600)
+        self.dex, self.user_id = dex, dex.user_id
+        back = discord.ui.Button(label=text("dex.info.back"), emoji=catch_emoji.mark("ui", "back"),
+                                 style=button_style("navigation"))
+        back.callback = self._back
+        self.add_item(back)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            return False
+        return True
+
+    async def _back(self, interaction: discord.Interaction) -> None:
+        embed = self.dex.embed()
+        self.dex._build()
+        await interaction.response.edit_message(embed=embed, view=self.dex)
+
+
 async def open_collection(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     clone_id = getattr(interaction.client, "clone_id", None)
@@ -484,11 +591,12 @@ async def open_dex(interaction: discord.Interaction) -> None:
         logger.exception("Catch dex load failed user=%s", interaction.user.id)
         await interaction.followup.send(text("dex.error"), ephemeral=True)
         return
-    view = DexView(interaction.user.id, entries)
+    view = DexBrowseView(interaction.user.id, entries)
     await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
 
 __all__ = [
-    "CollectionBoxView", "CollectionBrowseView", "CollectionFilterView", "CollectionView", "DexView",
+    "CollectionBoxView", "CollectionBrowseView", "CollectionFilterView", "CollectionView", "DexBrowseView",
+    "DexInfoView", "DexView", "species_embed",
     "PageJumpModal", "SearchModal", "open_collection", "open_dex",
 ]
