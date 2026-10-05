@@ -37,6 +37,7 @@ from modules.catch_gate import check_player_allowed, guild_allowed, set_feature_
 from modules.catch_i18n import text
 from modules.catch_items import ensure_starter_kit
 from modules.catch_service import CatchBlocked, record_catch
+from modules.catch_xp import grant_buddy_catch_xp
 from modules.catch_theme import button_style, state_color
 from modules.catch_throw import choice_label
 
@@ -644,7 +645,31 @@ class SpawnClaimView(discord.ui.View):
         embed.add_field(name="Level", value=str(result.level), inline=True)
         if result.new_species:
             embed.add_field(name="Dex", value=text("claim.new_species"), inline=True)
+        if not getattr(result, "replay", False) and getattr(result, "owned_id", None) is not None:
+            await self._add_buddy_xp(embed, interaction, result)
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _add_buddy_xp(self, embed: discord.Embed, interaction: discord.Interaction, result) -> None:
+        """Best effort: a buddy XP problem must never undo or hide a finished catch."""
+        try:
+            xp = await grant_buddy_catch_xp(
+                interaction.user.id,
+                getattr(interaction.client, "clone_id", None),
+                caught_owned_id=result.owned_id,
+                new_species=result.new_species,
+                guild_id=interaction.guild_id,
+            )
+        except Exception:
+            logger.exception("Buddy xp failed owned=%s user=%s", result.owned_id, interaction.user.id)
+            return
+        if xp is None or not xp.ok or xp.gained <= 0:
+            return
+        key = "xp.buddy_level_up" if xp.leveled else "xp.buddy_gain"
+        embed.add_field(
+            name=text("xp.field"),
+            value=text(key, gained=xp.gained, level=xp.level_after),
+            inline=False,
+        )
 
 
 class CatchCog(commands.Cog):

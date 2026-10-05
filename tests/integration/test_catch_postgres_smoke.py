@@ -422,3 +422,154 @@ def test_failed_catch_schema_does_not_break_the_surrounding_migration_transactio
         assert names == {"catch_guard_before", "catch_guard_after"}
 
     run_with_pool(scenario)
+
+
+async def _xp_setup(pool, user=U1, key="xp-a", level=5, species_rarity="common"):
+    """Sync species, make one creature for ``user`` and return its owned id."""
+    from modules import catch_service, catch_species
+
+    async with pool.acquire() as conn:
+        await catch_species.sync_to_db(conn)
+    sid = next(i for i, sp in catch_species.all_species().items() if sp["rarity"] == species_rarity)
+    await catch_service.record_catch(
+        user_id=user, clone_id=None, guild_id=None, source="wild", species_id=sid, level=level,
+        ivs=[10, 10, 10, 10, 10], idem_key=key,
+    )
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT id FROM catch_owned WHERE idem_key = $1", key)
+
+
+async def _creature(pool, owned_id):
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT level, xp FROM catch_owned WHERE id = $1", owned_id)
+
+
+def test_xp_levels_up_audits_and_replays_without_double_paying():
+    from modules import catch_xp
+
+    async def scenario(pool):
+        oid = await _xp_setup(pool)
+        need = catch_xp.xp_to_next(5)
+        first = await catch_xp.grant_xp(oid, U1, None, source="catch", amount=30, idem_key="g1")
+        assert first.ok and first.gained == 30 and first.level_after >= 5
+        row = await _creature(pool, oid)
+        expected = catch_xp.apply_xp(5, 0, 30)
+        assert (row["level"], row["xp"]) == expected
+        again = await catch_xp.grant_xp(oid, U1, None, source="catch", amount=30, idem_key="g1")
+        assert again.ok and again.replay and again.gained == 30
+        assert (await _creature(pool, oid))["xp"] == row["xp"]
+        async with pool.acquire() as conn:
+            n = await conn.fetchval("SELECT count(*) FROM catch_audit WHERE action = 'xp' AND ref_id = $1", oid)
+        assert n == 1
+        big = await catch_xp.grant_xp(oid, U1, None, source="catch", amount=40, idem_key="g2")
+        assert big.ok and need > 0
+
+    run_with_pool(scenario)
+
+
+def test_xp_cannot_touch_someone_elses_creature_or_other_clone():
+    from modules import catch_xp
+
+    async def scenario(pool):
+        mine = await _xp_setup(pool, U1, "xp-mine")
+        theirs = await _xp_setup(pool, U2, "xp-theirs")
+        stolen = await catch_xp.grant_xp(theirs, U1, None, source="catch", amount=20, idem_key="steal")
+        assert not stolen.ok and stolen.reason == "not_found"
+        assert (await _creature(pool, theirs))["xp"] == 0
+        async with pool.acquire() as conn:  # the same player exists in another clone
+            await conn.execute("INSERT INTO catch_players (user_id, clone_id) VALUES ($1, 7)", U1)
+        other_clone = await catch_xp.grant_xp(mine, U1, 7, source="catch", amount=20, idem_key="clone")
+        assert not other_clone.ok and other_clone.reason == "not_found"
+        assert (await _creature(pool, mine))["xp"] == 0
+
+    run_with_pool(scenario)
+
+
+def test_xp_daily_budget_cuts_then_refuses():
+    from modules import catch_xp
+
+    async def scenario(pool):
+        oid = await _xp_setup(pool, level=1)
+        per_grant, per_day = catch_xp.SOURCES["daily"]
+        got = 0
+        for i in range(per_day // per_grant):
+            r = await catch_xp.grant_xp(oid, U1, None, source="daily", amount=per_grant, idem_key=f"d{i}")
+            assert r.ok
+            got += r.gained
+        assert got == per_day
+        over = await catch_xp.grant_xp(oid, U1, None, source="daily", amount=5, idem_key="d-over")
+        assert not over.ok and over.reason == "capped"
+        # another source has its own budget
+        other = await catch_xp.grant_xp(oid, U1, None, source="buddy", amount=5, idem_key="b0")
+        assert other.ok
+
+    run_with_pool(scenario)
+
+
+def test_xp_max_level_refuses_and_stays_at_cap():
+    from modules import catch_xp
+    from modules.catch_game import LEVEL_MAX
+
+    async def scenario(pool):
+        oid = await _xp_setup(pool, level=LEVEL_MAX - 1)
+        r = await catch_xp.grant_xp(oid, U1, None, source="catch", amount=40, idem_key="m1")
+        assert r.ok
+        # push to the cap directly, then confirm further grants are refused
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_owned SET level = $2, xp = 0 WHERE id = $1", oid, LEVEL_MAX)
+        r2 = await catch_xp.grant_xp(oid, U1, None, source="catch", amount=40, idem_key="m2")
+        assert not r2.ok and r2.reason == "max_level"
+        row = await _creature(pool, oid)
+        assert (row["level"], row["xp"]) == (LEVEL_MAX, 0)
+
+    run_with_pool(scenario)
+
+
+def test_xp_concurrent_same_key_pays_once():
+    from modules import catch_xp
+
+    async def scenario(pool):
+        oid = await _xp_setup(pool, level=3)
+        holder = await pool.acquire()
+        tx = holder.transaction()
+        await tx.start()
+        await holder.fetchval("SELECT 1 FROM catch_players WHERE user_id = $1 FOR UPDATE", U1)
+        tasks = [
+            asyncio.create_task(catch_xp.grant_xp(oid, U1, None, source="catch", amount=25, idem_key="same"))
+            for _ in range(6)
+        ]
+        await asyncio.sleep(0.5)
+        assert not any(t.done() for t in tasks), "grants should be waiting on the player lock"
+        await tx.commit()
+        await pool.release(holder)
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=30)
+        assert all(r.ok for r in results)
+        assert sum(1 for r in results if not r.replay) == 1
+        assert (await _creature(pool, oid))["xp"] == catch_xp.apply_xp(3, 0, 25)[1]
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit WHERE action = 'xp' AND ref_id = $1", oid) == 1
+
+    run_with_pool(scenario)
+
+
+def test_buddy_catch_xp_goes_to_buddy_only_and_never_twice():
+    from modules import catch_xp
+
+    async def scenario(pool):
+        buddy = await _xp_setup(pool, U1, "bd-a", level=4)
+        none_yet = await catch_xp.grant_buddy_catch_xp(U1, None, caught_owned_id=111)
+        assert none_yet is None
+        theirs = await _xp_setup(pool, U2, "bd-b", level=4)
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_players SET buddy_id = $2 WHERE user_id = $1", U1, theirs)
+        foreign = await catch_xp.grant_buddy_catch_xp(U1, None, caught_owned_id=112)
+        assert foreign is None  # a buddy id that is not the player's own is ignored
+        assert (await _creature(pool, theirs))["xp"] == 0
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_players SET buddy_id = $2 WHERE user_id = $1", U1, buddy)
+        r = await catch_xp.grant_buddy_catch_xp(U1, None, caught_owned_id=113, new_species=True)
+        assert r.ok and r.gained == catch_xp.BUDDY_CATCH_XP + catch_xp.BUDDY_NEW_SPECIES_XP
+        again = await catch_xp.grant_buddy_catch_xp(U1, None, caught_owned_id=113, new_species=True)
+        assert again.replay and (await _creature(pool, buddy))["xp"] == catch_xp.apply_xp(4, 0, r.gained)[1]
+
+    run_with_pool(scenario)

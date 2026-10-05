@@ -184,5 +184,8 @@
   "catch.rules.seconds": "{count} sec",
   "catch.rules.error": "The server rules couldn't be loaded right now. Try again in a moment.",
   "catch.setup.support_only": "Support server only",
-  "catch.setup.support_only_detail": "Creature catching is only open in the support server for now. It will open to other servers later."
+  "catch.setup.support_only_detail": "Creature catching is only open in the support server for now. It will open to other servers later.",
+  "catch.xp.field": "Buddy",
+  "catch.xp.buddy_gain": "Your buddy gained **{gained} XP**.",
+  "catch.xp.buddy_level_up": "Your buddy gained **{gained} XP** and reached **level {level}**!"
 }
