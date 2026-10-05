@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from modules import catch_db
+from modules import catch_db, catch_emoji
 from modules.catch_species import all_species
 
 COLLECTION_PAGE_SIZE = 10
@@ -23,7 +23,7 @@ SORTS: dict[str, str] = {
     "rarity": "s.rarity DESC, o.level DESC, o.id DESC",
     "favorites": "o.favorite DESC, o.caught_at DESC, o.id DESC",
 }
-RARITY_MARK = {"common": "⚪", "uncommon": "🟢", "rare": "🔵", "epic": "🟣", "mythic": "🟠"}
+RARITY_MARK = catch_emoji.RARITY  # one shared table: restyle it in modules/catch_emoji.py
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,9 +140,9 @@ def dex_summary(entries: list[DexEntry]) -> tuple[int, int, int]:
 
 
 def format_owned_line(row: OwnedRow) -> str:
-    mark = RARITY_MARK.get(row.rarity, "⚪")
+    mark = RARITY_MARK.get(row.rarity, catch_emoji.FALLBACK)
     label = f"{row.nickname} ({row.name})" if row.nickname else row.name
-    flags = ("✨" if row.shiny else "") + ("🌟" if row.special else "") + ("❤️" if row.favorite else "") + ("🔒" if row.locked else "")
+    flags = catch_emoji.flags(shiny=row.shiny, special=row.special, favorite=row.favorite, locked=row.locked)
     return f"{mark} `#{row.id}` **{label}** · Lv.{row.level}{(' ' + flags) if flags else ''}"
 
 

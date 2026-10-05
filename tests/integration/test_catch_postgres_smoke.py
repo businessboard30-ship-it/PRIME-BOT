@@ -424,6 +424,292 @@ def test_failed_catch_schema_does_not_break_the_surrounding_migration_transactio
     run_with_pool(scenario)
 
 
+# ----------------------------------------------------------------------------- Phase 3
+
+async def _owned_by_key(pool, key):
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT id FROM catch_owned WHERE idem_key = $1", key)
+
+
+async def _grant(user, key, species_id, level, *, clone_id=None, **extra):
+    from modules import catch_service
+
+    assert await catch_service.record_catch(
+        user_id=user, clone_id=clone_id, guild_id=None, source="wild", species_id=species_id, level=level,
+        ivs=[10, 10, 10, 10, 10], idem_key=key,
+    )
+
+
+async def _hold_locked_then_run(pool, lock_sql, lock_args, coroutines):
+    """Start every coroutine while a holder keeps one row locked, then release them together,
+    so all of them are genuinely in flight at the same moment. The holder is always released,
+    even if an assertion fails, so a failing test can never hang the pool."""
+    holder = await pool.acquire()
+    tx = holder.transaction()
+    await tx.start()
+    pending = []
+    try:
+        await holder.fetchval(lock_sql, *lock_args)
+        pending = [asyncio.create_task(c) for c in coroutines]
+        await asyncio.sleep(0.5)
+        assert not any(t.done() for t in pending), "calls should be waiting on the row lock"
+    except BaseException:
+        await tx.rollback()
+        await pool.release(holder)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        raise
+    await tx.commit()
+    await pool.release(holder)
+    return await asyncio.gather(*pending)
+
+
+def _lock_creature(owned_id):
+    return "SELECT id FROM catch_owned WHERE id = $1 FOR UPDATE", (owned_id,)
+
+
+def test_phase3_creature_actions_are_scoped_to_their_owner_and_clone():
+    from modules import catch_creature, catch_profile, catch_sell, catch_species
+
+    async def scenario(pool):
+        async with pool.acquire() as conn:
+            await catch_species.sync_to_db(conn)
+        await catch_items_starter()
+        await _grant(U1, "p3-a", 1, 16)
+        await _grant(U2, "p3-b", 1, 16)
+        mine, theirs = await _owned_by_key(pool, "p3-a"), await _owned_by_key(pool, "p3-b")
+
+        detail = await catch_creature.load_creature(mine, U1, None)
+        assert detail and detail.name == "Cindrop" and detail.level == 16 and not detail.is_buddy
+        assert set(detail.stats) == {"vigor", "power", "guard", "speed", "spirit"}
+        assert await catch_creature.load_creature(theirs, U1, None) is None      # someone else's
+        assert await catch_creature.load_creature(mine, U1, 3) is None           # wrong clone
+        assert await catch_creature.load_creature(mine, U2, None) is None
+
+        # lock: flips for the owner, refused for everyone else, unchanged underneath
+        assert (await catch_creature.toggle_lock(mine, U1, None)).value is True
+        assert (await catch_creature.toggle_lock(mine, U2, None)).reason == "not_found"
+        assert (await catch_creature.toggle_lock(mine, U1, 3)).reason == "not_found"
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT locked FROM catch_owned WHERE id = $1", mine) is True
+        assert (await catch_sell.sell_creature(mine, U1, None)).reason == "locked"   # lock really blocks Sell
+        assert (await catch_creature.toggle_lock(mine, U1, None)).value is False
+
+        # nickname: saved clean, bad ones refused before the database, others cannot write it
+        assert (await catch_creature.set_nickname(mine, U1, None, "  Big   Sparky ")).value == "Big Sparky"
+        assert (await catch_creature.set_nickname(mine, U1, None, "see http-x")).reason == "link"
+        assert (await catch_creature.set_nickname(mine, U1, None, "a" * 25)).reason == "too_long"
+        assert (await catch_creature.set_nickname(mine, U2, None, "Stolen")).reason == "not_found"
+        assert (await catch_creature.set_nickname(mine, U1, 3, "Stolen")).reason == "not_found"
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT nickname FROM catch_owned WHERE id = $1", mine) == "Big Sparky"
+        assert (await catch_creature.set_nickname(mine, U1, None, "   ")).value is None
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT nickname FROM catch_owned WHERE id = $1", mine) is None
+
+        # buddy: set, shows on the profile, toggles off, cannot be pointed at another player's creature
+        assert (await catch_creature.toggle_buddy(mine, U1, None, guild_id=GUILD)).value is True
+        assert (await catch_creature.load_creature(mine, U1, None)).is_buddy
+        assert (await catch_profile.load_profile(U1, None)).buddy.id == mine
+        assert (await catch_creature.toggle_buddy(theirs, U1, None)).reason == "not_found"
+        assert (await catch_creature.toggle_buddy(mine, U2, None)).reason == "not_found"
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT buddy_id FROM catch_players WHERE user_id = $1", U1) == mine
+            assert await conn.fetchval("SELECT buddy_id FROM catch_players WHERE user_id = $1", U2) is None
+        assert (await catch_creature.toggle_buddy(mine, U1, None)).value is False
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT buddy_id FROM catch_players WHERE user_id = $1", U1) is None
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit WHERE user_id = $1 AND action = 'buddy'", U1) == 2
+
+        # a buddy that is later sold reads as "no buddy" instead of a dangling card
+        await catch_creature.toggle_buddy(mine, U1, None)
+        assert (await catch_sell.sell_creature(mine, U1, None)).ok
+        assert (await catch_profile.load_profile(U1, None)).buddy is None
+
+        # an owner with no player row cannot become anyone's buddy owner: nothing is written
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO catch_owned (user_id, species_id, level, ivs, source) VALUES ($1, 1, 5, '{1,1,1,1,1}', 0)", U3,
+            )
+            orphan = await conn.fetchval("SELECT id FROM catch_owned WHERE user_id = $1", U3)
+        assert (await catch_creature.toggle_buddy(orphan, U3, None)).reason == "no_player"
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_players WHERE user_id = $1", U3) == 0
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit WHERE user_id = $1 AND action = 'buddy'", U3) == 0
+
+    async def catch_items_starter():
+        from modules import catch_items
+        await catch_items.claim_daily(U1, None)
+        await catch_items.claim_daily(U2, None)
+
+    run_with_pool(scenario)
+
+
+def test_phase3_profile_reads_only_this_player_and_writes_nothing():
+    from modules import catch_profile, catch_species
+
+    async def scenario(pool):
+        from modules.catch_species import all_species
+
+        async with pool.acquire() as conn:
+            await catch_species.sync_to_db(conn)
+        epic = next(i for i, sp in all_species().items() if sp["rarity"] == "epic")
+        rare = next(i for i, sp in all_species().items() if sp["rarity"] == "rare")
+        await _grant(U1, "pf-1", 1, 5)
+        await _grant(U1, "pf-2", rare, 40)
+        await _grant(U1, "pf-3", epic, 8)
+        await _grant(U2, "pf-4", 1, 99)
+        await _grant(U1, "pf-clone", 1, 99, clone_id=3)
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_owned SET shiny = TRUE WHERE idem_key = 'pf-1'")
+
+        before = {}
+        async with pool.acquire() as conn:
+            for table in ("catch_players", "catch_owned", "catch_dex", "catch_audit", "catch_inventory"):
+                before[table] = await conn.fetchval(f"SELECT count(*) FROM {table}")  # noqa: S608 - fixed names
+
+        profile = await catch_profile.load_profile(U1, None)
+        assert profile.owned == 3 and profile.total_catches == 3 and profile.shinies == 1 and profile.specials == 0
+        assert profile.rarest.rarity == "epic" and profile.rarest.level == 8     # rarity beats level
+        assert profile.dex_caught == 3 and profile.dex_total >= 3 and 0 < profile.dex_percent < 100
+        assert profile.buddy is None
+
+        stranger = await catch_profile.load_profile(U3, None)
+        assert stranger == catch_profile.TrainerProfile(dex_total=stranger.dex_total)   # all zeros, no buddy, no rarest
+        other_clone = await catch_profile.load_profile(U1, 3)
+        assert other_clone.owned == 1 and other_clone.total_catches == 1
+
+        async with pool.acquire() as conn:
+            for table, count in before.items():
+                assert await conn.fetchval(f"SELECT count(*) FROM {table}") == count, table  # noqa: S608
+
+    run_with_pool(scenario)
+
+
+def test_phase3_evolution_keeps_everything_and_overlapping_taps_evolve_once():
+    from modules import catch_creature, catch_evolve, catch_species
+
+    async def scenario(pool):
+        async with pool.acquire() as conn:
+            await catch_species.sync_to_db(conn)
+        from modules import catch_items
+        await catch_items.claim_daily(U1, None)
+        await _grant(U1, "ev-a", 1, 16)
+        await _grant(U1, "ev-low", 1, 15)
+        await _grant(U1, "ev-final", 3, 50)
+        await _grant(U2, "ev-theirs", 1, 16)
+        a, low, final, theirs = [await _owned_by_key(pool, k) for k in ("ev-a", "ev-low", "ev-final", "ev-theirs")]
+        await catch_creature.set_nickname(a, U1, None, "Sparky")
+        await catch_creature.toggle_lock(a, U1, None)
+        await catch_creature.toggle_buddy(a, U1, None)
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_owned SET favorite = TRUE, shiny = TRUE, xp = 77 WHERE id = $1", a)
+            catches_before = await conn.fetchval("SELECT total_catches FROM catch_players WHERE user_id = $1", U1)
+            ivs_before = await conn.fetchval("SELECT ivs FROM catch_owned WHERE id = $1", a)
+
+        pv = await catch_evolve.preview(a, U1, None)
+        assert pv.eligibility.status == "ready" and pv.to_name == "Pyrrock" and pv.after["power"] > pv.before["power"]
+        assert (await catch_evolve.preview(low, U1, None)).eligibility.status == "level_too_low"
+        assert (await catch_evolve.preview(final, U1, None)).eligibility.status == "final_form"
+        assert await catch_evolve.preview(theirs, U1, None) is None and await catch_evolve.preview(a, U1, 3) is None
+
+        # six taps that overlap: exactly one evolves, the rest are told it is no longer possible
+        results = await _hold_locked_then_run(pool, *_lock_creature(a), [catch_evolve.evolve(a, U1, None, guild_id=GUILD) for _ in range(6)])
+        assert sum(r.ok for r in results) == 1
+        assert all(r.reason == "level_too_low" for r in results if not r.ok)   # Pyrrock needs level 36
+        winner = next(r for r in results if r.ok)
+        assert (winner.from_name, winner.to_name, winner.to_species_id, winner.new_dex_entry) == ("Cindrop", "Pyrrock", 2, True)
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM catch_owned WHERE id = $1", a)
+            assert row["species_id"] == 2 and row["level"] == 16 and row["xp"] == 77 and row["nickname"] == "Sparky"
+            assert row["favorite"] and row["locked"] and row["shiny"] and list(row["ivs"]) == list(ivs_before)
+            assert await conn.fetchval("SELECT buddy_id FROM catch_players WHERE user_id = $1", U1) == a   # still the buddy
+            assert await conn.fetchval("SELECT total_catches FROM catch_players WHERE user_id = $1", U1) == catches_before
+            dex = {r["species_id"]: r for r in await conn.fetch("SELECT * FROM catch_dex WHERE user_id = $1", U1)}
+            assert dex[2]["caught_count"] == 1 and dex[2]["shiny_caught"] == 1 and dex[2]["seen"]
+            assert dex[1]["caught_count"] == 2                                     # the old species keeps its history
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit WHERE user_id = $1 AND action = 'evolve'", U1) == 1
+
+        # refusals change nothing and write nothing
+        assert (await catch_evolve.evolve(low, U1, None)).reason == "level_too_low"
+        assert (await catch_evolve.evolve(final, U1, None)).reason == "final_form"
+        assert (await catch_evolve.evolve(theirs, U1, None)).reason == "not_found"
+        assert (await catch_evolve.evolve(low, U1, 3)).reason == "not_found"
+        async with pool.acquire() as conn:
+            species = {r["id"]: r["species_id"] for r in await conn.fetch("SELECT id, species_id FROM catch_owned WHERE id = ANY($1::bigint[])", [low, final, theirs])}
+            assert species == {low: 1, final: 3, theirs: 1}
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit WHERE action = 'evolve'") == 1
+
+    run_with_pool(scenario)
+
+
+def test_phase3_item_evolution_spends_exactly_one_item_and_rolls_back_on_failure(monkeypatch):
+    from modules import catch_evolve, catch_species
+
+    async def scenario(pool):
+        async with pool.acquire() as conn:
+            await catch_species.sync_to_db(conn)
+        species = {k: dict(v) for k, v in catch_species.all_species().items()}
+        species[1].update(evolve_level=None, evolve_item="ember_stone")
+        monkeypatch.setattr(catch_evolve, "all_species", lambda: species)
+        from modules import catch_items
+        await catch_items.claim_daily(U1, None)
+        for key in ("it-1", "it-2", "it-3"):
+            await _grant(U1, key, 1, 2)
+        ids = [await _owned_by_key(pool, k) for k in ("it-1", "it-2", "it-3")]
+
+        # no item: refused, nothing spent
+        assert (await catch_evolve.evolve(ids[0], U1, None)).reason == "needs_item"
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO catch_inventory (user_id, clone_id, item_key, quantity) VALUES ($1, NULL, 'ember_stone', 1)", U1)
+
+        # one stone, three creatures tapped together: exactly one evolves and the stone is gone
+        results = await _hold_locked_then_run(
+            pool, "SELECT 1 FROM catch_inventory WHERE user_id = $1 AND item_key = 'ember_stone' FOR UPDATE", (U1,),
+            [catch_evolve.evolve(i, U1, None) for i in ids],
+        )
+        assert sum(r.ok for r in results) == 1
+        assert all(r.reason in {"needs_item", "no_item"} for r in results if not r.ok)
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT quantity FROM catch_inventory WHERE user_id = $1 AND item_key = 'ember_stone'", U1) == 0
+            assert await conn.fetchval("SELECT count(*) FROM catch_owned WHERE user_id = $1 AND species_id = 2", U1) == 1
+
+        # a failure after the item was spent rolls everything back (stone returned, species unchanged, no dex row, no audit)
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_inventory SET quantity = 1 WHERE user_id = $1 AND item_key = 'ember_stone'", U1)
+            await conn.execute(
+                "CREATE FUNCTION catch_test_block() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'blocked'; END $$ LANGUAGE plpgsql"
+            )
+            await conn.execute("CREATE TRIGGER catch_test_block BEFORE INSERT ON catch_audit FOR EACH ROW EXECUTE FUNCTION catch_test_block()")
+            audits = await conn.fetchval("SELECT count(*) FROM catch_audit")
+        remaining = [i for i in ids if (await _species_of(pool, i)) == 1][0]
+        with pytest.raises(Exception, match="blocked"):
+            await catch_evolve.evolve(remaining, U1, None)
+        async with pool.acquire() as conn:
+            await conn.execute("DROP TRIGGER catch_test_block ON catch_audit")
+            await conn.execute("DROP FUNCTION catch_test_block()")
+            assert await conn.fetchval("SELECT quantity FROM catch_inventory WHERE user_id = $1 AND item_key = 'ember_stone'", U1) == 1
+            assert await conn.fetchval("SELECT species_id FROM catch_owned WHERE id = $1", remaining) == 1
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit") == audits
+
+        # a target species that is disabled in the database is refused before anything is spent
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE catch_species SET enabled = FALSE WHERE id = 2")
+        assert (await catch_evolve.evolve(remaining, U1, None)).reason == "unknown_target"
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT quantity FROM catch_inventory WHERE user_id = $1 AND item_key = 'ember_stone'", U1) == 1
+
+    async def _species_of(pool, owned_id):
+        async with pool.acquire() as conn:
+            return await conn.fetchval("SELECT species_id FROM catch_owned WHERE id = $1", owned_id)
+
+    run_with_pool(scenario)
+
+
+
+
 async def _xp_setup(pool, user=U1, key="xp-a", level=5, species_rarity="common"):
     """Sync species, make one creature for ``user`` and return its owned id."""
     from modules import catch_service, catch_species

@@ -8,6 +8,7 @@ import discord
 import discord_bot.cogs._views_catch_collection as views
 import discord_bot.cogs.catch as catch
 from modules import catch_collection as cc
+from modules import catch_emoji
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
 
 
@@ -86,7 +87,9 @@ def test_set_favorite_returns_new_value(monkeypatch):
 def test_format_owned_line_shows_flags_and_nickname():
     row = cc.OwnedRow(5, 1, "Cindrop", "rare", 12, "Sparky", True, False, True, True)
     line = cc.format_owned_line(row)
-    assert "Sparky (Cindrop)" in line and "Lv.12" in line and "✨" in line and "❤️" in line and "🔒" in line
+    assert "Sparky (Cindrop)" in line and "Lv.12" in line
+    # Flag emoji live in modules/catch_emoji.py, so the test follows them if the owner restyles.
+    assert all(catch_emoji.FLAG[name] in line for name in ("shiny", "favorite", "locked"))
 
 
 def test_dex_hides_unseen_and_exclusive_species(monkeypatch):

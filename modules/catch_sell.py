@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from modules import catch_db
+from modules import catch_db, catch_emoji
 from modules.catch_game import (
     RARITY_BY_KEY,
     SHINY_SELL_MULTIPLIER,
@@ -27,7 +27,7 @@ from modules.catch_game import (
 from modules.catch_species import all_species
 
 SELL_PAGE_SIZE = 10
-RARITY_MARK = {"common": "⚪", "uncommon": "🟢", "rare": "🔵", "epic": "🟣", "mythic": "🟠"}
+RARITY_MARK = catch_emoji.RARITY  # one shared table: restyle it in modules/catch_emoji.py
 
 
 @dataclass(frozen=True, slots=True)

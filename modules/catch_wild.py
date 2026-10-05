@@ -10,12 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from modules import catch_db
+from modules import catch_db, catch_emoji
 from modules.catch_game import RARITY_BY_KEY
 from modules.catch_species import all_species
 
 WILD_LIST_LIMIT = 10
-RARITY_MARK = {"common": "⚪", "uncommon": "🟢", "rare": "🔵", "epic": "🟣", "mythic": "🟠"}
+RARITY_MARK = catch_emoji.RARITY  # one shared table: restyle it in modules/catch_emoji.py
 
 
 @dataclass(frozen=True, slots=True)
