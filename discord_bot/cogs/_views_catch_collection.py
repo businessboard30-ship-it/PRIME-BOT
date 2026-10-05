@@ -15,9 +15,10 @@ from discord_bot.cogs._views_catch_creature import open_creature_detail
 from discord_bot.cogs._views_catch_profile import open_profile
 from modules import catch_emoji
 from modules.catch_collection import (
-    SORTS, dex_page, dex_summary, format_dex_line, format_owned_line,
-    list_owned, load_dex, page_count, set_favorite,
+    SEARCH_MAX, SORTS, CollectionFilter, dex_page, dex_summary, filter_summary, format_dex_line,
+    format_owned_line, list_owned, load_dex, page_count, set_favorite,
 )
+from modules.catch_game import ELEMENTS, RARITIES
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
 from modules.catch_theme import button_style, state_color
@@ -27,24 +28,31 @@ logger = logging.getLogger(__name__)
 SORT_LABELS = {"recent": "Newest", "level": "Highest level", "rarity": "Rarest", "favorites": "Favourites first"}
 
 
-def _collection_embed(rows, total: int, page: int, sort: str) -> discord.Embed:
+def _collection_embed(rows, total: int, page: int, sort: str, flt: CollectionFilter | None = None) -> discord.Embed:
     pages = page_count(total, 10)
+    summary = filter_summary(flt)
     if not rows:
-        return discord.Embed(title=text("collection.title"), description=text("collection.empty"), colour=state_color("info"))
+        empty = text("collection.filtered_empty", filters=summary) if summary else text("collection.empty")
+        return discord.Embed(title=text("collection.title"), description=empty, colour=state_color("info"))
     embed = discord.Embed(
         title=text("collection.title"),
         description="\n".join(format_owned_line(r) for r in rows),
         colour=state_color("info"),
     )
-    embed.set_footer(text=text("collection.footer", page=page + 1, pages=pages, total=total, sort=SORT_LABELS[sort]))
+    if summary:
+        embed.set_footer(text=text("collection.footer_filtered", page=page + 1, pages=pages, total=total,
+                                   sort=SORT_LABELS[sort], filters=summary))
+    else:
+        embed.set_footer(text=text("collection.footer", page=page + 1, pages=pages, total=total, sort=SORT_LABELS[sort]))
     return embed
 
 
 class CollectionView(discord.ui.View):
     def __init__(self, user_id: int, clone_id: int | None, *, page: int = 0, sort: str = "recent",
-                 rows=(), total: int = 0):
+                 rows=(), total: int = 0, flt: CollectionFilter | None = None):
         super().__init__(timeout=600)
         self.user_id, self.clone_id = user_id, clone_id
+        self.flt = (flt or CollectionFilter()).clean()
         self.page, self.sort, self.rows, self.total = page, sort if sort in SORTS else "recent", list(rows), total
         self._build()
 
@@ -84,9 +92,13 @@ class CollectionView(discord.ui.View):
         return True
 
     async def _reload(self, interaction: discord.Interaction) -> None:
-        self.rows, self.total, self.page = await list_owned(self.user_id, self.clone_id, page=self.page, sort=self.sort)
+        self.rows, self.total, self.page = await list_owned(
+            self.user_id, self.clone_id, page=self.page, sort=self.sort, flt=self.flt,
+        )
         self._build()
-        await interaction.edit_original_response(embed=_collection_embed(self.rows, self.total, self.page, self.sort), view=self)
+        await interaction.edit_original_response(
+            embed=_collection_embed(self.rows, self.total, self.page, self.sort, self.flt), view=self,
+        )
 
     async def _sort(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
@@ -149,7 +161,7 @@ class CollectionBrowseView(CollectionView):
         """Redraw the list (used by Back on the creature and trainer card screens)."""
         try:
             self.rows, self.total, self.page = await list_owned(
-                self.user_id, self.clone_id, page=self.page, sort=self.sort,
+                self.user_id, self.clone_id, page=self.page, sort=self.sort, flt=self.flt,
             )
         except Exception:
             logger.exception("Catch collection reload failed user=%s", self.user_id)
@@ -157,7 +169,7 @@ class CollectionBrowseView(CollectionView):
             return
         self._build()
         await interaction.edit_original_response(
-            content=None, embed=_collection_embed(self.rows, self.total, self.page, self.sort), view=self,
+            content=None, embed=_collection_embed(self.rows, self.total, self.page, self.sort, self.flt), view=self,
         )
 
     async def _open_creature(self, interaction: discord.Interaction) -> None:
@@ -172,6 +184,227 @@ class CollectionBrowseView(CollectionView):
     async def _profile(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await open_profile(interaction, self.user_id, self.clone_id, back=self._back_to_list)
+
+
+class CollectionBoxView(CollectionBrowseView):
+    """Browse view plus the box controls: Filter screen and Go to page.
+
+    Added on top of ``CollectionBrowseView`` (its children are unchanged); the two new
+    buttons sit on row 2 beside Prev, Next and Trainer card.
+    """
+
+    def _build(self) -> None:
+        super()._build()
+        filter_btn = discord.ui.Button(
+            label=text("collection.filter.button"), emoji=catch_emoji.mark("ui", "filter"),
+            style=button_style("navigation"), row=2,
+        )
+        filter_btn.callback = self._open_filters
+        self.add_item(filter_btn)
+        jump_btn = discord.ui.Button(
+            label=text("collection.jump.button"), emoji=catch_emoji.mark("ui", "jump"),
+            style=button_style("navigation"), row=2, disabled=page_count(self.total, 10) <= 1,
+        )
+        jump_btn.callback = self._open_jump
+        self.add_item(jump_btn)
+
+    async def _open_filters(self, interaction: discord.Interaction) -> None:
+        # Pure UI state: no database work, so the response is the screen itself.
+        screen = CollectionFilterView(self)
+        await interaction.response.edit_message(content=None, embed=screen.embed(), view=screen)
+
+    async def _open_jump(self, interaction: discord.Interaction) -> None:
+        # A modal is itself the interaction response; it does no database work here.
+        await interaction.response.send_modal(PageJumpModal(self))
+
+    async def apply_filter(self, interaction: discord.Interaction, flt: CollectionFilter) -> None:
+        """Adopt ``flt``, go back to page 1 and redraw the list. The caller has already responded."""
+        self.flt, self.page = flt.clean(), 0
+        await self._back_to_list(interaction)
+
+
+class CollectionFilterView(discord.ui.View):
+    """Rarity, element, shiny, favourite and search; Show results returns to the list."""
+
+    def __init__(self, box: CollectionBoxView):
+        super().__init__(timeout=600)
+        self.box, self.user_id = box, box.user_id
+        self.flt = box.flt
+        self._busy = False
+        self._build()
+
+    def embed(self) -> discord.Embed:
+        summary = filter_summary(self.flt) or text("collection.filter.none")
+        return discord.Embed(
+            title=text("collection.filter.title"), description=text("collection.filter.current", filters=summary),
+            colour=state_color("info"),
+        )
+
+    def _build(self) -> None:
+        self.clear_items()
+        any_label = text("collection.filter.any")
+        rarity = discord.ui.Select(
+            placeholder=text("collection.filter.rarity"), row=0,
+            options=[discord.SelectOption(label=any_label, value="any", default=self.flt.rarity is None)] + [
+                discord.SelectOption(label=r.key.title(), value=r.key, emoji=catch_emoji.mark("rarity", r.key),
+                                     default=self.flt.rarity == r.key)
+                for r in RARITIES
+            ],
+        )
+        rarity.callback = self._rarity
+        self.add_item(rarity)
+        element = discord.ui.Select(
+            placeholder=text("collection.filter.element"), row=1,
+            options=[discord.SelectOption(label=any_label, value="any", default=self.flt.element is None)] + [
+                discord.SelectOption(label=e.title(), value=e, emoji=catch_emoji.mark("element", e),
+                                     default=self.flt.element == e)
+                for e in ELEMENTS
+            ],
+        )
+        element.callback = self._element
+        self.add_item(element)
+        shiny = discord.ui.Button(
+            label=text("collection.filter.shiny"), emoji=catch_emoji.mark("flag", "shiny"), row=2,
+            style=button_style("toggle_on" if self.flt.shiny else "toggle_off"),
+        )
+        shiny.callback = self._shiny
+        self.add_item(shiny)
+        fav = discord.ui.Button(
+            label=text("collection.filter.favorite"), emoji=catch_emoji.mark("flag", "favorite"), row=2,
+            style=button_style("toggle_on" if self.flt.favorite else "toggle_off"),
+        )
+        fav.callback = self._favorite
+        self.add_item(fav)
+        search = discord.ui.Button(
+            label=text("collection.filter.search"), emoji=catch_emoji.mark("ui", "filter"), row=2,
+            style=button_style("toggle_on" if self.flt.search else "toggle_off"),
+        )
+        search.callback = self._search
+        self.add_item(search)
+        clear = discord.ui.Button(
+            label=text("collection.filter.clear"), emoji=catch_emoji.mark("ui", "clear"), row=3,
+            style=button_style("navigation"), disabled=not self.flt.active,
+        )
+        clear.callback = self._clear
+        self.add_item(clear)
+        show = discord.ui.Button(label=text("collection.filter.apply"), emoji=catch_emoji.mark("ui", "ok"),
+                                 row=3, style=button_style("main"))
+        show.callback = self._apply
+        self.add_item(show)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            return False
+        return True
+
+    async def _redraw(self, interaction: discord.Interaction) -> None:
+        self._build()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    @staticmethod
+    def _picked(interaction: discord.Interaction) -> str | None:
+        value = ((interaction.data or {}).get("values") or ["any"])[0]
+        return None if value == "any" else str(value)
+
+    async def _rarity(self, interaction: discord.Interaction) -> None:
+        self.flt = CollectionFilter(self._picked(interaction), self.flt.element, self.flt.shiny,
+                                    self.flt.favorite, self.flt.search).clean()
+        await self._redraw(interaction)
+
+    async def _element(self, interaction: discord.Interaction) -> None:
+        self.flt = CollectionFilter(self.flt.rarity, self._picked(interaction), self.flt.shiny,
+                                    self.flt.favorite, self.flt.search).clean()
+        await self._redraw(interaction)
+
+    async def _shiny(self, interaction: discord.Interaction) -> None:
+        self.flt = CollectionFilter(self.flt.rarity, self.flt.element, not self.flt.shiny,
+                                    self.flt.favorite, self.flt.search).clean()
+        await self._redraw(interaction)
+
+    async def _favorite(self, interaction: discord.Interaction) -> None:
+        self.flt = CollectionFilter(self.flt.rarity, self.flt.element, self.flt.shiny,
+                                    not self.flt.favorite, self.flt.search).clean()
+        await self._redraw(interaction)
+
+    async def _clear(self, interaction: discord.Interaction) -> None:
+        self.flt = CollectionFilter()
+        await self._redraw(interaction)
+
+    async def _search(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(SearchModal(self))
+
+    async def _apply(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        if self._busy:
+            await interaction.followup.send(text("collection.busy"), ephemeral=True)
+            return
+        self._busy = True
+        try:
+            gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", self.box.clone_id)
+            if not gate.allowed:
+                await interaction.followup.send(
+                    text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+                return
+            await self.box.apply_filter(interaction, self.flt)
+        except Exception:
+            logger.exception("Catch collection filter failed user=%s", self.user_id)
+            await interaction.followup.send(text("collection.error"), ephemeral=True)
+        finally:
+            self._busy = False
+
+
+class SearchModal(discord.ui.Modal):
+    def __init__(self, screen: CollectionFilterView):
+        super().__init__(title=text("collection.filter.search_title"), timeout=300)
+        self.screen = screen
+        self.term = discord.ui.TextInput(
+            label=text("collection.filter.search_label"),
+            placeholder=text("collection.filter.search_placeholder"),
+            default=screen.flt.search or None, required=False, max_length=SEARCH_MAX,
+        )
+        self.add_item(self.term)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        screen = self.screen
+        screen.flt = CollectionFilter(screen.flt.rarity, screen.flt.element, screen.flt.shiny,
+                                      screen.flt.favorite, str(self.term.value or "")).clean()
+        screen._build()
+        await interaction.edit_original_response(embed=screen.embed(), view=screen)
+
+
+class PageJumpModal(discord.ui.Modal):
+    def __init__(self, box: CollectionBoxView):
+        super().__init__(title=text("collection.jump.title"), timeout=300)
+        self.box = box
+        pages = page_count(box.total, 10)
+        self.number = discord.ui.TextInput(
+            label=text("collection.jump.label", pages=pages), required=True, max_length=6,
+            placeholder=str(box.page + 1),
+        )
+        self.add_item(self.number)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        box = self.box
+        try:
+            wanted = int(str(self.number.value).strip())
+        except ValueError:
+            await interaction.followup.send(
+                text("collection.jump.invalid", pages=page_count(box.total, 10)), ephemeral=True)
+            return
+        try:
+            gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", box.clone_id)
+            if not gate.allowed:
+                await interaction.followup.send(
+                    text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+                return
+            box.page = max(0, wanted - 1)  # list_owned clamps it into range
+            await box._back_to_list(interaction)
+        except Exception:
+            logger.exception("Catch collection page jump failed user=%s", box.user_id)
+            await interaction.followup.send(text("collection.error"), ephemeral=True)
 
 
 class DexView(discord.ui.View):
@@ -234,7 +467,7 @@ async def open_collection(interaction: discord.Interaction) -> None:
         logger.exception("Catch collection load failed user=%s", interaction.user.id)
         await interaction.followup.send(text("collection.error"), ephemeral=True)
         return
-    view = CollectionBrowseView(interaction.user.id, clone_id, page=page, rows=rows, total=total)
+    view = CollectionBoxView(interaction.user.id, clone_id, page=page, rows=rows, total=total)
     await interaction.followup.send(embed=_collection_embed(rows, total, page, "recent"), view=view, ephemeral=True)
 
 
@@ -255,4 +488,7 @@ async def open_dex(interaction: discord.Interaction) -> None:
     await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
 
-__all__ = ["CollectionBrowseView", "CollectionView", "DexView", "open_collection", "open_dex"]
+__all__ = [
+    "CollectionBoxView", "CollectionBrowseView", "CollectionFilterView", "CollectionView", "DexView",
+    "PageJumpModal", "SearchModal", "open_collection", "open_dex",
+]

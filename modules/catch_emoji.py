@@ -66,6 +66,9 @@ UI: dict[str, str] = {
     "arrow": "➜",
     "sparkle": "✨",
     "coins": "🪙",
+    "filter": "🔎",
+    "jump": "🔢",
+    "clear": "🧹",
     "release": "🕊️",
 }
 
