@@ -10,12 +10,14 @@ from its owner and ignores a second tap while one is running.
 
 from __future__ import annotations
 
+import io
 import logging
 from collections.abc import Awaitable, Callable
 
 import discord
 
 from modules import catch_emoji as emoji
+from modules.catch_card import creature_card_png
 from modules.catch_collection import set_favorite
 from modules.catch_creature import (
     NICKNAME_MAX,
@@ -93,6 +95,26 @@ def creature_embed(d: CreatureDetail, pv: EvolutionPreview | None = None) -> dis
     embed.add_field(name=f"{emoji.mark('ui', 'evolve')} {text('creature.evolution')}", value=_evolution_text(pv), inline=False)
     embed.set_footer(text=text("creature.footer", id=d.id))
     return embed
+
+
+CARD_FILE = "creature.png"
+
+
+async def creature_message(d: CreatureDetail, pv: EvolutionPreview | None = None) -> dict:
+    """Embed plus drawn card for ``edit_original_response``.
+
+    The card shows level, stats and XP, so the plain stat field is dropped when it renders.
+    If drawing fails the screen is the old text embed and any card from before is cleared.
+    """
+    embed = creature_embed(d, pv)
+    try:
+        data = await creature_card_png(d)
+    except Exception:
+        logger.exception("Catch creature card render failed creature=%s", d.id)
+        return {"embed": embed, "attachments": []}
+    embed.set_image(url=f"attachment://{CARD_FILE}")
+    embed.remove_field(0)
+    return {"embed": embed, "attachments": [discord.File(io.BytesIO(data), filename=CARD_FILE)]}
 
 
 def evolve_confirm_embed(pv: EvolutionPreview, nickname: str | None = None) -> discord.Embed:
@@ -197,7 +219,7 @@ class CreatureView(discord.ui.View):
         self.detail = detail
         self.pv = await preview(detail.id, self.user_id, self.clone_id)
         self._build()
-        await interaction.edit_original_response(content=notice, embed=creature_embed(detail, self.pv), view=self)
+        await interaction.edit_original_response(content=notice, view=self, **await creature_message(detail, self.pv))
 
     async def _run(self, interaction: discord.Interaction, work: Callable[[], Awaitable[None]]) -> None:
         await interaction.response.defer()
@@ -266,11 +288,11 @@ class CreatureView(discord.ui.View):
                 self.pv = pv
                 self._build()
                 notice = text(f"evolve.refused_{pv.eligibility.status}")
-                await interaction.edit_original_response(content=notice, embed=creature_embed(self.detail, pv), view=self)
+                await interaction.edit_original_response(content=notice, view=self, **await creature_message(self.detail, pv))
                 return
             confirm = EvolveConfirmView(self.user_id, self.clone_id, self)
             await interaction.edit_original_response(
-                content=None, embed=evolve_confirm_embed(pv, self.detail.nickname), view=confirm,
+                content=None, embed=evolve_confirm_embed(pv, self.detail.nickname), view=confirm, attachments=[],
             )
         await self._run(interaction, work)
 
@@ -282,7 +304,7 @@ class CreatureView(discord.ui.View):
                 await interaction.followup.send(text(key, name=safe(d.display_name)), ephemeral=True)
                 return
             confirm = ReleaseConfirmView(self.user_id, self.clone_id, self)
-            await interaction.edit_original_response(content=None, embed=release_confirm_embed(d), view=confirm)
+            await interaction.edit_original_response(content=None, embed=release_confirm_embed(d), view=confirm, attachments=[])
         await self._run(interaction, work)
 
     async def _back(self, interaction: discord.Interaction) -> None:
@@ -459,11 +481,11 @@ async def open_creature_detail(
         await interaction.followup.send(text("creature.error"), ephemeral=True)
         return
     view = CreatureView(user_id, clone_id, detail, pv, back=back)
-    await interaction.edit_original_response(content=None, embed=creature_embed(detail, pv), view=view)
+    await interaction.edit_original_response(content=None, view=view, **await creature_message(detail, pv))
 
 
 __all__ = [
-    "CreatureView", "EvolveConfirmView", "NicknameModal", "ReleaseConfirmView", "creature_embed", "evolve_confirm_embed",
+    "CARD_FILE", "CreatureView", "EvolveConfirmView", "NicknameModal", "ReleaseConfirmView", "creature_embed", "creature_message", "evolve_confirm_embed",
     "release_confirm_embed",
     "open_creature_detail", "safe", "stat_lines",
 ]

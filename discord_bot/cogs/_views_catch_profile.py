@@ -7,12 +7,14 @@ to the list. Read-only: defers first (rule B.6), checks the ``view`` gate, then 
 
 from __future__ import annotations
 
+import io
 import logging
 from collections.abc import Awaitable, Callable
 
 import discord
 
 from modules import catch_emoji as emoji
+from modules.catch_card import trainer_card_png
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
 from modules.catch_profile import ProfileCreature, TrainerProfile, load_profile
@@ -72,6 +74,25 @@ def profile_embed(profile: TrainerProfile, display_name: str) -> discord.Embed:
     return embed
 
 
+CARD_FILE = "trainer.png"
+
+
+async def profile_message(profile: TrainerProfile, display_name: str) -> dict:
+    """Embed plus drawn trainer card for ``edit_original_response``.
+
+    The embed keeps every field (it also carries the numbers the card leaves out, such as
+    best streak and seen count). If drawing fails the screen is the text embed alone.
+    """
+    embed = profile_embed(profile, display_name)
+    try:
+        data = await trainer_card_png(profile)
+    except Exception:
+        logger.exception("Catch trainer card render failed")
+        return {"embed": embed, "attachments": []}
+    embed.set_image(url=f"attachment://{CARD_FILE}")
+    return {"embed": embed, "attachments": [discord.File(io.BytesIO(data), filename=CARD_FILE)]}
+
+
 class ProfileView(discord.ui.View):
     def __init__(self, user_id: int, *, back: BackCallback):
         super().__init__(timeout=600)
@@ -109,8 +130,8 @@ async def open_profile(
         return
     name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", None) or "Trainer"
     await interaction.edit_original_response(
-        content=None, embed=profile_embed(profile, str(name)), view=ProfileView(user_id, back=back),
+        content=None, view=ProfileView(user_id, back=back), **await profile_message(profile, str(name)),
     )
 
 
-__all__ = ["ProfileView", "open_profile", "profile_embed"]
+__all__ = ["CARD_FILE", "ProfileView", "open_profile", "profile_embed", "profile_message"]
