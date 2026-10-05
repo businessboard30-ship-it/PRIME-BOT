@@ -268,5 +268,8 @@
   "catch.release.refused_favorite": "**{name}** is a favourite, so it was not released. Unfavourite it first.",
   "catch.release.refused_locked": "**{name}** is locked, so it was not released. Unlock it first.",
   "catch.release.gone": "That creature is no longer in your collection, so nothing was released.",
-  "catch.release.error": "The release couldn't be completed right now. Nothing was released; try again in a moment."
+  "catch.release.error": "The release couldn't be completed right now. Nothing was released; try again in a moment.",
+  "catch.xp.field": "Buddy",
+  "catch.xp.buddy_gain": "Your buddy gained **{gained} XP**.",
+  "catch.xp.buddy_level_up": "Your buddy gained **{gained} XP** and reached **level {level}**!"
 }
