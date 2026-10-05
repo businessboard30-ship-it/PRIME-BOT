@@ -708,6 +708,66 @@ def test_phase3_item_evolution_spends_exactly_one_item_and_rolls_back_on_failure
     run_with_pool(scenario)
 
 
+def test_phase5_release_is_scoped_clears_the_buddy_audits_and_overlapping_taps_release_once():
+    from modules import catch_creature, catch_items, catch_release, catch_species
+
+    async def scenario(pool):
+        async with pool.acquire() as conn:
+            await catch_species.sync_to_db(conn)
+        for user in (U1, U2):
+            await catch_items.claim_daily(user, None)
+        for key, user in (("rel-a", U1), ("rel-b", U1), ("rel-fav", U1), ("rel-lock", U1), ("rel-c", U1), ("rel-x", U2)):
+            await _grant(user, key, 1, 8)
+        a, b, fav, lock, other_clone, theirs = [
+            await _owned_by_key(pool, k) for k in ("rel-a", "rel-b", "rel-fav", "rel-lock", "rel-c", "rel-x")
+        ]
+        async with pool.acquire() as conn:
+            coins_before = await conn.fetchval("SELECT coins FROM catch_players WHERE user_id = $1", U1)
+            await conn.execute("UPDATE catch_owned SET favorite = true WHERE id = $1", fav)
+            await conn.execute("UPDATE catch_owned SET locked = true WHERE id = $1", lock)
+            await conn.execute("UPDATE catch_owned SET clone_id = 3 WHERE id = $1", other_clone)
+
+        # scope: someone else's creature, the wrong clone and a forged id release nothing
+        assert (await catch_release.release_creature(theirs, U1, None)).reason == "not_found"
+        assert (await catch_release.release_creature(a, U2, None)).reason == "not_found"
+        assert (await catch_release.release_creature(a, U1, 3)).reason == "not_found"
+        assert (await catch_release.release_creature(other_clone, U1, None)).reason == "not_found"
+        assert (await catch_release.release_creature(10**9, U1, None)).reason == "not_found"
+        # favourites and locked creatures survive
+        assert (await catch_release.release_creature(fav, U1, None)).reason == "favorite"
+        assert (await catch_release.release_creature(lock, U1, None)).reason == "locked"
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_owned WHERE id = ANY($1::bigint[])", [a, fav, lock, other_clone, theirs]) == 5
+            assert await conn.fetchval("SELECT count(*) FROM catch_audit WHERE action = 'release'") == 0
+
+        # buddy: releasing the buddy clears the slot; releasing a non-buddy leaves it alone
+        assert (await catch_creature.toggle_buddy(a, U1, None)).value is True
+        res = await catch_release.release_creature(b, U1, None, guild_id=GUILD)
+        assert res.ok and not res.was_buddy
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT buddy_id FROM catch_players WHERE user_id = $1", U1) == a
+
+        # overlapping taps on the buddy: exactly one release, one audit row, buddy cleared, no coins
+        results = await _hold_locked_then_run(
+            pool, *_lock_creature(a),
+            [catch_release.release_creature(a, U1, None, guild_id=GUILD) for _ in range(6)],
+        )
+        assert sum(1 for r in results if r.ok) == 1
+        assert {r.reason for r in results if not r.ok} == {"not_found"}
+        assert next(r for r in results if r.ok).was_buddy is True
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_owned WHERE id = ANY($1::bigint[])", [a, b]) == 0
+            assert await conn.fetchval("SELECT buddy_id FROM catch_players WHERE user_id = $1", U1) is None
+            assert await conn.fetchval("SELECT coins FROM catch_players WHERE user_id = $1", U1) == coins_before
+            rows = await conn.fetch("SELECT user_id, ref_id, detail FROM catch_audit WHERE action = 'release' ORDER BY id")
+        assert [(r["user_id"], r["ref_id"]) for r in rows] == [(U1, b), (U1, a)]
+        import json
+        assert json.loads(rows[1]["detail"])["was_buddy"] is True and json.loads(rows[0]["detail"])["was_buddy"] is False
+        # the other player's creature and player row were never touched
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM catch_owned WHERE id = $1", theirs) == 1
+
+    run_with_pool(scenario)
 
 
 async def _xp_setup(pool, user=U1, key="xp-a", level=5, species_rarity="common"):

@@ -66,6 +66,7 @@ UI: dict[str, str] = {
     "arrow": "➜",
     "sparkle": "✨",
     "coins": "🪙",
+    "release": "🕊️",
 }
 
 # Progress-bar pieces (plain text on purpose: they render the same on every device).
