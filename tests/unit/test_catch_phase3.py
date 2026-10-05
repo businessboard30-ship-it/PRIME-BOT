@@ -229,7 +229,7 @@ def edits_to(inter):
 
 def test_creature_view_layout_fits_discord_and_evolve_only_when_ready():
     view = make_view(None)
-    assert len(view.children) == 6 and {c.row for c in view.children} == {0, 1}
+    assert len(view.children) == 7 and {c.row for c in view.children} == {0, 1}
     assert len(view.to_components()) == 2
     evolve_btn = next(c for c in view.children if c.label == LOCALE["catch.creature.btn_evolve"])
     assert not evolve_btn.disabled

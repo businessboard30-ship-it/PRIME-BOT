@@ -69,6 +69,7 @@ UI: dict[str, str] = {
     "filter": "🔎",
     "jump": "🔢",
     "clear": "🧹",
+    "release": "🕊️",
 }
 
 # Progress-bar pieces (plain text on purpose: they render the same on every device).

@@ -270,8 +270,11 @@ def _success_embed(monkeypatch, shiny):
     rec = Recorder()
     monkeypatch.setattr(catch, "check_player_allowed", gate_ok(rec))
     monkeypatch.setattr(catch, "ensure_starter_kit", slow(rec, "starter", False))
-    result = SimpleNamespace(claimed=True, species_id=1, level=5, shiny=shiny, new_species=False)
+    result = SimpleNamespace(
+        claimed=True, species_id=1, level=5, shiny=shiny, new_species=False, owned_id=5, replay=False,
+    )
     monkeypatch.setattr(catch, "record_catch", slow(rec, "record", result))
+    monkeypatch.setattr(catch, "grant_buddy_catch_xp", slow(rec, "buddy_xp", None))
     sent = []
 
     async def followup_send(*args, **kwargs):

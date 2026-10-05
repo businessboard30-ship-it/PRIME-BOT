@@ -30,6 +30,7 @@ from modules.catch_game import STAT_NAMES
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
 from modules.catch_items import item_name
+from modules.catch_release import release_creature
 from modules.catch_theme import button_style, rarity_color, state_color
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,16 @@ def evolve_confirm_embed(pv: EvolutionPreview, nickname: str | None = None) -> d
     return embed
 
 
+def release_confirm_embed(d: CreatureDetail) -> discord.Embed:
+    body = text("release.body", name=safe(d.display_name), level=d.level)
+    if d.is_buddy:
+        body += "\n" + text("release.buddy_warning")
+    return discord.Embed(
+        title=f"{emoji.mark('ui', 'release')} {text('release.title', name=safe(d.display_name))}"[:256],
+        description=body, colour=state_color("warning"),
+    )
+
+
 def _gate_message(gate) -> str:
     return text("catch.unavailable", reason=gate.reason or "disabled")
 
@@ -162,7 +173,12 @@ class CreatureView(discord.ui.View):
             style=button_style("navigation"), row=1,
         )
         back.callback = self._back
-        for item in (fav, lock, buddy, nick, evo, back):
+        release = discord.ui.Button(
+            label=text("creature.btn_release"), emoji=emoji.mark("ui", "release"),
+            style=button_style("danger"), row=1,
+        )
+        release.callback = self._release
+        for item in (fav, lock, buddy, nick, evo, release, back):
             self.add_item(item)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -258,6 +274,17 @@ class CreatureView(discord.ui.View):
             )
         await self._run(interaction, work)
 
+    async def _release(self, interaction: discord.Interaction) -> None:
+        async def work() -> None:
+            d = self.detail
+            if d.favorite or d.locked:
+                key = "release.refused_favorite" if d.favorite else "release.refused_locked"
+                await interaction.followup.send(text(key, name=safe(d.display_name)), ephemeral=True)
+                return
+            confirm = ReleaseConfirmView(self.user_id, self.clone_id, self)
+            await interaction.edit_original_response(content=None, embed=release_confirm_embed(d), view=confirm)
+        await self._run(interaction, work)
+
     async def _back(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         await self.back(interaction)
@@ -351,6 +378,67 @@ class EvolveConfirmView(discord.ui.View):
             self._busy = False
 
 
+class ReleaseConfirmView(discord.ui.View):
+    def __init__(self, user_id: int, clone_id: int | None, creature_view: CreatureView):
+        super().__init__(timeout=300)
+        self.user_id, self.clone_id, self.creature_view = user_id, clone_id, creature_view
+        self._busy = False
+        confirm = discord.ui.Button(
+            label=text("release.confirm"), emoji=emoji.mark("ui", "release"), style=button_style("danger"),
+        )
+        confirm.callback = self._confirm
+        cancel = discord.ui.Button(label=text("release.cancel"), style=button_style("navigation"))
+        cancel.callback = self._cancel
+        self.add_item(confirm)
+        self.add_item(cancel)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            return False
+        return True
+
+    async def _cancel(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        try:
+            await self.creature_view._refresh(interaction, text("release.cancelled"))
+        except Exception:
+            logger.exception("Catch release cancel failed user=%s", self.user_id)
+            await interaction.followup.send(text("creature.error"), ephemeral=True)
+
+    async def _confirm(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        if self._busy:
+            await interaction.followup.send(text("creature.busy"), ephemeral=True)
+            return
+        self._busy = True
+        try:
+            gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", self.clone_id)
+            if not gate.allowed:
+                await interaction.followup.send(_gate_message(gate), ephemeral=True)
+                return
+            cv = self.creature_view
+            result = await release_creature(cv.detail.id, self.user_id, self.clone_id, guild_id=interaction.guild_id)
+            name = safe(result.name or cv.detail.display_name)
+            if result.ok:
+                notice = text("release.done", name=name)
+                if result.was_buddy:
+                    notice += "\n" + text("release.buddy_cleared")
+                await interaction.followup.send(notice, ephemeral=True)
+                await cv.back(interaction)
+                return
+            if result.reason in ("favorite", "locked"):
+                await cv._refresh(interaction, text(f"release.refused_{result.reason}", name=name))
+                return
+            await interaction.followup.send(text("release.gone"), ephemeral=True)
+            await cv.back(interaction)
+        except Exception:
+            logger.exception("Catch release failed user=%s creature=%s", self.user_id, self.creature_view.detail.id)
+            await interaction.followup.send(text("release.error"), ephemeral=True)
+        finally:
+            self._busy = False
+
+
 async def open_creature_detail(
     interaction: discord.Interaction, user_id: int, clone_id: int | None, owned_id: int, *, back: BackCallback,
 ) -> None:
@@ -375,6 +463,7 @@ async def open_creature_detail(
 
 
 __all__ = [
-    "CreatureView", "EvolveConfirmView", "NicknameModal", "creature_embed", "evolve_confirm_embed",
+    "CreatureView", "EvolveConfirmView", "NicknameModal", "ReleaseConfirmView", "creature_embed", "evolve_confirm_embed",
+    "release_confirm_embed",
     "open_creature_detail", "safe", "stat_lines",
 ]
