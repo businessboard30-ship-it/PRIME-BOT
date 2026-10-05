@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import discord
 
+from modules import catch_emoji
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
 from modules.catch_theme import state_color
@@ -15,10 +16,15 @@ from modules.catch_theme import state_color
 GUIDE_SECTIONS = ("catching", "items", "rarity", "coins", "collection")
 
 
+def _marks() -> dict[str, str]:
+    """Emoji the guide text refers to, read from the shared table so a restyle shows up here too."""
+    return {**catch_emoji.RARITY, "shiny": catch_emoji.FLAG["shiny"]}
+
+
 def guide_embed() -> discord.Embed:
     embed = discord.Embed(title=text("guide.title"), description=text("guide.intro"), colour=state_color("info"))
     for key in GUIDE_SECTIONS:
-        embed.add_field(name=text(f"guide.{key}.name"), value=text(f"guide.{key}.body"), inline=False)
+        embed.add_field(name=text(f"guide.{key}.name"), value=text(f"guide.{key}.body", **_marks()), inline=False)
     return embed
 
 

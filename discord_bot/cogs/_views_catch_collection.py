@@ -11,6 +11,9 @@ import logging
 
 import discord
 
+from discord_bot.cogs._views_catch_creature import open_creature_detail
+from discord_bot.cogs._views_catch_profile import open_profile
+from modules import catch_emoji
 from modules.catch_collection import (
     SORTS, dex_page, dex_summary, format_dex_line, format_owned_line,
     list_owned, load_dex, page_count, set_favorite,
@@ -113,6 +116,64 @@ class CollectionView(discord.ui.View):
         await self._reload(interaction)
 
 
+class CollectionBrowseView(CollectionView):
+    """The Collection list plus Phase 3 controls: open a creature, and the trainer card.
+
+    Added on top of ``CollectionView`` (children 0-3 are unchanged) so the list, sort,
+    favourite toggle and paging behave exactly as before.
+    """
+
+    def _build(self) -> None:
+        super()._build()
+        profile_btn = discord.ui.Button(
+            label=text("profile.button"), emoji=catch_emoji.mark("ui", "profile"),
+            style=button_style("navigation"), row=2,
+        )
+        profile_btn.callback = self._profile
+        self.add_item(profile_btn)
+        if self.rows:
+            pick = discord.ui.Select(
+                placeholder=text("creature.pick"), row=3,
+                options=[
+                    discord.SelectOption(
+                        label=f"#{r.id} {r.nickname or r.name} (Lv.{r.level})"[:100], value=str(r.id),
+                        emoji=catch_emoji.mark("rarity", r.rarity),
+                    )
+                    for r in self.rows
+                ],
+            )
+            pick.callback = self._open_creature
+            self.add_item(pick)
+
+    async def _back_to_list(self, interaction: discord.Interaction) -> None:
+        """Redraw the list (used by Back on the creature and trainer card screens)."""
+        try:
+            self.rows, self.total, self.page = await list_owned(
+                self.user_id, self.clone_id, page=self.page, sort=self.sort,
+            )
+        except Exception:
+            logger.exception("Catch collection reload failed user=%s", self.user_id)
+            await interaction.followup.send(text("collection.error"), ephemeral=True)
+            return
+        self._build()
+        await interaction.edit_original_response(
+            content=None, embed=_collection_embed(self.rows, self.total, self.page, self.sort), view=self,
+        )
+
+    async def _open_creature(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        try:
+            owned_id = int((interaction.data or {}).get("values", [""])[0])
+        except ValueError:
+            await interaction.followup.send(text("collection.not_found"), ephemeral=True)
+            return
+        await open_creature_detail(interaction, self.user_id, self.clone_id, owned_id, back=self._back_to_list)
+
+    async def _profile(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        await open_profile(interaction, self.user_id, self.clone_id, back=self._back_to_list)
+
+
 class DexView(discord.ui.View):
     def __init__(self, user_id: int, entries, *, page: int = 0):
         super().__init__(timeout=600)
@@ -173,7 +234,7 @@ async def open_collection(interaction: discord.Interaction) -> None:
         logger.exception("Catch collection load failed user=%s", interaction.user.id)
         await interaction.followup.send(text("collection.error"), ephemeral=True)
         return
-    view = CollectionView(interaction.user.id, clone_id, page=page, rows=rows, total=total)
+    view = CollectionBrowseView(interaction.user.id, clone_id, page=page, rows=rows, total=total)
     await interaction.followup.send(embed=_collection_embed(rows, total, page, "recent"), view=view, ephemeral=True)
 
 
@@ -194,4 +255,4 @@ async def open_dex(interaction: discord.Interaction) -> None:
     await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
 
 
-__all__ = ["CollectionView", "DexView", "open_collection", "open_dex"]
+__all__ = ["CollectionBrowseView", "CollectionView", "DexView", "open_collection", "open_dex"]
