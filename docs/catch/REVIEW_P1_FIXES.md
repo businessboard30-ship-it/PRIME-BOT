@@ -115,3 +115,18 @@ The identical helper pair in `catch_coin_card`, `catch_dex_card` and `catch_coll
 every name is the same object), and the shop, sell, items and collection views import it from `catch_card`.
 No behaviour change. Unit suite: 1336 passed; ruff `F,E9` and compileall clean. Not run: the real-Postgres tests
 (no SQL touched).
+
+## Visual pass 6: level-up card
+
+`modules/catch_levelup_card.py` draws a 720x300 card (medallion, "LEVEL UP!", `LV a -> LV b`, rarity/element chips,
+a READY TO EVOLVE chip when a level-based evolution is reached, XP bar). The nickname is never drawn.
+When the buddy levels up after a catch, `SpawnClaimView._send_levelup` sends it as a second ephemeral message after
+the caught card. The plain XP text field in the catch embed is unchanged (old tests index it). The card is best
+effort: a profile, render or send failure logs and sends nothing. It is skipped when the buddy changed since the XP
+grant (level mismatch) or its species is gone. `_add_buddy_xp` now returns the XP result (still None on no gain).
+`ProfileCreature` gained an optional trailing `species_id` (default 0). No SQL changed.
+Branched from `refactor/catch-card-kwargs` (PR #84), so merge #84 first.
+Tests: `tests/unit/test_catch_levelup_card.py`. Mutation-checked (each trips a test): level-up call dropped, buddy
+level guard, leveled guard (needed a leaky input where the buddy level equals level_after), ephemeral flag, XP result
+not returned, shiny flag, evolve off by one, pill never drawn, XP not in cache key, species_id not filled.
+Not verified: how the card looks on a real Discord client, and that a second ephemeral follow-up with a file arrives.
