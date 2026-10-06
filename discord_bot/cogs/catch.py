@@ -33,6 +33,8 @@ from modules.catch_setup import CatchSetup, SPEED_PRESETS, load_setup, save_setu
 from modules.catch_species import all_species
 from modules.catch_card import encounter_card_png
 from modules.catch_fled_card import FLED_FILE, fled_card_png, fled_file
+from modules.catch_levelup_card import LEVELUP_FILE, levelup_card_png, levelup_file
+from modules.catch_profile import load_profile
 from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
 from modules.catch_trigger import ChannelTriggerState, consider_message
 from modules.catch_encounter import EncounterOnCooldown, create_player_encounter
@@ -681,16 +683,18 @@ class SpawnClaimView(discord.ui.View):
             description=text("claim.success.description", name=name),
             colour=state_color("success"),
         )
+        buddy_xp = None
         embed.add_field(name="Level", value=str(result.level), inline=True)
         if result.new_species:
             embed.add_field(name="Dex", value=text("claim.new_species"), inline=True)
         if not getattr(result, "replay", False) and getattr(result, "owned_id", None) is not None:
-            await self._add_buddy_xp(embed, interaction, result)
+            buddy_xp = await self._add_buddy_xp(embed, interaction, result)
         parts = await card_parts(embed, "caught", result.species_id or 0, level=result.level or 1,
                                  shiny=result.shiny, new_species=result.new_species)
         await interaction.followup.send(embed=embed, ephemeral=True, **parts)
+        await self._send_levelup(interaction, buddy_xp)
 
-    async def _add_buddy_xp(self, embed: discord.Embed, interaction: discord.Interaction, result) -> None:
+    async def _add_buddy_xp(self, embed: discord.Embed, interaction: discord.Interaction, result):
         """Best effort: a buddy XP problem must never undo or hide a finished catch."""
         try:
             xp = await grant_buddy_catch_xp(
@@ -702,15 +706,39 @@ class SpawnClaimView(discord.ui.View):
             )
         except Exception:
             logger.exception("Buddy xp failed owned=%s user=%s", result.owned_id, interaction.user.id)
-            return
+            return None
         if xp is None or not xp.ok or xp.gained <= 0:
-            return
+            return None
         key = "xp.buddy_level_up" if xp.leveled else "xp.buddy_gain"
         embed.add_field(
             name=text("xp.field"),
             value=text(key, gained=xp.gained, level=xp.level_after),
             inline=False,
         )
+        return xp
+
+    async def _send_levelup(self, interaction: discord.Interaction, xp) -> None:
+        """Best effort second message with the level-up card; never affects the finished catch."""
+        if xp is None or not getattr(xp, "leveled", False):
+            return
+        try:
+            clone_id = getattr(interaction.client, "clone_id", None)
+            buddy = (await load_profile(interaction.user.id, clone_id)).buddy
+            species = all_species().get(buddy.species_id) if buddy is not None else None
+            if buddy is None or species is None or buddy.level != xp.level_after:
+                return
+            data = await levelup_card_png(
+                species, level_before=xp.level_before, level_after=xp.level_after, xp=xp.xp,
+                shiny=buddy.shiny, special=buddy.special,
+            )
+            embed = discord.Embed(
+                description=text("xp.buddy_level_up", gained=xp.gained, level=xp.level_after),
+                colour=state_color("success"),
+            )
+            embed.set_image(url=f"attachment://{LEVELUP_FILE}")
+            await interaction.followup.send(embed=embed, file=levelup_file(data), ephemeral=True)
+        except Exception:
+            logger.warning("Catch level-up card not sent", exc_info=True)
 
 
 class CatchCog(commands.Cog):
