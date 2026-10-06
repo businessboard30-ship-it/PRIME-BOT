@@ -78,6 +78,7 @@ from discord_bot.cogs._views_style_wizard import STYLE_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
 from modules import channel_finder
 from discord_bot.cogs._views_card_customize import DYNAMIC_ITEMS as CARD_CUSTOMIZE_DYNAMIC_ITEMS
+from discord_bot.cogs.catch import DYNAMIC_ITEMS as CATCH_DYNAMIC_ITEMS
 from discord_bot.cogs._views_invites import DYNAMIC_ITEMS as INVITES_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_wizard import DYNAMIC_ITEMS as AUTOMOD_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_modlog_wizard import DYNAMIC_ITEMS as MODLOG_WIZARD_DYNAMIC_ITEMS
@@ -180,6 +181,16 @@ class AnimeBotDiscord(commands.Bot):
         await db.init()
         logger.info("Database tables verified/created.")
 
+        # Catch game roster: data/catch/species.json is the source of truth.
+        # A broken roster file must not take the rest of the bot down, so a
+        # failure is logged and the catch game simply has no species.
+        try:
+            from modules import catch_species
+            changed = await catch_species.sync_to_db()
+            logger.info("Catch species synced (%s rows written).", changed)
+        except Exception:
+            logger.exception("Catch species sync failed; catch game has no roster this boot.")
+
         # Persistent views MUST be registered before on_ready fires, so
         # buttons on messages sent before a restart keep working immediately
         # on reconnect. These views use fixed custom_ids — that's what makes
@@ -206,6 +217,7 @@ class AnimeBotDiscord(commands.Bot):
         channel_finder.install()
         self.add_dynamic_items(*channel_finder.DYNAMIC_ITEMS)
         self.add_dynamic_items(*CARD_CUSTOMIZE_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*CATCH_DYNAMIC_ITEMS)
         self.add_dynamic_items(*INVITES_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*MODLOG_WIZARD_DYNAMIC_ITEMS)
@@ -243,6 +255,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*GUMROAD_CLAIM_DYNAMIC_ITEMS)
         self.add_dynamic_items(*PAYMENT_CARD_DYNAMIC_ITEMS)
 
+        await self.load_extension("discord_bot.cogs.catch")
         await self.load_extension("discord_bot.cogs.help")
         # archive / archive_automation dropped: feature retired to free up
         # global slash-command slots (see CommandLimitReached in clone_admin

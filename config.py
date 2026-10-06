@@ -556,6 +556,11 @@ DISCORD_SUPPORT_SERVER_INVITE = "https://discord.gg/DYfajXrP9B"
 # modules/ai_features.py's ai_chat() simply never matches, which is a safe
 # no-op fallback (same behavior as before this existed), not a crash.
 DISCORD_SUPPORT_SERVER_ID = int(os.getenv("DISCORD_SUPPORT_SERVER_ID", "1534576875983339621") or 0)
+# Creature catching game: while True (the default) only the support server above can use it;
+# every other server (and DMs) is refused by modules/catch_gate.py and the join-DM / setup
+# buttons that would turn it on are dimmed. Set CATCH_SUPPORT_SERVER_ONLY=0 on Railway to open it
+# to every server, no code change needed.
+CATCH_SUPPORT_SERVER_ONLY = os.getenv("CATCH_SUPPORT_SERVER_ONLY", "1").strip().lower() not in ("0", "false", "no", "off")
 # Frontend (dash-production) equivalent of the line above — Next.js only
 # inlines env vars prefixed NEXT_PUBLIC_ at build time, so this can't just
 # reuse DISCORD_SUPPORT_SERVER_INVITE from this (backend) process; set it
