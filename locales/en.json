@@ -313,5 +313,6 @@
   "catch.dex.info.evo_from": "Evolves from **{name}**.",
   "catch.dex.info.locked": "You have seen this species but not caught one yet. Catch it to learn its stats and evolution.",
   "catch.dex.info.back": "Back to Dex",
-  "catch.dex.info.not_found": "That species isn't in your Dex yet."
+  "catch.dex.info.not_found": "That species isn't in your Dex yet.",
+  "catch.hub.error": "The hub couldn't be refreshed right now. Try again in a moment."
 }
