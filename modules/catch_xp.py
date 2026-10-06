@@ -32,6 +32,9 @@ SOURCES: dict[str, tuple[int, int]] = {
 
 BUDDY_CATCH_XP = 10
 BUDDY_NEW_SPECIES_XP = 15
+DAILY_XP_BASE = 20
+DAILY_XP_PER_STREAK_DAY = 5
+DAILY_XP_STREAK_CAP = 7
 
 
 def xp_to_next(level: int) -> int:
@@ -181,7 +184,39 @@ async def grant_buddy_catch_xp(
     )
 
 
+def daily_xp_amount(streak: int) -> int:
+    """Buddy XP for one daily claim: a base plus a bonus per streak day (the bonus stops at 7 days)."""
+    days = max(0, min(int(streak), DAILY_XP_STREAK_CAP))
+    return DAILY_XP_BASE + DAILY_XP_PER_STREAK_DAY * days
+
+
+async def grant_buddy_daily_xp(
+    user_id: int, clone_id: int | None, *, streak: int, claim_ref: str,
+    guild_id: int | None = None, conn=None,
+) -> XpResult | None:
+    """XP for the buddy after a daily claim. None when the player has no usable buddy.
+
+    ``claim_ref`` must be unique per claim (the caller passes the claim's next-ready timestamp), so a
+    retried callback can never pay twice. The per-day budget of the ``daily`` source still applies.
+    """
+    key = catch_db.clone_key(clone_id)
+    async with catch_db.connection(conn) as db:
+        buddy_id = await db.fetchval(
+            "SELECT o.id FROM catch_players p JOIN catch_owned o "
+            "ON o.id = p.buddy_id AND o.user_id = p.user_id AND o.clone_key = p.clone_key "
+            "WHERE p.user_id = $1 AND p.clone_key = $2",
+            user_id, key,
+        )
+    if buddy_id is None:
+        return None
+    return await grant_xp(
+        int(buddy_id), user_id, clone_id, source="daily", amount=daily_xp_amount(streak),
+        idem_key=f"daily-claim:{claim_ref}", guild_id=guild_id, conn=conn,
+    )
+
+
 __all__ = [
-    "BUDDY_CATCH_XP", "BUDDY_NEW_SPECIES_XP", "SOURCES", "XpResult", "apply_xp",
+    "BUDDY_CATCH_XP", "DAILY_XP_BASE", "DAILY_XP_PER_STREAK_DAY", "DAILY_XP_STREAK_CAP",
+    "daily_xp_amount", "grant_buddy_daily_xp", "BUDDY_NEW_SPECIES_XP", "SOURCES", "XpResult", "apply_xp",
     "grant_buddy_catch_xp", "grant_xp", "xp_to_next",
 ]

@@ -314,5 +314,9 @@
   "catch.dex.info.locked": "You have seen this species but not caught one yet. Catch it to learn its stats and evolution.",
   "catch.dex.info.back": "Back to Dex",
   "catch.dex.info.not_found": "That species isn't in your Dex yet.",
-  "catch.hub.error": "The hub couldn't be refreshed right now. Try again in a moment."
+  "catch.hub.error": "The hub couldn't be refreshed right now. Try again in a moment.",
+  "catch.xp.daily_gain": "Your buddy gained **{gained} XP** from your daily reward.",
+  "catch.xp.daily_level_up": "Your buddy gained **{gained} XP** from your daily reward and reached **level {level}**!",
+  "catch.levelup.evolve_done": "Closed. Open your collection any time to see your creature.",
+  "catch.levelup.error": "That couldn't be opened right now. Try again from your collection."
 }
