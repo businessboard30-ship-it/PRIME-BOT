@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw
 from modules import catch_theme
 from modules.catch_card import (
     _INK, _MUTED, _WHITE, SCALE, W, _fit_font, _font, _glow, _mix, _pill, _rgb, _s, _text_w,
+    edit_kwargs, send_kwargs,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,16 +148,6 @@ async def daily_art(embed: discord.Embed, *, coins: int, streak: int, items: dic
     for name in drop_fields:
         _drop_field(embed, name)
     return discord.File(io.BytesIO(data), filename=DAILY_FILE)
-
-
-def edit_kwargs(file: discord.File | None) -> dict:
-    """``edit_original_response`` kwargs: always set attachments so a stale card is replaced or cleared."""
-    return {"attachments": [file] if file else []}
-
-
-def send_kwargs(file: discord.File | None) -> dict:
-    """``followup.send`` kwargs: pass ``file`` only when there is one."""
-    return {"file": file} if file else {}
 
 
 __all__ = ["clear_coin_cache", "coin_art", "daily_art", "edit_kwargs", "send_kwargs"]

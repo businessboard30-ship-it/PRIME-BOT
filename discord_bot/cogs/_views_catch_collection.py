@@ -19,7 +19,8 @@ from modules.catch_collection import (
     format_owned_line, list_owned, load_dex, page_count, set_favorite,
 )
 from modules.catch_collection_card import collection_art
-from modules.catch_dex_card import dex_art, edit_kwargs, send_kwargs, species_art
+from modules.catch_card import edit_kwargs, send_kwargs
+from modules.catch_dex_card import dex_art, species_art
 from modules.catch_dex import SpeciesInfo, rarity_completion, species_info
 from modules.catch_game import ELEMENTS, RARITIES
 from modules.catch_gate import check_player_allowed

@@ -107,3 +107,11 @@ Wiring, additive: `CollectionCardView(CollectionBoxView)`; `open_collection` now
 Tests: `tests/unit/test_catch_collection_card.py` (15). Mutation-checked, each trips a test: nickname drawn instead of species name, element ignored, empty page still draws a card, image not set on the embed, favourite flag not drawn, lock not drawn, reload drops the card, back-to-list drops the card, the filter screen keeps the card, `open_collection` uses the old view. A stale module constant (`H`) was found by a test and removed.
 
 Not verified on a real client: image rendering and the redraw feel on Prev/Next. Card text ("COLLECTION", "CREATURES", "LV", "PAGE n / m") is hard-coded English.
+
+## Refactor: shared `edit_kwargs` / `send_kwargs`
+
+The identical helper pair in `catch_coin_card`, `catch_dex_card` and `catch_collection_card` now lives once in
+`modules/catch_card.py`. The three card modules re-export it (so `cards.edit_kwargs` in the old tests still works and
+every name is the same object), and the shop, sell, items and collection views import it from `catch_card`.
+No behaviour change. Unit suite: 1336 passed; ruff `F,E9` and compileall clean. Not run: the real-Postgres tests
+(no SQL touched).
