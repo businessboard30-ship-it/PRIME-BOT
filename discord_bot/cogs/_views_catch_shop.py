@@ -13,6 +13,7 @@ import logging
 import discord
 
 from modules.catch_gate import check_player_allowed
+from modules.catch_coin_card import coin_art, edit_kwargs, send_kwargs
 from modules.catch_i18n import text
 from modules.catch_items import item_name, load_player
 from modules.catch_shop import CATALOG, QUANTITIES, load_wallet, purchase, total_price
@@ -85,6 +86,12 @@ class ShopView(discord.ui.View):
     def embed(self) -> discord.Embed:
         return shop_embed(self.coins, self.selected, self.notice)
 
+    async def message(self, *, edit: bool) -> dict:
+        """Embed plus coin banner, as keyword arguments for an edit (``edit=True``) or a send."""
+        embed = self.embed()
+        file = await coin_art(embed, label="SHOP", coins=self.coins, drop_field=text("shop.balance"))
+        return {"embed": embed, **(edit_kwargs(file) if edit else send_kwargs(file))}
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
@@ -97,7 +104,7 @@ class ShopView(discord.ui.View):
         self.selected = value if value in CATALOG else None
         self.notice = None
         self._build()
-        await interaction.edit_original_response(embed=self.embed(), view=self)
+        await interaction.edit_original_response(view=self, **await self.message(edit=True))
 
     def _buy_callback(self, quantity: int):
         async def callback(interaction: discord.Interaction) -> None:
@@ -134,7 +141,7 @@ class ShopView(discord.ui.View):
             else:
                 self.notice = text("shop.not_for_sale")
             self._build()
-            await interaction.edit_original_response(embed=self.embed(), view=self)
+            await interaction.edit_original_response(view=self, **await self.message(edit=True))
         finally:
             self._busy = False
 
@@ -153,7 +160,7 @@ async def open_shop(interaction: discord.Interaction) -> None:
         await interaction.followup.send(text("shop.load_error"), ephemeral=True)
         return
     view = ShopView(interaction.user.id, clone_id, player.coins)
-    await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
+    await interaction.followup.send(view=view, ephemeral=True, **await view.message(edit=False))
 
 
 async def open_wallet(interaction: discord.Interaction) -> None:
@@ -169,7 +176,9 @@ async def open_wallet(interaction: discord.Interaction) -> None:
         logger.exception("Catch wallet load failed user=%s", interaction.user.id)
         await interaction.followup.send(text("wallet.error"), ephemeral=True)
         return
-    await interaction.followup.send(embed=wallet_embed(wallet), ephemeral=True)
+    embed = wallet_embed(wallet)
+    file = await coin_art(embed, label="WALLET", coins=wallet.coins, drop_field=text("wallet.balance"))
+    await interaction.followup.send(embed=embed, ephemeral=True, **send_kwargs(file))
 
 
 __all__ = ["ShopView", "open_shop", "open_wallet", "shop_embed", "wallet_embed"]

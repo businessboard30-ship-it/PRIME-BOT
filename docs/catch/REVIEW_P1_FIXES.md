@@ -74,6 +74,18 @@ Tests: `tests/unit/test_catch_card_screens.py` (17). Mutation-checked, each trip
 
 Not verified on a real client: image rendering, attachment behaviour of ephemeral follow-ups with `file=`, and the expiry edit removing the image from the public message.
 
+## Visual pass 3: coin banner and daily reward card
+
+`modules/catch_coin_card.py` draws a gold coin banner (720x200: label, balance, COINS) and a daily reward card (720x250: `+N COINS`, a 7-pip streak row that wraps every 7 days, item pills). Only numbers and catalogue item names are drawn. Helpers `coin_art` / `daily_art` attach the image to the embed and drop the plain field(s) the image replaces; they return `None` (embed untouched) if drawing fails. `edit_kwargs` always sets `attachments` (so a banner with an old balance is replaced), `send_kwargs` passes `file` only when there is one.
+
+Wired: Shop (`ShopView.message`, open, choose, buy), Sell (`SellView.message`, open, choose, cancel, page turn, after a sale), Wallet (balance banner; the history list stays in the embed), Bag (banner replaces the plain coin field), Daily claimed (reward card replaces the coins and items fields). A not-ready daily stays the plain warning embed. The shop/sell `*_embed` functions are unchanged (old tests index them).
+
+Tests: `tests/unit/test_catch_coin_cards.py` (28). Mutation-checked, each trips a test: banner dropped at shop choose / shop buy / sell cancel / sell choose / sell page turn / open shop / open sell / wallet / bag / daily; balance field kept; stale card not cleared; banner not set on the embed. NOT covered by a test: the redraw after a completed sale in `SellView` (same `message(edit=True)` call as the covered sites, but unmutation-checked).
+
+Not changed: plain refusal/error lines (`catch.unavailable`, `*.error`, `*.load_error` and similar) are still bare text. Existing tests assert those exact strings as the first argument (31 `LOCALE[...]` assertions), so restyling them means editing those tests.
+
+Not verified on a real client: rendering of the images, editing an ephemeral message's attachments, and the daily card on mobile.
+
 ## Visual pass 4: Dex page card and species card
 
 `modules/catch_dex_card.py` draws the Dex page as a 720x410 image: title, overall caught/seen bar, a 6x2 grid of the page's species, and per-rarity completion bars with the page number. The species page gets a 720x400 card (medallion, chips, five base-stat bars, caught and shiny counts; seen-only species show a dim medallion and "Catch one to reveal its stats").

@@ -14,6 +14,7 @@ import logging
 import discord
 
 from modules.catch_gate import check_player_allowed
+from modules.catch_coin_card import coin_art, edit_kwargs, send_kwargs
 from modules.catch_i18n import text
 from modules.catch_items import load_player
 from modules.catch_sell import RARITY_MARK, SELL_PAGE_SIZE, SellRow, display_name, list_sellable, sell_creature
@@ -89,6 +90,12 @@ class SellView(discord.ui.View):
     def embed(self) -> discord.Embed:
         return sell_embed(self.coins, self.rows, self.page, self.total, SELL_PAGE_SIZE, self.selected, self.notice)
 
+    async def message(self, *, edit: bool) -> dict:
+        """Embed plus coin banner, as keyword arguments for an edit (``edit=True``) or a send."""
+        embed = self.embed()
+        file = await coin_art(embed, label="SELL", coins=self.coins, drop_field=text("sell.balance"))
+        return {"embed": embed, **(edit_kwargs(file) if edit else send_kwargs(file))}
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
             await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
@@ -106,14 +113,14 @@ class SellView(discord.ui.View):
         self.selected = next((row for row in self.rows if str(row.id) == value), None)
         self.notice = None
         self._build()
-        await interaction.edit_original_response(embed=self.embed(), view=self)
+        await interaction.edit_original_response(view=self, **await self.message(edit=True))
 
     async def _cancel(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         self.selected = None
         self.notice = text("sell.cancelled")
         self._build()
-        await interaction.edit_original_response(embed=self.embed(), view=self)
+        await interaction.edit_original_response(view=self, **await self.message(edit=True))
 
     async def _turn(self, interaction: discord.Interaction, delta: int) -> None:
         await interaction.response.defer()
@@ -125,7 +132,7 @@ class SellView(discord.ui.View):
             return
         self.notice = None
         self._build()
-        await interaction.edit_original_response(embed=self.embed(), view=self)
+        await interaction.edit_original_response(view=self, **await self.message(edit=True))
 
     async def _prev(self, interaction: discord.Interaction) -> None:
         await self._turn(interaction, -1)
@@ -171,7 +178,7 @@ class SellView(discord.ui.View):
                 logger.exception("Catch sell reload failed user=%s", self.user_id)
                 self.rows = [row for row in self.rows if row.id != target.id]
             self._build()
-            await interaction.edit_original_response(embed=self.embed(), view=self)
+            await interaction.edit_original_response(view=self, **await self.message(edit=True))
         finally:
             self._busy = False
 
@@ -191,7 +198,7 @@ async def open_sell(interaction: discord.Interaction) -> None:
         await interaction.followup.send(text("sell.load_error"), ephemeral=True)
         return
     view = SellView(interaction.user.id, clone_id, player.coins, rows, total, page)
-    await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
+    await interaction.followup.send(view=view, ephemeral=True, **await view.message(edit=False))
 
 
 __all__ = ["SellView", "open_sell", "sell_embed"]
