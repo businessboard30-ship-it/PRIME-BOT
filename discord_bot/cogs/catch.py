@@ -261,6 +261,25 @@ class CatchHubCardView(CatchHubView):
         await self._redraw(interaction, CATEGORIES[0].key)
 
 
+def live_view_owns(interaction: discord.Interaction) -> bool:
+    """True when a live view in this process already handles this component click.
+
+    discord.py runs every matching DynamicItem AND the live view's own callback for the same click.
+    The hub registers both (the dynamic items exist so old messages survive a restart), so a live hub
+    was answered twice: the plain dynamic screen could win over the drawn card, "Home" sent an extra
+    plain hub message, and actions ran twice. The dynamic items call this and stand down when the
+    live view has the click. It reads the library's view store; if that layout is ever different it
+    returns False, which is the old behaviour (the dynamic item answers).
+    """
+    try:
+        store = interaction.client._connection._view_store
+        key = (int((interaction.data or {})["component_type"]), str((interaction.data or {})["custom_id"]))
+        message_id = interaction.message.id if interaction.message is not None else None
+        return key in store._views.get(message_id, {})
+    except Exception:
+        return False
+
+
 class CatchHubDynamicButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"catch:hub:(?!category$)(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)",
@@ -298,6 +317,8 @@ class CatchHubDynamicButton(
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if live_view_owns(interaction):
+            return  # the live hub view answers this click (see live_view_owns)
         if self.action == "home":
             await interaction.response.send_message(
                 embed=build_hub_embed(), view=CatchHubView(), ephemeral=True
@@ -353,6 +374,8 @@ class CatchHubDynamicSelect(
         return cls(item)
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        if live_view_owns(interaction):
+            return  # the live hub view answers this click and redraws the card (see live_view_owns)
         selected = (interaction.data or {}).get("values", ["play"])[0]
         view = CatchHubView(category=selected)
         # After a restart the message may still carry the hub card; this plain screen must clear it.
@@ -942,6 +965,7 @@ __all__ = [
     "CATEGORIES",
     "CatchHubCardView",
     "CatchHubView",
+    "live_view_owns",
     "CatchSetupView",
     "build_hub_embed",
     "build_setup_embed",
