@@ -73,3 +73,13 @@ Same approach as pass 1 (drawn from game data, `catch_theme` colours, no locale 
 Tests: `tests/unit/test_catch_card_screens.py` (17). Mutation-checked, each trips a test: public spawn drops card, claim success drops card, expired spawn keeps card, profile loses elements, profile fallback sets image. Result: 1286 passed, 21 skipped with real Postgres; ruff and compileall clean.
 
 Not verified on a real client: image rendering, attachment behaviour of ephemeral follow-ups with `file=`, and the expiry edit removing the image from the public message.
+
+## Visual pass 5: collection box card
+
+`modules/catch_collection_card.py` draws the collection page as a box: a 5x2 grid of the page's creatures (rarity ring, element sigil, species name, level, owned `#id`, favourite star, lock, shiny/special sparkle) with the total and page number. The image is sized to its rows (a page of five or fewer is shorter). Species names and elements come from the species table; nicknames are never drawn (the text list under the card still shows them and the ids the select uses), so no player text reaches the renderer. An empty page draws no card.
+
+Wiring, additive: `CollectionCardView(CollectionBoxView)`; `open_collection` now builds it. It overrides `_reload` (sort, Prev/Next, favourite: every caller already deferred), `_back_to_list` (Back from a creature, the trainer card, a filter or a page jump) and `_open_filters`, which responds with the filter screen and `attachments=[]` so the box card does not linger there. The old classes and the plain `_collection_embed` are untouched. The `_reload`/`_back_to_list` bodies are copied into the subclass (their DB call and list shape), so if the base versions change, change both. A DB error in `_back_to_list` edits nothing and sends `collection.error`. If drawing fails, or the page is empty, the screen is the old text embed with `attachments=[]`. `edit_kwargs` / `send_kwargs` are a third copy (also in `catch_coin_card` and `catch_dex_card` on their branches); unify once those are merged.
+
+Tests: `tests/unit/test_catch_collection_card.py` (15). Mutation-checked, each trips a test: nickname drawn instead of species name, element ignored, empty page still draws a card, image not set on the embed, favourite flag not drawn, lock not drawn, reload drops the card, back-to-list drops the card, the filter screen keeps the card, `open_collection` uses the old view. A stale module constant (`H`) was found by a test and removed.
+
+Not verified on a real client: image rendering and the redraw feel on Prev/Next. Card text ("COLLECTION", "CREATURES", "LV", "PAGE n / m") is hard-coded English.

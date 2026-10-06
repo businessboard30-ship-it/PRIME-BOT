@@ -18,6 +18,7 @@ from modules.catch_collection import (
     SEARCH_MAX, SORTS, CollectionFilter, dex_page, dex_summary, filter_summary, format_dex_line,
     format_owned_line, list_owned, load_dex, page_count, set_favorite,
 )
+from modules.catch_collection_card import collection_art, edit_kwargs, send_kwargs
 from modules.catch_dex import SpeciesInfo, rarity_completion, species_info
 from modules.catch_game import ELEMENTS, RARITIES
 from modules.catch_gate import check_player_allowed
@@ -222,6 +223,46 @@ class CollectionBoxView(CollectionBrowseView):
         """Adopt ``flt``, go back to page 1 and redraw the list. The caller has already responded."""
         self.flt, self.page = flt.clean(), 0
         await self._back_to_list(interaction)
+
+
+class CollectionCardView(CollectionBoxView):
+    """The collection box with a drawn card of the page's creatures above the text list.
+
+    Added on top of ``CollectionBoxView`` (its children, select and plain embed are unchanged).
+    The list is redrawn by ``_reload`` (sort, Prev/Next, favourite) and ``_back_to_list`` (Back
+    from a creature, the trainer card, a filter or a page jump); every caller has already
+    responded, so these may render and then edit. Leaving the list for the filter screen
+    clears the card. If the card cannot be drawn the plain embed is used.
+    """
+
+    async def message(self, *, edit: bool) -> dict:
+        embed = _collection_embed(self.rows, self.total, self.page, self.sort, self.flt)
+        file = await collection_art(embed, self.rows, self.page, self.total)
+        return {"embed": embed, **(edit_kwargs(file) if edit else send_kwargs(file))}
+
+    async def _reload(self, interaction: discord.Interaction) -> None:
+        self.rows, self.total, self.page = await list_owned(
+            self.user_id, self.clone_id, page=self.page, sort=self.sort, flt=self.flt,
+        )
+        self._build()
+        await interaction.edit_original_response(view=self, **await self.message(edit=True))
+
+    async def _back_to_list(self, interaction: discord.Interaction) -> None:
+        try:
+            self.rows, self.total, self.page = await list_owned(
+                self.user_id, self.clone_id, page=self.page, sort=self.sort, flt=self.flt,
+            )
+        except Exception:
+            logger.exception("Catch collection reload failed user=%s", self.user_id)
+            await interaction.followup.send(text("collection.error"), ephemeral=True)
+            return
+        self._build()
+        await interaction.edit_original_response(content=None, view=self, **await self.message(edit=True))
+
+    async def _open_filters(self, interaction: discord.Interaction) -> None:
+        # Pure UI state: the response is the screen itself, and it drops the card.
+        screen = CollectionFilterView(self)
+        await interaction.response.edit_message(content=None, embed=screen.embed(), view=screen, attachments=[])
 
 
 class CollectionFilterView(discord.ui.View):
@@ -574,8 +615,8 @@ async def open_collection(interaction: discord.Interaction) -> None:
         logger.exception("Catch collection load failed user=%s", interaction.user.id)
         await interaction.followup.send(text("collection.error"), ephemeral=True)
         return
-    view = CollectionBoxView(interaction.user.id, clone_id, page=page, rows=rows, total=total)
-    await interaction.followup.send(embed=_collection_embed(rows, total, page, "recent"), view=view, ephemeral=True)
+    view = CollectionCardView(interaction.user.id, clone_id, page=page, rows=rows, total=total)
+    await interaction.followup.send(view=view, ephemeral=True, **await view.message(edit=False))
 
 
 async def open_dex(interaction: discord.Interaction) -> None:
@@ -596,7 +637,8 @@ async def open_dex(interaction: discord.Interaction) -> None:
 
 
 __all__ = [
-    "CollectionBoxView", "CollectionBrowseView", "CollectionFilterView", "CollectionView", "DexBrowseView",
+    "CollectionBoxView", "CollectionBrowseView", "CollectionCardView", "CollectionFilterView", "CollectionView",
+    "DexBrowseView",
     "DexInfoView", "DexView", "species_embed",
     "PageJumpModal", "SearchModal", "open_collection", "open_dex",
 ]
