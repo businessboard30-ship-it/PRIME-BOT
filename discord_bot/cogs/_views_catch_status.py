@@ -10,9 +10,11 @@ import logging
 
 import discord
 
+from modules.catch_card import send_kwargs
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
 from modules.catch_status import PlayerStatus, load_status
+from modules.catch_status_card import status_art
 from modules.catch_theme import state_color
 
 logger = logging.getLogger(__name__)
@@ -46,7 +48,9 @@ async def open_status(interaction: discord.Interaction) -> None:
         logger.exception("Catch status load failed user=%s", interaction.user.id)
         await interaction.followup.send(text("status.error"), ephemeral=True)
         return
-    await interaction.followup.send(embed=status_embed(status), ephemeral=True)
+    embed = status_embed(status)
+    file = await status_art(embed, status)  # None (plain embed, unchanged) if the card cannot be drawn
+    await interaction.followup.send(embed=embed, ephemeral=True, **send_kwargs(file))
 
 
 __all__ = ["open_status", "status_embed"]
