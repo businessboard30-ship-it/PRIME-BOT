@@ -134,7 +134,10 @@ def test_release_and_evolve_confirm_screens_clear_the_card(monkeypatch):
         inter = make_interaction(rec)
         edits = edits_to(inter)
         asyncio.run(getattr(view, call)(inter))
-        assert len(edits) == 1 and edits[0]["attachments"] == [] and "image" not in edits[0]["embed"].to_dict()
+        # Visual pass 8: the confirm screens now carry their OWN card; the creature card must not linger.
+        names = [f.filename for f in edits[0]["attachments"]]
+        assert len(edits) == 1 and names == [{"_release": "release.png", "_evolve": "evolve.png"}[call]]
+        assert "creature.png" not in names
 
 
 def test_back_to_the_list_clears_the_card(monkeypatch):

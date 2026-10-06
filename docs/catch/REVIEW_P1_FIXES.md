@@ -125,7 +125,7 @@ the caught card. The plain XP text field in the catch embed is unchanged (old te
 effort: a profile, render or send failure logs and sends nothing. It is skipped when the buddy changed since the XP
 grant (level mismatch) or its species is gone. `_add_buddy_xp` now returns the XP result (still None on no gain).
 `ProfileCreature` gained an optional trailing `species_id` (default 0). No SQL changed.
-Branched from `refactor/catch-card-kwargs` (PR #84), so merge #84 first.
+Built on the `catch_card` helper unification from PR #84 (merged).
 Tests: `tests/unit/test_catch_levelup_card.py`. Mutation-checked (each trips a test): level-up call dropped, buddy
 level guard, leveled guard (needed a leaky input where the buddy level equals level_after), ephemeral flag, XP result
 not returned, shiny flag, evolve off by one, pill never drawn, XP not in cache key, species_id not filled.

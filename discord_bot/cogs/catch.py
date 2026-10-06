@@ -31,7 +31,9 @@ from modules.catch_scheduler import run_scheduler_batch
 from modules.catch_reminders import Reminder, dispatch_due_reminders
 from modules.catch_setup import CatchSetup, SPEED_PRESETS, load_setup, save_setup
 from modules.catch_species import all_species
-from modules.catch_card import encounter_card_png
+from modules.catch_card import edit_kwargs, encounter_card_png, send_kwargs
+from modules.catch_fled_card import FLED_FILE, fled_card_png, fled_file
+from modules.catch_hub_card import HUB_FILE, hub_card_png, hub_file
 from modules.catch_levelup_card import LEVELUP_FILE, levelup_card_png, levelup_file
 from modules.catch_profile import load_profile
 from modules.catch_spawn import attach_spawn_message, create_spawn, roll_spawn, spawn_embed_data
@@ -217,6 +219,47 @@ def build_hub_embed(category: str = "play") -> discord.Embed:
     return embed
 
 
+async def hub_parts(category: str = "play") -> tuple[discord.Embed, discord.File | None]:
+    """Hub embed plus a fresh drawn card, or the plain embed and ``None`` when it cannot draw.
+
+    The card shows the category and its actions, so the plain fields are dropped only when it rendered.
+    """
+    embed = build_hub_embed(category)
+    try:
+        data = await hub_card_png(CATEGORIES, category_for(category).key)
+    except Exception:
+        logger.exception("Catch hub card render failed category=%s", category)
+        return embed, None
+    embed.set_image(url=f"attachment://{HUB_FILE}")
+    embed.clear_fields()
+    return embed, hub_file(data)
+
+
+class CatchHubCardView(CatchHubView):
+    """The hub with a drawn card. Switching category redraws it, so these callbacks defer first (rule B.6).
+
+    ``CatchHubView`` and its callbacks are untouched: old tests and the restart-safe dynamic items use them.
+    """
+
+    async def _redraw(self, interaction: discord.Interaction, key: str) -> None:
+        await interaction.response.defer()
+        self.category = category_for(key)
+        self._build()
+        try:
+            embed, file = await hub_parts(self.category.key)
+            await interaction.edit_original_response(embed=embed, view=self, **edit_kwargs(file))
+        except Exception:
+            logger.exception("Catch hub redraw failed category=%s", key)
+            await interaction.followup.send(text("hub.error"), ephemeral=True)
+
+    async def _select_category(self, interaction: discord.Interaction) -> None:
+        selected = interaction.data.get("values", ["play"])[0] if interaction.data else "play"
+        await self._redraw(interaction, selected)
+
+    async def _home(self, interaction: discord.Interaction) -> None:
+        await self._redraw(interaction, CATEGORIES[0].key)
+
+
 class CatchHubDynamicButton(
     discord.ui.DynamicItem[discord.ui.Button],
     template=r"catch:hub:(?!category$)(?:(?P<category>[a-z-]+):)?(?P<action>[a-z-]+)",
@@ -311,7 +354,8 @@ class CatchHubDynamicSelect(
     async def callback(self, interaction: discord.Interaction) -> None:
         selected = (interaction.data or {}).get("values", ["play"])[0]
         view = CatchHubView(category=selected)
-        await interaction.response.edit_message(embed=build_hub_embed(view.category.key), view=view)
+        # After a restart the message may still carry the hub card; this plain screen must clear it.
+        await interaction.response.edit_message(embed=build_hub_embed(view.category.key), view=view, attachments=[])
 
 
 DYNAMIC_ITEMS = (CatchHubDynamicButton, CatchHubDynamicSelect)
@@ -365,6 +409,17 @@ async def card_parts(embed: discord.Embed, kind: str, species_id, *, level, shin
         return {}
     embed.set_image(url=f"attachment://{SPAWN_CARD_FILE}")
     return {"file": discord.File(io.BytesIO(data), filename=SPAWN_CARD_FILE)}
+
+
+async def fled_card_for_row(row: dict) -> bytes | None:
+    """PNG for an expired spawn row, or None (no species, unknown species, or a drawing error)."""
+    try:
+        species_id = row.get("species_id")
+        species = all_species().get(int(species_id)) if species_id is not None else None
+        return await fled_card_png(species) if species is not None else None
+    except Exception:
+        logger.warning("Catch fled card not drawn spawn=%s", row.get("id"), exc_info=True)
+        return None
 
 
 async def publish_spawn(channel, *, guild_id: int, clone_id: int | None, setup: CatchSetup, source: str = "chat") -> int:
@@ -808,12 +863,24 @@ class CatchCog(commands.Cog):
             view = SpawnClaimView(int(spawn_id))
             for item in view.children:
                 item.disabled = True
-            embed = discord.Embed(
-                title=text("claim.fled.title"),
-                description=text("claim.fled.description"),
-                colour=state_color("warning"),
-            )
-            await message.edit(embed=embed, view=view, attachments=[])
+            def fled_embed() -> discord.Embed:
+                return discord.Embed(
+                    title=text("claim.fled.title"),
+                    description=text("claim.fled.description"),
+                    colour=state_color("warning"),
+                )
+
+            card = await fled_card_for_row(row)
+            if card is not None:
+                embed = fled_embed()
+                embed.set_image(url=f"attachment://{FLED_FILE}")
+                try:
+                    await message.edit(embed=embed, view=view, attachments=[fled_file(card)])
+                    return
+                except discord.DiscordException:
+                    logger.warning("Catch fled card edit failed spawn=%s; retrying plain", spawn_id, exc_info=True)
+            # Plain embed; attachments=[] removes the wild card that was on the message.
+            await message.edit(embed=fled_embed(), view=view, attachments=[])
         except discord.DiscordException:
             return
 
@@ -857,7 +924,8 @@ class CatchCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.followup.send(embed=build_hub_embed(), view=CatchHubView(), ephemeral=True)
+        embed, file = await hub_parts()
+        await interaction.followup.send(embed=embed, view=CatchHubCardView(), ephemeral=True, **send_kwargs(file))
 
 
 async def setup(bot: commands.Bot) -> None:
@@ -866,10 +934,12 @@ async def setup(bot: commands.Bot) -> None:
 
 __all__ = [
     "CATEGORIES",
+    "CatchHubCardView",
     "CatchHubView",
     "CatchSetupView",
     "build_hub_embed",
     "build_setup_embed",
+    "hub_parts",
     "category_for",
     "component_count",
 ]

@@ -11,6 +11,7 @@ from modules.catch_game import BAIT_BONUS, BALLS
 from modules.catch_gate import check_player_allowed
 from modules.catch_card import send_kwargs
 from modules.catch_coin_card import coin_art, daily_art
+from modules.catch_daily_wait_card import daily_wait_art
 from modules.catch_i18n import text
 from modules.catch_items import (
     claim_daily, ensure_starter_kit, item_name, load_inventory, load_player, sorted_inventory,
@@ -103,6 +104,9 @@ async def open_daily(interaction: discord.Interaction) -> None:
             items={item_name(k): v for k, v in reward.items.items()},
             drop_fields=(text("inventory.coins"), text("daily.items")),
         )
+    else:
+        # the embed text stays: it carries the live countdown, which an image cannot
+        file = await daily_wait_art(embed, streak=result.streak)
     await interaction.followup.send(embed=embed, ephemeral=True, **send_kwargs(file))
 
 

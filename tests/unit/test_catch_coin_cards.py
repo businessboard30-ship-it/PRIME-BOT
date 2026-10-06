@@ -230,11 +230,12 @@ def test_claimed_daily_sends_the_reward_card(monkeypatch):
     assert sent[0]["file"].fp.getvalue() == cards._cached_daily(250, 3, ((items_views.item_name(BALL), 3),))
 
 
-def test_daily_not_ready_stays_a_plain_embed(monkeypatch):
+def test_daily_not_ready_sends_the_wait_card_and_keeps_the_countdown_text(monkeypatch):
     soon = datetime.now(timezone.utc) + timedelta(hours=5)
     inter, sent = daily_inter(monkeypatch, DailyResult(False, 2, soon))
     run(items_views.open_daily(inter))
-    assert "file" not in sent[0] and sent[0]["embed"].image.url is None
+    assert sent[0]["file"].filename == "daily_wait.png" and sent[0]["embed"].image.url == "attachment://daily_wait.png"
+    assert sent[0]["embed"].description == items_views.daily_embed(DailyResult(False, 2, soon)).description
 
 
 def test_sell_choose_and_page_turn_redraw_the_banner(monkeypatch):
