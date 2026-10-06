@@ -18,7 +18,9 @@ import discord
 
 from modules import catch_emoji as emoji
 from modules.catch_card import creature_card_png
+from modules import catch_species
 from modules.catch_collection import set_favorite
+from modules.catch_confirm_card import EVOLVE_FILE, RELEASE_FILE, confirm_file, evolve_card_png, release_card_png
 from modules.catch_creature import (
     NICKNAME_MAX,
     CreatureDetail,
@@ -143,6 +145,39 @@ def release_confirm_embed(d: CreatureDetail) -> discord.Embed:
         title=f"{emoji.mark('ui', 'release')} {text('release.title', name=safe(d.display_name))}"[:256],
         description=body, colour=state_color("warning"),
     )
+
+
+async def evolve_confirm_message(pv: EvolutionPreview, d: CreatureDetail) -> dict:
+    """Evolve confirm embed plus a drawn before/after card (``attachments=[]`` when it cannot draw).
+
+    The card shows the stat change, so the plain stats field is removed only when it rendered.
+    """
+    embed = evolve_confirm_embed(pv, d.nickname)
+    try:
+        species = catch_species.get(d.species_id)
+        target = catch_species.get(int(species["evolves_to"]))
+        data = await evolve_card_png(
+            species, target, level=pv.level, shiny=d.shiny, special=d.special, before=pv.before, after=pv.after,
+        )
+    except Exception:
+        logger.exception("Catch evolve confirm card failed creature=%s", d.id)
+        return {"embed": embed, "attachments": []}
+    embed.set_image(url=f"attachment://{EVOLVE_FILE}")
+    embed.remove_field(0)
+    return {"embed": embed, "attachments": [confirm_file(data, EVOLVE_FILE)]}
+
+
+async def release_confirm_message(d: CreatureDetail) -> dict:
+    """Release confirm embed (text kept: it carries the warning) plus a drawn card when possible."""
+    embed = release_confirm_embed(d)
+    try:
+        species = catch_species.get(d.species_id)
+        data = await release_card_png(species, level=d.level, shiny=d.shiny, special=d.special, buddy=d.is_buddy)
+    except Exception:
+        logger.exception("Catch release confirm card failed creature=%s", d.id)
+        return {"embed": embed, "attachments": []}
+    embed.set_image(url=f"attachment://{RELEASE_FILE}")
+    return {"embed": embed, "attachments": [confirm_file(data, RELEASE_FILE)]}
 
 
 def _gate_message(gate) -> str:
@@ -292,7 +327,7 @@ class CreatureView(discord.ui.View):
                 return
             confirm = EvolveConfirmView(self.user_id, self.clone_id, self)
             await interaction.edit_original_response(
-                content=None, embed=evolve_confirm_embed(pv, self.detail.nickname), view=confirm, attachments=[],
+                content=None, view=confirm, **await evolve_confirm_message(pv, self.detail),
             )
         await self._run(interaction, work)
 
@@ -304,7 +339,7 @@ class CreatureView(discord.ui.View):
                 await interaction.followup.send(text(key, name=safe(d.display_name)), ephemeral=True)
                 return
             confirm = ReleaseConfirmView(self.user_id, self.clone_id, self)
-            await interaction.edit_original_response(content=None, embed=release_confirm_embed(d), view=confirm, attachments=[])
+            await interaction.edit_original_response(content=None, view=confirm, **await release_confirm_message(d))
         await self._run(interaction, work)
 
     async def _back(self, interaction: discord.Interaction) -> None:
@@ -486,6 +521,6 @@ async def open_creature_detail(
 
 __all__ = [
     "CARD_FILE", "CreatureView", "EvolveConfirmView", "NicknameModal", "ReleaseConfirmView", "creature_embed", "creature_message", "evolve_confirm_embed",
-    "release_confirm_embed",
+    "evolve_confirm_message", "release_confirm_embed", "release_confirm_message",
     "open_creature_detail", "safe", "stat_lines",
 ]
