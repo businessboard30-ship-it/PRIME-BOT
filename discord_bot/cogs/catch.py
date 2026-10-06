@@ -22,6 +22,7 @@ from discord_bot.cogs._views_catch_collection import open_collection, open_dex
 from discord_bot.cogs._views_catch_items import open_daily, open_inventory
 from discord_bot.cogs._views_catch_guide import open_guide
 from discord_bot.cogs._views_catch_rules import open_rules
+from discord_bot.cogs._views_catch_levelup import evolve_view_for
 from discord_bot.cogs._views_catch_sell import open_sell
 from discord_bot.cogs._views_catch_status import open_status
 from discord_bot.cogs._views_catch_wild import open_wild_zone
@@ -779,7 +780,12 @@ class SpawnClaimView(discord.ui.View):
                 colour=state_color("success"),
             )
             embed.set_image(url=f"attachment://{LEVELUP_FILE}")
-            await interaction.followup.send(embed=embed, file=levelup_file(data), ephemeral=True)
+            extra = {}
+            view = evolve_view_for(species, buddy, level=xp.level_after, user_id=interaction.user.id,
+                                   clone_id=clone_id)
+            if view is not None:
+                extra["view"] = view
+            await interaction.followup.send(embed=embed, file=levelup_file(data), ephemeral=True, **extra)
         except Exception:
             logger.warning("Catch level-up card not sent", exc_info=True)
 

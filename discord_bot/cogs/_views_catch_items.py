@@ -7,6 +7,7 @@ import logging
 
 import discord
 
+from discord_bot.cogs._views_catch_levelup import send_levelup
 from modules.catch_game import BAIT_BONUS, BALLS
 from modules.catch_gate import check_player_allowed
 from modules.catch_card import send_kwargs
@@ -17,6 +18,7 @@ from modules.catch_items import (
     claim_daily, ensure_starter_kit, item_name, load_inventory, load_player, sorted_inventory,
 )
 from modules.catch_theme import state_color
+from modules.catch_xp import grant_buddy_daily_xp
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +109,28 @@ async def open_daily(interaction: discord.Interaction) -> None:
     else:
         # the embed text stays: it carries the live countdown, which an image cannot
         file = await daily_wait_art(embed, streak=result.streak)
+    xp = await _daily_buddy_xp(embed, interaction, clone_id, result)
     await interaction.followup.send(embed=embed, ephemeral=True, **send_kwargs(file))
+    await send_levelup(interaction, xp)
+
+
+async def _daily_buddy_xp(embed: discord.Embed, interaction: discord.Interaction, clone_id, result):
+    """Best effort: buddy XP for a claimed daily. A problem here must never hide the reward."""
+    if not result.claimed:
+        return None
+    try:
+        xp = await grant_buddy_daily_xp(
+            interaction.user.id, clone_id, streak=result.streak,
+            claim_ref=str(int(result.ready_at.timestamp())), guild_id=interaction.guild_id,
+        )
+    except Exception:
+        logger.exception("Daily buddy xp failed user=%s", interaction.user.id)
+        return None
+    if xp is None or not xp.ok or xp.gained <= 0:
+        return None
+    key = "xp.daily_level_up" if xp.leveled else "xp.daily_gain"
+    embed.add_field(name=text("xp.field"), value=text(key, gained=xp.gained, level=xp.level_after), inline=False)
+    return xp
 
 
 __all__ = ["daily_embed", "inventory_embed", "open_daily", "open_inventory"]
