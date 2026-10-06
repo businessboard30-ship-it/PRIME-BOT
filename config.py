@@ -352,7 +352,7 @@ AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "2"))
 # 31 days never cause a gap. PREMIUM_GRACE_DAYS keeps features on briefly
 # after expiry so a slow renewal doesn't cut anyone off mid-payment.
 # ─────────────────────────────────────────────────────────────────────
-PREMIUM_FEE_USD = 2
+PREMIUM_FEE_USD = 4
 
 # Minimum XP level a member needs before they can hold a clan-chief seat
 # (top-5 on the XP leaderboard is necessary but no longer sufficient).
