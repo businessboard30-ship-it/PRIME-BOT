@@ -18,7 +18,8 @@ from modules.catch_collection import (
     SEARCH_MAX, SORTS, CollectionFilter, dex_page, dex_summary, filter_summary, format_dex_line,
     format_owned_line, list_owned, load_dex, page_count, set_favorite,
 )
-from modules.catch_collection_card import collection_art, edit_kwargs, send_kwargs
+from modules.catch_collection_card import collection_art
+from modules.catch_dex_card import dex_art, edit_kwargs, send_kwargs, species_art
 from modules.catch_dex import SpeciesInfo, rarity_completion, species_info
 from modules.catch_game import ELEMENTS, RARITIES
 from modules.catch_gate import check_player_allowed
@@ -602,6 +603,49 @@ class DexInfoView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self.dex)
 
 
+class DexCardView(DexBrowseView):
+    """The Dex with a drawn page card (grid of the page's species plus per-rarity bars).
+
+    Added on top of ``DexBrowseView``, whose buttons, select and plain embed are unchanged.
+    An image cannot be swapped in the same call that responds, so Prev/Next and the species
+    pick defer first and then redraw. If the card cannot be drawn the plain embed is used.
+    """
+
+    async def message(self, *, edit: bool) -> dict:
+        embed = self.embed()  # also clamps self.page
+        file = await dex_art(embed, self.entries, self.page, drop_field=text("dex.completion"))
+        return {"embed": embed, **(edit_kwargs(file) if edit else send_kwargs(file))}
+
+    async def _turn(self, interaction: discord.Interaction, delta: int) -> None:
+        await interaction.response.defer()
+        self.page += delta
+        message = await self.message(edit=True)
+        self._build()
+        await interaction.edit_original_response(view=self, **message)
+
+    async def _open_species(self, interaction: discord.Interaction) -> None:
+        try:
+            species_id = int(((interaction.data or {}).get("values") or [""])[0])
+        except ValueError:
+            species_id = 0
+        info = species_info(self.entries, species_id)
+        if info is None:
+            await interaction.response.send_message(text("dex.info.not_found"), ephemeral=True)
+            return
+        await interaction.response.defer()
+        embed = species_embed(info)
+        file = await species_art(embed, info, drop_field=text("dex.info.stats"))
+        await interaction.edit_original_response(embed=embed, view=DexCardInfoView(self), **edit_kwargs(file))
+
+
+class DexCardInfoView(DexInfoView):
+    async def _back(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        message = await self.dex.message(edit=True)
+        self.dex._build()
+        await interaction.edit_original_response(view=self.dex, **message)
+
+
 async def open_collection(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     clone_id = getattr(interaction.client, "clone_id", None)
@@ -632,13 +676,12 @@ async def open_dex(interaction: discord.Interaction) -> None:
         logger.exception("Catch dex load failed user=%s", interaction.user.id)
         await interaction.followup.send(text("dex.error"), ephemeral=True)
         return
-    view = DexBrowseView(interaction.user.id, entries)
-    await interaction.followup.send(embed=view.embed(), view=view, ephemeral=True)
+    view = DexCardView(interaction.user.id, entries)
+    await interaction.followup.send(view=view, ephemeral=True, **await view.message(edit=False))
 
 
 __all__ = [
     "CollectionBoxView", "CollectionBrowseView", "CollectionCardView", "CollectionFilterView", "CollectionView",
-    "DexBrowseView",
-    "DexInfoView", "DexView", "species_embed",
+    "DexBrowseView", "DexCardInfoView", "DexCardView", "DexInfoView", "DexView", "species_embed",
     "PageJumpModal", "SearchModal", "open_collection", "open_dex",
 ]

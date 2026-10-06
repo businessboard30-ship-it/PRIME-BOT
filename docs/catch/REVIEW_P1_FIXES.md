@@ -74,6 +74,30 @@ Tests: `tests/unit/test_catch_card_screens.py` (17). Mutation-checked, each trip
 
 Not verified on a real client: image rendering, attachment behaviour of ephemeral follow-ups with `file=`, and the expiry edit removing the image from the public message.
 
+## Visual pass 3: coin banner and daily reward card
+
+`modules/catch_coin_card.py` draws a gold coin banner (720x200: label, balance, COINS) and a daily reward card (720x250: `+N COINS`, a 7-pip streak row that wraps every 7 days, item pills). Only numbers and catalogue item names are drawn. Helpers `coin_art` / `daily_art` attach the image to the embed and drop the plain field(s) the image replaces; they return `None` (embed untouched) if drawing fails. `edit_kwargs` always sets `attachments` (so a banner with an old balance is replaced), `send_kwargs` passes `file` only when there is one.
+
+Wired: Shop (`ShopView.message`, open, choose, buy), Sell (`SellView.message`, open, choose, cancel, page turn, after a sale), Wallet (balance banner; the history list stays in the embed), Bag (banner replaces the plain coin field), Daily claimed (reward card replaces the coins and items fields). A not-ready daily stays the plain warning embed. The shop/sell `*_embed` functions are unchanged (old tests index them).
+
+Tests: `tests/unit/test_catch_coin_cards.py` (28). Mutation-checked, each trips a test: banner dropped at shop choose / shop buy / sell cancel / sell choose / sell page turn / open shop / open sell / wallet / bag / daily; balance field kept; stale card not cleared; banner not set on the embed. NOT covered by a test: the redraw after a completed sale in `SellView` (same `message(edit=True)` call as the covered sites, but unmutation-checked).
+
+Not changed: plain refusal/error lines (`catch.unavailable`, `*.error`, `*.load_error` and similar) are still bare text. Existing tests assert those exact strings as the first argument (31 `LOCALE[...]` assertions), so restyling them means editing those tests.
+
+Not verified on a real client: rendering of the images, editing an ephemeral message's attachments, and the daily card on mobile.
+
+## Visual pass 4: Dex page card and species card
+
+`modules/catch_dex_card.py` draws the Dex page as a 720x410 image: title, overall caught/seen bar, a 6x2 grid of the page's species, and per-rarity completion bars with the page number. The species page gets a 720x400 card (medallion, chips, five base-stat bars, caught and shiny counts; seen-only species show a dim medallion and "Catch one to reveal its stats").
+
+Spoiler rule (same as the text Dex): an undiscovered species is a "?" tile and its element and rarity never reach the drawing code or the cache key (`tiles_for` blanks them); a seen-only species is a dim sigil with no rarity colour; stats and counts are drawn only for a caught species (`species_key` also hides them if a not-caught info ever carried them).
+
+Wiring, additive: `DexCardView(DexBrowseView)` and `DexCardInfoView(DexInfoView)`; `open_dex` now builds `DexCardView`. The old classes and their pure-UI `edit_message` callbacks are untouched (old tests keep passing). The new callbacks defer first, then draw and redraw with `edit_original_response`, because an image cannot be swapped in the same call that responds (B.6). The plain per-rarity completion field and the plain stats field are removed only when their image rendered; otherwise the screen is the old embed and `attachments=[]`. Prev/Next, the species pick and Back always set `attachments`. `edit_kwargs` / `send_kwargs` are duplicated from `catch_coin_card` on purpose so this branch has no dependency on the unmerged coin branch; unify them once both are merged.
+
+Tests: `tests/unit/test_catch_dex_card.py` (19). Mutation-checked, each trips a test: unknown tile leaks rarity/element, seen tile leaks rarity, species key carries stats or counts when not caught, completion field kept, page turn does not defer first, page turn drops the card, species pick does not defer first, species pick drops the card, Back drops the Dex card, `open_dex` uses the old view. One mutation initially survived (counts in the key for a not-caught species, an equivalent mutant on real data); a test with a deliberately leaky info now covers it.
+
+Not verified on a real client: image rendering, and whether the defer-then-edit flow shows a visible flicker on Prev/Next compared with the old instant edit. Card text is hard-coded English.
+
 ## Visual pass 5: collection box card
 
 `modules/catch_collection_card.py` draws the collection page as a box: a 5x2 grid of the page's creatures (rarity ring, element sigil, species name, level, owned `#id`, favourite star, lock, shiny/special sparkle) with the total and page number. The image is sized to its rows (a page of five or fewer is shorter). Species names and elements come from the species table; nicknames are never drawn (the text list under the card still shows them and the ids the select uses), so no player text reaches the renderer. An empty page draws no card.
