@@ -27,6 +27,7 @@ class ProfileCreature:
     special: bool
     element: str = ""
     element2: str | None = None
+    species_id: int = 0
 
     @property
     def display_name(self) -> str:
@@ -62,7 +63,7 @@ def _creature(rec) -> ProfileCreature | None:
     return ProfileCreature(
         int(rec["id"]), str(species["name"]), str(species["rarity"]), int(rec["level"]),
         rec["nickname"], bool(rec["shiny"]), bool(rec["special"]),
-        str(species.get("element") or ""), species.get("element2") or None,
+        str(species.get("element") or ""), species.get("element2") or None, int(rec["species_id"]),
     )
 
 
