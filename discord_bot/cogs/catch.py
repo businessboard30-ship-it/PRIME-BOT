@@ -32,6 +32,7 @@ from modules.catch_reminders import Reminder, dispatch_due_reminders
 from modules.catch_setup import CatchSetup, SPEED_PRESETS, load_setup, save_setup
 from modules.catch_species import all_species
 from modules.catch_card import edit_kwargs, encounter_card_png, send_kwargs
+from modules.catch_fled_card import FLED_FILE, fled_card_png, fled_file
 from modules.catch_hub_card import HUB_FILE, hub_card_png, hub_file
 from modules.catch_levelup_card import LEVELUP_FILE, levelup_card_png, levelup_file
 from modules.catch_profile import load_profile
@@ -408,6 +409,17 @@ async def card_parts(embed: discord.Embed, kind: str, species_id, *, level, shin
         return {}
     embed.set_image(url=f"attachment://{SPAWN_CARD_FILE}")
     return {"file": discord.File(io.BytesIO(data), filename=SPAWN_CARD_FILE)}
+
+
+async def fled_card_for_row(row: dict) -> bytes | None:
+    """PNG for an expired spawn row, or None (no species, unknown species, or a drawing error)."""
+    try:
+        species_id = row.get("species_id")
+        species = all_species().get(int(species_id)) if species_id is not None else None
+        return await fled_card_png(species) if species is not None else None
+    except Exception:
+        logger.warning("Catch fled card not drawn spawn=%s", row.get("id"), exc_info=True)
+        return None
 
 
 async def publish_spawn(channel, *, guild_id: int, clone_id: int | None, setup: CatchSetup, source: str = "chat") -> int:
@@ -851,12 +863,24 @@ class CatchCog(commands.Cog):
             view = SpawnClaimView(int(spawn_id))
             for item in view.children:
                 item.disabled = True
-            embed = discord.Embed(
-                title=text("claim.fled.title"),
-                description=text("claim.fled.description"),
-                colour=state_color("warning"),
-            )
-            await message.edit(embed=embed, view=view, attachments=[])
+            def fled_embed() -> discord.Embed:
+                return discord.Embed(
+                    title=text("claim.fled.title"),
+                    description=text("claim.fled.description"),
+                    colour=state_color("warning"),
+                )
+
+            card = await fled_card_for_row(row)
+            if card is not None:
+                embed = fled_embed()
+                embed.set_image(url=f"attachment://{FLED_FILE}")
+                try:
+                    await message.edit(embed=embed, view=view, attachments=[fled_file(card)])
+                    return
+                except discord.DiscordException:
+                    logger.warning("Catch fled card edit failed spawn=%s; retrying plain", spawn_id, exc_info=True)
+            # Plain embed; attachments=[] removes the wild card that was on the message.
+            await message.edit(embed=fled_embed(), view=view, attachments=[])
         except discord.DiscordException:
             return
 
