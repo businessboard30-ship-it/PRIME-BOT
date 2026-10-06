@@ -9,6 +9,7 @@ import discord
 
 from modules.catch_game import BAIT_BONUS, BALLS
 from modules.catch_gate import check_player_allowed
+from modules.catch_coin_card import coin_art, daily_art, send_kwargs
 from modules.catch_i18n import text
 from modules.catch_items import (
     claim_daily, ensure_starter_kit, item_name, load_inventory, load_player, sorted_inventory,
@@ -75,7 +76,9 @@ async def open_inventory(interaction: discord.Interaction) -> None:
         logger.exception("Catch inventory load failed user=%s", interaction.user.id)
         await interaction.followup.send(text("inventory.error"), ephemeral=True)
         return
-    await interaction.followup.send(embed=inventory_embed(inventory, player, starter_granted=granted), ephemeral=True)
+    embed = inventory_embed(inventory, player, starter_granted=granted)
+    file = await coin_art(embed, label="YOUR BAG", coins=player.coins, drop_field=text("inventory.coins"))
+    await interaction.followup.send(embed=embed, ephemeral=True, **send_kwargs(file))
 
 
 async def open_daily(interaction: discord.Interaction) -> None:
@@ -90,7 +93,16 @@ async def open_daily(interaction: discord.Interaction) -> None:
         logger.exception("Catch daily claim failed user=%s", interaction.user.id)
         await interaction.followup.send(text("daily.error"), ephemeral=True)
         return
-    await interaction.followup.send(embed=daily_embed(result), ephemeral=True)
+    embed = daily_embed(result)
+    file = None
+    if result.claimed:
+        reward = result.reward
+        file = await daily_art(
+            embed, coins=reward.coins, streak=result.streak,
+            items={item_name(k): v for k, v in reward.items.items()},
+            drop_fields=(text("inventory.coins"), text("daily.items")),
+        )
+    await interaction.followup.send(embed=embed, ephemeral=True, **send_kwargs(file))
 
 
 __all__ = ["daily_embed", "inventory_embed", "open_daily", "open_inventory"]
