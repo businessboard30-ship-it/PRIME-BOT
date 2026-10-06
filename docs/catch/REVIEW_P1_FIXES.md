@@ -73,3 +73,15 @@ Same approach as pass 1 (drawn from game data, `catch_theme` colours, no locale 
 Tests: `tests/unit/test_catch_card_screens.py` (17). Mutation-checked, each trips a test: public spawn drops card, claim success drops card, expired spawn keeps card, profile loses elements, profile fallback sets image. Result: 1286 passed, 21 skipped with real Postgres; ruff and compileall clean.
 
 Not verified on a real client: image rendering, attachment behaviour of ephemeral follow-ups with `file=`, and the expiry edit removing the image from the public message.
+
+## Visual pass 4: Dex page card and species card
+
+`modules/catch_dex_card.py` draws the Dex page as a 720x410 image: title, overall caught/seen bar, a 6x2 grid of the page's species, and per-rarity completion bars with the page number. The species page gets a 720x400 card (medallion, chips, five base-stat bars, caught and shiny counts; seen-only species show a dim medallion and "Catch one to reveal its stats").
+
+Spoiler rule (same as the text Dex): an undiscovered species is a "?" tile and its element and rarity never reach the drawing code or the cache key (`tiles_for` blanks them); a seen-only species is a dim sigil with no rarity colour; stats and counts are drawn only for a caught species (`species_key` also hides them if a not-caught info ever carried them).
+
+Wiring, additive: `DexCardView(DexBrowseView)` and `DexCardInfoView(DexInfoView)`; `open_dex` now builds `DexCardView`. The old classes and their pure-UI `edit_message` callbacks are untouched (old tests keep passing). The new callbacks defer first, then draw and redraw with `edit_original_response`, because an image cannot be swapped in the same call that responds (B.6). The plain per-rarity completion field and the plain stats field are removed only when their image rendered; otherwise the screen is the old embed and `attachments=[]`. Prev/Next, the species pick and Back always set `attachments`. `edit_kwargs` / `send_kwargs` are duplicated from `catch_coin_card` on purpose so this branch has no dependency on the unmerged coin branch; unify them once both are merged.
+
+Tests: `tests/unit/test_catch_dex_card.py` (19). Mutation-checked, each trips a test: unknown tile leaks rarity/element, seen tile leaks rarity, species key carries stats or counts when not caught, completion field kept, page turn does not defer first, page turn drops the card, species pick does not defer first, species pick drops the card, Back drops the Dex card, `open_dex` uses the old view. One mutation initially survived (counts in the key for a not-caught species, an equivalent mutant on real data); a test with a deliberately leaky info now covers it.
+
+Not verified on a real client: image rendering, and whether the defer-then-edit flow shows a visible flicker on Prev/Next compared with the old instant edit. Card text is hard-coded English.
