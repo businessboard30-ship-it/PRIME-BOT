@@ -13,7 +13,8 @@ import logging
 import discord
 
 from modules.catch_gate import check_player_allowed
-from modules.catch_coin_card import coin_art, edit_kwargs, send_kwargs
+from modules.catch_card import edit_kwargs, send_kwargs
+from modules.catch_coin_card import coin_art
 from modules.catch_i18n import text
 from modules.catch_items import item_name, load_player
 from modules.catch_shop import CATALOG, QUANTITIES, load_wallet, purchase, total_price

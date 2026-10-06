@@ -18,6 +18,7 @@ import os
 import random
 from functools import lru_cache
 
+import discord
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from modules import catch_theme
@@ -395,4 +396,17 @@ def clear_card_cache() -> None:
     _cached_encounter.cache_clear()
 
 
-__all__ = ["H", "W", "clear_card_cache", "creature_card_png", "encounter_card_png", "trainer_card_png"]
+def edit_kwargs(file: discord.File | None) -> dict:
+    """``edit_original_response`` kwargs: always set attachments so a stale card is replaced or cleared."""
+    return {"attachments": [file] if file else []}
+
+
+def send_kwargs(file: discord.File | None) -> dict:
+    """``followup.send`` kwargs: pass ``file`` only when there is one."""
+    return {"file": file} if file else {}
+
+
+__all__ = [
+    "H", "W", "clear_card_cache", "creature_card_png", "edit_kwargs", "encounter_card_png", "send_kwargs",
+    "trainer_card_png",
+]

@@ -23,6 +23,7 @@ from modules import catch_theme
 from modules.catch_card import (
     _INK, _MUTED, _WHITE, SCALE, STAT_BAR_MAX, STAT_ORDER, W, _backdrop, _fit_font, _font, _glow, _medallion,
     _mix, _pill, _rgb, _s, _sigil, _sparkle,
+    edit_kwargs, send_kwargs,
 )
 from modules.catch_collection import DEX_PAGE_SIZE, dex_page, dex_summary, page_count
 from modules.catch_dex import SpeciesInfo, rarity_completion
@@ -217,16 +218,6 @@ async def species_art(embed: discord.Embed, info: SpeciesInfo, *, drop_field: st
     if drop_field:
         _drop_field(embed, drop_field)
     return discord.File(io.BytesIO(data), filename=SPECIES_FILE)
-
-
-def edit_kwargs(file: discord.File | None) -> dict:
-    """``edit_original_response`` kwargs: always set attachments so a stale card is replaced or cleared."""
-    return {"attachments": [file] if file else []}
-
-
-def send_kwargs(file: discord.File | None) -> dict:
-    """``followup.send`` kwargs: pass ``file`` only when there is one."""
-    return {"file": file} if file else {}
 
 
 __all__ = ["clear_dex_card_cache", "dex_art", "edit_kwargs", "send_kwargs", "species_art", "tiles_for"]
