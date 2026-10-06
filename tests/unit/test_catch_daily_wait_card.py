@@ -177,10 +177,11 @@ def test_a_failed_render_still_sends_the_plain_embed(monkeypatch):
         raise RuntimeError("no font")
 
     monkeypatch.setattr(wait, "_cached_wait", boom)
-    inter, sent = daily_inter(monkeypatch, waiting(2))
+    result = waiting(2)   # one result: a second call would carry a different timestamp
+    inter, sent = daily_inter(monkeypatch, result)
     run(items_views.open_daily(inter))
     assert "file" not in sent[0] and sent[0]["embed"].image.url is None
-    assert sent[0]["embed"].description == items_views.daily_embed(waiting(2)).description
+    assert sent[0]["embed"].description == items_views.daily_embed(result).description
 
 
 def test_a_claimed_daily_still_uses_the_reward_card_not_the_wait_card(monkeypatch):
