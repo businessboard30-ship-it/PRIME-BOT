@@ -21,6 +21,7 @@ from modules.catch_collection import (
 from modules.catch_collection_card import collection_art
 from modules.catch_card import edit_kwargs, send_kwargs
 from modules.catch_dex_card import dex_art, species_art
+from modules.catch_filter_card import filter_art
 from modules.catch_dex import SpeciesInfo, rarity_completion, species_info
 from modules.catch_game import ELEMENTS, RARITIES
 from modules.catch_gate import check_player_allowed
@@ -262,9 +263,15 @@ class CollectionCardView(CollectionBoxView):
         await interaction.edit_original_response(content=None, view=self, **await self.message(edit=True))
 
     async def _open_filters(self, interaction: discord.Interaction) -> None:
-        # Pure UI state: the response is the screen itself, and it drops the card.
-        screen = CollectionFilterView(self)
-        await interaction.response.edit_message(content=None, embed=screen.embed(), view=screen, attachments=[])
+        # Defer first (drawing the filter card takes a moment), then swap the collection card for the
+        # filter card. If the card cannot be drawn the plain screen is shown with the attachment cleared.
+        await interaction.response.defer()
+        screen = CollectionFilterCardView(self)
+        try:
+            await interaction.edit_original_response(content=None, view=screen, **await screen.message())
+        except Exception:
+            logger.exception("Catch filter screen failed user=%s", self.user_id)
+            await interaction.followup.send(text("collection.error"), ephemeral=True)
 
 
 class CollectionFilterView(discord.ui.View):
@@ -398,6 +405,35 @@ class CollectionFilterView(discord.ui.View):
             self._busy = False
 
 
+class CollectionFilterCardView(CollectionFilterView):
+    """The filter screen with a drawn card above the pickers.
+
+    Added on top of ``CollectionFilterView`` (children, embed and Show results are unchanged).
+    Every change redraws the card: defer first, rebuild, then edit with the new image (or
+    ``attachments=[]`` plus the plain embed if it cannot be drawn, so no old card lingers).
+    """
+
+    async def message(self) -> dict:
+        embed = self.embed()
+        file = await filter_art(embed, self.flt)
+        return {"embed": embed, **edit_kwargs(file)}
+
+    async def _redraw(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        self._build()
+        await self._push(interaction)
+
+    async def _push(self, interaction: discord.Interaction) -> None:
+        try:
+            await interaction.edit_original_response(view=self, **await self.message())
+        except Exception:
+            logger.exception("Catch filter screen redraw failed user=%s", self.user_id)
+            await interaction.followup.send(text("collection.error"), ephemeral=True)
+
+    async def _search(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(CardSearchModal(self))
+
+
 class SearchModal(discord.ui.Modal):
     def __init__(self, screen: CollectionFilterView):
         super().__init__(title=text("collection.filter.search_title"), timeout=300)
@@ -416,6 +452,18 @@ class SearchModal(discord.ui.Modal):
                                       screen.flt.favorite, str(self.term.value or "")).clean()
         screen._build()
         await interaction.edit_original_response(embed=screen.embed(), view=screen)
+
+
+class CardSearchModal(SearchModal):
+    """Search box for the card filter screen: same rules as ``SearchModal``, then redraws the card."""
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        screen = self.screen
+        screen.flt = CollectionFilter(screen.flt.rarity, screen.flt.element, screen.flt.shiny,
+                                      screen.flt.favorite, str(self.term.value or "")).clean()
+        screen._build()
+        await screen._push(interaction)
 
 
 class PageJumpModal(discord.ui.Modal):
@@ -682,7 +730,8 @@ async def open_dex(interaction: discord.Interaction) -> None:
 
 
 __all__ = [
-    "CollectionBoxView", "CollectionBrowseView", "CollectionCardView", "CollectionFilterView", "CollectionView",
+    "CollectionBoxView", "CollectionBrowseView", "CollectionCardView", "CollectionFilterCardView",
+    "CollectionFilterView", "CollectionView",
     "DexBrowseView", "DexCardInfoView", "DexCardView", "DexInfoView", "DexView", "species_embed",
     "PageJumpModal", "SearchModal", "open_collection", "open_dex",
 ]

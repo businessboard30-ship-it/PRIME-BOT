@@ -172,18 +172,17 @@ def test_an_empty_filter_result_is_the_plain_empty_screen_with_the_card_cleared(
 
 
 def test_opening_the_filter_screen_responds_first_and_clears_the_card():
+    # Changed with the filter card: the screen now defers first, then swaps the collection card for the
+    # filter card (it used to edit_message with attachments=[]). The collection card must still not linger.
     rec = Recorder()
     view = card_view()
     inter = make_interaction(rec)
-    seen = []
-
-    async def edit_message(**kw):
-        rec.add("response")
-        seen.append(kw)
-
-    inter.response.edit_message = edit_message
+    edits = edits_to(inter)
     run(view._open_filters(inter))
-    assert rec.calls == ["response"] and seen[0]["attachments"] == [] and isinstance(seen[0]["view"], views.CollectionFilterView)
+    assert rec.calls == ["response"]
+    assert isinstance(edits[0]["view"], views.CollectionFilterView)
+    assert [a.filename for a in edits[0]["attachments"]] == ["filter.png"]
+    assert cards.FILE not in [a.filename for a in edits[0]["attachments"]]
 
 
 def test_open_collection_sends_the_card_view_after_gate_and_db(monkeypatch):
