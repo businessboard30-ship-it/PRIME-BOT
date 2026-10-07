@@ -14,6 +14,7 @@ from modules.catch_card import send_kwargs
 from modules.catch_coin_card import coin_art, daily_art
 from modules.catch_daily_wait_card import daily_wait_art
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_items import (
     claim_daily, ensure_starter_kit, item_name, load_inventory, load_player, sorted_inventory,
 )
@@ -63,7 +64,7 @@ def daily_embed(result) -> discord.Embed:
 async def _gate(interaction: discord.Interaction, clone_id) -> bool:
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
     return gate.allowed
 
 
@@ -78,7 +79,7 @@ async def open_inventory(interaction: discord.Interaction) -> None:
         player = await load_player(interaction.user.id, clone_id)
     except Exception:
         logger.exception("Catch inventory load failed user=%s", interaction.user.id)
-        await interaction.followup.send(text("inventory.error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("inventory.error"), ephemeral=True)
         return
     embed = inventory_embed(inventory, player, starter_granted=granted)
     file = await coin_art(embed, label="YOUR BAG", coins=player.coins, drop_field=text("inventory.coins"))
@@ -95,7 +96,7 @@ async def open_daily(interaction: discord.Interaction) -> None:
         result = await claim_daily(interaction.user.id, clone_id)
     except Exception:
         logger.exception("Catch daily claim failed user=%s", interaction.user.id)
-        await interaction.followup.send(text("daily.error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("daily.error"), ephemeral=True)
         return
     embed = daily_embed(result)
     file = None

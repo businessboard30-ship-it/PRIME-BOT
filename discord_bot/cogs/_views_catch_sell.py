@@ -17,6 +17,7 @@ from modules.catch_gate import check_player_allowed
 from modules.catch_card import edit_kwargs, send_kwargs
 from modules.catch_coin_card import coin_art
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_items import load_player
 from modules.catch_sell import RARITY_MARK, SELL_PAGE_SIZE, SellRow, display_name, list_sellable, sell_creature
 from modules.catch_theme import button_style, state_color
@@ -99,7 +100,7 @@ class SellView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -129,7 +130,7 @@ class SellView(discord.ui.View):
             await self._reload(self.page + delta)
         except Exception:
             logger.exception("Catch sell page load failed user=%s", self.user_id)
-            await interaction.followup.send(text("sell.load_error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("sell.load_error"), ephemeral=True)
             return
         self.notice = None
         self._build()
@@ -149,17 +150,17 @@ class SellView(discord.ui.View):
         try:
             gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "shop", self.clone_id)
             if not gate.allowed:
-                await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+                await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
                 return
             target = self.selected
             if target is None:
-                await interaction.followup.send(text("sell.no_selection"), ephemeral=True)
+                await interaction.followup.send(**notice_for("sell.no_selection"), ephemeral=True)
                 return
             try:
                 result = await sell_creature(target.id, self.user_id, self.clone_id, guild_id=interaction.guild_id)
             except Exception:
                 logger.exception("Catch sell failed user=%s owned=%s", self.user_id, target.id)
-                await interaction.followup.send(text("sell.error"), ephemeral=True)
+                await interaction.followup.send(**notice_for("sell.error"), ephemeral=True)
                 return
             if result.ok:
                 self.coins = result.coins_left
@@ -189,14 +190,14 @@ async def open_sell(interaction: discord.Interaction) -> None:
     clone_id = getattr(interaction.client, "clone_id", None)
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "shop", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
         return
     try:
         player = await load_player(interaction.user.id, clone_id)
         rows, total, page = await list_sellable(interaction.user.id, clone_id)
     except Exception:
         logger.exception("Catch sell load failed user=%s", interaction.user.id)
-        await interaction.followup.send(text("sell.load_error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("sell.load_error"), ephemeral=True)
         return
     view = SellView(interaction.user.id, clone_id, player.coins, rows, total, page)
     await interaction.followup.send(view=view, ephemeral=True, **await view.message(edit=False))

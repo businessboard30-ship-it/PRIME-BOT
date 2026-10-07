@@ -24,6 +24,7 @@ from modules.catch_creature import load_creature
 from modules.catch_evolve import preview
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_levelup_card import LEVELUP_FILE, evolve_ready, levelup_card_png, levelup_file
 from modules.catch_profile import load_profile
 from modules.catch_species import all_species
@@ -48,7 +49,7 @@ class LevelUpEvolveView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -61,23 +62,23 @@ class LevelUpEvolveView(discord.ui.View):
     async def _evolve(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         if self._busy:
-            await interaction.followup.send(text("creature.busy"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.busy"), ephemeral=True)
             return
         self._busy = True
         try:
             gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", self.clone_id)
             if not gate.allowed:
                 await interaction.followup.send(
-                    text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True,
+                    **notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True,
                 )
                 return
             detail = await load_creature(self.owned_id, self.user_id, self.clone_id)
             pv = await preview(self.owned_id, self.user_id, self.clone_id)
             if detail is None or pv is None:
-                await interaction.followup.send(text("creature.not_found"), ephemeral=True)
+                await interaction.followup.send(**notice_for("creature.not_found"), ephemeral=True)
                 return
             if pv.eligibility.status != "ready":
-                await interaction.followup.send(text(f"evolve.refused_{pv.eligibility.status}"), ephemeral=True)
+                await interaction.followup.send(**notice_for(f"evolve.refused_{pv.eligibility.status}"), ephemeral=True)
                 return
             creature_view = CreatureView(self.user_id, self.clone_id, detail, pv, back=self._closed)
             confirm = EvolveConfirmView(self.user_id, self.clone_id, creature_view)
@@ -86,7 +87,7 @@ class LevelUpEvolveView(discord.ui.View):
             )
         except Exception:
             logger.exception("Catch level-up evolve failed user=%s creature=%s", self.user_id, self.owned_id)
-            await interaction.followup.send(text("levelup.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("levelup.error"), ephemeral=True)
         finally:
             self._busy = False
 

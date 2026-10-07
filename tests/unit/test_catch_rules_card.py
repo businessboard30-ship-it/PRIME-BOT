@@ -11,6 +11,7 @@ from PIL import Image
 import discord_bot.cogs._views_catch_rules as views
 from modules import catch_rules_card as rc
 from modules.catch_setup import CatchSetup
+from modules.catch_theme import state_color
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
 
 REAL_CACHED = rc._cached_rules  # the failure tests replace the module attribute
@@ -190,12 +191,13 @@ def test_open_rules_still_responds_first_and_gates_before_loading(monkeypatch):
     assert rec.calls.index("gate") < rec.calls.index("load")
 
 
-def test_refusal_stays_plain_text_and_loads_nothing(monkeypatch):
+def test_refusal_is_a_warning_notice_embed_and_loads_nothing(monkeypatch):
     sent, rec = open_rules(monkeypatch, allowed=False)
-    assert "embed" not in sent[0][1] and "file" not in sent[0][1] and "load" not in rec.calls
+    kwargs = sent[0][1]
+    assert "file" not in kwargs and kwargs["embed"].colour == state_color("warning") and "load" not in rec.calls
 
 
-def test_load_error_stays_plain_text(monkeypatch):
+def test_load_error_is_a_danger_notice_embed(monkeypatch):
     rec = Recorder()
 
     async def gate(*a, **k):
@@ -215,4 +217,5 @@ def test_load_error_stays_plain_text(monkeypatch):
 
     inter.followup = SimpleNamespace(send=followup_send)
     run(views.open_rules(inter))
-    assert "embed" not in sent[0][1] and "file" not in sent[0][1]
+    kwargs = sent[0][1]
+    assert "file" not in kwargs and kwargs["embed"].colour == state_color("danger")

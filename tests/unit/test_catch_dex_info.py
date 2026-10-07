@@ -129,7 +129,7 @@ def test_species_pick_refuses_undiscovered_ids_and_junk():
         inter.response.send_message = send_message
         inter.data = {"values": [value]}
         asyncio.run(view._open_species(inter))
-    assert [a[0] for a, _ in sent] == [LOCALE["catch.dex.info.not_found"]] * 3
+    assert [k["embed"].description for _, k in sent] == [LOCALE["catch.dex.info.not_found"]] * 3
 
 
 def test_info_view_is_owner_only():

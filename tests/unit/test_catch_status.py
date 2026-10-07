@@ -12,6 +12,7 @@ import discord_bot.cogs.catch as catch
 from modules import catch_status as status
 from modules.catch_items import DAILY_COOLDOWN_SECONDS
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
+from tests.unit.notice_helpers import body
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
 
@@ -105,7 +106,7 @@ def test_open_status_refuses_when_game_is_off(monkeypatch):
     inter = make_interaction(r)
     sent = sent_to(inter)
     asyncio.run(views.open_status(inter))
-    assert sent[0][0][0] == catch.text("catch.unavailable", reason="game_disabled")
+    assert body(sent[0]) == catch.text("catch.unavailable", reason="game_disabled")
     assert "load" not in r.calls
 
 
@@ -120,7 +121,7 @@ def test_load_failure_is_reported_politely(monkeypatch):
     inter = make_interaction(r)
     sent = sent_to(inter)
     asyncio.run(views.open_status(inter))
-    assert sent[0][0][0] == catch.text("status.error")
+    assert body(sent[0]) == catch.text("status.error")
 
 
 def test_status_button_opens_the_real_screen_live_and_after_restart(monkeypatch):

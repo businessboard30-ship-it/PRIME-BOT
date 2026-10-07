@@ -11,6 +11,7 @@ import discord_bot.cogs._views_catch_wild as views
 import discord_bot.cogs.catch as catch
 from modules import catch_wild as wild
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
+from tests.unit.notice_helpers import shown
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
 
@@ -122,7 +123,7 @@ def test_open_wild_zone_refuses_when_game_is_off_and_outside_servers(monkeypatch
     inter = wild_interaction(r)
 
     async def followup_send(*args, **kwargs):
-        sent.append(args[0])
+        sent.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=followup_send)
     asyncio.run(views.open_wild_zone(inter))
@@ -148,7 +149,7 @@ def test_load_failure_is_reported_politely(monkeypatch):
     inter = wild_interaction(r)
 
     async def followup_send(*args, **kwargs):
-        sent.append(args[0])
+        sent.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=followup_send)
     asyncio.run(views.open_wild_zone(inter))

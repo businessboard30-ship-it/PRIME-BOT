@@ -16,6 +16,7 @@ from modules.catch_species import all_species
 from tests.unit.test_catch_dex_info import entry, full_dex
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
 from tests.unit.test_catch_phase3 import edits_to
+from tests.unit.notice_helpers import shown
 
 PNG = b"\x89PNG\r\n\x1a\n"
 MIX = {1: (True, 3, 1), 2: (True, 1, 0), 3: (True, 0, 0), 6: (True, 2, 0), 7: (True, 0, 0), 12: (True, 5, 2)}
@@ -189,7 +190,7 @@ def test_species_pick_refuses_undiscovered_ids_without_deferring():
         inter.data = {"values": [value]}
 
         async def send_message(*a, _s=sent, **kw):
-            _s.append(a[0])
+            _s.append(shown(a, kw))
 
         inter.response.send_message = send_message
         run(view._open_species(inter))

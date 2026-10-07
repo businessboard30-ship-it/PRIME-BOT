@@ -14,6 +14,7 @@ from modules import catch_game, catch_items
 from modules import catch_sell as sell
 from modules import catch_shop as shop
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
+from tests.unit.notice_helpers import shown
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
 
@@ -211,7 +212,7 @@ def test_open_sell_refuses_when_the_shop_feature_is_off(monkeypatch):
     inter = sell_interaction(rec)
 
     async def followup_send(*args, **kwargs):
-        sent.append(args[0])
+        sent.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=followup_send)
     asyncio.run(views.open_sell(inter))
@@ -301,7 +302,7 @@ def test_sell_failure_reports_nothing_sold_and_unlocks_buttons(monkeypatch):
     inter = sell_interaction(rec)
 
     async def followup_send(*args, **kwargs):
-        sent.append(args[0])
+        sent.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=followup_send)
     view = views.SellView(7, None, 100, make_rows(1), total=1)
@@ -331,7 +332,7 @@ def test_sell_without_selection_asks_for_one(monkeypatch):
     inter = sell_interaction(rec)
 
     async def followup_send(*args, **kwargs):
-        sent.append(args[0])
+        sent.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=followup_send)
     asyncio.run(views.SellView(7, None, 0, make_rows(1), total=1)._sell(inter))
@@ -351,7 +352,7 @@ def test_only_the_owner_can_use_sell():
     sent = []
 
     async def send_message(*args, **kwargs):
-        sent.append(args[0])
+        sent.append(shown(args, kwargs))
 
     view = views.SellView(7, None, 0, make_rows(1), total=1)
     other = SimpleNamespace(user=SimpleNamespace(id=8), response=SimpleNamespace(send_message=send_message))

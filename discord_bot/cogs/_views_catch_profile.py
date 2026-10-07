@@ -17,6 +17,7 @@ from modules import catch_emoji as emoji
 from modules.catch_card import trainer_card_png
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_profile import ProfileCreature, TrainerProfile, load_profile
 from modules.catch_theme import button_style, rarity_color
 
@@ -105,7 +106,7 @@ class ProfileView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -120,13 +121,13 @@ async def open_profile(
     """Replace the (already deferred) message with the trainer card."""
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
         return
     try:
         profile = await load_profile(user_id, clone_id)
     except Exception:
         logger.exception("Catch profile load failed user=%s", user_id)
-        await interaction.followup.send(text("profile.error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("profile.error"), ephemeral=True)
         return
     name = getattr(interaction.user, "display_name", None) or getattr(interaction.user, "name", None) or "Trainer"
     await interaction.edit_original_response(

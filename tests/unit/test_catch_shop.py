@@ -12,6 +12,7 @@ import discord_bot.cogs.catch as catch
 from modules import catch_items
 from modules import catch_shop as shop
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
+from tests.unit.notice_helpers import shown
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
 
@@ -195,7 +196,7 @@ def test_open_shop_refuses_when_the_shop_feature_is_off(monkeypatch):
     inter = shop_interaction(rec)
 
     async def followup_send(*args, **kwargs):
-        sent.append(args[0] if args else kwargs)
+        sent.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=followup_send)
     asyncio.run(views.open_shop(inter))
@@ -272,7 +273,7 @@ def test_buy_failure_reports_no_charge_and_does_not_redraw(monkeypatch):
     inter = shop_interaction(rec)
 
     async def followup_send(*args, **kwargs):
-        sent.append(args[0])
+        sent.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=followup_send)
     view = views.ShopView(7, None, coins=1000, selected="capsule_basic")
@@ -297,7 +298,7 @@ def test_buy_without_a_selection_asks_for_one(monkeypatch):
     inter = shop_interaction(rec)
 
     async def followup_send(*args, **kwargs):
-        sent.append(args[0])
+        sent.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=followup_send)
     asyncio.run(views.ShopView(7, None, coins=1000)._buy(inter, 1))
@@ -308,7 +309,7 @@ def test_only_the_owner_can_use_the_shop():
     sent = []
 
     async def send_message(*args, **kwargs):
-        sent.append(args[0])
+        sent.append(shown(args, kwargs))
 
     view = views.ShopView(7, None, coins=10)
     other = SimpleNamespace(user=SimpleNamespace(id=8), response=SimpleNamespace(send_message=send_message))

@@ -9,6 +9,7 @@ import config
 import discord_bot.cogs.catch as catch
 import discord_bot.cogs._views_join_dm as join_dm
 from modules import catch_gate
+from tests.unit.notice_helpers import body
 
 SUPPORT = 5555
 OTHER = 7777
@@ -174,4 +175,4 @@ def test_hub_command_refuses_outside_the_support_server():
                             response=SimpleNamespace(defer=defer), followup=SimpleNamespace(send=send))
     cog = catch.CatchCog.__new__(catch.CatchCog)
     asyncio.run(catch.CatchCog.catch.callback(cog, inter))
-    assert sent[0][0][0] == catch.text("unavailable", reason=catch_gate.SUPPORT_ONLY_REASON) and "view" not in sent[0][1]
+    assert body(sent[0]) == catch.text("unavailable", reason=catch_gate.SUPPORT_ONLY_REASON) and "view" not in sent[0][1]

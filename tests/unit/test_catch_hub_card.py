@@ -198,7 +198,7 @@ def test_failed_edit_tells_the_player(monkeypatch):
     inter.edit_original_response = bad_edit
     asyncio.run(catch.CatchHubCardView()._select_category(inter))
     assert len(sent) == 1 and sent[0]["ephemeral"] is True
-    assert sent[0]["_args"] == (catch.text("hub.error"),)
+    assert sent[0]["embed"].description == catch.text("hub.error") and "_args" not in sent[0] or sent[0]["_args"] == ()
 
 
 def test_card_view_keeps_the_same_buttons_as_the_plain_hub():

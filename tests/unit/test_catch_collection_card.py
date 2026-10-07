@@ -12,6 +12,7 @@ from modules import catch_collection_card as cards
 from modules.catch_i18n import text
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
 from tests.unit.test_catch_phase3 import edits_to, row
+from tests.unit.notice_helpers import shown
 
 PNG = b"\x89PNG\r\n\x1a\n"
 
@@ -155,7 +156,7 @@ def test_back_to_list_with_a_database_error_edits_nothing(monkeypatch):
     sent = []
 
     async def send(*a, **kw):
-        sent.append(a[0])
+        sent.append(shown(a, kw))
 
     inter.followup = SimpleNamespace(send=send)
     run(view._back_to_list(inter))

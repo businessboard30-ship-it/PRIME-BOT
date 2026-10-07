@@ -13,6 +13,7 @@ from modules.catch_card import send_kwargs
 from modules.catch_guide_card import guide_art
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_theme import state_color
 
 GUIDE_SECTIONS = ("catching", "items", "rarity", "coins", "collection")
@@ -35,7 +36,7 @@ async def open_guide(interaction: discord.Interaction) -> None:
     clone_id = getattr(interaction.client, "clone_id", None)
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
         return
     embed = guide_embed()
     file = await guide_art(embed)  # None (plain embed, unchanged) if the card cannot be drawn
