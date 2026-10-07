@@ -10,8 +10,10 @@ import logging
 
 import discord
 
+from modules.catch_card import send_kwargs
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
+from modules.catch_rules_card import rules_art
 from modules.catch_setup import CatchSetup, load_setup
 from modules.catch_theme import state_color
 
@@ -65,7 +67,9 @@ async def open_rules(interaction: discord.Interaction) -> None:
         logger.exception("Catch rules load failed guild=%s", interaction.guild_id)
         await interaction.followup.send(text("rules.error"), ephemeral=True)
         return
-    await interaction.followup.send(embed=rules_embed(setup), ephemeral=True)
+    embed = rules_embed(setup)
+    file = await rules_art(embed, setup)  # None (plain embed, unchanged) if the card cannot be drawn
+    await interaction.followup.send(embed=embed, ephemeral=True, **send_kwargs(file))
 
 
 __all__ = ["MAX_CHANNELS_SHOWN", "open_rules", "rules_embed"]
