@@ -495,3 +495,11 @@ def test_pending_payments_list_is_one_code_block_without_inline_spans(monkeypatc
     assert "`" not in inner and "<t:" not in text
     assert "gum_premium_0_7cbeaa2e | premium | gumroad | 2 | buyer" in inner and "3h ago" in inner
     assert len(text) < 3600
+
+
+def test_join_dm_has_antiraid_button_registered():
+    from discord_bot.cogs import _views_join_dm as jd
+    assert jd._AntiRaidButton in jd.DYNAMIC_ITEMS
+    b = jd._AntiRaidButton(123, None)
+    assert b.item.custom_id == "join_dm_antiraid:123:-"
+    assert jd._AntiRaidButton(123, 5).item.custom_id == "join_dm_antiraid:123:5"
