@@ -309,6 +309,11 @@ GUMROAD_PRODUCT_LINKS = {
     # Gumroad dashboard (the API can't create memberships) — paste its link
     # / product id via these env vars (or edit here) once it exists.
     "premium": os.getenv("GUMROAD_PREMIUM_LINK", "https://boardmaster87.gumroad.com/l/naceb"),
+    # Yearly / Lifetime Premium are one-time products. Leave these empty: the bot
+    # auto-creates (or adopts by name) them via gumroad_autocreate.py. Set the env
+    # vars only to force a specific product.
+    "premium_yearly": os.getenv("GUMROAD_PREMIUM_YEARLY_LINK", ""),
+    "premium_lifetime": os.getenv("GUMROAD_PREMIUM_LIFETIME_LINK", ""),
     # Hardcore roast — per-battle activation ($1). Create this product in
     # the Gumroad dashboard (one-time, $1) and paste its link/id here or
     # set GUMROAD_HARDCORE_ROAST_LINK / GUMROAD_HARDCORE_ROAST_ID env vars.
@@ -332,6 +337,8 @@ GUMROAD_PRODUCT_IDS = {
     "xp_server_boost": "Wnvy9M0rXGlqZwVjUltlRQ==",
     "xp_server_boost_month": "Otjay_g0whBiQhfwXCnJIQ==",
     "premium": os.getenv("GUMROAD_PREMIUM_PRODUCT_ID", ""),
+    "premium_yearly": os.getenv("GUMROAD_PREMIUM_YEARLY_ID", ""),
+    "premium_lifetime": os.getenv("GUMROAD_PREMIUM_LIFETIME_ID", ""),
     "hardcore_roast": os.getenv("GUMROAD_HARDCORE_ROAST_ID", ""),
     "ad_placement": os.getenv("GUMROAD_AD_PLACEMENT_ID", ""),
 }
@@ -342,7 +349,7 @@ GUMROAD_PRODUCT_IDS = {
 AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "2"))
 
 # ─────────────────────────────────────────────────────────────────────
-# Premium: $2/month PER SERVER, unlocks every current and future package
+# Premium: $4/month PER SERVER (or yearly / lifetime, below), unlocks every current and future package
 # (welcome card pack, ultra welcome pack, custom roles, Music Pro, ...).
 # Deliberately NOT included: Discord Clone activation / clone monetization
 # (they cost real hosting) and the temporary XP boosts (consumables).
@@ -364,6 +371,15 @@ PREMIUM_DAYS = 30
 PREMIUM_SUB_DAYS = 33
 PREMIUM_GRACE_DAYS = 3
 PREMIUM_REMINDER_DAYS = 3
+
+# Longer Premium plans (one-time payments, per server, same perks as monthly).
+# Yearly = 12 months for the price of 9 (25% off $4/mo). Lifetime is stored as a
+# far-future expiry (100 years), so no schema change and reminders never fire.
+PREMIUM_YEARLY_FEE_USD = 36
+PREMIUM_YEARLY_DAYS = 365
+PREMIUM_LIFETIME_FEE_USD = 78.56
+PREMIUM_LIFETIME_DAYS = 36500
+PREMIUM_LIFETIME_THRESHOLD_DAYS = 365 * 50  # expiry further out than this == lifetime
 
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):

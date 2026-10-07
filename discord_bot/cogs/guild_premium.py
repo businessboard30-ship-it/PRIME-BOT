@@ -64,7 +64,7 @@ class GuildPremiumCog(commands.Cog):
                 user = await self.bot.fetch_user(int(row["activated_by"]))
                 await user.send(
                     f"💎 **Premium** for **{guild.name}** ends <t:{ts}:R> (<t:{ts}:D>). "
-                    "Tap below to renew — the new 30 days are added on top of the time you have left.",
+                    "Tap below to renew — the new time is added on top of what you have left.",
                     view=view,
                 )
             except discord.HTTPException:

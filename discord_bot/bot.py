@@ -211,6 +211,12 @@ class AnimeBotDiscord(commands.Bot):
         # rather than registered per fixed custom_id, so one call here
         # covers every guild's buttons, past and future.
         self.add_dynamic_items(*DYNAMIC_ITEMS)
+        if getattr(self, "clone_id", None) is None:
+            try:
+                import gumroad_autocreate
+                self._gumroad_autocreate_task = asyncio.create_task(gumroad_autocreate.run_forever())
+            except Exception:
+                logger.exception("Gumroad auto-provisioning failed to start")
         self.add_dynamic_items(*STYLE_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*WELCOME_WIZARD_DYNAMIC_ITEMS)
         # "Find by name" button on every wizard channel dropdown (fonts/brackets-proof).

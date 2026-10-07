@@ -7992,6 +7992,14 @@ class Database:
                 guild_id, clone_id, activated_by, days,
             )
 
+    async def is_guild_premium_lifetime(self, guild_id: int, clone_id: Optional[int] = None) -> bool:
+        """Lifetime Premium is stored as an expiry far past any real plan."""
+        from config import PREMIUM_LIFETIME_THRESHOLD_DAYS
+        row = await self.get_guild_premium(guild_id, clone_id)
+        if not row:
+            return False
+        return row["expires_at"] > datetime.now(timezone.utc) + timedelta(days=PREMIUM_LIFETIME_THRESHOLD_DAYS)
+
     async def set_premium_subscription_id(self, guild_id: int, clone_id: Optional[int], subscription_id: str) -> None:
         pool = await get_pool()
         async with pool.acquire() as conn:

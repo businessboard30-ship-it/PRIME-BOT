@@ -44,6 +44,8 @@ _PRODUCT_LABELS = {
     "custom_role": "Custom Role",
     "music_pro": "Music Pro",
     "premium": "Premium",
+    "premium_yearly": "Premium (Yearly)",
+    "premium_lifetime": "Premium (Lifetime)",
 }
 
 
