@@ -183,6 +183,11 @@ Creature catching (`/catch`) is a hub with six categories; see [Catch game](#cat
 ### Protection
 - **Auto-moderation** (`/automod`) — filters, banned words, guided wizard
 - **Anti-raid** (`/antiraid`) — spike detection, lockdown and staff alerts
+  **Anti-raid Pro** (premium extras): join-profile filter (account age / default avatar /
+  suspicious name → flag, quarantine or kick), a raid report posted when each raid ends, and
+  quarantine-for-review with Ban all / Release all / Review one-by-one buttons. Logic in
+  `modules/antiraid_pro.py`, UI in `discord_bot/cogs/_views_antiraid_pro.py`. Saved Pro settings
+  pause (not vanish) if premium lapses.
 - **Honeypot** (`/honeypot`) — free trap channel that auto-actions spam bots and
   hacked accounts (premium extras: action, history window, log channel)
 - **Scam shield**, **join gate**, **quarantine**, **moderation** (kick/ban/timeout)
