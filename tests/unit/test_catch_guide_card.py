@@ -10,6 +10,7 @@ from PIL import Image
 
 import discord_bot.cogs._views_catch_guide as views
 from modules import catch_guide_card as gc
+from modules.catch_theme import state_color
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
 
 REAL_CACHED = gc._cached_guide  # the failure tests replace the module attribute
@@ -160,7 +161,7 @@ def test_open_guide_still_responds_first_and_gates(monkeypatch):
     assert_response_first(rec)
 
 
-def test_refusal_stays_plain_text(monkeypatch):
+def test_refusal_is_a_warning_notice_embed(monkeypatch):
     rec = Recorder()
     monkeypatch.setattr(views, "check_player_allowed", slow(rec, "gate", SimpleNamespace(allowed=False, reason="game_disabled")))
     inter = make_interaction(rec)
@@ -171,4 +172,5 @@ def test_refusal_stays_plain_text(monkeypatch):
 
     inter.followup = SimpleNamespace(send=followup_send)
     run(views.open_guide(inter))
-    assert "embed" not in sent[0][1] and "file" not in sent[0][1]
+    kwargs = sent[0][1]
+    assert "file" not in kwargs and kwargs["embed"].colour == state_color("warning")
