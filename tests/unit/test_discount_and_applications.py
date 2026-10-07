@@ -206,3 +206,41 @@ def test_modal_submit_is_routed_without_a_live_modal(monkeypatch):
     assert asyncio.run(va.handle_modal_submit(_FakeInteraction(data))) is True and seen["det"][0] == 9
     # someone else's modal is left alone
     assert asyncio.run(va.handle_modal_submit(_FakeInteraction({"custom_id": "other:1"}))) is False
+
+
+# ── server panel: Community → Applications ────────────────────────────────
+
+def _labels(view):
+    out = []
+
+    def walk(c):
+        if getattr(c, "label", None):
+            out.append(c.label)
+        if getattr(c, "placeholder", None):
+            out.append(c.placeholder)
+        for ch in getattr(c, "children", []) or []:
+            walk(ch)
+    for c in view.children:
+        walk(c)
+    return out
+
+
+def test_panel_community_hub_links_to_applications():
+    from discord_bot.cogs import _views_server_panel_p2 as p2
+    v = p2.CommunityView(1, None, 2, {"app_live": 2})
+    assert "Applications" in _labels(v)
+
+
+def test_panel_applications_screen_lists_forms_and_controls():
+    from discord_bot.cogs import _views_server_panel_p2 as p2
+    forms = [_form(id=1, status="active", title="Staff team", panel_channel_id=55, pending=3),
+             _form(id=2, status="closed", title="Mods", pending=0)]
+    v = p2.ApplicationsView(1, None, 2, {"forms": forms, "premium": False})
+    labels = _labels(v)
+    assert "New form in this channel" in labels and "Close or reopen a form" in labels and "Back" in labels
+    body = "\n".join(v.body())
+    assert "Live forms: **1/1**" in body and "3 waiting for review" in body and "<#55>" in body
+    assert "Premium allows 10" in body
+    empty = p2.ApplicationsView(1, None, 2, {"forms": [], "premium": True})
+    assert "Close or reopen a form" not in _labels(empty)
+    assert "Live forms: **0/10**" in "\n".join(empty.body())

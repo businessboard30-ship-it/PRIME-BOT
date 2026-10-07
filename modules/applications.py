@@ -194,3 +194,16 @@ async def decide(sub_id: int, accepted: bool, staff_id: int) -> Optional[dict]:
     a = d.get("answers")
     d["answers"] = json.loads(a) if isinstance(a, str) else (a or [])
     return d
+
+
+async def list_forms(guild_id: int, clone_id) -> List[dict]:
+    """Every non-draft form of a server (newest first) with how many applications await review."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT f.*, (SELECT COUNT(*) FROM discord_application_submissions s "
+            "             WHERE s.form_id = f.id AND s.status = 'pending') AS pending "
+            "FROM discord_application_forms f "
+            "WHERE f.guild_id = $1 AND f.clone_id IS NOT DISTINCT FROM $2 AND f.status <> 'draft' "
+            "ORDER BY f.id DESC LIMIT 25", guild_id, clone_id)
+    return [_form(r) for r in rows]

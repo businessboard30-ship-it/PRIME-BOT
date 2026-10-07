@@ -10731,6 +10731,11 @@ class Database:
             )
             return dict(row)
 
+    async def get_application_forms(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
+        """Non-draft application forms of a server with pending-review counts (server panel screen)."""
+        from modules import applications
+        return await applications.list_forms(guild_id, clone_id)
+
     async def get_giveaway_draft(self, wizard_message_id: int) -> Optional[Dict]:
         pool = await get_pool()
         async with pool.acquire() as conn:
