@@ -34,7 +34,7 @@ _PERKS = (
     "🔤 **Fonts & Designs** — 20+ fonts, frames & emoji tags\n"
     "🎨 **Custom Roles** — every member styles their own\n"
     "💀 **Hardcore Roast** — unfiltered roast battles\n"
-    "🤖 **AI Chat** — 3x daily limit (30/day)\n"
+    "🤖 **AI Chat** — 5x daily limit (30/day)\n"
     "🖼️ **Bot Branding** — your own bot name, avatar & banner\n"
     "🎮 **Roblox Alerts** — auto game update posts\n"
     "🛡️ **Anti-raid Pro** — join-profile filter, raid reports & quarantine-and-review\n"
