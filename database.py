@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "56"
+SCHEMA_VERSION = "57"
+# "56" -> "57" adds 4 filter_* columns to discord_antiraid_config (Anti-raid Pro: account-age / default-avatar / suspicious-name join filter) via ALTER TABLE ADD COLUMN IF NOT EXISTS — see modules/antiraid_pro.py. Same bump-or-it-never-runs trap.
 # "55" -> "56" actually creates discord_verification_passes (Cloudflare Turnstile join verification). It was added to _create_tables in the Turnstile PR without a bump, so DBs stamped '55' skipped it (UndefinedTableError). Same bump-or-it-never-runs trap.
 # "54" -> "55" adds the Phase 1 catch game tables (modules/catch_schema.py: catch_species, catch_owned, catch_dex, catch_players, catch_spawns, catch_cooldowns, catch_feature_flags, catch_theme, catch_audit, ...). Same bump-or-it-never-runs trap.
 # "53" -> "54" adds discord_quarantine_config, discord_quarantined and discord_channel_locks (server panel phase 11: quarantine role with one-tap release, channel lock). Same bump-or-it-never-runs trap.
@@ -2758,6 +2759,15 @@ class Database:
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS discord_antiraid_config_guild_clone_key
             ON discord_antiraid_config (guild_id, COALESCE(clone_id, -1))
+        """)
+        # Anti-raid Pro (premium): join-profile filter. filter_age_days 0 = age check off.
+        # filter_action is flag | quarantine | kick. See modules/antiraid_pro.py.
+        await conn.execute("""
+            ALTER TABLE discord_antiraid_config
+                ADD COLUMN IF NOT EXISTS filter_age_days INTEGER NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS filter_default_avatar BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS filter_suspicious_name BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS filter_action TEXT NOT NULL DEFAULT 'flag'
         """)
         # --- Welcome extras: goodbye message + auto-roles ------------------------
         # One row per guild(+clone). Kept out of discord_welcome_config so the
@@ -10210,6 +10220,7 @@ class Database:
     _ANTIRAID_FIELDS = (
         "enabled", "sensitivity", "response", "joiner_action", "lockdown_minutes",
         "log_channel_id", "alert_role_id", "active_until", "prev_verification", "created_by",
+        "filter_age_days", "filter_default_avatar", "filter_suspicious_name", "filter_action",
     )
 
     async def get_antiraid_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
@@ -10227,6 +10238,8 @@ class Database:
                 "lockdown_minutes": 15, "log_channel_id": None, "alert_role_id": None,
                 "active_until": None, "prev_verification": None, "triggered_count": 0,
                 "last_triggered_at": None, "created_by": None,
+                "filter_age_days": 0, "filter_default_avatar": False,
+                "filter_suspicious_name": False, "filter_action": "flag",
             }
 
     async def set_antiraid_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
@@ -10241,18 +10254,22 @@ class Database:
                 INSERT INTO discord_antiraid_config
                     (guild_id, clone_id, enabled, sensitivity, response, joiner_action,
                      lockdown_minutes, log_channel_id, alert_role_id, active_until,
-                     prev_verification, created_by)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                     prev_verification, created_by, filter_age_days, filter_default_avatar,
+                     filter_suspicious_name, filter_action)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
                     SET enabled = $3, sensitivity = $4, response = $5, joiner_action = $6,
                         lockdown_minutes = $7, log_channel_id = $8, alert_role_id = $9,
-                        active_until = $10, prev_verification = $11, created_by = $12
+                        active_until = $10, prev_verification = $11, created_by = $12,
+                        filter_age_days = $13, filter_default_avatar = $14,
+                        filter_suspicious_name = $15, filter_action = $16
                 RETURNING *
                 """,
                 guild_id, clone_id, merged["enabled"], merged["sensitivity"], merged["response"],
                 merged["joiner_action"], merged["lockdown_minutes"], merged["log_channel_id"],
                 merged["alert_role_id"], merged["active_until"], merged["prev_verification"],
-                merged["created_by"],
+                merged["created_by"], merged["filter_age_days"], merged["filter_default_avatar"],
+                merged["filter_suspicious_name"], merged["filter_action"],
             )
             return dict(row)
 

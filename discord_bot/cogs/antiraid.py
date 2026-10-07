@@ -50,6 +50,8 @@ from discord.ext import commands, tasks
 from database import db
 from discord_bot import perm_check
 from discord_bot.cogs._dm_support import GuildOnlyCog
+from discord_bot.cogs import _views_antiraid_pro as pro_ui
+from modules import antiraid_pro as pro
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +74,10 @@ JOINER_ACTIONS = {
     "none":    ("Leave new joiners alone", "🤝", "Staff decide what to do"),
     "timeout": ("Timeout new joiners (1 hour)", "⏳", "They can read but not talk; staff can lift it"),
     "kick":    ("Kick new joiners", "👢", "Removes them; real people can rejoin later"),
+    # Premium (Anti-raid Pro): needs a quarantine role; free servers get the pitch when they pick it.
+    "quarantine": ("Quarantine for review 💎", "🔒", "Premium: hold raiders in a no-access role, then Ban all / Release / Review"),
 }
+_JOINER_VERB = {"timeout": "timed out", "kick": "kicked", "quarantine": "quarantined"}
 LOCKDOWN_MINUTES = (5, 15, 30, 60, 180)
 DEFAULT_LOCKDOWN_MINUTES = 15
 
@@ -182,6 +187,8 @@ def missing_permissions(guild: discord.Guild, cfg: dict) -> list:
         needs.append(("moderate_members", "Timeout Members"))
     elif action == "kick":
         needs.append(("kick_members", "Kick Members"))
+    elif action == "quarantine":
+        needs.append(("manage_roles", "Manage Roles"))
     return [label for perm, label in needs if not getattr(me.guild_permissions, perm, False)]
 
 
@@ -206,7 +213,8 @@ def alert_role_of(guild: discord.Guild, cfg: dict):
 
 
 async def _send_log(guild: discord.Guild, clone_id, cfg: dict, embed: discord.Embed,
-                    content: str | None = None, ping_role: discord.Role | None = None) -> bool:
+                    content: str | None = None, ping_role: discord.Role | None = None,
+                    view: discord.ui.View | None = None) -> bool:
     channel = await resolve_log_channel(guild, clone_id, cfg)
     if channel is None:
         return False
@@ -214,7 +222,8 @@ async def _send_log(guild: discord.Guild, clone_id, cfg: dict, embed: discord.Em
     allowed = (discord.AllowedMentions(everyone=False, users=False, roles=[ping_role])
                if ping_role is not None else discord.AllowedMentions.none())
     try:
-        await channel.send(content=content, embed=embed, allowed_mentions=allowed)
+        kwargs = {"view": view} if view is not None else {}
+        await channel.send(content=content, embed=embed, allowed_mentions=allowed, **kwargs)
         return True
     except (discord.Forbidden, discord.HTTPException):
         return False
@@ -227,6 +236,13 @@ async def apply_joiner_action(guild: discord.Guild, member: discord.Member, cfg:
     action = cfg.get("joiner_action") or "none"
     if action == "none" or _is_staff(member):
         return None
+    if action == "quarantine":
+        try:
+            ok, _msg = await pro.quarantine_suspect(guild, cfg.get("clone_id"), member, "joined during a raid")
+            return bool(ok)
+        except Exception:
+            logger.debug("anti-raid couldn't quarantine %s in guild %s", getattr(member, "id", "?"), guild.id, exc_info=True)
+            return False
     perm = "moderate_members" if action == "timeout" else "kick_members"
     try:
         if perm_check.member_problem(guild, member, perm, "act on"):
@@ -240,6 +256,46 @@ async def apply_joiner_action(guild: discord.Guild, member: discord.Member, cfg:
         # One joiner we can't act on must never stop the alert or the other joiners.
         logger.debug("anti-raid couldn't act on %s in guild %s", getattr(member, "id", "?"), guild.id, exc_info=True)
         return False
+
+
+async def apply_profile_filter(bot, member: discord.Member, cfg: dict) -> tuple:
+    """Anti-raid Pro: run the join-profile filter on one joiner. Never raises.
+    Returns (outcome, reasons): outcome is flagged / quarantined / kicked / failed, or None if the
+    joiner looks fine (or is staff / a bot). Callers only call this for premium servers."""
+    try:
+        if member.bot or _is_staff(member):
+            return None, []
+        reasons = pro.evaluate_profile(member, cfg)
+        if not reasons:
+            return None, []
+        guild, clone_id = member.guild, _clone_of(bot)
+        action = cfg.get("filter_action") or pro.DEFAULT_FILTER_ACTION
+        outcome, note = "flagged", ""
+        if action == "quarantine":
+            ok, msg = await pro.quarantine_suspect(guild, clone_id, member, "profile filter: " + "; ".join(reasons))
+            if ok:
+                outcome = "quarantined"
+            else:
+                note = f"Couldn't quarantine: {msg}"
+        elif action == "kick":
+            try:
+                if perm_check.member_problem(guild, member, "kick_members", "act on"):
+                    raise RuntimeError("cannot kick")
+                await guild.kick(member, reason="[anti-raid] profile filter: " + "; ".join(reasons)[:300])
+                outcome = "kicked"
+            except Exception:
+                outcome, note = "failed", "Couldn't kick them — check my role and **Kick Members**."
+        if pro.flag_post_allowed((guild.id, clone_id)):      # a big raid must not flood the log
+            embed = _raid_embed(f"🪪 Profile filter — {pro.OUTCOMES.get(outcome, outcome)}",
+                                f"{member.mention} (`{member.name}`)\n• " + "\n• ".join(reasons)
+                                + (f"\n⚠️ {note}" if note else ""), discord.Color.orange())
+            embed.set_thumbnail(url=member.display_avatar.url)
+            await _send_log(guild, clone_id, cfg, embed,
+                            view=pro_ui.action_view(guild.id, clone_id) if outcome == "quarantined" else None)
+        return outcome, reasons
+    except Exception:
+        logger.exception("anti-raid profile filter failed for guild %s", getattr(member.guild, "id", "?"))
+        return None, []
 
 
 def _raid_embed(title: str, description: str, color: discord.Color) -> discord.Embed:
@@ -291,19 +347,25 @@ async def start_raid(bot, guild: discord.Guild, joined_ids: list | None = None,
         _cache[key] = (time.monotonic() + _CACHE_TTL, cfg)
         _last_persist[key] = time.monotonic()
 
+        premium = await pro.is_premium(guild.id, clone_id)
+        eff = pro.effective_cfg(cfg, premium)
+        if premium:
+            pro.start_log(key)                  # feeds the raid report posted when the raid ends
         acted = failed = 0
         for uid in dict.fromkeys(joined_ids or []):
             member = guild.get_member(uid)
             if member is None:
                 continue
-            result = await apply_joiner_action(guild, member, cfg)
+            result = await apply_joiner_action(guild, member, eff)
+            if premium:
+                pro.record_join(key, member, pro.outcome_for(eff.get("joiner_action") or "none", result))
             if result is True:
                 acted += 1
             elif result is False:
                 failed += 1
-        action = cfg.get("joiner_action") or "none"
+        action = eff.get("joiner_action") or "none"
         if action != "none":
-            verb = "timed out" if action == "timeout" else "kicked"
+            verb = _JOINER_VERB[action]
             notes.append(f"{JOINER_ACTIONS[action][1]} {acted} account(s) {verb}"
                          + (f", **{failed}** I couldn't act on" if failed else "") + ". "
                          "New joiners get the same treatment until it's over.")
@@ -317,9 +379,14 @@ async def start_raid(bot, guild: discord.Guild, joined_ids: list | None = None,
         embed.add_field(name="Ends", value=f"<t:{int(until.timestamp())}:R> if joins stop", inline=True)
         embed.add_field(name="Stop it early", value="`/antiraid` → **End lockdown**", inline=True)
         role = alert_role_of(guild, cfg)
+        review = None
+        if action == "quarantine" and acted:
+            embed.add_field(name="Review", value="Raiders are held in quarantine. Decide with the buttons below.",
+                            inline=False)
+            review = pro_ui.action_view(guild.id, clone_id)
         sent = await _send_log(guild, clone_id, cfg, embed,
                                content=(f"{role.mention} 🚨 possible raid in progress." if role else None),
-                               ping_role=role)
+                               ping_role=role, view=review)
         if not sent:
             perm_check.flag(guild.id, clone_id, "antiraid_log",
                             "Anti-raid has nowhere to post alerts — pick a log channel in `/antiraid`.")
@@ -356,10 +423,18 @@ async def end_raid(bot, guild: discord.Guild, actor=None) -> tuple:
         _last_persist.pop(key, None)
         line = (f"Verification put back to **{restored}**." if restored
                 else "Verification level left as it is.")
-        embed = _raid_embed("✅ Raid mode ended",
-                            (f"Ended by {actor.mention}. " if actor else "No suspicious joins for a while. ") + line,
-                            discord.Color.green())
-        await _send_log(guild, clone_id, cfg, embed)
+        log = pro.pop_log(key)
+        if await pro.is_premium(guild.id, clone_id):
+            waiting = len(await pro.raid_quarantined(guild, clone_id))
+            embed = pro.build_report_embed(log, _now(), line, ended_by=actor, waiting=waiting)
+            await _send_log(guild, clone_id, cfg, embed,
+                            view=pro_ui.action_view(guild.id, clone_id) if waiting else None)
+        else:
+            embed = _raid_embed("✅ Raid mode ended",
+                                (f"Ended by {actor.mention}. " if actor else "No suspicious joins for a while. ") + line,
+                                discord.Color.green())
+            embed.set_footer(text="💎 Premium adds a full raid report, a join-profile filter and quarantine-for-review.")
+            await _send_log(guild, clone_id, cfg, embed)
         return True, line
     except Exception:
         logger.exception("anti-raid end failed for guild %s", guild.id)
@@ -375,8 +450,25 @@ async def handle_join(bot, member: discord.Member) -> None:
         return
     key = (guild.id, clone_id)
 
-    if raid_active(cfg):                      # raid in progress: act on joiner, push the timer back
-        await apply_joiner_action(guild, member, cfg)
+    active = raid_active(cfg)
+    premium = False
+    if active or pro.filter_enabled(cfg) or cfg.get("joiner_action") == "quarantine":
+        premium = await pro.is_premium(guild.id, clone_id)      # cached; skipped entirely for plain free setups
+    eff = pro.effective_cfg(cfg, premium)
+
+    outcome, reasons = None, []
+    if premium and pro.filter_enabled(cfg):                    # Anti-raid Pro: join-profile filter
+        outcome, reasons = await apply_profile_filter(bot, member, cfg)
+
+    if active:                                # raid in progress: act on joiner, push the timer back
+        if outcome not in ("quarantined", "kicked"):           # the filter already dealt with them
+            action = eff.get("joiner_action") or "none"
+            result = await apply_joiner_action(guild, member, eff)
+            joined_outcome = pro.outcome_for(action, result)
+            if not (joined_outcome == "left_alone" and outcome):
+                outcome = joined_outcome
+        if premium:
+            pro.record_join(key, member, outcome or "left_alone", reasons)
         now = time.monotonic()
         if now - _last_persist.get(key, 0.0) >= _PERSIST_EVERY:
             _last_persist[key] = now
@@ -430,7 +522,7 @@ def _step(done: bool) -> str:
     return "✅" if done else "⬜"
 
 
-def status_lines(guild: discord.Guild, cfg: dict, log_channel) -> list:
+def status_lines(guild: discord.Guild, cfg: dict, log_channel, premium: bool | None = None) -> list:
     sens = SENSITIVITY.get(cfg.get("sensitivity") or DEFAULT_SENSITIVITY, SENSITIVITY[DEFAULT_SENSITIVITY])
     resp = RESPONSES.get(cfg.get("response") or "lockdown", RESPONSES["lockdown"])
     joiner = JOINER_ACTIONS.get(cfg.get("joiner_action") or "none", JOINER_ACTIONS["none"])
@@ -451,7 +543,8 @@ def status_lines(guild: discord.Guild, cfg: dict, log_channel) -> list:
         f"{_step(True)} **1. Sensitivity** — {sens[1]} {sens[0]}: {sens[4]}",
         f"{_step(True)} **2. When a raid hits** — {resp[1]} {resp[0]}"
         + (f" (back to normal after **{minutes} min** of calm)" if cfg.get("response") == "lockdown" else ""),
-        f"{_step(True)} **3. New joiners during a raid** — {joiner[1]} {joiner[0]}",
+        f"{_step(True)} **3. New joiners during a raid** — {joiner[1]} {joiner[0]}"
+        + (" — ⏸️ *paused: needs premium*" if premium is False and cfg.get("joiner_action") == "quarantine" else ""),
         f"{_step(bool(log_channel))} **4. Where alerts go** — "
         + (log_channel.mention if log_channel else "*not set — pick a channel below*")
         + (f" · pings {role.mention}" if role else " · no staff role pinged"),
@@ -466,7 +559,18 @@ def status_lines(guild: discord.Guild, cfg: dict, log_channel) -> list:
     return lines
 
 
-def build_panel(guild: discord.Guild, clone_id, cfg: dict, log_channel, note: str = "") -> discord.ui.LayoutView:
+def pro_status_lines(cfg: dict, premium: bool) -> list:
+    if not premium:
+        return ["", "💎 **Anti-raid Pro** *(premium)* — profile filter · raid reports · quarantine & review"
+                + ("\n-# Your saved Pro settings are paused, not lost." if pro.paused_extras(cfg) else "")]
+    return ["", "💎 **Anti-raid Pro** — active",
+            f"🪪 Profile filter: {pro.filter_summary(cfg)}",
+            "📊 Raid report: posted automatically when a raid ends",
+            "🔒 Quarantined raiders: **Review quarantine** below, or the buttons on alerts"]
+
+
+def build_panel(guild: discord.Guild, clone_id, cfg: dict, log_channel, note: str = "",
+                premium: bool = False) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
     if raid_active(cfg):
         color = discord.Color.red()
@@ -479,7 +583,8 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, log_channel, note: st
         container.add_item(discord.ui.TextDisplay(note))
     container.add_item(discord.ui.TextDisplay(
         "### 🛡️ Anti-raid setup\n"
-        + "\n".join(perm_check.lines(guild.id, clone_id) + status_lines(guild, cfg, log_channel))
+        + "\n".join(perm_check.lines(guild.id, clone_id) + status_lines(guild, cfg, log_channel, premium)
+                    + pro_status_lines(cfg, premium))
         + "\n\n-# Staff are never actioned. Raid mode ends on its own; **End lockdown** stops it early."
     ))
     container.add_item(discord.ui.Separator())
@@ -505,6 +610,15 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, log_channel, note: st
     btns.add_item(AntiRaidButton("test", guild.id, clone_id))
     btns.add_item(AntiRaidButton("panel", guild.id, clone_id))
     container.add_item(btns)
+
+    pro_row = discord.ui.ActionRow()          # Anti-raid Pro: locked buttons open the premium pitch
+    pro_row.add_item(pro_ui.ProButton("filter", guild.id, clone_id,
+                                      label="Profile filter" if premium else "Profile filter 🔒"))
+    if premium:
+        pro_row.add_item(pro_ui.ProButton("qreview", guild.id, clone_id, label="Review quarantine"))
+    else:
+        pro_row.add_item(pro_ui.ProButton("upgrade", guild.id, clone_id))
+    container.add_item(pro_row)
 
     view.add_item(container)
     return view
@@ -536,7 +650,9 @@ async def _rerender(interaction: discord.Interaction, guild: discord.Guild, clon
         await interaction.response.defer()
     cfg = await db.get_antiraid_config(guild.id, clone_id=clone_id)
     log_channel = await resolve_log_channel(guild, clone_id, cfg)
-    await interaction.edit_original_response(view=build_panel(guild, clone_id, cfg, log_channel, note=note))
+    premium = await pro.is_premium(guild.id, clone_id)
+    await interaction.edit_original_response(
+        view=build_panel(guild, clone_id, cfg, log_channel, note=note, premium=premium))
 
 
 async def _save(interaction, guild: discord.Guild, clone_id, **fields) -> dict:
@@ -553,7 +669,9 @@ async def open_antiraid(interaction: discord.Interaction, guild: discord.Guild, 
     cfg = await db.get_antiraid_config(guild.id, clone_id=clone_id)
     log_channel = await resolve_log_channel(guild, clone_id, cfg)
     note = "" if cfg.get("enabled") else "👋 Anti-raid isn't on yet — go through the steps, then tap **Turn on**."
-    await interaction.followup.send(view=build_panel(guild, clone_id, cfg, log_channel, note=note), ephemeral=True)
+    premium = await pro.is_premium(guild.id, clone_id)
+    await interaction.followup.send(
+        view=build_panel(guild, clone_id, cfg, log_channel, note=note, premium=premium), ephemeral=True)
 
 
 # ── dynamic items ─────────────────────────────────────────────────────────
@@ -596,6 +714,14 @@ class AntiRaidSelect(discord.ui.DynamicItem[discord.ui.Select], template=_pat("s
             return
         await interaction.response.defer()
         value = self.item.values[0]
+        if self.kind == "joiner" and value == "quarantine" and not await pro.is_premium(guild.id, self.clone_id):
+            await _rerender(interaction, guild, self.clone_id)       # puts the select back where it was
+            await interaction.followup.send(
+                "🔒 **Quarantine for review** is part of **Anti-raid Pro** (premium). The free options keep "
+                "working. Here's how to unlock it 👇", ephemeral=True)
+            from discord_bot.cogs._views_premium import send_premium_pitch
+            await send_premium_pitch(interaction, guild.id, self.clone_id)
+            return
         field = {"sens": "sensitivity", "resp": "response", "joiner": "joiner_action", "dur": "lockdown_minutes"}[self.kind]
         valid = {"sens": SENSITIVITY, "resp": RESPONSES, "joiner": JOINER_ACTIONS,
                  "dur": {str(m): 1 for m in LOCKDOWN_MINUTES}}[self.kind]
@@ -609,6 +735,10 @@ class AntiRaidSelect(discord.ui.DynamicItem[discord.ui.Select], template=_pat("s
             await interaction.followup.send(
                 f"Heads up — I'm missing **{', '.join(miss)}**, so I can't do that yet. Enable it on my role.",
                 ephemeral=True)
+        if self.kind == "joiner" and value == "quarantine":
+            problem = await pro_ui.quarantine_setup_problem(guild, self.clone_id)
+            if problem:
+                await interaction.followup.send(problem, ephemeral=True)
 
 
 class AntiRaidLogSelect(discord.ui.DynamicItem[discord.ui.ChannelSelect], template=_pat("log")):
@@ -740,7 +870,7 @@ class AntiRaidButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("t
             await interaction.followup.send(("🔓 " if ok else "⚠️ ") + msg, ephemeral=True)
 
 
-DYNAMIC_ITEMS = (AntiRaidSelect, AntiRaidLogSelect, AntiRaidRoleSelect, AntiRaidButton)
+DYNAMIC_ITEMS = (AntiRaidSelect, AntiRaidLogSelect, AntiRaidRoleSelect, AntiRaidButton) + pro_ui.DYNAMIC_ITEMS
 
 
 # ── cog ───────────────────────────────────────────────────────────────────

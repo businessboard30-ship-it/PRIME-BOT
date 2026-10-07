@@ -37,6 +37,7 @@ _PERKS = (
     "🤖 **AI Chat** — 3x daily limit (30/day)\n"
     "🖼️ **Bot Branding** — your own bot name, avatar & banner\n"
     "🎮 **Roblox Alerts** — auto game update posts\n"
+    "🛡️ **Anti-raid Pro** — join-profile filter, raid reports & quarantine-and-review\n"
     "🆕 **Every future feature** — free, automatically"
 )
 def _yearly_savings_pct() -> int:

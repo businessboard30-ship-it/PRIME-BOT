@@ -744,8 +744,10 @@ class _AntiRaidButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^joi
                     f"👋 {interaction.user.mention} opened this from the setup DM — go through the steps, then tap **Turn on**.")
             # Posted straight into the server (not an ephemeral DM follow-up) so the wizard's
             # pickers/buttons run inside the guild. Its items are DynamicItems keyed by guild_id.
+            from modules.antiraid_pro import is_premium
+            premium = await is_premium(guild.id, self.clone_id)
             await channel.send(
-                view=build_panel(guild, self.clone_id, cfg, log_channel, note=note),
+                view=build_panel(guild, self.clone_id, cfg, log_channel, note=note, premium=premium),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except (discord.Forbidden, discord.HTTPException):
