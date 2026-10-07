@@ -705,9 +705,8 @@ class _HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^joi
 
 class _AntiRaidButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_antiraid:(\d+):(-|\d+)$"):
     """"Anti-raid" — same one-tap pattern as Honeypot: resolves the guild from
-    the custom_id (this is clicked from a DM), checks Manage Server, then opens
-    the /antiraid setup panel as an ephemeral follow-up. All the logic lives in
-    cogs/antiraid.py (open_antiraid), shared with the /antiraid slash command.
+    the custom_id (this is clicked from a DM), checks Manage Server, then posts the
+    anti-raid setup wizard into the server. Panel/auth logic lives in cogs/antiraid.py.
     Replaced the old "Enter code" (referral) button on page 1 of the join DM."""
 
     def __init__(self, guild_id: int, clone_id=None):
@@ -727,24 +726,42 @@ class _AntiRaidButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^joi
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        from discord_bot.cogs.antiraid import _authorize, open_antiraid
+        from discord_bot.cogs.antiraid import _authorize, build_panel, resolve_log_channel
         try:
             guild = await _authorize(interaction, self.guild_id)
             if guild is None:
                 return
-            await open_antiraid(interaction, guild, self.clone_id)
+            channel = _default_text_channel(guild)
+            if channel is None:
+                await interaction.followup.send(
+                    "I couldn't find a channel I'm able to post in — give me **Send Messages** "
+                    "in one and tap this again.", ephemeral=True,
+                )
+                return
+            cfg = await db.get_antiraid_config(guild.id, clone_id=self.clone_id)
+            log_channel = await resolve_log_channel(guild, self.clone_id, cfg)
+            note = ("" if cfg.get("enabled") else
+                    f"👋 {interaction.user.mention} opened this from the setup DM — go through the steps, then tap **Turn on**.")
+            # Posted straight into the server (not an ephemeral DM follow-up) so the wizard's
+            # pickers/buttons run inside the guild. Its items are DynamicItems keyed by guild_id.
+            await channel.send(
+                view=build_panel(guild, self.clone_id, cfg, log_channel, note=note),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
         except (discord.Forbidden, discord.HTTPException):
             logger.exception("join_dm antiraid setup failed for guild %s", self.guild_id)
             await interaction.followup.send(
-                "I couldn't open anti-raid — check my permissions, or run `/antiraid` in your server.",
+                "I couldn't post the anti-raid setup — make sure I can **Send Messages** in your server's channels, then try again.",
                 ephemeral=True,
             )
+            return
         except Exception:
             logger.exception("join_dm antiraid setup failed for guild %s", self.guild_id)
-            await interaction.followup.send(
-                "Something went wrong — try again in a moment, or run `/antiraid` in your server.",
-                ephemeral=True,
-            )
+            await interaction.followup.send("Something went wrong — try again in a moment.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"🛡️ Anti-raid setup is open in {channel.mention} — head there to finish it.", ephemeral=True,
+        )
 
 
 class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
