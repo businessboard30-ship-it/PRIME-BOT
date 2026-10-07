@@ -273,9 +273,11 @@ class JoinDMLayoutView(discord.ui.LayoutView):
 
         if page == 0:
             container.add_item(discord.ui.Separator())
-            ref_section = discord.ui.Section(accessory=_ReferralCodeButton(guild_id, clone_id))
-            ref_section.add_item("🎁 **Did a friend refer you?**\nEnter their referral code so they get credit.")
-            container.add_item(ref_section)
+            raid_section = discord.ui.Section(accessory=_AntiRaidButton(guild_id, clone_id))
+            raid_section.add_item(
+                "🛡️ **Protect your server from raids**\nSpike detection, one-tap lockdown and staff alerts."
+            )
+            container.add_item(raid_section)
 
         footer = "Run /help anytime for the full command list."
         if total_pages > 1:
@@ -701,6 +703,50 @@ class _HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^joi
             )
 
 
+class _AntiRaidButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_antiraid:(\d+):(-|\d+)$"):
+    """"Anti-raid" — same one-tap pattern as Honeypot: resolves the guild from
+    the custom_id (this is clicked from a DM), checks Manage Server, then opens
+    the /antiraid setup panel as an ephemeral follow-up. All the logic lives in
+    cogs/antiraid.py (open_antiraid), shared with the /antiraid slash command.
+    Replaced the old "Enter code" (referral) button on page 1 of the join DM."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(
+            discord.ui.Button(
+                label="Anti-raid", style=discord.ButtonStyle.danger,
+                emoji="🛡️", custom_id=_encode("antiraid", guild_id, clone_id),
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        from discord_bot.cogs.antiraid import _authorize, open_antiraid
+        try:
+            guild = await _authorize(interaction, self.guild_id)
+            if guild is None:
+                return
+            await open_antiraid(interaction, guild, self.clone_id)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("join_dm antiraid setup failed for guild %s", self.guild_id)
+            await interaction.followup.send(
+                "I couldn't open anti-raid — check my permissions, or run `/antiraid` in your server.",
+                ephemeral=True,
+            )
+        except Exception:
+            logger.exception("join_dm antiraid setup failed for guild %s", self.guild_id)
+            await interaction.followup.send(
+                "Something went wrong — try again in a moment, or run `/antiraid` in your server.",
+                ephemeral=True,
+            )
+
+
 class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
     what = discord.ui.TextInput(label="What do you want to advertise?", max_length=200)
     link = discord.ui.TextInput(label="Link (server invite, website, store)", max_length=300, required=False)
@@ -826,7 +872,10 @@ class _ReferralCodeModal(discord.ui.Modal, title="Enter a referral code"):
 
 
 class _ReferralCodeButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_refcode:(\d+):(-|\d+)$"):
-    """Lets whoever added the bot say who referred them. Same redemption as /referral use
+    """No longer rendered on the join DM (replaced by _AntiRaidButton); stays registered
+    so "Enter code" buttons on already-sent DMs keep working.
+
+    Lets whoever added the bot say who referred them. Same redemption as /referral use
     (counts toward referral giveaways)."""
 
     def __init__(self, guild_id: int, clone_id=None):
@@ -2023,7 +2072,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 DYNAMIC_ITEMS = (
     _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
-    _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton,
+    _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton,
 )
 
 # Compact quick-start message buttons (Open server panel / Full setup guide).
