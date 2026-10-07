@@ -19,6 +19,7 @@ from modules.catch_profile import ProfileCreature
 from modules.catch_xp import XpResult
 from tests.unit.test_catch_interaction_timing import Recorder, make_interaction, slow
 from tests.unit.test_catch_phase3 import detail, ready_preview
+from tests.unit.notice_helpers import body, shown
 
 
 def run(coro):
@@ -340,26 +341,26 @@ def test_only_the_owner_can_press_it(monkeypatch):
 def test_a_refused_gate_tells_the_player_and_changes_nothing(monkeypatch):
     rec, edits, followups, view, _ = _click(monkeypatch, gate=False)
     assert edits == [] and "load" not in rec.calls
-    assert followups[0][0][0] == text("catch.unavailable", reason="disabled")
+    assert body(followups[0]) == text("catch.unavailable", reason="disabled")
     assert followups[0][1]["ephemeral"] is True
 
 
 @pytest.mark.parametrize("kw", [{"creature": None}, {"pv": None}])
 def test_a_missing_creature_says_so(monkeypatch, kw):
     _, edits, followups, _, _ = _click(monkeypatch, **kw)
-    assert edits == [] and followups[0][0][0] == text("creature.not_found")
+    assert edits == [] and body(followups[0]) == text("creature.not_found")
 
 
 def test_a_creature_that_cannot_evolve_any_more_is_refused_in_words(monkeypatch):
     from modules import catch_evolve as evo
     not_ready = ready_preview(owned_id=9, eligibility=evo.Eligibility("final_form", None))
     _, edits, followups, _, _ = _click(monkeypatch, pv=not_ready)
-    assert edits == [] and followups[0][0][0] == text("evolve.refused_final_form")
+    assert edits == [] and body(followups[0]) == text("evolve.refused_final_form")
 
 
 def test_a_database_failure_is_reported_and_the_button_can_be_used_again(monkeypatch):
     _, edits, followups, view, _ = _click(monkeypatch, boom=True)
-    assert edits == [] and followups[0][0][0] == text("levelup.error")
+    assert edits == [] and body(followups[0]) == text("levelup.error")
     assert view._busy is False
 
 
@@ -369,7 +370,7 @@ def test_a_second_tap_while_busy_is_ignored(monkeypatch):
     seen = []
 
     async def follow(*args, **kwargs):
-        seen.append(args[0])
+        seen.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=follow)
     view = lv.LevelUpEvolveView(7, None, 9)

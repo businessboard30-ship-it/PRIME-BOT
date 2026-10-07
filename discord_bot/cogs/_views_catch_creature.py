@@ -33,6 +33,7 @@ from modules.catch_evolve import EvolutionPreview, evolve, preview
 from modules.catch_game import STAT_NAMES
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_items import item_name
 from modules.catch_release import release_creature
 from modules.catch_theme import button_style, rarity_color, state_color
@@ -180,8 +181,8 @@ async def release_confirm_message(d: CreatureDetail) -> dict:
     return {"embed": embed, "attachments": [confirm_file(data, RELEASE_FILE)]}
 
 
-def _gate_message(gate) -> str:
-    return text("catch.unavailable", reason=gate.reason or "disabled")
+def _gate_notice(gate) -> dict:
+    return notice_for("catch.unavailable", reason=gate.reason or "disabled")
 
 
 class CreatureView(discord.ui.View):
@@ -240,7 +241,7 @@ class CreatureView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -248,7 +249,7 @@ class CreatureView(discord.ui.View):
         """Reload the creature and redraw this screen; if it is gone, go back to the list."""
         detail = await load_creature(self.detail.id, self.user_id, self.clone_id)
         if detail is None:
-            await interaction.followup.send(text("creature.not_found"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.not_found"), ephemeral=True)
             await self.back(interaction)
             return
         self.detail = detail
@@ -259,25 +260,25 @@ class CreatureView(discord.ui.View):
     async def _run(self, interaction: discord.Interaction, work: Callable[[], Awaitable[None]]) -> None:
         await interaction.response.defer()
         if self._busy:
-            await interaction.followup.send(text("creature.busy"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.busy"), ephemeral=True)
             return
         self._busy = True
         try:
             gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", self.clone_id)
             if not gate.allowed:
-                await interaction.followup.send(_gate_message(gate), ephemeral=True)
+                await interaction.followup.send(**_gate_notice(gate), ephemeral=True)
                 return
             await work()
         except Exception:
             logger.exception("Catch creature action failed user=%s creature=%s", self.user_id, self.detail.id)
-            await interaction.followup.send(text("creature.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.error"), ephemeral=True)
         finally:
             self._busy = False
 
     async def _fav(self, interaction: discord.Interaction) -> None:
         async def work() -> None:
             if await set_favorite(self.detail.id, self.user_id, self.clone_id) is None:
-                await interaction.followup.send(text("creature.not_found"), ephemeral=True)
+                await interaction.followup.send(**notice_for("creature.not_found"), ephemeral=True)
                 await self.back(interaction)
                 return
             await self._refresh(interaction)
@@ -287,7 +288,7 @@ class CreatureView(discord.ui.View):
         async def work() -> None:
             result = await toggle_lock(self.detail.id, self.user_id, self.clone_id)
             if not result.ok:
-                await interaction.followup.send(text("creature.not_found"), ephemeral=True)
+                await interaction.followup.send(**notice_for("creature.not_found"), ephemeral=True)
                 await self.back(interaction)
                 return
             name = safe(self.detail.display_name)
@@ -299,7 +300,7 @@ class CreatureView(discord.ui.View):
             result = await toggle_buddy(self.detail.id, self.user_id, self.clone_id, guild_id=interaction.guild_id)
             if not result.ok:
                 key = "creature.buddy_no_player" if result.reason == "no_player" else "creature.not_found"
-                await interaction.followup.send(text(key), ephemeral=True)
+                await interaction.followup.send(**notice_for(key), ephemeral=True)
                 if result.reason != "no_player":
                     await self.back(interaction)
                 return
@@ -316,7 +317,7 @@ class CreatureView(discord.ui.View):
         async def work() -> None:
             pv = await preview(self.detail.id, self.user_id, self.clone_id)
             if pv is None:
-                await interaction.followup.send(text("creature.not_found"), ephemeral=True)
+                await interaction.followup.send(**notice_for("creature.not_found"), ephemeral=True)
                 await self.back(interaction)
                 return
             if pv.eligibility.status != "ready":
@@ -336,7 +337,7 @@ class CreatureView(discord.ui.View):
             d = self.detail
             if d.favorite or d.locked:
                 key = "release.refused_favorite" if d.favorite else "release.refused_locked"
-                await interaction.followup.send(text(key, name=safe(d.display_name)), ephemeral=True)
+                await interaction.followup.send(**notice_for(key, name=safe(d.display_name)), ephemeral=True)
                 return
             confirm = ReleaseConfirmView(self.user_id, self.clone_id, self)
             await interaction.edit_original_response(content=None, view=confirm, **await release_confirm_message(d))
@@ -363,12 +364,12 @@ class NicknameModal(discord.ui.Modal):
         try:
             gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", view.clone_id)
             if not gate.allowed:
-                await interaction.followup.send(_gate_message(gate), ephemeral=True)
+                await interaction.followup.send(**_gate_notice(gate), ephemeral=True)
                 return
             result = await set_nickname(view.detail.id, view.user_id, view.clone_id, str(self.nickname.value or ""))
             if not result.ok:
                 key = "creature.not_found" if result.reason == "not_found" else f"creature.nick_{result.reason}"
-                await interaction.followup.send(text(key, max=NICKNAME_MAX), ephemeral=True)
+                await interaction.followup.send(**notice_for(key, max=NICKNAME_MAX), ephemeral=True)
                 if result.reason == "not_found":
                     await view.back(interaction)
                 return
@@ -376,7 +377,7 @@ class NicknameModal(discord.ui.Modal):
             await view._refresh(interaction, notice)
         except Exception:
             logger.exception("Catch nickname failed user=%s creature=%s", view.user_id, view.detail.id)
-            await interaction.followup.send(text("creature.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.error"), ephemeral=True)
 
 
 class EvolveConfirmView(discord.ui.View):
@@ -395,7 +396,7 @@ class EvolveConfirmView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -405,18 +406,18 @@ class EvolveConfirmView(discord.ui.View):
             await self.creature_view._refresh(interaction)
         except Exception:
             logger.exception("Catch evolve cancel failed user=%s", self.user_id)
-            await interaction.followup.send(text("creature.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.error"), ephemeral=True)
 
     async def _confirm(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         if self._busy:
-            await interaction.followup.send(text("creature.busy"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.busy"), ephemeral=True)
             return
         self._busy = True
         try:
             gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", self.clone_id)
             if not gate.allowed:
-                await interaction.followup.send(_gate_message(gate), ephemeral=True)
+                await interaction.followup.send(**_gate_notice(gate), ephemeral=True)
                 return
             result = await evolve(
                 self.creature_view.detail.id, self.user_id, self.clone_id, guild_id=interaction.guild_id,
@@ -430,7 +431,7 @@ class EvolveConfirmView(discord.ui.View):
             await self.creature_view._refresh(interaction, notice)
         except Exception:
             logger.exception("Catch evolve failed user=%s creature=%s", self.user_id, self.creature_view.detail.id)
-            await interaction.followup.send(text("evolve.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("evolve.error"), ephemeral=True)
         finally:
             self._busy = False
 
@@ -451,7 +452,7 @@ class ReleaseConfirmView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -461,18 +462,18 @@ class ReleaseConfirmView(discord.ui.View):
             await self.creature_view._refresh(interaction, text("release.cancelled"))
         except Exception:
             logger.exception("Catch release cancel failed user=%s", self.user_id)
-            await interaction.followup.send(text("creature.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.error"), ephemeral=True)
 
     async def _confirm(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         if self._busy:
-            await interaction.followup.send(text("creature.busy"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.busy"), ephemeral=True)
             return
         self._busy = True
         try:
             gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", self.clone_id)
             if not gate.allowed:
-                await interaction.followup.send(_gate_message(gate), ephemeral=True)
+                await interaction.followup.send(**_gate_notice(gate), ephemeral=True)
                 return
             cv = self.creature_view
             result = await release_creature(cv.detail.id, self.user_id, self.clone_id, guild_id=interaction.guild_id)
@@ -487,11 +488,11 @@ class ReleaseConfirmView(discord.ui.View):
             if result.reason in ("favorite", "locked"):
                 await cv._refresh(interaction, text(f"release.refused_{result.reason}", name=name))
                 return
-            await interaction.followup.send(text("release.gone"), ephemeral=True)
+            await interaction.followup.send(**notice_for("release.gone"), ephemeral=True)
             await cv.back(interaction)
         except Exception:
             logger.exception("Catch release failed user=%s creature=%s", self.user_id, self.creature_view.detail.id)
-            await interaction.followup.send(text("release.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("release.error"), ephemeral=True)
         finally:
             self._busy = False
 
@@ -502,18 +503,18 @@ async def open_creature_detail(
     """Replace the (already deferred) message with this creature's detail screen."""
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(_gate_message(gate), ephemeral=True)
+        await interaction.followup.send(**_gate_notice(gate), ephemeral=True)
         return
     try:
         detail = await load_creature(owned_id, user_id, clone_id)
         if detail is None:
-            await interaction.followup.send(text("creature.not_found"), ephemeral=True)
+            await interaction.followup.send(**notice_for("creature.not_found"), ephemeral=True)
             await back(interaction)
             return
         pv = await preview(owned_id, user_id, clone_id)
     except Exception:
         logger.exception("Catch creature load failed user=%s creature=%s", user_id, owned_id)
-        await interaction.followup.send(text("creature.error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("creature.error"), ephemeral=True)
         return
     view = CreatureView(user_id, clone_id, detail, pv, back=back)
     await interaction.edit_original_response(content=None, view=view, **await creature_message(detail, pv))

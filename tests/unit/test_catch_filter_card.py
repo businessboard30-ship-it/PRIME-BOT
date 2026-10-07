@@ -16,6 +16,7 @@ from modules.catch_game import ELEMENTS, RARITIES
 from modules.catch_i18n import text
 from tests.unit.test_catch_collection_card import rows_of
 from tests.unit.test_catch_interaction_timing import Recorder, make_interaction
+from tests.unit.notice_helpers import body, shown
 
 PNG = b"\x89PNG\r\n\x1a\n"
 REAL_RENDER = fc.filter_card_png  # kept so spies can call through
@@ -248,7 +249,7 @@ def test_a_failed_edit_tells_the_player_instead_of_raising():
     inter.edit_original_response = edit
     inter.followup = SimpleNamespace(send=send)
     run(box_view()._open_filters(inter))
-    assert sent[0][0][0] == text("collection.error") and sent[0][1]["ephemeral"] is True
+    assert body(sent[0]) == text("collection.error") and sent[0][1]["ephemeral"] is True
 
 
 @pytest.mark.parametrize("callback,data,check", [
@@ -314,7 +315,7 @@ def test_a_failed_redraw_tells_the_player(monkeypatch):
         raise RuntimeError("gone")
 
     async def send(*a, **kw):
-        sent.append(a[0])
+        sent.append(shown(a, kw))
 
     inter.edit_original_response = edit
     inter.followup = SimpleNamespace(send=send)

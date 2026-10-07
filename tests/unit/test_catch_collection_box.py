@@ -10,6 +10,7 @@ from modules import catch_emoji
 from tests.unit.test_catch_collection import FakeDb, owned_rec, patch_db
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
 from tests.unit.test_catch_phase3 import edits_to, row, sent_to
+from tests.unit.notice_helpers import body
 
 LOCALE = json.loads((Path(__file__).resolve().parent.parent.parent / "locales" / "en.json").read_text(encoding="utf-8"))
 F = cc.CollectionFilter
@@ -187,12 +188,12 @@ def test_show_results_is_refused_by_the_gate_and_busy_taps_are_ignored(monkeypat
     inter = make_interaction(rec)
     sent = sent_to(inter)
     asyncio.run(screen._apply(inter))
-    assert "db" not in rec.calls and "off" in sent[0][0][0]
+    assert "db" not in rec.calls and "off" in body(sent[0])
     screen._busy = True
     inter = make_interaction(rec)
     sent = sent_to(inter)
     asyncio.run(screen._apply(inter))
-    assert sent[0][0][0] == LOCALE["catch.collection.busy"]
+    assert body(sent[0]) == LOCALE["catch.collection.busy"]
 
 
 def test_back_from_a_creature_keeps_the_active_filter(monkeypatch):

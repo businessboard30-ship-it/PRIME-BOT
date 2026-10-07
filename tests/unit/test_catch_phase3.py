@@ -20,6 +20,7 @@ from modules.catch_i18n import text as catch_text
 from modules.catch_profile import ProfileCreature, TrainerProfile
 from modules.catch_species import all_species
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
+from tests.unit.notice_helpers import body
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 LOCALE = json.loads((ROOT / "locales" / "en.json").read_text(encoding="utf-8"))
@@ -300,7 +301,7 @@ def test_actions_refuse_without_writing_when_the_game_is_off(monkeypatch):
         inter = make_interaction(rec)
         sent = sent_to(inter)
         asyncio.run(getattr(view, button)(inter))
-        assert len(sent) == 1 and sent[0][0][0] == catch_text("catch.unavailable", reason="off"), button
+        assert len(sent) == 1 and body(sent[0]) == catch_text("catch.unavailable", reason="off"), button
     assert not wrote
 
 
@@ -316,7 +317,7 @@ def test_missing_creature_sends_a_message_and_returns_to_the_list(monkeypatch):
     inter = make_interaction(rec)
     sent = sent_to(inter)
     asyncio.run(view._lock(inter))
-    assert sent[0][0][0] == LOCALE["catch.creature.not_found"] and view.back_calls == [1]
+    assert body(sent[0]) == LOCALE["catch.creature.not_found"] and view.back_calls == [1]
 
 
 def test_no_player_buddy_message_does_not_leave_the_screen(monkeypatch):
@@ -331,7 +332,7 @@ def test_no_player_buddy_message_does_not_leave_the_screen(monkeypatch):
     inter = make_interaction(rec)
     sent = sent_to(inter)
     asyncio.run(view._buddy(inter))
-    assert sent[0][0][0] == LOCALE["catch.creature.buddy_no_player"] and view.back_calls == []
+    assert body(sent[0]) == LOCALE["catch.creature.buddy_no_player"] and view.back_calls == []
 
 
 def test_a_second_tap_while_working_is_ignored(monkeypatch):
@@ -357,7 +358,7 @@ def test_a_second_tap_while_working_is_ignored(monkeypatch):
         return sent_b
 
     sent_b = asyncio.run(both())
-    assert writes == [1] and sent_b[0][0][0] == LOCALE["catch.creature.busy"]
+    assert writes == [1] and body(sent_b[0]) == LOCALE["catch.creature.busy"]
 
 
 def test_a_failing_write_shows_a_friendly_error_and_frees_the_screen(monkeypatch):
@@ -372,7 +373,7 @@ def test_a_failing_write_shows_a_friendly_error_and_frees_the_screen(monkeypatch
     inter = make_interaction(rec)
     sent = sent_to(inter)
     asyncio.run(view._lock(inter))
-    assert sent[0][0][0] == LOCALE["catch.creature.error"] and view._busy is False
+    assert body(sent[0]) == LOCALE["catch.creature.error"] and view._busy is False
 
 
 def test_nickname_button_opens_a_modal_without_touching_the_database(monkeypatch):
@@ -428,7 +429,7 @@ def test_nickname_modal_blank_clears(monkeypatch):
 
 def test_nickname_modal_refuses_bad_names_with_a_reason_and_no_redraw(monkeypatch):
     sent, edits, _ = run_modal(monkeypatch, "see http-x")
-    assert sent[0][0][0] == LOCALE["catch.creature.nick_link"] and not edits
+    assert body(sent[0]) == LOCALE["catch.creature.nick_link"] and not edits
 
 
 # ---------------------------------------------------------------- evolve flow
@@ -509,7 +510,7 @@ def test_confirm_error_says_nothing_was_spent(monkeypatch):
     inter = make_interaction(rec)
     sent = sent_to(inter)
     asyncio.run(confirm._confirm(inter))
-    assert "Nothing was spent" in sent[0][0][0] and confirm._busy is False
+    assert "Nothing was spent" in body(sent[0]) and confirm._busy is False
 
 
 def test_double_confirm_evolves_only_once(monkeypatch):
@@ -587,7 +588,7 @@ def test_opening_a_creature_from_the_list_passes_the_selected_id_and_a_back_path
     bad.data = {"values": ["x"]}
     sent = sent_to(bad)
     asyncio.run(view._open_creature(bad))
-    assert sent[0][0][0] == LOCALE["catch.collection.not_found"] and len(seen) == 1
+    assert body(sent[0]) == LOCALE["catch.collection.not_found"] and len(seen) == 1
 
 
 def test_back_to_list_redraws_the_list_and_clears_notices(monkeypatch):
@@ -619,7 +620,7 @@ def test_open_creature_detail_checks_the_gate_first_and_handles_missing(monkeypa
     inter2 = make_interaction(rec2)
     sent2 = sent_to(inter2)
     asyncio.run(views.open_creature_detail(inter2, 7, None, 5, back=go_back))
-    assert sent2[0][0][0] == LOCALE["catch.creature.not_found"] and back == [1]
+    assert body(sent2[0]) == LOCALE["catch.creature.not_found"] and back == [1]
 
 
 # ---------------------------------------------------------------- profile
@@ -688,7 +689,7 @@ def test_open_profile_refuses_when_off_and_survives_a_failing_load(monkeypatch):
     inter2 = make_interaction(rec)
     sent2 = sent_to(inter2)
     asyncio.run(profile_views.open_profile(inter2, 7, None, back=back))
-    assert sent2[0][0][0] == LOCALE["catch.profile.error"]
+    assert body(sent2[0]) == LOCALE["catch.profile.error"]
 
 
 def test_profile_view_is_owner_only_and_back_defers_first():

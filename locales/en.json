@@ -318,5 +318,8 @@
   "catch.xp.daily_gain": "Your buddy gained **{gained} XP** from your daily reward.",
   "catch.xp.daily_level_up": "Your buddy gained **{gained} XP** from your daily reward and reached **level {level}**!",
   "catch.levelup.evolve_done": "Closed. Open your collection any time to see your creature.",
-  "catch.levelup.error": "That couldn't be opened right now. Try again from your collection."
+  "catch.levelup.error": "That couldn't be opened right now. Try again from your collection.",
+  "catch.notice.error": "Something went wrong",
+  "catch.notice.warning": "Can't do that",
+  "catch.notice.info": "Heads up"
 }

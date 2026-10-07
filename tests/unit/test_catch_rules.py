@@ -9,6 +9,7 @@ import discord_bot.cogs._views_catch_rules as views
 import discord_bot.cogs.catch as catch
 from modules.catch_setup import CatchSetup
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
+from tests.unit.notice_helpers import body
 
 
 def values(embed):
@@ -94,10 +95,10 @@ def test_open_rules_refuses_when_game_is_off_and_outside_servers(monkeypatch):
     inter = rules_interaction(r)
     sent = sent_to(inter)
     asyncio.run(views.open_rules(inter))
-    assert sent[0][0][0] == catch.text("catch.unavailable", reason="game_disabled") and "load" not in r.calls
+    assert body(sent[0]) == catch.text("catch.unavailable", reason="game_disabled") and "load" not in r.calls
     inter.guild_id = None
     asyncio.run(views.open_rules(inter))
-    assert sent[1][0][0] == catch.text("encounter.server_only")
+    assert body(sent[1]) == catch.text("encounter.server_only")
 
 
 def test_load_failure_is_reported_politely(monkeypatch):
@@ -111,7 +112,7 @@ def test_load_failure_is_reported_politely(monkeypatch):
     inter = rules_interaction(r)
     sent = sent_to(inter)
     asyncio.run(views.open_rules(inter))
-    assert sent[0][0][0] == catch.text("rules.error")
+    assert body(sent[0]) == catch.text("rules.error")
 
 
 def test_rules_button_opens_the_real_screen_live_and_after_restart(monkeypatch):

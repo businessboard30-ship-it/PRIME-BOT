@@ -26,6 +26,7 @@ from modules.catch_dex import SpeciesInfo, rarity_completion, species_info
 from modules.catch_game import ELEMENTS, RARITIES
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_theme import button_style, rarity_color, state_color
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ class CollectionView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -126,10 +127,10 @@ class CollectionView(discord.ui.View):
         try:
             owned_id = int((interaction.data or {}).get("values", [""])[0])
         except ValueError:
-            await interaction.followup.send(text("collection.not_found"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.not_found"), ephemeral=True)
             return
         if await set_favorite(owned_id, self.user_id, self.clone_id) is None:
-            await interaction.followup.send(text("collection.not_found"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.not_found"), ephemeral=True)
         await self._reload(interaction)
 
 
@@ -170,7 +171,7 @@ class CollectionBrowseView(CollectionView):
             )
         except Exception:
             logger.exception("Catch collection reload failed user=%s", self.user_id)
-            await interaction.followup.send(text("collection.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.error"), ephemeral=True)
             return
         self._build()
         await interaction.edit_original_response(
@@ -182,7 +183,7 @@ class CollectionBrowseView(CollectionView):
         try:
             owned_id = int((interaction.data or {}).get("values", [""])[0])
         except ValueError:
-            await interaction.followup.send(text("collection.not_found"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.not_found"), ephemeral=True)
             return
         await open_creature_detail(interaction, self.user_id, self.clone_id, owned_id, back=self._back_to_list)
 
@@ -257,7 +258,7 @@ class CollectionCardView(CollectionBoxView):
             )
         except Exception:
             logger.exception("Catch collection reload failed user=%s", self.user_id)
-            await interaction.followup.send(text("collection.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.error"), ephemeral=True)
             return
         self._build()
         await interaction.edit_original_response(content=None, view=self, **await self.message(edit=True))
@@ -271,7 +272,7 @@ class CollectionCardView(CollectionBoxView):
             await interaction.edit_original_response(content=None, view=screen, **await screen.message())
         except Exception:
             logger.exception("Catch filter screen failed user=%s", self.user_id)
-            await interaction.followup.send(text("collection.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.error"), ephemeral=True)
 
 
 class CollectionFilterView(discord.ui.View):
@@ -345,7 +346,7 @@ class CollectionFilterView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -388,19 +389,19 @@ class CollectionFilterView(discord.ui.View):
     async def _apply(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         if self._busy:
-            await interaction.followup.send(text("collection.busy"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.busy"), ephemeral=True)
             return
         self._busy = True
         try:
             gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", self.box.clone_id)
             if not gate.allowed:
                 await interaction.followup.send(
-                    text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+                    **notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
                 return
             await self.box.apply_filter(interaction, self.flt)
         except Exception:
             logger.exception("Catch collection filter failed user=%s", self.user_id)
-            await interaction.followup.send(text("collection.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.error"), ephemeral=True)
         finally:
             self._busy = False
 
@@ -428,7 +429,7 @@ class CollectionFilterCardView(CollectionFilterView):
             await interaction.edit_original_response(view=self, **await self.message())
         except Exception:
             logger.exception("Catch filter screen redraw failed user=%s", self.user_id)
-            await interaction.followup.send(text("collection.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.error"), ephemeral=True)
 
     async def _search(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(CardSearchModal(self))
@@ -490,13 +491,13 @@ class PageJumpModal(discord.ui.Modal):
             gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", box.clone_id)
             if not gate.allowed:
                 await interaction.followup.send(
-                    text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+                    **notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
                 return
             box.page = max(0, wanted - 1)  # list_owned clamps it into range
             await box._back_to_list(interaction)
         except Exception:
             logger.exception("Catch collection page jump failed user=%s", box.user_id)
-            await interaction.followup.send(text("collection.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("collection.error"), ephemeral=True)
 
 
 class DexView(discord.ui.View):
@@ -529,7 +530,7 @@ class DexView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -625,7 +626,7 @@ class DexBrowseView(DexView):
             species_id = 0
         info = species_info(self.entries, species_id)
         if info is None:
-            await interaction.response.send_message(text("dex.info.not_found"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("dex.info.not_found"), ephemeral=True)
             return
         screen = DexInfoView(self)
         await interaction.response.edit_message(embed=species_embed(info), view=screen)
@@ -642,7 +643,7 @@ class DexInfoView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -679,7 +680,7 @@ class DexCardView(DexBrowseView):
             species_id = 0
         info = species_info(self.entries, species_id)
         if info is None:
-            await interaction.response.send_message(text("dex.info.not_found"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("dex.info.not_found"), ephemeral=True)
             return
         await interaction.response.defer()
         embed = species_embed(info)
@@ -700,13 +701,13 @@ async def open_collection(interaction: discord.Interaction) -> None:
     clone_id = getattr(interaction.client, "clone_id", None)
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
         return
     try:
         rows, total, page = await list_owned(interaction.user.id, clone_id)
     except Exception:
         logger.exception("Catch collection load failed user=%s", interaction.user.id)
-        await interaction.followup.send(text("collection.error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("collection.error"), ephemeral=True)
         return
     view = CollectionCardView(interaction.user.id, clone_id, page=page, rows=rows, total=total)
     await interaction.followup.send(view=view, ephemeral=True, **await view.message(edit=False))
@@ -717,13 +718,13 @@ async def open_dex(interaction: discord.Interaction) -> None:
     clone_id = getattr(interaction.client, "clone_id", None)
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
         return
     try:
         entries = await load_dex(interaction.user.id, clone_id)
     except Exception:
         logger.exception("Catch dex load failed user=%s", interaction.user.id)
-        await interaction.followup.send(text("dex.error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("dex.error"), ephemeral=True)
         return
     view = DexCardView(interaction.user.id, entries)
     await interaction.followup.send(view=view, ephemeral=True, **await view.message(edit=False))

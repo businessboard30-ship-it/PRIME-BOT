@@ -14,6 +14,7 @@ from modules.catch_card import W
 from modules.catch_i18n import text
 from modules.catch_status import PlayerStatus as P
 from tests.unit.test_catch_interaction_timing import Recorder, make_interaction, slow
+from tests.unit.notice_helpers import body
 
 PNG = b"\x89PNG\r\n\x1a\n"
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
@@ -241,11 +242,11 @@ def test_a_refused_player_gets_no_card_and_no_load(monkeypatch):
     inter, sent, _ = setup(monkeypatch, rec, allowed=False)
     run(views.open_status(inter))
     assert "load" not in rec.calls and "render" not in rec.calls
-    assert sent[0][0][0] == text("catch.unavailable", reason="off")
+    assert body(sent[0]) == text("catch.unavailable", reason="off")
 
 
 def test_a_load_failure_is_reported_without_a_card(monkeypatch):
     rec = Recorder()
     inter, sent, _ = setup(monkeypatch, rec, load_fails=True)
     run(views.open_status(inter))
-    assert "render" not in rec.calls and sent[0][0][0] == text("status.error")
+    assert "render" not in rec.calls and body(sent[0]) == text("status.error")

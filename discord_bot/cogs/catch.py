@@ -42,6 +42,7 @@ from modules.catch_trigger import ChannelTriggerState, consider_message
 from modules.catch_encounter import EncounterOnCooldown, create_player_encounter
 from modules.catch_gate import check_player_allowed, guild_allowed, set_feature_flag
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_items import ensure_starter_kit
 from modules.catch_service import CatchBlocked, record_catch
 from modules.catch_xp import grant_buddy_catch_xp
@@ -134,7 +135,7 @@ class CatchHubView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         if guild is None:
-            await interaction.followup.send(text("encounter.server_only"), ephemeral=True)
+            await interaction.followup.send(**notice_for("encounter.server_only"), ephemeral=True)
             return
         if not await user_can_manage_guild(guild, interaction.user.id):
             await interaction.followup.send(text("setup.manage_server"), ephemeral=True)
@@ -149,14 +150,14 @@ class CatchHubView(discord.ui.View):
 
     async def _encounter(self, interaction: discord.Interaction) -> None:
         if interaction.guild_id is None or interaction.channel_id is None:
-            await interaction.response.send_message(text("encounter.server_only"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("encounter.server_only"), ephemeral=True)
             return
         # Acknowledge first (3-second rule): the gate check and the encounter insert hit the DB.
         await interaction.response.defer(ephemeral=True)
         clone_id = getattr(interaction.client, "clone_id", None)
         gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "encounter", clone_id)
         if not gate.allowed:
-            await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+            await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
             return
         try:
             roll = roll_spawn(list(all_species().values()), random.Random())
@@ -169,7 +170,7 @@ class CatchHubView(discord.ui.View):
             )
         except EncounterOnCooldown as exc:
             await interaction.followup.send(
-                text("encounter.cooldown", ready_at=int(exc.ready_at.timestamp())),
+                **notice_for("encounter.cooldown", ready_at=int(exc.ready_at.timestamp())),
                 ephemeral=True,
             )
             return
@@ -251,7 +252,7 @@ class CatchHubCardView(CatchHubView):
             await interaction.edit_original_response(embed=embed, view=self, **edit_kwargs(file))
         except Exception:
             logger.exception("Catch hub redraw failed category=%s", key)
-            await interaction.followup.send(text("hub.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("hub.error"), ephemeral=True)
 
     async def _select_category(self, interaction: discord.Interaction) -> None:
         selected = interaction.data.get("values", ["play"])[0] if interaction.data else "play"
@@ -601,7 +602,7 @@ class CatchSetupView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         if guild is None or self.guild_id is None:
-            await interaction.followup.send(text("encounter.server_only"), ephemeral=True)
+            await interaction.followup.send(**notice_for("encounter.server_only"), ephemeral=True)
             return
         if not await user_can_manage_guild(guild, interaction.user.id):
             await interaction.followup.send(text("setup.manage_server"), ephemeral=True)
@@ -627,7 +628,7 @@ class CatchSetupView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         if guild is None or self.guild_id is None:
-            await interaction.followup.send(text("encounter.server_only"), ephemeral=True)
+            await interaction.followup.send(**notice_for("encounter.server_only"), ephemeral=True)
             return
         if not await user_can_manage_guild(guild, interaction.user.id):
             await interaction.followup.send(text("setup.manage_server"), ephemeral=True)
@@ -701,7 +702,7 @@ class SpawnClaimView(discord.ui.View):
             getattr(interaction.client, "clone_id", None),
         )
         if not gate.allowed:
-            await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+            await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
             return
         try:
             await ensure_starter_kit(interaction.user.id, getattr(interaction.client, "clone_id", None))
@@ -715,18 +716,18 @@ class SpawnClaimView(discord.ui.View):
                 bait=self.bait,
             )
         except CatchBlocked as exc:
-            await interaction.followup.send(text("claim.blocked", reason=exc.reason), ephemeral=True)
+            await interaction.followup.send(**notice_for("claim.blocked", reason=exc.reason), ephemeral=True)
             return
         except ValueError as exc:
             if str(exc).endswith("is not available"):
-                await interaction.followup.send(text("claim.no_items"), ephemeral=True)
+                await interaction.followup.send(**notice_for("claim.no_items"), ephemeral=True)
                 return
             logger.exception("Catch claim rejected spawn=%s user=%s", self.spawn_id, interaction.user.id)
-            await interaction.followup.send(text("claim.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("claim.error"), ephemeral=True)
             return
         except Exception:
             logger.exception("Catch claim failed spawn=%s user=%s", self.spawn_id, interaction.user.id)
-            await interaction.followup.send(text("claim.error"), ephemeral=True)
+            await interaction.followup.send(**notice_for("claim.error"), ephemeral=True)
             return
 
         for item in self.children:
@@ -949,7 +950,7 @@ class CatchCog(commands.Cog):
         )
         if not gate.allowed:
             await interaction.followup.send(
-                text("unavailable", reason=gate.reason or "disabled"),
+                **notice_for("unavailable", reason=gate.reason or "disabled"),
                 ephemeral=True,
             )
             return

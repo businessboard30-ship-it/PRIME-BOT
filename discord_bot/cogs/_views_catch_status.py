@@ -13,6 +13,7 @@ import discord
 from modules.catch_card import send_kwargs
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_status import PlayerStatus, load_status
 from modules.catch_status_card import status_art
 from modules.catch_theme import state_color
@@ -40,13 +41,13 @@ async def open_status(interaction: discord.Interaction) -> None:
     clone_id = getattr(interaction.client, "clone_id", None)
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
         return
     try:
         status = await load_status(interaction.user.id, clone_id)
     except Exception:
         logger.exception("Catch status load failed user=%s", interaction.user.id)
-        await interaction.followup.send(text("status.error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("status.error"), ephemeral=True)
         return
     embed = status_embed(status)
     file = await status_art(embed, status)  # None (plain embed, unchanged) if the card cannot be drawn

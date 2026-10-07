@@ -12,6 +12,7 @@ from modules import catch_release as rel
 from modules.catch_i18n import text
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
 from tests.unit.test_catch_phase3 import LOCALE, allow, detail, edits_to, make_view, sent_to
+from tests.unit.notice_helpers import body
 
 
 def owned(**over):
@@ -154,7 +155,7 @@ def test_release_button_refuses_favourite_and_locked_before_confirm(monkeypatch,
     sent, edits = sent_to(inter), edits_to(inter)
     asyncio.run(view._release(inter))
     assert not edits
-    assert sent and sent[0][0][0] == text(f"release.refused_{key}", name="Cindrop")
+    assert sent and body(sent[0]) == text(f"release.refused_{key}", name="Cindrop")
 
 
 def confirm_view(rec):
@@ -200,7 +201,7 @@ def test_confirm_gone_creature_says_nothing_released_and_goes_back(monkeypatch):
     inter = make_interaction(rec)
     sent = sent_to(inter)
     asyncio.run(confirm._confirm(inter))
-    assert sent[0][0][0] == text("release.gone") and cv.back_calls == [1]
+    assert body(sent[0]) == text("release.gone") and cv.back_calls == [1]
 
 
 def test_confirm_refuses_without_releasing_when_the_game_is_off(monkeypatch):
@@ -226,7 +227,7 @@ def test_confirm_error_says_nothing_was_released_and_frees_the_screen(monkeypatc
     inter = make_interaction(rec)
     sent = sent_to(inter)
     asyncio.run(confirm._confirm(inter))
-    assert sent[0][0][0] == text("release.error") and confirm._busy is False
+    assert body(sent[0]) == text("release.error") and confirm._busy is False
 
 
 def test_double_confirm_releases_only_once(monkeypatch):

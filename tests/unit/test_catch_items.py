@@ -11,6 +11,7 @@ import discord_bot.cogs._views_catch_items as views
 import discord_bot.cogs.catch as catch
 from modules import catch_items as ci
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
+from tests.unit.notice_helpers import shown
 
 NOW = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
 
@@ -259,7 +260,7 @@ def test_claim_without_items_gets_helpful_message(monkeypatch):
     inter = claim_interaction(rec)
 
     async def followup_send(*args, **kwargs):
-        sent.append(args[0] if args else kwargs)
+        sent.append(shown(args, kwargs))
 
     inter.followup = SimpleNamespace(send=followup_send)
     asyncio.run(catch.SpawnClaimView(1)._claim(inter))

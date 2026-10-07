@@ -8,6 +8,7 @@ import discord
 import discord_bot.cogs._views_catch_guide as views
 import discord_bot.cogs.catch as catch
 from tests.unit.test_catch_interaction_timing import Recorder, assert_response_first, make_interaction, slow
+from tests.unit.notice_helpers import body
 
 
 def sent_to(inter):
@@ -53,7 +54,7 @@ def test_open_guide_refuses_when_game_is_off(monkeypatch):
     inter = make_interaction(r)
     sent = sent_to(inter)
     asyncio.run(views.open_guide(inter))
-    assert sent[0][0][0] == catch.text("catch.unavailable", reason="game_disabled") and "embed" not in sent[0][1]
+    assert body(sent[0]) == catch.text("catch.unavailable", reason="game_disabled")
 
 
 def test_guide_button_opens_the_real_screen_live_and_after_restart(monkeypatch):

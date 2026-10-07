@@ -16,6 +16,7 @@ from modules.catch_gate import check_player_allowed
 from modules.catch_card import edit_kwargs, send_kwargs
 from modules.catch_coin_card import coin_art
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_items import item_name, load_player
 from modules.catch_shop import CATALOG, QUANTITIES, load_wallet, purchase, total_price
 from modules.catch_theme import button_style, state_color
@@ -95,7 +96,7 @@ class ShopView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message(text("ui.not_yours"), ephemeral=True)
+            await interaction.response.send_message(**notice_for("ui.not_yours"), ephemeral=True)
             return False
         return True
 
@@ -120,10 +121,10 @@ class ShopView(discord.ui.View):
         try:
             gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "shop", self.clone_id)
             if not gate.allowed:
-                await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+                await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
                 return
             if self.selected is None:
-                await interaction.followup.send(text("shop.no_selection"), ephemeral=True)
+                await interaction.followup.send(**notice_for("shop.no_selection"), ephemeral=True)
                 return
             try:
                 result = await purchase(
@@ -131,7 +132,7 @@ class ShopView(discord.ui.View):
                 )
             except Exception:
                 logger.exception("Catch shop purchase failed user=%s item=%s", self.user_id, self.selected)
-                await interaction.followup.send(text("shop.error"), ephemeral=True)
+                await interaction.followup.send(**notice_for("shop.error"), ephemeral=True)
                 return
             if result.ok:
                 self.coins = result.coins_left
@@ -152,13 +153,13 @@ async def open_shop(interaction: discord.Interaction) -> None:
     clone_id = getattr(interaction.client, "clone_id", None)
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "shop", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
         return
     try:
         player = await load_player(interaction.user.id, clone_id)
     except Exception:
         logger.exception("Catch shop load failed user=%s", interaction.user.id)
-        await interaction.followup.send(text("shop.load_error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("shop.load_error"), ephemeral=True)
         return
     view = ShopView(interaction.user.id, clone_id, player.coins)
     await interaction.followup.send(view=view, ephemeral=True, **await view.message(edit=False))
@@ -169,13 +170,13 @@ async def open_wallet(interaction: discord.Interaction) -> None:
     clone_id = getattr(interaction.client, "clone_id", None)
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
         return
     try:
         wallet = await load_wallet(interaction.user.id, clone_id)
     except Exception:
         logger.exception("Catch wallet load failed user=%s", interaction.user.id)
-        await interaction.followup.send(text("wallet.error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("wallet.error"), ephemeral=True)
         return
     embed = wallet_embed(wallet)
     file = await coin_art(embed, label="WALLET", coins=wallet.coins, drop_field=text("wallet.balance"))

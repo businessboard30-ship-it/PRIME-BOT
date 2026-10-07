@@ -12,6 +12,7 @@ import discord
 
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
+from modules.catch_notice import notice_for
 from modules.catch_theme import state_color
 from modules.catch_wild import RARITY_MARK, WILD_LIST_LIMIT, jump_url, list_active_spawns
 
@@ -42,18 +43,18 @@ def wild_embed(guild_id: int, spawns, total: int) -> discord.Embed:
 async def open_wild_zone(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     if interaction.guild_id is None:
-        await interaction.followup.send(text("encounter.server_only"), ephemeral=True)
+        await interaction.followup.send(**notice_for("encounter.server_only"), ephemeral=True)
         return
     clone_id = getattr(interaction.client, "clone_id", None)
     gate = await check_player_allowed(interaction.user.id, interaction.guild_id, "view", clone_id)
     if not gate.allowed:
-        await interaction.followup.send(text("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
+        await interaction.followup.send(**notice_for("catch.unavailable", reason=gate.reason or "disabled"), ephemeral=True)
         return
     try:
         spawns, total = await list_active_spawns(interaction.guild_id, interaction.user.id, clone_id, limit=WILD_LIST_LIMIT)
     except Exception:
         logger.exception("Catch wild zone load failed guild=%s", interaction.guild_id)
-        await interaction.followup.send(text("wild.error"), ephemeral=True)
+        await interaction.followup.send(**notice_for("wild.error"), ephemeral=True)
         return
     await interaction.followup.send(embed=wild_embed(interaction.guild_id, spawns, total), ephemeral=True)
 
