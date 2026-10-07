@@ -39,12 +39,24 @@ _PERKS = (
     "🎮 **Roblox Alerts** — auto game update posts\n"
     "🆕 **Every future feature** — free, automatically"
 )
+def _yearly_savings_pct() -> int:
+    full = config.PREMIUM_FEE_USD * 12
+    return round((1 - config.PREMIUM_YEARLY_FEE_USD / full) * 100) if full else 0
+
+
+def _is_lifetime_expiry(expires_at) -> bool:
+    import datetime as _dt
+    return expires_at > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=config.PREMIUM_LIFETIME_THRESHOLD_DAYS)
+
+
 _FOOTER = "-# Not included: clones & temporary XP boosts. Anything you bought separately stays yours."
 
 
 def _pitch_text(fee: float, status_line: str) -> str:
     return (
         f"## 💎 Go Premium — ${fee:g}/month for your whole server\n"
+        f"-# Or ${config.PREMIUM_YEARLY_FEE_USD:g}/year (save {_yearly_savings_pct()}%) · "
+        f"${config.PREMIUM_LIFETIME_FEE_USD:g} lifetime, one-time\n"
         f"{status_line}\n\n{_PERKS}\n\n"
         "🌍 Global: Gumroad, cancel anytime · 🇬🇭 Ghana: Paystack, 30 days per payment\n"
         + _FOOTER
@@ -55,8 +67,11 @@ async def build_pitch(guild_id: int, clone_id) -> str:
     row = await db.get_guild_premium(guild_id, clone_id=clone_id)
     status = "Not active on this server yet."
     if row and await db.is_guild_premium_active(guild_id, clone_id):
-        ts = int(row["expires_at"].timestamp())
-        status = f"✅ **Premium is active** on this server until <t:{ts}:D> (<t:{ts}:R>). Renew below to add more time."
+        if _is_lifetime_expiry(row["expires_at"]):
+            status = "♾️ **Lifetime Premium is active** on this server. Nothing more to pay, ever."
+        else:
+            ts = int(row["expires_at"].timestamp())
+            status = f"✅ **Premium is active** on this server until <t:{ts}:D> (<t:{ts}:R>). Renew below to add more time."
     return _pitch_text(config.PREMIUM_FEE_USD, status)
 
 
@@ -82,21 +97,80 @@ class PremiumSubscribeButton(discord.ui.DynamicItem[discord.ui.Button], template
         await _start_checkout(interaction, guild, self.clone_id)
 
 
-async def _start_checkout(interaction: discord.Interaction, guild, clone_id) -> None:
-    """Straight to the pay buttons — perks and checkout in ONE message.
-    Anyone in the server can pay for it."""
+class _PlanView(discord.ui.View):
+    """Monthly / Yearly / Lifetime picker. Ephemeral and short-lived: each button
+    starts the normal dual-mode checkout for that plan's payment_type, so the
+    Gumroad/Paystack routing, verify and unlock paths are exactly the existing ones."""
+
+    def __init__(self, guild, clone_id, buyer_id: int):
+        super().__init__(timeout=600)
+        self.guild = guild
+        self.clone_id = clone_id
+        self.buyer_id = buyer_id
+        pct = _yearly_savings_pct()
+        self.add_item(self._plan_button(
+            "premium", f"Monthly — ${config.PREMIUM_FEE_USD:g}", discord.ButtonStyle.secondary, "🗓️"))
+        self.add_item(self._plan_button(
+            "premium_yearly", f"Yearly — ${config.PREMIUM_YEARLY_FEE_USD:g} (save {pct}%)", discord.ButtonStyle.primary, "💎"))
+        self.add_item(self._plan_button(
+            "premium_lifetime", f"Lifetime — ${config.PREMIUM_LIFETIME_FEE_USD:g}", discord.ButtonStyle.success, "♾️"))
+
+    def _plan_button(self, plan: str, label: str, style, emoji: str) -> discord.ui.Button:
+        btn = discord.ui.Button(label=label, style=style, emoji=emoji)
+
+        async def _cb(interaction: discord.Interaction, _plan=plan):
+            if interaction.user.id != self.buyer_id:
+                await interaction.response.send_message("This menu isn't for you.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await _start_plan_checkout(interaction, self.guild, self.clone_id, _plan)
+
+        btn.callback = _cb
+        return btn
+
+
+_PLAN_INFO = {
+    "premium": ("monthly", lambda: config.PREMIUM_FEE_USD,
+                lambda f: f"${f:g}/month for the whole server"),
+    "premium_yearly": ("yearly", lambda: config.PREMIUM_YEARLY_FEE_USD,
+                       lambda f: f"${f:g}/year for the whole server"),
+    "premium_lifetime": ("lifetime", lambda: config.PREMIUM_LIFETIME_FEE_USD,
+                         lambda f: f"${f:g} one-time, lifetime, for the whole server"),
+}
+
+
+async def _start_plan_checkout(interaction: discord.Interaction, guild, clone_id, plan: str) -> None:
     from payments_manual import start_dual_mode_payment
-    fee = config.PREMIUM_FEE_USD
+    name, fee_fn, display_fn = _PLAN_INFO[plan]
+    fee = fee_fn()
     row = await db.get_guild_premium(guild.id, clone_id=clone_id)
     status = ""
     if row and await db.is_guild_premium_active(guild.id, clone_id):
+        if _is_lifetime_expiry(row["expires_at"]):
+            await interaction.followup.send(
+                "♾️ This server already has **Lifetime Premium** — nothing more to buy.", ephemeral=True)
+            return
         ts = int(row["expires_at"].timestamp())
-        status = f"✅ **Active** until <t:{ts}:D> — paying again adds 30 more days.\n\n"
+        status = f"✅ **Active** until <t:{ts}:D> — this plan adds its time on top.\n\n"
     await start_dual_mode_payment(
-        interaction, payment_type="premium", price_usd=fee,
-        product_title=f"💎 Go Premium — {guild.name}",
+        interaction, payment_type=plan, price_usd=fee,
+        product_title=f"💎 Go Premium ({name.title()}) — {guild.name}",
         product_description=f"{status}{_PERKS}\n\n{_FOOTER}",
-        amount_display_manual=f"${fee:g}/month for the whole server", guild_id=guild.id,
+        amount_display_manual=display_fn(fee), guild_id=guild.id,
+    )
+
+
+async def _start_checkout(interaction: discord.Interaction, guild, clone_id) -> None:
+    """Plan picker (monthly / yearly / lifetime) — one tap more than before,
+    then straight to the pay buttons. Anyone in the server can pay for it."""
+    row = await db.get_guild_premium(guild.id, clone_id=clone_id)
+    if row and await db.is_guild_premium_active(guild.id, clone_id) and _is_lifetime_expiry(row["expires_at"]):
+        await interaction.followup.send(
+            "♾️ This server already has **Lifetime Premium** — nothing more to buy.", ephemeral=True)
+        return
+    await interaction.followup.send(
+        await build_pitch(guild.id, clone_id) + "\n\n**Pick a plan:**",
+        view=_PlanView(guild, clone_id, interaction.user.id), ephemeral=True,
     )
 
 

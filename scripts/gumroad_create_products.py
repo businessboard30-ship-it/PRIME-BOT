@@ -31,6 +31,8 @@ PRODUCTS = [
     ("Discord Clone Monetization", config.CLONE_MONETIZATION_FEE_USD, "Monetization feature for your Discord clone bot."),
     ("XP Boost", config.XP_BOOST_FEE_USD, "Personal 2x XP boost for 7 days."),
     ("XP Server Boost - 24 Hours", t24["fee_usd"], f"{t24['multiplier']}x XP for the whole server for 24 hours."),
+    ("PRIME-BOT Premium - Yearly", config.PREMIUM_YEARLY_FEE_USD, "PRIME-BOT Premium for one server, 365 days."),
+    ("PRIME-BOT Premium - Lifetime", config.PREMIUM_LIFETIME_FEE_USD, "PRIME-BOT Premium for one server, forever."),
     ("XP Server Boost - 1 Month", t30["fee_usd"], f"{t30['multiplier']}x XP for the whole server for 30 days."),
 ]
 

@@ -481,6 +481,28 @@ async def _unlock_premium(reference: str, buyer_id: int, guild_id: Optional[int]
     await db.activate_guild_premium(guild_id, buyer_id, PREMIUM_DAYS, clone_id=clone_id)
 
 
+async def _unlock_premium_yearly(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """One-time yearly Premium: PREMIUM_YEARLY_DAYS stacked on any time left."""
+    from config import PREMIUM_YEARLY_DAYS
+    if not guild_id:
+        raise RuntimeError("yearly premium payment has no guild_id")
+    if await db.is_guild_premium_lifetime(guild_id, clone_id):
+        logger.warning(f"[unlock-premium-yearly] guild {guild_id} is already lifetime; ref={reference}")
+        return
+    await db.activate_guild_premium(guild_id, buyer_id, PREMIUM_YEARLY_DAYS, clone_id=clone_id)
+
+
+async def _unlock_premium_lifetime(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """One-time lifetime Premium: far-future expiry (config.PREMIUM_LIFETIME_DAYS).
+    Idempotent — a retried ping can't push the expiry out another 100 years."""
+    from config import PREMIUM_LIFETIME_DAYS
+    if not guild_id:
+        raise RuntimeError("lifetime premium payment has no guild_id")
+    if await db.is_guild_premium_lifetime(guild_id, clone_id):
+        return
+    await db.activate_guild_premium(guild_id, buyer_id, PREMIUM_LIFETIME_DAYS, clone_id=clone_id)
+
+
 def _make_unlock_xp_server_boost_tier(tier_key: str):
     """One handler per config.XP_SERVER_BOOST_TIERS entry — each tier is
     its own product/payment_type, but they all just activate a
@@ -548,6 +570,8 @@ UNLOCK_HANDLERS = {
     "custom_role": _unlock_custom_role,
     "music_pro": _unlock_music_pro,
     "premium": _unlock_premium,
+    "premium_yearly": _unlock_premium_yearly,
+    "premium_lifetime": _unlock_premium_lifetime,
     "xp_boost": _unlock_xp_boost,
     "xp_boost_3": _make_unlock_xp_boost_bundle("xp_boost_3"),
     "xp_boost_5": _make_unlock_xp_boost_bundle("xp_boost_5"),
@@ -659,6 +683,7 @@ async def create_checkout_for_intent(intent: dict, country: Optional[str]) -> Op
 
     if (country or "").upper() != "GH":
         import gumroad_payments as gp
+        await gp._auto.load_runtime()
         reference = gp.new_reference(payment_type, user_id)
         link = gp.build_link(payment_type, user_id, reference)
         if not link:

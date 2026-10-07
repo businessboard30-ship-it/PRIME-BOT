@@ -397,7 +397,9 @@ class PremiumView(ServerPanelView):
         prem = self.data.get("premium", {})
         if prem.get("active"):
             exp = prem.get("expires_at")
-            lines = ["Status: **active**" + (f" · expires <t:{int(exp.timestamp())}:F>" if exp else "")]
+            import datetime as _dt
+            _life = bool(exp) and exp > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=365 * 50)
+            lines = ["Status: **active**" + (" · **lifetime**" if _life else (f" · expires <t:{int(exp.timestamp())}:F>" if exp else ""))]
         else:
             lines = ["Status: **not active**"]
         lines.append("Premium unlocks the extra welcome card packs, honeypot extras and more for the whole server.")

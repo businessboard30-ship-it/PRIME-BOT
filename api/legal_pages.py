@@ -34,7 +34,7 @@ from config import (
     WELCOME_CARD_PACK_FEE_USD, ULTRA_PACK_FEE_USD, DISCORD_CLONE_ACTIVATION_FEE_USD,
     CLONE_MONETIZATION_FEE_USD, CUSTOM_ROLE_FEE_USD, MUSIC_PRO_PRICE_LABEL,
     XP_BOOST_FEE_USD, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS, XP_BOOST_BUNDLES, GUMROAD_PRODUCT_LINKS,
-    XP_SERVER_BOOST_TIERS, PREMIUM_FEE_USD,
+    XP_SERVER_BOOST_TIERS, PREMIUM_FEE_USD, PREMIUM_YEARLY_FEE_USD, PREMIUM_LIFETIME_FEE_USD,
 )
 
 _PAGE_CSS = """
@@ -183,11 +183,12 @@ PRICING_HTML = f"""
 <h1>Pricing</h1>
 <p class="updated">{BOT_NAME}</p>
 <p>{BOT_NAME} is free to add and use. Paid features are optional
-per-server or per-user unlocks. Go Premium is a monthly plan; everything
+per-server or per-user unlocks. Go Premium comes as a monthly, yearly or lifetime plan; everything
 else below is a one-time purchase. All prices in USD.</p>
 
-<h2>Go Premium (per server, monthly)</h2>
+<h2>Go Premium (per server: monthly, yearly or lifetime)</h2>
 <ul>
+<li>Yearly: ${PREMIUM_YEARLY_FEE_USD:g} one-time for 365 days. Lifetime: ${PREMIUM_LIFETIME_FEE_USD:g} one-time, no expiry (for as long as the bot service operates).</li>
 <li>${PREMIUM_FEE_USD:g}/month for the whole server — unlocks every premium
 feature (giveaways, tickets, Music Pro, welcome cards, fonts, custom roles,
 higher AI chat limit and future features).</li>

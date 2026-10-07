@@ -28,6 +28,7 @@ import aiohttp
 import discord
 
 import config
+import gumroad_autocreate as _auto
 from database import db, get_pool
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,8 @@ _PRICE_ATTRS = {
     "discord_clone_monetization": "CLONE_MONETIZATION_FEE_USD",
     "xp_boost": "XP_BOOST_FEE_USD",
     "premium": "PREMIUM_FEE_USD",
+    "premium_yearly": "PREMIUM_YEARLY_FEE_USD",
+    "premium_lifetime": "PREMIUM_LIFETIME_FEE_USD",
     "hardcore_roast": "HARDCORE_ROAST_FEE_USD",
     "ad_placement": "AD_PLACEMENT_FEE_USD",
 }
@@ -50,7 +53,7 @@ _PRICE_ATTRS = {
 
 # Products that unlock something for one specific server; their unlock handler
 # needs the guild id stored in payment_logs.chat_id.
-_GUILD_SCOPED_TYPES = {"welcome_card_pack", "ultra_welcome_pack", "custom_role", "music_pro", "premium"}
+_GUILD_SCOPED_TYPES = {"welcome_card_pack", "ultra_welcome_pack", "custom_role", "music_pro", "premium", "premium_yearly", "premium_lifetime"}
 
 
 def expected_price_usd(payment_type: str) -> Optional[float]:
@@ -68,7 +71,7 @@ def new_reference(payment_type: str, user_id: int) -> str:
 
 
 def build_link(payment_type: str, user_id: int, reference: str) -> Optional[str]:
-    base = config.GUMROAD_PRODUCT_LINKS.get(payment_type)
+    base = _auto.link_for(payment_type)
     if not base:
         return None
     params = {"wanted": "true", "reference": reference}
@@ -101,6 +104,7 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
         return reference or ""
     reference = reference or new_reference(payment_type, user.id)
     clone_id = getattr(interaction.client, "clone_id", None)
+    await _auto.load_runtime()
     link = build_link(payment_type, user.id, reference)
     if not link:
         await interaction.followup.send("Checkout isn't set up for this yet — please try again later.", ephemeral=True)
@@ -131,9 +135,9 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
 
 
 def _matches_product(payment_type: str, fields: dict) -> bool:
-    url = config.GUMROAD_PRODUCT_LINKS.get(payment_type, "")
+    url = _auto.link_for(payment_type)
     slug = url.rstrip("/").rsplit("/", 1)[-1]
-    pid = config.GUMROAD_PRODUCT_IDS.get(payment_type)
+    pid = _auto.id_for(payment_type)
     permalink = fields.get("permalink") or ""
     product_permalink = fields.get("product_permalink") or ""
     if slug and (permalink == slug or product_permalink.rstrip("/").endswith("/" + slug)):
@@ -397,6 +401,7 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
     """Returns (http_status, message). 200 = handled/ignored (don't retry);
     500 = unlock failed after claim (claim reverted, Gumroad may retry)."""
     import os
+    await _auto.load_runtime()
     is_test = str(fields.get("test", "")).lower() == "true"
     accept_test = os.getenv("GUMROAD_ACCEPT_TEST_PINGS", "").strip().lower() in ("1", "true", "yes")
     if is_test and not accept_test:
