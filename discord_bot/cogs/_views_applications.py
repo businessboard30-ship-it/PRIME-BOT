@@ -124,29 +124,76 @@ async def _pitch(interaction: discord.Interaction, form: dict) -> None:
     await send_premium_pitch(interaction, form["guild_id"], form.get("clone_id"))
 
 
+# ── persistent modals ─────────────────────────────────────────────────────
+# A discord.py Modal only lives in memory, so a restart between "open" and "submit" used to drop
+# the answer. These modals carry their form id in a fixed custom_id and are handled from the
+# cog's on_interaction listener (handle_modal_submit) instead of Modal.on_submit — so a submit
+# still works after a restart or redeploy.
+
+MODAL_PREFIXES = ("appm_details:", "appm_questions:", "appl_modal:")
+
+
+def modal_values(interaction: discord.Interaction) -> dict:
+    """custom_id -> text for every text input in a modal submit (works for row/label layouts)."""
+    out = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("custom_id") is not None and "value" in node:
+                out[node["custom_id"]] = node["value"] or ""
+            for v in node.values():
+                if isinstance(v, (list, dict)):
+                    walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(interaction.data or {})
+    return out
+
+
+async def handle_modal_submit(interaction: discord.Interaction) -> bool:
+    """True when this modal belongs to the application feature (and was handled)."""
+    cid = (interaction.data or {}).get("custom_id", "")
+    if not cid.startswith(MODAL_PREFIXES):
+        return False
+    kind, _, raw_id = cid.partition(":")
+    form_id = int(raw_id)
+    vals = modal_values(interaction)
+    if kind == "appm_details":
+        await _submit_details(interaction, form_id, vals)
+    elif kind == "appm_questions":
+        await _submit_questions(interaction, form_id, vals)
+    else:
+        await _submit_application(interaction, form_id, vals)
+    return True
+
+
 # ── wizard controls ───────────────────────────────────────────────────────
 
-class _DetailsModal(discord.ui.Modal, title="Form details"):
+class _DetailsModal(discord.ui.Modal):
     def __init__(self, form: dict):
-        super().__init__()
-        self.form_id = form["id"]
-        self.f_title = discord.ui.TextInput(label="Title (emojis welcome)", default=form["title"], max_length=80)
-        self.f_desc = discord.ui.TextInput(label="Description", style=discord.TextStyle.paragraph,
-                                           default=form["description"], max_length=500)
-        self.f_label = discord.ui.TextInput(label="Button text", default=form["button_label"], max_length=30)
-        self.f_emoji = discord.ui.TextInput(label="Button emoji (optional)", default=form["button_emoji"] or "",
-                                            required=False, max_length=40)
-        for i in (self.f_title, self.f_desc, self.f_label, self.f_emoji):
-            self.add_item(i)
+        super().__init__(title="Form details", custom_id=f"appm_details:{form['id']}")
+        self.add_item(discord.ui.TextInput(label="Title (emojis welcome)", custom_id="title", default=form["title"], max_length=80))
+        self.add_item(discord.ui.TextInput(label="Description", custom_id="desc", style=discord.TextStyle.paragraph,
+                                           default=form["description"], max_length=500))
+        self.add_item(discord.ui.TextInput(label="Button text", custom_id="label", default=form["button_label"], max_length=30))
+        self.add_item(discord.ui.TextInput(label="Button emoji (optional)", custom_id="emoji", default=form["button_emoji"] or "",
+                                           required=False, max_length=40))
 
     async def on_submit(self, interaction: discord.Interaction):
-        raw_emoji = self.f_emoji.value.strip()
-        emoji = apps.clean_emoji(raw_emoji)
-        note = "" if (emoji or not raw_emoji) else "⚠️ That wasn't a valid emoji, so the button has none."
-        await apps.update_form(self.form_id, title=self.f_title.value.strip() or "📝 Apply here",
-                               description=self.f_desc.value.strip() or "Press the button below to apply.",
-                               button_label=self.f_label.value.strip() or "Apply", button_emoji=emoji)
-        await _rerender(interaction, self.form_id, note)
+        pass  # handled by handle_modal_submit (persistent across restarts)
+
+
+async def _submit_details(interaction: discord.Interaction, form_id: int, vals: dict) -> None:
+    if not await _guard(interaction, form_id):
+        return
+    raw_emoji = vals.get("emoji", "").strip()
+    emoji = apps.clean_emoji(raw_emoji)
+    note = "" if (emoji or not raw_emoji) else "⚠️ That wasn't a valid emoji, so the button has none."
+    await apps.update_form(form_id, title=vals.get("title", "").strip() or "📝 Apply here",
+                           description=vals.get("desc", "").strip() or "Press the button below to apply.",
+                           button_label=vals.get("label", "").strip() or "Apply", button_emoji=emoji)
+    await _rerender(interaction, form_id, note)
 
 
 class AppDetailsButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("details")):
@@ -165,26 +212,31 @@ class AppDetailsButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat(
             await interaction.response.send_modal(_DetailsModal(form))
 
 
-class _QuestionsModal(discord.ui.Modal, title="Questions"):
+class _QuestionsModal(discord.ui.Modal):
     def __init__(self, form: dict, premium: bool):
-        super().__init__()
-        self.form_id, self.premium = form["id"], premium
+        super().__init__(title="Questions", custom_id=f"appm_questions:{form['id']}")
         n = apps.max_questions(premium)
-        self.f_q = discord.ui.TextInput(
-            label=f"One question per line (max {n})", style=discord.TextStyle.paragraph,
+        self.add_item(discord.ui.TextInput(
+            label=f"One question per line (max {n})", custom_id="q", style=discord.TextStyle.paragraph,
             default="\n".join(form["questions"]), max_length=600,
-            placeholder="Why do you want this role?\nHow active are you?")
-        self.add_item(self.f_q)
+            placeholder="Why do you want this role?\nHow active are you?"))
 
     async def on_submit(self, interaction: discord.Interaction):
-        raw_count = len([l for l in self.f_q.value.splitlines() if l.strip()])
-        qs = apps.parse_questions(self.f_q.value, self.premium)
-        await apps.update_form(self.form_id, questions=qs)
-        note = ""
-        if raw_count > len(qs):
-            note = (f"⚠️ Kept the first {len(qs)} questions."
-                    + ("" if self.premium else " 💎 Premium allows 5."))
-        await _rerender(interaction, self.form_id, note)
+        pass  # handled by handle_modal_submit
+
+
+async def _submit_questions(interaction: discord.Interaction, form_id: int, vals: dict) -> None:
+    form = await _guard(interaction, form_id)
+    if not form:
+        return
+    premium = await apps.is_premium(form["guild_id"], form.get("clone_id"))
+    raw = vals.get("q", "")
+    qs = apps.parse_questions(raw, premium)
+    await apps.update_form(form_id, questions=qs)
+    note = ""
+    if len([l for l in raw.splitlines() if l.strip()]) > len(qs):
+        note = f"⚠️ Kept the first {len(qs)} questions." + ("" if premium else " 💎 Premium allows 5.")
+    await _rerender(interaction, form_id, note)
 
 
 class AppQuestionsButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("questions")):
@@ -370,40 +422,48 @@ class AppPublishButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat(
 
 class _ApplyModal(discord.ui.Modal):
     def __init__(self, form: dict):
-        super().__init__(title=re.sub(r"<a?:\w+:\d+>", "", form["title"]).replace("#", "").strip()[:45] or "Application")
-        self.form = form
-        self.inputs = []
-        for q in form["questions"][:apps.MAX_QUESTIONS_PREMIUM]:
-            ti = discord.ui.TextInput(label=q[:45], placeholder=q[:100] if len(q) > 45 else None,
-                                      style=discord.TextStyle.paragraph, max_length=700)
-            self.inputs.append((q, ti))
-            self.add_item(ti)
+        super().__init__(title=re.sub(r"<a?:\w+:\d+>", "", form["title"]).replace("#", "").strip()[:45] or "Application",
+                         custom_id=f"appl_modal:{form['id']}")
+        for n, q in enumerate(form["questions"][:apps.MAX_QUESTIONS_PREMIUM]):
+            self.add_item(discord.ui.TextInput(
+                label=q[:45], custom_id=f"q{n}", placeholder=q[:100] if len(q) > 45 else None,
+                style=discord.TextStyle.paragraph, max_length=700))
 
     async def on_submit(self, interaction: discord.Interaction):
-        form = await apps.get_form(self.form["id"])
-        if not form or form["status"] != "active":
-            await interaction.response.send_message("This form isn't accepting applications right now.", ephemeral=True)
-            return
-        guild = interaction.client.get_guild(form["guild_id"])
-        review = guild.get_channel(form["review_channel_id"]) if guild else None
-        if review is None:
-            await interaction.response.send_message("Applications are unavailable right now — tell the staff.", ephemeral=True)
-            return
-        answers = [{"q": q, "a": ti.value} for q, ti in self.inputs]
-        sub = await apps.add_submission(form, interaction.user.id, answers)
-        if sub is None:
-            await interaction.response.send_message("You already have a pending application — wait for staff to answer it.", ephemeral=True)
-            return
-        try:
-            msg = await review.send(view=build_review_view(form, sub, interaction.user),
-                                    allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            logger.exception("application review post failed (form %s)", form["id"])
-            await apps.delete_submission(sub["id"])  # don't leave a pending row the applicant can't retry
-            await interaction.response.send_message("I couldn't deliver your application — please try again later.", ephemeral=True)
-            return
-        await apps.set_review_message(sub["id"], review.id, msg.id)
-        await interaction.response.send_message("✅ Application sent! You'll get a DM when staff decide.", ephemeral=True)
+        pass  # handled by handle_modal_submit
+
+
+async def _submit_application(interaction: discord.Interaction, form_id: int, vals: dict) -> None:
+    form = await apps.get_form(form_id)
+    if not form or form["status"] != "active":
+        await interaction.response.send_message("This form isn't accepting applications right now.", ephemeral=True)
+        return
+    guild = interaction.client.get_guild(form["guild_id"])
+    review = guild.get_channel(form["review_channel_id"]) if guild else None
+    if review is None:
+        await interaction.response.send_message("Applications are unavailable right now — tell the staff.", ephemeral=True)
+        return
+    # Answers are matched to the form's CURRENT questions by position; if staff edited the
+    # questions while this person was typing, the counts differ and we ask them to retry.
+    questions = form["questions"][:apps.MAX_QUESTIONS_PREMIUM]
+    if any(f"q{n}" not in vals for n in range(len(questions))) or len([k for k in vals if re.fullmatch(r"q\d", k)]) != len(questions):
+        await interaction.response.send_message("This form was just updated — please press Apply again.", ephemeral=True)
+        return
+    answers = [{"q": q, "a": vals[f"q{n}"]} for n, q in enumerate(questions)]
+    sub = await apps.add_submission(form, interaction.user.id, answers)
+    if sub is None:
+        await interaction.response.send_message("You already have a pending application — wait for staff to answer it.", ephemeral=True)
+        return
+    try:
+        msg = await review.send(view=build_review_view(form, sub, interaction.user),
+                                allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+        logger.exception("application review post failed (form %s)", form["id"])
+        await apps.delete_submission(sub["id"])  # don't leave a pending row the applicant can't retry
+        await interaction.response.send_message("I couldn't deliver your application — please try again later.", ephemeral=True)
+        return
+    await apps.set_review_message(sub["id"], review.id, msg.id)
+    await interaction.response.send_message("✅ Application sent! You'll get a DM when staff decide.", ephemeral=True)
 
 
 class AppApplyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^appl_apply:(\d+)$"):

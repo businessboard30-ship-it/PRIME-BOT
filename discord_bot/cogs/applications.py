@@ -10,7 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from discord_bot.cogs._dm_support import GuildOnlyCog
-from discord_bot.cogs._views_applications import build_wizard_view
+from discord_bot.cogs._views_applications import build_wizard_view, handle_modal_submit
 from discord_bot.cogs._views_shared import user_can_manage_guild
 from modules import applications as apps
 
@@ -40,6 +40,23 @@ class ApplicationsCog(GuildOnlyCog):
             return
         view = await open_wizard(interaction.guild, getattr(self.bot, "clone_id", None), interaction.user.id)
         await interaction.response.send_message(view=view, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        """Persistent modals: handle application-form submits even after a restart."""
+        if interaction.type is not discord.InteractionType.modal_submit:
+            return
+        try:
+            await handle_modal_submit(interaction)
+        except Exception:
+            logger.exception("application modal submit failed")
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send("Something went wrong — please try again.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("Something went wrong — please try again.", ephemeral=True)
+            except discord.HTTPException:
+                pass
 
 
 async def setup(bot: commands.Bot):

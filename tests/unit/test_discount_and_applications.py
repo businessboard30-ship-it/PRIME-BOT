@@ -164,3 +164,45 @@ def test_ping_accepts_discount_only_for_reserved_order(monkeypatch):
     # A stolen code on any other order → underpaid, nothing unlocked
     code, msg = asyncio.run(gp._process_gumroad_ping_inner({"reference": "gum_other", "price": str(half), "sale_id": "s"}))
     assert (code, msg) == (200, "underpaid")
+
+
+# ── persistent modals (survive restarts) ──────────────────────────────────
+
+class _FakeInteraction:
+    def __init__(self, data):
+        self.data = data
+
+
+def test_modal_values_reads_text_inputs_in_any_layout():
+    from discord_bot.cogs import _views_applications as va
+    rows = {"custom_id": "appl_modal:7", "components": [
+        {"type": 1, "components": [{"type": 4, "custom_id": "q0", "value": "because"}]},
+        {"type": 18, "component": {"type": 4, "custom_id": "q1", "value": "daily"}},
+    ]}
+    assert va.modal_values(_FakeInteraction(rows)) == {"q0": "because", "q1": "daily"}
+
+
+def test_modals_have_fixed_ids_and_no_in_memory_state():
+    from discord_bot.cogs import _views_applications as va
+    f = _form(questions=["Why?", "How active?"])
+    assert va._ApplyModal(f).custom_id == "appl_modal:7"
+    assert va._DetailsModal(f).custom_id == "appm_details:7"
+    assert va._QuestionsModal(f, True).custom_id == "appm_questions:7"
+    assert [c.custom_id for c in va._ApplyModal(f).children] == ["q0", "q1"]
+
+
+def test_modal_submit_is_routed_without_a_live_modal(monkeypatch):
+    from discord_bot.cogs import _views_applications as va
+    seen = {}
+
+    async def _app(i, form_id, vals): seen["app"] = (form_id, vals)
+    async def _det(i, form_id, vals): seen["det"] = (form_id, vals)
+    monkeypatch.setattr(va, "_submit_application", _app)
+    monkeypatch.setattr(va, "_submit_details", _det)
+    data = {"custom_id": "appl_modal:7", "components": [{"type": 1, "components": [{"custom_id": "q0", "value": "hi"}]}]}
+    assert asyncio.run(va.handle_modal_submit(_FakeInteraction(data))) is True
+    assert seen["app"] == (7, {"q0": "hi"})
+    data["custom_id"] = "appm_details:9"
+    assert asyncio.run(va.handle_modal_submit(_FakeInteraction(data))) is True and seen["det"][0] == 9
+    # someone else's modal is left alone
+    assert asyncio.run(va.handle_modal_submit(_FakeInteraction({"custom_id": "other:1"}))) is False
