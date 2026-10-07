@@ -1,51 +1,172 @@
 <!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex"><title>Verify you're human · Prime Bot</title>
+<meta name="robots" content="noindex"><meta name="color-scheme" content="dark">
+<title>Human verification</title>
 <style>
-:root{--bg:#0b0d14;--accent:#5865F2;--accent2:#7289DA;--text:#e8e9ee;--muted:#9aa0ae}
+:root{--glow:rgba(150,210,255,.75);--line:rgba(225,243,255,.92);--faint:rgba(190,225,255,.38);
+--mono:"Cascadia Mono","SF Mono",Consolas,"Liberation Mono",Menlo,ui-monospace,monospace}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:-apple-system,Segoe UI,Roboto,sans-serif;
-background:radial-gradient(1200px 600px at 50% -10%,#1b2140 0%,var(--bg) 60%);color:var(--text)}
-.card{width:min(92vw,420px);padding:2rem 1.5rem;text-align:center;border:1px solid #2a2f45;border-radius:16px;background:#12162099}
-h1{margin:.2rem 0 .5rem;font-size:1.5rem}p{color:var(--muted);margin:.4rem 0 1.2rem}
-#widget{display:flex;justify-content:center;min-height:70px}
-#msg{margin-top:1.2rem;font-weight:600}.ok{color:#43b581}.err{color:#f04747}
+html,body{min-height:100%}
+body{margin:0;background:#020407;color:#eef8ff;font-family:var(--mono);overflow-x:hidden;display:grid;place-items:center;min-height:100vh}
+/* ---- server-hall backdrop: dark racks, blue bokeh, floor glow ---- */
+.bg{position:fixed;inset:0;z-index:0;overflow:hidden;background:radial-gradient(ellipse at 50% 38%,#0a1018 0%,#020407 70%)}
+.bg::before,.bg::after{content:"";position:absolute;top:-5%;bottom:-5%;width:34%;filter:blur(7px);opacity:.9;
+background:repeating-linear-gradient(90deg,#0b121b 0 16px,#04070b 16px 46px)}
+.bg::before{left:-4%;-webkit-mask-image:linear-gradient(90deg,#000 40%,transparent);mask-image:linear-gradient(90deg,#000 40%,transparent)}
+.bg::after{right:-4%;-webkit-mask-image:linear-gradient(270deg,#000 40%,transparent);mask-image:linear-gradient(270deg,#000 40%,transparent)}
+.floor{position:absolute;inset:auto 0 0 0;height:45%;background:radial-gradient(ellipse at 50% 100%,rgba(120,170,220,.2),transparent 62%)}
+.bokeh i{position:absolute;border-radius:50%;background:radial-gradient(circle,#d4ecff 0,#4ba6ff 38%,transparent 70%);
+filter:blur(var(--b));opacity:var(--o);animation:drift var(--t) ease-in-out infinite alternate}
+@keyframes drift{to{transform:translate(var(--dx),var(--dy));opacity:calc(var(--o)*.45)}}
+.vig{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 45%,rgba(0,0,0,.75))}
+/* ---- HUD ---- */
+.hud{position:relative;z-index:1;width:min(96vw,780px);padding:1rem 0 1.4rem;display:flex;flex-direction:column;align-items:center}
+.frame{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
+.frame *{fill:none;stroke:var(--line);stroke-width:1.2;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 3px var(--glow))}
+.head{position:relative;align-self:flex-start;margin-left:6%;width:min(88%,560px);padding:1.1rem 1.4rem 0}
+.head .id{margin:0;font-size:clamp(.82rem,2.6vw,1.12rem);line-height:1.35;letter-spacing:.06em;font-weight:600;text-shadow:0 0 10px var(--glow)}
+.head .proto{margin:.85rem 0 0;padding:.7rem 0 .65rem;font-size:clamp(.72rem,2.3vw,1rem);letter-spacing:.05em;border-top:1px solid var(--faint);text-shadow:0 0 10px var(--glow)}
+.stage{width:100%;margin-top:.4rem;filter:drop-shadow(0 0 10px rgba(120,190,255,.28))}
+.stage svg{display:block;width:100%;height:auto;overflow:visible}
+.glow{filter:drop-shadow(0 0 4px var(--glow)) drop-shadow(0 0 10px rgba(120,190,255,.55))}
+.spin{transform-origin:380px 200px;animation:spin var(--s) linear infinite}
+.spin.rev{animation-direction:reverse}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pulse{animation:pulse 2.2s ease-in-out infinite;transform-origin:380px 200px}
+@keyframes pulse{50%{opacity:.35;transform:scale(.9)}}
+.check{opacity:0;transition:opacity .6s .3s}
+.ok .check{opacity:1}.ok .pulse{opacity:0;animation:none}
+.ok .spin{--s:3s!important}
+.slot{position:relative;z-index:2;margin:-.6rem 0 0;padding:.9rem 1rem .8rem;width:min(92%,360px);text-align:center;
+background:rgba(4,10,18,.62);border:1px solid var(--faint);backdrop-filter:blur(4px)}
+.slot::before,.slot::after{content:"";position:absolute;width:14px;height:14px;border:2px solid var(--line)}
+.slot::before{left:-2px;top:-2px;border-right:0;border-bottom:0}.slot::after{right:-2px;bottom:-2px;border-left:0;border-top:0}
+.slot .cap{margin:0 0 .6rem;font-size:.72rem;letter-spacing:.14em;color:var(--faint)}
+#widget{min-height:65px;display:flex;justify-content:center}
+.ok .slot{display:none}
+#msg{min-height:1.3em;margin:.55rem 0 0;font-size:.82rem;letter-spacing:.03em;color:#ffd9d9;text-shadow:0 0 8px rgba(255,150,150,.4)}
+.tele{position:relative;align-self:flex-end;margin-right:6%;margin-top:1rem;width:min(88%,470px);padding:.2rem 0 0 0}
+.tele .t{margin:0;font-size:clamp(.62rem,1.9vw,.8rem);letter-spacing:.07em;padding:0 0 .3rem 1rem;border-bottom:1px solid var(--faint);text-shadow:0 0 8px var(--glow)}
+.graph{display:block;width:100%;height:84px;border-left:1px solid var(--line);border-bottom:1px solid var(--line);margin-left:.35rem}
+.tele .s{margin:.45rem 0 0 1rem;font-size:clamp(.62rem,1.9vw,.8rem);letter-spacing:.07em;text-shadow:0 0 8px var(--glow)}
+noscript{position:relative;z-index:2}
+@media (max-width:560px){.head{margin-left:0;width:100%}.tele{margin-right:0;width:100%}}
+@media (prefers-reduced-motion:reduce){.spin,.pulse,.bokeh i{animation:none}}
 </style></head><body>
-<main class="card">
-  <div style="font-size:2.2rem">🧩</div>
-  <h1>Quick security check</h1>
-  <p>Confirm you're a real person to unlock the Discord server.</p>
-  <div id="widget"></div>
-  <div id="msg" role="status"></div>
+<div class="bg"><div class="floor"></div><div class="bokeh" id="bokeh"></div><div class="vig"></div></div>
+<main class="hud" id="hud">
+  <header class="head">
+    <svg class="frame" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points="100,0 5,0 0,26 0,100"/><polyline points="94,0 100,0"/></svg>
+    <p class="id">SYS_SEC//NEURAL_LINK<br>//_GATEWAY.01</p>
+    <p class="proto" id="proto">HUMAN VERIFICATION PROTOCOL ACTIVE</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <svg viewBox="0 0 760 400" aria-hidden="true">
+      <g id="circuits" fill="none" stroke="#e6f4ff" stroke-linecap="square"></g>
+      <g class="glow" fill="none" stroke="#f2faff">
+        <polygon points="545,200 462.5,342.9 297.5,342.9 215,200 297.5,57.1 462.5,57.1" stroke-width="2.4"/>
+        <polygon points="530,200 454.5,330 305.5,330 230,200 305.5,70 454.5,70" stroke-width="1" stroke-dasharray="46 10 8 10" opacity=".6"/>
+        <g class="spin" style="--s:60s"><text id="bin" font-size="9" fill="#e6f4ff" stroke="none" opacity=".85" textLength="850" lengthAdjust="spacing"><textPath href="#binpath"></textPath></text></g>
+        <path id="binpath" d="M380 64 a136 136 0 1 1 -0.01 0" stroke="none"/>
+        <circle class="spin" style="--s:28s" cx="380" cy="200" r="118" stroke-width="9" stroke-dasharray="120 18 60 22 200 24 90 30"/>
+        <circle class="spin rev" style="--s:17s" cx="380" cy="200" r="99" stroke-width="4" stroke-dasharray="40 8 12 8 220 10"/>
+        <circle class="spin" style="--s:11s" cx="380" cy="200" r="80" stroke-width="12" stroke-dasharray="210 70 120 100"/>
+        <circle class="spin rev" style="--s:35s" cx="380" cy="200" r="148" stroke-width="7" stroke-dasharray="1.6 8" opacity=".55"/>
+        <circle cx="380" cy="200" r="58" stroke-width="1.5" opacity=".8"/>
+        <circle class="pulse" cx="380" cy="200" r="16" fill="#f2faff" stroke="none"/>
+        <path class="check" d="M358 202 l15 15 l30 -34" stroke-width="7" stroke-linecap="square"/>
+      </g>
+    </svg>
+  </div>
+
+  <section class="slot" id="slot">
+    <p class="cap">AWAITING HUMAN INPUT</p>
+    <div id="widget"></div>
+    <p id="msg" role="status"></p>
+  </section>
+
+  <footer class="tele">
+    <p class="t">BIOMETRIC TELEMETRY STREAM</p>
+    <svg class="graph" id="graph" viewBox="0 0 400 84" preserveAspectRatio="none" aria-hidden="true">
+      <defs><linearGradient id="gf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cfe9ff" stop-opacity=".38"/><stop offset="1" stop-color="#cfe9ff" stop-opacity="0"/></linearGradient></defs>
+      <polygon id="area" fill="url(#gf)" stroke="none"/>
+      <polyline id="lagline" fill="none" stroke="#9fd0ff" stroke-opacity=".45" stroke-width="1" vector-effect="non-scaling-stroke"/>
+      <polyline id="line" fill="none" stroke="#f2faff" stroke-width="1.4" vector-effect="non-scaling-stroke" style="filter:drop-shadow(0 0 3px rgba(150,210,255,.9))"/>
+    </svg>
+    <p class="s" id="status">DECRYPTION STATUS: PENDING</p>
+  </footer>
 </main>
+<noscript><p style="position:relative;z-index:2">Turn on JavaScript to verify.</p></noscript>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 <script>
-(async () => {
-  const msg = document.getElementById("msg");
-  const say = (t, cls) => { msg.textContent = t; msg.className = cls || ""; };
-  const token = new URLSearchParams(location.search).get("t");
-  if (!token) return say("Missing link — click the verify button in Discord to get a fresh one.", "err");
+(function scene(){
+  let s=0x51ed270b; const r=()=>{s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296};
+  // bokeh
+  const bk=document.getElementById("bokeh");
+  for(let i=0;i<44;i++){const e=document.createElement("i"),z=6+r()*30;
+    e.style.cssText=`left:${r()*100}%;top:${r()*100}%;width:${z}px;height:${z}px;--b:${(1+r()*5).toFixed(1)}px;--o:${(.18+r()*.55).toFixed(2)};--t:${(5+r()*9).toFixed(1)}s;--dx:${((r()-.5)*40).toFixed(0)}px;--dy:${((r()-.5)*30).toFixed(0)}px`;
+    bk.appendChild(e);}
+  // binary ring
+  let bits=""; for(let i=0;i<150;i++) bits+=(r()<.5?"0":"1")+(i%7===6?" ":"");
+  document.querySelector("#bin textPath").textContent=bits;
+  // circuit traces off both sides of the hexagon
+  const g=document.getElementById("circuits"),NS="http://www.w3.org/2000/svg";
+  function trace(side){
+    for(let i=0;i<15;i++){
+      const dir=side==="L"?-1:1, y0=95+r()*210, x0=380+dir*(150+r()*50), len=60+r()*(side==="L"?150:130);
+      let x=x0,y=y0,d=`M${x} ${y}`,jogs=1+Math.floor(r()*3);
+      for(let j=0;j<jogs;j++){const seg=len/jogs; x+=dir*seg*(.4+r()*.6); d+=` H${x.toFixed(0)}`; if(j<jogs-1||r()<.5){const dy=(r()<.5?-1:1)*(6+r()*16); y+=dy; d+=` V${y.toFixed(0)}`;}}
+      const p=document.createElementNS(NS,"path"); p.setAttribute("d",d);
+      p.setAttribute("stroke-width",(.7+r()*.9).toFixed(1)); p.setAttribute("opacity",(.35+r()*.6).toFixed(2));
+      if(r()<.3)p.setAttribute("stroke-dasharray","6 3 1 3"); g.appendChild(p);
+      const b=document.createElementNS(NS,"rect"); b.setAttribute("x",(x-2).toFixed(0)); b.setAttribute("y",(y-2).toFixed(0));
+      b.setAttribute("width",r()<.4?7:3); b.setAttribute("height",3); b.setAttribute("fill","#e6f4ff"); b.setAttribute("stroke","none"); g.appendChild(b);
+    }
+  }
+  trace("L"); trace("R");
+})();
+
+// live telemetry graph
+const N=64, vals=Array.from({length:N},()=>.5), lag=vals.slice(); let amp=1;
+const $=id=>document.getElementById(id);
+function drawGraph(){
+  vals.shift(); const prev=vals[vals.length-1]; vals.push(Math.max(.05,Math.min(.95,prev+(Math.random()-.5)*.55*amp+(.5-prev)*.12)));
+  lag.shift(); lag.push(vals[vals.length-3]??vals[vals.length-1]);
+  const pts=a=>a.map((v,i)=>`${(i/(N-1)*400).toFixed(1)},${(84-v*76-4).toFixed(1)}`).join(" ");
+  $("line").setAttribute("points",pts(vals)); $("lagline").setAttribute("points",pts(lag));
+  $("area").setAttribute("points",`0,84 ${pts(vals)} 400,84`);
+}
+if(!matchMedia("(prefers-reduced-motion: reduce)").matches) setInterval(drawGraph,110); else drawGraph();
+
+// verification
+(async()=>{
+  const hud=$("hud"), stage=$("stage"), msg=$("msg"), proto=$("proto"), status=$("status");
+  const set=(t)=>status.textContent="DECRYPTION STATUS: "+t;
+  const err=t=>{msg.textContent=t};
+  const token=new URLSearchParams(location.search).get("t");
+  if(!token){ proto.textContent="LINK EMPTY. PRESS VERIFY IN DISCORD."; set("NO LINK"); $("slot").style.display="none"; return; }
   let cfg;
-  try { cfg = await (await fetch("config.json", {cache: "no-store"})).json(); }
-  catch { return say("Page isn't configured yet.", "err"); }
-  const waitForTurnstile = () => new Promise(r => { const t = setInterval(() => { if (window.turnstile) { clearInterval(t); r(); } }, 50); });
-  await waitForTurnstile();
-  turnstile.render("#widget", {
-    sitekey: cfg.turnstile_site_key, theme: "dark",
-    callback: async (cf_token) => {
-      say("Checking…");
-      try {
-        const res = await fetch(cfg.api_base.replace(/\/$/, "") + "/api/verify_captcha", {
-          method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({token, cf_token}),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.ok) { say("✅ " + data.message, "ok"); document.getElementById("widget").style.display = "none"; }
-        else { say(data.message || "Verification failed.", "err"); turnstile.reset(); }
-      } catch { say("Couldn't reach the server. Try again.", "err"); turnstile.reset(); }
+  try{ cfg=await (await fetch("config.json",{cache:"no-store"})).json(); }
+  catch{ proto.textContent="PAGE NOT CONFIGURED"; set("OFFLINE"); return; }
+  await new Promise(res=>{const t=setInterval(()=>{if(window.turnstile){clearInterval(t);res()}},50)});
+  turnstile.render("#widget",{
+    sitekey:cfg.turnstile_site_key, theme:"dark",
+    callback: async(cf_token)=>{
+      err(""); set("VERIFYING..."); amp=1.7;
+      try{
+        const res=await fetch(cfg.api_base.replace(/\/$/,"")+"/api/verify_captcha",{
+          method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token,cf_token})});
+        const data=await res.json().catch(()=>({}));
+        if(res.ok&&data.ok){
+          document.body.classList.add("ok"); stage.classList.add("ok"); hud.classList.add("ok");
+          proto.textContent="HUMAN VERIFIED. RETURN TO DISCORD."; set("COMPLETE"); amp=.25;
+        } else { amp=1; set("FAILED"); err(data.message||"That didn't work. Try again."); turnstile.reset(); }
+      }catch{ amp=1; set("NO SIGNAL"); err("Couldn't reach the server. Try again."); turnstile.reset(); }
     },
-    "error-callback": () => say("Captcha failed to load. Refresh and try again.", "err"),
+    "error-callback":()=>{ set("FAILED"); err("The check didn't load. Refresh the page."); },
   });
 })();
 </script></body></html>

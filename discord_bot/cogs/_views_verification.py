@@ -238,10 +238,9 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
                     label="Open captcha", emoji="🧩", style=discord.ButtonStyle.link,
                     url=f"{_cfg.TURNSTILE_PAGES_URL}/?t={token}",
                 ))
-                view.add_item(VerifyDoneButton(self.guild_id))
                 await interaction.response.send_message(
                     "Solve the quick Cloudflare check on the page (valid for 10 minutes). "
-                    "You'll be verified automatically — or tap **I've completed it** to check right away.",
+                    "You'll be verified automatically within a few seconds.",
                     view=view, ephemeral=True,
                 )
                 return
