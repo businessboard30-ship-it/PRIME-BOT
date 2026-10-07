@@ -10,10 +10,12 @@ import logging
 
 import discord
 
+from modules.catch_card import send_kwargs
 from modules.catch_gate import check_player_allowed
 from modules.catch_i18n import text
 from modules.catch_notice import notice_for
 from modules.catch_theme import state_color
+from modules.catch_wild_card import wild_art
 from modules.catch_wild import RARITY_MARK, WILD_LIST_LIMIT, jump_url, list_active_spawns
 
 logger = logging.getLogger(__name__)
@@ -56,7 +58,9 @@ async def open_wild_zone(interaction: discord.Interaction) -> None:
         logger.exception("Catch wild zone load failed guild=%s", interaction.guild_id)
         await interaction.followup.send(**notice_for("wild.error"), ephemeral=True)
         return
-    await interaction.followup.send(embed=wild_embed(interaction.guild_id, spawns, total), ephemeral=True)
+    embed = wild_embed(interaction.guild_id, spawns, total)
+    file = await wild_art(embed, spawns, total)  # None (plain embed, unchanged) if the card cannot be drawn
+    await interaction.followup.send(embed=embed, ephemeral=True, **send_kwargs(file))
 
 
 __all__ = ["open_wild_zone", "wild_embed"]
