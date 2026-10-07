@@ -244,7 +244,7 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
                     view=view, ephemeral=True,
                 )
                 return
-            # Turnstile not configured -> keep the old in-Discord math question.
+            # Turnstile not configured -> fall back to the in-Discord question.
             a, b = random.randint(1, 9), random.randint(1, 9)
             await interaction.response.send_modal(CaptchaModal(self.guild_id, a, b))
             return
@@ -260,10 +260,10 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
 def build_verify_panel_embed(guild_name: str, mode: str) -> discord.Embed:
     desc = "Click the button below to verify you're a real person and unlock the rest of the server."
     if mode == "captcha":
-        desc += (
-            "\nYou'll be asked to pass a quick Cloudflare security check."
-            if _turnstile_ready() else "\nYou'll be asked to solve a quick math question."
-        )
+        # Deliberately generic: the check is a Cloudflare page when Turnstile is
+        # configured, otherwise a short in-Discord question — the description
+        # shouldn't promise one specific kind of challenge.
+        desc += "\nYou'll be asked to pass a quick security check."
     embed = discord.Embed(title=f"Welcome to {guild_name} 👋", description=desc, color=discord.Color.green())
     return embed
 

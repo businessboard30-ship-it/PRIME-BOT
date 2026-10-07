@@ -22,8 +22,18 @@ up once you pick a direction, rather than guessing.
 UPDATE: chat no longer needs /aichat. Replying to any message from this bot
 (or its clone) starts/continues a chat, and DMs to the bot chat with no
 command at all — see AIToolsCog.on_bot_chat. That path has its own daily cap
-per user per server (10, or 30 in a Premium server; DMs 10) tracked in
+per user per server (6, or 30 in a Premium server; DMs 6) tracked in
 ai_chat_usage.guild_id/kind, separate from the /aichat tier limits above.
+
+Characters, voice and links (all without any new command):
+* The AI talks as the user's chosen character (Gen Z / Gentle / Sensei, see
+  modules/ai_prefs.py). Users change it by asking ("switch to gentle",
+  "change character" -> a picker).
+* The AI can reply with a voice message by itself, or the user can ask for
+  one ("reply with a voice note"). "No more voice notes" turns the automatic
+  ones off for that user. Text is always sent alongside the audio, and any
+  voice failure falls back to plain text (modules/ai_voice.py).
+* Links in a message are read and used in the answer (modules/ai_web.py).
 
 i18n: bot-authored strings go through discord_bot.i18n_helpers.tr().
 """
@@ -39,7 +49,7 @@ from discord.ext import commands
 from database import db
 import re
 
-from modules import leveling
+from modules import leveling, ai_prefs, ai_voice
 from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
@@ -48,7 +58,6 @@ from modules.ai_features import (
     is_bot_invite_question, is_support_invite_question, SUPPORT_BUTTON_MARKER,
     is_levelup_question, levelup_answer,
 )
-from discord_bot.cogs._views_leveling_boost import build_boost_xp_view
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
 from modules.ai_command_guard import (
@@ -129,6 +138,43 @@ def extract_support_marker(text: str, view: discord.ui.View) -> str:
     return text
 
 
+class CharacterPickView(discord.ui.View):
+    """Dropdown to choose the AI's character. Only the person it was shown to can use it."""
+
+    def __init__(self, owner_id: int, current: str):
+        super().__init__(timeout=120)
+        self.owner_id = owner_id
+        select = discord.ui.Select(
+            placeholder="Choose a character",
+            options=[
+                discord.SelectOption(label=c["label"], value=key, emoji=c["emoji"],
+                                     description=c["blurb"], default=(key == current))
+                for key, c in ai_prefs.CHARACTERS.items()
+            ],
+        )
+        select.callback = self._picked
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "That picker is for someone else — ask me to change character to get your own.", ephemeral=True)
+            return False
+        return True
+
+    async def _picked(self, interaction: discord.Interaction):
+        key = interaction.data["values"][0]
+        if await ai_prefs.set_character(interaction.user.id, key):
+            await interaction.response.edit_message(content=ai_prefs.CHARACTERS[key]["intro"], view=None)
+        else:
+            await interaction.response.send_message(
+                "Couldn't save that right now — try again in a moment.", ephemeral=True)
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+
 class AIToolsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -141,16 +187,12 @@ class AIToolsCog(commands.Cog):
         """Fixed answers that skip the AI call (and cost no daily cap):
         premium/credits -> Go Premium button, "add the bot to my server" -> this
         bot's own generated invite link, "support server link" -> the support
-        link, "how do I level up / get XP" -> short explanation + Boost XP
-        button. Returns (text, view_or_None) or None."""
+        link, "how do I level up / get XP" -> short explanation (the AI never
+        advertises the XP boost). Returns (text, view_or_None) or None."""
         if is_premium_question(text):
             return premium_answer(in_server), (premium_view() if in_server else None)
         if is_levelup_question(text):
-            view = None
-            if in_server and guild is not None:
-                clone_id = getattr(self.bot, "clone_id", None)
-                view = build_boost_xp_view(guild.id, clone_id)
-            return levelup_answer(in_server), view
+            return levelup_answer(in_server), None
         if is_support_invite_question(text):
             from config import DISCORD_SUPPORT_SERVER_INVITE, DISCORD_SUPPORT_SERVER_ID
             if guild is not None and DISCORD_SUPPORT_SERVER_ID and guild.id == DISCORD_SUPPORT_SERVER_ID:
@@ -176,6 +218,45 @@ class AIToolsCog(commands.Cog):
             ))
             return "➕ Tap below to add me to your server.", view
         return None
+
+    async def _prefs_quick_answer(self, text: str, user_id: int):
+        """"switch to gentle" / "change character" / "no more voice notes" —
+        handled in chat, no AI call, costs no daily cap. (text, view) or None."""
+        change = ai_voice.voice_preference_change(text)
+        if change:
+            if await ai_prefs.set_voice_mode(user_id, change):
+                if change == ai_prefs.VOICE_OFF:
+                    return ("🔇 Got it — no more voice notes unless you ask for one. "
+                            "(Say \"you can use voice notes again\" to switch them back on.)"), None
+                return "🔊 Voice notes are back on. I might reply with one when it fits, or just ask me for one.", None
+            return "Couldn't save that right now — try again in a moment.", None
+        req = ai_prefs.detect_character_request(text)
+        if req == "menu":
+            current, _ = await ai_prefs.get_prefs(user_id)
+            return "🎭 Pick the character you want me to chat as:", CharacterPickView(user_id, current)
+        if req:
+            if await ai_prefs.set_character(user_id, req):
+                return ai_prefs.CHARACTERS[req]["intro"], None
+            return "Couldn't save that right now — try again in a moment.", None
+        return None
+
+    async def _voice_setting(self, user_id: int, text: str) -> Optional[str]:
+        """What to tell ai_chat about voice for this message: "forced" if they
+        asked for it, "auto" if the AI may choose, None if they turned it off."""
+        if ai_voice.wants_voice(text):
+            return "forced"
+        _, mode = await ai_prefs.get_prefs(user_id)
+        return None if mode == ai_prefs.VOICE_OFF else "auto"
+
+    async def _voice_file(self, user_id: int, text: str, *, explicit: bool) -> Optional[discord.File]:
+        """Audio attachment for a voice reply, or None (caller sends text only)."""
+        try:
+            character, _ = await ai_prefs.get_prefs(user_id)
+            wav = await ai_voice.render_voice(user_id, text, ai_prefs.tts_voice(character), explicit=explicit)
+            return discord.File(io.BytesIO(wav), filename="voice.wav") if wav else None
+        except Exception:
+            logger.exception("[aichat] voice render failed; falling back to text")
+            return None
 
     @staticmethod
     def _perm_set(perms: Optional[discord.Permissions]) -> set:
@@ -593,7 +674,8 @@ class AIToolsCog(commands.Cog):
     async def _run_chat_turn(self, user_id: int, message: str,
                               perms: Optional[discord.Permissions] = None,
                               guild: Optional[discord.Guild] = None,
-                              interaction: Optional[discord.Interaction] = None) -> tuple[str, str, Optional[int]]:
+                              interaction: Optional[discord.Interaction] = None,
+                              voice: Optional[str] = None) -> tuple[str, str, Optional[int]]:
         """Shared by /aichat and the reply-to-continue listener. Returns
         (reply_text, warning, session_id). session_id is None only if
         usage was denied (caller should stop before sending anything).
@@ -619,7 +701,8 @@ class AIToolsCog(commands.Cog):
         runnable = {t["function"]["name"] for t in tools} if tools else None
         command_context = await self._command_context(message, user_id, perms, guild, runnable=runnable)
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
-                                  session_id=session_id, command_context=command_context, tools=tools or None)
+                                  session_id=session_id, command_context=command_context, tools=tools or None,
+                                  voice=voice)
         if not response:
             return "AI service error. Try again later.", warning, session_id
 
@@ -629,7 +712,10 @@ class AIToolsCog(commands.Cog):
             return "", warning, session_id
 
         prefix = f"⚠️ {warning}\n\n" if warning else ""
-        return f"{prefix}{response}", warning, session_id
+        out = f"{prefix}{response}"
+        if getattr(response, "voice", False):
+            out = ai_voice.VoiceReply(out)
+        return out, warning, session_id
 
     @app_commands.command(name="aichat", description="Chat with the AI (anime questions, recommendations, or anything)")
     @app_commands.describe(message="What do you want to ask or say?")
@@ -644,6 +730,13 @@ class AIToolsCog(commands.Cog):
             quick_text, quick_view = quick
             kwargs = {"view": quick_view} if quick_view else {}
             await interaction.response.send_message(quick_text, suppress_embeds=True, **kwargs)
+            return
+
+        pref = await self._prefs_quick_answer(message, interaction.user.id)
+        if pref:
+            pref_text, pref_view = pref
+            await interaction.response.send_message(
+                pref_text, suppress_embeds=True, **({"view": pref_view} if pref_view else {}))
             return
 
         user_id = interaction.user.id
@@ -677,6 +770,7 @@ class AIToolsCog(commands.Cog):
         perms = interaction.permissions if interaction.guild else None
         text, _warning, session_id = await self._run_chat_turn(
             user_id, message, perms=perms, guild=interaction.guild, interaction=interaction,
+            voice=await self._voice_setting(user_id, message),
         )
         if not text:
             # A tool call was made instead of a text reply — _run_chat_turn
@@ -684,8 +778,18 @@ class AIToolsCog(commands.Cog):
             # the command's own result, or a denial/Premium pitch.
             return
         view = ai_reply_view(self, user_id)
+        is_voice = getattr(text, "voice", False)
         text = extract_support_marker(text, view)
-        sent = await interaction.followup.send(text, view=view, wait=True, suppress_embeds=True)
+        voice_file = None
+        if is_voice:
+            voice_file = await self._voice_file(user_id, text, explicit=ai_voice.wants_voice(message))
+        try:
+            sent = await interaction.followup.send(
+                text, view=view, wait=True, suppress_embeds=True, **({"file": voice_file} if voice_file else {}))
+        except (discord.Forbidden, discord.HTTPException):
+            if voice_file is None:
+                raise
+            sent = await interaction.followup.send(text, view=view, wait=True, suppress_embeds=True)
 
         # Remember this message's id so a reply to it continues the same
         # session without the user having to retype /aichat.
@@ -835,6 +939,9 @@ class AIToolsCog(commands.Cog):
         quick = self._quick_answer(content, message.guild is not None, message.guild)
         if quick:
             return quick  # fixed answer (premium button / invite link), no AI call, costs no cap
+        pref = await self._prefs_quick_answer(content, message.author.id)
+        if pref:
+            return pref   # character / voice setting change, no AI call, costs no cap
         user_id = message.author.id
         guild = message.guild
         guild_id = guild.id if guild else None
@@ -854,6 +961,7 @@ class AIToolsCog(commands.Cog):
             user_id, content, is_anime_question=is_anime, tier="basic", session_id=None,
             command_context=command_context, history_override=history,
             guild_id=guild_id, kind="reply", tools=tools or None,
+            voice=await self._voice_setting(user_id, content),
         )
         if isinstance(response, dict):
             call = response["tool_calls"][0]
@@ -908,8 +1016,12 @@ class AIToolsCog(commands.Cog):
                     if not content:
                         return
 
+            voice_file = None
             async with message.channel.typing():
                 text, view = await self._run_reply_turn(message, content, history)
+                if text and getattr(text, "voice", False):
+                    voice_file = await self._voice_file(
+                        message.author.id, str(text), explicit=ai_voice.wants_voice(content))
             if not text:
                 return
             if SUPPORT_BUTTON_MARKER in text:
@@ -917,10 +1029,18 @@ class AIToolsCog(commands.Cog):
                 text = extract_support_marker(text, view)
             none = discord.AllowedMentions.none()
             extra = {"view": view} if view else {}
-            if message.guild is None:
-                await message.channel.send(text, allowed_mentions=none, suppress_embeds=True, **extra)
-            else:
-                await message.reply(text, mention_author=False, allowed_mentions=none, suppress_embeds=True, **extra)
+            for attachment in ([voice_file, None] if voice_file else [None]):
+                kw = {**extra, **({"file": attachment} if attachment else {})}
+                try:
+                    if message.guild is None:
+                        await message.channel.send(text, allowed_mentions=none, suppress_embeds=True, **kw)
+                    else:
+                        await message.reply(text, mention_author=False, allowed_mentions=none,
+                                            suppress_embeds=True, **kw)
+                    break
+                except (discord.Forbidden, discord.HTTPException):
+                    if attachment is None:   # even the plain-text retry failed
+                        raise
         except Exception:
             logger.exception("[aichat] reply/DM chat failed")
 

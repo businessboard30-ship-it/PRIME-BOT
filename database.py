@@ -2911,8 +2911,8 @@ class Database:
 
         # --- Discord port: join verification / anti-raid gate ------------------
         # discord_verification_config: one row per guild (+clone). mode is
-        # 'button' (low-friction click-to-verify) or 'captcha' (posts a math
-        # question in a modal before granting access). unverified_role_id is
+        # 'button' (low-friction click-to-verify) or 'captcha' (a quick
+        # security check before granting access). unverified_role_id is
         # applied on_member_join and is what every locked-down channel's
         # permission overwrite denies View Channel to; verified_role_id is
         # optional — if unset, verification just removes the unverified role
