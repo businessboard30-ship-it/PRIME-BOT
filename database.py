@@ -2930,6 +2930,21 @@ class Database:
             ON discord_verification_config (guild_id, COALESCE(clone_id, -1))
         """)
 
+        # discord_verification_passes: one row per solved Turnstile challenge.
+        # nonce is the challenge's unique id (PRIMARY KEY = single use). The
+        # API inserts it after Cloudflare validates the widget; the bot flips
+        # applied to TRUE when it swaps the member's roles.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_verification_passes (
+                nonce TEXT PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                user_id BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                applied BOOLEAN NOT NULL DEFAULT FALSE
+            )
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS discord_tickets (
                 id SERIAL PRIMARY KEY,
@@ -10592,6 +10607,40 @@ class Database:
                 wizard_channel_id, wizard_message_id, wizard_invoker_id
             )
             return dict(row)
+
+    async def create_verification_pass(self, nonce: str, guild_id: int, clone_id: Optional[int], user_id: int) -> bool:
+        """True if this challenge nonce was recorded now, False if already used."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_verification_passes (nonce, guild_id, clone_id, user_id)
+                VALUES ($1, $2, $3, $4) ON CONFLICT (nonce) DO NOTHING RETURNING nonce
+                """,
+                nonce, guild_id, clone_id, user_id,
+            )
+            return row is not None
+
+    async def claim_verification_passes(self, clone_id: Optional[int], guild_id: Optional[int] = None,
+                                        user_id: Optional[int] = None, max_age_minutes: int = 30) -> List[Dict]:
+        """Atomically marks matching un-applied passes as applied and returns them,
+        so two pollers (or the poller and the 'I've completed it' button) never
+        apply the same pass twice. Optional guild_id/user_id narrow the claim."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                UPDATE discord_verification_passes SET applied = TRUE
+                WHERE applied = FALSE
+                  AND clone_id IS NOT DISTINCT FROM $1
+                  AND ($2::BIGINT IS NULL OR guild_id = $2)
+                  AND ($3::BIGINT IS NULL OR user_id = $3)
+                  AND created_at > NOW() - make_interval(mins => $4)
+                RETURNING nonce, guild_id, clone_id, user_id
+                """,
+                clone_id, guild_id, user_id, max_age_minutes,
+            )
+            return [dict(r) for r in rows]
 
     async def create_ticket(self, guild_id: int, channel_id: int, opener_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()

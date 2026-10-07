@@ -1,0 +1,25 @@
+name: Deploy captcha-pages to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "captcha-pages/**"
+      - ".github/workflows/deploy-captcha-pages.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Needs repo secrets CLOUDFLARE_API_TOKEN (Pages:Edit) + CLOUDFLARE_ACCOUNT_ID,
+      # and optional variable CF_PAGES_PROJECT (default: prime-bot-verify).
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy captcha-pages --project-name=${{ vars.CF_PAGES_PROJECT || 'prime-bot-verify' }} --branch=main

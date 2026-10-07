@@ -736,3 +736,16 @@ MESSAGES = {
 # actually in that server). Set to False to go back to one separate network
 # per bot.
 BUMP_SHARED_NETWORK = True
+
+
+# ── Cloudflare Turnstile join verification (see captcha-pages/README.md) ──
+# TURNSTILE_SECRET_KEY: secret key of the Turnstile widget (backend only).
+# TURNSTILE_PAGES_URL: where captcha-pages/ is deployed on Cloudflare Pages,
+#   e.g. https://prime-bot-verify.pages.dev (no trailing slash).
+# VERIFY_SIGNING_SECRET: long random string used to sign challenge links.
+# Leave any of them unset and /setupverification captcha mode falls back to the
+# old in-Discord math question.
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "").strip()
+TURNSTILE_PAGES_URL = os.getenv("TURNSTILE_PAGES_URL", "").strip().rstrip("/")
+VERIFY_SIGNING_SECRET = os.getenv("VERIFY_SIGNING_SECRET", "").strip()
+TURNSTILE_ENABLED = bool(TURNSTILE_SECRET_KEY and TURNSTILE_PAGES_URL and VERIFY_SIGNING_SECRET)
