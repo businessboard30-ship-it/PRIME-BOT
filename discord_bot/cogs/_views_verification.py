@@ -33,7 +33,9 @@ import random
 
 import discord
 
+import config as _cfg
 from database import db
+from utils.verify_captcha import sign_challenge
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,11 @@ logger = logging.getLogger(__name__)
 #   verify_captcha:<guild_id>:<a>:<b>   (modal, not a DynamicItem — see above)
 _VERIFY_BTN_RE = re.compile(r"^verify_btn:(\d+)$")
 _CAPTCHA_MODAL_RE = re.compile(r"^verify_captcha:(\d+):(\d+):(\d+)$")
+_VERIFY_DONE_RE = re.compile(r"^verify_done:(\d+)$")
+
+
+def _turnstile_ready() -> bool:
+    return bool(getattr(_cfg, "TURNSTILE_ENABLED", False))
 
 
 def _diagnose_role_failure(guild: discord.Guild, role: discord.Role | None) -> str:
@@ -135,6 +142,69 @@ class CaptchaModal(discord.ui.Modal, title="Verify you're human"):
             )
 
 
+async def apply_verification_pass(bot_or_client, pass_row: dict) -> bool:
+    """Swaps roles for a claimed Turnstile pass. Used by the background poller and
+    the 'I've completed it' button. Returns True if roles were updated."""
+    guild = bot_or_client.get_guild(pass_row["guild_id"])
+    if guild is None:
+        return False
+    member = guild.get_member(pass_row["user_id"])
+    if member is None:
+        try:
+            member = await guild.fetch_member(pass_row["user_id"])
+        except discord.HTTPException:
+            return False
+    clone_id = getattr(bot_or_client, "clone_id", None)
+    cfg = await db.get_verification_config(guild.id, clone_id=clone_id)
+    if not cfg.get("enabled"):
+        return False
+    ok, _reason = await do_verify(member, cfg)
+    if ok:
+        try:
+            await member.send(f"✅ You're verified in **{guild.name}** — welcome in!")
+        except discord.HTTPException:
+            pass
+    return ok
+
+
+class VerifyDoneButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_DONE_RE.pattern):
+    """'I've completed it' — instant check for a solved Turnstile page, so people
+    don't have to wait for the poller's next tick."""
+
+    def __init__(self, guild_id: int):
+        super().__init__(
+            discord.ui.Button(
+                label="I've completed it", emoji="🔄", style=discord.ButtonStyle.secondary,
+                custom_id=f"verify_done:{guild_id}",
+            )
+        )
+        self.guild_id = guild_id
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.guild_id != self.guild_id:
+            await interaction.response.send_message("This button isn't for this server.", ephemeral=True)
+            return
+        clone_id = getattr(interaction.client, "clone_id", None)
+        passes = await db.claim_verification_passes(clone_id, guild_id=self.guild_id, user_id=interaction.user.id)
+        if not passes:
+            await interaction.response.send_message(
+                "I don't see a completed check yet. Finish the captcha on the page, then tap this again.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        ok = await apply_verification_pass(interaction.client, passes[0])
+        await interaction.followup.send(
+            "✅ You're verified — welcome in!" if ok
+            else "⚠️ Captcha passed, but I couldn't update your roles — ask a staff member to check my permissions.",
+            ephemeral=True,
+        )
+
+
 class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_BTN_RE.pattern):
     def __init__(self, guild_id: int):
         super().__init__(
@@ -161,6 +231,21 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
             await interaction.response.send_message("Verification isn't currently active here.", ephemeral=True)
             return
         if config.get("mode") == "captcha":
+            if _turnstile_ready():
+                token = sign_challenge(_cfg.VERIFY_SIGNING_SECRET, self.guild_id, interaction.user.id, clone_id)
+                view = discord.ui.View(timeout=None)
+                view.add_item(discord.ui.Button(
+                    label="Open captcha", emoji="🧩", style=discord.ButtonStyle.link,
+                    url=f"{_cfg.TURNSTILE_PAGES_URL}/?t={token}",
+                ))
+                view.add_item(VerifyDoneButton(self.guild_id))
+                await interaction.response.send_message(
+                    "Solve the quick Cloudflare check on the page (valid for 10 minutes). "
+                    "You'll be verified automatically — or tap **I've completed it** to check right away.",
+                    view=view, ephemeral=True,
+                )
+                return
+            # Turnstile not configured -> keep the old in-Discord math question.
             a, b = random.randint(1, 9), random.randint(1, 9)
             await interaction.response.send_modal(CaptchaModal(self.guild_id, a, b))
             return
@@ -176,7 +261,10 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
 def build_verify_panel_embed(guild_name: str, mode: str) -> discord.Embed:
     desc = "Click the button below to verify you're a real person and unlock the rest of the server."
     if mode == "captcha":
-        desc += "\nYou'll be asked to solve a quick math question."
+        desc += (
+            "\nYou'll be asked to pass a quick Cloudflare security check."
+            if _turnstile_ready() else "\nYou'll be asked to solve a quick math question."
+        )
     embed = discord.Embed(title=f"Welcome to {guild_name} 👋", description=desc, color=discord.Color.green())
     return embed
 
@@ -214,4 +302,4 @@ async def lockdown_guild_channels(guild: discord.Guild, unverified_role: discord
     return touched
 
 
-DYNAMIC_ITEMS = [VerifyButton]
+DYNAMIC_ITEMS = [VerifyButton, VerifyDoneButton]

@@ -23,13 +23,14 @@ import discord
 from modules.text_styles import plain_name as _plain_name
 from discord_bot import perm_check
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from discord_bot.cogs._dm_support import GuildOnlyCog
 from discord_bot.cogs._views_verification import (
     build_verify_panel_embed,
     build_verify_panel_view,
     lockdown_guild_channels,
+    apply_verification_pass,
 )
 from database import db
 
@@ -586,6 +587,33 @@ class WizardView(discord.ui.View):
 class VerificationCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def cog_load(self):
+        import config
+        if getattr(config, "TURNSTILE_ENABLED", False):
+            self.poll_turnstile_passes.start()
+
+    async def cog_unload(self):
+        self.poll_turnstile_passes.cancel()
+
+    @tasks.loop(seconds=5)
+    async def poll_turnstile_passes(self):
+        """Applies roles for members who solved the Cloudflare Turnstile page."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        try:
+            passes = await db.claim_verification_passes(clone_id)
+        except Exception:
+            logger.exception("verification: couldn't claim turnstile passes")
+            return
+        for row in passes:
+            try:
+                await apply_verification_pass(self.bot, row)
+            except Exception:
+                logger.exception("verification: failed applying pass for %s", row.get("user_id"))
+
+    @poll_turnstile_passes.before_loop
+    async def _before_poll(self):
+        await self.bot.wait_until_ready()
 
     # ai_command_guard.execute_ai_command looks this up when
     # requires_confirmation=True (see ModerationCog.AI_CONFIRMED_HANDLERS
