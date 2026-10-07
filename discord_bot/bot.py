@@ -111,6 +111,7 @@ from discord_bot.cogs._views_verification import DYNAMIC_ITEMS as VERIFICATION_D
 from discord_bot.cogs._views_custom_role import DYNAMIC_ITEMS as CUSTOM_ROLE_DYNAMIC_ITEMS
 from discord_bot.cogs.honeypot import DYNAMIC_ITEMS as HONEYPOT_DYNAMIC_ITEMS
 from discord_bot.cogs.antiraid import DYNAMIC_ITEMS as ANTIRAID_DYNAMIC_ITEMS
+from discord_bot.cogs._views_applications import DYNAMIC_ITEMS as APPLICATION_DYNAMIC_ITEMS
 from discord_bot.cogs._views_premium import DYNAMIC_ITEMS as GUILD_PREMIUM_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_boost import DYNAMIC_ITEMS as LEVELING_BOOST_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_wallet import DYNAMIC_ITEMS as LEVELING_WALLET_DYNAMIC_ITEMS
@@ -231,6 +232,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*TICKET_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*HONEYPOT_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ANTIRAID_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*APPLICATION_DYNAMIC_ITEMS)
         self.add_dynamic_items(*COMMUNITY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ECONOMY_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*ADS_WIZARD_DYNAMIC_ITEMS)
@@ -284,6 +286,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.ticket")
         await self.load_extension("discord_bot.cogs.honeypot")
         await self.load_extension("discord_bot.cogs.antiraid")
+        await self.load_extension("discord_bot.cogs.applications")
         await self.load_extension("discord_bot.cogs.verification")
         await self.load_extension("discord_bot.cogs.giveaways")
         await self.load_extension("discord_bot.cogs.referral_giveaway_post")

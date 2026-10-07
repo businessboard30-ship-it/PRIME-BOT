@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "57"
+SCHEMA_VERSION = "58"
+# "57" -> "58" adds 031_discount_and_applications.sql (premium_discount_codes, discord_application_forms, discord_application_submissions). Same bump-or-it-never-runs trap.
 # "56" -> "57" adds 4 filter_* columns to discord_antiraid_config (Anti-raid Pro: account-age / default-avatar / suspicious-name join filter) via ALTER TABLE ADD COLUMN IF NOT EXISTS — see modules/antiraid_pro.py. Same bump-or-it-never-runs trap.
 # "55" -> "56" actually creates discord_verification_passes (Cloudflare Turnstile join verification). It was added to _create_tables in the Turnstile PR without a bump, so DBs stamped '55' skipped it (UndefinedTableError). Same bump-or-it-never-runs trap.
 # "54" -> "55" adds the Phase 1 catch game tables (modules/catch_schema.py: catch_species, catch_owned, catch_dex, catch_players, catch_spawns, catch_cooldowns, catch_feature_flags, catch_theme, catch_audit, ...). Same bump-or-it-never-runs trap.
@@ -5222,6 +5223,11 @@ class Database:
         bump_recreate_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "030_bump_channel_recreate_consent.sql"
         if bump_recreate_migration.exists():
             await conn.execute(bump_recreate_migration.read_text())
+
+        # Yearly-Premium first-payment discount codes + Application Forms. Additive/idempotent.
+        discount_apps_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "031_discount_and_applications.sql"
+        if discount_apps_migration.exists():
+            await conn.execute(discount_apps_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
@@ -10724,6 +10730,11 @@ class Database:
                 guild_id, clone_id, channel_id, message_id, host_id, prize, winner_count, ends_at, role_requirement_id
             )
             return dict(row)
+
+    async def get_application_forms(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
+        """Non-draft application forms of a server with pending-review counts (server panel screen)."""
+        from modules import applications
+        return await applications.list_forms(guild_id, clone_id)
 
     async def get_giveaway_draft(self, wizard_message_id: int) -> Optional[Dict]:
         pool = await get_pool()
