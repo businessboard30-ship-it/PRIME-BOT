@@ -11603,6 +11603,16 @@ class Database:
                 guild_id, clone_id, disabled,
             )
 
+    async def get_custom_role_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Web dashboard view of the Custom Role kill switch: {"enabled": bool}. Same row the
+        /customrole disable_feature option writes, so Discord and the web always agree."""
+        return {"enabled": not await self.is_custom_role_feature_disabled(guild_id, clone_id=clone_id)}
+
+    async def set_custom_role_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        if "enabled" in fields:
+            await self.set_custom_role_feature_disabled(guild_id, not bool(fields["enabled"]), clone_id=clone_id)
+        return await self.get_custom_role_config(guild_id, clone_id=clone_id)
+
     async def get_custom_role_panel(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[dict]:
         """Returns {"panel_channel_id", "panel_message_id"} (or None) —
         used by _enable_custom_role_panel to avoid creating a second
