@@ -14901,6 +14901,15 @@ class Database:
                    WHERE user_ai_usage.used < $4 RETURNING used""",
                 str(user_id), week_start, str(source), int(limit))
 
+    async def ai_usage_refund(self, user_id: str, week_start, source: str) -> None:
+        """Give one chat back when the provider call failed (method only; no schema change)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE user_ai_usage SET used = GREATEST(used - 1, 0)
+                   WHERE user_id = $1 AND week_start = $2 AND source = $3""",
+                str(user_id), week_start, str(source)[:20])
+
     async def card_asset_get(self, user_id: str, kind: str):
         pool = await get_pool()
         async with pool.acquire() as conn:

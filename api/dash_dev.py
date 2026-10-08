@@ -6,12 +6,17 @@ dev_* handler must start with `gate = await require_dev(uid, db)` and return it 
 code "subscription_required"). The locked screen in the browser is cosmetic and grants nothing.
 Nothing here writes entitlements: only the payment webhook does. No route takes a user id from the client.
 """
+import logging
+
+from modules import ai_usage, dev_chat
 from modules import entitlements as ent
 from modules import user_subs
 
-WEEKLY_BOT_CHATS = 50          # bot-provided AI messages per week for Developer subscribers (plan C1; counter lands with chat)
+logger = logging.getLogger(__name__)
+SOURCE = "dev"                 # counter source in user_ai_usage; the card plan uses "card_plan"
+WEEKLY_BOT_CHATS = ai_usage.LIMITS[SOURCE]     # bot-provided AI messages per week for Developer subscribers
 FEATURES = (
-    {"key": "chat", "label": "AI chat", "ready": False},
+    {"key": "chat", "label": "AI chat", "ready": True},
     {"key": "export", "label": "Export to your DMs", "ready": False},
     {"key": "keys", "label": "Bring your own AI key (Claude, Groq, OpenAI)", "ready": False},
     {"key": "github", "label": "Connect GitHub (read-only)", "ready": False},
@@ -56,5 +61,45 @@ async def dev_overview(uid, q, db):
     return {"features": [dict(f) for f in FEATURES], "weekly_bot_chats": WEEKLY_BOT_CHATS}
 
 
-ROUTES = {"dev_status": dev_status, "dev_overview": dev_overview}
-WRITES = {}
+def _usage_view(st: dict) -> dict:
+    limit = WEEKLY_BOT_CHATS
+    return {"used": st["used"], "limit": limit, "remaining": max(limit - st["used"], 0), "resets_at": st["resets_at"]}
+
+
+async def dev_usage(uid, q, db):
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    return {**_usage_view(await ai_usage.status(db, uid, SOURCE)),
+            "models": [{"id": "default", "label": "Bot AI (default)"}]}
+
+
+async def dev_chat_send(uid, body, db):
+    """POST {messages: [{role, content}]}. The conversation is kept by the browser, never stored here.
+    Order matters: gate, kill switch, validate, spend one chat atomically, call the model, refund on failure."""
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    from modules import admin_controls
+    if "ai" in await admin_controls.current_switches():
+        return {"_status": 503, "message": "AI chat is switched off right now."}
+    messages, err = dev_chat.clean_messages((body or {}).get("messages"))
+    if err:
+        return {"_status": 422, "message": err}
+    ws = ai_usage.week_start()
+    ok, st = await ai_usage.consume(db, uid, SOURCE)
+    if not ok:
+        reset = ai_usage.resets_at().strftime("%a %d %b, %H:%M UTC")
+        return {"_status": 429, "code": "weekly_limit", "message": f"You've used all {WEEKLY_BOT_CHATS} chats this week. They reset {reset}."}
+    try:
+        text = await dev_chat.ask(messages)
+    except Exception as e:
+        await db.ai_usage_refund(uid, ws, SOURCE)
+        if not isinstance(e, RuntimeError):
+            logger.exception("dev chat failed")
+        return {"_status": 502, "message": str(e) if isinstance(e, RuntimeError) else "The AI service is busy. Try again in a moment."}
+    return {"reply": text, **_usage_view(st)}
+
+
+ROUTES = {"dev_status": dev_status, "dev_overview": dev_overview, "dev_usage": dev_usage}
+WRITES = {"dev_chat": dev_chat_send}

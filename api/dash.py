@@ -64,6 +64,8 @@ Routes (all on /api/dash):
   POST ?action=checkout_user {product} -> any signed-in user: a /pay checkout link for the SESSION user (webhook grants, never this call)
   GET  ?action=dev_status -> ANY signed-in user (#/dev): {unlocked, expires_at, export_available, plans, features}; drives the locked screen only
   GET  ?action=dev_overview (and every later dev_* route) -> 402 {code: subscription_required} without an active Developer entitlement (api/dash_dev.py, require_dev)
+  GET  ?action=dev_usage -> Developer plan only: {used, limit, remaining, resets_at, models} for the weekly bot-AI chats
+  POST {action: dev_chat, messages:[{role,content}]} -> Developer plan only: one bot-AI reply; spends 1 of 50 weekly chats (refunded if the model fails); 429 {code: weekly_limit}; 503 when the owner's `ai` switch is on. Nothing is stored.
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
   POST {action: member_pref_set, kind: language|currency|character|voice|level_ping, value[, guild_id]} -> own preference only (allowlisted)
@@ -1089,7 +1091,7 @@ async def _route(method: str, query: dict, headers, body: dict):
     if method == "POST" and action in _member_writes():
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
-                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300)}.get(action, (30, 60)))
+                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60)}.get(action, (30, 60)))
         out = await _member_writes()[action](uid, body, db)
         if out.get("_status"):
             raise _Reply(out["_status"], {"ok": False, "message": out.get("message") or "Something went wrong.",

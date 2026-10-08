@@ -1167,6 +1167,42 @@
   }
 
   /* ---------- Developer mode (#/dev): always opens; the server decides what is unlocked (402 on every other dev_* route) ---------- */
+  /* Developer chat: the conversation lives only in this page (never stored); the server enforces the weekly allowance. */
+  function devChat() {
+    var box = section("AI chat"), history = [], busy = false;
+    var meter = h("p", { class: "muted", role: "status", text: "" });
+    var log = h("div", { "aria-live": "polite", style: "max-height:420px;overflow:auto;margin:8px 0" });
+    var input = h("textarea", { rows: 3, maxlength: 4000, "aria-label": "Message", placeholder: "Ask anything about your code\u2026", style: "width:100%" });
+    var send = h("button", { class: "btn sm", type: "button", text: "Send" });
+    var fresh = h("button", { class: "btn sm ghost", type: "button", text: "New chat" });
+    function line(role, text) {
+      log.appendChild(h("div", { style: "margin:8px 0;white-space:pre-wrap;word-break:break-word" }, h("b", { text: role === "user" ? "You: " : "AI: " }), h("span", { text: text })));
+      log.scrollTop = log.scrollHeight;
+    }
+    function showUsage(u) {
+      meter.textContent = u.remaining + " of " + u.limit + " chats left this week \u00b7 resets " + new Date(u.resets_at).toLocaleString();
+    }
+    api("dev_usage").then(showUsage).catch(function (e) { meter.textContent = (e && e.message) || "Couldn't load your usage."; });
+    function go() {
+      var text = input.value.trim();
+      if (!text || busy) return;
+      busy = true; send.disabled = true; input.value = "";
+      history.push({ role: "user", content: text }); line("user", text);
+      api("dev_chat", null, { messages: history }).then(function (r) {
+        history.push({ role: "assistant", content: r.reply }); line("assistant", r.reply); showUsage(r);
+      }).catch(function (e) {
+        history.pop(); input.value = text; meter.textContent = (e && e.message) || "That didn't work. Try again.";
+      }).then(function () { busy = false; send.disabled = false; input.focus(); });
+    }
+    send.addEventListener("click", go);
+    input.addEventListener("keydown", function (ev) { if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") go(); });
+    fresh.addEventListener("click", function () { history = []; log.textContent = ""; });
+    box.appendChild(h("p", { class: "muted", text: "Uses the bot's own AI. Chats aren't saved on our servers; closing this page clears the conversation. Never paste passwords or API keys." }));
+    box.appendChild(meter); box.appendChild(log); box.appendChild(input);
+    box.appendChild(h("div", { class: "row" }, send, " ", fresh));
+    return box;
+  }
+
   function renderDev() {
     document.body.classList.remove("menu"); S.mod = null; renderHeader();
     var body = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
@@ -1182,6 +1218,7 @@
         var c = section("Developer mode is active");
         c.appendChild(h("p", { class: "muted", text: "Active" + (st.expires_at ? " until " + new Date(st.expires_at).toLocaleDateString() : "") + ". Features are switched on one at a time as they ship." }));
         c.appendChild(feats); body.appendChild(c);
+        body.appendChild(devChat());
         return;
       }
       var lock = section("Locked");
