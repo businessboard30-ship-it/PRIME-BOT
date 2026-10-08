@@ -216,3 +216,12 @@ option{background:#06101a;color:#fff}option:disabled{color:#667}
 .price b{font-size:1.8rem}
 .price span{opacity:.65}
 .btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* level tier gallery */
+.tier-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:14px}
+.tier{margin:0;border:1px solid var(--faint);background:rgba(4,10,18,.62);display:grid;overflow:hidden;transition:opacity .2s,border-color .2s}
+.tier img{width:100%;height:auto;display:block;object-fit:contain;background:#05090f}
+.tier figcaption{display:flex;flex-direction:column;gap:2px;padding:.6rem .8rem}
+.tier figcaption small{opacity:.65}
+.tier.hit{border-color:rgba(242,250,255,.8)}
+.tier.dim{opacity:.3}

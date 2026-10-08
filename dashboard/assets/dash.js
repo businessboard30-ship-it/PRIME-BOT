@@ -91,6 +91,7 @@
     var inGuild = /^#\/g\//.test(location.hash);
     menuBtn.hidden = !(S.user && inGuild);
     if (!S.user) return;
+    hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/tiers", text: "Level tiers" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost inboxbtn", href: "#/inbox", "aria-label": "Drop box, " + S.unread + " unread" }, "Drop box",
       S.unread ? h("span", { class: "badge-n", text: S.unread > 99 ? "99+" : String(S.unread) }) : null));
     hdrRight.appendChild(h("div", { class: "user" }, h("img", { src: S.user.avatar_url, alt: "" }), h("span", { text: S.user.username })));
@@ -565,6 +566,46 @@
     }).catch(function (e) { if (e.message !== "401") { body.textContent = ""; body.appendChild(h("p", { text: e.message })); } });
   }
 
+  /* ---------- level tier gallery (read-only; tiers are assigned by level) ---------- */
+  function rangeText(t) { return t.max_level == null ? "Level " + t.min_level + "+" : (t.min_level === t.max_level ? "Level " + t.min_level : "Levels " + t.min_level + "\u2013" + t.max_level); }
+
+  function renderTiers() {
+    document.body.classList.remove("menu"); S.mod = null; renderHeader();
+    var grid = h("div", { class: "tier-grid" }, h("div", { class: "skel", style: "height:160px" }));
+    var find = h("input", { type: "number", min: 1, max: 1000, placeholder: "Find a level, e.g. 42", "aria-label": "Find a level", inputmode: "numeric" });
+    var hint = h("p", { class: "muted", text: "" });
+    app.textContent = "";
+    app.appendChild(h("main", { id: "main", class: "page" },
+      h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Level-up artwork" }), h("h1", { text: "Level tiers" }),
+        h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }))),
+      h("div", { class: "card rv" }, h("p", { class: "muted", text: "Members get the card for their level automatically. Every server uses the same ladder. Where several designs share a range, one is picked at random each time." }), find, hint),
+      grid));
+    fetch("assets/tiers/manifest.json", { cache: "no-cache" }).then(function (r) {
+      if (!r.ok) throw new Error("Couldn't load the gallery.");
+      return r.json();
+    }).then(function (j) {
+      var tiers = j.tiers || [], cards = [];
+      grid.textContent = "";
+      tiers.forEach(function (t, i) {
+        var card = h("figure", { class: "tier", style: "--i:" + Math.min(i, 12) },
+          h("img", { src: "assets/tiers/" + t.thumb, alt: t.label + " level-up card", loading: "lazy", decoding: "async" }),
+          h("figcaption", null, h("b", { text: t.label }), h("small", { text: rangeText(t) + (t.random_pool ? " \u00b7 random pick" : "") })));
+        cards.push({ t: t, el: card }); grid.appendChild(card);
+      });
+      find.addEventListener("input", function () {
+        var lv = parseInt(find.value, 10), hits = 0, first = null;
+        cards.forEach(function (c) {
+          var on = lv > 0 && lv >= c.t.min_level && (c.t.max_level == null || lv <= c.t.max_level);
+          c.el.classList.toggle("hit", on); c.el.classList.toggle("dim", lv > 0 && !on);
+          if (on) { hits++; first = first || c.el; }
+        });
+        hint.textContent = !(lv > 0) ? "" : hits ? "Level " + lv + (hits > 1 ? " uses one of these " + hits + " designs." : " uses this design.")
+          : "Level " + lv + " has no artwork; it gets the plain illustrated card.";
+        if (first) first.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    }).catch(function (e) { grid.textContent = ""; grid.appendChild(h("p", { text: e.message || "Couldn't load the gallery." })); });
+  }
+
   /* ---------- router ---------- */
   function route() {
     document.body.classList.remove("menu"); S.mod = null;
@@ -572,6 +613,7 @@
     if (!S.sid) return renderLogin();
     showAnnouncements();
     if (hash === "#/inbox") { S.guild = null; return renderInbox(); }
+    if (hash === "#/tiers") { S.guild = null; return renderTiers(); }
     if (!m) { S.guild = null; return renderServers(); }
     var gid = m[1], modId = m[2];
     app.textContent = ""; app.appendChild(h("main", { id: "main", class: "center" }, h("div", { class: "boot", role: "status" }, "Loading server", h("span", { class: "dots" }))));
