@@ -85,9 +85,10 @@ def test_dashboard_never_goes_through_slash_pay():
     assert "/pay" not in src.replace("# ", "") .split("async def checkout_user")[1].split("async def member_card(")[0].replace("no /pay hop", "").replace("no /pay", "")
 
 
-def test_pay_redirect_enforces_the_mode_for_plans():
-    src = Path("api/pay_redirect.py").read_text()
-    assert "is_plan(intent.get" in src and 'override = "gh"' in src and 'override = "intl"' in src
+def test_slash_pay_route_is_gone():
+    assert not Path("api/pay_redirect.py").exists()
+    assert "pay_redirect" not in Path("api_server.py").read_text()
+    assert "payintent" not in Path("api/dash.py").read_text() + Path("api/dash_member.py").read_text()
 
 
 def test_member_pages_use_the_admin_shell_and_no_innerhtml():

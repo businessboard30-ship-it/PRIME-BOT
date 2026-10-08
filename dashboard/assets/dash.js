@@ -924,17 +924,26 @@
       }
       var grid = h("div", { class: "plans" });
       r.plans.forEach(function (p, i) {
-        var btn = h("button", { class: "btn primary", text: p.owned ? "Owned" : p.included ? "Included with Premium" : "Choose " + p.label.replace("Premium: ", ""), disabled: p.owned || p.included });
-        btn.addEventListener("click", function () {
-          btn.disabled = true; btn.classList.add("busy");
-          api("checkout", {}, { guild_id: gid, plan: p.id }).then(function (c) { location.href = c.url; })
-            .catch(function (e) { toast(e.message, "bad"); btn.disabled = false; btn.classList.remove("busy"); });
+        var locked = p.owned || p.included, btns = [];
+        var opts = (r.pay && r.pay.length) ? r.pay : [{ provider: "", label: "Choose " + p.label.replace("Premium: ", "") }];
+        if (locked) btns.push(h("button", { class: "btn primary", text: p.owned ? "Owned" : "Included with Premium", disabled: true }));
+        else opts.forEach(function (o) {
+          var btn = h("button", { class: "btn primary", text: o.label });
+          btn.addEventListener("click", function () {
+            btns.forEach(function (b) { b.disabled = true; }); btn.classList.add("busy");
+            api("checkout", {}, { guild_id: gid, plan: p.id, provider: o.provider || undefined }).then(function (c) {
+              if (!/^https:\/\//.test(String(c.url || ""))) throw new Error("Couldn't start checkout.");
+              location.href = c.url;
+            }).catch(function (e) { toast(e.message, "bad"); btns.forEach(function (b) { b.disabled = false; }); btn.classList.remove("busy"); });
+          });
+          btns.push(btn);
         });
+        var btn = h("div", { class: "row", style: "display:flex;gap:.5rem;flex-wrap:wrap" }, btns);
         grid.appendChild(h("div", { class: "card plan rv", style: "--i:" + i }, h("h3", { text: p.label }),
           h("div", { class: "price" }, h("b", { text: money(p.price_usd) }), h("span", { text: " " + p.period })), btn));
       });
       body.appendChild(grid);
-      body.appendChild(h("div", { class: "notice rv" }, "Checkout opens in this tab and is bound to this server. Premium turns on once the payment is confirmed; if it hasn't appeared after a few minutes, ",
+      body.appendChild(h("div", { class: "notice rv" }, "Checkout opens in this tab on Paystack or Gumroad and is bound to this server. Premium turns on once the payment is confirmed; if it hasn't appeared after a few minutes, ",
         h("a", { href: CFG.SUPPORT_URL, target: "_blank", rel: "noopener", text: "contact support" }), ". First-time buyers get 50% off Yearly: run /premium in Discord to claim it."));
     }).catch(function (e) { if (e.message !== "401") { body.textContent = ""; body.appendChild(h("p", { text: e.message })); } });
   }
