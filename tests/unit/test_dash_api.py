@@ -197,3 +197,36 @@ def test_me_lists_clones_present_in_server(env, monkeypatch):
     _clone_env(env, monkeypatch)
     st, p, _ = call("GET", {"action": "me"})
     assert st == 200 and p["servers"][0]["clones"] == [{"clone_id": 7, "name": "Cloney"}]
+
+
+# --- reset / export / import ----------------------------------------------------
+
+def test_export_then_import_roundtrip(env):
+    fake, _ = env
+    st, p, _ = call("GET", {"action": "export", "guild_id": str(GUILD), "module": "welcome"})
+    assert st == 200 and p["document"]["module"] == "welcome"
+    doc = p["document"]
+    doc["values"]["message_template"] = "Hello {member}"
+    st, p, _ = call("POST", body={"action": "import", "guild_id": str(GUILD), "module": "welcome", "data": doc})
+    assert st == 200 and "message_template" in p["applied"]
+    assert fake.saved[-1][2]["message_template"] == "Hello {member}"
+
+
+def test_import_rejects_wrong_module_and_needs_manage(env):
+    _, members = env
+    bad = {"format": "primebot-settings", "version": 1, "module": "antiraid", "values": {"enabled": True}}
+    st, p, _ = call("POST", body={"action": "import", "guild_id": str(GUILD), "module": "welcome", "data": bad})
+    assert st == 422 and "antiraid" in p["message"]
+    members["6"] = {"roles": ["501"]}
+    dash._cache.clear()                                   # permission lookups are cached for 60s
+    assert call("GET", {"action": "export", "guild_id": str(GUILD), "module": "welcome"})[0] == 403
+    assert call("POST", body={"action": "import", "guild_id": str(GUILD), "module": "welcome", "data": bad})[0] == 403
+    assert call("POST", body={"action": "reset", "guild_id": str(GUILD), "module": "welcome"})[0] == 403
+
+
+def test_reset_writes_defaults_and_clears_channel(env):
+    fake, _ = env
+    st, p, _ = call("POST", body={"action": "reset", "guild_id": str(GUILD), "module": "welcome"})
+    assert st == 200
+    saved = fake.saved[-1][2]
+    assert saved["channel_id"] is None and saved["message_template"] == "hi"

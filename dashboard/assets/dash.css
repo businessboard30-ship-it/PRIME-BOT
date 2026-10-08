@@ -228,3 +228,5 @@ option{background:#06101a;color:#fff}option:disabled{color:#667}
 
 .srvwrap{display:flex;flex-direction:column;gap:.5rem}
 .clonechips{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem;padding:0 .25rem}
+.actions .row{display:flex;gap:.5rem;flex-wrap:wrap}
+.btn.danger:hover{background:rgba(192,57,43,.18)}

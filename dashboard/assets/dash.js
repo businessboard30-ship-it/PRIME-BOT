@@ -364,13 +364,70 @@
       }).then(function () { saveBtn.classList.remove("busy"); });
     });
 
+    var skippedBox = h("div", { class: "notice", hidden: true });
+    function applyServerValues(values) {
+      S.orig = values; S.draft = JSON.parse(JSON.stringify(values)); S.errors = {};
+      if ("enabled" in values) { S.guild.status[m.id] = !!values.enabled; var d = document.querySelector('.nav a[aria-current="page"] .dot'); if (d) d.className = "dot " + (values.enabled ? "on" : "off"); }
+      build();
+    }
+    function guardDirty() { return !dirtyKeys().length || window.confirm("You have unsaved changes on this page. They will be lost. Continue?"); }
+    var exportBtn = h("button", { class: "btn sm ghost", text: "Export JSON" });
+    exportBtn.addEventListener("click", function () {
+      exportBtn.disabled = true;
+      api("export", { guild_id: gid, module: m.id }).then(function (r) {
+        var blob = new Blob([JSON.stringify(r.document, null, 2)], { type: "application/json" });
+        var a = h("a", { href: URL.createObjectURL(blob), download: "primebot-" + m.id + "-" + gid + ".json" });
+        document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+      }).catch(function (e) { toast(e.message, "bad"); }).then(function () { exportBtn.disabled = false; });
+    });
+    var fileIn = h("input", { type: "file", accept: "application/json,.json", hidden: true, "aria-label": "Settings file to import" });
+    var importBtn = h("button", { class: "btn sm ghost", text: "Import JSON", onclick: function () { if (guardDirty()) fileIn.click(); } });
+    fileIn.addEventListener("change", function () {
+      var file = fileIn.files && fileIn.files[0]; fileIn.value = "";
+      if (!file) return;
+      if (file.size > 100 * 1024) return toast("That file is too large to be a settings file.", "bad");
+      file.text().then(function (txt) {
+        var doc; try { doc = JSON.parse(txt); } catch (e) { return toast("That file isn't valid JSON.", "bad"); }
+        importBtn.disabled = true;
+        return api("import", {}, { guild_id: gid, module: m.id, data: doc }).then(function (r) {
+          applyServerValues(r.values);
+          skippedBox.hidden = !(r.skipped && r.skipped.length);
+          skippedBox.textContent = "";
+          if (r.skipped && r.skipped.length) {
+            skippedBox.appendChild(h("b", { text: "Imported " + r.applied.length + ", skipped " + r.skipped.length + ":" }));
+            skippedBox.appendChild(h("ul", null, r.skipped.slice(0, 20).map(function (t) { return h("li", { text: t }); })));
+          }
+          toast("Imported " + r.applied.length + (r.applied.length === 1 ? " setting" : " settings"), "ok");
+        }).catch(function (e) {
+          var sk = e.payload && e.payload.skipped;
+          toast(e.message, "bad");
+          if (sk && sk.length) { skippedBox.hidden = false; skippedBox.textContent = sk.slice(0, 20).join("; "); }
+        }).then(function () { importBtn.disabled = false; });
+      });
+    });
+    var resetModBtn = h("button", { class: "btn sm danger", text: "Reset to defaults" });
+    resetModBtn.addEventListener("click", function () {
+      if (!guardDirty()) return;
+      if (!window.confirm("Reset all " + m.title + " settings to their defaults? Channels and roles will be cleared. This is recorded in the audit log.")) return;
+      resetModBtn.disabled = true;
+      api("reset", {}, { guild_id: gid, module: m.id }).then(function (r) { applyServerValues(r.values); skippedBox.hidden = true; toast(m.title + " reset to defaults", "ok"); })
+        .catch(function (e) { toast(e.message, "bad"); }).then(function () { resetModBtn.disabled = false; });
+    });
+    var toolsCard = h("div", { class: "card actions rv" }, h("h2", { text: "Backup and reset" }),
+      h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: "Export / import" }),
+        h("p", { class: "help", text: "Save this module's settings to a file, or load a file. Channels and roles that don't exist in this server are skipped on import." })),
+        h("div", { class: "row" }, exportBtn, importBtn, fileIn)),
+      h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: "Reset" }),
+        h("p", { class: "help", text: "Put every setting in this module back to its default." })), resetModBtn),
+      skippedBox);
+
     add(main, [
       h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: m.category }), h("h1", { text: m.title }), h("p", { class: "muted", text: m.desc })),
         h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
       m.note ? h("div", { class: "notice rv" }, m.note) : null,
       !S.premium && m.fields.some(function (f) { return f.premium || f.premium_values; })
         ? h("div", { class: "notice rv" }, "Some options here are Premium. ", h("a", { href: CFG.SITE_URL + "/pricing/", target: "_blank", rel: "noopener", text: "See plans" })) : null,
-      designer ? designer.el : null, actionsCard, form, bar]);
+      designer ? designer.el : null, actionsCard, form, toolsCard, bar]);
     form.appendChild(h("div", { class: "skel", style: "height:160px" }));
     api("config", { guild_id: gid, module: m.id }).then(function (r) {
       S.premium = !!r.premium; S.orig = r.values; S.draft = JSON.parse(JSON.stringify(r.values)); S.errors = {}; build();

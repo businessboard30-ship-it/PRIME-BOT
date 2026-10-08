@@ -24,6 +24,9 @@ Routes (all on /api/dash):
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
   POST {action: logout}
+  POST {action: reset, guild_id, module}        -> module back to its defaults (channels/roles cleared)
+  GET  ?action=export&guild_id&module           -> portable JSON of that module's settings
+  POST {action: import, guild_id, module, data} -> apply an exported file (entries that don't fit are skipped)
   POST {action: bot_action, guild_id, id} -> bot posts a panel/test card (whitelist: S.BOT_ACTIONS)
   GET  ?action=billing&guild_id         -> Premium status + plans with server-side prices
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
@@ -493,6 +496,21 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
     return {"ok": True, "message": f"Done: posted in {summary}."}
 
 
+async def _save_and_audit(sess: dict, gid: int, module: dict, before_cfg: dict, clean: dict, note=None):
+    await getattr(db, module["set"])(gid, _cid(), **clean)
+    logger.info("dashboard %s guild=%s user=%s module=%s keys=%s", note or "save", gid, sess["user"]["id"], module["id"], sorted(clean))
+    try:
+        after = S.export_values(module, await _get_cfg(module, gid))
+        changes = S.diff_values(module, S.export_values(module, before_cfg), after)
+        if changes:
+            if note:
+                changes = {**{"(" + note + ")": {"from": None, "to": "applied"}}, **changes}
+            await db.dash_audit_add(gid, str(sess["user"]["id"]), sess["user"].get("username") or "Unknown",
+                                    module["id"], changes, S.AUDIT_RETENTION_DAYS)
+    except Exception:
+        logger.exception("dashboard: audit write failed (the change itself succeeded)")
+
+
 async def _authorised_guild(sess: dict, raw_gid) -> int:
     try:
         gid = int(str(raw_gid))
@@ -756,6 +774,46 @@ async def _route(method: str, query: dict, headers, body: dict):
         except Exception:
             logger.exception("dashboard: audit write failed (save itself succeeded)")
         raise _Reply(200, {"ok": True, "values": after})
+
+    if method == "POST" and action == "reset":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        module = S.BY_ID.get(str(body.get("module") or ""))
+        if not module:
+            _fail(404, "Unknown module.")
+        before_cfg = await _get_cfg(module, gid)
+        target = S.default_values(module, await getattr(db, module["get"])(0, _cid()))
+        meta = await _meta(gid)
+        chans, roles = _id_sets(meta)
+        clean, errors = S.validate_values(module, target, chans, roles, True)
+        if errors:
+            _fail(422, errors[0])
+        await _save_and_audit(sess, gid, module, before_cfg, clean, note=None)
+        after = S.export_values(module, await _get_cfg(module, gid))
+        raise _Reply(200, {"ok": True, "values": after})
+
+    if method == "GET" and action == "export":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        module = S.BY_ID.get(q("module") or "")
+        if not module:
+            _fail(404, "Unknown module.")
+        vals = S.export_values(module, await _get_cfg(module, gid))
+        raise _Reply(200, {"ok": True, "document": S.export_document(module, vals)})
+
+    if method == "POST" and action == "import":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        module = S.BY_ID.get(str(body.get("module") or ""))
+        if not module:
+            _fail(404, "Unknown module.")
+        meta = await _meta(gid)
+        chans, roles = _id_sets(meta)
+        before_cfg = await _get_cfg(module, gid)
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
+        clean, skipped, err = S.prepare_import(module, body.get("data"), chans, roles, _eff_premium(module, premium, before_cfg))
+        if err:
+            raise _Reply(422, {"ok": False, "message": err, "skipped": skipped})
+        await _save_and_audit(sess, gid, module, before_cfg, clean, note="import")
+        after = S.export_values(module, await _get_cfg(module, gid))
+        raise _Reply(200, {"ok": True, "values": after, "applied": sorted(clean), "skipped": skipped})
 
     if method == "POST" and action == "bot_action":
         gid = await _authorised_guild(sess, body.get("guild_id"))

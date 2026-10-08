@@ -400,6 +400,73 @@ def validate_values(module: dict, values: Any, channels: Dict[str, set], roles: 
     return clean, errors
 
 
+# ───────────────────────── reset / import / export ─────────────────────────
+
+EXPORT_FORMAT = "primebot-settings"
+EXPORT_VERSION = 1
+IMPORT_MAX_KEYS = 100
+
+
+def export_document(module: dict, values: dict) -> dict:
+    """Portable copy of one module's settings. Only declared keys, so nothing secret can leak."""
+    keys = {f["key"] for f in module["fields"]}
+    return {"format": EXPORT_FORMAT, "version": EXPORT_VERSION, "module": module["id"],
+            "values": {k: v for k, v in values.items() if k in keys}}
+
+
+def default_values(module: dict, defaults_cfg: dict) -> dict:
+    """The module's untouched values (from a never-configured server's config). Channel and
+    role pickers are always cleared: ids never carry over."""
+    vals = export_values(module, defaults_cfg or {})
+    for f in module["fields"]:
+        if f["type"] in ("channel", "role"):
+            vals[f["key"]] = None
+        elif vals.get(f["key"]) is None and f["type"] not in ("text", "textarea"):
+            vals.pop(f["key"], None)          # no known default: leave it alone rather than guess
+    return vals
+
+
+def prepare_import(module: dict, doc: Any, channels: Dict[str, set], roles: set,
+                   is_premium: bool) -> Tuple[Dict[str, Any], List[str], Optional[str]]:
+    """-> (clean values, skipped notes, fatal error). Entries that don't fit this server (unknown
+    key, channel/role not in it, Premium-only on a free server, invalid value) are skipped with a
+    reason, so one stale entry doesn't block the rest. Everything kept passes validate_values."""
+    if not isinstance(doc, dict) or doc.get("format") != EXPORT_FORMAT:
+        return {}, [], "That isn't a PRIME BOT settings file."
+    if doc.get("version") != EXPORT_VERSION:
+        return {}, [], "That settings file is from an unsupported version."
+    if doc.get("module") != module["id"]:
+        return {}, [], f"That file is for the \"{str(doc.get('module'))[:40]}\" module, not {module['title']}."
+    values = doc.get("values")
+    if not isinstance(values, dict) or not values:
+        return {}, [], "That file has no settings in it."
+    if len(values) > IMPORT_MAX_KEYS:
+        return {}, [], "That file has too many entries."
+    fields = {f["key"]: f for f in module["fields"]}
+    clean, skipped = {}, []
+    for key, raw in values.items():
+        f = fields.get(key)
+        if f is None:
+            skipped.append(f"{str(key)[:40]}: not a setting here")
+            continue
+        if f["type"] in ("channel", "role") and raw not in (None, ""):
+            pool = roles if f["type"] == "role" else channels.get(f.get("kind", "text"), set())
+            if str(raw) not in pool:
+                skipped.append(f"{f['label']}: that {f['type']} isn't in this server")
+                continue
+        one, errs = validate_values(module, {key: raw}, channels, roles, is_premium)
+        if errs:
+            skipped.append(errs[0])
+            continue
+        clean.update(one)
+    if not clean:
+        return {}, skipped, "Nothing in that file could be applied to this server."
+    _, errs = validate_values(module, clean, channels, roles, is_premium)   # cross-field rules
+    if errs:
+        return {}, skipped, errs[0]
+    return clean, skipped, None
+
+
 # ───────────────────────── drop box (owner -> every dashboard admin) ─────────────────────────
 
 DROPBOX_KINDS = ("info", "update", "warning", "maintenance")
