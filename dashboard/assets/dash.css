@@ -202,3 +202,17 @@ option{background:#06101a;color:#fff}option:disabled{color:#667}
 .entry .old{opacity:.6;text-decoration:line-through}
 .entry .new{color:#fff}
 .more{display:flex;justify-content:center;margin-top:12px}
+
+/* actions + billing */
+.actions{display:grid;gap:14px;margin-bottom:16px}
+.actions h2{margin:0}
+.action{display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.action .grow{flex:1;min-width:220px}
+.action .help{margin:4px 0 0}
+.billing{display:grid;gap:16px}
+.plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.plan{display:grid;gap:12px;align-content:space-between}
+.plan h3{margin:0}
+.price b{font-size:1.8rem}
+.price span{opacity:.65}
+.btn:disabled{opacity:.5;cursor:not-allowed}

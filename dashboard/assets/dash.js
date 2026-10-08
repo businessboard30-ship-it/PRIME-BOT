@@ -177,6 +177,7 @@
         icon(name), h("span", { text: label }), mod && statusOf(mod.id) ? h("i", { class: "dot " + statusOf(mod.id), title: statusOf(mod.id) === "on" ? "Enabled" : "Disabled" }) : null);
     }
     nav.appendChild(link("#/g/" + gid, "home", "Overview", !modId));
+    nav.appendChild(link("#/g/" + gid + "/billing", "star", "Premium & billing", modId === "billing"));
     nav.appendChild(link("#/g/" + gid + "/audit", "scroll", "Audit log", modId === "audit"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
@@ -292,9 +293,27 @@
     bar.appendChild(msg); bar.appendChild(resetBtn); bar.appendChild(saveBtn);
     var form = h("div", { class: "card fields rv" });
     var designer = m.designer === "welcome" ? makeWelcomePreview(gid) : null;
+    var actionBtns = [], actionNote = h("p", { class: "help", text: "" });
+    var actionsCard = m.actions ? h("div", { class: "card actions rv" }, h("h2", { text: "Actions" }),
+      m.actions.map(function (a) {
+        var b = h("button", { class: "btn sm", text: a.label });
+        b.addEventListener("click", function () {
+          b.classList.add("busy"); b.disabled = true;
+          api("bot_action", {}, { guild_id: gid, id: a.id }).then(function (r) { toast(r.message, "ok"); })
+            .catch(function (e) { toast(e.message, "bad"); })
+            .then(function () { b.classList.remove("busy"); refresh(); });
+        });
+        actionBtns.push(b);
+        return h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: a.label }), h("p", { class: "help", text: a.help })), b);
+      }), actionNote) : null;
 
     function refresh() {
       if (designer) designer.update();
+      if (actionsCard) {
+        var dirty = dirtyKeys().length > 0;
+        actionBtns.forEach(function (b) { b.disabled = dirty; });
+        actionNote.textContent = dirty ? "Save your changes first. Actions use your saved settings." : "";
+      }
       var keys = dirtyKeys();
       form.querySelectorAll(".field").forEach(function (row) { row.classList.toggle("chg", keys.indexOf(row.getAttribute("data-key")) > -1); });
       msg.textContent = keys.length + (keys.length === 1 ? " unsaved change" : " unsaved changes");
@@ -340,7 +359,7 @@
       m.note ? h("div", { class: "notice rv" }, m.note) : null,
       !S.premium && m.fields.some(function (f) { return f.premium || f.premium_values; })
         ? h("div", { class: "notice rv" }, "Some options here are Premium. ", h("a", { href: CFG.SITE_URL + "/pricing/", target: "_blank", rel: "noopener", text: "See plans" })) : null,
-      designer ? designer.el : null, form, bar]);
+      designer ? designer.el : null, actionsCard, form, bar]);
     form.appendChild(h("div", { class: "skel", style: "height:160px" }));
     api("config", { guild_id: gid, module: m.id }).then(function (r) {
       S.premium = !!r.premium; S.orig = r.values; S.draft = JSON.parse(JSON.stringify(r.values)); S.errors = {}; build();
@@ -497,6 +516,36 @@
     load(true);
   }
 
+  /* ---------- premium & billing ---------- */
+  function renderBilling(gid, main) {
+    var body = h("div", { class: "billing" }, h("div", { class: "skel", style: "height:140px" }));
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Server" }), h("h1", { text: "Premium & billing" }),
+      h("p", { class: "muted", text: "Plans apply to this whole server. Prices are in USD." }))), body]);
+    function money(n) { return "$" + (Math.round(n * 100) / 100).toString(); }
+    api("billing", { guild_id: gid }).then(function (r) {
+      body.textContent = "";
+      var until = r.expires_at ? new Date(r.expires_at).toLocaleDateString([], { dateStyle: "medium" }) : null;
+      body.appendChild(h("div", { class: "stats" },
+        h("div", { class: "card stat rv" }, h("b", { text: r.premium ? "Active" : "Free" }), h("span", { text: "Premium" })),
+        h("div", { class: "card stat rv" }, h("b", { text: until || "–" }), h("span", { text: r.premium ? "Current period ends" : "No active plan" })),
+        h("div", { class: "card stat rv" }, h("b", { text: r.card_pack || r.premium ? "Unlocked" : "Locked" }), h("span", { text: "Welcome card themes" }))));
+      var grid = h("div", { class: "plans" });
+      r.plans.forEach(function (p, i) {
+        var btn = h("button", { class: "btn primary", text: p.owned ? "Owned" : p.included ? "Included with Premium" : "Choose " + p.label.replace("Premium: ", ""), disabled: p.owned || p.included });
+        btn.addEventListener("click", function () {
+          btn.disabled = true; btn.classList.add("busy");
+          api("checkout", {}, { guild_id: gid, plan: p.id }).then(function (c) { location.href = c.url; })
+            .catch(function (e) { toast(e.message, "bad"); btn.disabled = false; btn.classList.remove("busy"); });
+        });
+        grid.appendChild(h("div", { class: "card plan rv", style: "--i:" + i }, h("h3", { text: p.label }),
+          h("div", { class: "price" }, h("b", { text: money(p.price_usd) }), h("span", { text: " " + p.period })), btn));
+      });
+      body.appendChild(grid);
+      body.appendChild(h("div", { class: "notice rv" }, "Checkout opens in this tab and is bound to this server. Premium turns on once the payment is confirmed; if it hasn't appeared after a few minutes, ",
+        h("a", { href: CFG.SUPPORT_URL, target: "_blank", rel: "noopener", text: "contact support" }), ". First-time buyers get 50% off Yearly: run /premium in Discord to claim it."));
+    }).catch(function (e) { if (e.message !== "401") { body.textContent = ""; body.appendChild(h("p", { text: e.message })); } });
+  }
+
   /* ---------- router ---------- */
   function route() {
     document.body.classList.remove("menu"); S.mod = null;
@@ -510,9 +559,9 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      if (modId && modId !== "audit" && !mod) { location.hash = "#/g/" + gid; return; }
+      if (modId && modId !== "audit" && modId !== "billing" && !mod) { location.hash = "#/g/" + gid; return; }
       var main = renderShell(gid, modId);
-      if (modId === "audit") renderAudit(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
+      if (modId === "audit") renderAudit(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
       window.scrollTo(0, 0);
     }).catch(function (e) {
       if (e.message === "401") return;

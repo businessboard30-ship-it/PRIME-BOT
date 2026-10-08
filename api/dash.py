@@ -24,6 +24,9 @@ Routes (all on /api/dash):
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
   POST {action: logout}
+  POST {action: bot_action, guild_id, id} -> bot posts a panel/test card (whitelist: S.BOT_ACTIONS)
+  GET  ?action=billing&guild_id         -> Premium status + plans with server-side prices
+  POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
@@ -268,6 +271,203 @@ async def _welcome_preview(sess: dict, gid: int, q) -> dict:
     return {"ok": True, "image": "data:image/png;base64," + base64.b64encode(png).decode()}
 
 
+PLANS = [
+    {"id": "premium", "label": "Premium: Monthly", "period": "per month", "kind": "premium"},
+    {"id": "premium_yearly", "label": "Premium: Yearly", "period": "per year", "kind": "premium"},
+    {"id": "premium_lifetime", "label": "Premium: Lifetime", "period": "one time", "kind": "premium"},
+    {"id": "welcome_card_pack", "label": "Welcome card pack", "period": "one time", "kind": "card_pack"},
+]
+PLAN_BY_ID = {p["id"]: p for p in PLANS}
+_last_checkout: dict = {}
+CHECKOUT_MIN_INTERVAL = 3.0
+
+
+def _price_usd(plan_id: str):
+    """The one price the payment verifier also expects (gumroad_payments.expected_price_usd)."""
+    try:
+        from gumroad_payments import expected_price_usd
+        price = expected_price_usd(plan_id)
+    except Exception:
+        logger.exception("dashboard: price lookup failed for %s", plan_id)
+        return None
+    return price if price and price > 0 else None
+
+
+def _pay_base() -> str:
+    u = urlparse(config.DASH_OAUTH_REDIRECT_URI or "")
+    return f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else ""
+
+
+async def _billing(gid: int) -> dict:
+    welcome = S.BY_ID["welcome"]
+    cfg = await _get_cfg(welcome, gid)
+    row = await db.get_guild_premium(gid, CLONE_ID)
+    active = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+    expires = row.get("expires_at") if row else None
+    plans = []
+    for p in PLANS:
+        price = _price_usd(p["id"])
+        if price is None:
+            continue
+        owned = (p["kind"] == "card_pack" and bool(cfg.get("card_pack_unlocked")))
+        plans.append({**p, "price_usd": price, "owned": owned,
+                      "included": p["kind"] == "card_pack" and active and not owned})
+    return {"premium": active, "expires_at": expires.isoformat() if hasattr(expires, "isoformat") else None,
+            "card_pack": bool(cfg.get("card_pack_unlocked")), "plans": plans}
+
+
+async def _checkout(sess: dict, gid: int, plan_id) -> dict:
+    uid = str(sess["user"]["id"])
+    now = time.monotonic()
+    if now - _last_checkout.get(uid, 0) < CHECKOUT_MIN_INTERVAL:
+        _fail(429, "One moment, then try again.")
+    _last_checkout[uid] = now
+    if len(_last_checkout) > 5000:
+        _last_checkout.clear()
+    plan = PLAN_BY_ID.get(str(plan_id or ""))
+    if not plan:
+        _fail(422, "Unknown plan.")
+    bill = await _billing(gid)
+    entry = next((p for p in bill["plans"] if p["id"] == plan["id"]), None)
+    if entry is None:
+        _fail(503, "That plan isn't available right now.")
+    if entry["owned"] or entry["included"]:
+        _fail(409, "This server already has that.")
+    base = _pay_base()
+    if not base:
+        _fail(503, "Checkout isn't configured yet.")
+    token = _secrets.token_urlsafe(16)
+    intent = {"payment_type": plan["id"], "user_id": int(uid), "guild_id": gid, "clone_id": CLONE_ID,
+              "price_usd": entry["price_usd"], "extra": {"source": "dashboard"}, "created": time.time()}
+    await db.set_global_setting(f"payintent:{token}", json.dumps(intent))
+    logger.info("dashboard checkout guild=%s user=%s plan=%s", gid, uid, plan["id"])
+    return {"ok": True, "url": f"{base}/pay?t={token}"}
+
+
+_last_action: dict = {}
+ACTION_MIN_INTERVAL = 8.0
+PANEL_PERMS_HINT = "Give me View Channel, Send Messages, Embed Links and Attach Files there, then try again."
+
+
+async def _bot_post(path: str, json_body=None, form=None):
+    """POST as the bot. JSON bodies retry once on a rate limit; multipart uploads can't be
+    replayed, so a 429 there is reported to the caller instead."""
+    headers = {"Authorization": f"Bot {config.DISCORD_BOT_TOKEN}"}
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        for attempt in range(2):
+            kw = {"data": form} if form is not None else {"json": json_body}
+            async with s.post(f"{DISCORD_API}{path}", headers=headers, **kw) as r:
+                if r.status == 429 and attempt == 0 and form is None:
+                    retry = float((await r.json(content_type=None)).get("retry_after", 1))
+                    await asyncio.sleep(min(retry, 3))
+                    continue
+                if r.status not in (200, 201):
+                    raise DiscordError(r.status)
+                return await r.json(content_type=None)
+
+
+def _channel_name(meta: dict, cid) -> str:
+    for c in meta["channels"]["text"]:
+        if c["id"] == str(cid):
+            return "#" + c["name"]
+    return "the channel"
+
+
+async def _post_to_channel(meta: dict, cid, **kw):
+    try:
+        return await _bot_post(f"/channels/{int(cid)}/messages", **kw)
+    except DiscordError as e:
+        name = _channel_name(meta, cid)
+        if e.status == 403:
+            _fail(422, f"I can't post in {name}. {PANEL_PERMS_HINT}")
+        if e.status == 404:
+            _fail(422, f"{name} no longer exists. Pick the channel again and save.")
+        if e.status == 429:
+            _fail(429, "Discord is rate limiting posts. Try again in a few seconds.")
+        raise
+
+
+async def _bot_action(sess: dict, gid: int, action_id) -> dict:
+    uid = str(sess["user"]["id"])
+    mod_id = S.BOT_ACTIONS.get(str(action_id or ""))
+    if not mod_id:
+        _fail(422, "Unknown action.")
+    now = time.monotonic()
+    key = (uid, gid, action_id)
+    if now - _last_action.get(key, 0) < ACTION_MIN_INTERVAL:
+        _fail(429, "Just did that. Wait a few seconds.")
+    _last_action[key] = now
+    if len(_last_action) > 5000:
+        _last_action.clear()
+    module = S.BY_ID[mod_id]
+    cfg = await _get_cfg(module, gid)
+    meta = await _meta(gid)
+    chans, roles = _id_sets(meta)
+
+    def need_channel(k, label):
+        v = cfg.get(k)
+        if not v or str(v) not in chans["text"]:
+            _fail(422, f"Pick and save the {label} first.")
+        return int(v)
+
+    if action_id == "verify_panel":
+        cid = need_channel("channel_id", "verify channel")
+        if not cfg.get("unverified_role_id") or str(cfg["unverified_role_id"]) not in roles:
+            _fail(422, "Pick and save the Unverified role first.")
+        desc = "Click the button below to verify you're a real person and unlock the rest of the server."
+        if cfg.get("mode") == "captcha":
+            desc += "\nYou'll be asked to pass a quick security check."
+        info = await _guild_info(gid)
+        msg = await _post_to_channel(meta, cid, json_body={
+            "embeds": [{"title": f"Welcome to {info.get('name') or 'the server'} 👋", "description": desc, "color": 0x2ECC71}],
+            "components": [{"type": 1, "components": [{"type": 2, "style": 3, "label": "I'm not a bot",
+                                                        "emoji": {"name": "✅"}, "custom_id": f"verify_btn:{gid}"}]}],
+            "allowed_mentions": {"parse": []}})
+        await db.set_verification_config(gid, CLONE_ID, message_id=int(msg["id"]))
+        summary, label = _channel_name(meta, cid), "Verify panel posted"
+    elif action_id == "ticket_panel":
+        cid = need_channel("panel_channel_id", "panel channel")
+        msg = await _post_to_channel(meta, cid, json_body={
+            "embeds": [{"title": "🎫 Support Tickets", "color": 0x5865F2,
+                        "description": "Click **Open Ticket** to create a private support channel."}],
+            "components": [{"type": 1, "components": [{"type": 2, "style": 1, "label": "Open Ticket",
+                                                        "emoji": {"name": "🎫"}, "custom_id": "ticket:open"}]}],
+            "allowed_mentions": {"parse": []}})
+        await db.set_ticket_config(gid, CLONE_ID, panel_channel_id=cid, panel_message_id=int(msg["id"]))
+        summary, label = _channel_name(meta, cid), "Ticket panel posted"
+    else:  # welcome_test
+        from modules import welcome_card as wc
+        cid = need_channel("channel_id", "welcome channel")
+        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        theme = cfg.get("card_theme") or "wolf"
+        if theme not in wc.THEME_BACKGROUNDS or (theme in wc.PREMIUM_THEMES and not _eff_premium(module, premium, cfg)):
+            theme = "wolf"
+        shape = cfg.get("avatar_shape") if cfg.get("avatar_shape") in wc.AVATAR_SHAPES else "circle"
+        info = await _guild_info(gid)
+        avatar = await _avatar_bytes(sess["user"].get("avatar_url"))
+        opts = {"bg": cfg.get("background_color") or "#2b2d31", "accent": cfg.get("accent_color") or "#5865F2",
+                "shape": shape, "theme": theme, "use_template": cfg.get("use_template") is not False}
+        png = await asyncio.get_running_loop().run_in_executor(
+            None, _render_card_sync, avatar, str(sess["user"].get("username") or "Member")[:32],
+            f"Member #{info.get('approximate_member_count') or 1}", str(info.get("name") or "Server")[:40], opts)
+        form = aiohttp.FormData()
+        form.add_field("payload_json", json.dumps({
+            "content": "🧪 Test welcome card, sent from the dashboard. Nobody joined.",
+            "attachments": [{"id": 0, "filename": "welcome.png"}], "allowed_mentions": {"parse": []}}),
+            content_type="application/json")
+        form.add_field("files[0]", png, filename="welcome.png", content_type="image/png")
+        await _post_to_channel(meta, cid, form=form)
+        summary, label = _channel_name(meta, cid), "Test welcome sent"
+    try:
+        await db.dash_audit_add(gid, uid, sess["user"].get("username") or "Unknown", mod_id,
+                                {label: {"from": None, "to": summary}}, S.AUDIT_RETENTION_DAYS)
+    except Exception:
+        logger.exception("dashboard: audit write failed for bot action")
+    logger.info("dashboard bot_action guild=%s user=%s action=%s", gid, uid, action_id)
+    return {"ok": True, "message": f"Done: posted in {summary}."}
+
+
 async def _authorised_guild(sess: dict, raw_gid) -> int:
     try:
         gid = int(str(raw_gid))
@@ -434,6 +634,18 @@ async def _route(method: str, query: dict, headers, body: dict):
         except Exception:
             logger.exception("dashboard: audit write failed (save itself succeeded)")
         raise _Reply(200, {"ok": True, "values": after})
+
+    if method == "POST" and action == "bot_action":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        raise _Reply(200, await _bot_action(sess, gid, body.get("id")))
+
+    if method == "GET" and action == "billing":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        raise _Reply(200, {"ok": True, **await _billing(gid)})
+
+    if method == "POST" and action == "checkout":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        raise _Reply(200, await _checkout(sess, gid, body.get("plan")))
 
     if method == "GET" and action == "audit":
         gid = await _authorised_guild(sess, q("guild_id"))
