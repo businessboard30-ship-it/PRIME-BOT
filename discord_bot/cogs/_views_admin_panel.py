@@ -46,25 +46,8 @@ def allowed_sections(user_id: int) -> set:
     """Which panel sections this user may open. Mirrors the two allowlists
     the slash commands already use (DISCORD_CLONE_ADMIN_IDS for payments and
     servers/clones, DISCORD_OWNER_BROADCAST_IDS for broadcasts)."""
-    out = set()
-    if user_id in DISCORD_CLONE_ADMIN_IDS:
-        out.add("payments")
-    if user_id in DISCORD_OWNER_BROADCAST_IDS:
-        out.add("broadcast")
-    if user_id in DISCORD_CLONE_ADMIN_IDS:
-        out.add("servers")  # servers / find / clones / monetize / commissions / subscribers
-        out.add("bump")     # /admin bump ... (bump.py gates it on DISCORD_CLONE_ADMIN_IDS)
-        out.add("system")   # submissions / envcheck / revenue / exportusers (admin.py, same list)
-        out.update({"controls", "blacklist", "premium", "audit"})  # Batch 1 (_views_admin_panel_controls.py)
-        out.update({"access", "logs", "config", "database"})       # Batch 2 (_views_admin_panel_ops.py)
-        out.update({"watchlist", "reports", "status", "honeypot"})  # Batch 3 (_views_admin_panel_safety.py), owner-only
-        out.add("money")                                            # Batch 4 (_views_admin_panel_money.py), owner-only
-        out.add("scamshield")                                       # Scam Shield (_views_admin_panel_scamshield.py), owner-only, not grantable
-        out.add("referral")                                         # Referral giveaway (_views_admin_panel_referral.py), owner-only, not grantable
-        out.add("ads")                                              # Batch 5 (_views_admin_panel_ads.py), owner-only (same gate as /ad manage)
-        out.update({"health", "inspect"})                           # Batch 6 (_views_admin_panel_inspect.py), owner-only, not grantable
-    if user_id in DISCORD_OWNER_BROADCAST_IDS:
-        out.add("feedback")  # /admin feedback (feedback.py gates it on DISCORD_OWNER_BROADCAST_IDS)
+    from modules.admin_access import compute_sections  # shared with the web dashboard
+    out = compute_sections(user_id, DISCORD_CLONE_ADMIN_IDS, DISCORD_OWNER_BROADCAST_IDS)
     # Helpers: extra people the owner let into SOME sections (only the grantable
     # ones, see modules/admin_controls.GRANTABLE). Reads an in-memory map.
     try:
@@ -106,6 +89,26 @@ def audit(interaction: discord.Interaction, action: str, **details) -> None:
         task.add_done_callback(_audit_tasks.discard)
     except Exception:
         logger.debug("[admin-panel] audit row not scheduled", exc_info=True)
+    # Same trail the web owner area uses (dash_owner_audit). Best effort on the Discord side.
+    try:
+        import asyncio
+        task = asyncio.get_running_loop().create_task(_owner_trail(interaction.user, action, interaction.guild_id, details))
+        _audit_tasks.add(task)
+        task.add_done_callback(_audit_tasks.discard)
+    except Exception:
+        logger.debug("[admin-panel] owner trail not scheduled", exc_info=True)
+
+
+async def _owner_trail(user, action: str, guild_id, details: dict) -> None:
+    try:
+        from database import db
+        # Only short, non-secret scalars; the panel never passes secret values to audit().
+        safe = {str(k)[:30]: (v if isinstance(v, (int, float, bool)) or v is None else str(v)[:80])
+                for k, v in list(details.items())[:10]}
+        await db.owner_audit_add(user.id, getattr(user, "name", "") or "", "discord_panel", action,
+                                 str(guild_id or ""), "discord", "ok", safe)
+    except Exception:
+        logger.debug("[admin-panel] owner trail write failed", exc_info=True)
 
 
 async def call_cmd(owner_cog, name: str, interaction: discord.Interaction, **kwargs):

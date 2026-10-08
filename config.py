@@ -766,3 +766,20 @@ DASH_PAGES_URL = os.getenv("DASH_PAGES_URL", "https://prime-bot-dash.pages.dev")
 DASH_OAUTH_REDIRECT_URI = os.getenv(
     "DASH_OAUTH_REDIRECT_URI", "https://web-production-74667a.up.railway.app/api/dash").strip()
 DASH_SESSION_MINUTES = int(os.getenv("DASH_SESSION_MINUTES", "720"))
+# Owner area (Phase 0): shorter sessions, step-up window, and an env-driven owner list.
+DASH_OWNER_SESSION_MINUTES = int(os.getenv("DASH_OWNER_SESSION_MINUTES", "120"))
+DASH_STEPUP_MINUTES = int(os.getenv("DASH_STEPUP_MINUTES", "5"))
+
+
+def _id_set_from_env(name: str) -> set:
+    """Comma/space separated Discord user IDs from an env var; junk entries are ignored."""
+    out = set()
+    for tok in os.getenv(name, "").replace(",", " ").split():
+        if tok.isdigit():
+            out.add(int(tok))
+    return out
+
+
+# Extra owners (added to the hardcoded IDs above, never replacing them, so a bad env
+# value cannot lock the real owner out). Applies to the web owner area.
+DASH_OWNER_IDS = set(DISCORD_CLONE_ADMIN_IDS) | _id_set_from_env("DASH_OWNER_IDS")

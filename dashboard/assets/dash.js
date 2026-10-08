@@ -82,7 +82,7 @@
     }, function () { throw new Error("Can't reach the server. Check your connection."); });
   }
   function signedOut(msg) {
-    localStorage.removeItem(KEY); S.sid = S.user = S.servers = null; S.guild = null; S.unread = 0; S.isOwner = false; S.inbox = null;
+    localStorage.removeItem(KEY); S.sid = S.user = S.servers = null; S.guild = null; S.unread = 0; S.isOwner = false; S.ownerSections = []; S.inbox = null;
     renderHeader(); renderLogin(msg);
   }
 
@@ -92,6 +92,7 @@
     var inGuild = /^#\/g\//.test(location.hash);
     menuBtn.hidden = !(S.user && inGuild);
     if (!S.user) return;
+    if (S.ownerSections && S.ownerSections.length) hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/owner", text: "Owner" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/tiers", text: "Level tiers" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost inboxbtn", href: "#/inbox", "aria-label": "Drop box, " + S.unread + " unread" }, "Drop box",
       S.unread ? h("span", { class: "badge-n", text: S.unread > 99 ? "99+" : String(S.unread) }) : null));
@@ -161,7 +162,7 @@
       });
     };
     if (S.servers) return done(S.servers);
-    api("me").then(function (j) { S.servers = j.servers; S.user = j.user; S.unread = j.unread || 0; S.isOwner = !!j.is_owner; renderHeader(); done(S.servers); })
+    api("me").then(function (j) { S.servers = j.servers; S.user = j.user; S.unread = j.unread || 0; S.isOwner = !!j.is_owner; S.ownerSections = j.owner_sections || []; renderHeader(); done(S.servers); })
       .catch(function (e) { if (e.message !== "401") { grid.textContent = ""; grid.appendChild(h("div", { class: "card empty", style: "grid-column:1/-1" }, h("p", { text: e.message }), h("button", { class: "btn sm", text: "Try again", onclick: renderServers }))); } });
   }
 
@@ -812,12 +813,32 @@
     }).catch(function (e) { grid.textContent = ""; grid.appendChild(h("p", { text: e.message || "Couldn't load the gallery." })); });
   }
 
+  /* ---------- owner area (lazy-loaded; the server gates every call, this only hides pages) ---------- */
+  var ownerLoading = null;
+  function loadOwner() {
+    if (window.DashOwner) return Promise.resolve();
+    if (!ownerLoading) ownerLoading = new Promise(function (ok, bad) {
+      window.DashOwnerHost = { S: S, api: api, h: h, app: app, toast: toast };
+      var el = document.createElement("script");
+      el.src = "assets/owner.js"; el.onload = ok; el.onerror = function () { ownerLoading = null; bad(new Error("Couldn't load the owner area.")); };
+      document.head.appendChild(el);
+    });
+    return ownerLoading;
+  }
+  function renderOwner(hash) {
+    S.guild = null; S.clone = null; renderHeader();
+    if (!S.ownerSections || !S.ownerSections.length) { location.hash = "#/"; return; }
+    loadOwner().then(function () { window.DashOwner.render(hash.replace(/^#\/owner\/?/, "")); })
+      .catch(function (e) { app.textContent = ""; app.appendChild(h("main", { id: "main", class: "center" }, h("div", { class: "card empty" }, h("p", { class: "muted", text: e.message })))); });
+  }
+
   /* ---------- router ---------- */
   function route() {
     document.body.classList.remove("menu"); S.mod = null;
     var hash = location.hash || "#/", m = hash.match(/^#\/(?:c\/(\d+)\/)?g\/(\d+)(?:\/([a-z_]+))?$/);
     if (!S.sid) return renderLogin();
     showAnnouncements();
+    if (/^#\/owner(\/|$)/.test(hash)) return renderOwner(hash);
     if (hash === "#/inbox") { S.guild = null; S.clone = null; return renderInbox(); }
     if (hash === "#/tiers") { S.guild = null; S.clone = null; return renderTiers(); }
     if (!m) { S.guild = null; S.clone = null; return renderServers(); }
@@ -844,13 +865,14 @@
   /* ---------- boot ---------- */
   function boot() {
     var frag = new URLSearchParams(location.hash.replace(/^#/, "")), err = null;
-    if (frag.get("session")) { localStorage.setItem(KEY, frag.get("session")); history.replaceState(null, "", location.pathname + "#/"); }
+    if (frag.get("owner") === "stepup_ok") { S.stepupDone = true; history.replaceState(null, "", location.pathname + "#/owner/security"); }
+    else if (frag.get("session")) { localStorage.setItem(KEY, frag.get("session")); history.replaceState(null, "", location.pathname + "#/"); }
     else if (frag.get("error")) { err = frag.get("error"); history.replaceState(null, "", location.pathname); }
     S.sid = localStorage.getItem(KEY);
     fetch(API + "?action=schema", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (j) {
       S.schema = j;
       if (!S.sid) return renderLogin(err);
-      return api("me").then(function (me) { S.user = me.user; S.servers = me.servers; S.unread = me.unread || 0; S.isOwner = !!me.is_owner; renderHeader(); route(); });
+      return api("me").then(function (me) { S.user = me.user; S.servers = me.servers; S.unread = me.unread || 0; S.isOwner = !!me.is_owner; S.ownerSections = me.owner_sections || []; renderHeader(); route(); });
     }).catch(function (e) { if (e.message !== "401") renderLogin(err || "Can't reach the server right now. Try again in a moment."); });
   }
   window.addEventListener("hashchange", function () { if (S.sid && S.schema && S.user) route(); });
