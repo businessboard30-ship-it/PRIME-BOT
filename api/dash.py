@@ -656,6 +656,29 @@ def _schedule_audit(sess, gid, label, summary):
 async def _live_schedules(gid: int) -> list:
     rows = await db.list_scheduled_messages(gid, CLONE_ID)
     return [r for r in rows if r.get("enabled")]
+async def _ticket_messages(channel_id: int) -> tuple:
+    """Up to TICKET_HISTORY_MAX messages, oldest first. (messages, truncated) or (None, False)
+    when the channel is gone."""
+    key = ("tkmsgs", channel_id)
+    hit = _cached(key, 30)
+    if hit is not None:
+        return hit
+    out, before = [], None
+    for _ in range(S.TICKET_HISTORY_MAX // 100):
+        path = f"/channels/{channel_id}/messages?limit=100" + (f"&before={before}" if before else "")
+        try:
+            page = await _bot_get(path)
+        except DiscordError as e:
+            if e.status in (403, 404):
+                if not out:
+                    return _store(key, 15, (None, False))
+                return _store(key, 30, ([S.ticket_message_view(m) for m in out[::-1]], True))
+            raise
+        out.extend(page)
+        if len(page) < 100:
+            return _store(key, 30, ([S.ticket_message_view(m) for m in out[::-1]], False))
+        before = page[-1]["id"]
+    return _store(key, 30, ([S.ticket_message_view(m) for m in out[::-1]], True))
 
 
 async def _authorised_guild(sess: dict, raw_gid) -> int:
@@ -986,6 +1009,30 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(404, "That schedule no longer exists.")
         await _schedule_audit(sess, gid, "Scheduled message removed", f"#{sid}")
         raise _Reply(200, {"ok": True})
+    if method == "GET" and action == "tickets":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        status = q("status")
+        if status and status not in S.TICKET_STATUSES:
+            _fail(400, "Unknown status.")
+        try:
+            before = int(q("before")) if q("before") else None
+        except ValueError:
+            _fail(400, "Invalid page.")
+        rows = await db.list_tickets(gid, CLONE_ID, status or None, before, 31)
+        raise _Reply(200, {"ok": True, "tickets": [S.ticket_row_view(r) for r in rows[:30]], "more": len(rows) > 30})
+
+    if method == "GET" and action == "ticket_messages":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        try:
+            tid = int(str(q("id")))
+        except ValueError:
+            _fail(400, "Invalid ticket.")
+        row = await db.get_ticket_by_id(gid, CLONE_ID, tid)     # the channel comes from OUR row, never from the client
+        if row is None:
+            _fail(404, "That ticket doesn't exist.")
+        msgs, truncated = await _ticket_messages(int(row["channel_id"]))
+        raise _Reply(200, {"ok": True, "ticket": S.ticket_row_view(row), "messages": msgs, "truncated": truncated,
+                           "gone": msgs is None})
 
     if method == "POST" and action == "bot_action":
         gid = await _authorised_guild(sess, body.get("guild_id"))

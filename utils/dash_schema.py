@@ -684,3 +684,25 @@ def schedule_row_view(row: dict) -> dict:
     return {"id": str(row["id"]), "channel_id": str(row["channel_id"]), "content": str(row.get("content") or "")[:SCHEDULE_TEXT_MAX],
             "next_run_at": iso(row.get("next_run_at")), "interval_seconds": int(iv) if iv else None,
             "enabled": bool(row.get("enabled")), "created_by": str(row.get("created_by")) if row.get("created_by") else None}
+TICKET_STATUSES = ("open", "closed")
+TICKET_MSG_MAX = 2000
+TICKET_HISTORY_MAX = 500
+
+
+def ticket_row_view(row: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(row["id"]), "opener_id": str(row["opener_id"]),
+            "claimed_by": str(row["claimed_by"]) if row.get("claimed_by") else None,
+            "status": row.get("status") if row.get("status") in TICKET_STATUSES else "open",
+            "created_at": iso(row.get("created_at")), "closed_at": iso(row.get("closed_at"))}
+
+
+def ticket_message_view(msg: dict) -> dict:
+    """One Discord message as the transcript viewer shows it: plain text only, bounded."""
+    author = msg.get("author") or {}
+    return {"id": str(msg.get("id")), "at": msg.get("timestamp"),
+            "author": str(author.get("global_name") or author.get("username") or "Unknown")[:40],
+            "bot": bool(author.get("bot")),
+            "text": str(msg.get("content") or "")[:TICKET_MSG_MAX],
+            "files": [str(a.get("filename") or "file")[:80] for a in (msg.get("attachments") or [])][:10],
+            "embeds": len(msg.get("embeds") or [])}

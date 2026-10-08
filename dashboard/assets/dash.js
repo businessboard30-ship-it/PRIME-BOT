@@ -195,6 +195,7 @@
     nav.appendChild(link("#/g/" + gid + "/audit", "scroll", "Audit log", modId === "audit"));
     nav.appendChild(link("#/g/" + gid + "/raid", "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link("#/g/" + gid + "/schedules", "scroll", "Scheduled messages", modId === "schedules"));
+    nav.appendChild(link("#/g/" + gid + "/tickethistory", "ticket", "Ticket history", modId === "tickethistory"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
       if (!list.length) return;
@@ -686,6 +687,55 @@
         h("div", { class: "action" }, h("div", { class: "grow" }), addBtn)),
       h("div", { class: "card rv" }, h("h2", { text: "Upcoming" }), note, list)]);
     syncMode(); load();
+  /* ---------- ticket history ---------- */
+  function fmtWhen(iso) { try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch (e) { return ""; } }
+  function renderTickets(gid, main) {
+    var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
+    var filter = h("select", { "aria-label": "Filter by status" }, [["", "All tickets"], ["open", "Open"], ["closed", "Closed"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var viewer = h("div", { class: "card rv", hidden: true });
+    var last = null;
+    function openTicket(t) {
+      viewer.hidden = false; viewer.textContent = "";
+      viewer.appendChild(h("div", { class: "skel", style: "height:120px" }));
+      viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      api("ticket_messages", { guild_id: gid, id: t.id }).then(function (r) {
+        viewer.textContent = "";
+        viewer.appendChild(h("h2", { text: "Ticket #" + t.id + " · " + r.ticket.status }));
+        if (r.gone) { viewer.appendChild(h("p", { class: "muted", text: "The ticket channel was deleted, so the conversation is no longer available." })); return; }
+        if (r.truncated) viewer.appendChild(h("p", { class: "help", text: "Showing the most recent " + r.messages.length + " messages." }));
+        if (!r.messages.length) viewer.appendChild(h("p", { class: "muted", text: "No messages." }));
+        r.messages.forEach(function (m) {
+          var extra = (m.files.length ? " [" + m.files.join(", ") + "]" : "") + (m.embeds ? " [" + m.embeds + " embed" + (m.embeds > 1 ? "s" : "") + "]" : "");
+          viewer.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: m.author + (m.bot ? " (bot)" : "") }), h("span", { class: "help", text: "  " + fmtWhen(m.at) }),
+            h("p", { text: (m.text || "") + extra, style: "white-space:pre-wrap;word-break:break-word" }))));
+        });
+      }).catch(function (e) { viewer.textContent = ""; viewer.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    function load(reset) {
+      if (reset) { list.textContent = ""; last = null; viewer.hidden = true; }
+      var params = { guild_id: gid };
+      if (filter.value) params.status = filter.value;
+      if (last) params.before = last;
+      api("tickets", params).then(function (r) {
+        r.tickets.forEach(function (t) {
+          var b = h("button", { class: "btn sm ghost", text: "Read" });
+          b.addEventListener("click", function () { openTicket(t); });
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: "Ticket #" + t.id + " · " + t.status }),
+            h("p", { class: "help", text: "Opened " + fmtWhen(t.created_at) + (t.closed_at ? " · closed " + fmtWhen(t.closed_at) : "") })), b));
+          last = t.id;
+        });
+        if (!list.children.length) list.appendChild(h("p", { class: "muted", text: "No tickets yet." }));
+        moreBtn.hidden = !r.more;
+      }).catch(function (e) { toast(e.message, "bad"); });
+    }
+    filter.addEventListener("change", function () { load(true); });
+    moreBtn.addEventListener("click", function () { load(false); });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Ticket history" }),
+      h("p", { class: "muted", text: "Read what was said in a ticket, live from its channel. Closed tickets keep their channel hidden, so the conversation is still here." })),
+      h("a", { class: "btn sm ghost", href: "#/g/" + gid, text: "Overview" })), h("div", { class: "card rv" }, filter, list, moreBtn), viewer]);
+    load(true);
   }
 
   /* ---------- premium & billing ---------- */
@@ -785,6 +835,9 @@
       if (modId && modId !== "audit" && modId !== "billing" && modId !== "schedules" && !mod) { location.hash = "#/g/" + gid; return; }
       var main = renderShell(gid, modId);
       if (modId === "audit") renderAudit(gid, main); else if (modId === "schedules") renderSchedules(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
+      if (modId && modId !== "audit" && modId !== "billing" && modId !== "tickethistory" && !mod) { location.hash = "#/g/" + gid; return; }
+      var main = renderShell(gid, modId);
+      if (modId === "audit") renderAudit(gid, main); else if (modId === "tickethistory") renderTickets(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
       window.scrollTo(0, 0);
     }).catch(function (e) {
       if (e.message === "401") return;
