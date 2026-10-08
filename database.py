@@ -14526,6 +14526,33 @@ class Database:
         p = r["payload"]
         return {"payload": json.loads(p) if isinstance(p, str) else p, "updated_at": r["updated_at"]}
 
+    # ── Web dashboard adapters (generic get(guild, clone) / set(guild, clone, **values) contract; no schema change) ──
+
+    async def get_bump_settings_config(self, guild_id: int, clone_id: Optional[int] = None) -> dict:
+        row = await self.bump_get_guild_config(guild_id, clone_id) or {}
+        return {"receives_bumps": bool(row.get("receives_bumps", False)), "bump_channel_id": row.get("bump_channel_id"),
+                "language": row.get("language") or "any", "nsfw_opt_in": bool(row.get("nsfw_opt_in", False)),
+                "intensity_level": str(row.get("intensity_level") or 3)}
+
+    async def set_bump_settings_config(self, guild_id: int, clone_id: Optional[int] = None, **values) -> None:
+        """Same write the /bumpsetup wizard makes. A cleared channel is ignored (bump_set_guild_config cannot null it)."""
+        existing = await self.bump_get_guild_config(guild_id, clone_id) or {}
+        level = values.get("intensity_level")
+        await self.bump_set_guild_config(
+            guild_id, clone_id, int(existing.get("configured_by") or 0),
+            bump_channel_id=values.get("bump_channel_id") or None,
+            language=values.get("language"), nsfw_opt_in=values.get("nsfw_opt_in"),
+            intensity_level=int(level) if level not in (None, "") else None,
+            receives_bumps=values.get("receives_bumps"))
+
+    async def get_custom_role_settings_config(self, guild_id: int, clone_id: Optional[int] = None) -> dict:
+        return {"enabled": not await self.is_custom_role_feature_disabled(guild_id, clone_id)}
+
+    async def set_custom_role_settings_config(self, guild_id: int, clone_id: Optional[int] = None, **values) -> None:
+        """Same write as `/customrole disable_feature`."""
+        if "enabled" in values:
+            await self.set_custom_role_feature_disabled(guild_id, not bool(values["enabled"]), clone_id=clone_id)
+
     # ── Web dashboard drop box (owner -> every dashboard admin) ──
 
     async def dropbox_create(self, title: str, body: str, kind: str, announce: bool,
