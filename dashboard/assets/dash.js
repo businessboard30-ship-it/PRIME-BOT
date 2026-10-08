@@ -898,24 +898,66 @@
   /* ---------- member area (#/me): the signed-in user's own plans; server decides everything ---------- */
   var PRODUCT_LABEL = { card_plan: "Custom level-up card", dev_monthly: "Developer mode (monthly)", dev_yearly: "Developer mode (yearly)" };
   var STATE_LABEL = { active: "Active", cancelled: "Ends at period end", past_due: "Payment failed (grace period)", expired: "Expired", none: "None" };
+  function section(title) { return h("div", { class: "card rv", style: "margin-bottom:16px" }, h("h3", { text: title })); }
+  function fail(box, e) { box.appendChild(h("p", { class: "muted", text: (e && e.message) || "Couldn't load this." })); }
+  function selectRow(label, opts, current, kind) {
+    var sel = h("select", { "aria-label": label }, opts.map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    sel.value = current == null ? "" : current;
+    sel.addEventListener("change", function () {
+      api("member_pref_set", null, { kind: kind, value: sel.value }).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, "err"); });
+    });
+    return h("p", null, h("b", { text: label + " " }), sel);
+  }
   function renderMe() {
     document.body.classList.remove("menu"); S.mod = null; renderHeader();
-    var list = h("div", { class: "card rv" }, h("div", { class: "skel" }));
+    var plans = section("My plans"), servers = section("My servers"), prefs = section("My preferences"), buys = section("My purchases");
     app.textContent = "";
     app.appendChild(h("main", { id: "main", class: "page" },
       h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Your account" }), h("h1", { text: "My account" }),
         h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }))),
-      list));
+      plans, servers, prefs, buys));
     api("member_status").then(function (j) {
-      list.textContent = "";
-      list.appendChild(h("h3", { text: "My plans" }));
       var items = j.entitlements || [];
-      if (!items.length) { list.appendChild(h("p", { class: "muted", text: "You have no active plans. Plans will be purchasable here soon." })); return; }
+      if (!items.length) { plans.appendChild(h("p", { class: "muted", text: "You have no active plans. Plans will be purchasable here soon." })); return; }
       items.forEach(function (e) {
-        list.appendChild(h("p", null, h("b", { text: PRODUCT_LABEL[e.product] || e.product }), " \u00b7 " + (STATE_LABEL[e.state] || e.state)
+        plans.appendChild(h("p", null, h("b", { text: PRODUCT_LABEL[e.product] || e.product }), " \u00b7 " + (STATE_LABEL[e.state] || e.state)
           + (e.expires_at ? " \u00b7 until " + new Date(e.expires_at).toLocaleDateString() : "")));
       });
-    }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { text: (e && e.message) || "Couldn't load your account." })); });
+    }).catch(function (e) { fail(plans, e); });
+    api("member_servers").then(function (j) {
+      var list = j.servers || [];
+      if (!list.length) { servers.appendChild(h("p", { class: "muted", text: "Chat in a server with the bot to start earning XP. Your levels will show up here." })); return; }
+      list.forEach(function (g) {
+        var pct = g.xp_for_next ? Math.min(100, Math.round(100 * g.xp_in_level / g.xp_for_next)) : 0;
+        var ping = h("input", { type: "checkbox", "aria-label": "Level-up pings in " + g.name }); ping.checked = !g.ping_optout;
+        ping.addEventListener("change", function () {
+          api("member_pref_set", null, { kind: "level_ping", guild_id: g.guild_id, value: !ping.checked }).then(function () { toast("Saved"); })
+            .catch(function (e) { ping.checked = !ping.checked; toast(e.message, "err"); });
+        });
+        servers.appendChild(h("div", { style: "margin:12px 0" },
+          h("p", null, h("b", { text: g.name }), " \u00b7 Level " + g.level + " \u00b7 Rank #" + g.rank + " of " + g.players
+            + (g.coins == null ? "" : " \u00b7 " + g.coin_symbol + " " + g.coins.toLocaleString() + " " + g.coin_name)),
+          h("div", { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct, "aria-label": "Progress to next level",
+            style: "height:8px;border-radius:4px;background:var(--tint)" }, h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
+          h("p", { class: "muted", text: g.xp_in_level.toLocaleString() + " / " + g.xp_for_next.toLocaleString() + " XP to level " + (g.level + 1) }),
+          h("label", null, ping, " Ping me when I level up")));
+      });
+    }).catch(function (e) { fail(servers, e); });
+    api("member_prefs").then(function (j) {
+      prefs.appendChild(selectRow("Language", Object.keys(j.languages).map(function (k) { return [k, j.languages[k]]; }), j.language, "language"));
+      prefs.appendChild(selectRow("Currency", [["", "Default"]].concat(j.currencies.map(function (c) { return [c, c]; })), j.currency, "currency"));
+      prefs.appendChild(selectRow("AI character", Object.keys(j.characters).map(function (k) { return [k, j.characters[k]]; }), j.character, "character"));
+      prefs.appendChild(selectRow("AI voice notes", [["auto", "Automatic"], ["off", "Off"]], j.voice, "voice"));
+      prefs.appendChild(h("p", { class: "muted", text: "Language applies to the main bot. Theme is in the header." }));
+    }).catch(function (e) { fail(prefs, e); });
+    api("member_purchases").then(function (j) {
+      var list = j.purchases || [];
+      if (!list.length) { buys.appendChild(h("p", { class: "muted", text: "No purchases yet." })); return; }
+      list.forEach(function (p) {
+        buys.appendChild(h("p", null, h("b", { text: p.type.replace(/_/g, " ") }), " \u00b7 " + p.amount.toFixed(2) + " \u00b7 " + p.status
+          + (p.at ? " \u00b7 " + new Date(p.at).toLocaleDateString() : "")));
+      });
+    }).catch(function (e) { fail(buys, e); });
   }
 
   function renderOwner(hash) {

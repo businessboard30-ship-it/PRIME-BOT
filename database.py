@@ -14660,6 +14660,53 @@ class Database:
         async with pool.acquire() as conn:
             return bool(await conn.fetchval("SELECT 1 FROM dash_web_users WHERE user_id = $1", str(user_id)))
 
+    # ── member pages (#/me): every query is keyed to the signed-in user's own id ──
+    async def member_servers(self, user_id: str) -> list:
+        """Servers (main bot, still present) where this user has XP: level, XP, rank, coins, ping opt-out."""
+        uid = int(user_id)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT x.guild_id, x.total_xp, x.level, g.guild_name,
+                          (SELECT COUNT(*) FROM discord_xp d WHERE d.guild_id = x.guild_id
+                             AND d.clone_id IS NULL AND d.total_xp > x.total_xp) + 1 AS rank,
+                          (SELECT COUNT(*) FROM discord_xp d WHERE d.guild_id = x.guild_id
+                             AND d.clone_id IS NULL) AS players,
+                          b.balance, c.currency_symbol, c.currency_name,
+                          EXISTS (SELECT 1 FROM leveling_ping_optout o
+                                  WHERE o.guild_id = x.guild_id AND o.user_id = x.user_id) AS ping_optout
+                   FROM discord_xp x
+                   JOIN LATERAL (SELECT guild_name FROM discord_guilds
+                                 WHERE guild_id = x.guild_id AND clone_id IS NULL AND left_at IS NULL
+                                 ORDER BY joined_at DESC LIMIT 1) g ON TRUE
+                   LEFT JOIN discord_economy_balances b
+                          ON b.guild_id = x.guild_id AND b.clone_id IS NULL AND b.user_id = x.user_id
+                   LEFT JOIN discord_economy_config c
+                          ON c.guild_id = x.guild_id AND c.clone_id IS NULL
+                   WHERE x.user_id = $1 AND x.clone_id IS NULL AND x.total_xp > 0
+                   ORDER BY x.total_xp DESC LIMIT 50""", uid)
+        return [dict(r) for r in rows]
+
+    async def member_level_ping_set(self, guild_id: int, user_id: int, optout: bool) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if optout:
+                await conn.execute("INSERT INTO leveling_ping_optout (guild_id, user_id) VALUES ($1, $2) "
+                                   "ON CONFLICT DO NOTHING", guild_id, user_id)
+            else:
+                await conn.execute("DELETE FROM leveling_ping_optout WHERE guild_id = $1 AND user_id = $2",
+                                   guild_id, user_id)
+
+    async def member_purchases(self, user_id: str, limit: int = 50) -> list:
+        """This user's own payment rows only. The gateway reference is never returned."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT amount, status, payment_type, provider, created_date
+                   FROM payment_logs WHERE user_id = $1 ORDER BY created_date DESC LIMIT $2""",
+                int(user_id), int(limit))
+        return [dict(r) for r in rows]
+
     async def entitlements_list(self, user_id: str) -> list:
         pool = await get_pool()
         async with pool.acquire() as conn:
