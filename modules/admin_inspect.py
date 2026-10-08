@@ -323,3 +323,47 @@ def parse_coins(raw: str) -> Optional[int]:
     if value == 0 or abs(value) > MAX_COINS:
         return None
     return value
+
+
+# ── server list (web owner area; also usable by the Discord panel) ───────
+
+SERVER_PAGE = 25
+
+
+def _like_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def server_list(query: str = "", clone: Optional[str] = None, active_only: bool = True,
+                      page: int = 0, per_page: int = SERVER_PAGE) -> dict:
+    """Servers (main bot + clones) with search and paging. Read-only.
+    query: part of a name, or an exact server id. clone: None = all, 'main' = main bot only,
+    or a clone id. Returns {'rows': [...], 'total': N}."""
+    q = (query or "").strip()[:100]
+    per_page = max(1, min(int(per_page), 100))
+    offset = max(0, int(page)) * per_page
+    clone_main = clone == "main"
+    clone_id = int(clone) if clone and clone != "main" and str(clone).isdigit() else None
+    args = [q or None, _like_escape(q) if q else None, clone_main, clone_id, bool(active_only)]
+    where = ("WHERE ($1::text IS NULL OR g.guild_name ILIKE '%' || $2 || '%' ESCAPE '\\' OR g.guild_id::text = $1) "
+             "AND (NOT $3::bool OR g.clone_id IS NULL) AND ($4::int IS NULL OR g.clone_id = $4) "
+             "AND (NOT $5::bool OR g.left_at IS NULL)")
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT g.guild_id, g.clone_id, g.guild_name, g.member_count, g.owner_id, g.joined_at, g.left_at, "
+            "c.bot_username FROM discord_guilds g LEFT JOIN discord_cloned_bots c ON c.clone_id = g.clone_id "
+            f"{where} ORDER BY g.member_count DESC NULLS LAST, g.joined_at DESC LIMIT $6 OFFSET $7",
+            *args, per_page, offset)
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM discord_guilds g {where}", *args)
+    return {"rows": [dict(r) for r in rows], "total": int(total or 0)}
+
+
+async def guild_counts() -> dict:
+    """Active servers for the main bot vs clones, straight from the database (no live bot needed)."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            "SELECT COUNT(*) FILTER (WHERE clone_id IS NULL AND left_at IS NULL) AS main, "
+            "COUNT(*) FILTER (WHERE clone_id IS NOT NULL AND left_at IS NULL) AS clones FROM discord_guilds")
+    return {"main": int(r["main"] or 0), "clones": int(r["clones"] or 0)}

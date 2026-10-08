@@ -41,6 +41,7 @@ Routes (all on /api/dash):
   POST {action: owner_stepup}           -> OWNER: {url}: Discord re-sign-in that makes this session "fresh" for DASH_STEPUP_MINUTES
   POST {action: owner_signout_all}      -> OWNER: drop every dashboard session of this user (audited)
   GET  ?action=owner_audit[&before][&section] -> OWNER (section "audit"): owner audit trail, newest first
+  GET  ?action=owner_health|owner_servers|owner_server|owner_user|owner_payments|owner_expiries -> OWNER, read-only (api/dash_owner.py)
 Clone bots: every guild route also accepts `clone_id` (query or JSON body). The dashboard then
 acts as that clone: its own bot token for every Discord call, its own settings rows (clone_id),
 its own Premium state. Authorisation is unchanged and still checked against Discord with the
@@ -278,6 +279,11 @@ def _require_confirm(body: dict, expected: str) -> None:
     """Typed confirmation for destructive actions (exact match, case-sensitive)."""
     if (body.get("confirm") or "") != expected:
         _fail(422, f"Type {expected} to confirm.")
+
+
+def _owner_routes() -> dict:
+    from api import dash_owner
+    return dash_owner.ROUTES
 
 
 _owner_hits: dict = {}
@@ -1029,6 +1035,17 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(422, "Bad cursor.")
         rows = await db.owner_audit_list(int(before) if before else None, section if section else None, 50)
         raise _Reply(200, {"ok": True, "entries": rows})
+
+    if method == "GET" and action in _owner_routes():
+        section, handler = _owner_routes()[action]
+        _require_section(sess, section)
+        _owner_rate(sess, "read:" + action, 60, 60)
+        from api import dash_owner
+        out = handler(q)
+        out = await out if hasattr(out, "__await__") else out
+        if "_error" in out:
+            _fail(*out["_error"])
+        raise _Reply(200, {"ok": True, **dash_owner.jsonable(out)})
 
     if method == "GET" and action == "guild":
         gid = await _authorised_guild(sess, q("guild_id"))
