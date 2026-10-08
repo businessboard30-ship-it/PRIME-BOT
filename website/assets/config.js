@@ -4,6 +4,8 @@ window.SITE_CONFIG = {
   WELCOME_INVITE_URL: "https://discord.com/api/oauth2/authorize?client_id=1539561247299604610&permissions=1100317453398&scope=bot%20applications.commands",
   PRIME_INVITE_URL: "https://discord.com/api/oauth2/authorize?client_id=1534579332528472246&permissions=1100317453398&scope=bot%20applications.commands",
   SUPPORT_SERVER_URL: "https://discord.gg/DYfajXrP9B",
+  // Web dashboard (Cloudflare Pages project prime-bot-dash). Links marked data-dash use this.
+  DASHBOARD_URL: "https://prime-bot-dash.pages.dev",
   CONTACT_EMAIL: "maxwelldumenya5@outlook.com",
   // [TOPGG_URL] — optional. Leave empty to hide every Top.gg link.
   TOPGG_URL: "",
