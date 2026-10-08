@@ -117,6 +117,9 @@ async def _bot_get(path: str):
                     retry = float((await r.json(content_type=None)).get("retry_after", 1))
                     await asyncio.sleep(min(retry, 3))
                     continue
+                if r.status in (500, 502, 503, 504) and attempt == 0:
+                    await asyncio.sleep(0.6)  # transient Discord hiccup: one quiet retry
+                    continue
                 if r.status != 200:
                     raise DiscordError(r.status)
                 return await r.json(content_type=None)
@@ -1063,7 +1066,12 @@ async def _route(method: str, query: dict, headers, body: dict):
         raise _Reply(200, await _welcome_preview(sess, gid, q))
 
     if method == "GET" and action == "dropbox":
-        msgs = await db.dropbox_list(str(sess["user"]["id"]))
+        try:
+            msgs = await db.dropbox_list(str(sess["user"]["id"]))
+        except Exception:
+            # The inbox is polled on every page; never let it take the panel down.
+            logger.exception("dashboard: dropbox list failed")
+            msgs = []
         raise _Reply(200, {"ok": True, "messages": msgs, "unread": sum(1 for m in msgs if not m["read"]),
                            "is_owner": _is_owner(sess)})
 
