@@ -277,15 +277,6 @@ MODULES: List[dict] = [
               options=opts(("1", "1 - Low"), ("2", "2 - Light"), ("3", "3 - Normal"), ("4", "4 - Frequent"), ("5", "5 - High"))),
         ],
     },
-    {
-        "id": "customrole", "title": "Custom roles", "category": "Community", "icon": "star", "no_quick": True,
-        "desc": "Let members create and restyle their own role.",
-        "get": "get_custom_role_settings_config", "set": "set_custom_role_settings_config",
-        "note": "Same switch as /customrole disable_feature. Members still need Premium or a purchase to use it; the panel itself is posted from Discord.",
-        "fields": [
-            F("enabled", "Custom roles", "toggle", "Turn the feature on or off for this server."),
-        ],
-    },
 ]
 
 BY_ID: Dict[str, dict] = {m["id"]: m for m in MODULES}
