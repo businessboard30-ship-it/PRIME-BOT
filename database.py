@@ -14526,6 +14526,32 @@ class Database:
         p = r["payload"]
         return {"payload": json.loads(p) if isinstance(p, str) else p, "updated_at": r["updated_at"]}
 
+    # ── Web dashboard adapters: auto-post (generic get(guild, clone) / set(guild, clone, **values) contract; no schema change) ──
+
+    async def get_autopost_settings_config(self, guild_id: int, clone_id: Optional[int] = None) -> dict:
+        row = await self.get_discord_autopost(guild_id, clone_id) or {}
+        return {"enabled": bool(row.get("enabled", False)), "channel_id": row.get("channel_id"),
+                "interval_hours": int(row.get("interval_hours") or 24)}
+
+    async def set_autopost_settings_config(self, guild_id: int, clone_id: Optional[int] = None, **values) -> None:
+        """Same writes as /autopost setup and /autopost disable. Turning it on needs a channel and some content in the
+        shared library (else ValidationError, which the route returns as a 422). A cleared channel while off is ignored
+        (the upsert cannot null it). configured_by keeps its old value (0 when new): the web audit row names the person."""
+        from utils.dash_schema import ValidationError
+        existing = await self.get_discord_autopost(guild_id, clone_id) or {}
+        enabled = bool(values["enabled"]) if "enabled" in values else bool(existing.get("enabled"))
+        channel = values["channel_id"] if "channel_id" in values else existing.get("channel_id")
+        hours = int(values.get("interval_hours") or existing.get("interval_hours") or 24)
+        if not channel:
+            if enabled:
+                raise ValidationError("Pick a channel before turning auto-post on.")
+            return
+        if enabled and not await self.list_discord_autopost_content():
+            raise ValidationError("There's no auto-post content configured yet, so there is nothing to rotate through.")
+        await self.set_discord_autopost(guild_id, clone_id, int(channel), hours, int(existing.get("configured_by") or 0))
+        if not enabled:
+            await self.disable_discord_autopost(guild_id, clone_id)
+
     # ── Web dashboard drop box (owner -> every dashboard admin) ──
 
     async def dropbox_create(self, title: str, body: str, kind: str, announce: bool,

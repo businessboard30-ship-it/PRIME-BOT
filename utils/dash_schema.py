@@ -242,6 +242,17 @@ MODULES: List[dict] = [
             F("vote_cooldown_hours", "Vote cooldown (hours)", "number", "", min=1, max=168),
         ],
     },
+    {
+        "id": "autopost", "title": "Auto-post", "category": "Community", "icon": "scroll", "no_quick": True,
+        "desc": "Post a rotating tip about the bot's features on a schedule.",
+        "get": "get_autopost_settings_config", "set": "set_autopost_settings_config",
+        "note": "Same settings as /autopost. The tips come from the bot's shared library; you only choose where and how often.",
+        "fields": [
+            F("enabled", "Auto-post", "toggle", "Post a bot tip in the channel below on a schedule."),
+            F("channel_id", "Channel", "channel", "Where the tips are posted. Needed before it can be turned on.", kind="text"),
+            F("interval_hours", "Post every (hours)", "number", "1 to 720 hours.", min=1, max=720),
+        ],
+    },
 ]
 
 BY_ID: Dict[str, dict] = {m["id"]: m for m in MODULES}
@@ -676,6 +687,30 @@ def validate_schedule(raw: Any, text_channels: set, now) -> Tuple[Optional[dict]
             run_at += timedelta(days=1)
         return {"channel_id": int(cid), "content": text, "run_at": run_at, "interval_seconds": 86400}, None
     return None, "Pick once, repeating or daily."
+
+
+ANNOUNCEMENT_MAX_ACTIVE = 25
+
+
+def validate_announcement(raw: Any, text_channels: set, now) -> Tuple[Optional[dict], Optional[str]]:
+    """Same checks as a scheduled message (channel, text, once/repeat/daily). -> ({channel_id, message, run_at,
+    interval_minutes}, None) or (None, error). The /announce command repeats in whole minutes."""
+    if isinstance(raw, dict) and raw.get("mode") == "daily":
+        return None, "Announcements can post once or repeat every few minutes. For a fixed daily time use a scheduled message."
+    clean, err = validate_schedule(raw, text_channels, now)
+    if err:
+        return None, err
+    sec = clean["interval_seconds"]
+    return {"channel_id": clean["channel_id"], "message": clean["content"], "run_at": clean["run_at"],
+            "interval_minutes": (sec // 60) if sec else None}, None
+
+
+def announcement_row_view(row: dict) -> dict:
+    """An announcement row in the same shape as a scheduled message, so the page renders both alike."""
+    iv = row.get("interval_minutes")
+    return schedule_row_view({"id": row.get("id"), "channel_id": row.get("channel_id"), "content": row.get("message"),
+                              "next_run_at": row.get("next_run_at"), "interval_seconds": int(iv) * 60 if iv else None,
+                              "enabled": row.get("active", True), "created_by": row.get("created_by")})
 
 
 def schedule_row_view(row: dict) -> dict:
