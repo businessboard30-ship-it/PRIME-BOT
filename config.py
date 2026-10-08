@@ -164,6 +164,11 @@ DISCORD_DEV_GUILD_ID = 0
 # Base URL of the Next.js site (app/ dir) this repo also deploys — used to
 # build the /automod dashboard link. Defaults to the marketing site's own
 # domain convention; override if the dashboard is deployed separately.
+# Public marketing website (website/ dir, Cloudflare Pages) and the YouTube setup walkthrough.
+# Shown as masked links in the join DM and on the /manual page. Change WEBSITE_URL once a custom domain is live.
+WEBSITE_URL = os.getenv("WEBSITE_URL", "https://prime-bot-site.pages.dev").rstrip("/")
+SETUP_VIDEO_URL = os.getenv("SETUP_VIDEO_URL", "https://youtu.be/aleJjsJdJxI")
+
 DASHBOARD_BASE_URL = os.getenv("DASHBOARD_BASE_URL", "https://prime-bot-sigma.vercel.app").rstrip("/")
 
 # Separate, explicitly-whitelisted base for the /unlock page ONLY, used

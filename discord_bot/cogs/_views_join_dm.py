@@ -31,7 +31,7 @@ import discord
 from modules.text_styles import plain_name as _plain_name
 
 from database import db
-from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, CUSTOM_ROLE_FEE_USD, AD_PLACEMENT_FEE_USD
+from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, WEBSITE_URL, CUSTOM_ROLE_FEE_USD, AD_PLACEMENT_FEE_USD
 import config as _cfg
 from modules.ads_marketplace import submit_ad
 from gumroad_payments import start_gumroad_payment
@@ -328,6 +328,8 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         link_bits = [f"📖 [Read bot manual]({_manual_base}/manual{'/' if _cfg.STABLE_BASE_URL else ''}#moderation)"]
         if DISCORD_SUPPORT_SERVER_INVITE:
             link_bits.append(f"🆘 [Join our support server]({DISCORD_SUPPORT_SERVER_INVITE})")
+        if WEBSITE_URL:
+            link_bits.append(f"🌐 [Website]({WEBSITE_URL})")
         container.add_item(discord.ui.TextDisplay("  •  ".join(link_bits)))
         if extra_connect_row is not None:
             container.add_item(extra_connect_row)
