@@ -313,3 +313,9 @@ input[type=password]:focus,input[type=search]:focus{border-color:var(--line);box
 .owner-chart .bar.b,.sw.b{fill:var(--warn);background:var(--warn)}
 .owner-legend{display:flex;gap:1.2rem;color:var(--muted);font-size:.8rem;margin-top:.4rem}
 .owner-legend .sw{display:inline-block;width:.8rem;height:.8rem;margin-right:.4rem;vertical-align:middle}
+
+/* Checkout loader (reuses the sign-in rings) */
+.payload{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;background:var(--bg);padding:1.5rem;text-align:center}
+.payload svg.rings{color:var(--strong,var(--text));width:min(60vw,260px);height:auto;filter:drop-shadow(0 0 10px var(--glow-soft))}
+body.paying{overflow:hidden}
+.payload [hidden]{display:none}

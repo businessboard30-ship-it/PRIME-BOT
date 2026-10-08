@@ -1095,6 +1095,34 @@
     }).catch(function (e) { fail(box, e); });
   }
 
+  /* Subscribe: full-screen loader (same rings as the sign-in page) while the server makes the checkout link, so the
+     jump to the payment page never looks frozen. Always recoverable: Cancel after a while, and Back from the
+     payment page (bfcache restore) clears it. Nothing is granted here; only the payment webhook grants. */
+  var payBox = null, payTimer = 0;
+  function endCheckoutUi() {
+    clearTimeout(payTimer);
+    if (payBox && payBox.parentNode) payBox.parentNode.removeChild(payBox);
+    payBox = null;
+    document.body.classList.remove("paying");
+    Array.prototype.forEach.call(document.querySelectorAll("button[data-paybusy]"), function (b) { b.disabled = false; b.removeAttribute("data-paybusy"); });
+  }
+  window.addEventListener("pageshow", function (ev) { if (ev.persisted || payBox) endCheckoutUi(); });
+  function startCheckout(product, btn, msg) {
+    if (payBox) return;
+    btn.disabled = true; btn.setAttribute("data-paybusy", "1"); msg.textContent = "";
+    var note = h("p", { class: "muted", role: "status", text: "Opening secure checkout\u2026" });
+    var cancel = h("button", { class: "btn sm ghost", type: "button", text: "Cancel", hidden: true });
+    cancel.addEventListener("click", endCheckoutUi);
+    payBox = h("div", { class: "payload", role: "dialog", "aria-modal": "true", "aria-label": "Opening checkout" }, ringsArt(), note, cancel);
+    document.body.classList.add("paying");
+    document.body.appendChild(payBox);
+    payTimer = setTimeout(function () { note.textContent = "Taking longer than usual\u2026"; cancel.hidden = false; }, 8000);
+    api("checkout_user", null, { product: product }).then(function (r) {
+      if (!/^https:\/\//.test(String(r.checkout_url || ""))) throw new Error("Couldn't start checkout.");
+      window.location.href = r.checkout_url;
+    }).catch(function (e) { endCheckoutUi(); msg.textContent = (e && e.message) || "Couldn't start checkout."; });
+  }
+
   function renderMe() {
     document.body.classList.remove("menu"); S.mod = null; renderHeader();
     var plans = section("My plans"), servers = section("My servers"), cardSec = section("Custom level-up card"), prefs = section("My preferences"), buys = section("My purchases");
@@ -1120,12 +1148,7 @@
         var per = p.period_days > 100 ? "year" : "month";
         var btn = h("button", { class: "btn sm", type: "button", text: can ? "Subscribe" : (STATE_LABEL[p.state] || "Active") });
         btn.disabled = !can;
-        btn.addEventListener("click", function () {
-          btn.disabled = true; msg.textContent = "Opening checkout\u2026";
-          api("checkout_user", null, { product: p.product }).then(function (r) {
-            window.location.href = r.checkout_url;
-          }).catch(function (e) { btn.disabled = false; msg.textContent = (e && e.message) || "Couldn't start checkout."; });
-        });
+        btn.addEventListener("click", function () { startCheckout(p.product, btn, msg); });
         plans.appendChild(h("div", { class: "row" }, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " / " + per + " ", btn));
       });
       plans.appendChild(msg);
@@ -1195,11 +1218,7 @@
         var per = p.period_days > 100 ? "year" : "month";
         var btn = h("button", { class: "btn sm", type: "button", text: can ? "Subscribe" : (STATE_LABEL[p.state] || "Active") });
         btn.disabled = !can;
-        btn.addEventListener("click", function () {
-          btn.disabled = true; msg.textContent = "Opening checkout\u2026";
-          api("checkout_user", null, { product: p.product }).then(function (r) { window.location.href = r.checkout_url; })
-            .catch(function (e) { btn.disabled = false; msg.textContent = (e && e.message) || "Couldn't start checkout."; });
-        });
+        btn.addEventListener("click", function () { startCheckout(p.product, btn, msg); });
         lock.appendChild(h("div", { class: "row" }, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " / " + per + " ", btn));
       });
       lock.appendChild(msg); body.appendChild(lock);
