@@ -38,6 +38,7 @@
   // Same layout as a server's settings: sidebar on the left, page header, then cards.
   function shell(current, content) {
     var me = pageById(current) || PAGES[0];
+    clearTimers();
     app.textContent = ""; document.body.classList.remove("menu");
     var nav = h("nav", { class: "nav", "aria-label": "Owner sections" });
     var search = h("input", { type: "text", class: "search", placeholder: "Search the owner panel", "aria-label": "Search the owner panel", autocomplete: "off" });
@@ -62,10 +63,115 @@
       h("div", { class: "srvhead" }, ava, h("div", null, h("b", { text: "Owner panel" }), h("small", { class: "muted", text: S.user && S.user.username || "" }), h("a", { href: "#/", text: "Back to servers" }))),
       search, nav);
     side.addEventListener("click", function (e) { if (e.target.closest("a")) document.body.classList.remove("menu"); });
-    var main = h("main", { id: "main", class: "main owner-page" },
+    var bar = h("div", { class: "owner-top" }, allowed(pageById("users")) ? globalSearch() : null, allowed(pageById("health")) ? alertsBell() : null);
+    var main = h("main", { id: "main", class: "main owner-page" }, bar,
       h("div", { class: "page-head" }, h("p", { class: "crumb", text: me.group || "Owner" }), h("h1", { text: me.label }), h("p", { class: "muted", text: me.desc })),
       content);
     app.appendChild(h("div", { class: "shell" }, side, main)); window.scrollTo(0, 0);
+  }
+
+
+  /* ---------- Phase 6: timers, charts, global search, alerts ---------- */
+  var timers = [], prefill = null;
+  function clearTimers() { timers.forEach(clearInterval); timers = []; }
+  // Runs fn every `ms` while the tab is visible and this page is still the one shown. Cleared by the next shell().
+  function every(ms, fn) {
+    var id = setInterval(function () { if (!document.hidden) fn(); }, ms);
+    timers.push(id); return id;
+  }
+  function takePrefill(page) { var p = prefill && prefill.page === page ? prefill.value : null; if (p != null) prefill = null; return p; }
+  function jumpTo(page, value) {
+    prefill = { page: page, value: value };
+    if (location.hash === "#/owner/" + page) window.DashOwner.render(page); else location.hash = "#/owner/" + page;
+  }
+
+  var SVGNS = "http://www.w3.org/2000/svg";
+  function svg(tag, attrs, text) {
+    var el = document.createElementNS(SVGNS, tag), k;
+    for (k in attrs) el.setAttribute(k, attrs[k]);
+    if (text != null) el.textContent = text;
+    return el;
+  }
+  // Grouped bar chart. series: [{name, cls, values:[n...]}], labels: [string...]. Server data only ever goes in via textContent.
+  function barChart(labels, series, opts) {
+    opts = opts || {};
+    var W = 640, Hh = opts.height || 180, padL = 40, padB = 22, padT = 10, n = labels.length;
+    var max = 0; series.forEach(function (s2) { s2.values.forEach(function (v) { if (v > max) max = v; }); });
+    if (max <= 0) max = 1;
+    var root = svg("svg", { viewBox: "0 0 " + W + " " + Hh, class: "owner-chart", role: "img", "aria-label": opts.title || "Chart", preserveAspectRatio: "xMidYMid meet" });
+    root.appendChild(svg("title", {}, opts.title || "Chart"));
+    var plotW = W - padL - 6, plotH = Hh - padB - padT, slot = plotW / Math.max(n, 1), bw = Math.max(1, Math.min(18, slot * 0.8 / series.length));
+    [0, 0.5, 1].forEach(function (f) {
+      var y = padT + plotH - plotH * f;
+      root.appendChild(svg("line", { x1: padL, x2: W - 6, y1: y, y2: y, class: "grid" }));
+      root.appendChild(svg("text", { x: padL - 5, y: y + 3, class: "tick", "text-anchor": "end" }, String(Math.round(max * f * 100) / 100)));
+    });
+    series.forEach(function (s2, si) {
+      s2.values.forEach(function (v, i) {
+        var bh = plotH * (v / max), x = padL + i * slot + (slot - bw * series.length) / 2 + si * bw;
+        var r = svg("rect", { x: x, y: padT + plotH - bh, width: bw, height: Math.max(bh, v > 0 ? 1 : 0), class: "bar " + (s2.cls || "a") });
+        r.appendChild(svg("title", {}, labels[i] + ": " + s2.name + " " + v));
+        root.appendChild(r);
+      });
+    });
+    var step = Math.max(1, Math.ceil(n / 8));
+    labels.forEach(function (l, i) { if (i % step === 0 || i === n - 1) root.appendChild(svg("text", { x: padL + i * slot + slot / 2, y: Hh - 6, class: "tick", "text-anchor": "middle" }, l)); });
+    var wrap = h("div", { class: "owner-chartwrap" }, root);
+    if (series.length > 1 || opts.legend) wrap.appendChild(h("div", { class: "owner-legend" }, series.map(function (s2) { return h("span", null, h("i", { class: "sw " + (s2.cls || "a") }), s2.name); })));
+    return wrap;
+  }
+  function dayLabel(iso) { var d = new Date(iso); return isNaN(d) ? String(iso) : (d.getUTCMonth() + 1) + "/" + d.getUTCDate(); }
+
+  function growthChart(days) {
+    var box = h("div", { class: "card" }, h("h3", { text: "Server growth, last " + days + " days" }));
+    var body = h("div", null); box.appendChild(body);
+    loadInto(body, "owner_growth", { days: days }, function (j) {
+      body.appendChild(h("p", { class: "muted", text: "Net " + (j.net >= 0 ? "+" : "") + j.net + " servers (joined minus left, main bot and clones)." }));
+      body.appendChild(barChart(j.series.map(function (r) { return dayLabel(r.start); }),
+        [{ name: "Joined", cls: "a", values: j.series.map(function (r) { return r.joined; }) }, { name: "Left", cls: "b", values: j.series.map(function (r) { return r.left; }) }], { title: "Servers joined and left per day" }));
+    });
+    return box;
+  }
+
+  function globalSearch() {
+    var inp = h("input", { type: "search", placeholder: "Search servers, users, payments", "aria-label": "Global search", autocomplete: "off" });
+    var res = h("div", { class: "card owner-results" }); res.hidden = true;
+    function go() {
+      var t = inp.value.trim();
+      if (t.length < 2) { res.hidden = true; return; }
+      res.hidden = false;
+      loadInto(res, "owner_search", { q: t }, function (j) {
+        var any = false;
+        function item(label, fn) { any = true; res.appendChild(h("button", { class: "btn sm ghost owner-hit", text: label, onclick: function () { res.hidden = true; fn(); } })); }
+        if (j.user_id) item("User " + j.user_id, function () { jumpTo("users", j.user_id); });
+        if (j.payment) item("Payment " + j.payment.paystack_reference + " (" + j.payment.status + ", " + money(j.payment.amount) + ")", function () { jumpTo("payments", j.payment.paystack_reference); });
+        (j.servers || []).forEach(function (r) {
+          item("Server " + (r.guild_name || "unnamed") + " | " + r.guild_id + (r.left ? " | left" : "") + (r.clone_id ? " | clone " + r.clone_id : ""), function () { jumpTo("servers", r.guild_id); });
+        });
+        if (!any) res.appendChild(h("p", { class: "muted", text: "Nothing matched \u201c" + j.q + "\u201d." }));
+      });
+    }
+    inp.addEventListener("keydown", function (e) { if (e.key === "Enter") go(); else if (e.key === "Escape") res.hidden = true; });
+    return h("div", { class: "owner-search" }, inp, h("button", { class: "btn sm", text: "Search", onclick: go }), res);
+  }
+
+  function alertsBell() {
+    var count = h("span", { class: "owner-badge", text: "0" }); count.hidden = true;
+    var btn = h("button", { class: "btn sm ghost", "aria-label": "Alerts", "aria-expanded": "false" }, icon("siren"), h("span", { text: "Alerts" }), count);
+    var panel = h("div", { class: "card owner-results" }); panel.hidden = true;
+    function refresh() {
+      api("owner_alerts").then(function (j) {
+        count.textContent = String(j.count); count.hidden = !j.count; count.className = "owner-badge" + (j.bad ? " bad" : "");
+        panel.textContent = "";
+        if (!j.alerts.length) panel.appendChild(h("p", { class: "muted", text: "All clear. Checked " + new Date().toLocaleTimeString() + "." }));
+        j.alerts.forEach(function (a) {
+          panel.appendChild(h("a", { class: "owner-alert " + a.level, href: "#/owner/" + a.page, text: a.title, onclick: function () { panel.hidden = true; btn.setAttribute("aria-expanded", "false"); } }));
+        });
+      }).catch(function () {});
+    }
+    btn.addEventListener("click", function () { panel.hidden = !panel.hidden; btn.setAttribute("aria-expanded", String(!panel.hidden)); if (!panel.hidden) refresh(); });
+    refresh(); every(60000, refresh);
+    return h("div", { class: "owner-alerts" }, btn, panel);
   }
 
   function overview() {
@@ -111,9 +217,13 @@
   function money(n) { return (Math.round((n || 0) * 100) / 100).toFixed(2); }
 
   function health() {
-    var box = h("div", { class: "card" }); shell("health", box);
-    loadInto(box, "owner_health", {}, function (j) {
+    var box = h("div", { class: "card" }), live = h("input", { type: "checkbox", id: "own-live" }), stamp = h("small", { class: "muted" });
+    live.checked = true;
+    shell("health", box);
+    function draw(j) {
       var sv = j.servers || {};
+      box.textContent = "";
+      box.appendChild(h("div", { class: "owner-bar" }, h("label", null, live, " Live (refreshes every 15 s)"), stamp));
       box.appendChild(kv([["Database round trip", j.db_ping_ms == null ? "unreachable" : j.db_ping_ms + " ms"],
         ["Servers (main bot)", sv.main], ["Servers (clones)", sv.clones], ["Active clones", j.clones_active],
         ["Quiet clones", j.clones_quiet == null ? "unknown" : j.clones_quiet.length], ["As of", fmt(j.as_of)]]));
@@ -131,7 +241,14 @@
         box.appendChild(h("h3", { text: "Clones with no heartbeat in " + j.heartbeat_stale_minutes + " minutes" }));
         box.appendChild(table(["Clone", "Bot", "Last heartbeat"], j.clones_quiet.map(function (c) { return [c.clone_id, c.bot_username, c.last_heartbeat ? fmt(c.last_heartbeat) : "never"]; })));
       }
-    });
+      stamp.textContent = "Updated " + new Date().toLocaleTimeString();
+    }
+    function first() { loadInto(box, "owner_health", {}, draw); }
+    function tick() {
+      if (!live.checked || !box.isConnected) return;
+      api("owner_health").then(function (j) { if (box.isConnected) { var keep = live.checked; draw(j); live.checked = keep; } }).catch(function () {});
+    }
+    first(); every(15000, tick);
   }
 
   function servers() {
@@ -162,10 +279,11 @@
           ["Reports", Object.keys(j.reports || {}).map(function (k) { return k + ": " + j.reports[k]; }).join(", ") || "none"]]));
       });
     }
-    shell("servers", h("div", null, h("div", { class: "owner-bar" }, q, which, h("label", null, left, " include left"),
+    shell("servers", h("div", null, growthChart(30), h("div", { class: "owner-bar" }, q, which, h("label", null, left, " include left"),
       h("button", { class: "btn sm", text: "Search", onclick: function () { page = 0; go(); } }),
       h("button", { class: "btn sm ghost", text: "Inspect id", onclick: inspect })), out, detail));
-    go();
+    var pre = takePrefill("servers");
+    if (pre) { q.value = pre; left.checked = true; go(); inspect(); } else go();
   }
 
   function users() {
@@ -183,6 +301,7 @@
     }
     out.appendChild(h("p", { class: "muted", text: "Look up a user by id." }));
     shell("users", h("div", null, h("div", { class: "owner-bar" }, id, h("button", { class: "btn sm", text: "Look up", onclick: look })), out));
+    var pre = takePrefill("users"); if (pre) { id.value = pre; look(); }
   }
 
   function payments() {
@@ -258,12 +377,16 @@
           ["GHS", "USD"].forEach(function (cur) {
             var rows = j.series[cur] || [], sum = rows.reduce(function (a, r) { return a + r.total; }, 0);
             out.appendChild(h("h3", { text: cur + ": " + money(sum) + " over " + rows.length + " days" }));
+            out.appendChild(barChart(rows.map(function (r) { return dayLabel(r.start); }), [{ name: cur, cls: cur === "USD" ? "b" : "a", values: rows.map(function (r) { return r.total; }) }], { title: "Revenue per day in " + cur, legend: true }));
             out.appendChild(table(["Day", "Total", "Payments"], rows.slice().reverse().map(function (r) { return [fmt(r.start).split(",")[0], money(r.total), r.count]; })));
           });
         }
       });
     }
-    shell("payments", h("div", null, nav, out)); draw();
+    shell("payments", h("div", null, nav, out));
+    var pre = takePrefill("payments"); if (pre) view = "reverse";
+    draw();
+    if (pre) { var rin = out.querySelector("input"); if (rin) { rin.value = pre; var rb = out.querySelector("button"); if (rb) rb.click(); } }
   }
 
   function audit() {
