@@ -292,3 +292,24 @@ input[type=password]:focus,input[type=search]:focus{border-color:var(--line);box
 /* theme control */
 .theme-btn{min-width:7.2rem}
 :root[data-theme="light"] .btn::after{opacity:.6}
+
+/* Owner area, Phase 6 */
+.owner-top{display:flex;flex-wrap:wrap;gap:.8rem;align-items:flex-start;justify-content:space-between;margin:0 0 1.4rem}
+.owner-search{position:relative;display:flex;gap:.6rem;flex:1 1 320px;max-width:560px}
+.owner-search input{flex:1 1 auto;min-width:0}
+.owner-alerts{position:relative}
+.owner-results{position:absolute;z-index:40;left:0;right:0;top:calc(100% + .4rem);min-width:280px;max-height:60vh;overflow:auto;margin:0}
+.owner-alerts .owner-results{left:auto;right:0;width:min(420px,90vw)}
+.owner-hit{display:flex;width:100%;justify-content:flex-start;text-align:left;margin:0 0 .4rem;text-transform:none;letter-spacing:.02em}
+.owner-badge{min-width:1.3rem;padding:0 .35rem;border-radius:999px;background:var(--warn);color:#000;font-size:.7rem;text-align:center;letter-spacing:0}
+.owner-badge.bad{background:var(--bad)}
+.owner-alert{display:block;padding:.6rem .2rem;border-bottom:1px solid var(--hair);color:var(--text);text-decoration:none}
+.owner-alert.bad{border-left:3px solid var(--bad);padding-left:.6rem}.owner-alert.warn{border-left:3px solid var(--warn);padding-left:.6rem}
+.owner-chartwrap{margin:0 0 1.2rem}
+.owner-chart{width:100%;height:auto;display:block}
+.owner-chart .grid{stroke:var(--hair);stroke-width:1}
+.owner-chart .tick{fill:var(--muted);font-family:var(--mono);font-size:9px}
+.owner-chart .bar.a,.sw.a{fill:var(--line);background:var(--line)}
+.owner-chart .bar.b,.sw.b{fill:var(--warn);background:var(--warn)}
+.owner-legend{display:flex;gap:1.2rem;color:var(--muted);font-size:.8rem;margin-top:.4rem}
+.owner-legend .sw{display:inline-block;width:.8rem;height:.8rem;margin-right:.4rem;vertical-align:middle}

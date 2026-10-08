@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "61"
+SCHEMA_VERSION = "62"
+# "61" -> "62" creates user_entitlements (per-user paid products: card_plan, dev_monthly, dev_yearly; only the payment webhook may write it) and dash_web_users (everyone who has signed in to the web dashboard; member messaging depends on it). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "59" -> "60" creates dash_owner_audit (web owner area audit trail, also written by the Discord owner panel) + its indexes. Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "60" -> "61" creates bot_status_snapshots (the bot worker publishes live health, masked logs and masked config here every ~60s so the web owner area, a separate process, can show them). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "58" -> "59" actually creates the web-dashboard tables dash_dropbox_messages, dash_dropbox_reads, dash_dropbox_dm and dash_audit (+ the audience/min_members/target_guild_id/push_dm columns). They were added to _create_tables in the dashboard PRs without a bump, so DBs stamped '58' hit UndefinedTableError on every Drop Box / Audit request. Same bump-or-it-never-runs trap.
@@ -4185,6 +4186,31 @@ class Database:
                 key TEXT PRIMARY KEY,
                 payload JSONB NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # Per-user paid products (member dashboard). Written ONLY by the payment webhook path, never by a browser.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_entitlements (
+                user_id TEXT NOT NULL,
+                product TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                expires_at TIMESTAMPTZ,
+                source TEXT NOT NULL DEFAULT '',
+                subscription_id TEXT,
+                cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, product)
+            )
+        """)
+
+        # Everyone who has signed in to the web dashboard (registry that member messaging will require).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_web_users (
+                user_id TEXT PRIMARY KEY,
+                first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
 
@@ -11603,6 +11629,16 @@ class Database:
                 guild_id, clone_id, disabled,
             )
 
+    async def get_custom_role_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Web dashboard view of the Custom Role kill switch: {"enabled": bool}. Same row the
+        /customrole disable_feature option writes, so Discord and the web always agree."""
+        return {"enabled": not await self.is_custom_role_feature_disabled(guild_id, clone_id=clone_id)}
+
+    async def set_custom_role_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        if "enabled" in fields:
+            await self.set_custom_role_feature_disabled(guild_id, not bool(fields["enabled"]), clone_id=clone_id)
+        return await self.get_custom_role_config(guild_id, clone_id=clone_id)
+
     async def get_custom_role_panel(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[dict]:
         """Returns {"panel_channel_id", "panel_message_id"} (or None) —
         used by _enable_custom_role_panel to avoid creating a second
@@ -14525,6 +14561,45 @@ class Database:
             return None
         p = r["payload"]
         return {"payload": json.loads(p) if isinstance(p, str) else p, "updated_at": r["updated_at"]}
+
+    # ── Member dashboard: web-user registry + per-user entitlements ──
+
+    async def dash_web_user_touch(self, user_id: str) -> None:
+        """Record a successful web sign-in (first_seen is kept, last_seen moves)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO dash_web_users (user_id) VALUES ($1)
+                   ON CONFLICT (user_id) DO UPDATE SET last_seen = NOW()""", str(user_id))
+
+    async def dash_web_user_exists(self, user_id: str) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval("SELECT 1 FROM dash_web_users WHERE user_id = $1", str(user_id)))
+
+    async def entitlements_list(self, user_id: str) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT product, status, expires_at, source, cancel_at_period_end, created_at
+                   FROM user_entitlements WHERE user_id = $1 ORDER BY product""", str(user_id))
+        return [dict(r) for r in rows]
+
+    async def entitlement_upsert(self, user_id: str, product: str, status: str, expires_at,
+                                 source: str = "", subscription_id: Optional[str] = None,
+                                 cancel_at_period_end: bool = False) -> None:
+        """WEBHOOK ONLY. Grants / extends / changes one product for one user. No route may call this
+        with anything that came from a browser."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO user_entitlements (user_id, product, status, expires_at, source, subscription_id, cancel_at_period_end)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)
+                   ON CONFLICT (user_id, product) DO UPDATE SET status = $3, expires_at = $4, source = $5,
+                       subscription_id = COALESCE($6, user_entitlements.subscription_id),
+                       cancel_at_period_end = $7, updated_at = NOW()""",
+                str(user_id), str(product)[:40], str(status)[:20], expires_at, str(source)[:40],
+                subscription_id, bool(cancel_at_period_end))
 
     # ── Web dashboard drop box (owner -> every dashboard admin) ──
 

@@ -214,6 +214,14 @@ MODULES: List[dict] = [
         ],
     },
     {
+        "id": "customrole", "title": "Custom role", "category": "Community", "icon": "users",
+        "desc": "Let members who bought the perk style their own role.",
+        "get": "get_custom_role_config", "set": "set_custom_role_config",
+        "fields": [
+            F("enabled", "Custom role perk", "toggle", "Turn off to stop members creating or restyling custom roles. Existing roles stay as they are."),
+        ],
+    },
+    {
         "id": "invites", "title": "Invite tracker", "category": "Community", "icon": "link",
         "desc": "See who invited each member.",
         "get": "get_invite_tracker_config", "set": "set_invite_tracker_config",

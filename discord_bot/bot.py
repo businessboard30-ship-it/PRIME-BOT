@@ -160,6 +160,11 @@ class AnimeBotDiscord(commands.Bot):
         super().__init__(
             command_prefix="!",
             intents=intents,
+            # Clones used to request member chunks for every guild at startup,
+            # a burst of gateway sends that trips discord.py's 120/60s send
+            # limiter ("WebSocket ... is ratelimited, waiting ~60s", repeated
+            # after every clone start). The main bot keeps the old behaviour.
+            chunk_guilds_at_startup=(clone_id is None),
             allowed_installs=app_commands.AppInstallationType(guild=True, user=True),
             allowed_contexts=app_commands.AppCommandContext(
                 guild=True, dm_channel=True, private_channel=True

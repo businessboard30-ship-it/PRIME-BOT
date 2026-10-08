@@ -245,7 +245,7 @@ class CreatureView(discord.ui.View):
             return False
         return True
 
-    async def _refresh(self, interaction: discord.Interaction, notice: str | None = None) -> None:
+    async def _redraw(self, interaction: discord.Interaction, notice: str | None = None) -> None:
         """Reload the creature and redraw this screen; if it is gone, go back to the list."""
         detail = await load_creature(self.detail.id, self.user_id, self.clone_id)
         if detail is None:
@@ -281,7 +281,7 @@ class CreatureView(discord.ui.View):
                 await interaction.followup.send(**notice_for("creature.not_found"), ephemeral=True)
                 await self.back(interaction)
                 return
-            await self._refresh(interaction)
+            await self._redraw(interaction)
         await self._run(interaction, work)
 
     async def _lock(self, interaction: discord.Interaction) -> None:
@@ -292,7 +292,7 @@ class CreatureView(discord.ui.View):
                 await self.back(interaction)
                 return
             name = safe(self.detail.display_name)
-            await self._refresh(interaction, text("creature.lock_on" if result.value else "creature.lock_off", name=name))
+            await self._redraw(interaction, text("creature.lock_on" if result.value else "creature.lock_off", name=name))
         await self._run(interaction, work)
 
     async def _buddy(self, interaction: discord.Interaction) -> None:
@@ -306,7 +306,7 @@ class CreatureView(discord.ui.View):
                 return
             notice = (text("creature.buddy_set", name=safe(self.detail.display_name)) if result.value
                       else text("creature.buddy_cleared"))
-            await self._refresh(interaction, notice)
+            await self._redraw(interaction, notice)
         await self._run(interaction, work)
 
     async def _nickname(self, interaction: discord.Interaction) -> None:
@@ -374,7 +374,7 @@ class NicknameModal(discord.ui.Modal):
                     await view.back(interaction)
                 return
             notice = text("creature.nick_saved", nickname=safe(str(result.value))) if result.value else text("creature.nick_cleared")
-            await view._refresh(interaction, notice)
+            await view._redraw(interaction, notice)
         except Exception:
             logger.exception("Catch nickname failed user=%s creature=%s", view.user_id, view.detail.id)
             await interaction.followup.send(**notice_for("creature.error"), ephemeral=True)
@@ -403,7 +403,7 @@ class EvolveConfirmView(discord.ui.View):
     async def _cancel(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         try:
-            await self.creature_view._refresh(interaction)
+            await self.creature_view._redraw(interaction)
         except Exception:
             logger.exception("Catch evolve cancel failed user=%s", self.user_id)
             await interaction.followup.send(**notice_for("creature.error"), ephemeral=True)
@@ -428,7 +428,7 @@ class EvolveConfirmView(discord.ui.View):
                     notice += "\n" + text("evolve.new_dex", to_name=safe(result.to_name))
             else:
                 notice = text(f"evolve.refused_{result.reason}") if result.reason else text("evolve.cannot")
-            await self.creature_view._refresh(interaction, notice)
+            await self.creature_view._redraw(interaction, notice)
         except Exception:
             logger.exception("Catch evolve failed user=%s creature=%s", self.user_id, self.creature_view.detail.id)
             await interaction.followup.send(**notice_for("evolve.error"), ephemeral=True)
@@ -459,7 +459,7 @@ class ReleaseConfirmView(discord.ui.View):
     async def _cancel(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         try:
-            await self.creature_view._refresh(interaction, text("release.cancelled"))
+            await self.creature_view._redraw(interaction, text("release.cancelled"))
         except Exception:
             logger.exception("Catch release cancel failed user=%s", self.user_id)
             await interaction.followup.send(**notice_for("creature.error"), ephemeral=True)
@@ -486,7 +486,7 @@ class ReleaseConfirmView(discord.ui.View):
                 await cv.back(interaction)
                 return
             if result.reason in ("favorite", "locked"):
-                await cv._refresh(interaction, text(f"release.refused_{result.reason}", name=name))
+                await cv._redraw(interaction, text(f"release.refused_{result.reason}", name=name))
                 return
             await interaction.followup.send(**notice_for("release.gone"), ephemeral=True)
             await cv.back(interaction)
