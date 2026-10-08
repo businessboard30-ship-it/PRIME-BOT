@@ -67,6 +67,9 @@ Routes (all on /api/dash):
   GET  ?action=dev_usage -> Developer plan only: {used, limit, remaining, resets_at, models} for the weekly bot-AI chats
   GET  ?action=dev_keys -> Developer plan only: {connections:[{provider,label,last4,added_at,updated_at}], providers}; a key is NEVER returned
   POST {action: dev_key_save, provider, key} / {action: dev_key_remove, provider} -> Developer plan + fresh Discord sign-in (403 stepup_required); the key is validated with one free provider call, encrypted, never echoed
+  GET  ?action=dev_export_list / dev_export_download&id -> active Developer plan OR within 7 days after it ends (ent.export_allowed, not require_dev): receipts / the decrypted file for the session user's own export only
+  POST {action: dev_export_create, kind: note|text|json, name?, content} -> same gate: encrypts, uploads ciphertext to the private storage channel (opaque name), stores a receipt, DMs the plain file best-effort; 429 daily_limit; 503 when the owner's `dev_export` switch is on
+  POST {action: dev_export_delete, id} -> same gate: deletes the storage message and the receipt
   POST {action: dev_stepup} -> Developer plan only: {url}: Discord re-sign-in that makes this session fresh for DASH_STEPUP_MINUTES (returns to #/dev)
   POST {action: dev_chat, model?: default|anthropic|groq|openai, messages:[{role,content}]} -> Developer plan only: one bot-AI reply; spends 1 of 50 weekly chats (refunded if the model fails); 429 {code: weekly_limit}; 503 when the owner's `ai` switch is on. Nothing is stored.
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
@@ -1113,7 +1116,8 @@ async def _route(method: str, query: dict, headers, body: dict):
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
                                                       "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60),
-                                                      "dev_key_save": (6, 300), "dev_key_remove": (10, 300)}.get(action, (30, 60)))
+                                                      "dev_key_save": (6, 300), "dev_key_remove": (10, 300),
+                                                      "dev_export_create": (6, 300), "dev_export_delete": (10, 300)}.get(action, (30, 60)))
         from api import dash_dev
         if action in dash_dev.FRESH_WRITES:          # gate first (402), then step-up (403); handlers never see the session
             gate = await dash_dev.require_dev(uid, db)

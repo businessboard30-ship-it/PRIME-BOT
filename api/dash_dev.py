@@ -6,9 +6,10 @@ dev_* handler must start with `gate = await require_dev(uid, db)` and return it 
 code "subscription_required"). The locked screen in the browser is cosmetic and grants nothing.
 Nothing here writes entitlements: only the payment webhook does. No route takes a user id from the client.
 """
+import json
 import logging
 
-from modules import ai_usage, dev_chat, dev_keys
+from modules import ai_usage, dev_chat, dev_export, dev_keys
 from modules import entitlements as ent
 from modules import user_subs
 from api.dash_member import pay_view
@@ -18,7 +19,7 @@ SOURCE = "dev"                 # counter source in user_ai_usage; the card plan 
 WEEKLY_BOT_CHATS = ai_usage.LIMITS[SOURCE]     # bot-provided AI messages per week for Developer subscribers
 FEATURES = (
     {"key": "chat", "label": "AI chat", "ready": True},
-    {"key": "export", "label": "Export to your DMs", "ready": False},
+    {"key": "export", "label": "Export to your DMs", "ready": True},
     {"key": "keys", "label": "Bring your own AI key (Claude, Groq, OpenAI)", "ready": True},
     {"key": "github", "label": "Connect GitHub (read-only)", "ready": False},
 )
@@ -181,7 +182,160 @@ async def dev_key_remove(uid, body, db):
     return {"connections": [dev_keys.public_view(r) for r in rows if r.get("provider") in dev_keys.PROVIDERS]}
 
 
-ROUTES = {"dev_status": dev_status, "dev_overview": dev_overview, "dev_usage": dev_usage, "dev_keys": dev_keys_list}
-WRITES = {"dev_chat": dev_chat_send, "dev_key_save": dev_key_save, "dev_key_remove": dev_key_remove}
+# ---------- Export (C2). Gated by ent.export_allowed(rows), NOT require_dev: it keeps working 7 days after the plan ends ----------
+async def _export_gate(uid, db):
+    """None when the SESSION user may export (active plan or inside the 7-day grace), else the 402 reply dict."""
+    rows = await db.entitlements_list(uid)
+    return None if ent.export_allowed(rows) else _gate_denied()
+
+
+def _storage_channel() -> int:
+    import config
+    return int(getattr(config, "DEV_STORAGE_CHANNEL_ID", 0) or 0)
+
+
+def _upload_form(payload: dict, filename: str, data: bytes, mime: str):
+    import aiohttp
+    form = aiohttp.FormData()
+    form.add_field("payload_json", json.dumps(payload), content_type="application/json")
+    form.add_field("files[0]", data, filename=filename, content_type=mime)
+    return form
+
+
+async def _fetch_bytes(url: str, limit: int):
+    """GET one attachment from Discord's CDN with a hard size cap. Returns bytes or None."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+            async with s.get(url) as r:
+                if r.status != 200 or (r.content_length or 0) > limit:
+                    return None
+                data = await r.content.read(limit + 1)
+                return data if len(data) <= limit else None
+    except Exception:
+        return None
+
+
+async def dev_export_list(uid, q, db):
+    gate = await _export_gate(uid, db)
+    if gate:
+        return gate
+    rows = await db.dev_export_list(uid)
+    return {"exports": [dev_export.public_view(r) for r in rows], "max_per_day": dev_export.MAX_PER_DAY,
+            "max_kb": dev_export.MAX_BYTES // 1024, "kinds": sorted(dev_export.KINDS)}
+
+
+async def dev_export_create(uid, body, db):
+    """POST {kind, name?, content}. Order: gate, kill switch, validate, caps, encrypt, upload ciphertext to the storage
+    channel, store the receipt, audit, then a best-effort DM of the plain file to the person."""
+    gate = await _export_gate(uid, db)
+    if gate:
+        return gate
+    from modules import admin_controls
+    if "dev_export" in await admin_controls.current_switches():
+        return {"_status": 503, "message": "Export is switched off right now."}
+    spec, err = dev_export.clean_request(body)
+    if err:
+        return {"_status": 422, "message": err}
+    channel = _storage_channel()
+    if not channel:
+        return {"_status": 503, "message": "Export isn't set up yet."}
+    if await db.dev_export_count_since(uid, 24) >= dev_export.MAX_PER_DAY:
+        return {"_status": 429, "code": "daily_limit", "message": f"You can export {dev_export.MAX_PER_DAY} files a day. Try again tomorrow."}
+    if await db.dev_export_count(uid) >= dev_export.MAX_KEPT:
+        return {"_status": 422, "message": "You're keeping the maximum number of exports. Delete some first."}
+    from api import dash
+    export_id = dev_export.new_export_id()
+    form = _upload_form(dev_export.storage_message(export_id), dev_export.opaque_filename(export_id),
+                        dev_export.encrypt(spec["data"]), "application/octet-stream")
+    try:
+        sent = await dash._bot_post(f"/channels/{channel}/messages", form=form)
+        message_id = str(sent["id"])
+    except Exception as e:
+        logger.warning("dev export upload failed: %s", type(e).__name__)
+        return {"_status": 502, "message": "Couldn't save the export right now. Try again in a moment."}
+    try:
+        await db.dev_export_add(export_id, uid, message_id, spec["name"], len(spec["data"]))
+    except Exception:
+        logger.exception("dev export receipt failed")
+        try:
+            await dash._bot_request("DELETE", f"/channels/{channel}/messages/{message_id}")
+        except Exception:
+            pass
+        return {"_status": 502, "message": "Couldn't save the export right now. Try again in a moment."}
+    try:                                           # best-effort extra audit; the receipt row is the durable record
+        await db.owner_audit_add(uid, "", "dev_export", "export", export_id, detail={"size": len(spec["data"]), "kind": spec["kind"]})
+    except Exception:
+        logger.warning("dev export audit write failed")
+    dm_sent = await _send_dm(uid, spec)
+    rows = await db.dev_export_list(uid)
+    return {"export": next((dev_export.public_view(r) for r in rows if r.get("id") == export_id), {"id": export_id, "name": spec["name"]}),
+            "dm_sent": dm_sent}
+
+
+async def _send_dm(uid, spec) -> bool:
+    import config
+    from api import dash
+    try:
+        ch = await dash._bot_post("/users/@me/channels", json_body={"recipient_id": str(uid)})
+        form = _upload_form(dev_export.dm_message(spec["name"], f"{config.DASH_PAGES_URL}/#/dev"), spec["name"], spec["data"], spec["mime"])
+        await dash._bot_post(f"/channels/{ch['id']}/messages", form=form)
+        return True
+    except Exception:
+        return False                               # DMs closed is normal; the Export page still has the file
+
+
+async def dev_export_download(uid, q, db):
+    gate = await _export_gate(uid, db)
+    if gate:
+        return gate
+    export_id = q("id")
+    if not dev_export.valid_export_id(export_id):
+        return {"_status": 422, "message": "That export doesn't exist."}
+    row = await db.dev_export_get(uid, export_id)             # keyed by the SESSION user: another user's id finds nothing
+    if not row:
+        return {"_status": 404, "message": "That export doesn't exist."}
+    from api import dash
+    channel = _storage_channel()
+    gone = {"_status": 410, "message": "That export is no longer available."}
+    try:
+        msg = await dash._bot_get(f"/channels/{channel}/messages/{row['message_id']}")
+        att = (msg.get("attachments") or [None])[0]
+    except Exception:
+        return gone
+    if not att or att.get("filename") != dev_export.opaque_filename(export_id):
+        return gone
+    blob = await _fetch_bytes(att.get("url") or "", dev_export.MAX_BYTES * 2)
+    plain = dev_export.decrypt(blob) if blob else None
+    if plain is None:
+        return gone
+    return {"name": row["name"], "content": plain.decode("utf-8", "replace")}
+
+
+async def dev_export_delete(uid, body, db):
+    gate = await _export_gate(uid, db)
+    if gate:
+        return gate
+    export_id = (body or {}).get("id")
+    if not dev_export.valid_export_id(export_id):
+        return {"_status": 422, "message": "That export doesn't exist."}
+    row = await db.dev_export_get(uid, export_id)
+    if not row:
+        return {"_status": 404, "message": "That export doesn't exist."}
+    from api import dash
+    try:
+        status = await dash._bot_request("DELETE", f"/channels/{_storage_channel()}/messages/{row['message_id']}")
+    except Exception:
+        status = None
+    if status not in (200, 204, 404):
+        return {"_status": 502, "message": "Couldn't delete it right now. Try again in a moment."}
+    await db.dev_export_delete(uid, export_id)
+    return {"deleted": True}
+
+
+ROUTES = {"dev_status": dev_status, "dev_overview": dev_overview, "dev_usage": dev_usage, "dev_keys": dev_keys_list,
+          "dev_export_list": dev_export_list, "dev_export_download": dev_export_download}
+WRITES = {"dev_chat": dev_chat_send, "dev_key_save": dev_key_save, "dev_key_remove": dev_key_remove,
+          "dev_export_create": dev_export_create, "dev_export_delete": dev_export_delete}
 # Writes that also need a fresh Discord sign-in (step-up). The router checks this set; handlers never see the session.
 FRESH_WRITES = frozenset({"dev_key_save", "dev_key_remove"})

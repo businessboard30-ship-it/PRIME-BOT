@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "66"
+SCHEMA_VERSION = "67"
+# "66" -> "67" creates dev_exports (minimal receipt for a Developer-mode export: opaque id, owner, storage message id, display name, size, time; the file itself lives ENCRYPTED in the private storage channel). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "65" -> "66" creates dev_connections (a Developer-mode member's own AI provider key: encrypted, last 4 + dates only ever returned; deleted 30 days after the plan ends). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "61" -> "62" creates user_entitlements (per-user paid products: card_plan, dev_monthly, dev_yearly; only the payment webhook may write it) and dash_web_users (everyone who has signed in to the web dashboard; member messaging depends on it). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "62" -> "63" creates user_billing_events (one row per gateway billing event id, claimed before an entitlement is changed so a duplicate or retried webhook can never double-extend a plan). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -4249,6 +4250,19 @@ class Database:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+
+        # Developer mode export receipts. The file is ciphertext in the storage channel; this row is only the pointer.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dev_exports (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT 'export',
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS dev_exports_user_idx ON dev_exports (user_id, created_at DESC)")
 
         # Developer mode: a member's own AI provider key. key_encrypted is secret_manager ciphertext; never returned or logged.
         await conn.execute("""
@@ -14951,6 +14965,49 @@ class Database:
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM user_card_assets WHERE user_id = $1 AND kind = $2", str(user_id), str(kind))
+
+    # ---- Developer mode: export receipts (pointer rows only; never the file) ----
+    async def dev_export_count_since(self, user_id: str, hours: int = 24) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return int(await conn.fetchval(
+                "SELECT COUNT(*) FROM dev_exports WHERE user_id = $1 AND created_at > NOW() - ($2 * INTERVAL '1 hour')",
+                str(user_id), int(hours)) or 0)
+
+    async def dev_export_count(self, user_id: str) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return int(await conn.fetchval("SELECT COUNT(*) FROM dev_exports WHERE user_id = $1", str(user_id)) or 0)
+
+    async def dev_export_add(self, export_id: str, user_id: str, message_id: str, name: str, size_bytes: int) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO dev_exports (id, user_id, message_id, name, size_bytes) VALUES ($1, $2, $3, $4, $5)",
+                str(export_id), str(user_id), str(message_id), str(name)[:80], int(size_bytes))
+
+    async def dev_export_list(self, user_id: str, limit: int = 50) -> list:
+        """Receipts for the list page. The storage message id is NOT selected."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, name, size_bytes, created_at FROM dev_exports WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+                str(user_id), int(limit))
+        return [dict(r) for r in rows]
+
+    async def dev_export_get(self, user_id: str, export_id: str):
+        """One of THIS user's receipts, including the storage message id (server use only)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow("SELECT id, message_id, name, size_bytes, created_at FROM dev_exports WHERE id = $1 AND user_id = $2",
+                                    str(export_id), str(user_id))
+        return dict(r) if r else None
+
+    async def dev_export_delete(self, user_id: str, export_id: str) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM dev_exports WHERE id = $1 AND user_id = $2", str(export_id), str(user_id))
+        return res.endswith(" 1")
 
     # ---- Developer mode: bring-your-own AI keys (ciphertext only; callers decrypt, nothing here returns plaintext) ----
     async def dev_connection_list(self, user_id: str) -> list:

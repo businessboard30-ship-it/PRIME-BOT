@@ -186,7 +186,7 @@ def test_gate_keeps_last_good_snapshot_when_refresh_fails(vp, monkeypatch):
 
 def test_every_feature_has_a_label_and_at_least_one_command(vp):
     for key, (label, roots) in vp.ac.FEATURES.items():
-        assert label and roots, key
+        assert label and (roots or key in vp.ac.WEBSITE_ONLY), key
 
 
 def test_set_switch_rejects_unknown_names(vp, monkeypatch):

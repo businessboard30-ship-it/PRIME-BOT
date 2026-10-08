@@ -160,6 +160,8 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
 # and breaking DM commands. Set to 1534576875983339621 locally if you need
 # fast iteration while developing, but never leave it set in production.
 DISCORD_DEV_GUILD_ID = 0
+# Private channel (in the support server, the same for every bot) where Developer-mode exports are stored ENCRYPTED.
+DEV_STORAGE_CHANNEL_ID = int(os.getenv("DEV_STORAGE_CHANNEL_ID", "1541141079913660446") or 0)
 
 # Base URL of the Next.js site (app/ dir) this repo also deploys — used to
 # build the /automod dashboard link. Defaults to the marketing site's own

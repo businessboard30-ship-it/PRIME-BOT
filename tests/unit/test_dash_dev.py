@@ -71,7 +71,9 @@ def test_every_dev_route_except_status_is_gated():
     assert "dev_status" in handlers
     for name, fn in handlers.items():
         assert name.startswith("dev_")
-        if name != "dev_status":
+        if name.startswith("dev_export"):       # export keeps working 7 days after the plan ends: gated by ent.export_allowed instead
+            assert "await _export_gate(uid, db)" in inspect.getsource(fn), f"{name} must call the export gate first"
+        elif name != "dev_status":
             assert "await require_dev(uid, db)" in inspect.getsource(fn), f"{name} must call require_dev first"
 
 
