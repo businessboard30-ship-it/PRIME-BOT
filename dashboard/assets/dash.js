@@ -33,6 +33,18 @@
     return el;
   }
   var ICONS = {
+    server: "M4 4h16v6H4z M4 14h16v6H4z M8 7h.01 M8 17h.01",
+    users: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M3 20v-1a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v1 M17 8a3 3 0 0 1 0 6 M21 20v-1a4 4 0 0 0-3-3.8",
+    key: "M14 10a4 4 0 1 0-3.9 4H12l1 1h2l1 1h2v-2l-3.5-3.5 M7.5 10h.01",
+    sliders: "M5 4v16 M12 4v16 M19 4v16 M3 9h4 M10 14h4 M17 8h4",
+    heart: "M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z",
+    mail: "M3 6h18v12H3z M3 7l9 6 9-6",
+    mega: "M4 10v4h3l7 4V6L7 10z M18 9a4 4 0 0 1 0 6",
+    db: "M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6 M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6",
+    lock: "M6 11h12v9H6z M8 11V8a4 4 0 0 1 8 0v3",
+    pulse: "M3 12h4l3-7 4 14 3-7h4",
+    code: "M9 8l-4 4 4 4 M15 8l4 4-4 4",
+    flag: "M5 21V4 M5 4h12l-2 4 2 4H5",
     home: "M4 11l8-7 8 7v9H4z M10 20v-6h4v6",
     wave: "M3 12c2-4 4-4 6 0s4 4 6 0 4-4 6 0",
     "shield-check": "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z M8.5 12l2.5 2.5 4.5-5",
@@ -90,7 +102,7 @@
   function renderHeader() {
     hdrRight.textContent = "";
     var inGuild = /^#\/g\//.test(location.hash);
-    menuBtn.hidden = !(S.user && inGuild);
+    menuBtn.hidden = !(S.user && (inGuild || /^#\/owner/.test(location.hash)));
     if (!S.user) return;
     if (S.ownerSections && S.ownerSections.length) hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/owner", text: "Owner" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/tiers", text: "Level tiers" }));
@@ -818,7 +830,7 @@
   function loadOwner() {
     if (window.DashOwner) return Promise.resolve();
     if (!ownerLoading) ownerLoading = new Promise(function (ok, bad) {
-      window.DashOwnerHost = { S: S, api: api, h: h, app: app, toast: toast };
+      window.DashOwnerHost = { S: S, api: api, h: h, app: app, toast: toast, icon: icon };
       var el = document.createElement("script");
       el.src = "assets/owner.js"; el.onload = ok; el.onerror = function () { ownerLoading = null; bad(new Error("Couldn't load the owner area.")); };
       document.head.appendChild(el);

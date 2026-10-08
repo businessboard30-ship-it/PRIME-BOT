@@ -176,3 +176,29 @@ Reads: `owner_ads`, `owner_ad`, `owner_market`, `owner_bump`, `owner_watchlist`,
 Tests: `tests/unit/test_dash_owner_phase3b_4.py` (74): permission matrix for every route (anonymous 401, guild admin 403, stale owner session 401), helper grants do not open these sections, step-up + typed-confirm case sensitivity, validation, wrong-state 409s, DM failure does not undo a rejection, fail-closed audit, whitelisted output. Mutation spot-check done: removing the step-up on `DISABLE` or `REMOVE` makes a test fail.
 
 **Still gated by the plan before MERGING anything from Phase 3/4:** a real small `/pay` + Gumroad/Paystack test, and a real-browser run with a second Discord account. None of the new pages has been opened in a browser (JS is syntax-checked only).
+
+---
+
+## Phase 5 (owner-only and dangerous): helpers, clones, named database cleanup
+
+No schema change (stays at 61). New: `api/dash_owner_ops.py` (merged by `dash._merged`), `modules/admin_clones.py`, owner.js pages **Helpers**, **Clones**, **Database**, tests in `tests/unit/test_dash_owner_phase5.py` (41).
+
+**Deviation from the plan: no `owner_jobs` queue.** `discord_bot/clone_manager.py` already polls `discord_cloned_bots.status` every 30 s and starts/stops the matching process, so stop, register and relink are database writes plus Discord REST calls made with the clone's own token. Nothing needs the live bot's memory. (Approve/reject payment and Scam Shield image rules still do, and are still not built.)
+
+| Action | Section | Protection |
+|---|---|---|
+| `owner_helper_set` | access | audit only (as in the plan: only removal needs step-up). Sections limited to `admin_controls.GRANTABLE`, so `access`/`config`/`database` can never be granted. Owners cannot be made helpers. Bot sees it within about 20 s |
+| `owner_helper_remove` | access | step-up + type `REMOVE` |
+| `owner_clone_register` | servers | step-up + type `REGISTER`. Free for the signed-in owner. Refused if the owner already has a clone (use relink, so history carries over) |
+| `owner_clone_relink` | servers | step-up + type `RELINK`. Only a clone the signed-in owner owns |
+| `owner_clone_stop` | servers | step-up + type `STOP`. Sets `inactive`; 404 unknown, 409 already stopped |
+| `owner_db_cleanup_stale` | database | step-up + type `CLEANUP`. The one named cleanup Discord has. Rows are kept, status becomes `expired` |
+Reads: `owner_helpers`, `owner_clones` (never selects the token column), `owner_database` (counts only).
+
+**Token handling:** the bot token is only passed in, shape-checked, validated against Discord, encrypted and stored. It is not in the response, the audit row (`target` is `owner:<id>` / `clone:<n>`), or the logs. A test asserts this.
+
+**Gotcha found while building:** `dash.py` reserves a POST body field called `clone_id` as the dashboard's own clone-scope selector (`_enter_clone`). Owner routes must name the field `clone`.
+
+**Not built:** starting a stopped clone (not in the plan; relinking brings a clone back), sub-clone registration, Discord's `register_clone_token` was NOT refactored onto `modules/admin_clones.py` (it carries the payment path; a parity refactor is a separate PR), no raw SQL, no other cleanups.
+
+**Before merging:** real-browser run with a second Discord account (JS is syntax-checked only), and register/relink with a real throwaway bot token.
