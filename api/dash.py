@@ -191,7 +191,7 @@ async def _get_cfg(module: dict, guild_id: int) -> dict:
 async def _write_values(sess: dict, gid: int, module: dict, clean: dict, before_cfg: dict, note=None) -> dict:
     """Shared by save and reset: write, then record who changed what. An audit failure never
     blocks the change itself."""
-    await getattr(db, module["set"])(gid, CLONE_ID, **clean)
+    await getattr(db, module["set"])(gid, _cid(), **clean)
     logger.info("dashboard %s guild=%s user=%s module=%s keys=%s", note or "save", gid, sess["user"]["id"], module["id"], sorted(clean))
     after = S.export_values(module, await _get_cfg(module, gid))
     try:
@@ -514,7 +514,7 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
 
 async def _bot_request(method: str, path: str, reason=None, json_body=None):
     """PUT/PATCH/DELETE as the bot. Returns the status code; callers decide what each means."""
-    headers = {"Authorization": f"Bot {config.DISCORD_BOT_TOKEN}"}
+    headers = {"Authorization": f"Bot {_token()}"}
     if reason:
         headers["X-Audit-Log-Reason"] = quote(reason[:400], safe="")
     timeout = aiohttp.ClientTimeout(total=10)
@@ -544,7 +544,7 @@ async def _actor_perms(gid: int, uid: int):
 
 
 async def _raid_review(gid: int) -> dict:
-    rows = [r for r in await db.list_quarantined(gid, CLONE_ID, 200) if S.is_raid_row(r)]
+    rows = [r for r in await db.list_quarantined(gid, _cid(), 200) if S.is_raid_row(r)]
     rows.sort(key=lambda r: r.get("created_at") or 0)
     total = len(rows)
     rows = rows[:RAID_LIST_MAX]
@@ -582,7 +582,7 @@ async def _raid_action(sess: dict, gid: int, raw_user, op) -> dict:
     if why:
         _fail(403, why)
     # Only people the anti-raid itself holds can be acted on here, never an arbitrary member id.
-    row = await db.get_quarantined(gid, CLONE_ID, target)
+    row = await db.get_quarantined(gid, _cid(), target)
     if row is None or not S.is_raid_row(row):
         _fail(404, "They're no longer waiting for review. Refresh the list.")
     try:
@@ -596,11 +596,11 @@ async def _raid_action(sess: dict, gid: int, raw_user, op) -> dict:
             _fail(403, "You can only act on people ranked below you.")
     actor_name = sess["user"].get("username") or "Unknown"
     reason = f"[anti-raid review] {op} by {actor_name} via dashboard"
-    q_role = await db.get_quarantine_role(gid, CLONE_ID)
+    q_role = await db.get_quarantine_role(gid, _cid())
 
     if op == "approve":
         if member is None:
-            await db.remove_quarantined(gid, CLONE_ID, target)
+            await db.remove_quarantined(gid, _cid(), target)
             done = "They'd already left, so they were removed from the list."
         else:
             existing = [int(x) for x in member.get("roles", [])]
@@ -613,7 +613,7 @@ async def _raid_action(sess: dict, gid: int, raw_user, op) -> dict:
                 _fail(422, "Discord refused to change their roles. Make sure my role is above theirs and above the roles being restored.")
             if st not in (200, 204):
                 _fail(502, "Discord didn't accept that. Try again.")
-            await db.remove_quarantined(gid, CLONE_ID, target)
+            await db.remove_quarantined(gid, _cid(), target)
             done = f"Released. {len(restore)} role(s) restored."
     elif op == "ban":
         st = await _bot_request("PUT", f"/guilds/{gid}/bans/{target}", reason=reason,
@@ -622,11 +622,11 @@ async def _raid_action(sess: dict, gid: int, raw_user, op) -> dict:
             _fail(422, "Discord refused that ban. Make sure my role is above theirs and I have Ban Members. They stay quarantined.")
         if st not in (200, 201, 204):
             _fail(502, "Discord didn't accept that. Try again.")
-        await db.remove_quarantined(gid, CLONE_ID, target)
+        await db.remove_quarantined(gid, _cid(), target)
         done = "Banned."
     else:  # kick
         if member is None:
-            await db.remove_quarantined(gid, CLONE_ID, target)
+            await db.remove_quarantined(gid, _cid(), target)
             done = "They'd already left, so they were removed from the list."
         else:
             st = await _bot_request("DELETE", f"/guilds/{gid}/members/{target}", reason=reason)
@@ -634,7 +634,7 @@ async def _raid_action(sess: dict, gid: int, raw_user, op) -> dict:
                 _fail(422, "Discord refused that kick. Make sure my role is above theirs and I have Kick Members. They stay quarantined.")
             if st not in (200, 204):
                 _fail(502, "Discord didn't accept that. Try again.")
-            await db.remove_quarantined(gid, CLONE_ID, target)
+            await db.remove_quarantined(gid, _cid(), target)
             done = "Kicked."
     try:
         await db.dash_audit_add(gid, str(uid), actor_name, "antiraid",
@@ -654,7 +654,7 @@ def _schedule_audit(sess, gid, label, summary):
 
 
 async def _live_schedules(gid: int) -> list:
-    rows = await db.list_scheduled_messages(gid, CLONE_ID)
+    rows = await db.list_scheduled_messages(gid, _cid())
     return [r for r in rows if r.get("enabled")]
 async def _ticket_messages(channel_id: int) -> tuple:
     """Up to TICKET_HISTORY_MAX messages, oldest first. (messages, truncated) or (None, False)
@@ -942,7 +942,7 @@ async def _route(method: str, query: dict, headers, body: dict):
         if not module:
             _fail(404, "Unknown module.")
         before_cfg = await _get_cfg(module, gid)
-        defaults, left = S.default_values(module, await getattr(db, module["get"])(0, CLONE_ID))
+        defaults, left = S.default_values(module, await getattr(db, module["get"])(0, _cid()))
         if not defaults:
             _fail(422, "Nothing to reset here.")
         after = await _write_values(sess, gid, module, defaults, before_cfg, note="reset")
@@ -964,7 +964,7 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(404, "Unknown module.")
         meta = await _meta(gid)
         chans, roles = _id_sets(meta)
-        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
         cfg = await _get_cfg(module, gid)
         values, skipped, err = S.import_values(module, body.get("data"), chans, roles, _eff_premium(module, premium, cfg))
         if err:
@@ -994,7 +994,7 @@ async def _route(method: str, query: dict, headers, body: dict):
         if len(await _live_schedules(gid)) >= S.SCHEDULE_MAX_ACTIVE:
             _fail(422, f"You can have up to {S.SCHEDULE_MAX_ACTIVE} scheduled messages. Delete one first.")
         job = await db.create_scheduled_message(gid, clean["channel_id"], clean["content"], clean["run_at"],
-                                                clean["interval_seconds"], int(sess["user"]["id"]), clone_id=CLONE_ID)
+                                                clean["interval_seconds"], int(sess["user"]["id"]), clone_id=_cid())
         await _schedule_audit(sess, gid, "Scheduled message added", f"{_channel_name(meta, clean['channel_id'])}: {clean['content'][:80]}")
         logger.info("dashboard schedule_add guild=%s user=%s id=%s", gid, sess["user"]["id"], job["id"])
         raise _Reply(200, {"ok": True, "schedule": S.schedule_row_view(job)})
@@ -1005,7 +1005,7 @@ async def _route(method: str, query: dict, headers, body: dict):
             sid = int(str(body.get("id")))
         except ValueError:
             _fail(400, "Invalid schedule.")
-        if not await db.delete_scheduled_message(gid, sid, CLONE_ID):
+        if not await db.delete_scheduled_message(gid, sid, _cid()):
             _fail(404, "That schedule no longer exists.")
         await _schedule_audit(sess, gid, "Scheduled message removed", f"#{sid}")
         raise _Reply(200, {"ok": True})
@@ -1018,7 +1018,7 @@ async def _route(method: str, query: dict, headers, body: dict):
             before = int(q("before")) if q("before") else None
         except ValueError:
             _fail(400, "Invalid page.")
-        rows = await db.list_tickets(gid, CLONE_ID, status or None, before, 31)
+        rows = await db.list_tickets(gid, _cid(), status or None, before, 31)
         raise _Reply(200, {"ok": True, "tickets": [S.ticket_row_view(r) for r in rows[:30]], "more": len(rows) > 30})
 
     if method == "GET" and action == "ticket_messages":
@@ -1027,7 +1027,7 @@ async def _route(method: str, query: dict, headers, body: dict):
             tid = int(str(q("id")))
         except ValueError:
             _fail(400, "Invalid ticket.")
-        row = await db.get_ticket_by_id(gid, CLONE_ID, tid)     # the channel comes from OUR row, never from the client
+        row = await db.get_ticket_by_id(gid, _cid(), tid)     # the channel comes from OUR row, never from the client
         if row is None:
             _fail(404, "That ticket doesn't exist.")
         msgs, truncated = await _ticket_messages(int(row["channel_id"]))

@@ -190,12 +190,9 @@
     nav.appendChild(link(gpath(gid), "home", "Overview", !modId));
     nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
-    nav.appendChild(link("#/g/" + gid, "home", "Overview", !modId));
-    nav.appendChild(link("#/g/" + gid + "/billing", "star", "Premium & billing", modId === "billing"));
-    nav.appendChild(link("#/g/" + gid + "/audit", "scroll", "Audit log", modId === "audit"));
-    nav.appendChild(link("#/g/" + gid + "/raid", "siren", "Anti-raid review", modId === "raid"));
-    nav.appendChild(link("#/g/" + gid + "/schedules", "scroll", "Scheduled messages", modId === "schedules"));
-    nav.appendChild(link("#/g/" + gid + "/tickethistory", "ticket", "Ticket history", modId === "tickethistory"));
+    nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
+    nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
+    nav.appendChild(link(gpath(gid, "tickethistory"), "ticket", "Ticket history", modId === "tickethistory"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
       if (!list.length) return;
@@ -603,7 +600,7 @@
     var list = h("div", { class: "audit" }), note = h("p", { class: "muted", text: "" });
     var head = h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Anti-raid review" }),
       h("p", { class: "muted", text: "People the anti-raid is holding in quarantine. Release them, kick them, or ban them." })),
-      h("a", { class: "btn sm ghost", href: "#/g/" + gid, text: "Overview" }));
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" }));
     add(main, [head, h("div", { class: "card rv" }, note, list)]);
     list.appendChild(h("div", { class: "skel", style: "height:80px" }));
     function act(p, op, row, btns) {
@@ -632,6 +629,8 @@
       }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { class: "muted", text: e.message })); });
     }
     load();
+  }
+
   function fmtWhen(iso) { try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch (e) { return ""; } }
   /* ---------- scheduled messages ---------- */
   function everyText(sec) { var m = Math.round(sec / 60); return m % 1440 === 0 ? (m / 1440) + " day(s)" : m % 60 === 0 ? (m / 60) + " hour(s)" : m + " min"; }
@@ -679,7 +678,7 @@
     });
     add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Scheduled messages" }),
       h("p", { class: "muted", text: "Post a message later, or on repeat. These are the same schedules as /schedule in Discord. Times are UTC." })),
-      h("a", { class: "btn sm ghost", href: "#/g/" + gid, text: "Overview" })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
       h("div", { class: "card fields rv" }, h("h2", { text: "New message" }),
         h("div", { class: "field" }, h("div", null, h("label", { for: "sc_chan", text: "Channel" })), chan),
         h("div", { class: "field" }, h("div", null, h("label", { for: "sc_mode", text: "When" }), hint), h("div", null, mode, mins, tod)),
@@ -687,8 +686,9 @@
         h("div", { class: "action" }, h("div", { class: "grow" }), addBtn)),
       h("div", { class: "card rv" }, h("h2", { text: "Upcoming" }), note, list)]);
     syncMode(); load();
+  }
+
   /* ---------- ticket history ---------- */
-  function fmtWhen(iso) { try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch (e) { return ""; } }
   function renderTickets(gid, main) {
     var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
     var filter = h("select", { "aria-label": "Filter by status" }, [["", "All tickets"], ["open", "Open"], ["closed", "Closed"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
@@ -734,7 +734,7 @@
     moreBtn.addEventListener("click", function () { load(false); });
     add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Ticket history" }),
       h("p", { class: "muted", text: "Read what was said in a ticket, live from its channel. Closed tickets keep their channel hidden, so the conversation is still here." })),
-      h("a", { class: "btn sm ghost", href: "#/g/" + gid, text: "Overview" })), h("div", { class: "card rv" }, filter, list, moreBtn), viewer]);
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })), h("div", { class: "card rv" }, filter, list, moreBtn), viewer]);
     load(true);
   }
 
@@ -828,16 +828,10 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      if (modId && modId !== "audit" && modId !== "billing" && !mod) { location.hash = gpath(gid); return; }
-      if (modId && modId !== "audit" && modId !== "billing" && modId !== "raid" && !mod) { location.hash = "#/g/" + gid; return; }
+      var PAGES = { audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
+      if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
-      if (modId === "audit") renderAudit(gid, main); else if (modId === "raid") renderRaid(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
-      if (modId && modId !== "audit" && modId !== "billing" && modId !== "schedules" && !mod) { location.hash = "#/g/" + gid; return; }
-      var main = renderShell(gid, modId);
-      if (modId === "audit") renderAudit(gid, main); else if (modId === "schedules") renderSchedules(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
-      if (modId && modId !== "audit" && modId !== "billing" && modId !== "tickethistory" && !mod) { location.hash = "#/g/" + gid; return; }
-      var main = renderShell(gid, modId);
-      if (modId === "audit") renderAudit(gid, main); else if (modId === "tickethistory") renderTickets(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
+      if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
       window.scrollTo(0, 0);
     }).catch(function (e) {
       if (e.message === "401") return;
