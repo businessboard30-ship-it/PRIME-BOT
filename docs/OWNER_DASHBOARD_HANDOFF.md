@@ -1,0 +1,97 @@
+# PRIME BOT: Owner Dashboard Handoff
+
+Written 8 Oct 2026. Read this first, then `OWNER_DASHBOARD_PLAN.md` (the plan this work follows).
+
+## 1. Where everything is
+
+| Thing | Value |
+|---|---|
+| Repo | https://github.com/businessboard30-ship-it/PRIME-BOT (clone URL ends `.git`) |
+| Base | `main` at `fc5bcf8` (after PR #121) |
+| Phase 0 branch | `feat/owner-dashboard-phase0` (commit `51b4195`), based on `main` |
+| Phase 1a branch | `feat/owner-phase1-readonly` (commit `51d3d7c`), STACKED on Phase 0 (contains its commit) |
+| PR links | `.../pull/new/feat/owner-dashboard-phase0` and `.../pull/new/feat/owner-phase1-readonly` |
+| Status | Both pushed, **no PRs opened, nothing merged, nothing deployed** |
+| Services | Railway `web` (`api_server.py`, serves `/api/dash`) and `worker` (`discord_bot/bot.py`). Dashboard front end is Cloudflare Pages (`dashboard/`). |
+| Dashboard backend URL | `https://web-production-74667a.up.railway.app/api/dash` |
+| Dashboard front end | `https://prime-bot-dash.pages.dev` |
+
+### Credentials (IMPORTANT)
+- **No token is stored in this doc, the repo, or `.git/config`.** Earlier chats pasted a classic `ghp_` token into the conversation. It must be **revoked** at github.com/settings/tokens.
+- Replace it with a **fine-grained token scoped to PRIME-BOT only**, Contents (read/write) and Pull requests (read/write). Ask the owner for it per session and pass it **inline on the single git command** (`git push https://<token>@github.com/businessboard30-ship-it/PRIME-BOT.git <branch>`). Never write it to a file, git config, or memory. Clean remote after cloning: `git remote set-url origin https://github.com/businessboard30-ship-it/PRIME-BOT.git`.
+- Pipe git output through `sed 's/ghp_[A-Za-z0-9]*/<token>/g'` so it never echoes.
+
+## 2. Merge order (do this, in order)
+
+1. Open and merge the Phase 0 PR. **It bumps `SCHEMA_VERSION` 59 to 60.**
+2. After deploy, check Railway logs for `[db init] schema_version '59' != '60'` followed by the DDL pass. That confirms `dash_owner_audit` exists. If you don't see it, the schema did not apply.
+3. Retarget/open the Phase 1a PR against `main` (it has no schema change; stays at 60).
+4. Per the plan's conventions: merge website and captcha PRs first because of the deploy workflow; one feature per PR.
+5. First sign-in after deploy: owners must sign in again (existing sessions have no `iat`, so owner routes return 401 "Owner sessions are short").
+
+## 3. SCHEMA BUMP RULES (the thing that has bitten this project)
+
+- `database.py` `SCHEMA_VERSION` gates the whole DDL pass. If `_create_tables` changes and the version doesn't, **the change silently never runs** (UndefinedTableError in production; this caused the PR #121 outage).
+- Guard: `tests/unit/test_schema_version_guard.py` pins `(PINNED_VERSION, PINNED_HASH)` of the normalised `_create_tables` body. It fails if the body changes without a bump, and fails if the version changes with no schema change. Workflow when you add a table or column: (1) change DDL, (2) bump `SCHEMA_VERSION` + add a `# "N" -> "N+1" ...` comment line, (3) run the test, it prints the new hash, (4) set `PINNED_VERSION` and `PINNED_HASH` to the printed values in the same PR.
+- Whole-line comments are ignored by the hash; edits inside SQL strings count.
+- **Planned next bump: 60 to 61** for the worker status snapshot table (Phase 1b below). Do not bump for anything else.
+
+## 4. What is built
+
+### Phase 0 (foundation) on `feat/owner-dashboard-phase0`
+- `modules/admin_access.py`: single source of truth for owner sections (`compute_sections`). The Discord `allowed_sections` now calls it; web calls it too. Parity test included. Owner-only (never grantable): `access`, `config`, `database`.
+- `api/dash.py` helpers: `_owner_sections`, `_require_section` (403 if not allowed, 401 if owner session older than `DASH_OWNER_SESSION_MINUTES`, default 120), `_require_fresh` (step-up), `_require_confirm` (exact typed text), `_owner_rate` (in-memory per user/action), `_owner_write` (**fail-closed audit**: audit row first; if that write fails the action does not run, 503).
+- Routes: `POST owner_stepup` (returns Discord authorize URL with `prompt=consent`; state `return_to="dash_stepup:<sid>"`; callback only marks the SAME session fresh for `DASH_STEPUP_MINUTES` (5) and rejects a different Discord account), `POST owner_signout_all` (needs fresh + typed `SIGN OUT`), `GET owner_audit`, and `me` now returns `owner_sections`.
+- Sessions: `iat` added at creation. `_session()` now returns the payload plus `_sid`.
+- DB: `dash_owner_audit` table, `owner_audit_add/set_result/list`, `update_login_session_payload`, `delete_login_sessions_for_user`. Discord panel `audit()` also writes to `dash_owner_audit` (best effort, source `discord`).
+- Config: `DASH_OWNER_IDS` env (comma/space separated IDs) is UNIONED with the hardcoded `DISCORD_CLONE_ADMIN_IDS`, never replaces it. `DASH_OWNER_SESSION_MINUTES`, `DASH_STEPUP_MINUTES`.
+- Front end: lazy `dashboard/assets/owner.js`, route `#/owner/<page>`, "Owner" header button only if `owner_sections` non-empty. Pages: Overview, Audit log, Security (step-up, sign out everywhere).
+- v1 is **owner-only on the web**. Helpers get nothing there (plan open decision 1).
+
+### Phase 1a on `feat/owner-phase1-readonly`
+- `api/dash_owner.py`: read-only handlers, `ROUTES` table dispatched from `_route`. Routes (all GET, section-gated, 60/min rate limit): `owner_health` (health), `owner_servers` (servers; search, paging, clone filter), `owner_server` (inspect), `owner_user` (inspect), `owner_payments` view=`pending|failures|revenue` (money), `owner_expiries` (money).
+- `modules/admin_inspect.py`: new `server_list` (literal LIKE escaping, validated on a real Postgres 16) and `guild_counts`.
+- `jsonable()`: ids (any key ending `id`) and ints beyond 2^53 become **strings**; datetimes ISO; Decimals floats. Discord snowflakes lose precision as JS numbers.
+- Pages: Health, Servers (search + inspect by id), Users, Payments (pending, failed, revenue, expiries). All server data via `textContent`.
+
+### Tests
+- Run: `python3 -m pytest tests/unit -q` (full suite: 1927 passed at `51d3d7c`, about 2.5 min) or `python3 -m pytest tests/unit/test_dash_*.py tests/unit/test_schema_version_guard.py -q`.
+- New: `test_dash_owner.py` (permission matrix, step-up, fail-closed audit, session age, parity), `test_dash_owner_phase1.py`, `test_schema_version_guard.py`.
+- Setup if starting fresh: `pip install -r requirements.txt pytest --break-system-packages`.
+- **Test gotcha:** other test modules drop and re-import `modules.admin_*`. In tests, patch those modules via `importlib.import_module("modules.admin_inspect")` inside the fixture, not a module-level import, or tests pass alone and fail in the full run.
+
+## 5. Not built yet (next work)
+
+### Phase 1b (needs schema 60 to 61)
+Live bot facts are NOT visible to the web process (separate Railway service). Health currently reports only DB-derived facts and returns `live_bot: null`. Remaining Phase 1 items need a worker snapshot:
+1. New table, e.g. `bot_status_snapshots (key TEXT PRIMARY KEY, payload JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`. **Bump to 61 and update the guard test.**
+2. Worker task (every ~60 s) upserts key `main`: `admin_inspect.bot_snapshot(bot)` (latency, uptime, memory, guild count, cogs), `loop_report(bot)`, `error_counts()`; and key `logs`: last ~200 lines from `admin_ops.recent_logs`, **already passed through `admin_ops.mask_secrets`**.
+3. Web: `owner_health` merges the snapshot with an "as of N s ago" and a stale warning. Add `owner_logs` (section `logs`, masked) and `owner_config` (section `config`, owner-only, `admin_ops.config_entries`, masked).
+4. **Config viewer caveat:** the web process reads its own env, which may differ from the worker's. Either publish the masked config from the worker too, or label the page "web service config".
+
+### Later phases (see plan)
+Phase 2 safe controls (kill switches, blacklist, premium, audit viewer, announcements, feedback), Phase 3 money (step-up + typed confirm; **do a real small `/pay` + Gumroad/Paystack test and a real-browser test with a second Discord account first**), Phase 4 safety, Phase 5 helpers/clones/DB cleanups (clone start/stop and mass DMs need an `owner_jobs` table polled by the worker, same pattern as `api/cron_discord_owner_broadcast.py`), Phase 6 polish.
+Every owner **write** must use `_owner_write`, a permission matrix test, a step-up test where destructive, and an audit test.
+
+## 6. Open decisions (owner has not answered)
+1. Helpers on the web? Recommended: owner-only v1, add helpers (audit, blacklist, premium, logs) in Phase 2.
+2. Money actions on the web? Recommended: yes with step-up; otherwise keep Phase 3 read-only.
+3. Database tools on web? Recommended: Discord-only.
+4. More than one owner? Phase 0 already supports extra IDs via `DASH_OWNER_IDS`, but the hardcoded ID remains the fallback. Moving fully to env/DB-backed is still open.
+5. Should owner **reads** (e.g. user inspector shows payment totals) be audited? Currently reads are rate-limited and not audited; only writes and step-up start are.
+6. Should the Discord-side audit write fail closed too? Currently best effort.
+
+## 7. Gotchas and conventions
+- Never `innerHTML` with server data; `textContent`/`h(...,{text})` only. CSP is `script-src 'self'; style-src 'self'` (no inline styles/scripts), connect-src limited to the Railway backend.
+- CORS is limited to `DASH_PAGES_URL`. Bearer-token sessions, no cookies.
+- Never accept a guild id without `_authorised_guild` on guild routes; owner routes use `_require_section`.
+- New routes: add to `_route` and the docstring at the top of `api/dash.py`, plus tests using the `env`/`call` helpers from `tests/unit/test_dash_api.py`.
+- `parse_snowflake` requires 10 to 20 digits; tests must use realistic ids.
+- `get_login_session` takes a TTL arg; owner TTL is enforced separately through `iat` in `_require_section`.
+- Env vars to know: `DASH_PAGES_URL`, `DASH_OAUTH_REDIRECT_URI`, `DISCORD_OAUTH_CLIENT_ID/SECRET`, `DASH_SESSION_MINUTES` (720), `DASH_OWNER_SESSION_MINUTES` (120), `DASH_STEPUP_MINUTES` (5), `DASH_OWNER_IDS` (optional extra owners).
+- Hardcoded owner Discord id lives in `config.py` (`DISCORD_CLONE_ADMIN_IDS`, `DISCORD_OWNER_BROADCAST_IDS`).
+- Still unverified end to end: real Discord sign-in, step-up round trip on a real browser, and a real payment. The step-up OAuth flow is unit tested with a faked Discord only.
+- Postgres can be installed in the sandbox for real SQL checks (`apt-get update && apt-get install -y postgresql`, then `initdb` as the `postgres` user on a non-default port). Used to validate `server_list`.
+
+## 8. Suggested first message for the next session
+"Read docs/OWNER_DASHBOARD_HANDOFF.md and OWNER_DASHBOARD_PLAN.md in github.com/businessboard30-ship-it/PRIME-BOT. Phase 0 and Phase 1a are pushed on two branches, unmerged. Start Phase 1b (worker status snapshot, schema bump to 61 with the guard test). I will give you a fine-grained token inline for pushes only."
