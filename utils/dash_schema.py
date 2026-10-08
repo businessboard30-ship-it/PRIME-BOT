@@ -706,3 +706,36 @@ def ticket_message_view(msg: dict) -> dict:
             "text": str(msg.get("content") or "")[:TICKET_MSG_MAX],
             "files": [str(a.get("filename") or "file")[:80] for a in (msg.get("attachments") or [])][:10],
             "embeds": len(msg.get("embeds") or [])}
+
+
+MOD_REASON_MAX = 300
+MOD_KIND_RE = re.compile(r"^[a-z_]{1,32}$")
+
+
+def _clean_text(raw, limit: int) -> str:
+    """Moderator-typed text shown back to admins: control characters out, bounded. The page also uses textContent."""
+    return "".join(ch for ch in str(raw or "") if ch == "\n" or ch >= " ")[:limit]
+
+
+def mod_case_view(row: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(row["id"]), "kind": str(row.get("action_type") or "")[:32],
+            "target_id": str(row["target_user_id"]) if row.get("target_user_id") else None,
+            "by": str(row["performed_by"]) if row.get("performed_by") else None,
+            "reason": _clean_text(row.get("reason"), MOD_REASON_MAX), "at": iso(row.get("created_at"))}
+
+
+def mod_warn_view(row: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(row["id"]), "by": str(row["warned_by"]) if row.get("warned_by") else None,
+            "reason": _clean_text(row.get("reason"), MOD_REASON_MAX), "at": iso(row.get("created_at"))}
+
+
+def parse_mod_user(raw):
+    """A Discord snowflake (10 to 20 digits that fit a BIGINT) or None. Raises ValueError on garbage."""
+    if raw in (None, ""):
+        return None
+    s = str(raw).strip()
+    if not (s.isdigit() and 10 <= len(s) <= 20 and int(s) < 2 ** 63):
+        raise ValueError("Enter a Discord user ID (10 to 20 digits).")
+    return int(s)

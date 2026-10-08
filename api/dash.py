@@ -31,6 +31,7 @@ Routes (all on /api/dash):
   GET  ?action=billing&guild_id         -> Premium status + plans with server-side prices
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
+  GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count); read-only
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
   POST {action: dropbox_read, id?}      -> mark one (or all) read
@@ -1255,6 +1256,27 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(400, "Invalid page.")
         rows = await db.dash_audit_list(gid, before, mod, 31)
         raise _Reply(200, {"ok": True, "entries": rows[:30], "more": len(rows) > 30})
+
+    if method == "GET" and action == "moderation":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        try:
+            user = S.parse_mod_user(q("user_id"))
+            before = int(q("before")) if q("before") else None
+        except ValueError as e:
+            _fail(400, str(e) if "user ID" in str(e) else "Invalid page.")
+        if before is not None and not 0 < before < 2 ** 31:
+            _fail(400, "Invalid page.")
+        kind = q("kind") or None
+        if kind and not S.MOD_KIND_RE.match(kind):
+            _fail(400, "Unknown action type.")
+        rows = await db.dash_mod_cases(gid, user, kind, before, 31)
+        out = {"ok": True, "cases": [S.mod_case_view(r) for r in rows[:30]], "more": len(rows) > 30}
+        if before is None:
+            out["kinds"] = [k for k in await db.dash_mod_kinds(gid) if S.MOD_KIND_RE.match(str(k))]
+        if user is not None and before is None:
+            warns, total = await db.dash_mod_warns(gid, user)
+            out["warns"], out["warn_count"] = [S.mod_warn_view(w) for w in warns], total
+        raise _Reply(200, out)
 
     if method == "GET" and action == "welcome_preview":
         gid = await _authorised_guild(sess, q("guild_id"))

@@ -202,6 +202,7 @@
     }
     nav.appendChild(link(gpath(gid), "home", "Overview", !modId));
     nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
+    nav.appendChild(link(gpath(gid, "moderation"), "gavel", "Moderation", modId === "moderation"));
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
     nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
@@ -702,6 +703,53 @@
   }
 
   /* ---------- ticket history ---------- */
+  function renderModeration(gid, main) {
+    var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
+    var user = h("input", { type: "text", placeholder: "Member's Discord ID (optional)", "aria-label": "Filter by member ID", inputmode: "numeric", maxlength: 20 });
+    var kind = h("select", { "aria-label": "Filter by action" }, h("option", { value: "", text: "All actions" }));
+    var go = h("button", { class: "btn sm", text: "Search" });
+    var warnsBox = h("div", { class: "card rv", hidden: true });
+    var last = null, kindsLoaded = false;
+    function load(reset) {
+      if (reset) { list.textContent = ""; last = null; warnsBox.hidden = true; }
+      var params = { guild_id: gid };
+      if (user.value.trim()) params.user_id = user.value.trim();
+      if (kind.value) params.kind = kind.value;
+      if (last) params.before = last;
+      api("moderation", params).then(function (r) {
+        if (r.kinds && !kindsLoaded) { kindsLoaded = true; r.kinds.forEach(function (k) { kind.appendChild(h("option", { value: k, text: k })); }); }
+        if (r.warns) {
+          warnsBox.hidden = false; warnsBox.textContent = "";
+          warnsBox.appendChild(h("h2", { text: r.warn_count + (r.warn_count === 1 ? " warn" : " warns") }));
+          if (!r.warns.length) warnsBox.appendChild(h("p", { class: "muted", text: "No warns for this member." }));
+          r.warns.forEach(function (w) {
+            warnsBox.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+              h("b", { text: "Warn #" + w.id }), h("span", { class: "help", text: "  " + fmtWhen(w.at) + (w.by ? " \u00b7 by " + w.by : "") }),
+              h("p", { text: w.reason || "No reason given." }))));
+          });
+        }
+        r.cases.forEach(function (c) {
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: c.kind + " #" + c.id }), h("span", { class: "help", text: "  " + fmtWhen(c.at) }),
+            h("p", { class: "help", text: (c.target_id ? "Member " + c.target_id : "No member") + (c.by ? " \u00b7 by " + c.by : "") }),
+            c.reason ? h("p", { text: c.reason }) : null)));
+          last = c.id;
+        });
+        if (!list.children.length) list.appendChild(h("p", { class: "muted", text: "No moderation actions found." }));
+        moreBtn.hidden = !r.more;
+      }).catch(function (e) { toast(e.message, "bad"); });
+    }
+    go.addEventListener("click", function () { load(true); });
+    user.addEventListener("keydown", function (e) { if (e.key === "Enter") load(true); });
+    kind.addEventListener("change", function () { load(true); });
+    moreBtn.addEventListener("click", function () { load(false); });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Moderation" }),
+      h("p", { class: "muted", text: "Kicks, bans, timeouts and warns recorded by the bot, newest first. Read-only: use the Discord commands to act." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card rv" }, h("div", { class: "owner-bar" }, user, kind, go), list, moreBtn), warnsBox]);
+    load(true);
+  }
+
   function renderTickets(gid, main) {
     var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
     var filter = h("select", { "aria-label": "Filter by status" }, [["", "All tickets"], ["open", "Open"], ["closed", "Closed"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
@@ -861,7 +909,7 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      var PAGES = { audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
+      var PAGES = { moderation: renderModeration, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
       if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
