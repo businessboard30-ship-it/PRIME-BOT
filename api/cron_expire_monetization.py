@@ -54,6 +54,11 @@ class handler(BaseHTTPRequestHandler):
 
         try:
             reverted = asyncio.run(db.expire_monetization_subscriptions())
+            try:                          # Developer-mode keys are deleted 30 days after the plan ends
+                purged = asyncio.run(db.dev_connections_purge_lapsed(30))
+                logger.info(f"[v0] cron dev_connections purged={purged}")
+            except Exception as e:
+                logger.error(f"[v0] cron dev_connections purge failed: {type(e).__name__}")
             logger.info(f"[v0] cron_expire_monetization reverted clone_ids={reverted}")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

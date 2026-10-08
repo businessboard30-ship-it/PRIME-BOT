@@ -8,7 +8,7 @@ Nothing here writes entitlements: only the payment webhook does. No route takes 
 """
 import logging
 
-from modules import ai_usage, dev_chat
+from modules import ai_usage, dev_chat, dev_keys
 from modules import entitlements as ent
 from modules import user_subs
 from api.dash_member import pay_view
@@ -19,7 +19,7 @@ WEEKLY_BOT_CHATS = ai_usage.LIMITS[SOURCE]     # bot-provided AI messages per we
 FEATURES = (
     {"key": "chat", "label": "AI chat", "ready": True},
     {"key": "export", "label": "Export to your DMs", "ready": False},
-    {"key": "keys", "label": "Bring your own AI key (Claude, Groq, OpenAI)", "ready": False},
+    {"key": "keys", "label": "Bring your own AI key (Claude, Groq, OpenAI)", "ready": True},
     {"key": "github", "label": "Connect GitHub (read-only)", "ready": False},
 )
 
@@ -71,8 +71,11 @@ async def dev_usage(uid, q, db):
     gate = await require_dev(uid, db)
     if gate:
         return gate
-    return {**_usage_view(await ai_usage.status(db, uid, SOURCE)),
-            "models": [{"id": "default", "label": "Bot AI (default)"}]}
+    conns = await db.dev_connection_list(uid)
+    models = [{"id": "default", "label": "Bot AI (default)"}] + [
+        {"id": c["provider"], "label": dev_keys.PROVIDERS[c["provider"]]["label"] + " (your key)"}
+        for c in conns if c.get("provider") in dev_keys.PROVIDERS]
+    return {**_usage_view(await ai_usage.status(db, uid, SOURCE)), "models": models}
 
 
 async def dev_chat_send(uid, body, db):
@@ -81,6 +84,9 @@ async def dev_chat_send(uid, body, db):
     gate = await require_dev(uid, db)
     if gate:
         return gate
+    model = str((body or {}).get("model") or "default").strip().lower()
+    if model != "default":
+        return await _chat_with_own_key(uid, body, db, model)
     from modules import admin_controls
     if "ai" in await admin_controls.current_switches():
         return {"_status": 503, "message": "AI chat is switched off right now."}
@@ -102,5 +108,80 @@ async def dev_chat_send(uid, body, db):
     return {"reply": text, **_usage_view(st)}
 
 
-ROUTES = {"dev_status": dev_status, "dev_overview": dev_overview, "dev_usage": dev_usage}
-WRITES = {"dev_chat": dev_chat_send}
+async def _chat_with_own_key(uid, body, db, provider):
+    """The person's own key: server to provider only, NOT counted against the weekly 50, never returned."""
+    provider = dev_keys.clean_provider(provider)
+    if not provider:
+        return {"_status": 422, "message": "Pick a model from the list."}
+    messages, err = dev_chat.clean_messages((body or {}).get("messages"))
+    if err:
+        return {"_status": 422, "message": err}
+    enc = await db.dev_connection_secret(uid, provider)
+    key = _decrypt(enc) if enc else None
+    if not key:
+        return {"_status": 409, "code": "no_key", "message": "Add that key in Keys first."}
+    try:
+        text = await dev_keys.chat(provider, key, dev_chat.SYSTEM_PROMPT, messages)
+    except RuntimeError as e:
+        return {"_status": 502, "message": str(e)}
+    except Exception:
+        logger.error("dev own-key chat failed (provider=%s)", provider)       # no exception text: it could echo request data
+        return {"_status": 502, "message": "The AI service is busy. Try again in a moment."}
+    return {"reply": text, "own_key": True, "provider": provider}
+
+
+def _decrypt(enc):
+    from utils.crypto import secret_manager
+    return secret_manager.decrypt(enc)
+
+
+async def dev_keys_list(uid, q, db):
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    rows = await db.dev_connection_list(uid)
+    return {"connections": [dev_keys.public_view(r) for r in rows if r.get("provider") in dev_keys.PROVIDERS],
+            "providers": [{"id": k, "label": v["label"]} for k, v in dev_keys.PROVIDERS.items()],
+            "kept_days_after_expiry": dev_keys.GRACE_DAYS}
+
+
+async def dev_key_save(uid, body, db):
+    """Add or replace one provider key. Step-up (fresh Discord sign-in) is enforced by the router before this runs.
+    Validates with one free call, then stores ciphertext. The key is never returned, logged or put in an error."""
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    provider = dev_keys.clean_provider((body or {}).get("provider"))
+    if not provider:
+        return {"_status": 422, "message": "Pick a provider."}
+    key, err = dev_keys.clean_key((body or {}).get("key"))
+    if err:
+        return {"_status": 422, "message": err}
+    existing = {c["provider"] for c in await db.dev_connection_list(uid)}
+    if provider not in existing and len(existing) >= dev_keys.MAX_CONNECTIONS:
+        return {"_status": 422, "message": "You've reached the limit of saved keys."}
+    ok, verr = await dev_keys.validate(provider, key)
+    if not ok:
+        return {"_status": 422, "message": verr}
+    from utils.crypto import secret_manager
+    await db.dev_connection_upsert(uid, provider, secret_manager.encrypt(key), dev_keys.last4(key))
+    rows = await db.dev_connection_list(uid)
+    return {"connections": [dev_keys.public_view(r) for r in rows if r.get("provider") in dev_keys.PROVIDERS]}
+
+
+async def dev_key_remove(uid, body, db):
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    provider = dev_keys.clean_provider((body or {}).get("provider"))
+    if not provider:
+        return {"_status": 422, "message": "Pick a provider."}
+    await db.dev_connection_delete(uid, provider)
+    rows = await db.dev_connection_list(uid)
+    return {"connections": [dev_keys.public_view(r) for r in rows if r.get("provider") in dev_keys.PROVIDERS]}
+
+
+ROUTES = {"dev_status": dev_status, "dev_overview": dev_overview, "dev_usage": dev_usage, "dev_keys": dev_keys_list}
+WRITES = {"dev_chat": dev_chat_send, "dev_key_save": dev_key_save, "dev_key_remove": dev_key_remove}
+# Writes that also need a fresh Discord sign-in (step-up). The router checks this set; handlers never see the session.
+FRESH_WRITES = frozenset({"dev_key_save", "dev_key_remove"})
