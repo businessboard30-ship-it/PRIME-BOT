@@ -19,8 +19,12 @@ class PaystackPayment:
     
     def initialize_payment(self, email: str, amount_minor_units: int, user_id: int, bot_name: str,
                             payment_type: str = "bot_clone", extra_metadata: Optional[Dict] = None,
-                            api_key: Optional[str] = None, currency: str = "GHS") -> Optional[Dict]:
+                            api_key: Optional[str] = None, currency: str = "GHS",
+                            plan: Optional[str] = None) -> Optional[Dict]:
         """Initialize a payment transaction.
+
+        plan: a Paystack recurring plan code (PLN_...). When set, Paystack charges the plan's own
+        amount/currency and subscribes the customer so it renews automatically.
 
         amount_minor_units: the smallest unit of `currency` (pesewas for
         GHS, kobo for NGN, cents for USD/ZAR, etc — Paystack always wants
@@ -53,6 +57,8 @@ class PaystackPayment:
             "currency": currency,
             "metadata": metadata
         }
+        if plan:
+            payload["plan"] = plan
 
         headers = self.headers if not api_key else {
             "Authorization": f"Bearer {api_key}",
