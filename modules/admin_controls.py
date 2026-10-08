@@ -259,6 +259,33 @@ async def revoke_premium(guild_id: int, clone_id: Optional[int]) -> bool:
     return not result.endswith(" 0")
 
 
+GRANT_MAX_DAYS = 3650
+
+
+async def grant_premium(guild_id: int, by: int, days: int, clone_id: Optional[int]):
+    """Add `days` on top of whatever time is left (or from now if lapsed). Returns the new expiry.
+    Same call the Discord panel's grant / +30 / +90 buttons make, so web and Discord agree."""
+    if not 1 <= int(days) <= GRANT_MAX_DAYS:
+        raise ValueError("days out of range")
+    from database import db
+    return await db.activate_guild_premium(guild_id, by, int(days), clone_id)
+
+
+async def list_bot_audit(before: Optional[int] = None, action: Optional[str] = None,
+                         guild_id: Optional[int] = None, admin_id: Optional[int] = None,
+                         limit: int = 50) -> List[dict]:
+    """The bot's own admin_panel_audit trail (Discord panel actions), newest first, with filters."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, admin_id, action, guild_id, details, created_at FROM admin_panel_audit "
+            "WHERE ($1::bigint IS NULL OR id < $1) AND ($2::text IS NULL OR action = $2) "
+            "AND ($3::bigint IS NULL OR guild_id = $3) AND ($4::bigint IS NULL OR admin_id = $4) "
+            "ORDER BY id DESC LIMIT $5",
+            before, action, guild_id, admin_id, max(1, min(int(limit), 200)))
+    return [dict(r) for r in rows]
+
+
 # ── helper accounts (per-section panel access) ───────────────────────────
 #
 # Real owners live in config.py and always get everything. A *helper* is an

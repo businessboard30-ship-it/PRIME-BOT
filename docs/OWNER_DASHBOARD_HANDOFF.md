@@ -112,16 +112,19 @@ Merge order is now: Phase 0 -> Phase 1a -> this branch. **This branch bumps `SCH
 | Action | Section | Extra protection |
 |---|---|---|
 | `owner_switch` (kill switches) | controls | engaging `maintenance`: step-up + type `MAINTENANCE`; engaging opt-in `build_bot_public`: step-up + type `OPEN`; feature switches and all releases: audit only |
-| `owner_blacklist_add/remove` | blacklist | cannot blacklist an owner id (user kind); reason sanitised, 300 chars |
-| `owner_premium_revoke` | premium | step-up + type `REVOKE`. Granting premium is NOT on the web (Phase 3) |
+| `owner_blacklist_add/remove` | blacklist | cannot blacklist an owner id (user kind); reason sanitised, 300 chars; blacklisting a SERVER needs step-up + type `BLOCK` (users: audit only) |
+| `owner_premium_revoke` | premium | step-up + type `REVOKE` |
+| `owner_premium_grant` (grant / extend, adds days on top, 1 to 3650) | premium | step-up + type `GRANT`; shared logic is `admin_controls.grant_premium` |
 | `owner_announce` | broadcast | dashboard-only message: audit only; with `push_dm` (mass DM): step-up + type `SEND` |
 | `owner_announce_delete` | broadcast | audit only |
-Reads: `owner_controls`, `owner_blacklist`, `owner_premium`, `owner_feedback` (messages cut to 1000 chars). The audit viewer shipped in Phase 0.
+Reads: `owner_controls`, `owner_blacklist`, `owner_premium`, `owner_feedback` (messages cut to 1000 chars), `owner_botaudit` (the bot's own `admin_panel_audit` with filters `what`, `guild_id`, `admin_id`, `before`; shown under the Audit log page). The web owner trail (`owner_audit`) shipped in Phase 0.
+- **Gotcha 2:** query filters must not be named `action` (the router's own key) or `clone_id`. `owner_botaudit` uses `what`.
+- Not changed: the Discord panel's own grant/extend buttons still call `db.activate_guild_premium` directly (same underlying function). Owner list is still `DASH_OWNER_IDS` unioned with the hardcoded ID (plan wanted it fully out of config; still open).
 - **Gotcha:** a body field named `clone_id` is swallowed by the dashboard's global clone-context handling (404 "That bot isn't available"). Owner writes use `clone`.
 - Kill-switch and blacklist changes reach the bot within its 20 s cache TTL (the web process can't invalidate the worker's cache).
 - Announcements on the web reuse `validate_dropbox` and the existing dropbox DB functions; the old `dropbox_send` / `dropbox_delete` routes still exist and are NOT audited by `_owner_write`. Consider removing them from the owner UI path or auditing them (open decision).
 - Front end: new pages Controls, Blacklist, Premium, Announcements, Feedback, Logs, Config. Typed confirmations use `window.prompt` (no inline scripts, CSP-safe). A `stepup_required` reply tells the owner to use the Security page.
-- Tests: `tests/unit/test_dash_owner_phase1b_2.py` (40 tests: permission matrix for every read and write, step-up, typed confirm case-sensitivity, fail-closed audit, validation, owner-lockout guard, snapshot staleness, masking). Full suite: 1967 passed.
+- Tests: `tests/unit/test_dash_owner_phase1b_2.py` (40 tests: permission matrix for every read and write, step-up, typed confirm case-sensitivity, fail-closed audit, validation, owner-lockout guard, snapshot staleness, masking). Full suite: see last commit message.
 
 ### Still unverified end to end
 Real Discord sign-in, the step-up round trip in a real browser, a live worker publishing a snapshot to the Railway DB, and the front-end pages (only syntax-checked, not exercised in a browser).

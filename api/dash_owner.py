@@ -193,6 +193,21 @@ async def premium(q) -> dict:
     return {"rows": await ac.list_premium(100)}
 
 
+async def bot_audit(q) -> dict:
+    """The bot's own admin_panel_audit (Discord panel actions), with filters. The web trail is owner_audit."""
+    from modules import admin_controls as ac
+    before, gid, aid = q("before"), q("guild_id"), q("admin_id")
+    action = (q("what") or "").strip()[:100] or None
+    for v in (before, gid, aid):
+        if v and not str(v).isdigit():
+            return {"_error": (422, "Bad filter.")}
+    if gid and _snowflake(gid) is None or aid and _snowflake(aid) is None:
+        return {"_error": (422, "Ids must be full ids.")}
+    rows = await ac.list_bot_audit(int(before) if before else None, action,
+                                   int(gid) if gid else None, int(aid) if aid else None, 50)
+    return {"rows": [{**r, "details": str(r.get("details") or "")[:500]} for r in rows]}
+
+
 async def feedback(q) -> dict:
     rows = await _db().get_discord_user_feedback(50)
     return {"rows": [{**r, "message": str(r.get("message") or "")[:1000]} for r in rows]}
@@ -243,8 +258,11 @@ async def prep_blacklist_add(sess, body) -> dict:
     if kind == "user" and tid in _owner_ids():
         return {"_error": (422, "You can't blacklist an owner.")}
     reason = _clean_reason(body.get("reason"))
-    return {"target": f"{kind}:{tid}", "detail": {"has_reason": bool(reason)},
+    plan = {"target": f"{kind}:{tid}", "detail": {"has_reason": bool(reason)},
             "fn": lambda: _do_bl_add(ac, kind, tid, reason, _actor(sess))}
+    if kind == "guild":
+        plan.update(fresh=True, confirm="BLOCK")      # cuts a whole server off: step-up + typed confirm
+    return plan
 
 
 async def _do_bl_add(ac, kind, tid, reason, by):
@@ -271,6 +289,22 @@ async def prep_premium_revoke(sess, body) -> dict:
     async def fn():
         return {"revoked": bool(await ac.revoke_premium(gid, clone))}
     return {"target": f"{gid}/{clone or 'main'}", "fn": fn, "fresh": True, "confirm": "REVOKE"}
+
+
+async def prep_premium_grant(sess, body) -> dict:
+    from modules import admin_controls as ac, admin_inspect as ai
+    gid = _snowflake(str(body.get("guild_id") or ""))
+    ok, clone = ai.parse_clone(str(body.get("clone") or ""))
+    days = str(body.get("days") or "").strip()
+    if gid is None or not ok:
+        return {"_error": (422, "Give a full server id (and a clone number, or leave it empty for the main bot).")}
+    if not days.isdigit() or not 1 <= int(days) <= ac.GRANT_MAX_DAYS:
+        return {"_error": (422, f"Days must be a whole number from 1 to {ac.GRANT_MAX_DAYS}.")}
+    n = int(days)
+    async def fn():
+        expires = await ac.grant_premium(gid, _actor(sess), n, clone)
+        return {"guild_id": gid, "days": n, "expires_at": expires}
+    return {"target": f"{gid}/{clone or 'main'}", "detail": {"days": n}, "fn": fn, "fresh": True, "confirm": "GRANT"}
 
 
 async def prep_announce(sess, body) -> dict:
@@ -312,6 +346,7 @@ WRITES = {
     "owner_blacklist_add": ("blacklist", 20, prep_blacklist_add),
     "owner_blacklist_remove": ("blacklist", 20, prep_blacklist_remove),
     "owner_premium_revoke": ("premium", 10, prep_premium_revoke),
+    "owner_premium_grant": ("premium", 10, prep_premium_grant),
     "owner_announce": ("broadcast", 5, prep_announce),
     "owner_announce_delete": ("broadcast", 10, prep_announce_delete),
 }
@@ -330,4 +365,5 @@ ROUTES = {
     "owner_blacklist": ("blacklist", blacklist),
     "owner_premium": ("premium", premium),
     "owner_feedback": ("feedback", feedback),
+    "owner_botaudit": ("audit", bot_audit),
 }

@@ -166,14 +166,30 @@
     shell("audit", box);
     api("owner_audit").then(function (j) {
       box.textContent = "";
-      if (!j.entries.length) { box.appendChild(h("p", { class: "muted", text: "No owner actions recorded yet." })); return; }
+      if (!j.entries.length) { box.appendChild(h("p", { class: "muted", text: "No owner actions recorded yet." })); botAudit(box); return; }
       var tbl = h("table", { class: "owner-table" },
         h("thead", null, h("tr", null, ["When", "Who", "Source", "Section", "Action", "Target", "Result"].map(function (t) { return h("th", { text: t }); }))),
         h("tbody", null, j.entries.map(function (r) {
           return h("tr", null, [fmt(r.created_at), r.user_name || r.user_id, r.source, r.section, r.action, r.target, r.result].map(function (v) { return h("td", { text: String(v == null ? "" : v) }); }));
         })));
       box.appendChild(h("div", { class: "owner-scroll" }, tbl));
+      botAudit(box);
     }).catch(function (e) { if (e.message !== "401") { box.textContent = ""; box.appendChild(h("p", { class: "muted", text: e.message })); } });
+  }
+
+  function botAudit(into) {
+    var act = h("input", { type: "text", placeholder: "Action, e.g. premium.grant", "aria-label": "Action" });
+    var gid = h("input", { type: "text", placeholder: "Server id", inputmode: "numeric", "aria-label": "Server id" });
+    var adm = h("input", { type: "text", placeholder: "Admin id", inputmode: "numeric", "aria-label": "Admin id" });
+    var out = h("div", null);
+    function go() {
+      loadInto(out, "owner_botaudit", { what: act.value.trim(), guild_id: gid.value.trim(), admin_id: adm.value.trim() }, function (j) {
+        out.appendChild(j.rows.length ? table(["When", "Admin", "Action", "Server", "Details"], j.rows.map(function (r) { return [fmt(r.created_at), r.admin_id, r.action, r.guild_id, r.details]; })) : h("p", { class: "muted", text: "No matching entries." }));
+      });
+    }
+    into.appendChild(h("h3", { text: "Discord panel audit (the bot's own log)" }));
+    into.appendChild(h("div", { class: "owner-bar" }, act, gid, adm, h("button", { class: "btn sm", text: "Filter", onclick: go })));
+    into.appendChild(out); go();
   }
 
   function security() {
@@ -247,7 +263,9 @@
       });
     }
     shell("blacklist", h("div", null, h("div", { class: "owner-bar" }, kind, id, why, h("button", { class: "btn sm", text: "Add", onclick: function () {
-      api("owner_blacklist_add", {}, { kind: kind.value, target_id: id.value.trim(), reason: why.value }).then(function () { id.value = ""; why.value = ""; toast("Added.", "ok"); draw(); }).catch(fail);
+      var bl = { kind: kind.value, target_id: id.value.trim(), reason: why.value };
+      if (kind.value === "guild") { var cb = typed("BLOCK", "This cuts server " + bl.target_id + " off from the bot."); if (cb === null) return; bl.confirm = cb; }
+      api("owner_blacklist_add", {}, bl).then(function () { id.value = ""; why.value = ""; toast("Added.", "ok"); draw(); }).catch(fail);
     } })), out));
     draw();
   }
@@ -255,13 +273,17 @@
   function premium() {
     var out = h("div", { class: "card" }), gid = h("input", { type: "text", placeholder: "Server id", inputmode: "numeric", "aria-label": "Server id" });
     var clone = h("input", { type: "text", placeholder: "Clone # (blank = main)", inputmode: "numeric", "aria-label": "Clone number" });
+    var days = h("input", { type: "text", placeholder: "Days to add", inputmode: "numeric", "aria-label": "Days to add" });
     function draw() {
       loadInto(out, "owner_premium", {}, function (j) {
-        out.appendChild(h("p", { class: "muted", text: "Soonest to expire first. Revoking ends Premium immediately (step-up + typed REVOKE). Granting stays in Discord for now." }));
+        out.appendChild(h("p", { class: "muted", text: "Soonest to expire first. Grant adds days on top of what is left (step-up + typed GRANT). Revoke ends Premium immediately (step-up + typed REVOKE)." }));
         out.appendChild(table(["Server", "Name", "Bot", "Expires"], j.rows.map(function (r) { return [r.guild_id, r.guild_name, r.clone_id ? "clone " + r.clone_id : "main", fmt(r.expires_at)]; })));
       });
     }
-    shell("premium", h("div", null, h("div", { class: "owner-bar" }, gid, clone, h("button", { class: "btn sm", text: "Revoke Premium", onclick: function () {
+    shell("premium", h("div", null, h("div", { class: "owner-bar" }, gid, clone, days, h("button", { class: "btn sm", text: "Grant / extend", onclick: function () {
+      var c = typed("GRANT", "Add " + days.value.trim() + " day(s) of Premium to server " + gid.value.trim() + "."); if (c === null) return;
+      api("owner_premium_grant", {}, { guild_id: gid.value.trim(), clone: clone.value.trim(), days: days.value.trim(), confirm: c }).then(function (j) { toast("Premium now runs until " + fmt(j.expires_at) + ".", "ok"); draw(); }).catch(fail);
+    } }), h("button", { class: "btn sm ghost", text: "Revoke Premium", onclick: function () {
       var c = typed("REVOKE", "End Premium for server " + gid.value.trim() + " now."); if (c === null) return;
       api("owner_premium_revoke", {}, { guild_id: gid.value.trim(), clone: clone.value.trim(), confirm: c }).then(function (j) { toast(j.revoked ? "Premium revoked." : "No subscription found.", j.revoked ? "ok" : "bad"); draw(); }).catch(fail);
     } })), out));

@@ -25,6 +25,12 @@ def ctl(own, monkeypatch):
     async def bl_list(limit=25): return [{"kind": "user", "target_id": BIG, "reason": "r", "added_by": 1, "created_at": NOW}]
     async def prem_list(limit=25): return [{"guild_id": BIG, "clone_id": None, "expires_at": NOW, "guild_name": "G"}]
     async def revoke(gid, clone): calls.append(("revoke", gid, clone)); return True
+    async def grant(gid, by, days, clone): calls.append(("grant", gid, by, days, clone)); return NOW + timedelta(days=days)
+    async def baudit(before=None, action=None, guild_id=None, admin_id=None, limit=50):
+        calls.append(("baudit", before, action, guild_id, admin_id))
+        return [{"id": 9, "admin_id": BIG, "action": "premium.grant", "guild_id": BIG, "details": "x" * 900, "created_at": NOW}]
+    monkeypatch.setattr(ac, "grant_premium", grant)
+    monkeypatch.setattr(ac, "list_bot_audit", baudit)
     for k, v in dict(get_engaged_switches=get_engaged, set_switch=set_switch, add_blacklist=bl_add, remove_blacklist=bl_rm,
                      list_blacklist=bl_list, list_premium=prem_list, revoke_premium=revoke).items():
         monkeypatch.setattr(ac, k, v)
@@ -40,7 +46,7 @@ def fresh(ctl):
     ctl.sessions["owner"]["fresh_until"] = time.time() + 300
 
 
-READS = [{"action": a} for a in ("owner_logs", "owner_config", "owner_controls", "owner_blacklist", "owner_premium", "owner_feedback")]
+READS = [{"action": a} for a in ("owner_botaudit", "owner_logs", "owner_config", "owner_controls", "owner_blacklist", "owner_premium", "owner_feedback")]
 
 
 @pytest.mark.parametrize("query", READS)
@@ -55,6 +61,7 @@ WRITES = [{"action": "owner_switch", "switch": "ai", "engaged": True},
           {"action": "owner_blacklist_add", "kind": "user", "target_id": str(BIG)},
           {"action": "owner_blacklist_remove", "kind": "user", "target_id": str(BIG)},
           {"action": "owner_premium_revoke", "guild_id": str(BIG), "confirm": "REVOKE"},
+          {"action": "owner_premium_grant", "guild_id": str(BIG), "days": "30", "confirm": "GRANT"},
           {"action": "owner_announce", "title": "t", "body": "b"},
           {"action": "owner_announce_delete", "id": "5"}]
 
@@ -126,7 +133,8 @@ def test_audit_failure_blocks_the_action(ctl):
 
 # ---------- blacklist ----------
 def test_blacklist_add_remove(ctl):
-    st, p, _ = call("POST", token="owner", body={"action": "owner_blacklist_add", "kind": "guild", "target_id": str(BIG), "reason": "spam\x00\n bad"})
+    fresh(ctl)
+    st, p, _ = call("POST", token="owner", body={"action": "owner_blacklist_add", "kind": "guild", "target_id": str(BIG), "reason": "spam\x00\n bad", "confirm": "BLOCK"})
     assert st == 200 and p["target_id"] == str(BIG)          # ids come back as strings
     assert ctl.calls[0][:3] == ("bl_add", "guild", BIG) and "\x00" not in ctl.calls[0][3]
     assert call("POST", token="owner", body={"action": "owner_blacklist_remove", "kind": "guild", "target_id": str(BIG)})[1]["removed"] is True
@@ -141,7 +149,8 @@ def test_cannot_blacklist_an_owner(ctl, monkeypatch):
     import config
     monkeypatch.setattr(config, "DASH_OWNER_IDS", {OWNER_ID, 5555555555})
     assert call("POST", token="owner", body={"action": "owner_blacklist_add", "kind": "user", "target_id": "5555555555"})[0] == 422
-    assert call("POST", token="owner", body={"action": "owner_blacklist_add", "kind": "guild", "target_id": "5555555555"})[0] == 200  # a server with that number is fine
+    fresh(ctl)
+    assert call("POST", token="owner", body={"action": "owner_blacklist_add", "kind": "guild", "target_id": "5555555555", "confirm": "BLOCK"})[0] == 200  # a server with that number is fine
     assert [c[0] for c in ctl.calls] == ["bl_add"]
 
 
@@ -261,3 +270,36 @@ def test_publisher_masks_secrets_and_survives_a_failing_key(monkeypatch):
     asyncio.run(sn.publish(object(), DB()))
     assert "main" in written and "config" in written and "logs" not in written       # one failure doesn't block the rest
     assert all(not e["shown"].startswith("postgres://u:") for e in written["config"]["entries"])
+
+
+# ---------- Phase 2 gap fixes ----------
+def test_server_blacklist_needs_stepup_and_block_but_user_does_not(ctl):
+    body = {"action": "owner_blacklist_add", "kind": "guild", "target_id": str(BIG)}
+    assert call("POST", token="owner", body={**body, "confirm": "BLOCK"})[1]["code"] == "stepup_required"
+    fresh(ctl)
+    assert call("POST", token="owner", body=body)[0] == 422
+    assert call("POST", token="owner", body={**body, "confirm": "block"})[0] == 422
+    assert ctl.calls == []
+    assert call("POST", token="owner", body={**body, "confirm": "BLOCK"})[0] == 200
+    ctl.calls.clear()
+    assert call("POST", token="owner", body={"action": "owner_blacklist_add", "kind": "user", "target_id": "2222222222"})[0] == 200
+
+
+def test_premium_grant_stepup_confirm_and_validation(ctl):
+    body = {"action": "owner_premium_grant", "guild_id": str(BIG), "days": "30", "clone": "9"}
+    assert call("POST", token="owner", body={**body, "confirm": "GRANT"})[1]["code"] == "stepup_required"
+    fresh(ctl)
+    assert call("POST", token="owner", body=body)[0] == 422
+    for bad in ({"days": "0"}, {"days": "3651"}, {"days": "-5"}, {"days": "x"}, {"days": ""}, {"guild_id": "12"}, {"clone": "z"}):
+        assert call("POST", token="owner", body={**body, "confirm": "GRANT", **bad})[0] == 422
+    assert ctl.calls == []
+    st, p, _ = call("POST", token="owner", body={**body, "confirm": "GRANT"})
+    assert st == 200 and p["guild_id"] == str(BIG) and ctl.calls == [("grant", BIG, OWNER_ID, 30, 9)]
+    assert (ctl.audit_rows[-1]["action"], ctl.audit_rows[-1]["target"]) == ("owner_premium_grant", f"{BIG}/9")
+
+
+def test_bot_audit_filters_validation_and_truncation(ctl):
+    _, p, _ = call("GET", {"action": "owner_botaudit", "what": "x", "guild_id": str(BIG), "admin_id": str(BIG), "before": "50"}, token="owner")
+    assert ctl.calls[-1] == ("baudit", 50, "x", BIG, BIG) and len(p["rows"][0]["details"]) == 500 and p["rows"][0]["admin_id"] == str(BIG)
+    for bad in ({"guild_id": "abc"}, {"guild_id": "12"}, {"before": "x"}, {"admin_id": "1; drop"}):
+        assert call("GET", {"action": "owner_botaudit", **bad}, token="owner")[0] == 422

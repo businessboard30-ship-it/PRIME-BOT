@@ -43,8 +43,8 @@ Routes (all on /api/dash):
   GET  ?action=owner_audit[&before][&section] -> OWNER (section "audit"): owner audit trail, newest first
   GET  ?action=owner_health|owner_servers|owner_server|owner_user|owner_payments|owner_expiries -> OWNER, read-only (api/dash_owner.py)
   GET  ?action=owner_logs|owner_config  -> OWNER: masked worker snapshot (logs / config), with its age
-  GET  ?action=owner_controls|owner_blacklist|owner_premium|owner_feedback -> OWNER, read-only
-  POST {action: owner_switch|owner_blacklist_add|owner_blacklist_remove|owner_premium_revoke|owner_announce|owner_announce_delete, ...}
+  GET  ?action=owner_controls|owner_blacklist|owner_premium|owner_feedback|owner_botaudit -> OWNER, read-only
+  POST {action: owner_switch|owner_blacklist_add|owner_blacklist_remove|owner_premium_revoke|owner_premium_grant|owner_announce|owner_announce_delete, ...}
                                         -> OWNER writes (api/dash_owner.WRITES): section + rate limit, step-up and typed confirm where destructive, fail-closed audit
 Clone bots: every guild route also accepts `clone_id` (query or JSON body). The dashboard then
 acts as that clone: its own bot token for every Discord call, its own settings rows (clone_id),
