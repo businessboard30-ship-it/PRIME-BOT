@@ -377,7 +377,7 @@ PREMIUM_REMINDER_DAYS = 3
 # far-future expiry (100 years), so no schema change and reminders never fire.
 PREMIUM_YEARLY_FEE_USD = 36
 PREMIUM_YEARLY_DAYS = 365
-PREMIUM_LIFETIME_FEE_USD = 78.56
+PREMIUM_LIFETIME_FEE_USD = 99.99
 PREMIUM_LIFETIME_DAYS = 36500
 PREMIUM_LIFETIME_THRESHOLD_DAYS = 365 * 50  # expiry further out than this == lifetime
 

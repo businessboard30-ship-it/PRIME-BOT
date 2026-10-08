@@ -11,7 +11,7 @@ if(lowPower)document.documentElement.classList.add("no-motion");
 function rng(seed){var s=seed|0;return function(){s|=0;s=s+0x6D2B79F5|0;var t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 
 /* ---- config-driven links ---- */
-$$("[data-invite]").forEach(function(a){if(C.BOT_INVITE_URL){a.href=C.BOT_INVITE_URL;a.rel="noopener"}else{a.setAttribute("aria-disabled","true")}});
+$$("[data-invite]").forEach(function(a){var u=a.dataset.invite==="prime"?C.PRIME_INVITE_URL:C.WELCOME_INVITE_URL;if(u){a.href=u;a.rel="noopener"}});
 $$("[data-support]").forEach(function(a){if(C.SUPPORT_SERVER_URL){a.href=C.SUPPORT_SERVER_URL;a.rel="noopener"}});
 $$("[data-topgg]").forEach(function(a){if(C.TOPGG_URL){a.href=C.TOPGG_URL;a.rel="noopener"}else{a.hidden=true}});
 
