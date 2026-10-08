@@ -135,8 +135,13 @@ async def member_card(uid, q, db):
         except Exception:
             design = None
     access = ent.has_access(rows, ("card_plan",))
+    from modules import card_assets
+    assets = {}
+    for kind in card_assets.KINDS:
+        a = await db.card_asset_get(uid, kind)
+        assets[kind] = {"status": a["status"], "reason": a["reason"]} if a else None
     out = {"design": design or dict(lcd.DEFAULT_DESIGN), "saved": bool(design), "access": access,
-           "options": lcd.options()}
+           "options": lcd.options(), "assets": assets, "prompt": card_assets.prompt_template()}
     if access:
         out["ai"] = await ai_usage.status(db, uid, "card_plan")
     return out
@@ -148,7 +153,53 @@ async def member_card_preview(uid, body, db):
     design, err = lcd.validate((body or {}).get("design"))
     if err:
         return {"_status": 422, "message": err}
-    return {"image": await lcd.preview_data_url_async(design)}
+    bg = logo = None
+    for kind, flag in (("background", "custom_bg"), ("logo", "logo")):
+        if design.get(flag):                      # the member's OWN upload, even while pending (never rejected ones)
+            a = await db.card_asset_get(uid, kind)
+            if a and a.get("status") != "rejected":
+                if kind == "background":
+                    bg = bytes(a["data"])
+                else:
+                    logo = bytes(a["data"])
+    return {"image": await lcd.preview_data_url_async(design, bg, logo)}
+
+
+async def _need_card_plan(uid, db):
+    if ent.has_access(await db.entitlements_list(uid), ("card_plan",)):
+        return None
+    extra = {}
+    started = await checkout_user(uid, {"product": "card_plan"}, db)
+    if started.get("checkout_url"):
+        extra["checkout_url"] = started["checkout_url"]
+    return {"_status": 402, "message": "Uploading needs the card plan. Subscribe to upload.", "extra": extra}
+
+
+async def member_card_asset(uid, body, db):
+    """POST {kind, data(base64)}. Plan-gated, validated, re-encoded, moderated. The user id is the session's."""
+    from modules import card_assets
+    kind = (body or {}).get("kind")
+    if kind not in card_assets.KINDS:
+        return {"_status": 422, "message": "Unknown upload type."}
+    raw = card_assets.decode_b64((body or {}).get("data"))
+    if raw is None:
+        return {"_status": 422, "message": "Couldn't read that file."}
+    gate = await _need_card_plan(uid, db)
+    if gate:
+        return gate
+    res = await card_assets.submit(db, uid, kind, raw)
+    if not res["ok"]:
+        return {"_status": 422, "message": res["message"]}
+    return {"status": res["status"], "reason": res["reason"]}
+
+
+async def member_card_asset_delete(uid, body, db):
+    from modules import card_assets
+    kind = (body or {}).get("kind")
+    if kind not in card_assets.KINDS:
+        return {"_status": 422, "message": "Unknown upload type."}
+    await db.card_asset_delete(uid, kind)
+    return {}
 
 
 async def member_card_save(uid, body, db):
@@ -171,4 +222,5 @@ async def member_card_save(uid, body, db):
 ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_plans": member_plans,
           "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card}
 WRITES = {"member_pref_set": member_pref_set, "checkout_user": checkout_user,
-          "member_card_preview": member_card_preview, "member_card_save": member_card_save}
+          "member_card_preview": member_card_preview, "member_card_save": member_card_save,
+          "member_card_asset": member_card_asset, "member_card_asset_delete": member_card_asset_delete}

@@ -157,10 +157,11 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "64"
+SCHEMA_VERSION = "65"
 # "61" -> "62" creates user_entitlements (per-user paid products: card_plan, dev_monthly, dev_yearly; only the payment webhook may write it) and dash_web_users (everyone who has signed in to the web dashboard; member messaging depends on it). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "62" -> "63" creates user_billing_events (one row per gateway billing event id, claimed before an entitlement is changed so a duplicate or retried webhook can never double-extend a plan). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "63" -> "64" creates user_level_cards (a member's saved custom level-up card design) and user_ai_usage (weekly website-only AI chat counter per user/week/source). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
+# "64" -> "65" creates user_card_assets (a member's uploaded card background/logo, re-encoded PNG + moderation status) and card_asset_blocklist (sha256 of rejected/taken-down images). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "59" -> "60" creates dash_owner_audit (web owner area audit trail, also written by the Discord owner panel) + its indexes. Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "60" -> "61" creates bot_status_snapshots (the bot worker publishes live health, masked logs and masked config here every ~60s so the web owner area, a separate process, can show them). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "58" -> "59" actually creates the web-dashboard tables dash_dropbox_messages, dash_dropbox_reads, dash_dropbox_dm and dash_audit (+ the audience/min_members/target_guild_id/push_dm columns). They were added to _create_tables in the dashboard PRs without a bump, so DBs stamped '58' hit UndefinedTableError on every Drop Box / Audit request. Same bump-or-it-never-runs trap.
@@ -4224,6 +4225,27 @@ class Database:
                 source TEXT NOT NULL,
                 used INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, week_start, source)
+            )
+        """)
+
+        # Uploaded card background / logo (card plan). data is the RE-ENCODED PNG; only status='approved' is ever drawn.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_card_assets (
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                data BYTEA NOT NULL,
+                sha256 TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, kind)
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS card_asset_blocklist (
+                sha256 TEXT PRIMARY KEY,
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
 
@@ -14835,6 +14857,52 @@ class Database:
                    ON CONFLICT (user_id, week_start, source) DO UPDATE SET used = user_ai_usage.used + 1
                    WHERE user_ai_usage.used < $4 RETURNING used""",
                 str(user_id), week_start, str(source), int(limit))
+
+    async def card_asset_get(self, user_id: str, kind: str):
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow("SELECT data, sha256, status, reason FROM user_card_assets WHERE user_id = $1 AND kind = $2",
+                                    str(user_id), str(kind))
+        return dict(r) if r else None
+
+    async def card_asset_set(self, user_id: str, kind: str, data: bytes, sha: str, status: str, reason: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO user_card_assets (user_id, kind, data, sha256, status, reason) VALUES ($1, $2, $3, $4, $5, $6)
+                   ON CONFLICT (user_id, kind) DO UPDATE SET data = $3, sha256 = $4, status = $5, reason = $6, created_at = NOW()""",
+                str(user_id), str(kind), data, str(sha), str(status)[:20], str(reason)[:200])
+
+    async def card_asset_status_set(self, user_id: str, kind: str, sha: str, status: str, reason: str) -> None:
+        """Only touches the row if it still holds the image that was checked (a newer upload keeps its own status)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE user_card_assets SET status = $4, reason = $5 WHERE user_id = $1 AND kind = $2 AND sha256 = $3",
+                str(user_id), str(kind), str(sha), str(status)[:20], str(reason)[:200])
+
+    async def card_asset_delete(self, user_id: str, kind: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM user_card_assets WHERE user_id = $1 AND kind = $2", str(user_id), str(kind))
+
+    async def card_asset_blocked(self, sha: str) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval("SELECT 1 FROM card_asset_blocklist WHERE sha256 = $1", str(sha)))
+
+    async def card_asset_block(self, sha: str, reason: str = "") -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("INSERT INTO card_asset_blocklist (sha256, reason) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                               str(sha), str(reason)[:200])
+
+    async def card_asset_takedown(self, user_id: str, kind: str, reason: str = "") -> None:
+        """Owner takedown: block the image's hash for everyone and remove it from this member."""
+        a = await self.card_asset_get(user_id, kind)
+        if a:
+            await self.card_asset_block(a["sha256"], reason)
+        await self.card_asset_delete(user_id, kind)
 
     async def entitlement_by_subscription(self, subscription_id: str):
         """Find the (user_id, product) that owns a gateway subscription id."""

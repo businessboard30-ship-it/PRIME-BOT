@@ -985,6 +985,49 @@
       box.appendChild(sel("Avatar shape", "shape", o.shapes));
       box.appendChild(h("p", null, h("b", { text: "Accent " }), color));
       box.appendChild(h("p", null, h("b", { text: "Bio " }), bio));
+      /* uploads: background + logo (card plan). Server validates, re-encodes and moderates; only approved files are drawn. */
+      var ST = { approved: "Approved", pending: "Waiting for a check (not shown on your card yet)", rejected: "Rejected" };
+      function upRow(kind, label, flag, maxBytes, help) {
+        var status = h("span", { class: "muted", text: "" }), use = h("input", { type: "checkbox", "aria-label": "Use my " + label }), file = h("input", { type: "file", accept: "image/png,image/jpeg", "aria-label": "Upload " + label });
+        var del = h("button", { class: "btn sm ghost", type: "button", text: "Remove" });
+        use.checked = !!d[flag];
+        use.addEventListener("change", function () { d[flag] = use.checked; queue(); });
+        function show(a) { status.textContent = a ? " " + (ST[a.status] || a.status) + (a.reason && a.status !== "approved" ? " \u2013 " + a.reason : "") : " Nothing uploaded"; del.hidden = !a; }
+        show(j.assets && j.assets[kind]);
+        file.addEventListener("change", function () {
+          var f = file.files && file.files[0]; if (!f) return;
+          if (f.size > maxBytes) { msg.textContent = label + " is too big (max " + (maxBytes / 1000000) + " MB)."; file.value = ""; return; }
+          status.textContent = " Uploading and checking\u2026"; pay.textContent = "";
+          var r = new FileReader();
+          r.onload = function () {
+            api("member_card_asset", null, { kind: kind, data: String(r.result).split(",")[1] || "" }).then(function (res) {
+              show({ status: res.status, reason: res.reason }); if (res.status !== "rejected") { d[flag] = true; use.checked = true; } queue();
+            }).catch(function (e) {
+              show(j.assets && j.assets[kind]); msg.textContent = e.message;
+              if (e.status === 402 && e.payload && e.payload.checkout_url) pay.appendChild(h("a", { class: "btn sm", href: e.payload.checkout_url, text: "Subscribe" }));
+            }).then(function () { file.value = ""; });
+          };
+          r.readAsDataURL(f);
+        });
+        del.addEventListener("click", function () {
+          api("member_card_asset_delete", null, { kind: kind }).then(function () { d[flag] = false; use.checked = false; show(null); queue(); })
+            .catch(function (e) { msg.textContent = e.message; });
+        });
+        return h("div", { style: "margin:10px 0" }, h("p", null, h("b", { text: label }), status), h("p", { class: "muted", text: help }),
+          h("p", null, file, " ", del), h("label", null, use, " Use my " + label.toLowerCase()));
+      }
+      box.appendChild(h("h4", { text: "Your own artwork" }));
+      box.appendChild(upRow("background", "Background", "custom_bg", 1500000, "PNG or JPEG, about 3:1 (900x300 is ideal), up to 1.5 MB. Keep the left 280px calm (avatar) and the middle dark and plain (text)."));
+      box.appendChild(upRow("logo", "Logo or picture", "logo", 1000000, "PNG with transparency works best, up to 1 MB. It is placed in the right-hand box and never covers the text."));
+      var idea = h("input", { type: "text", maxlength: 120, "aria-label": "Your style idea", placeholder: "e.g. neon city at night, purple and gold" });
+      var copy = h("button", { class: "btn sm ghost", type: "button", text: "Copy AI prompt" });
+      copy.addEventListener("click", function () {
+        var t = String(j.prompt || "").replace("{idea}", idea.value.trim() || "your idea");
+        (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { toast("Prompt copied"); })
+          .catch(function () { msg.textContent = "Couldn't copy. Select and copy it from the box below."; box.appendChild(h("textarea", { readonly: "readonly", rows: 6, "aria-label": "AI prompt" , text: t })); });
+      });
+      box.appendChild(h("p", null, h("b", { text: "Make it with AI " }), idea, " ", copy));
+      box.appendChild(h("p", { class: "muted", text: "Paste the prompt into any AI image tool, then upload the result above. Uploads are checked automatically; anything rejected is never shown." }));
       box.appendChild(h("p", null, save)); box.appendChild(pay); box.appendChild(msg);
       if (j.ai) { meter.textContent = "Free website AI chats this week: " + j.ai.used + " / " + j.ai.limit + " \u00b7 resets " + new Date(j.ai.resets_at).toLocaleString(); box.appendChild(meter); }
       preview();
