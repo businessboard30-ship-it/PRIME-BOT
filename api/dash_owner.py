@@ -307,6 +307,108 @@ async def prep_premium_grant(sess, body) -> dict:
     return {"target": f"{gid}/{clone or 'main'}", "detail": {"days": n}, "fn": fn, "fresh": True, "confirm": "GRANT"}
 
 
+# ───────────────────────── Phase 3: money (database-only actions) ─────────────────────────
+# Approve / reject of manual payments is NOT here: it runs unlock handlers and DMs the buyer through the
+# live bot, so it needs the owner_jobs queue (schema 62) and the real-payment test first.
+
+import re as _re
+_REF_RE = _re.compile(r"^[A-Za-z0-9_.:-]{3,120}$")
+_PAY_FIELDS = ("payment_id", "paystack_reference", "user_id", "amount", "status", "payment_type", "provider",
+               "chat_id", "clone_id", "created_date", "reversed_at", "reversed_by")
+
+
+def _pay_summary(row: dict) -> dict:
+    return {k: row.get(k) for k in _PAY_FIELDS}
+
+
+async def payment(q) -> dict:
+    from modules import admin_money as am
+    ref = (q("reference") or "").strip()
+    if not _REF_RE.match(ref):
+        return {"_error": (422, "That doesn't look like a payment reference.")}
+    row = await am.find_payment(ref)
+    if not row:
+        return {"_error": (404, "No payment found with that reference.")}
+    problem = am.reversal_problem(row)
+    return {"payment": _pay_summary(row), "can_reverse": problem is None, "problem": problem}
+
+
+async def coupons(q) -> dict:
+    from modules import admin_money as am
+    return {"rows": [{**c, "state": am.coupon_state(c)} for c in await am.list_coupons(50)]}
+
+
+async def prep_payment_reverse(sess, body) -> dict:
+    from modules import admin_money as am
+    ref = str(body.get("reference") or "").strip()
+    if not _REF_RE.match(ref):
+        return {"_error": (422, "That doesn't look like a payment reference.")}
+    row = await am.find_payment(ref)
+    problem = am.reversal_problem(row)
+    if problem:
+        return {"_error": (422, problem.replace("`", ""))}
+    pid = row["payment_id"]
+    async def fn():
+        res = await am.reverse_payment(pid, _actor(sess))
+        if not res.get("ok"):
+            return {"changed": False, "message": "Nothing changed: already reversed or no longer reversible."}
+        return {"changed": True, "days": res["days"], "expires_at": res.get("expires_at"),
+                "message": "Reversed. Refund the money at the gateway if needed."}
+    return {"target": ref, "detail": {"payment_id": pid, "type": row.get("payment_type")}, "fn": fn,
+            "fresh": True, "confirm": "REVERSE"}
+
+
+async def prep_coupon_create(sess, body) -> dict:
+    from modules import admin_money as am
+    code = am.normalize_code(str(body.get("code") or ""))
+    pct = am.parse_int(str(body.get("percent") or ""), 1, 100)
+    uses_raw, days_raw = str(body.get("max_uses") or "").strip(), str(body.get("days") or "").strip()
+    uses = am.parse_int(uses_raw, 1, 1_000_000) if uses_raw else None
+    days = am.parse_int(days_raw, 1, 3650) if days_raw else None
+    if code is None:
+        return {"_error": (422, "The code must be 3-24 characters: letters, digits, - or _.")}
+    if pct is None:
+        return {"_error": (422, "Percent off must be a whole number from 1 to 100.")}
+    if uses_raw and uses is None:
+        return {"_error": (422, "Max uses must be a whole number, or blank.")}
+    if days_raw and days is None:
+        return {"_error": (422, "Days must be a whole number up to 3650, or blank.")}
+    async def fn():
+        return {"created": bool(await am.create_coupon(code, pct, uses, days, _actor(sess))), "code": code}
+    plan = {"target": code, "detail": {"percent": pct, "max_uses": uses, "days": days}, "fn": fn}
+    if pct >= 50:
+        plan.update(fresh=True, confirm="CREATE")        # a deep discount is money left on the table
+    return plan
+
+
+async def prep_coupon_toggle(sess, body) -> dict:
+    from modules import admin_money as am
+    code, active = am.normalize_code(str(body.get("code") or "")), _flag(body, "active")
+    if code is None or active is None:
+        return {"_error": (422, "Pick a code and on or off.")}
+    async def fn():
+        return {"updated": bool(await am.set_coupon_active(code, active)), "code": code, "active": active}
+    return {"target": code, "detail": {"active": active}, "fn": fn}
+
+
+async def prep_failure_dismiss(sess, body) -> dict:
+    from modules import admin_money as am
+    raw = str(body.get("id") or "")
+    if not raw.isdigit() or int(raw) > 2 ** 62:
+        return {"_error": (422, "Bad failure id.")}
+    fid = int(raw)
+    async def fn():
+        return {"dismissed": bool(await am.dismiss_failure(fid, _actor(sess)))}
+    return {"target": raw, "fn": fn}
+
+
+async def prep_pending_clear(sess, body) -> dict:
+    from modules import admin_money as am
+    async def fn():
+        return {"expired": int(await am.clear_old_pending()), "older_than_hours": am.CLEAR_PENDING_HOURS}
+    return {"target": f">{am.CLEAR_PENDING_HOURS}h", "fn": fn, "fresh": True, "confirm": "CLEAR"}
+
+
 async def prep_announce(sess, body) -> dict:
     from utils import dash_schema as S
     db = _db()
@@ -347,6 +449,11 @@ WRITES = {
     "owner_blacklist_remove": ("blacklist", 20, prep_blacklist_remove),
     "owner_premium_revoke": ("premium", 10, prep_premium_revoke),
     "owner_premium_grant": ("premium", 10, prep_premium_grant),
+    "owner_payment_reverse": ("money", 5, prep_payment_reverse),
+    "owner_coupon_create": ("money", 10, prep_coupon_create),
+    "owner_coupon_toggle": ("money", 20, prep_coupon_toggle),
+    "owner_failure_dismiss": ("money", 30, prep_failure_dismiss),
+    "owner_pending_clear": ("money", 3, prep_pending_clear),
     "owner_announce": ("broadcast", 5, prep_announce),
     "owner_announce_delete": ("broadcast", 10, prep_announce_delete),
 }
@@ -366,4 +473,6 @@ ROUTES = {
     "owner_premium": ("premium", premium),
     "owner_feedback": ("feedback", feedback),
     "owner_botaudit": ("audit", bot_audit),
+    "owner_payment": ("money", payment),
+    "owner_coupons": ("money", coupons),
 }

@@ -138,17 +138,72 @@
   function payments() {
     var view = "pending", out = h("div", { class: "card" }), nav = h("div", { class: "owner-bar" });
     function tab(id, label) { return h("button", { class: "btn sm " + (view === id ? "primary" : "ghost"), text: label, onclick: function () { view = id; draw(); } }); }
+    function drawReverse() {
+      out.textContent = "";
+      var ref = h("input", { type: "text", placeholder: "Payment reference", "aria-label": "Payment reference" }), res = h("div", null);
+      function look() {
+        loadInto(res, "owner_payment", { reference: ref.value.trim() }, function (j) {
+          var p = j.payment;
+          res.appendChild(kv([["Payment", p.payment_id], ["User", p.user_id], ["Amount", money(p.amount)], ["Type", p.payment_type], ["Status", p.status], ["Server", p.chat_id], ["Created", fmt(p.created_date)]]));
+          if (!j.can_reverse) { res.appendChild(h("p", { class: "muted", text: j.problem })); return; }
+          res.appendChild(h("button", { class: "btn", text: "Reverse this payment", onclick: function () {
+            var c = typed("REVERSE", "This takes the premium days back off the server and marks the payment reversed. Refund the money at the gateway yourself."); if (c === null) return;
+            api("owner_payment_reverse", {}, { reference: p.paystack_reference, confirm: c }).then(function (r) { toast(r.message, r.changed ? "ok" : "bad"); look(); }).catch(fail);
+          } }));
+        });
+      }
+      out.appendChild(h("div", { class: "owner-bar" }, ref, h("button", { class: "btn sm", text: "Look up", onclick: look })));
+      out.appendChild(h("p", { class: "muted", text: "Only completed Premium payments can be reversed. Needs a fresh Discord sign-in and typing REVERSE." }));
+      out.appendChild(res);
+    }
+    function drawCoupons() {
+      var code = h("input", { type: "text", placeholder: "CODE", maxlength: "24", "aria-label": "Code" });
+      var pct = h("input", { type: "text", placeholder: "% off", inputmode: "numeric", "aria-label": "Percent off" });
+      var uses = h("input", { type: "text", placeholder: "Max uses (blank = unlimited)", inputmode: "numeric", "aria-label": "Max uses" });
+      var days = h("input", { type: "text", placeholder: "Valid days (blank = never expires)", inputmode: "numeric", "aria-label": "Valid days" });
+      var list = h("div", null);
+      function reload() {
+        loadInto(list, "owner_coupons", {}, function (j) {
+          list.appendChild(j.rows.length ? table(["Code", "% off", "Uses", "Expires", "State"], j.rows.map(function (c) { return [c.code, c.percent_off, c.uses + (c.max_uses == null ? "" : "/" + c.max_uses), c.expires_at ? fmt(c.expires_at) : "never", c.state]; })) : h("p", { class: "muted", text: "No codes yet." }));
+          j.rows.forEach(function (c) {
+            var on = c.state !== "disabled";
+            list.appendChild(h("button", { class: "btn sm ghost", text: (on ? "Disable " : "Enable ") + c.code, onclick: function () {
+              api("owner_coupon_toggle", {}, { code: c.code, active: !on }).then(function () { reload(); }).catch(fail);
+            } }));
+          });
+        });
+      }
+      out.textContent = "";
+      out.appendChild(h("p", { class: "muted", text: "Codes of 50% or more need a fresh Discord sign-in and typing CREATE." }));
+      out.appendChild(h("div", { class: "owner-bar" }, code, pct, uses, days, h("button", { class: "btn sm", text: "Create", onclick: function () {
+        var b = { code: code.value, percent: pct.value, max_uses: uses.value, days: days.value };
+        if (parseInt(pct.value, 10) >= 50) { var c = typed("CREATE", "A " + pct.value + "% discount."); if (c === null) return; b.confirm = c; }
+        api("owner_coupon_create", {}, b).then(function (r) { toast(r.created ? "Created " + r.code : "That code already exists.", r.created ? "ok" : "bad"); reload(); }).catch(fail);
+      } })));
+      out.appendChild(list); reload();
+    }
     function draw() {
-      nav.textContent = ""; [tab("pending", "Pending"), tab("failures", "Failed"), tab("revenue", "Revenue"), tab("expiries", "Expiries")].forEach(function (b) { nav.appendChild(b); });
+      nav.textContent = ""; [tab("pending", "Pending"), tab("failures", "Failed"), tab("revenue", "Revenue"), tab("expiries", "Expiries"), tab("reverse", "Reverse"), tab("coupons", "Coupons")].forEach(function (b) { nav.appendChild(b); });
+      if (view === "reverse") return drawReverse();
+      if (view === "coupons") return drawCoupons();
       if (view === "expiries") return loadInto(out, "owner_expiries", { days: 7 }, function (j) {
         out.appendChild(j.rows.length ? table(["Server", "Bot", "Expires", "Auto-renews"], j.rows.map(function (r) { return [r.guild_id, r.clone_id ? "clone " + r.clone_id : "main", fmt(r.expires_at), r.auto_renews ? "yes" : "no"]; })) : h("p", { class: "muted", text: "Nothing expires in the next 7 days." }));
       });
       loadInto(out, "owner_payments", { view: view }, function (j) {
         if (view === "pending") {
-          out.appendChild(h("p", { class: "muted", text: j.total + " pending (showing " + j.rows.length + "). Read-only; approve and reverse stay in Discord for now." }));
+          out.appendChild(h("p", { class: "muted", text: j.total + " pending (showing " + j.rows.length + "). Approve and reject stay in Discord for now." }));
           out.appendChild(table(["Id", "Reference", "User", "Amount", "Type", "Provider", "Created"], j.rows.map(function (r) { return [r.payment_id, r.paystack_reference, r.user_id, money(r.amount), r.payment_type, r.provider, fmt(r.created_date)]; })));
+          out.appendChild(h("button", { class: "btn sm ghost", text: "Clear abandoned checkouts (older than 6 h)", onclick: function () {
+            var c = typed("CLEAR", "Marks old pending checkouts as expired. Rows are kept."); if (c === null) return;
+            api("owner_pending_clear", {}, { confirm: c }).then(function (r) { toast("Expired " + r.expired + " checkout(s).", "ok"); draw(); }).catch(fail);
+          } }));
         } else if (view === "failures") {
           out.appendChild(j.rows.length ? table(["When", "Source", "Kind", "Reference", "Detail"], j.rows.map(function (r) { return [fmt(r.created_at), r.source, r.kind, r.reference, r.detail]; })) : h("p", { class: "muted", text: "No open payment failures." }));
+          j.rows.forEach(function (r) {
+            out.appendChild(h("button", { class: "btn sm ghost", text: "Dismiss " + r.id, onclick: function () {
+              api("owner_failure_dismiss", {}, { id: String(r.id) }).then(function () { draw(); }).catch(fail);
+            } }));
+          });
         } else {
           ["GHS", "USD"].forEach(function (cur) {
             var rows = j.series[cur] || [], sum = rows.reduce(function (a, r) { return a + r.total; }, 0);

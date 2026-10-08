@@ -128,3 +128,22 @@ Reads: `owner_controls`, `owner_blacklist`, `owner_premium`, `owner_feedback` (m
 
 ### Still unverified end to end
 Real Discord sign-in, the step-up round trip in a real browser, a live worker publishing a snapshot to the Railway DB, and the front-end pages (only syntax-checked, not exercised in a browser).
+
+---
+
+## 10. Phase 3 (part 1): database-only money actions (branch `feat/owner-phase3-money`, STACKED on `feat/owner-phase1b-phase2`)
+
+No schema change (stays at 61). All reuse `modules/admin_money.py`, so web and Discord behave the same.
+| Action | Protection |
+|---|---|
+| `owner_payment_reverse` (by reference) | step-up + type `REVERSE`; only completed `premium` payments (`reversal_problem`); takes PREMIUM_DAYS back off the server; **does not refund at the gateway** |
+| `owner_coupon_create` | audit only below 50% off; 50% or more: step-up + type `CREATE`. Code 3-24 chars, 1-100%, max uses and days optional |
+| `owner_coupon_toggle` | audit only |
+| `owner_failure_dismiss` | audit only |
+| `owner_pending_clear` (expire checkouts older than 6 h; rows kept) | step-up + type `CLEAR` |
+Reads: `owner_payment` (lookup by reference; returns only a whitelisted field set, never the raw row), `owner_coupons`. UI: Payments page gained Reverse and Coupons tabs, a Clear button on Pending, Dismiss buttons on Failed. Tests: `tests/unit/test_dash_owner_phase3.py` (38).
+
+### Phase 3 items NOT built yet, and why
+- **Approve / reject pending payment:** Discord's `/admin payments approve` runs `resolve_manual_payment_approval(bot, ...)`, which runs unlock handlers and DMs the buyer through the live bot. The web process has no bot client, so this needs the `owner_jobs` queue (worker polls it; schema 61 -> 62) and must not ship before the real small `/pay` + Gumroad/Paystack test the plan requires.
+- **Referral giveaway, Ads/Marketplace listings, Bump network:** not started; each is its own page/PR and needs its Discord view read first.
+- The plan's gate still stands: do a real small purchase and a real-browser test with a second Discord account before merging anything in this phase.
