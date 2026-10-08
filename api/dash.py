@@ -58,10 +58,10 @@ Routes (all on /api/dash):
   GET  ?action=member_plans -> any signed-in user: the plan list with server prices and the user's own state
   GET  ?action=member_card -> own saved custom level-up card design, editor options, plan access, weekly AI chat meter (B4)
   POST ?action=member_card_preview {design} -> data-URL PNG on a placeholder avatar; open to every signed-in user, stores nothing
-  POST ?action=member_card_save {design} -> saves for the SESSION user; 402 + checkout_url without an effective card_plan
+  POST ?action=member_card_save {design} -> saves for the SESSION user; 402 + plans_path without an effective card_plan
   POST ?action=member_card_asset {kind: background|logo, data: base64} -> card plan only; validated, re-encoded, AI-moderated (approved/pending/rejected)
   POST ?action=member_card_asset_delete {kind} -> removes the member's own upload
-  POST ?action=checkout_user {product} -> any signed-in user: a /pay checkout link for the SESSION user (webhook grants, never this call)
+  POST ?action=checkout_user {product} -> any signed-in user: the gateway (Paystack or Gumroad) checkout URL for the SESSION user, no /pay hop (webhook grants, never this call)
   GET  ?action=dev_status -> ANY signed-in user (#/dev): {unlocked, expires_at, export_available, plans, features}; drives the locked screen only
   GET  ?action=dev_overview (and every later dev_* route) -> 402 {code: subscription_required} without an active Developer entitlement (api/dash_dev.py, require_dev)
   GET  ?action=dev_usage -> Developer plan only: {used, limit, remaining, resets_at, models} for the weekly bot-AI chats
@@ -493,15 +493,21 @@ def _price_usd(plan_id: str):
     return price if price and price > 0 else None
 
 
-def _pay_base() -> str:
-    u = urlparse(config.DASH_OAUTH_REDIRECT_URI or "")
-    return f"{u.scheme}://{u.netloc}" if u.scheme and u.netloc else ""
+async def _pay_options() -> list:
+    """Payment buttons for the bot's payment mode (split: Paystack + Gumroad, auto: Paystack, gumroad: Gumroad)."""
+    from modules import user_subs
+    try:
+        mode = await db.get_payment_mode(None)
+    except Exception:
+        logger.warning("payment mode lookup failed, defaulting to split", exc_info=True)
+        mode = "split"
+    return user_subs.pay_options(mode)
 
 
 async def _billing(gid: int) -> dict:
     if _cid() is not None:
         active = bool(await db.is_guild_premium_active(gid, _cid()))
-        return {"premium": active, "expires_at": None, "card_pack": False, "plans": [], "clone": True}
+        return {"premium": active, "expires_at": None, "card_pack": False, "plans": [], "clone": True, "pay": []}
     welcome = S.BY_ID["welcome"]
     cfg = await _get_cfg(welcome, gid)
     row = await db.get_guild_premium(gid, _cid())
@@ -516,10 +522,10 @@ async def _billing(gid: int) -> dict:
         plans.append({**p, "price_usd": price, "owned": owned,
                       "included": p["kind"] == "card_pack" and active and not owned})
     return {"premium": active, "expires_at": expires.isoformat() if hasattr(expires, "isoformat") else None,
-            "card_pack": bool(cfg.get("card_pack_unlocked")), "plans": plans}
+            "card_pack": bool(cfg.get("card_pack_unlocked")), "plans": plans, "pay": await _pay_options()}
 
 
-async def _checkout(sess: dict, gid: int, plan_id) -> dict:
+async def _checkout(sess: dict, gid: int, plan_id, provider=None) -> dict:
     uid = str(sess["user"]["id"])
     now = time.monotonic()
     if now - _last_checkout.get(uid, 0) < CHECKOUT_MIN_INTERVAL:
@@ -538,15 +544,26 @@ async def _checkout(sess: dict, gid: int, plan_id) -> dict:
         _fail(503, "That plan isn't available right now.")
     if entry["owned"] or entry["included"]:
         _fail(409, "This server already has that.")
-    base = _pay_base()
-    if not base:
-        _fail(503, "Checkout isn't configured yet.")
-    token = _secrets.token_urlsafe(16)
+    options = await _pay_options()
+    allowed = [o["provider"] for o in options]
+    if provider in (None, ""):
+        if len(allowed) != 1:
+            _fail(422, "Choose Paystack or Gumroad to pay.")
+        provider = allowed[0]
+    elif provider not in allowed:
+        _fail(422, "That payment method isn't available right now.")
     intent = {"payment_type": plan["id"], "user_id": int(uid), "guild_id": gid, "clone_id": _cid(),
-              "price_usd": entry["price_usd"], "extra": {"source": "dashboard"}, "created": time.time()}
-    await db.set_global_setting(f"payintent:{token}", json.dumps(intent))
-    logger.info("dashboard checkout guild=%s user=%s plan=%s", gid, uid, plan["id"])
-    return {"ok": True, "url": f"{base}/pay?t={token}"}
+              "price_usd": entry["price_usd"], "extra": {"source": "dashboard"}}
+    from payments_manual import create_checkout_for_intent
+    try:
+        url = await create_checkout_for_intent(intent, "GH" if provider == "paystack" else "XX")
+    except Exception:
+        logger.exception("dashboard checkout crashed (%s)", provider)
+        url = None
+    if not url or not str(url).startswith("https://"):
+        _fail(502, "Couldn't start checkout right now. Please try again shortly.")
+    logger.info("dashboard checkout guild=%s user=%s plan=%s provider=%s", gid, uid, plan["id"], provider)
+    return {"ok": True, "url": url, "provider": provider}
 
 
 _last_action: dict = {}
@@ -1349,7 +1366,7 @@ async def _route(method: str, query: dict, headers, body: dict):
 
     if method == "POST" and action == "checkout":
         gid = await _authorised_guild(sess, body.get("guild_id"))
-        raise _Reply(200, await _checkout(sess, gid, body.get("plan")))
+        raise _Reply(200, await _checkout(sess, gid, body.get("plan"), body.get("provider")))
 
     if method == "GET" and action == "audit":
         gid = await _authorised_guild(sess, q("guild_id"))

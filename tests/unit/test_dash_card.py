@@ -105,10 +105,8 @@ def test_preview_rejects_invalid_designs(card):
 
 def test_save_without_a_plan_is_402_with_checkout_link_and_stores_nothing(card):
     st, p, _ = call("POST", body={"action": "member_card_save", "design": GOOD})
-    assert st == 402 and p["checkout_url"].startswith("https://api.example.test/pay?t=")
-    assert card["design"] is None
-    intent = json.loads(next(iter(card["settings"].values())))
-    assert intent["payment_type"] == "card_plan" and intent["user_id"] == "6"
+    assert st == 402 and p["plans_path"] == "#/me/plans" and "checkout_url" not in p
+    assert card["design"] is None and not card["settings"]
 
 
 @pytest.mark.parametrize("rows", [

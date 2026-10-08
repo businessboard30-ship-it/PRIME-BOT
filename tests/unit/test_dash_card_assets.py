@@ -260,7 +260,7 @@ def test_upload_needs_session_and_plan(web):
     assert call("POST", token=None, body=body)[0] == 401
     web.plan = False
     st, p, _ = call("POST", body=body)
-    assert st == 402 and p["checkout_url"].startswith("https://api.example.test/pay?t=") and not web.assets
+    assert st == 402 and p["plans_path"] == "#/me/plans" and not web.assets
 
 
 def test_upload_with_plan_stores_for_session_user_and_ignores_client_ids(web):

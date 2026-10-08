@@ -703,7 +703,7 @@ async def _create_user_plan_checkout(intent: dict, country: Optional[str]) -> Op
 
 
 async def create_checkout_for_intent(intent: dict, country: Optional[str]) -> Optional[str]:
-    """Called by api/pay_redirect.py. Ghana (country 'GH') -> Paystack in GHS;
+    """Called by the dashboard (server Premium and user plans) and the Discord payment flow. Ghana (country 'GH') -> Paystack in GHS;
     anything else -> Gumroad. Logs the pending payment row and returns the
     checkout URL, or None if the provider couldn't start a checkout."""
     payment_type = intent["payment_type"]
