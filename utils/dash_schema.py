@@ -784,6 +784,38 @@ def mod_case_view(row: dict) -> dict:
             "reason": _clean_text(row.get("reason"), MOD_REASON_MAX), "at": iso(row.get("created_at"))}
 
 
+ANALYTICS_DAYS = (7, 30, 90)
+
+
+def parse_analytics_days(raw) -> int:
+    """Window for the analytics page: only 7, 30 or 90 days. Empty means 30."""
+    if raw in (None, ""):
+        return 30
+    try:
+        n = int(str(raw).strip())
+    except ValueError:
+        raise ValueError("Invalid time range.")
+    if n not in ANALYTICS_DAYS:
+        raise ValueError("Invalid time range.")
+    return n
+
+
+def analytics_view(data: dict, members) -> dict:
+    """Shape db.dash_analytics output for JSON: snowflakes as strings, ints as ints, nothing else passes through."""
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    num = lambda v: int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+    series = [{"day": str(r.get("day"))[:10], "joined": num(r.get("joined")), "left": num(r.get("left"))}
+              for r in data.get("series", [])]
+    return {"days": num(data.get("days")), "members": members if isinstance(members, int) else None, "series": series,
+            "joined": sum(r["joined"] for r in series), "left": sum(r["left"] for r in series),
+            "tracking_since": iso(data.get("tracking_since")), "ranked": num(data.get("ranked")),
+            "active": {"d1": num(data.get("active_1d")), "d7": num(data.get("active_7d")), "d30": num(data.get("active_30d"))},
+            "top_members": [{"id": str(r["user_id"]), "xp": num(r.get("total_xp")), "level": num(r.get("level"))}
+                            for r in data.get("top_members", [])],
+            "top_inviters": [{"id": str(r["user_id"]), "joins": num(r.get("joins")), "net": num(r.get("net"))}
+                             for r in data.get("top_inviters", [])]}
+
+
 def mod_warn_view(row: dict) -> dict:
     iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
     return {"id": str(row["id"]), "by": str(row["warned_by"]) if row.get("warned_by") else None,

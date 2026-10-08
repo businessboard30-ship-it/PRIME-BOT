@@ -14674,6 +14674,49 @@ class Database:
                 "SELECT DISTINCT action_type FROM moderation_logs WHERE chat_id = $1 ORDER BY action_type LIMIT 40", int(guild_id))
         return [r["action_type"] for r in rows]
 
+    async def dash_analytics(self, guild_id: int, clone_id: Optional[int] = None, days: int = 30) -> dict:
+        """Server analytics for the web dashboard. Read-only, live queries over tables the bot already
+        fills (no schema change): discord_invite_joins (one row per join, left_at set on leave) and
+        discord_xp (activity proxy: last_xp_at only moves once per XP cooldown, so it is not a message count)."""
+        days = max(1, min(int(days), 90))
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            today = await conn.fetchval("SELECT (NOW() AT TIME ZONE 'UTC')::date")
+            since = today - timedelta(days=days - 1)
+            joined = await conn.fetch(
+                """SELECT (joined_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS n FROM discord_invite_joins
+                   WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                     AND (joined_at AT TIME ZONE 'UTC')::date >= $3 GROUP BY 1""", int(guild_id), clone_id, since)
+            left = await conn.fetch(
+                """SELECT (left_at AT TIME ZONE 'UTC')::date AS day, COUNT(*) AS n FROM discord_invite_joins
+                   WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND left_at IS NOT NULL
+                     AND (left_at AT TIME ZONE 'UTC')::date >= $3 GROUP BY 1""", int(guild_id), clone_id, since)
+            tracking_since = await conn.fetchval(
+                "SELECT MIN(joined_at) FROM discord_invite_joins WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                int(guild_id), clone_id)
+            act = await conn.fetchrow(
+                """SELECT COUNT(*) AS ranked,
+                          COUNT(*) FILTER (WHERE last_xp_at >= NOW() - INTERVAL '1 day') AS d1,
+                          COUNT(*) FILTER (WHERE last_xp_at >= NOW() - INTERVAL '7 days') AS d7,
+                          COUNT(*) FILTER (WHERE last_xp_at >= NOW() - INTERVAL '30 days') AS d30
+                   FROM discord_xp WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2""", int(guild_id), clone_id)
+            top = await conn.fetch(
+                """SELECT user_id, total_xp, level FROM discord_xp
+                   WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                   ORDER BY total_xp DESC, user_id LIMIT 10""", int(guild_id), clone_id)
+        jmap = {r["day"]: int(r["n"]) for r in joined}
+        lmap = {r["day"]: int(r["n"]) for r in left}
+        series = []
+        for i in range(days):
+            d = since + timedelta(days=i)
+            series.append({"day": d.isoformat(), "joined": jmap.get(d, 0), "left": lmap.get(d, 0)})
+        inviters = await self.get_invite_leaderboard(int(guild_id), clone_id, 10)
+        return {"days": days, "series": series, "tracking_since": tracking_since,
+                "ranked": int(act["ranked"] or 0), "active_1d": int(act["d1"] or 0),
+                "active_7d": int(act["d7"] or 0), "active_30d": int(act["d30"] or 0),
+                "top_members": [dict(r) for r in top],
+                "top_inviters": [{"user_id": a, "joins": b, "net": c} for a, b, c in inviters]}
+
     # ── Web dashboard: read-only giveaway list (table is shared with the Discord /giveaway commands) ──
 
     async def dash_giveaways(self, guild_id: int, clone_id: Optional[int] = None, status: Optional[str] = None,
