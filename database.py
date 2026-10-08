@@ -14618,6 +14618,22 @@ class Database:
                 "SELECT DISTINCT action_type FROM moderation_logs WHERE chat_id = $1 ORDER BY action_type LIMIT 40", int(guild_id))
         return [r["action_type"] for r in rows]
 
+    # ── Web dashboard: read-only giveaway list (table is shared with the Discord /giveaway commands) ──
+
+    async def dash_giveaways(self, guild_id: int, clone_id: Optional[int] = None, status: Optional[str] = None,
+                             before: Optional[int] = None, limit: int = 31) -> list:
+        """Newest first. Returns an entrant COUNT, never the entrant ids."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, channel_id, message_id, host_id, prize, winner_count, ends_at, winner_ids, status,
+                          COALESCE(cardinality(entrant_ids), 0) AS entrant_count
+                   FROM discord_giveaways
+                   WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)
+                     AND ($3::text IS NULL OR status = $3) AND ($4::int IS NULL OR id < $4)
+                   ORDER BY id DESC LIMIT $5""", int(guild_id), clone_id, status, before, int(limit))
+        return [dict(r) for r in rows]
+
     # ── Web dashboard adapters (generic get(guild, clone) / set(guild, clone, **values) contract; no schema change) ──
 
     async def get_bump_settings_config(self, guild_id: int, clone_id: Optional[int] = None) -> dict:

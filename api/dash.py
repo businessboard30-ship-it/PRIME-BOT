@@ -34,6 +34,7 @@ Routes (all on /api/dash):
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
   GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count); read-only
+  GET  ?action=giveaways&guild_id=&status=&before= -> giveaways for this server (prize, status, entrant count, winners); read-only
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
   POST {action: dropbox_read, id?}      -> mark one (or all) read
@@ -1365,6 +1366,21 @@ async def _route(method: str, query: dict, headers, body: dict):
             warns, total = await db.dash_mod_warns(gid, user)
             out["warns"], out["warn_count"] = [S.mod_warn_view(w) for w in warns], total
         raise _Reply(200, out)
+
+    if method == "GET" and action == "giveaways":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        _owner_rate(sess, "giveaways_read", 60, 60)
+        status = q("status") or None
+        if status and status not in S.GIVEAWAY_STATUSES:
+            _fail(400, "Unknown status.")
+        try:
+            before = int(q("before")) if q("before") else None
+        except ValueError:
+            _fail(400, "Invalid page.")
+        if before is not None and not 0 < before < 2 ** 31:
+            _fail(400, "Invalid page.")
+        rows = await db.dash_giveaways(gid, _cid(), status, before, 31)
+        raise _Reply(200, {"ok": True, "giveaways": [S.giveaway_view(r) for r in rows[:30]], "more": len(rows) > 30})
 
     if method == "GET" and action == "welcome_preview":
         gid = await _authorised_guild(sess, q("guild_id"))
