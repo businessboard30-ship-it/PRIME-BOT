@@ -50,6 +50,8 @@ Routes (all on /api/dash):
   POST {action: owner_report_resolve|owner_status_add|owner_status_remove|owner_presence_set|owner_status_reset|owner_scam_toggle|owner_scam_add|owner_scam_remove, ...} -> OWNER (safety)
   GET  ?action=owner_helpers|owner_clones|owner_database -> OWNER (access / servers / database): helpers, clones (never the token), table counts (api/dash_owner_ops.py)
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
+  GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
+  POST {action: member_pref_set, kind: language|currency|character|voice|level_ping, value[, guild_id]} -> own preference only (allowlisted)
   POST {action: owner_helper_set|owner_helper_remove|owner_clone_register|owner_clone_relink|owner_clone_stop|owner_db_cleanup_stale, ...} -> OWNER (Phase 5): step-up + typed confirm on all but helper_set
   POST {action: owner_switch|owner_blacklist_add|owner_blacklist_remove|owner_premium_revoke|owner_premium_grant|owner_payment_reverse|owner_coupon_create|owner_coupon_toggle|owner_failure_dismiss|owner_pending_clear|owner_announce|owner_announce_delete, ...}
                                         -> OWNER writes (api/dash_owner.WRITES): section + rate limit, step-up and typed confirm where destructive, fail-closed audit
@@ -317,6 +319,11 @@ def _merged(attr: str) -> dict:
 def _member_routes() -> dict:
     from api import dash_member
     return dash_member.ROUTES
+
+
+def _member_writes() -> dict:
+    from api import dash_member
+    return dash_member.WRITES
 
 
 def _owner_routes() -> dict:
@@ -1055,6 +1062,14 @@ async def _route(method: str, query: dict, headers, body: dict):
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, 60, 60)
         out = await _member_routes()[action](uid, q, db)
+        raise _Reply(200, {"ok": True, **out})
+
+    if method == "POST" and action in _member_writes():
+        uid = _require_member(sess)
+        _owner_rate(sess, "member:" + action, 30, 60)
+        out = await _member_writes()[action](uid, body, db)
+        if out.get("_status"):
+            _fail(out["_status"], out.get("message") or "Something went wrong.")
         raise _Reply(200, {"ok": True, **out})
 
     if method == "POST" and action == "owner_stepup":
