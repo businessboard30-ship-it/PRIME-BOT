@@ -1285,6 +1285,7 @@
     var pick = h("select", { "aria-label": "Model", style: "margin-right:8px" }, h("option", { value: "default", text: "Bot AI (default)" }));
     var send = h("button", { class: "btn sm", type: "button", text: "Send" });
     var fresh = h("button", { class: "btn sm ghost", type: "button", text: "New chat" });
+    var saveChat = h("button", { class: "btn sm ghost", type: "button", text: "Save chat" });
     function line(role, text) {
       log.appendChild(h("div", { style: "margin:8px 0;white-space:pre-wrap;word-break:break-word" }, h("b", { text: role === "user" ? "You: " : "AI: " }), h("span", { text: text })));
       log.scrollTop = log.scrollHeight;
@@ -1315,9 +1316,53 @@
     send.addEventListener("click", go);
     input.addEventListener("keydown", function (ev) { if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") go(); });
     fresh.addEventListener("click", function () { history = []; log.textContent = ""; });
+    saveChat.addEventListener("click", function () {
+      if (!history.length) { meter.textContent = "Nothing to save yet."; return; }
+      var md = history.map(function (m) { return (m.role === "user" ? "**You:** " : "**AI:** ") + m.content; }).join("\n\n");
+      saveChat.disabled = true;
+      api("dev_export_create", null, { kind: "note", name: "chat " + new Date().toISOString().slice(0, 16).replace("T", " "), content: md })
+        .then(function (r) { meter.textContent = r.dm_sent ? "Saved. A copy is in your DMs and on this page under Exports." : "Saved under Exports below (we couldn't DM you)."; refreshExports(); })
+        .catch(function (e) { meter.textContent = (e && e.message) || "Couldn't save the chat."; })
+        .then(function () { saveChat.disabled = false; });
+    });
     box.appendChild(h("p", { class: "muted", text: "Uses the bot's own AI. Chats aren't saved on our servers; closing this page clears the conversation. Never paste passwords or API keys." }));
     box.appendChild(meter); box.appendChild(log); box.appendChild(input);
-    box.appendChild(h("div", { class: "row" }, pick, send, " ", fresh));
+    box.appendChild(h("div", { class: "row" }, pick, send, " ", fresh, " ", saveChat));
+    return box;
+  }
+
+  /* Exports: files are encrypted before they leave this server; the list shows names, sizes and dates only. */
+  var refreshExports = function () {};
+  function devExports() {
+    var box = section("Exports");
+    var note = h("p", { class: "muted", role: "status", text: "" });
+    var list = h("div", null);
+    box.appendChild(h("p", { class: "muted", text: "Saved chats and files. They are encrypted when stored. You also get a copy by DM when you save one. After your plan ends you can still download them for 7 days." }));
+    box.appendChild(list); box.appendChild(note);
+    function save(name, text) {
+      var url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+      var a = h("a", { href: url, download: name }); document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    }
+    function draw(r) {
+      list.textContent = "";
+      var xs = r.exports || [];
+      if (!xs.length) list.appendChild(h("p", { class: "muted", text: "Nothing exported yet. Use \"Save chat\" in the chat." }));
+      xs.forEach(function (x) {
+        var dl = h("button", { class: "btn sm ghost", type: "button", text: "Download" });
+        var rm = h("button", { class: "btn sm ghost", type: "button", text: "Delete" });
+        dl.addEventListener("click", function () {
+          api("dev_export_download", { id: x.id }).then(function (f) { save(f.name, f.content); }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't download that."; });
+        });
+        rm.addEventListener("click", function () {
+          api("dev_export_delete", null, { id: x.id }).then(load).catch(function (e) { note.textContent = (e && e.message) || "Couldn't delete that."; });
+        });
+        list.appendChild(h("div", { class: "row", style: "margin:6px 0;gap:8px;align-items:center" },
+          h("b", { text: x.name }), h("span", { class: "muted", text: Math.max(1, Math.round(x.size / 1024)) + " KB \u00b7 " + when2(x.created_at) }), dl, rm));
+      });
+    }
+    function load() { return api("dev_export_list").then(draw).catch(function (e) { list.textContent = ""; fail(list, e); }); }
+    refreshExports = load; load();
     return box;
   }
 
@@ -1391,6 +1436,7 @@
         c.appendChild(h("p", { class: "muted", text: "Active" + (st.expires_at ? " until " + when2(st.expires_at) : "") + ". Features are switched on one at a time as they ship." }));
         c.appendChild(feats); body.appendChild(c);
         body.appendChild(devChat());
+        body.appendChild(devExports());
         body.appendChild(devKeys());
         return;
       }
@@ -1402,6 +1448,7 @@
       lock.appendChild(h("p", { class: "muted", text: "Plans renew automatically until you cancel. Access starts after the payment is confirmed." }));
       body.appendChild(lock);
       body.appendChild(planGrid(st.plans, st.pay, msg)); body.appendChild(msg);
+      if (st.export_available) body.appendChild(devExports());
     }).catch(function (e) { body.textContent = ""; fail(body, e); });
   }
 

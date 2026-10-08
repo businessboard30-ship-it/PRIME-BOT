@@ -40,6 +40,8 @@ FEATURES: Dict[str, Tuple[str, Set[str]]] = {
     # Also enforced inside clone_admin.register_clone_token, so the "Build Bot"
     # button wizard is stopped too (it isn't a slash command).
     "clone_registration": ("Clone registration", {"registerclone"}),
+    # Website-only (no slash command): stops Developer-mode exports to the storage channel.
+    "dev_export": ("Developer export", set()),
 }
 
 # Opt-in switches: engaged means ON (the opposite of FEATURES above, where engaged means turned off).
@@ -47,6 +49,9 @@ FEATURES: Dict[str, Tuple[str, Set[str]]] = {
 OPT_IN: Dict[str, str] = {
     "build_bot_public": "Build Bot button open to everyone",
 }
+
+# Switch keys that guard website features only (no slash command to turn off).
+WEBSITE_ONLY = frozenset({"dev_export"})
 
 _ROOT_TO_FEATURE: Dict[str, str] = {root: key for key, (_, roots) in FEATURES.items() for root in roots}
 
