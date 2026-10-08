@@ -46,6 +46,7 @@ Routes (all on /api/dash):
   GET  ?action=owner_controls|owner_blacklist|owner_premium|owner_feedback|owner_botaudit|owner_payment|owner_coupons -> OWNER, read-only
   GET  ?action=owner_ads|owner_ad|owner_market|owner_bump -> OWNER (ads / bump): ads queue, one ad, marketplace listings, bump network (api/dash_owner_growth.py)
   GET  ?action=owner_watchlist|owner_reports|owner_status|owner_honeypot|owner_scamshield -> OWNER: safety pages (api/dash_owner_safety.py)
+  GET  ?action=owner_search|owner_alerts|owner_growth -> OWNER (inspect / health / servers): global search, alerts (notifications), server growth series (api/dash_owner_insights.py)
   POST {action: owner_ad_approve|owner_ad_reject|owner_ad_deactivate|owner_ad_reactivate|owner_listing_remove|owner_bump_cooldown, ...} -> OWNER (ads / bump)
   POST {action: owner_report_resolve|owner_status_add|owner_status_remove|owner_presence_set|owner_status_reset|owner_scam_toggle|owner_scam_add|owner_scam_remove, ...} -> OWNER (safety)
   GET  ?action=owner_helpers|owner_clones|owner_database -> OWNER (access / servers / database): helpers, clones (never the token), table counts (api/dash_owner_ops.py)
@@ -293,9 +294,9 @@ def _require_confirm(body: dict, expected: str) -> None:
 
 def _merged(attr: str) -> dict:
     """ROUTES / WRITES of every owner module. A duplicate action name is a bug, so fail loudly (tested)."""
-    from api import dash_owner, dash_owner_growth, dash_owner_ops, dash_owner_safety
+    from api import dash_owner, dash_owner_growth, dash_owner_insights, dash_owner_ops, dash_owner_safety
     out: dict = {}
-    for mod in (dash_owner, dash_owner_growth, dash_owner_safety, dash_owner_ops):
+    for mod in (dash_owner, dash_owner_growth, dash_owner_safety, dash_owner_ops, dash_owner_insights):
         part = getattr(mod, attr)
         dup = out.keys() & part.keys()
         if dup:
@@ -1067,7 +1068,7 @@ async def _route(method: str, query: dict, headers, body: dict):
         _require_section(sess, section)
         _owner_rate(sess, "read:" + action, 60, 60)
         from api import dash_owner
-        out = handler(q)
+        out = handler(q, _owner_sections(sess)) if getattr(handler, "wants_sections", False) else handler(q)
         out = await out if hasattr(out, "__await__") else out
         if "_error" in out:
             _fail(*out["_error"])
