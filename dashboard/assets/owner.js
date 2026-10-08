@@ -22,6 +22,9 @@
     { id: "status", label: "Bot status", need: "status" },
     { id: "honeypot", label: "Honeypots", need: "honeypot" },
     { id: "scamshield", label: "Scam Shield", need: "scamshield" },
+    { id: "helpers", label: "Helpers", need: "access" },
+    { id: "clones", label: "Clones", need: "servers" },
+    { id: "database", label: "Database", need: "database" },
     { id: "announce", label: "Announcements", need: "broadcast" },
     { id: "feedback", label: "Feedback", need: "feedback" },
     { id: "logs", label: "Logs", need: "logs" },
@@ -583,13 +586,90 @@
     draw();
   }
 
+  /* ---------- Phase 5: helpers, clones, database (owner-only, step-up on the dangerous ones) ---------- */
+  function helpersPage() {
+    var out = h("div", { class: "card" }); shell("helpers", out);
+    function draw() {
+      out.textContent = "";
+      loadInto(out, "owner_helpers", {}, function (j) {
+        out.appendChild(h("p", { class: "muted", text: j.note }));
+        var uid = h("input", { type: "text", inputmode: "numeric", placeholder: "User id", "aria-label": "Helper user id" });
+        var boxes = Object.keys(j.grantable).map(function (k) {
+          var cb = h("input", { type: "checkbox", value: k, id: "hp-" + k });
+          return { k: k, cb: cb, el: h("label", null, cb, " " + j.grantable[k]) };
+        });
+        out.appendChild(h("div", { class: "owner-bar" }, uid, boxes.map(function (b) { return b.el; }), h("button", { class: "btn sm", text: "Save helper", onclick: function () {
+          var sections = boxes.filter(function (b) { return b.cb.checked; }).map(function (b) { return b.k; });
+          api("owner_helper_set", {}, { user_id: uid.value.trim(), sections: sections }).then(function (r) { toast(r.message, "ok"); draw(); }).catch(fail);
+        } })));
+        out.appendChild(h("h3", { text: "Current helpers" }));
+        out.appendChild(j.rows.length ? table(["User", "Sections", "Added by", "Updated"], j.rows.map(function (r) { return [r.user_id, r.sections.join(", "), r.added_by, fmt(r.updated_at || r.created_at)]; })) : h("p", { class: "muted", text: "No helpers." }));
+        j.rows.forEach(function (r) { out.appendChild(h("button", { class: "btn sm ghost", text: "Remove " + r.user_id, onclick: function () {
+          var c = typed("REMOVE", "Remove helper " + r.user_id + "."); if (c === null) return;
+          api("owner_helper_remove", {}, { user_id: r.user_id, confirm: c }).then(function (x) { toast(x.message, x.removed ? "ok" : "bad"); draw(); }).catch(fail);
+        } })); });
+      });
+    }
+    draw();
+  }
+
+  function clonesPage() {
+    var out = h("div", { class: "card" }); shell("clones", out);
+    function tokenInput(label) { return h("input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: label, "aria-label": label }); }
+    function done(r, what) { toast(what + " " + (r.bot_username || "") + ". " + r.note, "ok"); }
+    function draw() {
+      out.textContent = "";
+      loadInto(out, "owner_clones", {}, function (j) {
+        out.appendChild(h("p", { class: "muted", text: "Tokens are sent once, stored encrypted, and never shown again. Each action needs a fresh sign-in (Security page). " + j.stop_note }));
+        var tok = tokenInput("Bot token for a new clone");
+        out.appendChild(h("div", { class: "owner-bar" }, tok, h("button", { class: "btn sm", text: "Register my clone", onclick: function () {
+          var c = typed("REGISTER", "Register a new clone for your account."); if (c === null) return;
+          var t = tok.value; tok.value = "";
+          api("owner_clone_register", {}, { token: t, confirm: c }).then(function (r) { done(r, "Registered"); draw(); }).catch(fail);
+        } })));
+        var rid = h("input", { type: "text", inputmode: "numeric", placeholder: "Clone number", "aria-label": "Clone number to relink" }), rtok = tokenInput("New bot token");
+        out.appendChild(h("div", { class: "owner-bar" }, rid, rtok, h("button", { class: "btn sm ghost", text: "Relink my clone", onclick: function () {
+          var c = typed("RELINK", "Point clone " + rid.value + " at a new bot token. Its data stays."); if (c === null) return;
+          var t = rtok.value; rtok.value = "";
+          api("owner_clone_relink", {}, { clone: rid.value.trim(), token: t, confirm: c }).then(function (r) { done(r, "Relinked to"); draw(); }).catch(fail);
+        } })));
+        out.appendChild(h("h3", { text: "All clones" }));
+        out.appendChild(j.rows.length ? table(["#", "Bot", "Owner", "Status", "Last heartbeat", "Created"], j.rows.map(function (r) {
+          return [r.clone_id, r.bot_username, r.owner_id, r.status, r.last_heartbeat ? fmt(r.last_heartbeat) : "never", fmt(r.created_at)]; })) : h("p", { class: "muted", text: "No clones." }));
+        j.rows.filter(function (r) { return r.status === "active"; }).forEach(function (r) { out.appendChild(h("button", { class: "btn sm ghost", text: "Stop #" + r.clone_id, onclick: function () {
+          var c = typed("STOP", "Stop clone #" + r.clone_id + " (" + (r.bot_username || "unnamed") + "). Its servers lose the bot until it is relinked."); if (c === null) return;
+          api("owner_clone_stop", {}, { clone: String(r.clone_id), confirm: c }).then(function (x) { toast(x.message, "ok"); draw(); }).catch(fail);
+        } })); });
+      });
+    }
+    draw();
+  }
+
+  function databasePage() {
+    var out = h("div", { class: "card" }); shell("database", out);
+    function draw() {
+      out.textContent = "";
+      loadInto(out, "owner_database", {}, function (j) {
+        out.appendChild(h("p", { class: "muted", text: "Read-only counts plus one named cleanup. There is no way to run your own SQL here." }));
+        out.appendChild(table(["Table", "Rows"], j.counts.map(function (c) { return [c.table, c.rows == null ? "n/a" : (c.approx ? "~" : "") + c.rows]; })));
+        out.appendChild(h("p", { text: j.stale_payments + " checkout(s) pending for more than " + j.stale_hours + " hours." }));
+        out.appendChild(h("button", { class: "btn sm", text: "Mark stale checkouts expired", disabled: !j.stale_payments, onclick: function () {
+          var c = typed("CLEANUP", "Mark " + j.stale_payments + " abandoned checkout(s) as expired. Rows are kept."); if (c === null) return;
+          api("owner_db_cleanup_stale", {}, { confirm: c }).then(function (r) { toast(r.message, "ok"); draw(); }).catch(fail);
+        } }));
+      });
+    }
+    draw();
+  }
+
   window.DashOwner = {
     render: function (sub) {
       var page = PAGES.filter(function (p) { return p.id === (sub || "") && allowed(p); })[0];
       if (!page) { location.hash = "#/owner"; return; }
       ({ "": overview, health: health, servers: servers, users: users, payments: payments, audit: audit, security: security,
         controls: controls, blacklist: blacklist, premium: premium, announce: announce, feedback: feedback, logs: logs, config: config,
-        ads: ads, bump: bump, watchlist: watchlist, reports: reports, status: statusPage, honeypot: honeypot, scamshield: scamshield })[page.id]();
+        ads: ads, bump: bump, watchlist: watchlist, reports: reports, status: statusPage, honeypot: honeypot, scamshield: scamshield,
+        helpers: helpersPage, clones: clonesPage, database: databasePage })[page.id]();
     }
   };
 })();
