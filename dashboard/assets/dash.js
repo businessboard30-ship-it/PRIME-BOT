@@ -916,13 +916,31 @@
       h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Your account" }), h("h1", { text: "My account" }),
         h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }))),
       plans, servers, prefs, buys));
-    api("member_status").then(function (j) {
+    Promise.all([api("member_status"), api("member_plans")]).then(function (res) {
+      var j = res[0], offers = res[1].plans || [];
       var items = j.entitlements || [];
-      if (!items.length) { plans.appendChild(h("p", { class: "muted", text: "You have no active plans. Plans will be purchasable here soon." })); return; }
+      if (!items.length) plans.appendChild(h("p", { class: "muted", text: "You have no active plans." }));
       items.forEach(function (e) {
         plans.appendChild(h("p", null, h("b", { text: PRODUCT_LABEL[e.product] || e.product }), " \u00b7 " + (STATE_LABEL[e.state] || e.state)
           + (e.expires_at ? " \u00b7 until " + new Date(e.expires_at).toLocaleDateString() : "")));
       });
+      plans.appendChild(h("h4", { text: "Subscribe" }));
+      plans.appendChild(h("p", { class: "muted", text: "Plans renew automatically until you cancel. Access starts after the payment is confirmed." }));
+      var msg = h("p", { class: "muted", role: "status", text: "" });
+      offers.forEach(function (p) {
+        var can = p.state === "none" || p.state === "expired";
+        var per = p.period_days > 100 ? "year" : "month";
+        var btn = h("button", { class: "btn sm", type: "button", text: can ? "Subscribe" : (STATE_LABEL[p.state] || "Active") });
+        btn.disabled = !can;
+        btn.addEventListener("click", function () {
+          btn.disabled = true; msg.textContent = "Opening checkout\u2026";
+          api("checkout_user", null, { product: p.product }).then(function (r) {
+            window.location.href = r.checkout_url;
+          }).catch(function (e) { btn.disabled = false; msg.textContent = (e && e.message) || "Couldn't start checkout."; });
+        });
+        plans.appendChild(h("div", { class: "row" }, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " / " + per + " ", btn));
+      });
+      plans.appendChild(msg);
     }).catch(function (e) { fail(plans, e); });
     api("member_servers").then(function (j) {
       var list = j.servers || [];

@@ -562,7 +562,18 @@ async def _unlock_ad_placement(reference: str, buyer_id: int, guild_id: Optional
         logger.info(f"[unlock-ad] ad #{ad_id} auto-approved after payment (buyer {buyer_id}) ref={reference}")
 
 
+def _make_unlock_user_plan(product: str):
+    async def _handler(reference: str, buyer_id: int, guild_id, clone_id):
+        from modules import user_billing
+        await user_billing.apply_event(db, event_id=f"pay:{reference}", user_id=buyer_id, product=product,
+                                       kind="charge", provider="payment")
+    return _handler
+
+
 UNLOCK_HANDLERS = {
+    "card_plan": _make_unlock_user_plan("card_plan"),
+    "dev_monthly": _make_unlock_user_plan("dev_monthly"),
+    "dev_yearly": _make_unlock_user_plan("dev_yearly"),
     "welcome_card_pack": _unlock_welcome_card_pack,
     "ultra_welcome_pack": _unlock_ultra_pack,
     "discord_clone": _unlock_discord_clone,
@@ -650,6 +661,47 @@ async def start_geo_payment(interaction: discord.Interaction, *, payment_type: s
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
+async def _create_user_plan_checkout(intent: dict, country: Optional[str]) -> Optional[str]:
+    """Per-user recurring plan (card_plan / dev_*). The price comes from modules.user_subs, never
+    from the intent. Ghana -> Paystack recurring plan; elsewhere -> Gumroad membership. If the
+    plan isn't configured for that gateway we return None (no checkout) instead of a one-off charge."""
+    from modules import user_subs
+    payment_type = intent["payment_type"]
+    user_id = int(intent["user_id"])
+    price_usd = user_subs.price_usd(payment_type)
+    if (country or "").upper() == "GH":
+        import config
+        plan_code = (config.USER_PLAN_PAYSTACK_CODES.get(payment_type) or "").strip()
+        if not plan_code:
+            logger.error(f"[user-plan] no Paystack plan code configured for {payment_type}")
+            return None
+        import utils.currency as fx
+        from payments import paystack
+        amount_minor_units, charge_currency = fx.usd_to_minor_units(price_usd, "GHS")
+        result = await asyncio.to_thread(
+            paystack.initialize_payment,
+            f"user_{user_id}@animebot.com", amount_minor_units, user_id, f"{payment_type}_{user_id}",
+            payment_type=payment_type, extra_metadata={"provider": "discord", "user_plan": True},
+            currency=charge_currency, plan=plan_code,
+        )
+        if not result or result.get("status") != "success":
+            logger.error(f"[user-plan:{payment_type}] paystack initialize failed for user {user_id}: {result!r}")
+            return None
+        await db.log_payment(user_id, price_usd, result["reference"], status="pending",
+                             payment_type=payment_type, chat_id=None, provider="paystack", clone_id=None)
+        return result["authorization_url"]
+    import gumroad_payments as gp
+    await gp._auto.load_runtime()
+    reference = gp.new_reference(payment_type, user_id)
+    link = gp.build_link(payment_type, user_id, reference)
+    if not link:
+        logger.error(f"[user-plan] no Gumroad link configured for {payment_type}")
+        return None
+    await db.log_payment(user_id, price_usd, reference, status="pending",
+                         payment_type=payment_type, chat_id=None, provider="gumroad", clone_id=None)
+    return link
+
+
 async def create_checkout_for_intent(intent: dict, country: Optional[str]) -> Optional[str]:
     """Called by api/pay_redirect.py. Ghana (country 'GH') -> Paystack in GHS;
     anything else -> Gumroad. Logs the pending payment row and returns the
@@ -660,6 +712,10 @@ async def create_checkout_for_intent(intent: dict, country: Optional[str]) -> Op
     clone_id = intent.get("clone_id")
     price_usd = float(intent["price_usd"])
     mon_clone = (intent.get("extra") or {}).get("monetize_clone_id")
+
+    from modules import user_subs
+    if user_subs.is_plan(payment_type):
+        return await _create_user_plan_checkout(intent, country)
 
     if (country or "").upper() == "GH" and mon_clone:
         # Clone monetization is priced in GHS on Paystack, with its own pending row.

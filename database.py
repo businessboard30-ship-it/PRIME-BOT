@@ -157,8 +157,9 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "62"
+SCHEMA_VERSION = "63"
 # "61" -> "62" creates user_entitlements (per-user paid products: card_plan, dev_monthly, dev_yearly; only the payment webhook may write it) and dash_web_users (everyone who has signed in to the web dashboard; member messaging depends on it). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
+# "62" -> "63" creates user_billing_events (one row per gateway billing event id, claimed before an entitlement is changed so a duplicate or retried webhook can never double-extend a plan). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "59" -> "60" creates dash_owner_audit (web owner area audit trail, also written by the Discord owner panel) + its indexes. Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "60" -> "61" creates bot_status_snapshots (the bot worker publishes live health, masked logs and masked config here every ~60s so the web owner area, a separate process, can show them). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "58" -> "59" actually creates the web-dashboard tables dash_dropbox_messages, dash_dropbox_reads, dash_dropbox_dm and dash_audit (+ the audience/min_members/target_guild_id/push_dm columns). They were added to _create_tables in the dashboard PRs without a bump, so DBs stamped '58' hit UndefinedTableError on every Drop Box / Audit request. Same bump-or-it-never-runs trap.
@@ -4202,6 +4203,18 @@ class Database:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (user_id, product)
+            )
+        """)
+
+        # Gateway billing events already applied to a per-user plan. The PRIMARY KEY is the idempotency gate.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_billing_events (
+                event_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                product TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
 
@@ -14730,6 +14743,40 @@ class Database:
                        cancel_at_period_end = $7, updated_at = NOW()""",
                 str(user_id), str(product)[:40], str(status)[:20], expires_at, str(source)[:40],
                 subscription_id, bool(cancel_at_period_end))
+
+    async def billing_event_claim(self, event_id: str, user_id: str, product: str,
+                                  provider: str, kind: str) -> bool:
+        """True the first time this gateway event id is seen, False for a duplicate/retry."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            got = await conn.fetchval(
+                """INSERT INTO user_billing_events (event_id, user_id, product, provider, kind)
+                   VALUES ($1, $2, $3, $4, $5) ON CONFLICT (event_id) DO NOTHING RETURNING event_id""",
+                str(event_id)[:200], str(user_id), str(product)[:40], str(provider)[:20], str(kind)[:20])
+        return bool(got)
+
+    async def billing_event_release(self, event_id: str) -> None:
+        """Undo a claim when applying the event failed, so the gateway's retry can succeed."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM user_billing_events WHERE event_id = $1", str(event_id)[:200])
+
+    async def entitlement_get(self, user_id: str, product: str):
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow(
+                """SELECT product, status, expires_at, source, subscription_id, cancel_at_period_end
+                   FROM user_entitlements WHERE user_id = $1 AND product = $2""", str(user_id), str(product))
+        return dict(r) if r else None
+
+    async def entitlement_by_subscription(self, subscription_id: str):
+        """Find the (user_id, product) that owns a gateway subscription id."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow(
+                """SELECT user_id, product, status, expires_at, subscription_id, cancel_at_period_end
+                   FROM user_entitlements WHERE subscription_id = $1""", str(subscription_id))
+        return dict(r) if r else None
 
     # ── Web dashboard drop box (owner -> every dashboard admin) ──
 

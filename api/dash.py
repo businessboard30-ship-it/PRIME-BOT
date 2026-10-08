@@ -53,6 +53,8 @@ Routes (all on /api/dash):
   POST {action: owner_ad_approve|owner_ad_reject|owner_ad_deactivate|owner_ad_reactivate|owner_listing_remove|owner_bump_cooldown, ...} -> OWNER (ads / bump)
   POST {action: owner_report_resolve|owner_status_add|owner_status_remove|owner_presence_set|owner_status_reset|owner_scam_toggle|owner_scam_add|owner_scam_remove, ...} -> OWNER (safety)
   GET  ?action=owner_helpers|owner_clones|owner_database -> OWNER (access / servers / database): helpers, clones (never the token), table counts (api/dash_owner_ops.py)
+  GET  ?action=member_plans -> any signed-in user: the plan list with server prices and the user's own state
+  POST ?action=checkout_user {product} -> any signed-in user: a /pay checkout link for the SESSION user (webhook grants, never this call)
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
   POST {action: member_pref_set, kind: language|currency|character|voice|level_ping, value[, guild_id]} -> own preference only (allowlisted)
@@ -1074,7 +1076,7 @@ async def _route(method: str, query: dict, headers, body: dict):
 
     if method == "POST" and action in _member_writes():
         uid = _require_member(sess)
-        _owner_rate(sess, "member:" + action, 30, 60)
+        _owner_rate(sess, "member:" + action, *((10, 300) if action == "checkout_user" else (30, 60)))
         out = await _member_writes()[action](uid, body, db)
         if out.get("_status"):
             _fail(out["_status"], out.get("message") or "Something went wrong.")
