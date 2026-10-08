@@ -157,8 +157,9 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "60"
+SCHEMA_VERSION = "61"
 # "59" -> "60" creates dash_owner_audit (web owner area audit trail, also written by the Discord owner panel) + its indexes. Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
+# "60" -> "61" creates bot_status_snapshots (the bot worker publishes live health, masked logs and masked config here every ~60s so the web owner area, a separate process, can show them). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "58" -> "59" actually creates the web-dashboard tables dash_dropbox_messages, dash_dropbox_reads, dash_dropbox_dm and dash_audit (+ the audience/min_members/target_guild_id/push_dm columns). They were added to _create_tables in the dashboard PRs without a bump, so DBs stamped '58' hit UndefinedTableError on every Drop Box / Audit request. Same bump-or-it-never-runs trap.
 # "57" -> "58" adds 031_discount_and_applications.sql (premium_discount_codes, discord_application_forms, discord_application_submissions). Same bump-or-it-never-runs trap.
 # "56" -> "57" adds 4 filter_* columns to discord_antiraid_config (Anti-raid Pro: account-age / default-avatar / suspicious-name join filter) via ALTER TABLE ADD COLUMN IF NOT EXISTS — see modules/antiraid_pro.py. Same bump-or-it-never-runs trap.
@@ -4177,6 +4178,15 @@ class Database:
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS dash_owner_audit_id_idx ON dash_owner_audit (id DESC)")
         await conn.execute("CREATE INDEX IF NOT EXISTS dash_owner_audit_section_idx ON dash_owner_audit (section, id DESC)")
+
+        # Live bot status published by the worker for the web owner area. No secrets (masked before write).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_status_snapshots (
+                key TEXT PRIMARY KEY,
+                payload JSONB NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
 
         # Referral-boost click log — just a visit counter (no auth, no
         # cookies/sessions to correlate: see the note on invite_code/
@@ -14497,6 +14507,24 @@ class Database:
                 d["detail"] = json.loads(d["detail"])
             out.append(d)
         return out
+
+    async def bot_snapshot_put(self, key: str, payload: dict) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO bot_status_snapshots (key, payload, updated_at) VALUES ($1, $2::jsonb, NOW())
+                   ON CONFLICT (key) DO UPDATE SET payload = $2::jsonb, updated_at = NOW()""",
+                str(key)[:40], json.dumps(payload, default=str))
+
+    async def bot_snapshot_get(self, key: str) -> Optional[dict]:
+        """{"payload": dict, "updated_at": datetime} or None when the worker never published `key`."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow("SELECT payload, updated_at FROM bot_status_snapshots WHERE key = $1", str(key))
+        if not r:
+            return None
+        p = r["payload"]
+        return {"payload": json.loads(p) if isinstance(p, str) else p, "updated_at": r["updated_at"]}
 
     # ── Web dashboard drop box (owner -> every dashboard admin) ──
 

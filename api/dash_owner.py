@@ -1,13 +1,17 @@
 # path: api/dash_owner.py
-"""Owner area, Phase 1: READ-ONLY pages. Called from api/dash.py's router.
+"""Owner area. Called from api/dash.py's router.
 
-Every handler reuses the same modules/admin_*.py logic the Discord Owner panel uses. Nothing here
-writes. Access is decided by dash._require_section, never by the client.
+ROUTES   (GET)  read-only pages. Handlers take `q` and return a dict; they never write.
+WRITES   (POST) Phase 2 safe controls. Each entry is (section, rate_per_min, prepare). `prepare(sess, body)`
+                validates and returns a plan {target, detail, fn, fresh?, confirm?}; dash.py then enforces the
+                section, rate limit, step-up and typed confirmation and runs `fn` through the FAIL-CLOSED audit
+                (dash._owner_write). Nothing here decides access.
 
-The web service is a separate process from the bot worker, so live bot state (uptime, latency,
-in-memory error counts, log ring buffer) is NOT available here; Health reports what the database
-knows (DB round-trip, server counts, clone heartbeats). Live stats need the worker to publish a
-snapshot (Phase 1b).
+Every handler reuses the same modules/admin_*.py logic the Discord Owner panel uses.
+
+The web service is a separate process from the bot worker, so live bot state (uptime, latency, log ring
+buffer, the worker's config) comes from bot_status_snapshots, which the worker publishes every ~60 s
+(modules/admin_snapshot.py). The web only reads it and says how old it is.
 """
 import logging
 from datetime import date, datetime, timezone
@@ -52,6 +56,7 @@ async def health() -> dict:
     beats = await ai.clone_heartbeats()
     quiet = ai.quiet_clones(beats) if beats is not None else None
     now = datetime.now(timezone.utc)
+    live = await _live("main", now)
     return {"db_ping_ms": None if ping is None else round(ping, 1),
             "servers": counts,
             "clones_active": None if beats is None else len(beats),
@@ -59,8 +64,54 @@ async def health() -> dict:
                 {"clone_id": r["clone_id"], "bot_username": r.get("bot_username"), "last_heartbeat": r.get("last_heartbeat")}
                 for r in quiet],
             "heartbeat_stale_minutes": ai.HEARTBEAT_STALE_MIN,
-            "live_bot": None,          # uptime/latency/errors need the worker snapshot (Phase 1b)
+            "live_bot": live,          # None until the worker has published once
             "as_of": now}
+
+
+def _db():
+    from api import dash          # lazy: dash imports this module; tests fake dash.db
+    return dash.db
+
+
+async def _snapshot(key: str):
+    try:
+        return await _db().bot_snapshot_get(key)
+    except Exception:
+        logger.exception("owner: snapshot read failed (%s)", key)
+        return None
+
+
+def _freshness(row, now=None) -> dict:
+    from modules import admin_snapshot as sn
+    age = sn.age_seconds(row["updated_at"], now)
+    return {"age_s": round(age), "stale": age > sn.STALE_AFTER_S, "updated_at": row["updated_at"]}
+
+
+async def _live(key: str, now=None):
+    row = await _snapshot(key)
+    if not row:
+        return None
+    return {**{k: v for k, v in row["payload"].items() if k != "published_at"}, **_freshness(row, now)}
+
+
+async def logs(q) -> dict:
+    row = await _snapshot("logs")
+    if not row:
+        return {"lines": [], "available": False}
+    lines = row["payload"].get("lines", [])
+    level = (q("level") or "").upper()
+    if level in ("ERROR", "WARNING"):
+        lines = [l for l in lines if l.get("level") == level]
+    return {"lines": lines, "available": True, **_freshness(row)}
+
+
+async def config_view(q) -> dict:
+    row = await _snapshot("config")
+    if not row:
+        return {"entries": [], "available": False}
+    needle = (q("q") or "").strip().lower()[:40]
+    entries = [e for e in row["payload"].get("entries", []) if not needle or needle in e.get("name", "").lower()]
+    return {"entries": entries, "available": True, "source": "bot worker", **_freshness(row)}
 
 
 async def servers(q) -> dict:
@@ -120,6 +171,151 @@ async def expiries(q) -> dict:
     return {"rows": await am.upcoming_expiries(int(days))}
 
 
+# ───────────────────────── Phase 2: safe controls ─────────────────────────
+
+async def controls(q) -> dict:
+    from modules import admin_controls as ac
+    engaged = await ac.get_engaged_switches()
+    rows = [{"key": ac.MAINTENANCE, "label": "Maintenance mode (blocks every command for everyone)",
+             "kind": "maintenance", "engaged": ac.MAINTENANCE in engaged}]
+    rows += [{"key": k, "label": label, "kind": "feature", "engaged": k in engaged} for k, (label, _) in ac.FEATURES.items()]
+    rows += [{"key": k, "label": label, "kind": "opt_in", "engaged": k in engaged} for k, label in ac.OPT_IN.items()]
+    return {"switches": rows, "note": "Features: engaged means turned OFF. Opt-in: engaged means turned ON. The bot picks changes up within about 20 seconds."}
+
+
+async def blacklist(q) -> dict:
+    from modules import admin_controls as ac
+    return {"rows": await ac.list_blacklist(100)}
+
+
+async def premium(q) -> dict:
+    from modules import admin_controls as ac
+    return {"rows": await ac.list_premium(100)}
+
+
+async def feedback(q) -> dict:
+    rows = await _db().get_discord_user_feedback(50)
+    return {"rows": [{**r, "message": str(r.get("message") or "")[:1000]} for r in rows]}
+
+
+def _owner_ids() -> set:
+    import config
+    return set(config.DASH_OWNER_IDS) | set(config.DISCORD_CLONE_ADMIN_IDS) | set(config.DISCORD_OWNER_BROADCAST_IDS)
+
+
+def _actor(sess) -> int:
+    return int(sess["user"]["id"])
+
+
+def _clean_reason(raw) -> str:
+    return "".join(ch for ch in str(raw or "") if ch.isprintable())[:300].strip()
+
+
+def _flag(body, key):
+    v = body.get(key)
+    return v if isinstance(v, bool) else None
+
+
+async def prep_switch(sess, body) -> dict:
+    from modules import admin_controls as ac
+    key, engaged = body.get("switch"), _flag(body, "engaged")
+    if not isinstance(key, str) or engaged is None or (key != ac.MAINTENANCE and key not in ac.FEATURES and key not in ac.OPT_IN):
+        return {"_error": (422, "Unknown switch.")}
+    plan = {"target": key, "detail": {"engaged": engaged},
+            "fn": lambda: _do_switch(ac, key, engaged, _actor(sess))}
+    if engaged and key == ac.MAINTENANCE:
+        plan.update(fresh=True, confirm="MAINTENANCE")      # takes the whole bot offline for users
+    elif engaged and key in ac.OPT_IN:
+        plan.update(fresh=True, confirm="OPEN")             # opens a restricted feature to everyone
+    return plan
+
+
+async def _do_switch(ac, key, engaged, by):
+    await ac.set_switch(key, engaged, by)
+    return {"switch": key, "engaged": engaged}
+
+
+async def prep_blacklist_add(sess, body) -> dict:
+    from modules import admin_controls as ac
+    kind, tid = body.get("kind"), _snowflake(str(body.get("target_id") or ""))
+    if kind not in ("user", "guild") or tid is None:
+        return {"_error": (422, "Pick user or server and give a full id.")}
+    if kind == "user" and tid in _owner_ids():
+        return {"_error": (422, "You can't blacklist an owner.")}
+    reason = _clean_reason(body.get("reason"))
+    return {"target": f"{kind}:{tid}", "detail": {"has_reason": bool(reason)},
+            "fn": lambda: _do_bl_add(ac, kind, tid, reason, _actor(sess))}
+
+
+async def _do_bl_add(ac, kind, tid, reason, by):
+    await ac.add_blacklist(kind, tid, reason, by)
+    return {"kind": kind, "target_id": tid}
+
+
+async def prep_blacklist_remove(sess, body) -> dict:
+    from modules import admin_controls as ac
+    kind, tid = body.get("kind"), _snowflake(str(body.get("target_id") or ""))
+    if kind not in ("user", "guild") or tid is None:
+        return {"_error": (422, "Pick user or server and give a full id.")}
+    async def fn():
+        return {"removed": bool(await ac.remove_blacklist(kind, tid))}
+    return {"target": f"{kind}:{tid}", "fn": fn}
+
+
+async def prep_premium_revoke(sess, body) -> dict:
+    from modules import admin_controls as ac, admin_inspect as ai
+    gid = _snowflake(str(body.get("guild_id") or ""))
+    ok, clone = ai.parse_clone(str(body.get("clone") or ""))
+    if gid is None or not ok:
+        return {"_error": (422, "Give a full server id (and a clone number, or leave it empty for the main bot).")}
+    async def fn():
+        return {"revoked": bool(await ac.revoke_premium(gid, clone))}
+    return {"target": f"{gid}/{clone or 'main'}", "fn": fn, "fresh": True, "confirm": "REVOKE"}
+
+
+async def prep_announce(sess, body) -> dict:
+    from utils import dash_schema as S
+    db = _db()
+    clean, err = S.validate_dropbox(body)
+    if err:
+        return {"_error": (422, err)}
+    recipients = []
+    if clean["audience"] != "all" or clean["push_dm"]:
+        recipients = await db.dropbox_resolve_recipients(clean["audience"], clean["min_members"], clean["target_guild_id"])
+        if not recipients:
+            return {"_error": (422, "No servers match that audience, so nobody would receive it.")}
+    async def fn():
+        mid = await db.dropbox_create(clean["title"], clean["body"], clean["kind"], clean["announce"],
+                                      str(sess["user"]["id"]), clean["expires_hours"], clean["audience"],
+                                      clean["min_members"], clean["target_guild_id"], clean["push_dm"])
+        queued = await db.dropbox_enqueue(mid, recipients, clean["push_dm"]) if recipients else 0
+        return {"id": str(mid), "recipients": queued}
+    plan = {"target": clean["audience"], "detail": {"push_dm": clean["push_dm"], "announce": clean["announce"], "title_len": len(clean["title"])}, "fn": fn}
+    if clean["push_dm"]:
+        plan.update(fresh=True, confirm="SEND")             # mass DMs: step-up + typed confirm
+    return plan
+
+
+async def prep_announce_delete(sess, body) -> dict:
+    try:
+        mid = int(str(body.get("id")))
+    except ValueError:
+        return {"_error": (400, "Invalid message.")}
+    async def fn():
+        return {"deleted": bool(await _db().dropbox_delete(mid))}
+    return {"target": str(mid), "fn": fn}
+
+
+# action -> (section, per-minute limit, prepare). dash.py enforces section, rate, step-up, confirm, audit.
+WRITES = {
+    "owner_switch": ("controls", 20, prep_switch),
+    "owner_blacklist_add": ("blacklist", 20, prep_blacklist_add),
+    "owner_blacklist_remove": ("blacklist", 20, prep_blacklist_remove),
+    "owner_premium_revoke": ("premium", 10, prep_premium_revoke),
+    "owner_announce": ("broadcast", 5, prep_announce),
+    "owner_announce_delete": ("broadcast", 10, prep_announce_delete),
+}
+
 # action -> (section, handler). Read-only; the router rate-limits and serialises.
 ROUTES = {
     "owner_health": ("health", lambda q: health()),
@@ -128,4 +324,10 @@ ROUTES = {
     "owner_user": ("inspect", user),
     "owner_payments": ("money", payments),
     "owner_expiries": ("money", expiries),
+    "owner_logs": ("logs", logs),
+    "owner_config": ("config", config_view),
+    "owner_controls": ("controls", controls),
+    "owner_blacklist": ("blacklist", blacklist),
+    "owner_premium": ("premium", premium),
+    "owner_feedback": ("feedback", feedback),
 }

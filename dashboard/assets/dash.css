@@ -237,3 +237,4 @@ option{background:#06101a;color:#fff}option:disabled{color:#667}
 .owner-table th,.owner-table td{text-align:left;padding:.45rem .6rem;border-bottom:1px solid var(--faint);white-space:nowrap}
 .owner-bar{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:0 0 1rem}
 .owner-kv{display:grid;grid-template-columns:max-content 1fr;gap:.35rem 1.2rem;margin:0 0 1rem}.owner-kv dt{color:var(--muted)}.owner-kv dd{margin:0}
+.owner-warn{color:#f0a020;font-weight:600}

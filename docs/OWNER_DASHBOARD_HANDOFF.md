@@ -95,3 +95,33 @@ Every owner **write** must use `_owner_write`, a permission matrix test, a step-
 
 ## 8. Suggested first message for the next session
 "Read docs/OWNER_DASHBOARD_HANDOFF.md and OWNER_DASHBOARD_PLAN.md in github.com/businessboard30-ship-it/PRIME-BOT. Phase 0 and Phase 1a are pushed on two branches, unmerged. Start Phase 1b (worker status snapshot, schema bump to 61 with the guard test). I will give you a fine-grained token inline for pushes only."
+
+---
+
+## 9. Update: Phase 1b + Phase 2 (branch `feat/owner-phase1b-phase2`, STACKED on Phase 1a)
+
+Merge order is now: Phase 0 -> Phase 1a -> this branch. **This branch bumps `SCHEMA_VERSION` 60 -> 61** (new table `bot_status_snapshots`). After deploy, check Railway logs for `[db init] schema_version '60' != '61'` and the DDL pass. Guard test is pinned to 61 / `37a7b502bb7fcc7e`.
+
+### Phase 1b (worker snapshot)
+- `modules/admin_snapshot.py`: the **main bot only** (not clones) publishes every 60 s: key `main` (latency, uptime, memory, servers, cogs, loops, error counts), `logs` (last 200 WARNING+ lines), `config` (worker config via `config_entries`). Everything is passed through `mask_secrets` before the write. One failing key never blocks the others. Loop: `_owner_snapshot_loop` in `discord_bot/bot.py`.
+- Web: `owner_health` merges `live_bot` with `age_s` and `stale` (older than 180 s). New `owner_logs` (section `logs`) and `owner_config` (section `config`). Config comes from the **worker**, so the old "web env differs" caveat is gone; pages say "bot worker".
+- DB: `bot_snapshot_put` / `bot_snapshot_get`. Validated on real Postgres 16.
+
+### Phase 2 (safe controls), all through `dash_owner.WRITES` and the generic POST route in `dash.py`
+`WRITES[action] = (section, per-minute limit, prepare)`. `prepare(sess, body)` validates and returns a plan; `dash.py` enforces section, rate limit, step-up (`fresh`), typed confirm, and runs it via `_owner_write` (fail-closed audit). To add a write, add a `prepare_*` and a `WRITES` entry, plus tests.
+| Action | Section | Extra protection |
+|---|---|---|
+| `owner_switch` (kill switches) | controls | engaging `maintenance`: step-up + type `MAINTENANCE`; engaging opt-in `build_bot_public`: step-up + type `OPEN`; feature switches and all releases: audit only |
+| `owner_blacklist_add/remove` | blacklist | cannot blacklist an owner id (user kind); reason sanitised, 300 chars |
+| `owner_premium_revoke` | premium | step-up + type `REVOKE`. Granting premium is NOT on the web (Phase 3) |
+| `owner_announce` | broadcast | dashboard-only message: audit only; with `push_dm` (mass DM): step-up + type `SEND` |
+| `owner_announce_delete` | broadcast | audit only |
+Reads: `owner_controls`, `owner_blacklist`, `owner_premium`, `owner_feedback` (messages cut to 1000 chars). The audit viewer shipped in Phase 0.
+- **Gotcha:** a body field named `clone_id` is swallowed by the dashboard's global clone-context handling (404 "That bot isn't available"). Owner writes use `clone`.
+- Kill-switch and blacklist changes reach the bot within its 20 s cache TTL (the web process can't invalidate the worker's cache).
+- Announcements on the web reuse `validate_dropbox` and the existing dropbox DB functions; the old `dropbox_send` / `dropbox_delete` routes still exist and are NOT audited by `_owner_write`. Consider removing them from the owner UI path or auditing them (open decision).
+- Front end: new pages Controls, Blacklist, Premium, Announcements, Feedback, Logs, Config. Typed confirmations use `window.prompt` (no inline scripts, CSP-safe). A `stepup_required` reply tells the owner to use the Security page.
+- Tests: `tests/unit/test_dash_owner_phase1b_2.py` (40 tests: permission matrix for every read and write, step-up, typed confirm case-sensitivity, fail-closed audit, validation, owner-lockout guard, snapshot staleness, masking). Full suite: 1967 passed.
+
+### Still unverified end to end
+Real Discord sign-in, the step-up round trip in a real browser, a live worker publishing a snapshot to the Railway DB, and the front-end pages (only syntax-checked, not exercised in a browser).

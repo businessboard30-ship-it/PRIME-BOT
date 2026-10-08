@@ -42,6 +42,10 @@ Routes (all on /api/dash):
   POST {action: owner_signout_all}      -> OWNER: drop every dashboard session of this user (audited)
   GET  ?action=owner_audit[&before][&section] -> OWNER (section "audit"): owner audit trail, newest first
   GET  ?action=owner_health|owner_servers|owner_server|owner_user|owner_payments|owner_expiries -> OWNER, read-only (api/dash_owner.py)
+  GET  ?action=owner_logs|owner_config  -> OWNER: masked worker snapshot (logs / config), with its age
+  GET  ?action=owner_controls|owner_blacklist|owner_premium|owner_feedback -> OWNER, read-only
+  POST {action: owner_switch|owner_blacklist_add|owner_blacklist_remove|owner_premium_revoke|owner_announce|owner_announce_delete, ...}
+                                        -> OWNER writes (api/dash_owner.WRITES): section + rate limit, step-up and typed confirm where destructive, fail-closed audit
 Clone bots: every guild route also accepts `clone_id` (query or JSON body). The dashboard then
 acts as that clone: its own bot token for every Discord call, its own settings rows (clone_id),
 its own Premium state. Authorisation is unchanged and still checked against Discord with the
@@ -284,6 +288,11 @@ def _require_confirm(body: dict, expected: str) -> None:
 def _owner_routes() -> dict:
     from api import dash_owner
     return dash_owner.ROUTES
+
+
+def _owner_writes() -> dict:
+    from api import dash_owner
+    return dash_owner.WRITES
 
 
 _owner_hits: dict = {}
@@ -1046,6 +1055,21 @@ async def _route(method: str, query: dict, headers, body: dict):
         if "_error" in out:
             _fail(*out["_error"])
         raise _Reply(200, {"ok": True, **dash_owner.jsonable(out)})
+
+    if method == "POST" and action in _owner_writes():
+        section, limit, prepare = _owner_writes()[action]
+        _require_section(sess, section)
+        _owner_rate(sess, "write:" + action, limit, 60)
+        plan = await prepare(sess, body)
+        if "_error" in plan:
+            _fail(*plan["_error"])
+        if plan.get("fresh"):
+            _require_fresh(sess)
+        if plan.get("confirm"):
+            _require_confirm(body, plan["confirm"])
+        from api import dash_owner
+        result = await _owner_write(sess, section, action, plan["target"], plan["fn"], detail=plan.get("detail"))
+        raise _Reply(200, {"ok": True, **dash_owner.jsonable(result or {})})
 
     if method == "GET" and action == "guild":
         gid = await _authorised_guild(sess, q("guild_id"))

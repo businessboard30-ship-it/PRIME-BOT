@@ -381,6 +381,8 @@ class AnimeBotDiscord(commands.Bot):
 
         if self.clone_id is not None:
             self._heartbeat_loop.start()
+        else:
+            self._owner_snapshot_loop.start()   # clones never publish; the web shows the main bot
 
         # Catch-all for anything Phase 1's per-cog guild_only()/interaction_check
         # doesn't cover (e.g. a raw NoPrivateMessage from a command that has
@@ -1008,6 +1010,19 @@ class AnimeBotDiscord(commands.Bot):
         # join DM, instead of being permanently blocked by the claim row
         # from this membership (see db.claim_new_guild_handling).
         await db.clear_new_guild_claim(guild.id, self.clone_id)
+
+    @tasks.loop(seconds=60)
+    async def _owner_snapshot_loop(self):
+        """Main bot only: publishes live health / masked logs / masked config for the web owner area."""
+        try:
+            from modules import admin_snapshot
+            await admin_snapshot.publish(self, db)
+        except Exception:
+            logger.warning("[snapshot] loop tick failed", exc_info=True)
+
+    @_owner_snapshot_loop.before_loop
+    async def _before_owner_snapshot(self):
+        await self.wait_until_ready()
 
     @tasks.loop(minutes=5)
     async def _heartbeat_loop(self):
