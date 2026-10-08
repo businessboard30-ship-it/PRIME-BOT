@@ -49,7 +49,7 @@ jobs:
             "23 3 * * *")  GROUP=daily ;;
           esac
           case "${GROUP:-frequent}" in
-            frequent) EPS="cron_discord_announcements cron_discord_owner_broadcast" ;;
+            frequent) EPS="cron_discord_announcements cron_discord_owner_broadcast cron_dash_dropbox_dm" ;;
             hourly)   EPS="cron_ad_placement" ;;
             daily)    EPS="cron_expire_monetization cron_renew_yandex_search cron_cleanup_pending_payments" ;;
           esac

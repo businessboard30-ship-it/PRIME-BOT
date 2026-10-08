@@ -404,6 +404,7 @@ def validate_values(module: dict, values: Any, channels: Dict[str, set], roles: 
 
 DROPBOX_KINDS = ("info", "update", "warning", "maintenance")
 DROPBOX_TITLE_MAX, DROPBOX_BODY_MAX = 100, 2000
+DROPBOX_AUDIENCES = ("all", "premium", "min_members", "guild")   # who gets DM-pushed / sees a targeted message
 
 
 def validate_dropbox(raw: Any) -> Tuple[Optional[dict], Optional[str]]:
@@ -430,8 +431,35 @@ def validate_dropbox(raw: Any) -> Tuple[Optional[dict], Optional[str]]:
         if isinstance(hours, bool) or not isinstance(hours, (int, float)) or not 1 <= hours <= 24 * 90:
             return None, "Expiry must be between 1 hour and 90 days."
         hours = int(hours)
+    audience = str(raw.get("audience") or "all")
+    if audience not in DROPBOX_AUDIENCES:
+        return None, "Unknown audience."
+    min_members, target_guild = None, None
+    if audience == "min_members":
+        mm = raw.get("min_members")
+        if isinstance(mm, bool) or not isinstance(mm, (int, float)) or not 1 <= mm <= 10_000_000:
+            return None, "Minimum members must be between 1 and 10,000,000."
+        min_members = int(mm)
+    if audience == "guild":
+        gid = str(raw.get("target_guild_id") or "").strip()
+        if not gid.isdigit() or not 15 <= len(gid) <= 20:
+            return None, "Enter a valid server ID."
+        target_guild = int(gid)
     return {"title": title, "body": body, "kind": kind,
-            "announce": bool(raw.get("announce")), "expires_hours": hours}, None
+            "announce": bool(raw.get("announce")), "expires_hours": hours,
+            "push_dm": bool(raw.get("push_dm")), "audience": audience,
+            "min_members": min_members, "target_guild_id": target_guild}, None
+
+
+def format_dropbox_dm(title: str, body: str, kind: str) -> str:
+    """Discord DM text for a drop box message (Discord's limit is 2000 characters)."""
+    icon = {"info": "📢", "update": "✨", "warning": "⚠️", "maintenance": "🛠️"}.get(kind, "📢")
+    head = f"{icon} **{title}**\n\n"
+    tail = "\n\n_Sent from the PRIME BOT dashboard._"
+    room = 2000 - len(head) - len(tail)
+    if len(body) > room:
+        body = body[:max(0, room - 1)] + "…"
+    return head + body + tail
 
 
 # ───────────────────────── audit log ─────────────────────────

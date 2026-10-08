@@ -396,18 +396,28 @@
     var kind = h("select", { "aria-label": "Type" }, Object.keys(KIND_LABEL).map(function (k) { return h("option", { value: k, text: KIND_LABEL[k] }); }));
     var expiry = h("select", { "aria-label": "Expires" }, [["", "Never expires"], ["24", "In 1 day"], ["168", "In 7 days"], ["720", "In 30 days"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
     var ann = h("input", { type: "checkbox", id: "annchk" });
-    var send = h("button", { class: "btn primary", text: "Send to all admins" });
+    var aud = h("select", { "aria-label": "Audience" }, [["all", "Every dashboard admin"], ["premium", "Premium servers only"], ["min_members", "Servers over N members"], ["guild", "One server"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var minM = h("input", { type: "number", min: 1, max: 10000000, placeholder: "Minimum members", "aria-label": "Minimum members", style: "display:none" });
+    var gid = h("input", { type: "text", inputmode: "numeric", maxlength: 20, placeholder: "Server ID", "aria-label": "Server ID", autocomplete: "off", style: "display:none" });
+    var push = h("input", { type: "checkbox", id: "pushchk" });
+    function syncAud() { minM.style.display = aud.value === "min_members" ? "" : "none"; gid.style.display = aud.value === "guild" ? "" : "none"; }
+    aud.addEventListener("change", syncAud);
+    var send = h("button", { class: "btn primary", text: "Send" });
     send.addEventListener("click", function () {
       if (!title.value.trim() || !body.value.trim()) return toast("Add a title and a message.", "bad");
-      if (!confirm("Send this to every admin who uses the dashboard?")) return;
+      var who = aud.value === "all" ? "every admin who uses the dashboard" : "the owners of the matching servers";
+      if (!confirm("Send this to " + who + (push.checked ? " and DM it to them" : "") + "?")) return;
       send.classList.add("busy");
-      api("dropbox_send", {}, { title: title.value, body: body.value, kind: kind.value, announce: ann.checked, expires_hours: expiry.value ? Number(expiry.value) : null })
-        .then(function () { toast("Sent to the drop box", "ok"); title.value = body.value = ""; ann.checked = false; onSent(); })
+      api("dropbox_send", {}, { title: title.value, body: body.value, kind: kind.value, announce: ann.checked,
+        expires_hours: expiry.value ? Number(expiry.value) : null, push_dm: push.checked, audience: aud.value,
+        min_members: aud.value === "min_members" ? Number(minM.value) : null, target_guild_id: aud.value === "guild" ? gid.value.trim() : null })
+        .then(function (j) { toast(j.recipients ? "Sent to " + j.recipients + " server owner" + (j.recipients === 1 ? "" : "s") : "Sent to the drop box", "ok"); title.value = body.value = ""; ann.checked = push.checked = false; onSent(); })
         .catch(function (e) { toast(e.message, "bad"); }).then(function () { send.classList.remove("busy"); });
     });
     return h("div", { class: "card composer rv" }, h("h2", { text: "Send a message" }),
-      h("p", { class: "muted", text: "Appears in every admin's drop box. Tick the banner option to also show it at the top of the panel until they dismiss it." }),
-      title, body, h("div", { class: "row" }, kind, expiry, h("label", { class: "chk", for: "annchk" }, ann, " Also show as banner")), send);
+      h("p", { class: "muted", text: "Appears in the drop box. Pick an audience to target server owners, and tick DM to also message them on Discord. Targeted messages reach server owners only." }),
+      title, body, h("div", { class: "row" }, kind, expiry, h("label", { class: "chk", for: "annchk" }, ann, " Also show as banner")),
+      h("div", { class: "row" }, aud, minM, gid, h("label", { class: "chk", for: "pushchk" }, push, " Also DM server owners")), send);
   }
 
   function renderInbox() {
@@ -434,6 +444,15 @@
           if (!m.read) actions.appendChild(h("button", { class: "btn sm ghost", text: "Mark read", onclick: function () {
             api("dropbox_read", {}, { id: m.id }).then(load).catch(function (e) { toast(e.message, "bad"); });
           } }));
+          if (S.isOwner) {
+            var dl = h("small", { class: "muted" });
+            actions.appendChild(h("button", { class: "btn sm ghost", text: "Delivery", onclick: function () {
+              api("dropbox_delivery", { id: m.id }).then(function (d) {
+                dl.textContent = " " + (d.reads || 0) + " read, " + (d.sent || 0) + " DM sent, " + (d.pending || 0) + " pending, " + (d.failed || 0) + " failed (closed DMs)";
+              }).catch(function (e) { toast(e.message, "bad"); });
+            } }));
+            actions.appendChild(dl);
+          }
           if (S.isOwner) actions.appendChild(h("button", { class: "btn sm ghost danger", text: "Delete for everyone", onclick: function () {
             if (!confirm("Delete this message for every admin?")) return;
             api("dropbox_delete", {}, { id: m.id }).then(load).catch(function (e) { toast(e.message, "bad"); });
