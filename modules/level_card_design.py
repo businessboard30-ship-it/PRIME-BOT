@@ -34,7 +34,8 @@ BACKGROUNDS = {
     "forest": ("#0b2a1c", "#1f5a3a", "Forest"),
     "royal": ("#1a1040", "#3d2a8f", "Royal"),
 }
-DEFAULT_DESIGN = {"background": "slate", "accent": "#57F287", "font": "classic", "shape": "circle", "bio": ""}
+DEFAULT_DESIGN = {"background": "slate", "accent": "#57F287", "font": "classic", "shape": "circle", "bio": "",
+                  "custom_bg": False, "logo": False}
 
 
 def options() -> dict:
@@ -53,6 +54,11 @@ def validate(raw) -> tuple:
             if not isinstance(v, str) or v not in allowed:
                 return None, f"Unknown {key}."
             d[key] = v
+    for key in ("custom_bg", "logo"):
+        if key in raw:
+            if not isinstance(raw[key], bool):
+                return None, f"{key} must be true or false."
+            d[key] = raw[key]
     if "accent" in raw:
         v = raw["accent"]
         if not isinstance(v, str) or not _HEX.match(v):
@@ -110,12 +116,44 @@ def placeholder_avatar(accent: str = "#57F287") -> bytes:
     return out.getvalue()
 
 
+def _darken_text_zone(bg: Image.Image) -> Image.Image:
+    """Uploaded backgrounds get a dark panel behind the text so white text stays readable."""
+    from PIL import ImageStat
+    x0, y0, x1, y1 = card_assets_zone()
+    mean = ImageStat.Stat(bg.crop((x0, y0, x1, y1)).convert("L")).mean[0]
+    alpha = int(255 * min(0.85, 0.40 + max(0.0, mean - 90) / 255))
+    layer = Image.new("RGBA", bg.size, (0, 0, 0, 0))
+    ImageDraw.Draw(layer).rounded_rectangle((x0, 14, x1, lc.CARD_HEIGHT - 14), radius=18, fill=(0, 0, 0, alpha))
+    return Image.alpha_composite(bg.convert("RGBA"), layer).convert("RGB")
+
+
+def card_assets_zone():
+    from modules import card_assets
+    return card_assets.TEXT_ZONE
+
+
 def render_custom_level_card(avatar_bytes: bytes, username: str, new_level: int, cur_xp: int, need_xp: int,
-                             design: dict) -> bytes:
+                             design: dict, bg_png: Optional[bytes] = None, logo_png: Optional[bytes] = None) -> bytes:
     d, _ = validate(design or {})
     d = d or dict(DEFAULT_DESIGN)
     top, bottom, _label = BACKGROUNDS[d["background"]]
-    bg = _gradient(top, bottom)
+    bg = None
+    if bg_png and d.get("custom_bg"):
+        try:
+            bg = _darken_text_zone(Image.open(io.BytesIO(bg_png)).convert("RGB").resize((lc.CARD_WIDTH, lc.CARD_HEIGHT)))
+        except Exception:
+            bg = None
+    if bg is None:
+        bg = _gradient(top, bottom)
+    if logo_png and d.get("logo"):
+        try:
+            from modules import card_assets
+            lg = Image.open(io.BytesIO(logo_png)).convert("RGBA")
+            x0, y0, x1, y1 = card_assets.LOGO_BOX
+            lg.thumbnail((x1 - x0, y1 - y0), Image.LANCZOS)
+            bg.paste(lg, (x0 + (x1 - x0 - lg.width) // 2, y0 + (y1 - y0 - lg.height) // 2), lg)
+        except Exception:
+            pass
     draw = ImageDraw.Draw(bg)
     accent = lc._hex_to_rgb(d["accent"])
     draw.rectangle([(0, 0), (14, lc.CARD_HEIGHT)], fill=accent)
@@ -154,13 +192,14 @@ def render_custom_level_card(avatar_bytes: bytes, username: str, new_level: int,
     return out.getvalue()
 
 
-def preview_data_url(design: dict) -> str:
-    png = render_custom_level_card(placeholder_avatar(design.get("accent", "#57F287")), "Your name", 7, 40, 100, design)
+def preview_data_url(design: dict, bg_png: Optional[bytes] = None, logo_png: Optional[bytes] = None) -> str:
+    png = render_custom_level_card(placeholder_avatar(design.get("accent", "#57F287")), "Your name", 7, 40, 100, design,
+                                   bg_png, logo_png)
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
-async def preview_data_url_async(design: dict) -> str:
-    return await asyncio.to_thread(preview_data_url, design)
+async def preview_data_url_async(design: dict, bg_png: Optional[bytes] = None, logo_png: Optional[bytes] = None) -> str:
+    return await asyncio.to_thread(preview_data_url, design, bg_png, logo_png)
 
 
 async def design_for_user(db, uid, now=None) -> Optional[dict]:
@@ -177,3 +216,20 @@ async def design_for_user(db, uid, now=None) -> Optional[dict]:
     except Exception:
         return None
     return d
+
+
+async def card_for_user(db, uid, now=None) -> Optional[tuple]:
+    """(design, background_png|None, logo_png|None) for the bot, or None. Only APPROVED assets are ever returned."""
+    d = await design_for_user(db, uid, now)
+    if d is None:
+        return None
+    bg = logo = None
+    for kind, flag in (("background", "custom_bg"), ("logo", "logo")):
+        if d.get(flag):
+            a = await db.card_asset_get(str(uid), kind)
+            if a and a.get("status") == "approved":
+                if kind == "background":
+                    bg = bytes(a["data"])
+                else:
+                    logo = bytes(a["data"])
+    return d, bg, logo

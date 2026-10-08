@@ -58,6 +58,8 @@ Routes (all on /api/dash):
   GET  ?action=member_card -> own saved custom level-up card design, editor options, plan access, weekly AI chat meter (B4)
   POST ?action=member_card_preview {design} -> data-URL PNG on a placeholder avatar; open to every signed-in user, stores nothing
   POST ?action=member_card_save {design} -> saves for the SESSION user; 402 + checkout_url without an effective card_plan
+  POST ?action=member_card_asset {kind: background|logo, data: base64} -> card plan only; validated, re-encoded, AI-moderated (approved/pending/rejected)
+  POST ?action=member_card_asset_delete {kind} -> removes the member's own upload
   POST ?action=checkout_user {product} -> any signed-in user: a /pay checkout link for the SESSION user (webhook grants, never this call)
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
@@ -93,6 +95,7 @@ DISCORD_API = "https://discord.com/api/v10"
 AUTHORIZE_URL = "https://discord.com/api/oauth2/authorize"
 TOKEN_URL = "https://discord.com/api/oauth2/token"
 MAX_BODY = 64 * 1024
+MAX_UPLOAD_BODY = 3 * 1024 * 1024      # only member_card_asset, and only with an Authorization header
 CLONE_ID = None            # main bot. Per-request clone context lives in _BOT below.
 MAX_CLONE_SCAN = 60
 
@@ -1080,7 +1083,8 @@ async def _route(method: str, query: dict, headers, body: dict):
 
     if method == "POST" and action in _member_writes():
         uid = _require_member(sess)
-        _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60)}.get(action, (30, 60)))
+        _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
+                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300)}.get(action, (30, 60)))
         out = await _member_writes()[action](uid, body, db)
         if out.get("_status"):
             raise _Reply(out["_status"], {"ok": False, "message": out.get("message") or "Something went wrong.",
@@ -1491,7 +1495,8 @@ class handler(BaseHTTPRequestHandler):
         if method == "POST":
             try:
                 n = int(self.headers.get("Content-Length", 0))
-                if n > MAX_BODY:
+                big = query.get("action", [""])[0] == "member_card_asset" and bool(self.headers.get("Authorization"))
+                if n > (MAX_UPLOAD_BODY if big else MAX_BODY):
                     raise ValueError
                 body = json.loads(self.rfile.read(n) or b"{}")
                 if not isinstance(body, dict):
