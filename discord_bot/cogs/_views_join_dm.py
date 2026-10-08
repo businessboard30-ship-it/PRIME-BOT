@@ -328,7 +328,7 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         from utils.dash_links import dashboard_url, dashboard_supported
         link_bits = []
         if dashboard_supported(clone_id):
-            link_bits.append(f"🖥️ [Open dashboard]({dashboard_url(guild_id)})")
+            link_bits.append(f"🖥️ [Open dashboard]({dashboard_url(guild_id, clone_id)})")
         link_bits += [f"📖 [Read bot manual]({_manual_base}/manual{'/' if _cfg.STABLE_BASE_URL else ''}#moderation)"]
         if DISCORD_SUPPORT_SERVER_INVITE:
             link_bits.append(f"🆘 [Join our support server]({DISCORD_SUPPORT_SERVER_INVITE})")

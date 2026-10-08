@@ -327,7 +327,7 @@ def _site_links(guild_id: Optional[int] = None, clone_id: Optional[int] = None) 
     bits = []
     from utils.dash_links import dashboard_url, dashboard_supported
     if guild_id and dashboard_supported(clone_id):
-        bits.append(f"🖥️ [Web dashboard]({dashboard_url(guild_id)})")
+        bits.append(f"🖥️ [Web dashboard]({dashboard_url(guild_id, clone_id)})")
     if WEBSITE_URL:
         bits.append(f"🌐 [Website]({WEBSITE_URL})")
     if DISCORD_SUPPORT_SERVER_INVITE:

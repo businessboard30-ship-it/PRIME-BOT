@@ -123,3 +123,77 @@ def test_logout(env):
 def test_login_needs_config(env, monkeypatch):
     monkeypatch.setattr(config, "DASH_PAGES_URL", "")
     assert call("GET", {"action": "login"}, token=None)[0] == 503
+
+
+# --- clone bots ----------------------------------------------------------------
+
+def _clone_env(env, monkeypatch, status="active"):
+    fake, members = env
+    seen = {"tokens": []}
+
+    async def get_clone(cid):
+        return {"clone_id": cid, "status": status, "bot_username": "Cloney", "bot_token_encrypted": "enc"} if cid == 7 else None
+    async def list_clones():
+        return [{"clone_id": 7, "bot_username": "Cloney"}]
+    fake.get_discord_clone, fake.list_active_discord_clones = get_clone, list_clones
+    import types, sys
+    mod = types.ModuleType("utils.crypto")
+    mod.secret_manager = types.SimpleNamespace(decrypt=lambda c: "CLONE-TOKEN")
+    monkeypatch.setitem(sys.modules, "utils.crypto", mod)
+    dash._clone_rows.clear()
+    orig = dash._bot_get
+
+    async def spy(path):
+        seen["tokens"].append(dash._token())
+        return await orig(path)
+    monkeypatch.setattr(dash, "_bot_get", spy)
+    return seen
+
+
+def test_clone_requests_use_the_clone_token_and_clone_id(env, monkeypatch):
+    fake, _ = env
+    seen = _clone_env(env, monkeypatch)
+    st, p, _ = call("POST", body={"action": "save", "guild_id": str(GUILD), "module": "welcome", "clone_id": 7,
+                                  "values": {"enabled": True}})
+    assert st == 200
+    assert fake.saved[-1][1] == 7
+    assert set(seen["tokens"]) == {"CLONE-TOKEN"}
+
+
+def test_main_bot_requests_still_use_main_token_and_none(env, monkeypatch):
+    fake, _ = env
+    seen = _clone_env(env, monkeypatch)
+    st, _, _ = call("POST", body={"action": "save", "guild_id": str(GUILD), "module": "welcome", "values": {"enabled": True}})
+    assert st == 200 and fake.saved[-1][1] is None
+    assert config.DISCORD_BOT_TOKEN in seen["tokens"] or set(seen["tokens"]) == {dash._token()}
+    assert "CLONE-TOKEN" not in seen["tokens"]
+
+
+def test_unknown_or_inactive_clone_is_rejected(env, monkeypatch):
+    _clone_env(env, monkeypatch)
+    assert call("GET", {"action": "guild", "guild_id": str(GUILD), "clone_id": "99"})[0] == 404
+    assert call("GET", {"action": "guild", "guild_id": str(GUILD), "clone_id": "abc"})[0] == 400
+    dash._clone_rows.clear()
+    _clone_env(env, monkeypatch, status="inactive")
+    assert call("GET", {"action": "guild", "guild_id": str(GUILD), "clone_id": "7"})[0] == 404
+
+
+def test_clone_still_requires_manage_server(env, monkeypatch):
+    _, members = env
+    _clone_env(env, monkeypatch)
+    members["6"] = {"roles": ["501"]}                      # plain member
+    assert call("GET", {"action": "guild", "guild_id": str(GUILD), "clone_id": "7"})[0] == 403
+
+
+def test_clone_billing_is_disabled(env, monkeypatch):
+    _clone_env(env, monkeypatch)
+    st, p, _ = call("GET", {"action": "billing", "guild_id": str(GUILD), "clone_id": "7"})
+    assert st == 200 and p["plans"] == [] and p["clone"] is True
+    st, p, _ = call("POST", body={"action": "checkout", "guild_id": str(GUILD), "clone_id": 7, "plan": "premium"})
+    assert st == 409
+
+
+def test_me_lists_clones_present_in_server(env, monkeypatch):
+    _clone_env(env, monkeypatch)
+    st, p, _ = call("GET", {"action": "me"})
+    assert st == 200 and p["servers"][0]["clones"] == [{"clone_id": 7, "name": "Cloney"}]

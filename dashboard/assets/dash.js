@@ -6,7 +6,7 @@
   var KEY = "primebot.dash.session";
   var NS = "http://www.w3.org/2000/svg";
   var app = document.getElementById("app"), hdrRight = document.getElementById("hdrRight"), menuBtn = document.getElementById("menuBtn");
-  var S = { sid: null, user: null, servers: null, schema: null, guild: null, meta: null, orig: {}, draft: {}, mod: null, premium: false, errors: {}, unread: 0, isOwner: false, inbox: null };
+  var S = { clone: null, sid: null, user: null, servers: null, schema: null, guild: null, meta: null, orig: {}, draft: {}, mod: null, premium: false, errors: {}, unread: 0, isOwner: false, inbox: null };
 
   /* ---------- tiny DOM helpers ---------- */
   function h(tag, attrs) {
@@ -69,9 +69,10 @@
   function api(action, params, body) {
     var url = API + "?action=" + encodeURIComponent(action), k;
     for (k in (params || {})) url += "&" + k + "=" + encodeURIComponent(params[k]);
+    if (S.clone && action !== "me") url += "&clone_id=" + encodeURIComponent(S.clone);
     var opts = { headers: {}, cache: "no-store" };
     if (S.sid) opts.headers.Authorization = "Bearer " + S.sid;
-    if (body) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(Object.assign({ action: action }, body)); }
+    if (body) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(Object.assign({ action: action }, S.clone && action !== "me" ? { clone_id: S.clone } : {}, body)); }
     return fetch(url, opts).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
         if (r.status === 401) { signedOut("Your session expired. Sign in again."); throw new Error("401"); }
@@ -125,6 +126,8 @@
     renderHeader();
   }
 
+  function gpath(gid, rest) { return "#/" + (S.clone ? "c/" + S.clone + "/" : "") + "g/" + gid + (rest ? "/" + rest : ""); }
+
   /* ---------- servers ---------- */
   function renderServers() {
     document.body.classList.remove("menu"); renderHeader();
@@ -145,8 +148,15 @@
           h("span", { class: "tag" }, h("i", { class: "dot " + (g.bot_present ? "on live" : "off") }), g.bot_present ? "Bot online" : "Bot not added"))),
           h("span", { class: "btn sm " + (g.bot_present ? "primary" : "ghost"), text: g.bot_present ? "Manage" : "Add the bot" })];
         var el = g.bot_present
-          ? h("a", { class: "card srv rv", style: "--i:" + i, href: "#/g/" + g.id }, inner)
+          ? h("a", { class: "card srv rv", style: "--i:" + i, href: gpath(g.id) }, inner)
           : h("a", { class: "card srv rv", style: "--i:" + i, href: CFG.INVITE_URL + "&guild_id=" + g.id + "&disable_guild_select=true", target: "_blank", rel: "noopener" }, inner);
+        if (g.clones && g.clones.length) {
+          var chips = h("div", { class: "clonechips" }, h("small", { class: "muted", text: "Custom bots here:" }));
+          g.clones.forEach(function (c) {
+            chips.appendChild(h("a", { class: "btn sm ghost", href: "#/c/" + c.clone_id + "/g/" + g.id, text: c.name }));
+          });
+          el = h("div", { class: "srvwrap" }, el, chips);
+        }
         grid.appendChild(el);
       });
     };
@@ -161,9 +171,9 @@
   function statusOf(id) { var s = S.guild && S.guild.status ? S.guild.status[id] : null; return s === true ? "on" : s === false ? "off" : ""; }
 
   function loadGuild(gid) {
-    if (S.guild && S.guild.id === gid && S.meta) return Promise.resolve();
+    if (S.guild && S.guild.id === gid && S.guild.clone === S.clone && S.meta) return Promise.resolve();
     return Promise.all([api("guild", { guild_id: gid }), api("meta", { guild_id: gid })]).then(function (r) {
-      S.guild = r[0].guild; S.meta = r[1]; S.premium = !!S.guild.premium;
+      S.guild = r[0].guild; S.guild.clone = S.clone; S.meta = r[1]; S.premium = !!S.guild.premium;
     });
   }
   function renderShell(gid, modId) {
@@ -171,20 +181,20 @@
     var nav = h("nav", { class: "nav", "aria-label": "Settings" });
     var search = h("input", { type: "text", class: "search", placeholder: "Search settings", "aria-label": "Search settings", autocomplete: "off" });
     var side = h("aside", { class: "side", id: "side" },
-      h("div", { class: "srvhead" }, avatar(S.guild.icon_url, S.guild.name), h("div", null, h("b", { text: S.guild.name }), h("a", { href: "#/", text: "Switch server" }))),
+      h("div", { class: "srvhead" }, avatar(S.guild.icon_url, S.guild.name), h("div", null, h("b", { text: S.guild.name }), S.clone && S.guild.bot_name ? h("small", { class: "muted", text: "via " + S.guild.bot_name }) : null, h("a", { href: "#/", text: "Switch server" }))),
       search, nav);
     function link(href, name, label, current, mod) {
       return h("a", { href: href, "aria-current": current ? "page" : null, "data-q": (label + " " + ((mod && mod.desc) || "")).toLowerCase() },
         icon(name), h("span", { text: label }), mod && statusOf(mod.id) ? h("i", { class: "dot " + statusOf(mod.id), title: statusOf(mod.id) === "on" ? "Enabled" : "Disabled" }) : null);
     }
-    nav.appendChild(link("#/g/" + gid, "home", "Overview", !modId));
-    nav.appendChild(link("#/g/" + gid + "/billing", "star", "Premium & billing", modId === "billing"));
-    nav.appendChild(link("#/g/" + gid + "/audit", "scroll", "Audit log", modId === "audit"));
+    nav.appendChild(link(gpath(gid), "home", "Overview", !modId));
+    nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
+    nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
       if (!list.length) return;
       nav.appendChild(h("div", { class: "grp", text: cat }));
-      list.forEach(function (m) { nav.appendChild(link("#/g/" + gid + "/" + m.id, m.icon, m.title, m.id === modId, m)); });
+      list.forEach(function (m) { nav.appendChild(link(gpath(gid, m.id), m.icon, m.title, m.id === modId, m)); });
     });
     search.addEventListener("input", function () {
       var q = search.value.trim().toLowerCase();
@@ -209,7 +219,7 @@
     mods().forEach(function (m, i) {
       var isToggle = m.fields.length && m.fields[0].key === "enabled" && !m.no_quick;
       var row = h("div", { class: "card q rv", style: "--i:" + Math.min(i, 12) }, icon(m.icon),
-        h("div", { class: "grow" }, h("a", { href: "#/g/" + gid + "/" + m.id, text: m.title }), h("small", { text: m.desc })));
+        h("div", { class: "grow" }, h("a", { href: gpath(gid, m.id), text: m.title }), h("small", { text: m.desc })));
       if (isToggle) {
         var sw = h("button", { class: "switch", role: "switch", "aria-label": m.title, "aria-checked": String(statusOf(m.id) === "on") });
         sw.addEventListener("click", function () {
@@ -217,11 +227,11 @@
           api("save", {}, { guild_id: gid, module: m.id, values: { enabled: next } }).then(function (r) {
             S.guild.status[m.id] = !!r.values.enabled; sw.setAttribute("aria-checked", String(!!r.values.enabled));
             toast(m.title + (r.values.enabled ? " is on" : " is off"), "ok");
-            var d = document.querySelector('.nav a[href="#/g/' + gid + "/" + m.id + '"] .dot'); if (d) d.className = "dot " + (r.values.enabled ? "on" : "off");
+            var d = document.querySelector('.nav a[href="' + gpath(gid, m.id) + '"] .dot'); if (d) d.className = "dot " + (r.values.enabled ? "on" : "off");
           }).catch(function (e) { toast(e.message, "bad"); }).then(function () { sw.disabled = false; });
         });
         row.appendChild(sw);
-      } else row.appendChild(h("a", { class: "btn sm ghost", href: "#/g/" + gid + "/" + m.id, text: "Open" }));
+      } else row.appendChild(h("a", { class: "btn sm ghost", href: gpath(gid, m.id), text: "Open" }));
       quick.appendChild(row);
     });
     add(main, [
@@ -356,7 +366,7 @@
 
     add(main, [
       h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: m.category }), h("h1", { text: m.title }), h("p", { class: "muted", text: m.desc })),
-        h("a", { class: "btn sm ghost", href: "#/g/" + gid, text: "Overview" })),
+        h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
       m.note ? h("div", { class: "notice rv" }, m.note) : null,
       !S.premium && m.fields.some(function (f) { return f.premium || f.premium_values; })
         ? h("div", { class: "notice rv" }, "Some options here are Premium. ", h("a", { href: CFG.SITE_URL + "/pricing/", target: "_blank", rel: "noopener", text: "See plans" })) : null,
@@ -549,6 +559,10 @@
         h("div", { class: "card stat rv" }, h("b", { text: r.premium ? "Active" : "Free" }), h("span", { text: "Premium" })),
         h("div", { class: "card stat rv" }, h("b", { text: until || "–" }), h("span", { text: r.premium ? "Current period ends" : "No active plan" })),
         h("div", { class: "card stat rv" }, h("b", { text: r.card_pack || r.premium ? "Unlocked" : "Locked" }), h("span", { text: "Welcome card themes" }))));
+      if (r.clone) {
+        body.appendChild(h("div", { class: "notice rv" }, "This custom bot's Premium is managed by the bot's owner, so there is no checkout here. Ask them (or use the bot's own /premium command in Discord) to change plans."));
+        return;
+      }
       var grid = h("div", { class: "plans" });
       r.plans.forEach(function (p, i) {
         var btn = h("button", { class: "btn primary", text: p.owned ? "Owned" : p.included ? "Included with Premium" : "Choose " + p.label.replace("Premium: ", ""), disabled: p.owned || p.included });
@@ -609,18 +623,20 @@
   /* ---------- router ---------- */
   function route() {
     document.body.classList.remove("menu"); S.mod = null;
-    var hash = location.hash || "#/", m = hash.match(/^#\/g\/(\d+)(?:\/([a-z]+))?$/);
+    var hash = location.hash || "#/", m = hash.match(/^#\/(?:c\/(\d+)\/)?g\/(\d+)(?:\/([a-z_]+))?$/);
     if (!S.sid) return renderLogin();
     showAnnouncements();
-    if (hash === "#/inbox") { S.guild = null; return renderInbox(); }
-    if (hash === "#/tiers") { S.guild = null; return renderTiers(); }
-    if (!m) { S.guild = null; return renderServers(); }
-    var gid = m[1], modId = m[2];
+    if (hash === "#/inbox") { S.guild = null; S.clone = null; return renderInbox(); }
+    if (hash === "#/tiers") { S.guild = null; S.clone = null; return renderTiers(); }
+    if (!m) { S.guild = null; S.clone = null; return renderServers(); }
+    var clone = m[1] || null;
+    if (clone !== S.clone) { S.clone = clone; S.guild = null; S.meta = null; }
+    var gid = m[2], modId = m[3];
     app.textContent = ""; app.appendChild(h("main", { id: "main", class: "center" }, h("div", { class: "boot", role: "status" }, "Loading server", h("span", { class: "dots" }))));
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      if (modId && modId !== "audit" && modId !== "billing" && !mod) { location.hash = "#/g/" + gid; return; }
+      if (modId && modId !== "audit" && modId !== "billing" && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId === "audit") renderAudit(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
       window.scrollTo(0, 0);

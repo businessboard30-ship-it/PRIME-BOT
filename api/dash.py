@@ -34,10 +34,15 @@ Routes (all on /api/dash):
   POST {action: dropbox_send, ...}      -> OWNER ONLY (config.DISCORD_OWNER_BROADCAST_IDS)
   POST {action: dropbox_delete, id}     -> OWNER ONLY
   GET  ?action=dropbox_delivery&id      -> OWNER ONLY: DM sent/failed/pending counts + reads
-Scope: the main PRIME BOT (clone_id None). Clone bots are not covered yet.
+Clone bots: every guild route also accepts `clone_id` (query or JSON body). The dashboard then
+acts as that clone: its own bot token for every Discord call, its own settings rows (clone_id),
+its own Premium state. Authorisation is unchanged and still checked against Discord with the
+clone's token. Billing/checkout stay main-bot only (clone owners run their own monetisation).
+  GET  ?action=me   -> each server also lists `clones` (active clone bots present in it)
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import secrets as _secrets
@@ -57,13 +62,26 @@ DISCORD_API = "https://discord.com/api/v10"
 AUTHORIZE_URL = "https://discord.com/api/oauth2/authorize"
 TOKEN_URL = "https://discord.com/api/oauth2/token"
 MAX_BODY = 64 * 1024
-CLONE_ID = None
+CLONE_ID = None            # main bot. Per-request clone context lives in _BOT below.
+MAX_CLONE_SCAN = 60
+
+# (clone_id, bot_token) for the current request; (None, None) means the main bot.
+_BOT = contextvars.ContextVar("dash_bot", default=(None, None))
+
+
+def _cid():
+    return _BOT.get()[0]
+
+
+def _token():
+    return _BOT.get()[1] or config.DISCORD_BOT_TOKEN
 
 _initialized = False
 _cache: dict = {}
 
 
 def _cached(key, ttl):
+    key = (_cid(), key)
     hit = _cache.get(key)
     if hit and hit[0] > time.monotonic():
         return hit[1]
@@ -71,6 +89,7 @@ def _cached(key, ttl):
 
 
 def _store(key, ttl, value):
+    key = (_cid(), key)
     _cache[key] = (time.monotonic() + ttl, value)
     if len(_cache) > 2000:
         now = time.monotonic()
@@ -86,7 +105,7 @@ class DiscordError(Exception):
 
 
 async def _bot_get(path: str):
-    headers = {"Authorization": f"Bot {config.DISCORD_BOT_TOKEN}"}
+    headers = {"Authorization": f"Bot {_token()}"}
     timeout = aiohttp.ClientTimeout(total=10)
     async with aiohttp.ClientSession(timeout=timeout) as s:
         for attempt in range(2):
@@ -163,7 +182,7 @@ def _id_sets(meta: dict):
 
 
 async def _get_cfg(module: dict, guild_id: int) -> dict:
-    return await getattr(db, module["get"])(guild_id, CLONE_ID)
+    return await getattr(db, module["get"])(guild_id, _cid())
 
 
 # ───────────────────────── request handling ─────────────────────────
@@ -259,7 +278,7 @@ async def _welcome_preview(sess: dict, gid: int, q) -> dict:
     use_template = (q("use_template") or "1") != "0"
     welcome = S.BY_ID["welcome"]
     cfg = await _get_cfg(welcome, gid)
-    premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+    premium = bool(await db.is_guild_premium_active(gid, _cid()))
     if use_template and theme in wc.PREMIUM_THEMES and not _eff_premium(welcome, premium, cfg):
         _fail(403, "That theme needs Premium or the card pack.")
     info = await _guild_info(gid)
@@ -300,10 +319,13 @@ def _pay_base() -> str:
 
 
 async def _billing(gid: int) -> dict:
+    if _cid() is not None:
+        active = bool(await db.is_guild_premium_active(gid, _cid()))
+        return {"premium": active, "expires_at": None, "card_pack": False, "plans": [], "clone": True}
     welcome = S.BY_ID["welcome"]
     cfg = await _get_cfg(welcome, gid)
-    row = await db.get_guild_premium(gid, CLONE_ID)
-    active = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+    row = await db.get_guild_premium(gid, _cid())
+    active = bool(await db.is_guild_premium_active(gid, _cid()))
     expires = row.get("expires_at") if row else None
     plans = []
     for p in PLANS:
@@ -325,6 +347,8 @@ async def _checkout(sess: dict, gid: int, plan_id) -> dict:
     _last_checkout[uid] = now
     if len(_last_checkout) > 5000:
         _last_checkout.clear()
+    if _cid() is not None:
+        _fail(409, "Premium for this bot is managed by its owner, not through the main checkout.")
     plan = PLAN_BY_ID.get(str(plan_id or ""))
     if not plan:
         _fail(422, "Unknown plan.")
@@ -338,7 +362,7 @@ async def _checkout(sess: dict, gid: int, plan_id) -> dict:
     if not base:
         _fail(503, "Checkout isn't configured yet.")
     token = _secrets.token_urlsafe(16)
-    intent = {"payment_type": plan["id"], "user_id": int(uid), "guild_id": gid, "clone_id": CLONE_ID,
+    intent = {"payment_type": plan["id"], "user_id": int(uid), "guild_id": gid, "clone_id": _cid(),
               "price_usd": entry["price_usd"], "extra": {"source": "dashboard"}, "created": time.time()}
     await db.set_global_setting(f"payintent:{token}", json.dumps(intent))
     logger.info("dashboard checkout guild=%s user=%s plan=%s", gid, uid, plan["id"])
@@ -353,7 +377,7 @@ PANEL_PERMS_HINT = "Give me View Channel, Send Messages, Embed Links and Attach 
 async def _bot_post(path: str, json_body=None, form=None):
     """POST as the bot. JSON bodies retry once on a rate limit; multipart uploads can't be
     replayed, so a 429 there is reported to the caller instead."""
-    headers = {"Authorization": f"Bot {config.DISCORD_BOT_TOKEN}"}
+    headers = {"Authorization": f"Bot {_token()}"}
     timeout = aiohttp.ClientTimeout(total=15)
     async with aiohttp.ClientSession(timeout=timeout) as s:
         for attempt in range(2):
@@ -395,7 +419,7 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
     if not mod_id:
         _fail(422, "Unknown action.")
     now = time.monotonic()
-    key = (uid, gid, action_id)
+    key = (uid, gid, action_id, _cid())
     if now - _last_action.get(key, 0) < ACTION_MIN_INTERVAL:
         _fail(429, "Just did that. Wait a few seconds.")
     _last_action[key] = now
@@ -425,7 +449,7 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
             "components": [{"type": 1, "components": [{"type": 2, "style": 3, "label": "I'm not a bot",
                                                         "emoji": {"name": "✅"}, "custom_id": f"verify_btn:{gid}"}]}],
             "allowed_mentions": {"parse": []}})
-        await db.set_verification_config(gid, CLONE_ID, message_id=int(msg["id"]))
+        await db.set_verification_config(gid, _cid(), message_id=int(msg["id"]))
         summary, label = _channel_name(meta, cid), "Verify panel posted"
     elif action_id == "ticket_panel":
         cid = need_channel("panel_channel_id", "panel channel")
@@ -435,12 +459,12 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
             "components": [{"type": 1, "components": [{"type": 2, "style": 1, "label": "Open Ticket",
                                                         "emoji": {"name": "🎫"}, "custom_id": "ticket:open"}]}],
             "allowed_mentions": {"parse": []}})
-        await db.set_ticket_config(gid, CLONE_ID, panel_channel_id=cid, panel_message_id=int(msg["id"]))
+        await db.set_ticket_config(gid, _cid(), panel_channel_id=cid, panel_message_id=int(msg["id"]))
         summary, label = _channel_name(meta, cid), "Ticket panel posted"
     else:  # welcome_test
         from modules import welcome_card as wc
         cid = need_channel("channel_id", "welcome channel")
-        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
         theme = cfg.get("card_theme") or "wolf"
         if theme not in wc.THEME_BACKGROUNDS or (theme in wc.PREMIUM_THEMES and not _eff_premium(module, premium, cfg)):
             theme = "wolf"
@@ -539,6 +563,97 @@ async def _oauth_callback(query: dict):
     _back("session=" + sid)
 
 
+# ───────────────────────── clone bots ─────────────────────────
+
+_clone_rows: dict = {}
+
+
+async def _clone_row(clone_id: int):
+    """Active clone row (cached 60s). Contains the encrypted token; never sent to the browser."""
+    hit = _clone_rows.get(clone_id)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    row = await db.get_discord_clone(clone_id)
+    if row and row.get("status") != "active":
+        row = None
+    _clone_rows[clone_id] = (time.monotonic() + 60, row)
+    if len(_clone_rows) > 500:
+        _clone_rows.clear()
+    return row
+
+
+def _clone_token(row) -> str:
+    try:
+        from utils.crypto import secret_manager
+        return secret_manager.decrypt(row["bot_token_encrypted"]) or ""
+    except Exception:
+        logger.exception("dashboard: couldn't decrypt a clone token")
+        return ""
+
+
+def _parse_clone_id(raw):
+    if raw in (None, "", "0", 0, "main"):
+        return None
+    try:
+        n = int(str(raw))
+    except (TypeError, ValueError):
+        _fail(400, "Unknown bot.")
+    if n <= 0:
+        _fail(400, "Unknown bot.")
+    return n
+
+
+async def _enter_clone(raw):
+    """Point every Discord call and settings read/write of this request at the chosen clone.
+    Anyone may ask for any clone id; what protects a server is still _authorised_guild, which
+    checks Discord (with that clone's token) that the bot is in the guild and the user manages it."""
+    cid = _parse_clone_id(raw)
+    if cid is None:
+        _BOT.set((None, None))
+        return
+    row = await _clone_row(cid)
+    token = _clone_token(row) if row else ""
+    if not token:
+        _fail(404, "That bot isn't available.")
+    _BOT.set((cid, token))
+
+
+async def _clone_guild_ids(row) -> set:
+    """Guild ids a clone bot is in (cached 60s per clone), scoped by its own token."""
+    cid = int(row["clone_id"])
+    token = _clone_token(row)
+    if not token:
+        return set()
+    _BOT.set((cid, token))
+    try:
+        return await _bot_guild_ids()
+    except Exception:
+        return set()
+
+
+async def _clone_presence(user_guild_ids: set) -> dict:
+    """{guild_id: [{clone_id, name}]} for active clones present in the user's servers."""
+    try:
+        listed = (await db.list_active_discord_clones())[:MAX_CLONE_SCAN]
+    except Exception:
+        logger.exception("dashboard: clone list failed")
+        return {}
+    sem = asyncio.Semaphore(8)
+
+    async def one(c):
+        async with sem:
+            row = await _clone_row(int(c["clone_id"]))
+            if not row:
+                return c, set()
+            return c, await _clone_guild_ids(row)
+
+    out: dict = {}
+    for c, ids in await asyncio.gather(*[one(c) for c in listed], return_exceptions=False):
+        for gid in ids & user_guild_ids:
+            out.setdefault(gid, []).append({"clone_id": int(c["clone_id"]), "name": c.get("bot_username") or f"Clone {c['clone_id']}"})
+    return out
+
+
 def _icon(g):
     return f"https://cdn.discordapp.com/icons/{g['id']}/{g['icon']}.png?size=128" if g.get("icon") else None
 
@@ -566,13 +681,18 @@ async def _route(method: str, query: dict, headers, body: dict):
         await db.delete_login_session(_bearer(headers))
         raise _Reply(200, {"ok": True})
 
+    if action != "me":
+        await _enter_clone(body.get("clone_id") if method == "POST" else q("clone_id"))
+
     if method == "GET" and action == "me":
         try:
             present = await _bot_guild_ids()
         except DiscordError:
             _fail(502, "Couldn't reach Discord. Try again in a moment.")
-        servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present} for g in sess.get("guilds", [])]
-        servers.sort(key=lambda g: (not g["bot_present"], g["name"].lower()))
+        clones = await _clone_presence({g["id"] for g in sess.get("guilds", [])})
+        servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present, "clones": clones.get(g["id"], [])}
+                   for g in sess.get("guilds", [])]
+        servers.sort(key=lambda g: (not (g["bot_present"] or g["clones"]), g["name"].lower()))
         uid = str(sess["user"]["id"])
         try:
             unread = sum(1 for m in await db.dropbox_list(uid) if not m["read"])
@@ -585,7 +705,7 @@ async def _route(method: str, query: dict, headers, body: dict):
     if method == "GET" and action == "guild":
         gid = await _authorised_guild(sess, q("guild_id"))
         info = await _guild_info(gid)
-        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
         status = {}
         for m in S.MODULES:
             try:
@@ -597,7 +717,8 @@ async def _route(method: str, query: dict, headers, body: dict):
         raise _Reply(200, {"ok": True, "guild": {
             "id": str(gid), "name": info.get("name"), "icon_url": _icon(info),
             "members": info.get("approximate_member_count"), "online": info.get("approximate_presence_count"),
-            "premium": premium, "status": status}})
+            "premium": premium, "status": status,
+            "bot_name": ((await _clone_row(_cid())) or {}).get("bot_username") if _cid() else None}})
 
     if method == "GET" and action == "meta":
         gid = await _authorised_guild(sess, q("guild_id"))
@@ -608,7 +729,7 @@ async def _route(method: str, query: dict, headers, body: dict):
         module = S.BY_ID.get(q("module") or "")
         if not module:
             _fail(404, "Unknown module.")
-        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
         cfg = await _get_cfg(module, gid)
         raise _Reply(200, {"ok": True, "values": S.export_values(module, cfg), "premium": _eff_premium(module, premium, cfg)})
 
@@ -619,12 +740,12 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(404, "Unknown module.")
         meta = await _meta(gid)
         chans, roles = _id_sets(meta)
-        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
         before_cfg = await _get_cfg(module, gid)
         clean, errors = S.validate_values(module, body.get("values"), chans, roles, _eff_premium(module, premium, before_cfg))
         if errors:
             raise _Reply(422, {"ok": False, "message": errors[0], "errors": errors})
-        await getattr(db, module["set"])(gid, CLONE_ID, **clean)
+        await getattr(db, module["set"])(gid, _cid(), **clean)
         logger.info("dashboard save guild=%s user=%s module=%s keys=%s", gid, sess["user"]["id"], module["id"], sorted(clean))
         after = S.export_values(module, await _get_cfg(module, gid))
         try:
