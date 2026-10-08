@@ -11629,6 +11629,16 @@ class Database:
                 guild_id, clone_id, disabled,
             )
 
+    async def get_custom_role_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Web dashboard view of the Custom Role kill switch: {"enabled": bool}. Same row the
+        /customrole disable_feature option writes, so Discord and the web always agree."""
+        return {"enabled": not await self.is_custom_role_feature_disabled(guild_id, clone_id=clone_id)}
+
+    async def set_custom_role_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        if "enabled" in fields:
+            await self.set_custom_role_feature_disabled(guild_id, not bool(fields["enabled"]), clone_id=clone_id)
+        return await self.get_custom_role_config(guild_id, clone_id=clone_id)
+
     async def get_custom_role_panel(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[dict]:
         """Returns {"panel_channel_id", "panel_message_id"} (or None) —
         used by _enable_custom_role_panel to avoid creating a second
@@ -14551,6 +14561,89 @@ class Database:
             return None
         p = r["payload"]
         return {"payload": json.loads(p) if isinstance(p, str) else p, "updated_at": r["updated_at"]}
+
+    # ── Web dashboard adapters: auto-post (generic get(guild, clone) / set(guild, clone, **values) contract; no schema change) ──
+
+    async def get_autopost_settings_config(self, guild_id: int, clone_id: Optional[int] = None) -> dict:
+        row = await self.get_discord_autopost(guild_id, clone_id) or {}
+        return {"enabled": bool(row.get("enabled", False)), "channel_id": row.get("channel_id"),
+                "interval_hours": int(row.get("interval_hours") or 24)}
+
+    async def set_autopost_settings_config(self, guild_id: int, clone_id: Optional[int] = None, **values) -> None:
+        """Same writes as /autopost setup and /autopost disable. Turning it on needs a channel and some content in the
+        shared library (else ValidationError, which the route returns as a 422). A cleared channel while off is ignored
+        (the upsert cannot null it). configured_by keeps its old value (0 when new): the web audit row names the person."""
+        from utils.dash_schema import ValidationError
+        existing = await self.get_discord_autopost(guild_id, clone_id) or {}
+        enabled = bool(values["enabled"]) if "enabled" in values else bool(existing.get("enabled"))
+        channel = values["channel_id"] if "channel_id" in values else existing.get("channel_id")
+        hours = int(values.get("interval_hours") or existing.get("interval_hours") or 24)
+        if not channel:
+            if enabled:
+                raise ValidationError("Pick a channel before turning auto-post on.")
+            return
+        if enabled and not await self.list_discord_autopost_content():
+            raise ValidationError("There's no auto-post content configured yet, so there is nothing to rotate through.")
+        await self.set_discord_autopost(guild_id, clone_id, int(channel), hours, int(existing.get("configured_by") or 0))
+        if not enabled:
+            await self.disable_discord_autopost(guild_id, clone_id)
+
+    # ── Web dashboard: read-only moderation views (tables are shared with the Discord /warn, /modlogs commands) ──
+
+    async def dash_mod_cases(self, guild_id: int, user_id: Optional[int] = None, kind: Optional[str] = None,
+                             before: Optional[int] = None, limit: int = 31) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, action_type, target_user_id, performed_by, reason, created_at
+                   FROM moderation_logs
+                   WHERE chat_id = $1 AND ($2::bigint IS NULL OR target_user_id = $2)
+                     AND ($3::text IS NULL OR action_type = $3) AND ($4::int IS NULL OR id < $4)
+                   ORDER BY id DESC LIMIT $5""", int(guild_id), user_id, kind, before, int(limit))
+        return [dict(r) for r in rows]
+
+    async def dash_mod_warns(self, guild_id: int, user_id: int, limit: int = 50) -> tuple:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, reason, warned_by, created_at FROM user_warns
+                   WHERE chat_id = $1 AND user_id = $2 ORDER BY id DESC LIMIT $3""", int(guild_id), int(user_id), int(limit))
+            total = await conn.fetchval("SELECT COUNT(*) FROM user_warns WHERE chat_id = $1 AND user_id = $2", int(guild_id), int(user_id))
+        return [dict(r) for r in rows], int(total or 0)
+
+    async def dash_mod_kinds(self, guild_id: int) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT action_type FROM moderation_logs WHERE chat_id = $1 ORDER BY action_type LIMIT 40", int(guild_id))
+        return [r["action_type"] for r in rows]
+
+    # ── Web dashboard adapters (generic get(guild, clone) / set(guild, clone, **values) contract; no schema change) ──
+
+    async def get_bump_settings_config(self, guild_id: int, clone_id: Optional[int] = None) -> dict:
+        row = await self.bump_get_guild_config(guild_id, clone_id) or {}
+        return {"receives_bumps": bool(row.get("receives_bumps", False)), "bump_channel_id": row.get("bump_channel_id"),
+                "language": row.get("language") or "any", "nsfw_opt_in": bool(row.get("nsfw_opt_in", False)),
+                "intensity_level": str(row.get("intensity_level") or 3)}
+
+    async def set_bump_settings_config(self, guild_id: int, clone_id: Optional[int] = None, **values) -> None:
+        """Same write the /bumpsetup wizard makes. A cleared channel is ignored (bump_set_guild_config cannot null it)."""
+        existing = await self.bump_get_guild_config(guild_id, clone_id) or {}
+        level = values.get("intensity_level")
+        await self.bump_set_guild_config(
+            guild_id, clone_id, int(existing.get("configured_by") or 0),
+            bump_channel_id=values.get("bump_channel_id") or None,
+            language=values.get("language"), nsfw_opt_in=values.get("nsfw_opt_in"),
+            intensity_level=int(level) if level not in (None, "") else None,
+            receives_bumps=values.get("receives_bumps"))
+
+    async def get_custom_role_settings_config(self, guild_id: int, clone_id: Optional[int] = None) -> dict:
+        return {"enabled": not await self.is_custom_role_feature_disabled(guild_id, clone_id)}
+
+    async def set_custom_role_settings_config(self, guild_id: int, clone_id: Optional[int] = None, **values) -> None:
+        """Same write as `/customrole disable_feature`."""
+        if "enabled" in values:
+            await self.set_custom_role_feature_disabled(guild_id, not bool(values["enabled"]), clone_id=clone_id)
 
     # ── Member dashboard: web-user registry + per-user entitlements ──
 

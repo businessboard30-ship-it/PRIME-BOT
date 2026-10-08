@@ -23,6 +23,8 @@ Routes (all on /api/dash):
   GET  ?action=meta&guild_id            -> channels and roles
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
+  GET  ?action=announcements&guild_id   -> upcoming /announce posts for this server (same page as Scheduled messages)
+  POST {action: announcement_add, guild_id, channel_id, content, mode, minutes|time_utc} / {action: announcement_delete, guild_id, id} -> audited, 30 writes/min
   POST {action: logout}
   POST {action: reset, guild_id, module} -> put one module back to factory settings (audited)
   GET  ?action=export&guild_id&module   -> downloadable settings file for one module
@@ -31,6 +33,7 @@ Routes (all on /api/dash):
   GET  ?action=billing&guild_id         -> Premium status + plans with server-side prices
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
+  GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count); read-only
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
   POST {action: dropbox_read, id?}      -> mark one (or all) read
@@ -46,6 +49,7 @@ Routes (all on /api/dash):
   GET  ?action=owner_controls|owner_blacklist|owner_premium|owner_feedback|owner_botaudit|owner_payment|owner_coupons -> OWNER, read-only
   GET  ?action=owner_ads|owner_ad|owner_market|owner_bump -> OWNER (ads / bump): ads queue, one ad, marketplace listings, bump network (api/dash_owner_growth.py)
   GET  ?action=owner_watchlist|owner_reports|owner_status|owner_honeypot|owner_scamshield -> OWNER: safety pages (api/dash_owner_safety.py)
+  GET  ?action=owner_search|owner_alerts|owner_growth -> OWNER (inspect / health / servers): global search, alerts (notifications), server growth series (api/dash_owner_insights.py)
   POST {action: owner_ad_approve|owner_ad_reject|owner_ad_deactivate|owner_ad_reactivate|owner_listing_remove|owner_bump_cooldown, ...} -> OWNER (ads / bump)
   POST {action: owner_report_resolve|owner_status_add|owner_status_remove|owner_presence_set|owner_status_reset|owner_scam_toggle|owner_scam_add|owner_scam_remove, ...} -> OWNER (safety)
   GET  ?action=owner_helpers|owner_clones|owner_database -> OWNER (access / servers / database): helpers, clones (never the token), table counts (api/dash_owner_ops.py)
@@ -305,9 +309,9 @@ def _require_confirm(body: dict, expected: str) -> None:
 
 def _merged(attr: str) -> dict:
     """ROUTES / WRITES of every owner module. A duplicate action name is a bug, so fail loudly (tested)."""
-    from api import dash_owner, dash_owner_growth, dash_owner_ops, dash_owner_safety
+    from api import dash_owner, dash_owner_growth, dash_owner_insights, dash_owner_ops, dash_owner_safety
     out: dict = {}
-    for mod in (dash_owner, dash_owner_growth, dash_owner_safety, dash_owner_ops):
+    for mod in (dash_owner, dash_owner_growth, dash_owner_safety, dash_owner_ops, dash_owner_insights):
         part = getattr(mod, attr)
         dup = out.keys() & part.keys()
         if dup:
@@ -796,6 +800,10 @@ def _schedule_audit(sess, gid, label, summary):
     return go()
 
 
+async def _live_announcements(gid: int) -> list:
+    return await db.get_scheduled_announcements(gid, _cid())
+
+
 async def _live_schedules(gid: int) -> list:
     rows = await db.list_scheduled_messages(gid, _cid())
     return [r for r in rows if r.get("enabled")]
@@ -1107,7 +1115,7 @@ async def _route(method: str, query: dict, headers, body: dict):
         _require_section(sess, section)
         _owner_rate(sess, "read:" + action, 60, 60)
         from api import dash_owner
-        out = handler(q)
+        out = handler(q, _owner_sections(sess)) if getattr(handler, "wants_sections", False) else handler(q)
         out = await out if hasattr(out, "__await__") else out
         if "_error" in out:
             _fail(*out["_error"])
@@ -1171,7 +1179,10 @@ async def _route(method: str, query: dict, headers, body: dict):
         clean, errors = S.validate_values(module, body.get("values"), chans, roles, _eff_premium(module, premium, before_cfg))
         if errors:
             raise _Reply(422, {"ok": False, "message": errors[0], "errors": errors})
-        after = await _write_values(sess, gid, module, clean, before_cfg)
+        try:
+            after = await _write_values(sess, gid, module, clean, before_cfg)
+        except S.ValidationError as e:                       # a rule only the database layer can check (e.g. auto-post needs a channel)
+            raise _Reply(422, {"ok": False, "message": str(e), "errors": [str(e)]})
         raise _Reply(200, {"ok": True, "values": after})
 
     if method == "POST" and action == "reset":
@@ -1247,6 +1258,44 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(404, "That schedule no longer exists.")
         await _schedule_audit(sess, gid, "Scheduled message removed", f"#{sid}")
         raise _Reply(200, {"ok": True})
+    if method == "GET" and action == "announcements":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        _owner_rate(sess, "announcements_read", 60, 60)
+        rows = await _live_announcements(gid)
+        raise _Reply(200, {"ok": True, "schedules": [S.announcement_row_view(r) for r in rows[:S.ANNOUNCEMENT_MAX_ACTIVE + 5]],
+                           "limit": S.ANNOUNCEMENT_MAX_ACTIVE})
+
+    if method == "POST" and action == "announcement_add":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        _owner_rate(sess, "announcement_add", 30, 60)
+        meta = await _meta(gid)
+        chans, _roles = _id_sets(meta)
+        from datetime import datetime, timezone
+        clean, err = S.validate_announcement(body, chans["text"], datetime.now(timezone.utc))
+        if err:
+            _fail(422, err)
+        if len(await _live_announcements(gid)) >= S.ANNOUNCEMENT_MAX_ACTIVE:
+            _fail(422, f"You can have up to {S.ANNOUNCEMENT_MAX_ACTIVE} announcements. Delete one first.")
+        new_id = await db.add_scheduled_announcement(gid, clean["channel_id"], clean["message"], clean["run_at"],
+                                                     int(sess["user"]["id"]), interval_minutes=clean["interval_minutes"], clone_id=_cid())
+        await _schedule_audit(sess, gid, "Announcement added", f"{_channel_name(meta, clean['channel_id'])}: {clean['message'][:80]}")
+        logger.info("dashboard announcement_add guild=%s user=%s id=%s", gid, sess["user"]["id"], new_id)
+        raise _Reply(200, {"ok": True, "schedule": S.announcement_row_view({
+            "id": new_id, "channel_id": clean["channel_id"], "message": clean["message"], "next_run_at": clean["run_at"],
+            "interval_minutes": clean["interval_minutes"], "active": True, "created_by": sess["user"]["id"]})})
+
+    if method == "POST" and action == "announcement_delete":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        _owner_rate(sess, "announcement_delete", 30, 60)
+        try:
+            aid = int(str(body.get("id")))
+        except ValueError:
+            _fail(400, "Invalid announcement.")
+        if not await db.remove_scheduled_announcement(gid, aid, _cid()):
+            _fail(404, "That announcement no longer exists.")
+        await _schedule_audit(sess, gid, "Announcement removed", f"#{aid}")
+        raise _Reply(200, {"ok": True})
+
     if method == "GET" and action == "tickets":
         gid = await _authorised_guild(sess, q("guild_id"))
         status = q("status")
@@ -1295,6 +1344,27 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(400, "Invalid page.")
         rows = await db.dash_audit_list(gid, before, mod, 31)
         raise _Reply(200, {"ok": True, "entries": rows[:30], "more": len(rows) > 30})
+
+    if method == "GET" and action == "moderation":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        try:
+            user = S.parse_mod_user(q("user_id"))
+            before = int(q("before")) if q("before") else None
+        except ValueError as e:
+            _fail(400, str(e) if "user ID" in str(e) else "Invalid page.")
+        if before is not None and not 0 < before < 2 ** 31:
+            _fail(400, "Invalid page.")
+        kind = q("kind") or None
+        if kind and not S.MOD_KIND_RE.match(kind):
+            _fail(400, "Unknown action type.")
+        rows = await db.dash_mod_cases(gid, user, kind, before, 31)
+        out = {"ok": True, "cases": [S.mod_case_view(r) for r in rows[:30]], "more": len(rows) > 30}
+        if before is None:
+            out["kinds"] = [k for k in await db.dash_mod_kinds(gid) if S.MOD_KIND_RE.match(str(k))]
+        if user is not None and before is None:
+            warns, total = await db.dash_mod_warns(gid, user)
+            out["warns"], out["warn_count"] = [S.mod_warn_view(w) for w in warns], total
+        raise _Reply(200, out)
 
     if method == "GET" and action == "welcome_preview":
         gid = await _authorised_guild(sess, q("guild_id"))
