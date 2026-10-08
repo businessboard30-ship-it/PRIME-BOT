@@ -2,6 +2,10 @@ name = "prime-bot-cron"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
 
+# Cron-only worker: no public URL needed, so skip workers.dev publishing
+workers_dev = false
+preview_urls = false
+
 [vars]
 BACKEND_URL = "https://web-production-74667a.up.railway.app"
 
