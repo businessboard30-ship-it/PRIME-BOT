@@ -14562,6 +14562,36 @@ class Database:
         p = r["payload"]
         return {"payload": json.loads(p) if isinstance(p, str) else p, "updated_at": r["updated_at"]}
 
+    # ── Web dashboard: read-only moderation views (tables are shared with the Discord /warn, /modlogs commands) ──
+
+    async def dash_mod_cases(self, guild_id: int, user_id: Optional[int] = None, kind: Optional[str] = None,
+                             before: Optional[int] = None, limit: int = 31) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, action_type, target_user_id, performed_by, reason, created_at
+                   FROM moderation_logs
+                   WHERE chat_id = $1 AND ($2::bigint IS NULL OR target_user_id = $2)
+                     AND ($3::text IS NULL OR action_type = $3) AND ($4::int IS NULL OR id < $4)
+                   ORDER BY id DESC LIMIT $5""", int(guild_id), user_id, kind, before, int(limit))
+        return [dict(r) for r in rows]
+
+    async def dash_mod_warns(self, guild_id: int, user_id: int, limit: int = 50) -> tuple:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, reason, warned_by, created_at FROM user_warns
+                   WHERE chat_id = $1 AND user_id = $2 ORDER BY id DESC LIMIT $3""", int(guild_id), int(user_id), int(limit))
+            total = await conn.fetchval("SELECT COUNT(*) FROM user_warns WHERE chat_id = $1 AND user_id = $2", int(guild_id), int(user_id))
+        return [dict(r) for r in rows], int(total or 0)
+
+    async def dash_mod_kinds(self, guild_id: int) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT action_type FROM moderation_logs WHERE chat_id = $1 ORDER BY action_type LIMIT 40", int(guild_id))
+        return [r["action_type"] for r in rows]
+
     # ── Web dashboard adapters (generic get(guild, clone) / set(guild, clone, **values) contract; no schema change) ──
 
     async def get_bump_settings_config(self, guild_id: int, clone_id: Optional[int] = None) -> dict:
