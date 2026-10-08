@@ -86,4 +86,16 @@ def test_dev_page_is_always_routed_and_never_uses_innerhtml():
     assert 'hash === "#/dev"' in js and 'href: "#/dev"' in js
     page = js[js.index("function devChat"):js.index("function renderOwner")]
     assert "innerHTML" not in page and 'api("dev_status")' in page
-    assert "checkout_user" in page          # Subscribe goes through the existing server-priced checkout
+    assert "startCheckout(" in page         # Subscribe goes through the shared server-priced checkout loader
+
+
+def test_checkout_loader_is_shared_recoverable_and_safe():
+    from pathlib import Path
+    js = Path("dashboard/assets/dash.js").read_text()
+    css = Path("dashboard/assets/dash.css").read_text()
+    fn = js[js.index("function startCheckout"):js.index("function renderMe")]
+    assert js.count('api("checkout_user"') == 1 and js.count("startCheckout(p.product") == 2      # /me and /dev share it
+    assert "ringsArt()" in fn and "innerHTML" not in fn
+    assert "pageshow" in js and "endCheckoutUi" in js and "Cancel" in fn                        # not stuck after Back / slow start
+    assert r'/^https:\/\//' in fn                                                              # only follows an https checkout link
+    assert ".payload{" in css
