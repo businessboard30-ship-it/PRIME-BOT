@@ -78,3 +78,52 @@ def test_dashboard_command_clone_gets_clone_link():
     _run(D.DashboardCog(None), i)
     url = r.sent[1].children[0].url
     assert url == f"{config.DASH_PAGES_URL}/#/c/4/g/999" and "token" not in url
+
+
+# --- deep links + views (join DM, server panel, honeypot) ---------------------
+
+def test_module_deep_link():
+    assert L.dashboard_url(5, None, "honeypot").endswith("/#/g/5/honeypot")
+    assert L.dashboard_url(5, 7, "honeypot").endswith("/#/c/7/g/5/honeypot")
+    assert L.dashboard_link_button(5, module="welcome").url.endswith("/#/g/5/welcome")
+
+
+def test_module_deep_link_rejects_junk():
+    # the dashboard router only accepts [a-z_]+; anything else falls back to the overview
+    assert L.dashboard_url(5, None, "../x?y=1").endswith("/#/g/5")
+    assert L.dashboard_url(5, None, "Honey Pot").endswith("/#/g/5")
+
+
+def _walk_text(view):
+    out = []
+    def go(item):
+        if hasattr(item, "content"):
+            out.append(item.content)
+        for c in getattr(item, "children", []) or []:
+            go(c)
+    for it in view.children:
+        go(it)
+    return "\n".join(out)
+
+
+def test_honeypot_panel_has_masked_dashboard_link():
+    from discord_bot.cogs import honeypot as hp
+    line = hp._dash_line(55, None)
+    assert "[Edit in the web dashboard](" in line and line.rstrip().endswith("/#/g/55/honeypot)")
+    assert "/#/c/3/g/55/honeypot" in hp._dash_line(55, 3)
+
+
+def test_server_panel_screens_link_to_dashboard():
+    from discord_bot.cogs import _views_server_panel as P
+    mk = lambda cls, **kw: cls(55, kw.get("clone"), 1, {}, inspect=kw.get("inspect"))
+    assert "/#/g/55/welcome)" in _walk_text(mk(P.WelcomeView))
+    assert "/#/c/3/g/55/verification)" in _walk_text(mk(P.VerificationView, clone=3))
+    assert "/#/g/55)" in _walk_text(mk(P.PremiumView))          # no matching page: overview
+    home = _walk_text(mk(P.HomeView))
+    assert home.count("dashboard](") == 1                          # Home keeps its single links row
+
+
+def test_join_dm_has_masked_dashboard_link():
+    from discord_bot.cogs._views_join_dm import build_join_dm_view
+    v = build_join_dm_view(55, None)
+    assert "[Open dashboard](" in _walk_text(v) and "/#/g/55)" in _walk_text(v)
