@@ -23,6 +23,8 @@ Routes (all on /api/dash):
   GET  ?action=meta&guild_id            -> channels and roles
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
+  GET  ?action=announcements&guild_id   -> upcoming /announce posts for this server (same page as Scheduled messages)
+  POST {action: announcement_add, guild_id, channel_id, content, mode, minutes|time_utc} / {action: announcement_delete, guild_id, id} -> audited, 30 writes/min
   POST {action: logout}
   POST {action: reset, guild_id, module} -> put one module back to factory settings (audited)
   GET  ?action=export&guild_id&module   -> downloadable settings file for one module
@@ -791,6 +793,10 @@ def _schedule_audit(sess, gid, label, summary):
     return go()
 
 
+async def _live_announcements(gid: int) -> list:
+    return await db.get_scheduled_announcements(gid, _cid())
+
+
 async def _live_schedules(gid: int) -> list:
     rows = await db.list_scheduled_messages(gid, _cid())
     return [r for r in rows if r.get("enabled")]
@@ -1158,7 +1164,10 @@ async def _route(method: str, query: dict, headers, body: dict):
         clean, errors = S.validate_values(module, body.get("values"), chans, roles, _eff_premium(module, premium, before_cfg))
         if errors:
             raise _Reply(422, {"ok": False, "message": errors[0], "errors": errors})
-        after = await _write_values(sess, gid, module, clean, before_cfg)
+        try:
+            after = await _write_values(sess, gid, module, clean, before_cfg)
+        except S.ValidationError as e:                       # a rule only the database layer can check (e.g. auto-post needs a channel)
+            raise _Reply(422, {"ok": False, "message": str(e), "errors": [str(e)]})
         raise _Reply(200, {"ok": True, "values": after})
 
     if method == "POST" and action == "reset":
@@ -1234,6 +1243,44 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(404, "That schedule no longer exists.")
         await _schedule_audit(sess, gid, "Scheduled message removed", f"#{sid}")
         raise _Reply(200, {"ok": True})
+    if method == "GET" and action == "announcements":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        _owner_rate(sess, "announcements_read", 60, 60)
+        rows = await _live_announcements(gid)
+        raise _Reply(200, {"ok": True, "schedules": [S.announcement_row_view(r) for r in rows[:S.ANNOUNCEMENT_MAX_ACTIVE + 5]],
+                           "limit": S.ANNOUNCEMENT_MAX_ACTIVE})
+
+    if method == "POST" and action == "announcement_add":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        _owner_rate(sess, "announcement_add", 30, 60)
+        meta = await _meta(gid)
+        chans, _roles = _id_sets(meta)
+        from datetime import datetime, timezone
+        clean, err = S.validate_announcement(body, chans["text"], datetime.now(timezone.utc))
+        if err:
+            _fail(422, err)
+        if len(await _live_announcements(gid)) >= S.ANNOUNCEMENT_MAX_ACTIVE:
+            _fail(422, f"You can have up to {S.ANNOUNCEMENT_MAX_ACTIVE} announcements. Delete one first.")
+        new_id = await db.add_scheduled_announcement(gid, clean["channel_id"], clean["message"], clean["run_at"],
+                                                     int(sess["user"]["id"]), interval_minutes=clean["interval_minutes"], clone_id=_cid())
+        await _schedule_audit(sess, gid, "Announcement added", f"{_channel_name(meta, clean['channel_id'])}: {clean['message'][:80]}")
+        logger.info("dashboard announcement_add guild=%s user=%s id=%s", gid, sess["user"]["id"], new_id)
+        raise _Reply(200, {"ok": True, "schedule": S.announcement_row_view({
+            "id": new_id, "channel_id": clean["channel_id"], "message": clean["message"], "next_run_at": clean["run_at"],
+            "interval_minutes": clean["interval_minutes"], "active": True, "created_by": sess["user"]["id"]})})
+
+    if method == "POST" and action == "announcement_delete":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        _owner_rate(sess, "announcement_delete", 30, 60)
+        try:
+            aid = int(str(body.get("id")))
+        except ValueError:
+            _fail(400, "Invalid announcement.")
+        if not await db.remove_scheduled_announcement(gid, aid, _cid()):
+            _fail(404, "That announcement no longer exists.")
+        await _schedule_audit(sess, gid, "Announcement removed", f"#{aid}")
+        raise _Reply(200, {"ok": True})
+
     if method == "GET" and action == "tickets":
         gid = await _authorised_guild(sess, q("guild_id"))
         status = q("status")

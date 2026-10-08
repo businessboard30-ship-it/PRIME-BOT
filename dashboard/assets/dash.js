@@ -649,31 +649,31 @@
   function fmtWhen(iso) { try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch (e) { return ""; } }
   /* ---------- scheduled messages ---------- */
   function everyText(sec) { var m = Math.round(sec / 60); return m % 1440 === 0 ? (m / 1440) + " day(s)" : m % 60 === 0 ? (m / 60) + " hour(s)" : m + " min"; }
-  function renderSchedules(gid, main) {
-    var list = h("div", { class: "audit" }), note = h("p", { class: "help", text: "" });
-    var chan = h("select", { id: "sc_chan", "aria-label": "Channel" }, S.meta.channels.text.map(function (c) { return h("option", { value: c.id, text: "#" + c.name }); }));
-    var mode = h("select", { id: "sc_mode", "aria-label": "How often" }, [["once", "Once, after a delay"], ["interval", "Repeat on an interval"], ["daily", "Every day at a time (UTC)"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+  function schedulePanel(gid, cfg) {
+    var P = cfg.id, list = h("div", { class: "audit" }), note = h("p", { class: "help", text: "" });
+    var chan = h("select", { id: P + "_chan", "aria-label": "Channel" }, S.meta.channels.text.map(function (c) { return h("option", { value: c.id, text: "#" + c.name }); }));
+    var mode = h("select", { id: P + "_mode", "aria-label": "How often" }, [["once", "Once, after a delay"], ["interval", "Repeat on an interval"]].concat(cfg.daily ? [["daily", "Every day at a time (UTC)"]] : []).map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
     var mins = h("input", { type: "number", min: "1", value: "60", "aria-label": "Minutes" });
     var tod = h("input", { type: "text", value: "09:00", placeholder: "09:00", "aria-label": "Time (UTC)", hidden: true });
     var hint = h("p", { class: "help", text: "Minutes from now." });
     var text = h("textarea", { rows: "3", maxlength: "2000", placeholder: "What should I post?", "aria-label": "Message" });
-    var addBtn = h("button", { class: "btn sm primary", text: "Schedule it" });
+    var addBtn = h("button", { class: "btn sm primary", text: cfg.button });
     function syncMode() {
       tod.hidden = mode.value !== "daily"; mins.hidden = mode.value === "daily";
       hint.textContent = mode.value === "once" ? "Minutes from now." : mode.value === "interval" ? "Repeat every this many minutes (5 or more)." : "24-hour UTC time, e.g. 09:00.";
     }
     mode.addEventListener("change", syncMode);
     function load() {
-      api("schedules", { guild_id: gid }).then(function (r) {
+      api(cfg.list, { guild_id: gid }).then(function (r) {
         list.textContent = "";
         note.textContent = r.schedules.length + " of " + r.limit + " used.";
-        if (!r.schedules.length) { list.appendChild(h("p", { class: "muted", text: "Nothing scheduled." })); return; }
+        if (!r.schedules.length) { list.appendChild(h("p", { class: "muted", text: cfg.empty })); return; }
         r.schedules.forEach(function (sc) {
           var del = h("button", { class: "btn sm ghost", text: "Delete" });
           del.addEventListener("click", function () {
-            if (!window.confirm("Delete this scheduled message?")) return;
+            if (!window.confirm(cfg.confirm)) return;
             del.disabled = true;
-            api("schedule_delete", {}, { guild_id: gid, id: sc.id }).then(function () { toast("Deleted", "ok"); load(); })
+            api(cfg.del, {}, { guild_id: gid, id: sc.id }).then(function () { toast("Deleted", "ok"); load(); })
               .catch(function (e) { toast(e.message, "bad"); del.disabled = false; });
           });
           var ch = S.meta.channels.text.filter(function (c) { return c.id === sc.channel_id; })[0];
@@ -688,19 +688,28 @@
       var body = { guild_id: gid, channel_id: chan.value, mode: mode.value, content: text.value };
       if (mode.value === "daily") body.time_utc = tod.value; else body.minutes = Number(mins.value);
       addBtn.classList.add("busy"); addBtn.disabled = true;
-      api("schedule_add", {}, body).then(function () { toast("Scheduled", "ok"); text.value = ""; load(); })
+      api(cfg.add, {}, body).then(function () { toast(cfg.done, "ok"); text.value = ""; load(); })
         .catch(function (e) { toast(e.message, "bad"); }).then(function () { addBtn.classList.remove("busy"); addBtn.disabled = false; });
     });
-    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Scheduled messages" }),
-      h("p", { class: "muted", text: "Post a message later, or on repeat. These are the same schedules as /schedule in Discord. Times are UTC." })),
-      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
-      h("div", { class: "card fields rv" }, h("h2", { text: "New message" }),
-        h("div", { class: "field" }, h("div", null, h("label", { for: "sc_chan", text: "Channel" })), chan),
-        h("div", { class: "field" }, h("div", null, h("label", { for: "sc_mode", text: "When" }), hint), h("div", null, mode, mins, tod)),
-        h("div", { class: "field" }, h("div", null, h("label", { text: "Message" }), h("p", { class: "help", text: "Up to 2000 characters. Mentions like @everyone will ping, same as the command." })), text),
-        h("div", { class: "action" }, h("div", { class: "grow" }), addBtn)),
-      h("div", { class: "card rv" }, h("h2", { text: "Upcoming" }), note, list)]);
     syncMode(); load();
+    return [h("div", { class: "card fields rv" }, h("h2", { text: cfg.newTitle }),
+        h("div", { class: "field" }, h("div", null, h("label", { for: P + "_chan", text: "Channel" })), chan),
+        h("div", { class: "field" }, h("div", null, h("label", { for: P + "_mode", text: "When" }), hint), h("div", null, mode, mins, tod)),
+        h("div", { class: "field" }, h("div", null, h("label", { text: "Message" }), h("p", { class: "help", text: cfg.msgHelp })), text),
+        h("div", { class: "action" }, h("div", { class: "grow" }), addBtn)),
+      h("div", { class: "card rv" }, h("h2", { text: cfg.upTitle }), note, list)];
+  }
+  function renderSchedules(gid, main) {
+    var sched = schedulePanel(gid, { id: "sc", list: "schedules", add: "schedule_add", del: "schedule_delete", daily: true,
+      empty: "Nothing scheduled.", confirm: "Delete this scheduled message?", done: "Scheduled", button: "Schedule it",
+      newTitle: "New message", upTitle: "Upcoming", msgHelp: "Up to 2000 characters. Mentions like @everyone will ping, same as the command." });
+    var ann = schedulePanel(gid, { id: "an", list: "announcements", add: "announcement_add", del: "announcement_delete", daily: false,
+      empty: "No announcements queued.", confirm: "Delete this announcement?", done: "Announcement queued", button: "Queue announcement",
+      newTitle: "New announcement", upTitle: "Queued announcements",
+      msgHelp: "Same as /announce. These post through the announcement scheduler, so they can be a minute or two late." });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Scheduled messages" }),
+      h("p", { class: "muted", text: "Post a message later, or on repeat. Scheduled messages are the same as /schedule in Discord and announcements are the same as /announce. Times are UTC." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" }))].concat(sched, ann));
   }
 
   /* ---------- ticket history ---------- */
