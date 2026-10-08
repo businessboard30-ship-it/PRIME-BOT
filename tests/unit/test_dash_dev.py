@@ -84,6 +84,6 @@ def test_dev_page_is_always_routed_and_never_uses_innerhtml():
     from pathlib import Path
     js = Path("dashboard/assets/dash.js").read_text()
     assert 'hash === "#/dev"' in js and 'href: "#/dev"' in js
-    page = js[js.index("function renderDev"):js.index("function renderOwner")]
+    page = js[js.index("function devChat"):js.index("function renderOwner")]
     assert "innerHTML" not in page and 'api("dev_status")' in page
     assert "checkout_user" in page          # Subscribe goes through the existing server-priced checkout
