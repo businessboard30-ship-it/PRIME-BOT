@@ -45,6 +45,10 @@ logger = logging.getLogger("discord_bot.clone_manager")
 POLL_INTERVAL_SECONDS = 30
 INITIAL_RESTART_BACKOFF_SECONDS = 15
 MAX_RESTART_BACKOFF_SECONDS = 300
+# A clone only counts as "stable" (backoff reset) after this much uptime; a clone
+# that dies every minute or two must keep escalating its backoff instead of
+# restarting at 15s forever and re-IDENTIFYing into Discord's rate limit.
+STABLE_UPTIME_SECONDS = 300
 
 # Held for the lifetime of the process so a second supervisor can never
 # start on the same host while this one is alive (see _acquire_singleton_lock).
@@ -62,12 +66,17 @@ class ManagedClone:
         self.process: Optional[subprocess.Popen] = None
         self.backoff = INITIAL_RESTART_BACKOFF_SECONDS
         self.next_restart_at = 0.0
+        self.started_at = 0.0  # time.monotonic() of the last start()
+
+    def uptime(self) -> float:
+        return time.monotonic() - self.started_at if self.started_at else 0.0
 
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
     def start(self):
         logger.info(f"Starting clone #{self.clone_id} ({self.label})")
+        self.started_at = time.monotonic()
         self.process = subprocess.Popen(
             [sys.executable, "-m", "discord_bot.bot", "--clone-id", str(self.clone_id)],
         )
@@ -326,10 +335,16 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
     now = time.monotonic()
     for m in managed.values():
         if m.is_running():
-            m.backoff = INITIAL_RESTART_BACKOFF_SECONDS  # reset once stable
+            if m.uptime() >= STABLE_UPTIME_SECONDS:
+                m.backoff = INITIAL_RESTART_BACKOFF_SECONDS  # reset once stable
             continue
         if now >= m.next_restart_at:
-            logger.warning(f"Clone #{m.clone_id} ({m.label}) is down — restarting (next backoff={m.backoff}s)")
+            code = m.process.returncode if m.process is not None else None
+            hint = " (SIGKILL/OOM-kill likely)" if code in (-9, 137) else ""
+            logger.warning(
+                f"Clone #{m.clone_id} ({m.label}) is down — exit code {code}{hint}, "
+                f"ran {m.uptime():.0f}s — restarting (next backoff={m.backoff}s)"
+            )
             m.start()
             m.next_restart_at = now + m.backoff
             m.backoff = min(m.backoff * 2, MAX_RESTART_BACKOFF_SECONDS)
