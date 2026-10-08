@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "59"
+SCHEMA_VERSION = "60"
+# "59" -> "60" creates dash_owner_audit (web owner area audit trail, also written by the Discord owner panel) + its indexes. Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "58" -> "59" actually creates the web-dashboard tables dash_dropbox_messages, dash_dropbox_reads, dash_dropbox_dm and dash_audit (+ the audience/min_members/target_guild_id/push_dm columns). They were added to _create_tables in the dashboard PRs without a bump, so DBs stamped '58' hit UndefinedTableError on every Drop Box / Audit request. Same bump-or-it-never-runs trap.
 # "57" -> "58" adds 031_discount_and_applications.sql (premium_discount_codes, discord_application_forms, discord_application_submissions). Same bump-or-it-never-runs trap.
 # "56" -> "57" adds 4 filter_* columns to discord_antiraid_config (Anti-raid Pro: account-age / default-avatar / suspicious-name join filter) via ALTER TABLE ADD COLUMN IF NOT EXISTS — see modules/antiraid_pro.py. Same bump-or-it-never-runs trap.
@@ -4158,6 +4159,24 @@ class Database:
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS dash_audit_guild_idx ON dash_audit (guild_id, id DESC)")
+
+        # Owner-area audit trail (web + Discord owner actions). Never stores secrets.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_owner_audit (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                user_name TEXT NOT NULL DEFAULT '',
+                section TEXT NOT NULL,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'web',
+                result TEXT NOT NULL DEFAULT 'started',
+                detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS dash_owner_audit_id_idx ON dash_owner_audit (id DESC)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS dash_owner_audit_section_idx ON dash_owner_audit (section, id DESC)")
 
         # Referral-boost click log — just a visit counter (no auth, no
         # cookies/sessions to correlate: see the note on invite_code/
@@ -14419,6 +14438,65 @@ class Database:
                 session_id,
             )
             return row is not None
+
+    # ── Owner area: session helpers + audit trail ──
+
+    async def update_login_session_payload(self, session_id: str, patch: dict) -> bool:
+        """Merge ``patch`` into a session's JSON payload (used for the step-up 'fresh until')."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE discord_login_sessions SET payload = payload || $2::jsonb "
+                "WHERE session_id = $1 RETURNING session_id", session_id, json.dumps(patch))
+            return row is not None
+
+    async def delete_login_sessions_for_user(self, user_id: str) -> int:
+        """'Sign out everywhere': drop every dashboard session for this Discord user."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "DELETE FROM discord_login_sessions WHERE payload->>'kind' = 'dash' "
+                "AND payload->'user'->>'id' = $1 RETURNING session_id", str(user_id))
+            return len(rows)
+
+    async def owner_audit_add(self, user_id, user_name: str, section: str, action: str,
+                              target: str = "", source: str = "web", result: str = "started",
+                              detail: Optional[dict] = None) -> int:
+        """Insert one owner audit row and return its id. Raises on failure (callers that must
+        fail closed rely on that)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                """INSERT INTO dash_owner_audit (user_id, user_name, section, action, target, source, result, detail)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb) RETURNING id""",
+                str(user_id), str(user_name or "")[:80], str(section)[:40], str(action)[:60],
+                str(target or "")[:120], source if source in ("web", "discord") else "web",
+                str(result)[:20], json.dumps(detail or {}))
+
+    async def owner_audit_set_result(self, audit_id: int, result: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE dash_owner_audit SET result = $2 WHERE id = $1", int(audit_id), str(result)[:20])
+
+    async def owner_audit_list(self, before_id: Optional[int] = None, section: Optional[str] = None,
+                               limit: int = 50) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, user_id, user_name, section, action, target, source, result, detail, created_at
+                   FROM dash_owner_audit
+                   WHERE ($1::bigint IS NULL OR id < $1) AND ($2::text IS NULL OR section = $2)
+                   ORDER BY id DESC LIMIT $3""",
+                before_id, section, max(1, min(int(limit), 200)))
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["id"] = str(d["id"])
+            d["created_at"] = d["created_at"].isoformat()
+            if isinstance(d.get("detail"), str):
+                d["detail"] = json.loads(d["detail"])
+            out.append(d)
+        return out
 
     # ── Web dashboard drop box (owner -> every dashboard admin) ──
 

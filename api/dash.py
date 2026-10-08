@@ -37,6 +37,10 @@ Routes (all on /api/dash):
   POST {action: dropbox_send, ...}      -> OWNER ONLY (config.DISCORD_OWNER_BROADCAST_IDS)
   POST {action: dropbox_delete, id}     -> OWNER ONLY
   GET  ?action=dropbox_delivery&id      -> OWNER ONLY: DM sent/failed/pending counts + reads
+  GET  ?action=me                       -> also returns owner_sections (owner area; [] for everyone else)
+  POST {action: owner_stepup}           -> OWNER: {url}: Discord re-sign-in that makes this session "fresh" for DASH_STEPUP_MINUTES
+  POST {action: owner_signout_all}      -> OWNER: drop every dashboard session of this user (audited)
+  GET  ?action=owner_audit[&before][&section] -> OWNER (section "audit"): owner audit trail, newest first
 Clone bots: every guild route also accepts `clone_id` (query or JSON body). The dashboard then
 acts as that clone: its own bot token for every Discord call, its own settings rows (clone_id),
 its own Premium state. Authorisation is unchanged and still checked against Discord with the
@@ -228,7 +232,7 @@ async def _session(headers) -> dict:
     payload = await db.get_login_session(sid, ttl_minutes=config.DASH_SESSION_MINUTES) if sid else None
     if not payload or payload.get("kind") != "dash":
         _fail(401, "Your session expired. Sign in again.")
-    return payload
+    return {**payload, "_sid": sid}
 
 
 def _is_owner(sess: dict) -> bool:
@@ -236,6 +240,88 @@ def _is_owner(sess: dict) -> bool:
         return int(sess["user"]["id"]) in set(config.DISCORD_OWNER_BROADCAST_IDS)
     except (KeyError, TypeError, ValueError):
         return False
+
+
+# ───────────────────────── owner area ─────────────────────────
+# Same permission rules as the Discord Owner panel (modules/admin_access). The client never
+# decides access: every owner_* route calls _require_section. v1 is owner-only (no helpers on the
+# web yet), so the helper map is empty here.
+
+def _owner_sections(sess: dict) -> set:
+    from modules.admin_access import compute_sections
+    try:
+        uid = int(sess["user"]["id"])
+    except (KeyError, TypeError, ValueError):
+        return set()
+    return compute_sections(uid, config.DASH_OWNER_IDS, config.DISCORD_OWNER_BROADCAST_IDS)
+
+
+def _require_section(sess: dict, section: str) -> None:
+    """403 unless this user may open `section`; 401 if the owner session is older than
+    DASH_OWNER_SESSION_MINUTES (owners sign in again more often than guild admins)."""
+    if section not in _owner_sections(sess):
+        _fail(403, "You don't have access to that.")
+    iat = sess.get("iat")
+    if not isinstance(iat, (int, float)) or time.time() - iat > config.DASH_OWNER_SESSION_MINUTES * 60:
+        _fail(401, "Owner sessions are short. Sign in again.")
+
+
+def _require_fresh(sess: dict) -> None:
+    """Step-up: the session must have re-authenticated with Discord within DASH_STEPUP_MINUTES."""
+    fu = sess.get("fresh_until")
+    if not isinstance(fu, (int, float)) or fu < time.time():
+        raise _Reply(403, {"ok": False, "code": "stepup_required",
+                           "message": "Confirm it's you: sign in with Discord again."})
+
+
+def _require_confirm(body: dict, expected: str) -> None:
+    """Typed confirmation for destructive actions (exact match, case-sensitive)."""
+    if (body.get("confirm") or "") != expected:
+        _fail(422, f"Type {expected} to confirm.")
+
+
+_owner_hits: dict = {}
+
+
+def _owner_rate(sess: dict, action: str, limit: int, window: float) -> None:
+    key = (str(sess["user"]["id"]), action)
+    now = time.monotonic()
+    hits = [t for t in _owner_hits.get(key, []) if now - t < window]
+    if len(hits) >= limit:
+        _fail(429, "Slow down a little.")
+    hits.append(now)
+    _owner_hits[key] = hits
+    if len(_owner_hits) > 2000:
+        _owner_hits.clear()
+
+
+async def _owner_write(sess: dict, section: str, action: str, target: str, fn, *, detail=None):
+    """Run an owner write with a FAIL-CLOSED audit: the audit row is written first and, if that
+    fails, the action does not run (the opposite of the guild dashboard). The row's result is
+    updated afterwards (best effort). Never put secrets in `target` or `detail`."""
+    try:
+        audit_id = await db.owner_audit_add(sess["user"]["id"], sess["user"].get("username") or "",
+                                            section, action, target, "web", "started", detail)
+    except Exception:
+        logger.exception("dashboard: owner audit write failed; refusing the action")
+        _fail(503, "Couldn't record this in the audit log, so it was not done.")
+    try:
+        result = await fn()
+    except _Reply as r:
+        await _owner_audit_result(audit_id, "denied" if r.status < 500 else "error")
+        raise
+    except Exception:
+        await _owner_audit_result(audit_id, "error")
+        raise
+    await _owner_audit_result(audit_id, "ok")
+    return result
+
+
+async def _owner_audit_result(audit_id, result: str) -> None:
+    try:
+        await db.owner_audit_set_result(audit_id, result)
+    except Exception:
+        logger.exception("dashboard: owner audit result update failed")
 
 
 _last_preview: dict = {}
@@ -703,14 +789,22 @@ async def _authorised_guild(sess: dict, raw_gid) -> int:
     return gid
 
 
-async def _oauth_login():
+def _check_oauth_configured():
     if not (config.DASH_PAGES_URL and config.DASH_OAUTH_REDIRECT_URI and config.DISCORD_OAUTH_CLIENT_SECRET):
         _fail(503, "The dashboard isn't configured yet.")
+
+
+def _authorize_url(state: str, prompt: str) -> str:
+    q = {"client_id": config.DISCORD_OAUTH_CLIENT_ID, "redirect_uri": config.DASH_OAUTH_REDIRECT_URI,
+         "response_type": "code", "scope": "identify guilds", "state": state, "prompt": prompt}
+    return f"{AUTHORIZE_URL}?{urlencode(q)}"
+
+
+async def _oauth_login():
+    _check_oauth_configured()
     state = _secrets.token_urlsafe(24)
     await db.create_login_oauth_state(state, return_to="dash")
-    q = {"client_id": config.DISCORD_OAUTH_CLIENT_ID, "redirect_uri": config.DASH_OAUTH_REDIRECT_URI,
-         "response_type": "code", "scope": "identify guilds", "state": state, "prompt": "none"}
-    raise _Reply(302, location=f"{AUTHORIZE_URL}?{urlencode(q)}")
+    raise _Reply(302, location=_authorize_url(state, "none"))
 
 
 def _back(fragment: str):
@@ -722,7 +816,9 @@ async def _oauth_callback(query: dict):
         _back("error=" + urlencode({"": "Sign-in was cancelled."})[1:])
     state, code = query.get("state", [None])[0], query.get("code", [None])[0]
     popped = await db.pop_login_oauth_state(state) if state else None
-    if not popped or popped.get("return_to") != "dash" or not code:
+    rt = (popped or {}).get("return_to") or ""
+    stepup_sid = rt[len("dash_stepup:"):] if rt.startswith("dash_stepup:") else None
+    if not popped or not (rt == "dash" or stepup_sid) or not code:
         _back("error=" + urlencode({"": "That sign-in link expired. Try again."})[1:])
     try:
         timeout = aiohttp.ClientTimeout(total=12)
@@ -744,10 +840,20 @@ async def _oauth_callback(query: dict):
         logger.exception("dashboard OAuth exchange failed")
         _back("error=" + urlencode({"": "Something went wrong signing you in."})[1:])
     uid = me["id"]
+    if stepup_sid:
+        # Step-up: the same Discord account must have just re-authenticated. Mark THAT session
+        # fresh; never create a new one (so a different account can't take over the session).
+        cur = await db.get_login_session(stepup_sid, ttl_minutes=config.DASH_OWNER_SESSION_MINUTES)
+        if not cur or cur.get("kind") != "dash" or str((cur.get("user") or {}).get("id")) != str(uid):
+            _back("error=" + urlencode({"": "That confirmation didn't match your session."})[1:])
+        await db.update_login_session_payload(
+            stepup_sid, {"fresh_until": int(time.time()) + config.DASH_STEPUP_MINUTES * 60})
+        _back("owner=stepup_ok")
     avatar = (f"https://cdn.discordapp.com/avatars/{uid}/{me['avatar']}.png?size=64" if me.get("avatar")
               else f"https://cdn.discordapp.com/embed/avatars/{(int(uid) >> 22) % 6}.png")
     sid = await db.create_login_session({
         "kind": "dash",
+        "iat": int(time.time()),
         "user": {"id": uid, "username": me.get("global_name") or me.get("username") or "Discord user", "avatar_url": avatar},
         "guilds": S.guild_list_manageable(guilds),
     })
@@ -891,7 +997,38 @@ async def _route(method: str, query: dict, headers, body: dict):
             logger.exception("dashboard: dropbox unread count failed")
             unread = 0
         raise _Reply(200, {"ok": True, "user": sess["user"], "servers": servers,
-                           "is_owner": _is_owner(sess), "unread": unread})
+                           "is_owner": _is_owner(sess), "unread": unread,
+                           "owner_sections": sorted(_owner_sections(sess))})
+
+    if method == "POST" and action == "owner_stepup":
+        _require_section(sess, "controls")      # any real owner; helpers never get here
+        _owner_rate(sess, "stepup", 5, 300)
+        _check_oauth_configured()
+
+        async def _start():
+            state = _secrets.token_urlsafe(24)
+            await db.create_login_oauth_state(state, return_to="dash_stepup:" + sess["_sid"])
+            return _authorize_url(state, "consent")
+        url = await _owner_write(sess, "session", "stepup_start", "", _start)
+        raise _Reply(200, {"ok": True, "url": url, "minutes": config.DASH_STEPUP_MINUTES})
+
+    if method == "POST" and action == "owner_signout_all":
+        _require_section(sess, "controls")
+        _owner_rate(sess, "signout_all", 5, 300)
+        _require_fresh(sess)
+        _require_confirm(body, "SIGN OUT")
+        n = await _owner_write(sess, "session", "signout_all", "",
+                               lambda: db.delete_login_sessions_for_user(str(sess["user"]["id"])))
+        raise _Reply(200, {"ok": True, "signed_out": n})
+
+    if method == "GET" and action == "owner_audit":
+        _require_section(sess, "audit")
+        _owner_rate(sess, "audit_read", 60, 60)
+        before, section = q("before"), q("section")
+        if before is not None and not str(before).isdigit():
+            _fail(422, "Bad cursor.")
+        rows = await db.owner_audit_list(int(before) if before else None, section if section else None, 50)
+        raise _Reply(200, {"ok": True, "entries": rows})
 
     if method == "GET" and action == "guild":
         gid = await _authorised_guild(sess, q("guild_id"))
