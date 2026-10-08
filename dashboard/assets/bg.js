@@ -2,7 +2,11 @@
 (function () {
   "use strict";
   var c = document.getElementById("bgfx"); if (!c) return;
-  var x = c.getContext("2d"), W = 0, H = 0, P = [], last = 0;
+  var x = c.getContext("2d"), W = 0, H = 0, P = [], last = 0, LINE = "150,210,255", DOT = "210,236,255";
+  function colours() {
+    var cs = getComputedStyle(document.documentElement);
+    LINE = cs.getPropertyValue("--fx-line").trim() || LINE; DOT = cs.getPropertyValue("--fx-dot").trim() || DOT;
+  }
   var still = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
   function size() {
     var d = Math.min(window.devicePixelRatio || 1, 2);
@@ -17,9 +21,9 @@
       var a = P[i];
       for (var j = i + 1; j < P.length; j++) {
         var b = P[j], dx = a.x - b.x, dy = a.y - b.y, d = dx * dx + dy * dy;
-        if (d < 17000) { x.strokeStyle = "rgba(150,210,255," + (0.16 * (1 - d / 17000)).toFixed(3) + ")"; x.lineWidth = 1; x.beginPath(); x.moveTo(a.x, a.y); x.lineTo(b.x, b.y); x.stroke(); }
+        if (d < 17000) { x.strokeStyle = "rgba(" + LINE + "," + (0.16 * (1 - d / 17000)).toFixed(3) + ")"; x.lineWidth = 1; x.beginPath(); x.moveTo(a.x, a.y); x.lineTo(b.x, b.y); x.stroke(); }
       }
-      x.fillStyle = "rgba(210,236,255,.7)"; x.beginPath(); x.arc(a.x, a.y, a.r, 0, 6.283); x.fill();
+      x.fillStyle = "rgba(" + DOT + ",.7)"; x.beginPath(); x.arc(a.x, a.y, a.r, 0, 6.283); x.fill();
     }
   }
   function tick(t) {
@@ -32,7 +36,8 @@
     }
     draw();
   }
-  size(); draw();
+  colours(); size(); draw();
+  addEventListener("pb-theme", function () { colours(); draw(); });
   addEventListener("resize", function () { size(); draw(); });
   if (!still) requestAnimationFrame(tick);
 })();

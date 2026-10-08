@@ -541,7 +541,7 @@ class CatchSetupView(discord.ui.View):
         join_dm.callback = self._toggle_join_dm
         self.add_item(join_dm)
 
-    async def _refresh(self, interaction: discord.Interaction) -> None:
+    async def _redraw(self, interaction: discord.Interaction) -> None:
         if self.guild_id is not None:
             # Acknowledge first (3-second rule); permission lookup and saves hit the API/DB.
             await interaction.response.defer()
@@ -573,12 +573,12 @@ class CatchSetupView(discord.ui.View):
             await interaction.response.send_message(text("setup.enable_channel"), ephemeral=True)
             return
         self.setup = candidate
-        await self._refresh(interaction)
+        await self._redraw(interaction)
 
     async def _speed(self, interaction: discord.Interaction) -> None:
         selected = interaction.data.get("values", [self.setup.speed_preset])[0] if interaction.data else self.setup.speed_preset
         self.setup = self.setup.with_speed(selected)
-        await self._refresh(interaction)
+        await self._redraw(interaction)
 
     async def _channels(self, interaction: discord.Interaction) -> None:
         values = (interaction.data or {}).get("values", [])
@@ -587,16 +587,16 @@ class CatchSetupView(discord.ui.View):
             await interaction.response.send_message(text("setup.text_channel"), ephemeral=True)
             return
         self.setup = self.setup.with_spawn_channels(channel_ids)
-        await self._refresh(interaction)
+        await self._redraw(interaction)
 
     async def _toggle_encounters(self, interaction: discord.Interaction) -> None:
         encounter_channels = self.setup.spawn_channel_ids if not self.setup.encounter_channel_ids else ()
         self.setup = replace(self.setup, encounter_channel_ids=encounter_channels)
-        await self._refresh(interaction)
+        await self._redraw(interaction)
 
     async def _toggle_join_dm(self, interaction: discord.Interaction) -> None:
         self.setup = replace(self.setup, join_dm_enabled=not self.setup.join_dm_enabled)
-        await self._refresh(interaction)
+        await self._redraw(interaction)
 
     async def _wild_zone(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
