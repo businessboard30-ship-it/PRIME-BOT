@@ -1034,8 +1034,8 @@
         api("member_card_save", null, { design: d }).then(function () { msg.textContent = "Saved. Your next level-up uses this card."; toast("Saved"); })
           .catch(function (e) {
             msg.textContent = e.message;
-            if (e.status === 402 && e.payload && e.payload.checkout_url) {
-              pay.appendChild(h("a", { class: "btn sm", href: e.payload.checkout_url, text: "Subscribe" }));
+            if (e.status === 402 && e.payload && e.payload.plans_path) {
+              pay.appendChild(h("a", { class: "btn sm", href: e.payload.plans_path, text: "Subscribe" }));
             }
           }).then(function () { save.disabled = false; });
       });
@@ -1065,7 +1065,7 @@
               show({ status: res.status, reason: res.reason }); if (res.status !== "rejected") { d[flag] = true; use.checked = true; } queue();
             }).catch(function (e) {
               show(j.assets && j.assets[kind]); msg.textContent = e.message;
-              if (e.status === 402 && e.payload && e.payload.checkout_url) pay.appendChild(h("a", { class: "btn sm", href: e.payload.checkout_url, text: "Subscribe" }));
+              if (e.status === 402 && e.payload && e.payload.plans_path) pay.appendChild(h("a", { class: "btn sm", href: e.payload.plans_path, text: "Subscribe" }));
             }).then(function () { file.value = ""; });
           };
           r.readAsDataURL(f);

@@ -32,28 +32,57 @@ def test_plans_and_dev_status_list_buttons_for_the_mode(cdb, monkeypatch, mode, 
     assert len(call("GET", {"action": "dev_status"})[1]["pay"]) == expect
 
 
-def _intent(cdb, p):
-    return json.loads(cdb.settings["payintent:" + p["checkout_url"].split("t=")[1].split("&")[0]])
+@pytest.fixture
+def made(monkeypatch):
+    seen = []
+
+    async def fake(intent, country):
+        seen.append(country)
+        return "https://checkout.example.test/" + ("paystack" if country == "GH" else "gumroad")
+    import payments_manual
+    monkeypatch.setattr(payments_manual, "_create_user_plan_checkout", fake)
+    return seen
 
 
-def test_split_checkout_routes_to_the_chosen_gateway(cdb, monkeypatch):
+def _buy(provider=None, product="dev_monthly"):
+    body = {"action": "checkout_user", "product": product}
+    if provider:
+        body["provider"] = provider
+    return call("POST", {}, body=body)
+
+
+def test_split_checkout_goes_straight_to_the_chosen_gateway(cdb, monkeypatch, made):
     _mode(cdb, monkeypatch, "split")
-    p = call("POST", {}, body={"action": "checkout_user", "product": "dev_monthly", "provider": "paystack"})[1]
-    assert p["checkout_url"].endswith("&r=gh") and p["provider"] == "paystack"
-    p = call("POST", {}, body={"action": "checkout_user", "product": "dev_monthly", "provider": "gumroad"})[1]
-    assert p["checkout_url"].endswith("&r=intl")
-    p = call("POST", {}, body={"action": "checkout_user", "product": "dev_monthly"})[1]
-    assert "&r=" not in p["checkout_url"]                      # no choice: the /pay page detects the country
+    p = _buy("paystack")[1]
+    assert p["checkout_url"] == "https://checkout.example.test/paystack" and "/pay?" not in p["checkout_url"]
+    assert _buy("gumroad")[1]["checkout_url"] == "https://checkout.example.test/gumroad"
+    assert made == ["GH", "XX"]
+    st, p, _ = _buy()                                           # split with no choice: ask, never guess
+    assert st == 422 and len(p["pay"]) == 2
 
 
-def test_single_gateway_modes_refuse_the_other_one(cdb, monkeypatch):
+def test_single_gateway_modes_use_it_and_refuse_the_other(cdb, monkeypatch, made):
     _mode(cdb, monkeypatch, "auto")
-    assert call("POST", {}, body={"action": "checkout_user", "product": "dev_monthly", "provider": "gumroad"})[0] == 422
-    p = call("POST", {}, body={"action": "checkout_user", "product": "dev_monthly"})[1]
-    assert p["checkout_url"].endswith("&r=gh")                 # the only gateway is used by default
+    assert _buy("gumroad")[0] == 422
+    assert _buy()[1]["checkout_url"].endswith("/paystack")
     _mode(cdb, monkeypatch, "gumroad")
-    assert call("POST", {}, body={"action": "checkout_user", "product": "dev_monthly", "provider": "paystack"})[0] == 422
-    assert call("POST", {}, body={"action": "checkout_user", "product": "dev_monthly"})[1]["checkout_url"].endswith("&r=intl")
+    assert _buy("paystack")[0] == 422
+    assert _buy()[1]["checkout_url"].endswith("/gumroad")
+
+
+def test_gateway_failure_is_a_clean_502(cdb, monkeypatch):
+    import payments_manual
+
+    async def none(intent, country):
+        return None
+    monkeypatch.setattr(payments_manual, "_create_user_plan_checkout", none)
+    _mode(cdb, monkeypatch, "gumroad")
+    assert _buy()[0] == 502
+
+
+def test_dashboard_never_goes_through_slash_pay():
+    src = Path("api/dash_member.py").read_text()
+    assert "/pay" not in src.replace("# ", "") .split("async def checkout_user")[1].split("async def member_card(")[0].replace("no /pay hop", "").replace("no /pay", "")
 
 
 def test_pay_redirect_enforces_the_mode_for_plans():

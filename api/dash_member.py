@@ -115,28 +115,33 @@ async def member_plans(uid, q, db):
 
 
 async def checkout_user(uid, body, db):
-    """Start checkout for ONE plan for the SIGNED-IN user. The user id is the session's; the price
-    is the server's. Returns a /pay link that detects the buyer's country (Paystack in Ghana,
-    Gumroad elsewhere). Nothing is granted here: only the payment webhook can grant."""
+    """Start checkout for ONE plan for the SIGNED-IN user and return the gateway's OWN checkout URL
+    (Paystack or Gumroad); there is no /pay hop. The user id is the session's; the price is the server's.
+    Which gateways are allowed follows the bot's payment mode. Nothing is granted here: only the payment
+    webhook can grant."""
     product = (body or {}).get("product")
     if not user_subs.is_plan(product):
         return {"_status": 422, "message": "Unknown plan."}
-    base = (getattr(config, "PUBLIC_BASE_URL", "") or "").rstrip("/")
-    if not base:
-        logger.error("checkout_user: PUBLIC_BASE_URL is not set")
-        return {"_status": 503, "message": "Checkout isn't available right now."}
     options = await pay_view(db)
+    allowed = [o["provider"] for o in options]
     provider = (body or {}).get("provider")
     if provider in (None, ""):
-        provider = options[0]["provider"] if len(options) == 1 else None      # split: the /pay page picks by country
-    elif provider not in [o["provider"] for o in options]:
+        if len(allowed) != 1:
+            return {"_status": 422, "message": "Choose Paystack or Gumroad to pay.", "extra": {"pay": options}}
+        provider = allowed[0]
+    elif provider not in allowed:
         return {"_status": 422, "message": "That payment method isn't available right now."}
-    token = secrets.token_urlsafe(18)
+    from payments_manual import _create_user_plan_checkout
     intent = {"payment_type": product, "user_id": uid, "guild_id": None, "clone_id": None,
-              "price_usd": user_subs.price_usd(product), "extra": {}, "created": time.time()}
-    await db.set_global_setting(f"payintent:{token}", json.dumps(intent))
-    region = f"&r={user_subs.PAY_PROVIDERS[provider]['region']}" if provider else ""
-    return {"checkout_url": f"{base}/pay?t={token}{region}", "provider": provider, "pay": options, "product": product,
+              "price_usd": user_subs.price_usd(product), "extra": {}}
+    try:
+        url = await _create_user_plan_checkout(intent, "GH" if provider == "paystack" else "XX")
+    except Exception:
+        logger.exception("checkout_user: %s checkout crashed", provider)
+        url = None
+    if not url or not str(url).startswith("https://"):
+        return {"_status": 502, "message": "Couldn't start checkout right now. Please try again shortly."}
+    return {"checkout_url": url, "provider": provider, "pay": options, "product": product,
             "price_usd": user_subs.price_usd(product), "period_days": user_subs.PLANS[product]["period_days"]}
 
 
@@ -185,11 +190,8 @@ async def member_card_preview(uid, body, db):
 async def _need_card_plan(uid, db):
     if ent.has_access(await db.entitlements_list(uid), ("card_plan",)):
         return None
-    extra = {}
-    started = await checkout_user(uid, {"product": "card_plan"}, db)
-    if started.get("checkout_url"):
-        extra["checkout_url"] = started["checkout_url"]
-    return {"_status": 402, "message": "Uploading needs the card plan. Subscribe to upload.", "extra": extra}
+    return {"_status": 402, "message": "Uploading needs the card plan. Subscribe to upload.",
+            "extra": {"plans_path": "#/me/plans", "pay": await pay_view(db)}}
 
 
 async def member_card_asset(uid, body, db):
@@ -226,12 +228,8 @@ async def member_card_save(uid, body, db):
     if err:
         return {"_status": 422, "message": err}
     if not ent.has_access(await db.entitlements_list(uid), ("card_plan",)):
-        extra = {}
-        started = await checkout_user(uid, {"product": "card_plan"}, db)
-        if started.get("checkout_url"):
-            extra["checkout_url"] = started["checkout_url"]
         return {"_status": 402, "message": "The custom level-up card needs the card plan. Subscribe to save your design.",
-                "extra": extra}
+                "extra": {"plans_path": "#/me/plans", "pay": await pay_view(db)}}
     await db.user_card_set(uid, json.dumps(design, separators=(",", ":")))
     return {"design": design}
 

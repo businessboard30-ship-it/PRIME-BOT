@@ -46,14 +46,25 @@ def test_checkout_requires_a_session(cdb):
     assert call("POST", {}, token=None, body={"action": "checkout_user", "product": "dev_monthly"})[0] == 401
 
 
-def test_checkout_uses_session_user_and_server_price_not_client_values(cdb):
-    st, p, _ = call("POST", {}, body={"action": "checkout_user", "product": "dev_monthly",
+@pytest.fixture
+def made(monkeypatch):
+    seen = []
+
+    async def fake(intent, country):
+        seen.append((intent, country))
+        return "https://checkout.example.test/" + ("paystack" if country == "GH" else "gumroad")
+    import payments_manual
+    monkeypatch.setattr(payments_manual, "_create_user_plan_checkout", fake)
+    return seen
+
+
+def test_checkout_uses_session_user_and_server_price_not_client_values(cdb, made):
+    st, p, _ = call("POST", {}, body={"action": "checkout_user", "product": "dev_monthly", "provider": "gumroad",
                                   "user_id": "999", "price_usd": 0.01, "uid": "999"})
-    assert st == 200 and p["price_usd"] == 5.0
-    token = p["checkout_url"].split("t=")[1]
-    intent = json.loads(cdb.settings[f"payintent:{token}"])
-    assert intent["price_usd"] == 5.0 and intent["payment_type"] == "dev_monthly"
-    assert intent["user_id"] != "999"
+    assert st == 200 and p["price_usd"] == 5.0 and p["checkout_url"] == "https://checkout.example.test/gumroad"
+    intent, country = made[0]
+    assert intent["price_usd"] == 5.0 and intent["payment_type"] == "dev_monthly" and country == "XX"
+    assert intent["user_id"] != "999" and not cdb.settings            # no /pay token is stored any more
 
 
 def test_checkout_rejects_unknown_products(cdb):
