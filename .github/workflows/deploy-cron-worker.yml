@@ -1,0 +1,36 @@
+name: Deploy cron worker to Cloudflare
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cron-worker/**"
+      - ".github/workflows/deploy-cron-worker.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cron-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # Needs repo secrets CLOUDFLARE_API_TOKEN (Workers Scripts:Edit) + CLOUDFLARE_ACCOUNT_ID + CRON_SECRET.
+      - name: Deploy worker
+        run: npx --yes wrangler@4 deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Sync CRON_SECRET to worker
+        run: printf '%s' "$CRON_SECRET" | npx --yes wrangler@4 secret put CRON_SECRET
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

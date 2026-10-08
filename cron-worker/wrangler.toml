@@ -1,0 +1,16 @@
+name = "prime-bot-cron"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+BACKEND_URL = "https://web-production-74667a.up.railway.app"
+
+[triggers]
+crons = [
+  "*/5 * * * *",  # frequent: announcements, owner broadcast, dropbox DM
+  "17 * * * *",   # hourly: ad placement
+  "23 3 * * *",   # daily: expire monetization, yandex renew, pending-payment cleanup
+]
+
+[observability]
+enabled = true

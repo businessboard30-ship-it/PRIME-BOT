@@ -4,11 +4,9 @@ name: Cron pings
 # (the one place the real host lives). Needs repo secret CRON_SECRET (same value as
 # on the backend). GitHub schedules can run a few minutes late and are the fastest
 # allowed at every 5 minutes. Turn off any other scheduler hitting these URLs.
+# SCHEDULE MOVED to the Cloudflare Worker in cron-worker/ (on-time, reliable).
+# This workflow is now manual-only (Run workflow) as a fallback.
 on:
-  schedule:
-    - cron: "*/5 * * * *"   # announcements + owner broadcast
-    - cron: "17 * * * *"    # ad placement
-    - cron: "23 3 * * *"    # daily: expire monetization, yandex renew, pending-payment cleanup
   workflow_dispatch:
     inputs:
       group:
