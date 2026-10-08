@@ -126,28 +126,62 @@ def test_approved_upload_is_stored_and_status_is_returned(monkeypatch):
     assert r == {"ok": True, "status": "approved", "reason": ""} and db.assets[("6", "background")]["status"] == "approved"
 
 
-def test_moderation_failure_leaves_it_pending_never_approved(monkeypatch):
-    import modules.ai_store_providers as prov
-
-    async def boom(**k):
-        raise RuntimeError("no key")
-    monkeypatch.setattr(prov, "call_anthropic", boom)
+def test_moderation_maps_openai_results_and_fails_safe(monkeypatch):
+    def reply(obj=None, exc=None):
+        async def f(png):
+            if exc:
+                raise exc
+            return obj
+        monkeypatch.setattr(ca, "_post_moderation", f)
+    reply({"results": [{"flagged": False, "categories": {"sexual": False}}]})
+    assert run(ca.moderate(b"x")) == {"status": "approved", "reason": ""}
+    reply({"results": [{"flagged": True, "categories": {"sexual": True, "violence": False}}]})
+    r = run(ca.moderate(b"x"))
+    assert r["status"] == "rejected" and "sexual" in r["reason"] and "violence" not in r["reason"]
+    for bad in ({}, {"results": []}, {"results": [{}]}, {"results": [{"flagged": "no"}]}, {"results": ["x"]}):
+        reply(bad)
+        assert run(ca.moderate(b"x"))["status"] == "pending"
+    reply(exc=RuntimeError("OPENAI_API_KEY is not set"))
     assert run(ca.moderate(b"x"))["status"] == "pending"
 
-    async def junk(**k):
-        return "sure, looks great!", 0, 0
-    monkeypatch.setattr(prov, "call_anthropic", junk)
+
+def test_missing_key_means_pending_and_key_is_never_logged(monkeypatch, caplog):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert run(ca.moderate(b"x"))["status"] == "pending"
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-SECRETVALUE")
+    import httpx
 
-    async def yes(**k):
-        return json.dumps({"decision": "APPROVE", "reason": "ok"}), 1, 1
-    monkeypatch.setattr(prov, "call_anthropic", yes)
-    assert run(ca.moderate(b"x"))["status"] == "approved"
+    class Boom:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): raise httpx.ConnectError("sk-SECRETVALUE leaked?")
+    monkeypatch.setattr(httpx, "AsyncClient", Boom)
+    with caplog.at_level("DEBUG"):
+        assert run(ca.moderate(b"x"))["status"] == "pending"
+    assert "SECRETVALUE" not in caplog.text
 
-    async def no(**k):
-        return json.dumps({"decision": "REJECT", "reason": "nsfw"}), 1, 1
-    monkeypatch.setattr(prov, "call_anthropic", no)
-    assert run(ca.moderate(b"x"))["status"] == "rejected"
+
+def test_request_goes_to_free_endpoint_with_image_input(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    import httpx
+    seen = {}
+
+    class Resp:
+        def raise_for_status(self): pass
+        def json(self): return {"results": [{"flagged": False}]}
+
+    class C:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, headers=None, json=None):
+            seen.update(url=url, headers=headers, body=json)
+            return Resp()
+    monkeypatch.setattr(httpx, "AsyncClient", C)
+    assert run(ca.moderate(img_bytes()))["status"] == "approved"
+    assert seen["url"] == "https://api.openai.com/v1/moderations" and seen["body"]["model"] == "omni-moderation-latest"
+    assert seen["body"]["input"][0]["type"] == "image_url" and seen["body"]["input"][0]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 def test_rejected_image_hash_is_blocked_for_everyone(monkeypatch):

@@ -2,7 +2,7 @@
 """Custom level-up card assets (card plan): an uploaded background and/or logo.
 
 Pipeline: size cap -> decode with PIL (PNG/JPEG only, pixel cap, no animation) -> shape check -> RE-ENCODE to PNG
-(strips metadata and anything appended to the file) -> hash block-list -> AI vision moderation -> approved/pending/rejected.
+(strips metadata and anything appended to the file) -> hash block-list -> OpenAI free image moderation -> approved/pending/rejected.
 Fails safe: any moderation error leaves the asset 'pending' (the bot only ever draws 'approved' assets).
 
 Card zones (900x300): avatar x0-280, text x280-660 (darkened automatically), logo box x660-880 y20-280.
@@ -83,33 +83,39 @@ def sha(png: bytes) -> str:
     return hashlib.sha256(png).hexdigest()
 
 
-MOD_PROMPT = (
-    "You review images users upload as the background or logo of a Discord level-up card shown to other people. "
-    "REJECT if the image has: nudity or sexual content, gore or graphic violence, hate symbols or harassment, "
-    "readable text/URLs/contact details/QR codes, a recognisable real person's face, or a real company's trademarked logo. "
-    "NEEDS_HUMAN if borderline. APPROVE if it is clean artwork, patterns, mascots or an original logo. "
-    'Reply with ONLY JSON: {"decision":"APPROVE"|"REJECT"|"NEEDS_HUMAN","reason":"one short sentence"}'
-)
+MODERATION_URL = "https://api.openai.com/v1/moderations"
+MODERATION_MODEL = "omni-moderation-latest"          # free endpoint; image support covers sexual/violence/self-harm categories
+
+
+async def _post_moderation(png: bytes) -> dict:
+    """One call to OpenAI's free moderation endpoint. Raises on any problem (no key, HTTP error, bad JSON)."""
+    import os
+    import httpx
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            MODERATION_URL, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={"model": MODERATION_MODEL, "input": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}}]})
+        resp.raise_for_status()
+        return resp.json()
 
 
 async def moderate(png: bytes) -> dict:
-    """-> {'status': 'approved'|'rejected'|'pending', 'reason': str}. Any failure -> pending."""
+    """-> {'status': 'approved'|'rejected'|'pending', 'reason': str}. Flagged -> rejected; any failure -> pending (never approved)."""
     try:
-        from modules.ai_store_providers import call_anthropic
-        text, _i, _o = await call_anthropic(
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png",
-                                             "data": base64.b64encode(png).decode()}},
-                {"type": "text", "text": MOD_PROMPT}]}],
-            api_model="claude-sonnet-4-6", max_tokens=150)
-        parsed = json.loads(text.strip())
-        decision = parsed.get("decision")
-        status = {"APPROVE": "approved", "REJECT": "rejected", "NEEDS_HUMAN": "pending"}.get(decision)
-        if not status:
-            return {"status": "pending", "reason": "Automatic check returned an unexpected answer."}
-        return {"status": status, "reason": str(parsed.get("reason") or "")[:200]}
+        data = await _post_moderation(png)
+        res = (data.get("results") or [None])[0]
+        if not isinstance(res, dict) or not isinstance(res.get("flagged"), bool):
+            return {"status": "pending", "reason": "Waiting for a check."}
+        if res["flagged"]:
+            cats = sorted(k for k, v in (res.get("categories") or {}).items() if v is True)
+            return {"status": "rejected", "reason": ("Not allowed: " + ", ".join(cats))[:200] if cats else "Not allowed."}
+        return {"status": "approved", "reason": ""}
     except Exception as e:
-        logger.warning(f"[card_assets] moderation failed, leaving pending: {e}")
+        logger.warning(f"[card_assets] moderation failed, leaving pending: {type(e).__name__}")
         return {"status": "pending", "reason": "Waiting for a check."}
 
 
