@@ -160,3 +160,26 @@ option{background:#06101a;color:#fff}option:disabled{color:#667}
   *,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important}
   .rv{opacity:1;transform:none}.toast{opacity:1}
 }
+
+/* drop box + announcements */
+.inboxbtn{position:relative}
+.badge-n{display:inline-block;min-width:18px;margin-left:8px;padding:0 6px;border-radius:9px;background:#f2faff;color:#020407;font-size:11px;font-weight:700;line-height:18px;text-align:center}
+.announce{position:sticky;top:0;z-index:30}
+.announce:empty{display:none}
+.ann{display:flex;gap:12px;align-items:center;padding:10px 16px;background:rgba(242,250,255,.1);border-bottom:1px solid rgba(242,250,255,.25);backdrop-filter:blur(8px)}
+.ann.warning,.ann.maintenance{background:rgba(255,190,80,.14);border-bottom-color:rgba(255,190,80,.5)}
+.ann .grow{min-width:0;overflow-wrap:anywhere}
+.composer{display:grid;gap:12px;margin-bottom:20px}
+.composer input[type=text],.composer textarea,.composer select{width:100%}
+.composer textarea{min-height:110px;resize:vertical}
+.composer .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.composer .row select{width:auto}
+.chk{display:inline-flex;align-items:center;gap:6px}
+.inbox{display:grid;gap:12px}
+.msg{display:grid;gap:8px}
+.msg.unread{border-color:rgba(242,250,255,.55)}
+.msg-top{display:flex;gap:10px;align-items:center}
+.msg-top small{margin-left:auto;opacity:.65}
+.msgbody{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+.msg-actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn.danger{color:#ff8a8a}

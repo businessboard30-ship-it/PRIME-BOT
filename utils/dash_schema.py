@@ -382,3 +382,37 @@ def validate_values(module: dict, values: Any, channels: Dict[str, set], roles: 
             if module["id"] == "economy" and lo in clean and hi in clean and clean[lo] > clean[hi]:
                 errors.append("Minimum can't be higher than maximum.")
     return clean, errors
+
+
+# ───────────────────────── drop box (owner -> every dashboard admin) ─────────────────────────
+
+DROPBOX_KINDS = ("info", "update", "warning", "maintenance")
+DROPBOX_TITLE_MAX, DROPBOX_BODY_MAX = 100, 2000
+
+
+def validate_dropbox(raw: Any) -> Tuple[Optional[dict], Optional[str]]:
+    """Validate an owner's drop box message. Returns (clean, error)."""
+    if not isinstance(raw, dict):
+        return None, "Invalid message."
+    title = str(raw.get("title") or "").strip()
+    body = str(raw.get("body") or "").strip()
+    kind = str(raw.get("kind") or "info")
+    if not title:
+        return None, "Title is required."
+    if len(title) > DROPBOX_TITLE_MAX:
+        return None, f"Title must be at most {DROPBOX_TITLE_MAX} characters."
+    if not body:
+        return None, "Message is required."
+    if len(body) > DROPBOX_BODY_MAX:
+        return None, f"Message must be at most {DROPBOX_BODY_MAX} characters."
+    if kind not in DROPBOX_KINDS:
+        return None, "Unknown message type."
+    hours = raw.get("expires_hours")
+    if hours in (None, ""):
+        hours = None
+    else:
+        if isinstance(hours, bool) or not isinstance(hours, (int, float)) or not 1 <= hours <= 24 * 90:
+            return None, "Expiry must be between 1 hour and 90 days."
+        hours = int(hours)
+    return {"title": title, "body": body, "kind": kind,
+            "announce": bool(raw.get("announce")), "expires_hours": hours}, None

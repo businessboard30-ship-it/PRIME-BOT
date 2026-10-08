@@ -6,7 +6,7 @@
   var KEY = "primebot.dash.session";
   var NS = "http://www.w3.org/2000/svg";
   var app = document.getElementById("app"), hdrRight = document.getElementById("hdrRight"), menuBtn = document.getElementById("menuBtn");
-  var S = { sid: null, user: null, servers: null, schema: null, guild: null, meta: null, orig: {}, draft: {}, mod: null, premium: false, errors: {} };
+  var S = { sid: null, user: null, servers: null, schema: null, guild: null, meta: null, orig: {}, draft: {}, mod: null, premium: false, errors: {}, unread: 0, isOwner: false, inbox: null };
 
   /* ---------- tiny DOM helpers ---------- */
   function h(tag, attrs) {
@@ -81,7 +81,7 @@
     }, function () { throw new Error("Can't reach the server. Check your connection."); });
   }
   function signedOut(msg) {
-    localStorage.removeItem(KEY); S.sid = S.user = S.servers = null; S.guild = null;
+    localStorage.removeItem(KEY); S.sid = S.user = S.servers = null; S.guild = null; S.unread = 0; S.isOwner = false; S.inbox = null;
     renderHeader(); renderLogin(msg);
   }
 
@@ -91,6 +91,8 @@
     var inGuild = /^#\/g\//.test(location.hash);
     menuBtn.hidden = !(S.user && inGuild);
     if (!S.user) return;
+    hdrRight.appendChild(h("a", { class: "btn sm ghost inboxbtn", href: "#/inbox", "aria-label": "Drop box, " + S.unread + " unread" }, "Drop box",
+      S.unread ? h("span", { class: "badge-n", text: S.unread > 99 ? "99+" : String(S.unread) }) : null));
     hdrRight.appendChild(h("div", { class: "user" }, h("img", { src: S.user.avatar_url, alt: "" }), h("span", { text: S.user.username })));
     hdrRight.appendChild(h("button", { class: "btn sm ghost", text: "Sign out", onclick: function () {
       api("logout", {}, {}).catch(function () {}).then(function () { signedOut(); });
@@ -148,7 +150,7 @@
       });
     };
     if (S.servers) return done(S.servers);
-    api("me").then(function (j) { S.servers = j.servers; S.user = j.user; renderHeader(); done(S.servers); })
+    api("me").then(function (j) { S.servers = j.servers; S.user = j.user; S.unread = j.unread || 0; S.isOwner = !!j.is_owner; renderHeader(); done(S.servers); })
       .catch(function (e) { if (e.message !== "401") { grid.textContent = ""; grid.appendChild(h("div", { class: "card empty", style: "grid-column:1/-1" }, h("p", { text: e.message }), h("button", { class: "btn sm", text: "Try again", onclick: renderServers }))); } });
   }
 
@@ -339,11 +341,92 @@
     }).catch(function (e) { if (e.message !== "401") { form.textContent = ""; form.appendChild(h("p", { text: e.message })); } });
   }
 
+  /* ---------- drop box + announcements ---------- */
+  var KIND_LABEL = { info: "Info", update: "Update", warning: "Warning", maintenance: "Maintenance" };
+  function when(iso) { try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch (e) { return ""; } }
+  function setUnread(n) { S.unread = Math.max(0, n); renderHeader(); }
+
+  function showAnnouncements() {
+    var box = document.getElementById("announce");
+    if (!box) { box = h("div", { id: "announce", class: "announce", role: "region", "aria-label": "Announcements" }); document.getElementById("hdr").after(box); }
+    box.textContent = "";
+    if (!S.sid) return;
+    api("dropbox").then(function (j) {
+      S.inbox = j.messages; setUnread(j.unread);
+      box.textContent = "";
+      j.messages.filter(function (m) { return m.announce && !m.read; }).slice(0, 3).forEach(function (m) {
+        var row = h("div", { class: "ann " + m.kind },
+          h("div", { class: "grow" }, h("b", { text: m.title }), h("span", { text: " " + m.body })),
+          h("button", { class: "btn sm ghost", text: "Dismiss", onclick: function () {
+            api("dropbox_read", {}, { id: m.id }).then(function () { row.remove(); setUnread(S.unread - 1); }).catch(function (e) { toast(e.message, "bad"); });
+          } }));
+        box.appendChild(row);
+      });
+    }).catch(function () {});
+  }
+
+  function renderComposer(onSent) {
+    var title = h("input", { type: "text", maxlength: 100, placeholder: "Title", "aria-label": "Title", autocomplete: "off" });
+    var body = h("textarea", { maxlength: 2000, placeholder: "Message to every dashboard admin", "aria-label": "Message", spellcheck: "true" });
+    var kind = h("select", { "aria-label": "Type" }, Object.keys(KIND_LABEL).map(function (k) { return h("option", { value: k, text: KIND_LABEL[k] }); }));
+    var expiry = h("select", { "aria-label": "Expires" }, [["", "Never expires"], ["24", "In 1 day"], ["168", "In 7 days"], ["720", "In 30 days"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var ann = h("input", { type: "checkbox", id: "annchk" });
+    var send = h("button", { class: "btn primary", text: "Send to all admins" });
+    send.addEventListener("click", function () {
+      if (!title.value.trim() || !body.value.trim()) return toast("Add a title and a message.", "bad");
+      if (!confirm("Send this to every admin who uses the dashboard?")) return;
+      send.classList.add("busy");
+      api("dropbox_send", {}, { title: title.value, body: body.value, kind: kind.value, announce: ann.checked, expires_hours: expiry.value ? Number(expiry.value) : null })
+        .then(function () { toast("Sent to the drop box", "ok"); title.value = body.value = ""; ann.checked = false; onSent(); })
+        .catch(function (e) { toast(e.message, "bad"); }).then(function () { send.classList.remove("busy"); });
+    });
+    return h("div", { class: "card composer rv" }, h("h2", { text: "Send a message" }),
+      h("p", { class: "muted", text: "Appears in every admin's drop box. Tick the banner option to also show it at the top of the panel until they dismiss it." }),
+      title, body, h("div", { class: "row" }, kind, expiry, h("label", { class: "chk", for: "annchk" }, ann, " Also show as banner")), send);
+  }
+
+  function renderInbox() {
+    document.body.classList.remove("menu"); S.mod = null; renderHeader();
+    var list = h("div", { class: "inbox" }, h("div", { class: "skel", style: "height:120px" }));
+    var parts = [h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Messages from the PRIME BOT team" }), h("h1", { text: "Drop box" }),
+      h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }), " ",
+        h("button", { class: "btn sm ghost", text: "Mark all read", onclick: function () {
+          api("dropbox_read", {}, {}).then(function () { setUnread(0); load(); }).catch(function (e) { toast(e.message, "bad"); });
+        } })))];
+    if (S.isOwner) parts.push(renderComposer(function () { load(); }));
+    parts.push(list);
+    app.textContent = "";
+    app.appendChild(h("main", { id: "main", class: "page" }, parts));
+    function load() {
+      api("dropbox").then(function (j) {
+        S.inbox = j.messages; setUnread(j.unread); list.textContent = "";
+        if (!j.messages.length) return list.appendChild(h("div", { class: "card empty" }, h("h3", { text: "Nothing here yet" }), h("p", { class: "muted", text: "Announcements from the team will show up here." })));
+        j.messages.forEach(function (m, i) {
+          var card = h("div", { class: "card msg " + m.kind + (m.read ? "" : " unread") + " rv", style: "--i:" + Math.min(i, 10) },
+            h("div", { class: "msg-top" }, h("span", { class: "tag", text: KIND_LABEL[m.kind] || "Info" }), !m.read ? h("i", { class: "dot on", title: "Unread" }) : null, h("small", { text: when(m.created_at) })),
+            h("h3", { text: m.title }), h("p", { class: "msgbody", text: m.body }));
+          var actions = h("div", { class: "msg-actions" });
+          if (!m.read) actions.appendChild(h("button", { class: "btn sm ghost", text: "Mark read", onclick: function () {
+            api("dropbox_read", {}, { id: m.id }).then(load).catch(function (e) { toast(e.message, "bad"); });
+          } }));
+          if (S.isOwner) actions.appendChild(h("button", { class: "btn sm ghost danger", text: "Delete for everyone", onclick: function () {
+            if (!confirm("Delete this message for every admin?")) return;
+            api("dropbox_delete", {}, { id: m.id }).then(load).catch(function (e) { toast(e.message, "bad"); });
+          } }));
+          card.appendChild(actions); list.appendChild(card);
+        });
+      }).catch(function (e) { if (e.message !== "401") { list.textContent = ""; list.appendChild(h("p", { text: e.message })); } });
+    }
+    load();
+  }
+
   /* ---------- router ---------- */
   function route() {
     document.body.classList.remove("menu"); S.mod = null;
     var hash = location.hash || "#/", m = hash.match(/^#\/g\/(\d+)(?:\/([a-z]+))?$/);
     if (!S.sid) return renderLogin();
+    showAnnouncements();
+    if (hash === "#/inbox") { S.guild = null; return renderInbox(); }
     if (!m) { S.guild = null; return renderServers(); }
     var gid = m[1], modId = m[2];
     app.textContent = ""; app.appendChild(h("main", { id: "main", class: "center" }, h("div", { class: "boot", role: "status" }, "Loading server", h("span", { class: "dots" }))));
@@ -371,7 +454,7 @@
     fetch(API + "?action=schema", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (j) {
       S.schema = j;
       if (!S.sid) return renderLogin(err);
-      return api("me").then(function (me) { S.user = me.user; S.servers = me.servers; renderHeader(); route(); });
+      return api("me").then(function (me) { S.user = me.user; S.servers = me.servers; S.unread = me.unread || 0; S.isOwner = !!me.is_owner; renderHeader(); route(); });
     }).catch(function (e) { if (e.message !== "401") renderLogin(err || "Can't reach the server right now. Try again in a moment."); });
   }
   window.addEventListener("hashchange", function () { if (S.sid && S.schema && S.user) route(); });

@@ -24,6 +24,10 @@ Routes (all on /api/dash):
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
   POST {action: logout}
+  GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
+  POST {action: dropbox_read, id?}      -> mark one (or all) read
+  POST {action: dropbox_send, ...}      -> OWNER ONLY (config.DISCORD_OWNER_BROADCAST_IDS)
+  POST {action: dropbox_delete, id}     -> OWNER ONLY
 Scope: the main PRIME BOT (clone_id None). Clone bots are not covered yet.
 """
 
@@ -180,6 +184,13 @@ async def _session(headers) -> dict:
     return payload
 
 
+def _is_owner(sess: dict) -> bool:
+    try:
+        return int(sess["user"]["id"]) in set(config.DISCORD_OWNER_BROADCAST_IDS)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 async def _authorised_guild(sess: dict, raw_gid) -> int:
     try:
         gid = int(str(raw_gid))
@@ -284,7 +295,14 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(502, "Couldn't reach Discord. Try again in a moment.")
         servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present} for g in sess.get("guilds", [])]
         servers.sort(key=lambda g: (not g["bot_present"], g["name"].lower()))
-        raise _Reply(200, {"ok": True, "user": sess["user"], "servers": servers})
+        uid = str(sess["user"]["id"])
+        try:
+            unread = sum(1 for m in await db.dropbox_list(uid) if not m["read"])
+        except Exception:
+            logger.exception("dashboard: dropbox unread count failed")
+            unread = 0
+        raise _Reply(200, {"ok": True, "user": sess["user"], "servers": servers,
+                           "is_owner": _is_owner(sess), "unread": unread})
 
     if method == "GET" and action == "guild":
         gid = await _authorised_guild(sess, q("guild_id"))
@@ -329,6 +347,40 @@ async def _route(method: str, query: dict, headers, body: dict):
         await getattr(db, module["set"])(gid, CLONE_ID, **clean)
         logger.info("dashboard save guild=%s user=%s module=%s keys=%s", gid, sess["user"]["id"], module["id"], sorted(clean))
         raise _Reply(200, {"ok": True, "values": S.export_values(module, await _get_cfg(module, gid))})
+
+    if method == "GET" and action == "dropbox":
+        msgs = await db.dropbox_list(str(sess["user"]["id"]))
+        raise _Reply(200, {"ok": True, "messages": msgs, "unread": sum(1 for m in msgs if not m["read"]),
+                           "is_owner": _is_owner(sess)})
+
+    if method == "POST" and action == "dropbox_read":
+        raw = body.get("id")
+        try:
+            mid = None if raw in (None, "") else int(str(raw))
+        except ValueError:
+            _fail(400, "Invalid message.")
+        await db.dropbox_mark_read(str(sess["user"]["id"]), mid)
+        raise _Reply(200, {"ok": True})
+
+    if method == "POST" and action in ("dropbox_send", "dropbox_delete"):
+        if not _is_owner(sess):
+            _fail(403, "Only the bot owner can do that.")
+        if action == "dropbox_delete":
+            try:
+                mid = int(str(body.get("id")))
+            except ValueError:
+                _fail(400, "Invalid message.")
+            if not await db.dropbox_delete(mid):
+                _fail(404, "That message no longer exists.")
+            logger.info("dashboard dropbox delete id=%s by=%s", mid, sess["user"]["id"])
+            raise _Reply(200, {"ok": True})
+        clean, err = S.validate_dropbox(body)
+        if err:
+            _fail(422, err)
+        mid = await db.dropbox_create(clean["title"], clean["body"], clean["kind"], clean["announce"],
+                                      str(sess["user"]["id"]), clean["expires_hours"])
+        logger.info("dashboard dropbox send id=%s by=%s announce=%s", mid, sess["user"]["id"], clean["announce"])
+        raise _Reply(200, {"ok": True, "id": str(mid)})
 
     _fail(404, "Unknown action.")
 
