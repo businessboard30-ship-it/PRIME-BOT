@@ -147,3 +147,32 @@ Reads: `owner_payment` (lookup by reference; returns only a whitelisted field se
 - **Approve / reject pending payment:** Discord's `/admin payments approve` runs `resolve_manual_payment_approval(bot, ...)`, which runs unlock handlers and DMs the buyer through the live bot. The web process has no bot client, so this needs the `owner_jobs` queue (worker polls it; schema 61 -> 62) and must not ship before the real small `/pay` + Gumroad/Paystack test the plan requires.
 - **Referral giveaway, Ads/Marketplace listings, Bump network:** not started; each is its own page/PR and needs its Discord view read first.
 - The plan's gate still stands: do a real small purchase and a real-browser test with a second Discord account before merging anything in this phase.
+
+---
+
+## 11. Phase 3 remainder + Phase 4 (branch `feat/owner-phase3b-phase4`, STACKED on `feat/owner-phase3-money`)
+
+No schema change (stays at 61). Two new modules, merged into the router by `dash._merged` (raises on a duplicate action name): `api/dash_owner_growth.py` and `api/dash_owner_safety.py`. All writes reuse the exact functions the Discord panel calls (`modules/ads_marketplace.py`, `modules/admin_safety.py`, `modules/scam_shield.py`).
+
+**Left out on purpose (owner's instruction):** approve / reject PAYMENT, Referral giveaway. **Also not built, needs the `owner_jobs` queue (live bot):** Bump review (approve/reject a bot listing), adding a Scam Shield IMAGE rule (Discord hashes the attachment via the live bot).
+
+| Action | Section | Protection |
+|---|---|---|
+| `owner_ad_approve` / `_deactivate` / `_reactivate` | ads | audit only; state checked first (409 if the ad is not in the right state) |
+| `owner_ad_reject` | ads | audit only; reason required (200 chars); DM to submitter over Discord REST with the bot token, best effort, never undoes the rejection |
+| `owner_listing_remove` | ads | step-up + type `REMOVE` (no undo exists); uses the real seller id like Discord |
+| `owner_bump_cooldown` | bump | audit only; 1 to 10080 minutes |
+| `owner_report_resolve` | reports | audit only; reviewed / dismissed; double press is a no-op |
+| `owner_status_add` / `_remove` / `owner_presence_set` | status | audit only |
+| `owner_status_reset` | status | step-up + type `RESET` |
+| `owner_scam_toggle` | scamshield | turning OFF: step-up + type `DISABLE`; turning ON: audit only |
+| `owner_scam_add` (word / domain) / `owner_scam_remove` | scamshield | audit only; min 4 chars like Discord |
+Reads: `owner_ads`, `owner_ad`, `owner_market`, `owner_bump`, `owner_watchlist`, `owner_reports`, `owner_status`, `owner_honeypot`, `owner_scamshield` (watchlist and honeypot are read-only).
+
+**Cache latency (shown on the pages):** the web service cannot clear the worker's memory. Scam Shield rules/toggle reach the bot within `scam_shield.CACHE_SECONDS` (5 min); custom statuses within 60 s. Discord's panel is instant because it runs inside the worker.
+
+**Safety of displayed text:** ad, listing and report text is written by strangers. Server side it is clipped and control characters removed; the front end uses `textContent` only, and an ad's link is shown as plain text, never as an `href`.
+
+Tests: `tests/unit/test_dash_owner_phase3b_4.py` (74): permission matrix for every route (anonymous 401, guild admin 403, stale owner session 401), helper grants do not open these sections, step-up + typed-confirm case sensitivity, validation, wrong-state 409s, DM failure does not undo a rejection, fail-closed audit, whitelisted output. Mutation spot-check done: removing the step-up on `DISABLE` or `REMOVE` makes a test fail.
+
+**Still gated by the plan before MERGING anything from Phase 3/4:** a real small `/pay` + Gumroad/Paystack test, and a real-browser run with a second Discord account. None of the new pages has been opened in a browser (JS is syntax-checked only).

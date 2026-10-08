@@ -44,6 +44,10 @@ Routes (all on /api/dash):
   GET  ?action=owner_health|owner_servers|owner_server|owner_user|owner_payments|owner_expiries -> OWNER, read-only (api/dash_owner.py)
   GET  ?action=owner_logs|owner_config  -> OWNER: masked worker snapshot (logs / config), with its age
   GET  ?action=owner_controls|owner_blacklist|owner_premium|owner_feedback|owner_botaudit|owner_payment|owner_coupons -> OWNER, read-only
+  GET  ?action=owner_ads|owner_ad|owner_market|owner_bump -> OWNER (ads / bump): ads queue, one ad, marketplace listings, bump network (api/dash_owner_growth.py)
+  GET  ?action=owner_watchlist|owner_reports|owner_status|owner_honeypot|owner_scamshield -> OWNER: safety pages (api/dash_owner_safety.py)
+  POST {action: owner_ad_approve|owner_ad_reject|owner_ad_deactivate|owner_ad_reactivate|owner_listing_remove|owner_bump_cooldown, ...} -> OWNER (ads / bump)
+  POST {action: owner_report_resolve|owner_status_add|owner_status_remove|owner_presence_set|owner_status_reset|owner_scam_toggle|owner_scam_add|owner_scam_remove, ...} -> OWNER (safety)
   POST {action: owner_switch|owner_blacklist_add|owner_blacklist_remove|owner_premium_revoke|owner_premium_grant|owner_payment_reverse|owner_coupon_create|owner_coupon_toggle|owner_failure_dismiss|owner_pending_clear|owner_announce|owner_announce_delete, ...}
                                         -> OWNER writes (api/dash_owner.WRITES): section + rate limit, step-up and typed confirm where destructive, fail-closed audit
 Clone bots: every guild route also accepts `clone_id` (query or JSON body). The dashboard then
@@ -285,14 +289,25 @@ def _require_confirm(body: dict, expected: str) -> None:
         _fail(422, f"Type {expected} to confirm.")
 
 
+def _merged(attr: str) -> dict:
+    """ROUTES / WRITES of every owner module. A duplicate action name is a bug, so fail loudly (tested)."""
+    from api import dash_owner, dash_owner_growth, dash_owner_safety
+    out: dict = {}
+    for mod in (dash_owner, dash_owner_growth, dash_owner_safety):
+        part = getattr(mod, attr)
+        dup = out.keys() & part.keys()
+        if dup:
+            raise RuntimeError(f"duplicate owner {attr} action(s): {sorted(dup)}")
+        out.update(part)
+    return out
+
+
 def _owner_routes() -> dict:
-    from api import dash_owner
-    return dash_owner.ROUTES
+    return _merged("ROUTES")
 
 
 def _owner_writes() -> dict:
-    from api import dash_owner
-    return dash_owner.WRITES
+    return _merged("WRITES")
 
 
 _owner_hits: dict = {}
