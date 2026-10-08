@@ -1282,13 +1282,21 @@
     var meter = h("p", { class: "muted", role: "status", text: "" });
     var log = h("div", { "aria-live": "polite", style: "max-height:420px;overflow:auto;margin:8px 0" });
     var input = h("textarea", { rows: 3, maxlength: 4000, "aria-label": "Message", placeholder: "Ask anything about your code\u2026", style: "width:100%" });
+    var pick = h("select", { "aria-label": "Model", style: "margin-right:8px" }, h("option", { value: "default", text: "Bot AI (default)" }));
     var send = h("button", { class: "btn sm", type: "button", text: "Send" });
     var fresh = h("button", { class: "btn sm ghost", type: "button", text: "New chat" });
     function line(role, text) {
       log.appendChild(h("div", { style: "margin:8px 0;white-space:pre-wrap;word-break:break-word" }, h("b", { text: role === "user" ? "You: " : "AI: " }), h("span", { text: text })));
       log.scrollTop = log.scrollHeight;
     }
+    function showModels(u) {
+      var cur = pick.value || "default";
+      pick.textContent = "";
+      (u.models || []).forEach(function (m) { pick.appendChild(h("option", { value: m.id, text: m.label })); });
+      pick.value = cur; if (pick.value !== cur) pick.value = "default";
+    }
     function showUsage(u) {
+      showModels(u);
       meter.textContent = u.remaining + " of " + u.limit + " chats left this week \u00b7 resets " + new Date(u.resets_at).toLocaleString();
     }
     api("dev_usage").then(showUsage).catch(function (e) { meter.textContent = (e && e.message) || "Couldn't load your usage."; });
@@ -1297,8 +1305,9 @@
       if (!text || busy) return;
       busy = true; send.disabled = true; input.value = "";
       history.push({ role: "user", content: text }); line("user", text);
-      api("dev_chat", null, { messages: history }).then(function (r) {
-        history.push({ role: "assistant", content: r.reply }); line("assistant", r.reply); showUsage(r);
+      api("dev_chat", null, { messages: history, model: pick.value || "default" }).then(function (r) {
+        history.push({ role: "assistant", content: r.reply }); line("assistant", r.reply);
+        if (r.own_key) { meter.textContent = "Answered with your own key. This doesn't use your weekly chats."; } else { showUsage(r); }
       }).catch(function (e) {
         history.pop(); input.value = text; meter.textContent = (e && e.message) || "That didn't work. Try again.";
       }).then(function () { busy = false; send.disabled = false; input.focus(); });
@@ -1308,7 +1317,65 @@
     fresh.addEventListener("click", function () { history = []; log.textContent = ""; });
     box.appendChild(h("p", { class: "muted", text: "Uses the bot's own AI. Chats aren't saved on our servers; closing this page clears the conversation. Never paste passwords or API keys." }));
     box.appendChild(meter); box.appendChild(log); box.appendChild(input);
-    box.appendChild(h("div", { class: "row" }, send, " ", fresh));
+    box.appendChild(h("div", { class: "row" }, pick, send, " ", fresh));
+    return box;
+  }
+
+  /* Bring your own AI key. The key goes server to provider only and is never shown again (last 4 + date only). */
+  function devKeys() {
+    var box = section("Your own AI keys");
+    var note = h("p", { class: "muted", role: "status", text: "" });
+    var list = h("div", null);
+    box.appendChild(h("p", { class: "muted", text: "Add an API key from Anthropic, Groq or OpenAI (not a Claude.ai or ChatGPT login). It is encrypted, never shown again, and used only to answer your own chats. Chats on your own key don't use your weekly 50." }));
+    box.appendChild(list); box.appendChild(note);
+    var prov = h("select", { "aria-label": "Provider" });
+    var key = h("input", { type: "password", autocomplete: "off", spellcheck: "false", maxlength: 300, "aria-label": "API key", placeholder: "Paste API key", style: "width:100%;max-width:420px" });
+    var save = h("button", { class: "btn sm", type: "button", text: "Save key" });
+    var form = h("div", { class: "row", style: "margin-top:8px;gap:8px;flex-wrap:wrap" }, prov, key, save);
+    box.appendChild(form);
+    function stepUp() {
+      note.textContent = "Confirm it's you: opening Discord\u2026";
+      api("dev_stepup", null, {}).then(function (r) { location.href = r.url; })
+        .catch(function (e) { note.textContent = (e && e.message) || "Couldn't start the sign-in."; });
+    }
+    function guard(p) {
+      return p.catch(function (e) {
+        if (e && e.payload && e.payload.code === "stepup_required") {
+          note.textContent = "";
+          note.appendChild(document.createTextNode("Confirm it's you first. "));
+          note.appendChild(h("button", { class: "btn sm ghost", type: "button", text: "Sign in with Discord again", onclick: stepUp }));
+          return null;
+        }
+        note.textContent = (e && e.message) || "That didn't work. Try again."; return null;
+      });
+    }
+    function draw(r) {
+      if (!r) return;
+      list.textContent = "";
+      var cs = r.connections || [];
+      if (!cs.length) list.appendChild(h("p", { class: "muted", text: "No keys saved yet." }));
+      cs.forEach(function (c) {
+        var rm = h("button", { class: "btn sm ghost", type: "button", text: "Remove" });
+        rm.addEventListener("click", function () {
+          guard(api("dev_key_remove", null, { provider: c.provider })).then(function (x) { if (x) { note.textContent = c.label + " key removed."; draw(x); } });
+        });
+        list.appendChild(h("div", { class: "row", style: "margin:6px 0;gap:8px;align-items:center" },
+          h("b", { text: c.label }), h("span", { class: "muted", text: "ends in " + c.last4 + (c.updated_at ? " \u00b7 added " + when2(c.added_at) : "") }), rm));
+      });
+    }
+    save.addEventListener("click", function () {
+      var v = key.value.trim();
+      if (!v) { note.textContent = "Paste your API key first."; return; }
+      save.disabled = true; note.textContent = "Checking the key\u2026";
+      guard(api("dev_key_save", null, { provider: prov.value, key: v })).then(function (x) {
+        save.disabled = false;
+        if (x) { key.value = ""; note.textContent = "Saved. The key is hidden from now on."; draw(x); }
+      });
+    });
+    api("dev_keys").then(function (r) {
+      (r.providers || []).forEach(function (p) { prov.appendChild(h("option", { value: p.id, text: p.label })); });
+      draw(r);
+    }).catch(function (e) { fail(box, e); });
     return box;
   }
 
@@ -1324,6 +1391,7 @@
         c.appendChild(h("p", { class: "muted", text: "Active" + (st.expires_at ? " until " + when2(st.expires_at) : "") + ". Features are switched on one at a time as they ship." }));
         c.appendChild(feats); body.appendChild(c);
         body.appendChild(devChat());
+        body.appendChild(devKeys());
         return;
       }
       var lock = section("Locked");
@@ -1380,7 +1448,8 @@
   /* ---------- boot ---------- */
   function boot() {
     var frag = new URLSearchParams(location.hash.replace(/^#/, "")), err = null;
-    if (frag.get("owner") === "stepup_ok") { S.stepupDone = true; history.replaceState(null, "", location.pathname + "#/owner/security"); }
+    if (frag.get("dev") === "stepup_ok") { history.replaceState(null, "", location.pathname + "#/dev"); }
+    else if (frag.get("owner") === "stepup_ok") { S.stepupDone = true; history.replaceState(null, "", location.pathname + "#/owner/security"); }
     else if (frag.get("session")) { localStorage.setItem(KEY, frag.get("session")); history.replaceState(null, "", location.pathname + "#/"); }
     else if (frag.get("error")) { err = frag.get("error"); history.replaceState(null, "", location.pathname); }
     S.sid = localStorage.getItem(KEY);

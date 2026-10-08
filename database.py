@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "65"
+SCHEMA_VERSION = "66"
+# "65" -> "66" creates dev_connections (a Developer-mode member's own AI provider key: encrypted, last 4 + dates only ever returned; deleted 30 days after the plan ends). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "61" -> "62" creates user_entitlements (per-user paid products: card_plan, dev_monthly, dev_yearly; only the payment webhook may write it) and dash_web_users (everyone who has signed in to the web dashboard; member messaging depends on it). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "62" -> "63" creates user_billing_events (one row per gateway billing event id, claimed before an entitlement is changed so a duplicate or retried webhook can never double-extend a plan). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "63" -> "64" creates user_level_cards (a member's saved custom level-up card design) and user_ai_usage (weekly website-only AI chat counter per user/week/source). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -4246,6 +4247,19 @@ class Database:
                 sha256 TEXT PRIMARY KEY,
                 reason TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # Developer mode: a member's own AI provider key. key_encrypted is secret_manager ciphertext; never returned or logged.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dev_connections (
+                user_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                key_encrypted TEXT NOT NULL,
+                last4 TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, provider)
             )
         """)
 
@@ -14937,6 +14951,51 @@ class Database:
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM user_card_assets WHERE user_id = $1 AND kind = $2", str(user_id), str(kind))
+
+    # ---- Developer mode: bring-your-own AI keys (ciphertext only; callers decrypt, nothing here returns plaintext) ----
+    async def dev_connection_list(self, user_id: str) -> list:
+        """Provider, last4 and dates only. The ciphertext column is never selected here."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, last4, created_at, updated_at FROM dev_connections WHERE user_id = $1 ORDER BY provider", str(user_id))
+        return [dict(r) for r in rows]
+
+    async def dev_connection_secret(self, user_id: str, provider: str):
+        """Ciphertext for server-to-provider calls only (modules.dev_keys). Never route this to a response."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval("SELECT key_encrypted FROM dev_connections WHERE user_id = $1 AND provider = $2",
+                                       str(user_id), str(provider))
+
+    async def dev_connection_upsert(self, user_id: str, provider: str, key_encrypted: str, last4: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO dev_connections (user_id, provider, key_encrypted, last4) VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (user_id, provider) DO UPDATE SET key_encrypted = $3, last4 = $4, updated_at = NOW()""",
+                str(user_id), str(provider)[:20], str(key_encrypted), str(last4)[:4])
+
+    async def dev_connection_delete(self, user_id: str, provider: str) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM dev_connections WHERE user_id = $1 AND provider = $2", str(user_id), str(provider))
+        return res.endswith(" 1")
+
+    async def dev_connections_purge_lapsed(self, grace_days: int = 30) -> int:
+        """Delete keys of people whose Developer plan ended more than `grace_days` ago (or who never had one)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                """DELETE FROM dev_connections c WHERE NOT EXISTS (
+                       SELECT 1 FROM user_entitlements e
+                       WHERE e.user_id = c.user_id AND e.product IN ('dev_monthly', 'dev_yearly')
+                         AND e.expires_at IS NOT NULL AND e.expires_at > NOW() - ($1 * INTERVAL '1 day'))""",
+                int(grace_days))
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
 
     async def card_asset_blocked(self, sha: str) -> bool:
         pool = await get_pool()

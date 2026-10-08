@@ -65,7 +65,10 @@ Routes (all on /api/dash):
   GET  ?action=dev_status -> ANY signed-in user (#/dev): {unlocked, expires_at, export_available, plans, features}; drives the locked screen only
   GET  ?action=dev_overview (and every later dev_* route) -> 402 {code: subscription_required} without an active Developer entitlement (api/dash_dev.py, require_dev)
   GET  ?action=dev_usage -> Developer plan only: {used, limit, remaining, resets_at, models} for the weekly bot-AI chats
-  POST {action: dev_chat, messages:[{role,content}]} -> Developer plan only: one bot-AI reply; spends 1 of 50 weekly chats (refunded if the model fails); 429 {code: weekly_limit}; 503 when the owner's `ai` switch is on. Nothing is stored.
+  GET  ?action=dev_keys -> Developer plan only: {connections:[{provider,label,last4,added_at,updated_at}], providers}; a key is NEVER returned
+  POST {action: dev_key_save, provider, key} / {action: dev_key_remove, provider} -> Developer plan + fresh Discord sign-in (403 stepup_required); the key is validated with one free provider call, encrypted, never echoed
+  POST {action: dev_stepup} -> Developer plan only: {url}: Discord re-sign-in that makes this session fresh for DASH_STEPUP_MINUTES (returns to #/dev)
+  POST {action: dev_chat, model?: default|anthropic|groq|openai, messages:[{role,content}]} -> Developer plan only: one bot-AI reply; spends 1 of 50 weekly chats (refunded if the model fails); 429 {code: weekly_limit}; 503 when the owner's `ai` switch is on. Nothing is stored.
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
   POST {action: member_pref_set, kind: language|currency|character|voice|level_ping, value[, guild_id]} -> own preference only (allowlisted)
@@ -910,7 +913,8 @@ async def _oauth_callback(query: dict):
     state, code = query.get("state", [None])[0], query.get("code", [None])[0]
     popped = await db.pop_login_oauth_state(state) if state else None
     rt = (popped or {}).get("return_to") or ""
-    stepup_sid = rt[len("dash_stepup:"):] if rt.startswith("dash_stepup:") else None
+    stepup_dev = rt.startswith("dash_stepup_dev:")
+    stepup_sid = (rt[len("dash_stepup_dev:"):] if stepup_dev else rt[len("dash_stepup:"):]) if (stepup_dev or rt.startswith("dash_stepup:")) else None
     if not popped or not (rt == "dash" or stepup_sid) or not code:
         _back("error=" + urlencode({"": "That sign-in link expired. Try again."})[1:])
     try:
@@ -936,12 +940,12 @@ async def _oauth_callback(query: dict):
     if stepup_sid:
         # Step-up: the same Discord account must have just re-authenticated. Mark THAT session
         # fresh; never create a new one (so a different account can't take over the session).
-        cur = await db.get_login_session(stepup_sid, ttl_minutes=config.DASH_OWNER_SESSION_MINUTES)
+        cur = await db.get_login_session(stepup_sid, ttl_minutes=config.DASH_SESSION_MINUTES if stepup_dev else config.DASH_OWNER_SESSION_MINUTES)
         if not cur or cur.get("kind") != "dash" or str((cur.get("user") or {}).get("id")) != str(uid):
             _back("error=" + urlencode({"": "That confirmation didn't match your session."})[1:])
         await db.update_login_session_payload(
             stepup_sid, {"fresh_until": int(time.time()) + config.DASH_STEPUP_MINUTES * 60})
-        _back("owner=stepup_ok")
+        _back("dev=stepup_ok" if stepup_dev else "owner=stepup_ok")
     avatar = (f"https://cdn.discordapp.com/avatars/{uid}/{me['avatar']}.png?size=64" if me.get("avatar")
               else f"https://cdn.discordapp.com/embed/avatars/{(int(uid) >> 22) % 6}.png")
     sid = await db.create_login_session({
@@ -1108,12 +1112,31 @@ async def _route(method: str, query: dict, headers, body: dict):
     if method == "POST" and action in _member_writes():
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
-                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60)}.get(action, (30, 60)))
+                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60),
+                                                      "dev_key_save": (6, 300), "dev_key_remove": (10, 300)}.get(action, (30, 60)))
+        from api import dash_dev
+        if action in dash_dev.FRESH_WRITES:          # gate first (402), then step-up (403); handlers never see the session
+            gate = await dash_dev.require_dev(uid, db)
+            if gate:
+                raise _Reply(gate["_status"], {"ok": False, "message": gate["message"], "code": gate["code"]})
+            _require_fresh(sess)
         out = await _member_writes()[action](uid, body, db)
         if out.get("_status"):
             raise _Reply(out["_status"], {"ok": False, "message": out.get("message") or "Something went wrong.",
                                           **({"code": out["code"]} if out.get("code") else {}), **(out.get("extra") or {})})
         raise _Reply(200, {"ok": True, **out})
+
+    if method == "POST" and action == "dev_stepup":
+        from api import dash_dev
+        uid = _require_member(sess)
+        _owner_rate(sess, "dev_stepup", 5, 300)
+        gate = await dash_dev.require_dev(uid, db)
+        if gate:
+            _fail(gate["_status"], gate["message"], gate["code"])
+        _check_oauth_configured()
+        state = _secrets.token_urlsafe(24)
+        await db.create_login_oauth_state(state, return_to="dash_stepup_dev:" + sess["_sid"])
+        raise _Reply(200, {"ok": True, "url": _authorize_url(state, "consent"), "minutes": config.DASH_STEPUP_MINUTES})
 
     if method == "POST" and action == "owner_stepup":
         _require_section(sess, "controls")      # any real owner; helpers never get here
