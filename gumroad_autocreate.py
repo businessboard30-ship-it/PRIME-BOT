@@ -1,6 +1,6 @@
 # path: gumroad_autocreate.py
 
-"""Auto-provisioning of the Premium Yearly / Lifetime Gumroad products.
+"""Auto-provisioning of the Gumroad products (Premium Yearly/Lifetime, plus the card/Developer memberships).
 
 On boot (main bot only) and then every few hours until both exist, this:
   1. loads any product links already saved in bot_global_settings,
@@ -36,16 +36,39 @@ NOTIFIED_KEY = "gumroad_auto_notified:{ptype}"
 REFRESH_SECONDS = 60
 RETRY_SECONDS = 6 * 3600
 
+def _plan_price(product):
+    from modules import user_subs
+    return user_subs.price_usd(product)
+
+
+# Product names are neutral on purpose (no bot name). `legacy` names are still ADOPTED if they already exist.
+# kind "membership" = recurring; Gumroad's API cannot create those, so the bot adopts one by name or DMs the owner
+# the exact name/price/period to create by hand (once).
 PRODUCTS = {
     "premium_yearly": {
-        "name": "PRIME-BOT Premium - Yearly",
-        "price_attr": "PREMIUM_YEARLY_FEE_USD",
-        "description": "PRIME-BOT Premium for one whole Discord server, 365 days. One-time payment, every current and future premium feature included.",
+        "name": "Server Premium - Yearly", "legacy": ["PRIME-BOT Premium - Yearly"], "kind": "one_time",
+        "price": lambda: float(config.PREMIUM_YEARLY_FEE_USD),
+        "description": "Premium for one whole Discord server, 365 days. One-time payment, every current and future premium feature included.",
     },
     "premium_lifetime": {
-        "name": "PRIME-BOT Premium - Lifetime",
-        "price_attr": "PREMIUM_LIFETIME_FEE_USD",
-        "description": "PRIME-BOT Premium for one whole Discord server, forever. One-time payment, every current and future premium feature included.",
+        "name": "Server Premium - Lifetime", "legacy": ["PRIME-BOT Premium - Lifetime"], "kind": "one_time",
+        "price": lambda: float(config.PREMIUM_LIFETIME_FEE_USD),
+        "description": "Premium for one whole Discord server, forever. One-time payment, every current and future premium feature included.",
+    },
+    "card_plan": {
+        "name": "Custom Level-Up Card - Monthly", "legacy": [], "kind": "membership", "period": "monthly",
+        "price": lambda: _plan_price("card_plan"),
+        "description": "Design your own level-up card: colours, layout, background and logo. Renews monthly, cancel any time.",
+    },
+    "dev_monthly": {
+        "name": "Developer Mode - Monthly", "legacy": [], "kind": "membership", "period": "monthly",
+        "price": lambda: _plan_price("dev_monthly"),
+        "description": "Developer tools with a weekly AI chat allowance. Renews monthly, cancel any time.",
+    },
+    "dev_yearly": {
+        "name": "Developer Mode - Yearly", "legacy": [], "kind": "membership", "period": "yearly",
+        "price": lambda: _plan_price("dev_yearly"),
+        "description": "Developer tools with a weekly AI chat allowance. Renews yearly, cancel any time.",
     },
 }
 
@@ -55,7 +78,7 @@ _last_load = 0.0
 
 
 def _cents(ptype: str) -> int:
-    return int(round(float(getattr(config, PRODUCTS[ptype]["price_attr"])) * 100))
+    return int(round(float(PRODUCTS[ptype]["price"]()) * 100))
 
 
 def link_for(payment_type: str) -> str:
@@ -101,14 +124,15 @@ async def _notify_owner_once(ptype: str, reason: str) -> None:
         if await db.get_global_setting(key):
             return
         spec = PRODUCTS[ptype]
-        price = getattr(config, spec["price_attr"])
+        price = spec["price"]()
         from gumroad_payments import _alert_owner
+        what = ("a **Membership** (recurring, billed %s)" % spec.get("period", "monthly")) if spec["kind"] == "membership" else "a one-time **Digital product**"
         await _alert_owner(
-            "\U0001F6E0\ufe0f **Gumroad product needed** (couldn't auto-create: %s)\n"
-            "Create a one-time **Digital product** on gumroad.com/products/new:\n"
+            "\U0001F6E0\ufe0f **Gumroad product needed** (%s)\n"
+            "Create %s on gumroad.com/products/new:\n"
             "\u2022 Name: `%s`\n\u2022 Price: **$%s**\n\u2022 Description: %s\n"
             "Keep that exact name — the bot finds it automatically within a few hours (or on next restart). "
-            "No env vars or code changes needed." % (reason, spec["name"], f"{price:g}", spec["description"])
+            "No env vars or code changes needed." % (reason, what, spec["name"], f"{price:g}", spec["description"])
         )
         await db.set_global_setting(key, "1")
     except Exception:
@@ -131,8 +155,9 @@ async def ensure_products() -> bool:
             for ptype in missing:
                 spec = PRODUCTS[ptype]
                 found = None
+                names = {spec["name"].lower(), *[n.lower() for n in spec.get("legacy", [])]}
                 for p in existing or []:
-                    if (p.get("name") or "").strip().lower() == spec["name"].lower() and not p.get("deleted"):
+                    if (p.get("name") or "").strip().lower() in names and not p.get("deleted"):
                         found = p
                         break
                 if found:
@@ -141,7 +166,9 @@ async def ensure_products() -> bool:
                         await _save(ptype, found.get("id", ""), url)
                         logger.info("[gumroad-auto] adopted existing product for %s: %s", ptype, url)
                         continue
-                if found is None and existing is not None:
+                if found is None and existing is not None and spec["kind"] == "membership":
+                    await _notify_owner_once(ptype, "Gumroad's API can't create recurring memberships")
+                elif found is None and existing is not None:
                     async with s.post(API, data={
                         "access_token": token, "name": spec["name"],
                         "price": _cents(ptype), "description": spec["description"],

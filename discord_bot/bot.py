@@ -223,6 +223,11 @@ class AnimeBotDiscord(commands.Bot):
                 self._gumroad_autocreate_task = asyncio.create_task(gumroad_autocreate.run_forever())
             except Exception:
                 logger.exception("Gumroad auto-provisioning failed to start")
+            try:
+                import paystack_autocreate
+                self._paystack_autocreate_task = asyncio.create_task(paystack_autocreate.run_forever())
+            except Exception:
+                logger.exception("Paystack plan auto-provisioning failed to start")
         self.add_dynamic_items(*STYLE_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*WELCOME_WIZARD_DYNAMIC_ITEMS)
         # "Find by name" button on every wizard channel dropdown (fonts/brackets-proof).

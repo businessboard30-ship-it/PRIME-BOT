@@ -671,7 +671,9 @@ async def _create_user_plan_checkout(intent: dict, country: Optional[str]) -> Op
     price_usd = user_subs.price_usd(payment_type)
     if (country or "").upper() == "GH":
         import config
-        plan_code = (config.USER_PLAN_PAYSTACK_CODES.get(payment_type) or "").strip()
+        import paystack_autocreate
+        await paystack_autocreate.load_runtime()
+        plan_code = paystack_autocreate.plan_code_for(payment_type)
         if not plan_code:
             logger.error(f"[user-plan] no Paystack plan code configured for {payment_type}")
             return None

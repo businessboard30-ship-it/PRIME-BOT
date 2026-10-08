@@ -28,8 +28,8 @@ _KIND_BY_EVENT = {
 
 
 def _plan_map() -> dict:
-    import config
-    return {code: product for product, code in config.USER_PLAN_PAYSTACK_CODES.items() if code}
+    import paystack_autocreate        # env codes plus the auto-created/adopted ones
+    return paystack_autocreate.code_to_product()
 
 
 def _product(data: dict) -> Optional[str]:
@@ -54,6 +54,11 @@ def _user_id(data: dict) -> Optional[str]:
 async def handle(db, event_type: str, data: dict, now=None) -> Optional[str]:
     if not isinstance(data, dict):
         return None
+    try:
+        import paystack_autocreate
+        await paystack_autocreate.load_runtime()
+    except Exception:
+        logger.warning("[paystack-plan] couldn't refresh auto-created plan codes", exc_info=True)
     product = _product(data)
     if not product:
         return None
