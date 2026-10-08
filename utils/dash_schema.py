@@ -400,6 +400,71 @@ def validate_values(module: dict, values: Any, channels: Dict[str, set], roles: 
     return clean, errors
 
 
+# ───────────────────────── reset to defaults + import / export ─────────────────────────
+
+EXPORT_FORMAT = "prime-bot-settings"
+EXPORT_VERSION = 1
+IMPORT_MAX_BYTES = 48 * 1024
+
+
+def default_values(module: dict, default_cfg: dict) -> Tuple[Dict[str, Any], List[str]]:
+    """Values that put a module back to factory settings. `default_cfg` is what the module's
+    getter returns for a server with no saved row. A field whose default can't be expressed
+    through the dashboard (e.g. an unset number) is left alone and named in the second item."""
+    exported = export_values(module, default_cfg or {})
+    clean, left = {}, []
+    for f in module["fields"]:
+        try:
+            clean[f["key"]] = _coerce(f, exported.get(f["key"]), {}, set())
+        except ValidationError:
+            left.append(f["label"])
+    return clean, left
+
+
+def export_payload(module: dict, cfg: dict, exported_at: str) -> dict:
+    """The JSON a user downloads. Only declared keys, same shape the dashboard saves."""
+    return {"format": EXPORT_FORMAT, "version": EXPORT_VERSION, "module": module["id"],
+            "exported_at": exported_at, "values": export_values(module, cfg)}
+
+
+def import_values(module: dict, payload: Any, channels: Dict[str, set], roles: set,
+                  is_premium: bool) -> Tuple[Dict[str, Any], List[str], Optional[str]]:
+    """Check an uploaded settings file against THIS server. Returns (values, skipped, error).
+
+    Nothing is written: the dashboard loads `values` into the form as unsaved changes, and
+    the normal save path validates them again. Anything that doesn't fit this server (a
+    channel or role from another server, a Premium option on a free server, an out-of-range
+    number, a key this version doesn't know) is skipped and named, never guessed at."""
+    if not isinstance(payload, dict) or payload.get("format") != EXPORT_FORMAT:
+        return {}, [], "That isn't a PRIME BOT settings file."
+    if payload.get("version") != EXPORT_VERSION:
+        return {}, [], "That settings file is from a different version."
+    if payload.get("module") != module["id"]:
+        return {}, [], f"That file is for a different module ({str(payload.get('module'))[:40]}), not {module['title']}."
+    values = payload.get("values")
+    if not isinstance(values, dict) or not values:
+        return {}, [], "That settings file is empty."
+    fields = {f["key"]: f for f in module["fields"]}
+    clean, skipped = {}, []
+    for key, raw in values.items():
+        f = fields.get(key)
+        if f is None:
+            skipped.append(f"{str(key)[:40]}: not a setting here")
+            continue
+        try:
+            v = _coerce(f, raw, channels, roles)
+        except ValidationError as e:
+            skipped.append(str(e))
+            continue
+        if not is_premium and (f.get("premium") or v in (f.get("premium_values") or [])):
+            skipped.append(f"{f['label']}: needs Premium")
+            continue
+        clean[key] = v
+    if not clean:
+        return {}, skipped, "Nothing in that file fits this server."
+    return clean, skipped, None
+
+
 # ───────────────────────── drop box (owner -> every dashboard admin) ─────────────────────────
 
 DROPBOX_KINDS = ("info", "update", "warning", "maintenance")

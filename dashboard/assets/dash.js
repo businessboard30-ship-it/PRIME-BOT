@@ -308,6 +308,48 @@
         return h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: a.label }), h("p", { class: "help", text: a.help })), b);
       }), actionNote) : null;
 
+    var fileIn = h("input", { type: "file", accept: "application/json,.json", style: "display:none", "aria-hidden": "true" });
+    function toolBtn(label, fn) {
+      var b = h("button", { class: "btn sm ghost", text: label });
+      b.addEventListener("click", function () { b.classList.add("busy"); b.disabled = true; Promise.resolve().then(fn).catch(function (e) { toast(e.message, "bad"); }).then(function () { b.classList.remove("busy"); b.disabled = false; }); });
+      return b;
+    }
+    var toolsRow = h("div", { class: "card actions rv" }, h("h2", { text: "Backup and reset" }),
+      h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: "Export or import" }),
+        h("p", { class: "help", text: "Download this page's settings as a file, or load a file into the form. Importing only fills the form: nothing changes until you press Save." })),
+        toolBtn("Export", function () {
+          return api("export", { guild_id: gid, module: m.id }).then(function (r) {
+            var a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(r.file, null, 2)], { type: "application/json" })), download: r.filename });
+            document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+          });
+        }),
+        toolBtn("Import", function () { fileIn.value = ""; fileIn.click(); })),
+      h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: "Reset to defaults" }),
+        h("p", { class: "help", text: "Puts every setting on this page back to factory settings. It's saved straight away and recorded in the audit log." })),
+        toolBtn("Reset", function () {
+          if (!window.confirm("Reset all " + m.title + " settings to their defaults? This is saved immediately.")) return;
+          return api("reset", {}, { guild_id: gid, module: m.id }).then(function (r) {
+            S.orig = r.values; S.draft = JSON.parse(JSON.stringify(r.values)); S.errors = {};
+            if ("enabled" in r.values) S.guild.status[m.id] = !!r.values.enabled;
+            build();
+            toast("Reset " + m.title + (r.left_alone && r.left_alone.length ? ". Left as they were: " + r.left_alone.join(", ") : ""), "ok");
+          });
+        })), fileIn);
+    fileIn.addEventListener("change", function () {
+      var f = fileIn.files && fileIn.files[0];
+      if (!f) return;
+      if (f.size > 48 * 1024) { toast("That file is too big to be a settings file.", "bad"); return; }
+      f.text().then(function (txt) {
+        var data; try { data = JSON.parse(txt); } catch (e) { throw new Error("That file isn't valid JSON."); }
+        return api("import_check", {}, { guild_id: gid, module: m.id, data: data });
+      }).then(function (r) {
+        Object.keys(r.values).forEach(function (k) { S.draft[k] = r.values[k]; });
+        build();
+        var n = Object.keys(r.values).length;
+        toast("Loaded " + n + (n === 1 ? " setting" : " settings") + " into the form. Review and Save." + (r.skipped.length ? " Skipped " + r.skipped.length + ": " + r.skipped.slice(0, 2).join("; ") + (r.skipped.length > 2 ? "…" : "") : ""), r.skipped.length ? "bad" : "ok");
+      }).catch(function (e) { toast(e.message, "bad"); });
+    });
+
     function refresh() {
       if (designer) designer.update();
       if (actionsCard) {
@@ -360,7 +402,7 @@
       m.note ? h("div", { class: "notice rv" }, m.note) : null,
       !S.premium && m.fields.some(function (f) { return f.premium || f.premium_values; })
         ? h("div", { class: "notice rv" }, "Some options here are Premium. ", h("a", { href: CFG.SITE_URL + "/pricing/", target: "_blank", rel: "noopener", text: "See plans" })) : null,
-      designer ? designer.el : null, actionsCard, form, bar]);
+      designer ? designer.el : null, actionsCard, form, toolsRow, bar]);
     form.appendChild(h("div", { class: "skel", style: "height:160px" }));
     api("config", { guild_id: gid, module: m.id }).then(function (r) {
       S.premium = !!r.premium; S.orig = r.values; S.draft = JSON.parse(JSON.stringify(r.values)); S.errors = {}; build();
