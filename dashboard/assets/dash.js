@@ -117,12 +117,12 @@
 
   /* ---------- login ---------- */
   function ringsArt() {
-    var c = function (cls, r, w, dash, s) { return svg("circle", { "class": cls, cx: 180, cy: 180, r: r, fill: "none", stroke: "#f2faff", "stroke-width": w, "stroke-dasharray": dash, style: "--s:" + s }); };
+    var c = function (cls, r, w, dash, s) { return svg("circle", { "class": cls, cx: 180, cy: 180, r: r, fill: "none", stroke: "currentColor", "stroke-width": w, "stroke-dasharray": dash, style: "--s:" + s }); };
     return svg("svg", { "class": "rings", viewBox: "0 0 360 360", "aria-hidden": "true" },
-      svg("polygon", { points: "345,180 262.5,322.9 97.5,322.9 15,180 97.5,37.1 262.5,37.1", fill: "none", stroke: "#f2faff", "stroke-width": 2.2 }),
+      svg("polygon", { points: "345,180 262.5,322.9 97.5,322.9 15,180 97.5,37.1 262.5,37.1", fill: "none", stroke: "currentColor", "stroke-width": 2.2 }),
       c("spin", 118, 8, "110 18 55 22 190 24 90 30", "26s"), c("spin rev", 96, 4, "40 8 12 8 200 10", "16s"),
       c("spin", 76, 11, "190 66 110 94", "10s"), c("spin rev", 142, 6, "1.6 8", "34s"),
-      svg("circle", { "class": "pulse", cx: 180, cy: 180, r: 14, fill: "#f2faff" }));
+      svg("circle", { "class": "pulse", cx: 180, cy: 180, r: 14, fill: "currentColor" }));
   }
   function renderLogin(msg) {
     document.body.classList.remove("menu");
