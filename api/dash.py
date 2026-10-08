@@ -61,6 +61,7 @@ Routes (all on /api/dash):
   POST ?action=member_card_save {design} -> saves for the SESSION user; 402 + plans_path without an effective card_plan
   POST ?action=member_card_asset {kind: background|logo, data: base64} -> card plan only; validated, re-encoded, AI-moderated (approved/pending/rejected)
   POST ?action=member_card_asset_delete {kind} -> removes the member's own upload
+  POST ?action=member_chat {messages} -> card plan only (402 otherwise): one free website AI chat; 10 a week (source card_plan), refunded on failure
   POST ?action=checkout_user {product} -> any signed-in user: the gateway (Paystack or Gumroad) checkout URL for the SESSION user, no /pay hop (webhook grants, never this call)
   GET  ?action=dev_status -> ANY signed-in user (#/dev): {unlocked, expires_at, export_available, plans, features}; drives the locked screen only
   GET  ?action=dev_overview (and every later dev_* route) -> 402 {code: subscription_required} without an active Developer entitlement (api/dash_dev.py, require_dev)
@@ -1112,7 +1113,7 @@ async def _route(method: str, query: dict, headers, body: dict):
     if method == "POST" and action in _member_writes():
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
-                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60),
+                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60), "member_chat": (8, 60),
                                                       "dev_key_save": (6, 300), "dev_key_remove": (10, 300)}.get(action, (30, 60)))
         from api import dash_dev
         if action in dash_dev.FRESH_WRITES:          # gate first (402), then step-up (403); handlers never see the session
