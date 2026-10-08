@@ -106,6 +106,7 @@
     if (!S.user) return;
     if (S.ownerSections && S.ownerSections.length) hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/owner", text: "Owner" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/me", text: "My account" }));
+    hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/dev", text: "Developer" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/tiers", text: "Level tiers" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost inboxbtn", href: "#/inbox", "aria-label": "Drop box, " + S.unread + " unread" }, "Drop box",
       S.unread ? h("span", { class: "badge-n", text: S.unread > 99 ? "99+" : String(S.unread) }) : null));
@@ -1104,6 +1105,46 @@
     }).catch(function (e) { fail(buys, e); });
   }
 
+  /* ---------- Developer mode (#/dev): always opens; the server decides what is unlocked (402 on every other dev_* route) ---------- */
+  function renderDev() {
+    document.body.classList.remove("menu"); S.mod = null; renderHeader();
+    var body = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
+    app.textContent = "";
+    app.appendChild(h("main", { id: "main", class: "page" },
+      h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "For builders" }), h("h1", { text: "Developer mode" }),
+        h("div", null, h("a", { class: "btn sm ghost", href: "#/me", text: "My account" }))),
+      body));
+    api("dev_status").then(function (st) {
+      body.textContent = "";
+      var feats = h("ul", null, (st.features || []).map(function (f) { return h("li", { text: f.label + (f.ready ? "" : " (coming soon)") }); }));
+      if (st.unlocked) {
+        var c = section("Developer mode is active");
+        c.appendChild(h("p", { class: "muted", text: "Active" + (st.expires_at ? " until " + new Date(st.expires_at).toLocaleDateString() : "") + ". Features are switched on one at a time as they ship." }));
+        c.appendChild(feats); body.appendChild(c);
+        return;
+      }
+      var lock = section("Locked");
+      lock.appendChild(h("p", null, "Developer mode needs a subscription. This is what it includes:"));
+      lock.appendChild(feats);
+      if (st.export_available) lock.appendChild(h("p", { class: "muted", text: "Your plan has ended. Export stays available for 7 days after it ends." }));
+      var msg = h("p", { class: "muted", role: "status", text: "" });
+      lock.appendChild(h("p", { class: "muted", text: "Plans renew automatically until you cancel. Access starts after the payment is confirmed." }));
+      (st.plans || []).forEach(function (p) {
+        var can = p.state === "none" || p.state === "expired";
+        var per = p.period_days > 100 ? "year" : "month";
+        var btn = h("button", { class: "btn sm", type: "button", text: can ? "Subscribe" : (STATE_LABEL[p.state] || "Active") });
+        btn.disabled = !can;
+        btn.addEventListener("click", function () {
+          btn.disabled = true; msg.textContent = "Opening checkout\u2026";
+          api("checkout_user", null, { product: p.product }).then(function (r) { window.location.href = r.checkout_url; })
+            .catch(function (e) { btn.disabled = false; msg.textContent = (e && e.message) || "Couldn't start checkout."; });
+        });
+        lock.appendChild(h("div", { class: "row" }, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " / " + per + " ", btn));
+      });
+      lock.appendChild(msg); body.appendChild(lock);
+    }).catch(function (e) { body.textContent = ""; fail(body, e); });
+  }
+
   function renderOwner(hash) {
     S.guild = null; S.clone = null; renderHeader();
     if (!S.ownerSections || !S.ownerSections.length) { location.hash = "#/"; return; }
@@ -1120,6 +1161,7 @@
     if (/^#\/owner(\/|$)/.test(hash)) return renderOwner(hash);
     if (hash === "#/inbox") { S.guild = null; S.clone = null; return renderInbox(); }
     if (hash === "#/me") { S.guild = null; S.clone = null; return renderMe(); }
+    if (hash === "#/dev") { S.guild = null; S.clone = null; return renderDev(); }
     if (hash === "#/tiers") { S.guild = null; S.clone = null; return renderTiers(); }
     if (!m) { S.guild = null; S.clone = null; return renderServers(); }
     var clone = m[1] || null;
