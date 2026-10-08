@@ -91,6 +91,7 @@
     var inGuild = /^#\/g\//.test(location.hash);
     menuBtn.hidden = !(S.user && inGuild);
     if (!S.user) return;
+    hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/tiers", text: "Level tiers" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost inboxbtn", href: "#/inbox", "aria-label": "Drop box, " + S.unread + " unread" }, "Drop box",
       S.unread ? h("span", { class: "badge-n", text: S.unread > 99 ? "99+" : String(S.unread) }) : null));
     hdrRight.appendChild(h("div", { class: "user" }, h("img", { src: S.user.avatar_url, alt: "" }), h("span", { text: S.user.username })));
@@ -396,18 +397,28 @@
     var kind = h("select", { "aria-label": "Type" }, Object.keys(KIND_LABEL).map(function (k) { return h("option", { value: k, text: KIND_LABEL[k] }); }));
     var expiry = h("select", { "aria-label": "Expires" }, [["", "Never expires"], ["24", "In 1 day"], ["168", "In 7 days"], ["720", "In 30 days"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
     var ann = h("input", { type: "checkbox", id: "annchk" });
-    var send = h("button", { class: "btn primary", text: "Send to all admins" });
+    var aud = h("select", { "aria-label": "Audience" }, [["all", "Every dashboard admin"], ["premium", "Premium servers only"], ["min_members", "Servers over N members"], ["guild", "One server"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var minM = h("input", { type: "number", min: 1, max: 10000000, placeholder: "Minimum members", "aria-label": "Minimum members", style: "display:none" });
+    var gid = h("input", { type: "text", inputmode: "numeric", maxlength: 20, placeholder: "Server ID", "aria-label": "Server ID", autocomplete: "off", style: "display:none" });
+    var push = h("input", { type: "checkbox", id: "pushchk" });
+    function syncAud() { minM.style.display = aud.value === "min_members" ? "" : "none"; gid.style.display = aud.value === "guild" ? "" : "none"; }
+    aud.addEventListener("change", syncAud);
+    var send = h("button", { class: "btn primary", text: "Send" });
     send.addEventListener("click", function () {
       if (!title.value.trim() || !body.value.trim()) return toast("Add a title and a message.", "bad");
-      if (!confirm("Send this to every admin who uses the dashboard?")) return;
+      var who = aud.value === "all" ? "every admin who uses the dashboard" : "the owners of the matching servers";
+      if (!confirm("Send this to " + who + (push.checked ? " and DM it to them" : "") + "?")) return;
       send.classList.add("busy");
-      api("dropbox_send", {}, { title: title.value, body: body.value, kind: kind.value, announce: ann.checked, expires_hours: expiry.value ? Number(expiry.value) : null })
-        .then(function () { toast("Sent to the drop box", "ok"); title.value = body.value = ""; ann.checked = false; onSent(); })
+      api("dropbox_send", {}, { title: title.value, body: body.value, kind: kind.value, announce: ann.checked,
+        expires_hours: expiry.value ? Number(expiry.value) : null, push_dm: push.checked, audience: aud.value,
+        min_members: aud.value === "min_members" ? Number(minM.value) : null, target_guild_id: aud.value === "guild" ? gid.value.trim() : null })
+        .then(function (j) { toast(j.recipients ? "Sent to " + j.recipients + " server owner" + (j.recipients === 1 ? "" : "s") : "Sent to the drop box", "ok"); title.value = body.value = ""; ann.checked = push.checked = false; onSent(); })
         .catch(function (e) { toast(e.message, "bad"); }).then(function () { send.classList.remove("busy"); });
     });
     return h("div", { class: "card composer rv" }, h("h2", { text: "Send a message" }),
-      h("p", { class: "muted", text: "Appears in every admin's drop box. Tick the banner option to also show it at the top of the panel until they dismiss it." }),
-      title, body, h("div", { class: "row" }, kind, expiry, h("label", { class: "chk", for: "annchk" }, ann, " Also show as banner")), send);
+      h("p", { class: "muted", text: "Appears in the drop box. Pick an audience to target server owners, and tick DM to also message them on Discord. Targeted messages reach server owners only." }),
+      title, body, h("div", { class: "row" }, kind, expiry, h("label", { class: "chk", for: "annchk" }, ann, " Also show as banner")),
+      h("div", { class: "row" }, aud, minM, gid, h("label", { class: "chk", for: "pushchk" }, push, " Also DM server owners")), send);
   }
 
   function renderInbox() {
@@ -434,6 +445,15 @@
           if (!m.read) actions.appendChild(h("button", { class: "btn sm ghost", text: "Mark read", onclick: function () {
             api("dropbox_read", {}, { id: m.id }).then(load).catch(function (e) { toast(e.message, "bad"); });
           } }));
+          if (S.isOwner) {
+            var dl = h("small", { class: "muted" });
+            actions.appendChild(h("button", { class: "btn sm ghost", text: "Delivery", onclick: function () {
+              api("dropbox_delivery", { id: m.id }).then(function (d) {
+                dl.textContent = " " + (d.reads || 0) + " read, " + (d.sent || 0) + " DM sent, " + (d.pending || 0) + " pending, " + (d.failed || 0) + " failed (closed DMs)";
+              }).catch(function (e) { toast(e.message, "bad"); });
+            } }));
+            actions.appendChild(dl);
+          }
           if (S.isOwner) actions.appendChild(h("button", { class: "btn sm ghost danger", text: "Delete for everyone", onclick: function () {
             if (!confirm("Delete this message for every admin?")) return;
             api("dropbox_delete", {}, { id: m.id }).then(load).catch(function (e) { toast(e.message, "bad"); });
@@ -546,6 +566,46 @@
     }).catch(function (e) { if (e.message !== "401") { body.textContent = ""; body.appendChild(h("p", { text: e.message })); } });
   }
 
+  /* ---------- level tier gallery (read-only; tiers are assigned by level) ---------- */
+  function rangeText(t) { return t.max_level == null ? "Level " + t.min_level + "+" : (t.min_level === t.max_level ? "Level " + t.min_level : "Levels " + t.min_level + "\u2013" + t.max_level); }
+
+  function renderTiers() {
+    document.body.classList.remove("menu"); S.mod = null; renderHeader();
+    var grid = h("div", { class: "tier-grid" }, h("div", { class: "skel", style: "height:160px" }));
+    var find = h("input", { type: "number", min: 1, max: 1000, placeholder: "Find a level, e.g. 42", "aria-label": "Find a level", inputmode: "numeric" });
+    var hint = h("p", { class: "muted", text: "" });
+    app.textContent = "";
+    app.appendChild(h("main", { id: "main", class: "page" },
+      h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Level-up artwork" }), h("h1", { text: "Level tiers" }),
+        h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }))),
+      h("div", { class: "card rv" }, h("p", { class: "muted", text: "Members get the card for their level automatically. Every server uses the same ladder. Where several designs share a range, one is picked at random each time." }), find, hint),
+      grid));
+    fetch("assets/tiers/manifest.json", { cache: "no-cache" }).then(function (r) {
+      if (!r.ok) throw new Error("Couldn't load the gallery.");
+      return r.json();
+    }).then(function (j) {
+      var tiers = j.tiers || [], cards = [];
+      grid.textContent = "";
+      tiers.forEach(function (t, i) {
+        var card = h("figure", { class: "tier", style: "--i:" + Math.min(i, 12) },
+          h("img", { src: "assets/tiers/" + t.thumb, alt: t.label + " level-up card", loading: "lazy", decoding: "async" }),
+          h("figcaption", null, h("b", { text: t.label }), h("small", { text: rangeText(t) + (t.random_pool ? " \u00b7 random pick" : "") })));
+        cards.push({ t: t, el: card }); grid.appendChild(card);
+      });
+      find.addEventListener("input", function () {
+        var lv = parseInt(find.value, 10), hits = 0, first = null;
+        cards.forEach(function (c) {
+          var on = lv > 0 && lv >= c.t.min_level && (c.t.max_level == null || lv <= c.t.max_level);
+          c.el.classList.toggle("hit", on); c.el.classList.toggle("dim", lv > 0 && !on);
+          if (on) { hits++; first = first || c.el; }
+        });
+        hint.textContent = !(lv > 0) ? "" : hits ? "Level " + lv + (hits > 1 ? " uses one of these " + hits + " designs." : " uses this design.")
+          : "Level " + lv + " has no artwork; it gets the plain illustrated card.";
+        if (first) first.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    }).catch(function (e) { grid.textContent = ""; grid.appendChild(h("p", { text: e.message || "Couldn't load the gallery." })); });
+  }
+
   /* ---------- router ---------- */
   function route() {
     document.body.classList.remove("menu"); S.mod = null;
@@ -553,6 +613,7 @@
     if (!S.sid) return renderLogin();
     showAnnouncements();
     if (hash === "#/inbox") { S.guild = null; return renderInbox(); }
+    if (hash === "#/tiers") { S.guild = null; return renderTiers(); }
     if (!m) { S.guild = null; return renderServers(); }
     var gid = m[1], modId = m[2];
     app.textContent = ""; app.appendChild(h("main", { id: "main", class: "center" }, h("div", { class: "boot", role: "status" }, "Loading server", h("span", { class: "dots" }))));

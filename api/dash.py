@@ -33,6 +33,7 @@ Routes (all on /api/dash):
   POST {action: dropbox_read, id?}      -> mark one (or all) read
   POST {action: dropbox_send, ...}      -> OWNER ONLY (config.DISCORD_OWNER_BROADCAST_IDS)
   POST {action: dropbox_delete, id}     -> OWNER ONLY
+  GET  ?action=dropbox_delivery&id      -> OWNER ONLY: DM sent/failed/pending counts + reads
 Scope: the main PRIME BOT (clone_id None). Clone bots are not covered yet.
 """
 
@@ -668,6 +669,15 @@ async def _route(method: str, query: dict, headers, body: dict):
         raise _Reply(200, {"ok": True, "messages": msgs, "unread": sum(1 for m in msgs if not m["read"]),
                            "is_owner": _is_owner(sess)})
 
+    if method == "GET" and action == "dropbox_delivery":
+        if not _is_owner(sess):
+            _fail(403, "Only the bot owner can do that.")
+        try:
+            mid = int(str(q("id")))
+        except ValueError:
+            _fail(400, "Invalid message.")
+        raise _Reply(200, {"ok": True, **await db.dropbox_delivery(mid)})
+
     if method == "POST" and action == "dropbox_read":
         raw = body.get("id")
         try:
@@ -692,10 +702,21 @@ async def _route(method: str, query: dict, headers, body: dict):
         clean, err = S.validate_dropbox(body)
         if err:
             _fail(422, err)
+        # Targeted messages (and pushed ones) go to guild owners of the main bot.
+        recipients = []
+        if clean["audience"] != "all" or clean["push_dm"]:
+            recipients = await db.dropbox_resolve_recipients(
+                clean["audience"], clean["min_members"], clean["target_guild_id"])
+            if not recipients:
+                _fail(422, "No servers match that audience, so nobody would receive it.")
         mid = await db.dropbox_create(clean["title"], clean["body"], clean["kind"], clean["announce"],
-                                      str(sess["user"]["id"]), clean["expires_hours"])
-        logger.info("dashboard dropbox send id=%s by=%s announce=%s", mid, sess["user"]["id"], clean["announce"])
-        raise _Reply(200, {"ok": True, "id": str(mid)})
+                                      str(sess["user"]["id"]), clean["expires_hours"],
+                                      clean["audience"], clean["min_members"], clean["target_guild_id"],
+                                      clean["push_dm"])
+        queued = await db.dropbox_enqueue(mid, recipients, clean["push_dm"]) if recipients else 0
+        logger.info("dashboard dropbox send id=%s by=%s announce=%s audience=%s push_dm=%s recipients=%s",
+                    mid, sess["user"]["id"], clean["announce"], clean["audience"], clean["push_dm"], queued)
+        raise _Reply(200, {"ok": True, "id": str(mid), "recipients": queued})
 
     _fail(404, "Unknown action.")
 

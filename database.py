@@ -4122,6 +4122,28 @@ class Database:
                 PRIMARY KEY (message_id, user_id)
             )
         """)
+        for _col in ("audience TEXT NOT NULL DEFAULT 'all'", "min_members INTEGER",
+                     "target_guild_id BIGINT", "push_dm BOOLEAN NOT NULL DEFAULT FALSE"):
+            await conn.execute(f"ALTER TABLE dash_dropbox_messages ADD COLUMN IF NOT EXISTS {_col}")
+        # One row per (message, guild owner). status: pending -> sent | failed,
+        # or dashboard_only (targeted message without a DM). Failed is final.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_dropbox_dm (
+                id BIGSERIAL PRIMARY KEY,
+                message_id BIGINT NOT NULL REFERENCES dash_dropbox_messages(id) ON DELETE CASCADE,
+                user_id BIGINT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                claimed_at TIMESTAMPTZ,
+                sent_at TIMESTAMPTZ,
+                UNIQUE (message_id, user_id)
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS dash_dropbox_dm_pending_idx
+            ON dash_dropbox_dm (status, claimed_at)
+        """)
 
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS dash_audit (
@@ -14376,17 +14398,121 @@ class Database:
     # ── Web dashboard drop box (owner -> every dashboard admin) ──
 
     async def dropbox_create(self, title: str, body: str, kind: str, announce: bool,
-                             created_by: str, expires_hours: Optional[int] = None) -> int:
+                             created_by: str, expires_hours: Optional[int] = None,
+                             audience: str = "all", min_members: Optional[int] = None,
+                             target_guild_id: Optional[int] = None, push_dm: bool = False) -> int:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """INSERT INTO dash_dropbox_messages (title, body, kind, announce, created_by, expires_at)
+                """INSERT INTO dash_dropbox_messages
+                          (title, body, kind, announce, created_by, expires_at,
+                           audience, min_members, target_guild_id, push_dm)
                    VALUES ($1, $2, $3, $4, $5,
-                           CASE WHEN $6::int IS NULL THEN NULL ELSE NOW() + make_interval(hours => $6::int) END)
+                           CASE WHEN $6::int IS NULL THEN NULL ELSE NOW() + make_interval(hours => $6::int) END,
+                           $7, $8, $9, $10)
                    RETURNING id""",
                 title, body, kind, bool(announce), str(created_by), expires_hours,
+                audience, min_members, target_guild_id, bool(push_dm),
             )
             return int(row["id"])
+
+    async def dropbox_resolve_recipients(self, audience: str, min_members: Optional[int] = None,
+                                         target_guild_id: Optional[int] = None) -> List[int]:
+        """Distinct owner ids of the main bot's current guilds that match the audience.
+        Guilds with no known owner are skipped. Clone bots are not included."""
+        from config import PREMIUM_GRACE_DAYS
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT DISTINCT g.owner_id FROM discord_guilds g
+                   WHERE g.clone_id IS NULL AND g.left_at IS NULL AND g.owner_id IS NOT NULL
+                     AND ($1 <> 'min_members' OR COALESCE(g.member_count, 0) >= $2::int)
+                     AND ($1 <> 'guild' OR g.guild_id = $3::bigint)
+                     AND ($1 <> 'premium' OR EXISTS (
+                            SELECT 1 FROM discord_guild_subscriptions s
+                            WHERE s.guild_id = g.guild_id AND s.clone_id IS NULL
+                              AND s.expires_at + make_interval(days => $4::int) > NOW()))""",
+                audience, min_members, target_guild_id, int(PREMIUM_GRACE_DAYS),
+            )
+            return [int(r["owner_id"]) for r in rows]
+
+    async def dropbox_enqueue(self, message_id: int, user_ids: List[int], push_dm: bool) -> int:
+        """Record recipients. Without push_dm they are 'dashboard_only' (they just see it in the panel)."""
+        if not user_ids:
+            return 0
+        status = "pending" if push_dm else "dashboard_only"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                """INSERT INTO dash_dropbox_dm (message_id, user_id, status) VALUES ($1, $2, $3)
+                   ON CONFLICT (message_id, user_id) DO NOTHING""",
+                [(int(message_id), int(u), status) for u in user_ids],
+            )
+        return len(user_ids)
+
+    async def dropbox_dm_claim(self, limit: int = 25) -> List[Dict]:
+        """Atomically claim pending DMs for live messages. A claim abandoned for 2+ minutes
+        (crashed tick) becomes claimable again."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """UPDATE dash_dropbox_dm d SET claimed_at = NOW(), attempts = attempts + 1
+                   WHERE d.id IN (
+                       SELECT q.id FROM dash_dropbox_dm q
+                       JOIN dash_dropbox_messages m ON m.id = q.message_id
+                       WHERE q.status = 'pending'
+                         AND (q.claimed_at IS NULL OR q.claimed_at < NOW() - INTERVAL '2 minutes')
+                         AND (m.expires_at IS NULL OR m.expires_at > NOW())
+                       ORDER BY q.id LIMIT $1
+                       FOR UPDATE OF q SKIP LOCKED)
+                   RETURNING d.id, d.message_id, d.user_id, d.attempts,
+                             (SELECT title FROM dash_dropbox_messages WHERE id = d.message_id) AS title,
+                             (SELECT body FROM dash_dropbox_messages WHERE id = d.message_id) AS body,
+                             (SELECT kind FROM dash_dropbox_messages WHERE id = d.message_id) AS kind""",
+                int(limit),
+            )
+            return [dict(r) for r in rows]
+
+    async def dropbox_dm_finish(self, dm_id: int, error: Optional[str] = None, retry: bool = False,
+                                max_attempts: int = 3) -> None:
+        """Success -> sent. Failure -> failed (final), unless retry is allowed and attempts remain,
+        in which case it goes back to pending. Never retries forever."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if error is None:
+                await conn.execute("UPDATE dash_dropbox_dm SET status='sent', sent_at=NOW(), error=NULL WHERE id=$1", int(dm_id))
+                return
+            await conn.execute(
+                """UPDATE dash_dropbox_dm
+                   SET status = CASE WHEN $3 AND attempts < $4 THEN 'pending' ELSE 'failed' END,
+                       error = $2, claimed_at = NULL
+                   WHERE id = $1""",
+                int(dm_id), str(error)[:200], bool(retry), int(max_attempts),
+            )
+
+    async def dropbox_dm_release(self, dm_ids: List[int]) -> None:
+        """Give back claimed-but-never-attempted rows without costing them an attempt."""
+        if not dm_ids:
+            return
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE dash_dropbox_dm SET claimed_at = NULL, attempts = GREATEST(attempts - 1, 0) "
+                "WHERE id = ANY($1::bigint[]) AND status = 'pending'",
+                [int(i) for i in dm_ids],
+            )
+
+    async def dropbox_delivery(self, message_id: int) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT status, COUNT(*) AS n FROM dash_dropbox_dm WHERE message_id = $1 GROUP BY status",
+                int(message_id),
+            )
+            reads = await conn.fetchval("SELECT COUNT(*) FROM dash_dropbox_reads WHERE message_id = $1", int(message_id))
+        out = {r["status"]: int(r["n"]) for r in rows}
+        out["reads"] = int(reads or 0)
+        return out
 
     async def dropbox_list(self, user_id: str, limit: int = 50) -> list:
         """Live (unexpired) messages, newest first, each with this user's read flag."""
@@ -14397,7 +14523,10 @@ class Database:
                           (r.user_id IS NOT NULL) AS read
                    FROM dash_dropbox_messages m
                    LEFT JOIN dash_dropbox_reads r ON r.message_id = m.id AND r.user_id = $1
-                   WHERE m.expires_at IS NULL OR m.expires_at > NOW()
+                   WHERE (m.expires_at IS NULL OR m.expires_at > NOW())
+                     AND (m.audience = 'all' OR EXISTS (
+                            SELECT 1 FROM dash_dropbox_dm q
+                            WHERE q.message_id = m.id AND q.user_id::text = $1))
                    ORDER BY m.id DESC LIMIT $2""",
                 str(user_id), int(limit),
             )
@@ -14411,9 +14540,12 @@ class Database:
         async with pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO dash_dropbox_reads (message_id, user_id)
-                   SELECT id, $1 FROM dash_dropbox_messages
-                   WHERE ($2::bigint IS NULL OR id = $2::bigint)
-                     AND (expires_at IS NULL OR expires_at > NOW())
+                   SELECT m.id, $1 FROM dash_dropbox_messages m
+                   WHERE ($2::bigint IS NULL OR m.id = $2::bigint)
+                     AND (m.expires_at IS NULL OR m.expires_at > NOW())
+                     AND (m.audience = 'all' OR EXISTS (
+                            SELECT 1 FROM dash_dropbox_dm q
+                            WHERE q.message_id = m.id AND q.user_id::text = $1))
                    ON CONFLICT DO NOTHING""",
                 str(user_id), message_id,
             )

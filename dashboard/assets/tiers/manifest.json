@@ -1,0 +1,484 @@
+{
+ "tiers": [
+  {
+   "file": "tier00a_novice.png",
+   "label": "NOVICE",
+   "min_level": 1,
+   "max_level": 2,
+   "random_pool": true,
+   "thumb": "tier00a_novice.webp"
+  },
+  {
+   "file": "tier00b_apprentice.png",
+   "label": "APPRENTICE",
+   "min_level": 1,
+   "max_level": 2,
+   "random_pool": true,
+   "thumb": "tier00b_apprentice.webp"
+  },
+  {
+   "file": "tier00c_scout.png",
+   "label": "SCOUT",
+   "min_level": 1,
+   "max_level": 2,
+   "random_pool": true,
+   "thumb": "tier00c_scout.webp"
+  },
+  {
+   "file": "tier00d_knight.png",
+   "label": "KNIGHT",
+   "min_level": 1,
+   "max_level": 2,
+   "random_pool": true,
+   "thumb": "tier00d_knight.webp"
+  },
+  {
+   "file": "tier00e_cosmic_omnipotence.png",
+   "label": "COSMIC OMNIPOTENCE",
+   "min_level": 3,
+   "max_level": 3,
+   "random_pool": false,
+   "thumb": "tier00e_cosmic_omnipotence.webp"
+  },
+  {
+   "file": "tier00f_primordial_entropy.png",
+   "label": "PRIMORDIAL ENTROPY",
+   "min_level": 4,
+   "max_level": 4,
+   "random_pool": false,
+   "thumb": "tier00f_primordial_entropy.webp"
+  },
+  {
+   "file": "tier00g_chrono_collapser_blue.png",
+   "label": "CHRONO COLLAPSER",
+   "min_level": 5,
+   "max_level": 6,
+   "random_pool": true,
+   "thumb": "tier00g_chrono_collapser_blue.webp"
+  },
+  {
+   "file": "tier00h_chrono_collapser_red.png",
+   "label": "CHRONO COLLAPSER",
+   "min_level": 5,
+   "max_level": 6,
+   "random_pool": true,
+   "thumb": "tier00h_chrono_collapser_red.webp"
+  },
+  {
+   "file": "tier00i_voidreign.png",
+   "label": "VOIDREIGN",
+   "min_level": 7,
+   "max_level": 7,
+   "random_pool": false,
+   "thumb": "tier00i_voidreign.webp"
+  },
+  {
+   "file": "tier00j_metallic_serpent.png",
+   "label": "METALLIC SERPENT",
+   "min_level": 8,
+   "max_level": 8,
+   "random_pool": false,
+   "thumb": "tier00j_metallic_serpent.webp"
+  },
+  {
+   "file": "tier00u_griever.png",
+   "label": "GRIEVER",
+   "min_level": 9,
+   "max_level": 9,
+   "random_pool": false,
+   "thumb": "tier00u_griever.webp"
+  },
+  {
+   "file": "tier00k_ancient_mummy.png",
+   "label": "ANCIENT MUMMY CRAWLING OUT",
+   "min_level": 10,
+   "max_level": 10,
+   "random_pool": false,
+   "thumb": "tier00k_ancient_mummy.webp"
+  },
+  {
+   "file": "tier00l_ancients_rift_cultivator.png",
+   "label": "THE ANCIENT'S RIFT CULTIVATOR",
+   "min_level": 11,
+   "max_level": 11,
+   "random_pool": false,
+   "thumb": "tier00l_ancients_rift_cultivator.webp"
+  },
+  {
+   "file": "tier00m_nightfall.png",
+   "label": "NIGHTFALL",
+   "min_level": 12,
+   "max_level": 12,
+   "random_pool": false,
+   "thumb": "tier00m_nightfall.webp"
+  },
+  {
+   "file": "tier00n_greed_megathon.png",
+   "label": "GREED MEGATHON",
+   "min_level": 13,
+   "max_level": 13,
+   "random_pool": false,
+   "thumb": "tier00n_greed_megathon.webp"
+  },
+  {
+   "file": "tier00o_cosmic_weaver_rising.png",
+   "label": "COSMIC WEAVER RISING",
+   "min_level": 14,
+   "max_level": 14,
+   "random_pool": false,
+   "thumb": "tier00o_cosmic_weaver_rising.webp"
+  },
+  {
+   "file": "tier00s_plague.png",
+   "label": "PLAGUE",
+   "min_level": 15,
+   "max_level": 15,
+   "random_pool": false,
+   "thumb": "tier00s_plague.webp"
+  },
+  {
+   "file": "tier00t_unmatched_beast.png",
+   "label": "UNMATCHED BEAST",
+   "min_level": 16,
+   "max_level": 16,
+   "random_pool": false,
+   "thumb": "tier00t_unmatched_beast.webp"
+  },
+  {
+   "file": "tier00r_beyond_the_void.png",
+   "label": "BEYOND THE VOID",
+   "min_level": 17,
+   "max_level": 17,
+   "random_pool": false,
+   "thumb": "tier00r_beyond_the_void.webp"
+  },
+  {
+   "file": "tier00q_harbinger_of_ruin.png",
+   "label": "HARBINGER OF RUIN",
+   "min_level": 18,
+   "max_level": 18,
+   "random_pool": false,
+   "thumb": "tier00q_harbinger_of_ruin.webp"
+  },
+  {
+   "file": "tier00p_the_unmaking.png",
+   "label": "THE UNMAKING",
+   "min_level": 19,
+   "max_level": 20,
+   "random_pool": false,
+   "thumb": "tier00p_the_unmaking.webp"
+  },
+  {
+   "file": "tier05_transcendent.png",
+   "label": "TRANSCENDENT",
+   "min_level": 21,
+   "max_level": 25,
+   "random_pool": false,
+   "thumb": "tier05_transcendent.webp"
+  },
+  {
+   "file": "tier06_celestial.png",
+   "label": "CELESTIAL",
+   "min_level": 26,
+   "max_level": 30,
+   "random_pool": false,
+   "thumb": "tier06_celestial.webp"
+  },
+  {
+   "file": "tier07_divine_spark.png",
+   "label": "DIVINE SPARK",
+   "min_level": 31,
+   "max_level": 35,
+   "random_pool": false,
+   "thumb": "tier07_divine_spark.webp"
+  },
+  {
+   "file": "tier08_hallowed.png",
+   "label": "HALLOWED",
+   "min_level": 36,
+   "max_level": 40,
+   "random_pool": false,
+   "thumb": "tier08_hallowed.webp"
+  },
+  {
+   "file": "tier09_ethereal.png",
+   "label": "ETHEREAL",
+   "min_level": 41,
+   "max_level": 45,
+   "random_pool": false,
+   "thumb": "tier09_ethereal.webp"
+  },
+  {
+   "file": "tier10_astral.png",
+   "label": "ASTRAL",
+   "min_level": 46,
+   "max_level": 50,
+   "random_pool": false,
+   "thumb": "tier10_astral.webp"
+  },
+  {
+   "file": "tier11_overlord.png",
+   "label": "OVERLORD",
+   "min_level": 51,
+   "max_level": 55,
+   "random_pool": false,
+   "thumb": "tier11_overlord.webp"
+  },
+  {
+   "file": "tier12_mythic.png",
+   "label": "MYTHIC",
+   "min_level": 56,
+   "max_level": 60,
+   "random_pool": false,
+   "thumb": "tier12_mythic.webp"
+  },
+  {
+   "file": "tier13_primordial.png",
+   "label": "PRIMORDIAL",
+   "min_level": 61,
+   "max_level": 65,
+   "random_pool": false,
+   "thumb": "tier13_primordial.webp"
+  },
+  {
+   "file": "tier14_godlike.png",
+   "label": "GODLIKE",
+   "min_level": 66,
+   "max_level": 70,
+   "random_pool": false,
+   "thumb": "tier14_godlike.webp"
+  },
+  {
+   "file": "tier15_frostborn.png",
+   "label": "GOD OF WINTER",
+   "min_level": 71,
+   "max_level": 75,
+   "random_pool": false,
+   "thumb": "tier15_frostborn.webp"
+  },
+  {
+   "file": "tier16_sea_god.png",
+   "label": "GOD OF THE SEA",
+   "min_level": 76,
+   "max_level": 80,
+   "random_pool": false,
+   "thumb": "tier16_sea_god.webp"
+  },
+  {
+   "file": "tier17_forest_god.png",
+   "label": "GOD OF THE FOREST",
+   "min_level": 81,
+   "max_level": 85,
+   "random_pool": false,
+   "thumb": "tier17_forest_god.webp"
+  },
+  {
+   "file": "tier18_thunder_god.png",
+   "label": "GOD OF THUNDER",
+   "min_level": 86,
+   "max_level": 90,
+   "random_pool": false,
+   "thumb": "tier18_thunder_god.webp"
+  },
+  {
+   "file": "tier19_sun_god.png",
+   "label": "GOD OF THE SUN",
+   "min_level": 91,
+   "max_level": 95,
+   "random_pool": false,
+   "thumb": "tier19_sun_god.webp"
+  },
+  {
+   "file": "tier20_fire_god.png",
+   "label": "GOD OF FLAME",
+   "min_level": 96,
+   "max_level": 100,
+   "random_pool": false,
+   "thumb": "tier20_fire_god.webp"
+  },
+  {
+   "file": "tier21_blood_moon.png",
+   "label": "GOD OF THE BLOOD MOON",
+   "min_level": 101,
+   "max_level": 105,
+   "random_pool": false,
+   "thumb": "tier21_blood_moon.webp"
+  },
+  {
+   "file": "tier22_royal_god.png",
+   "label": "GOD OF ROYALTY",
+   "min_level": 106,
+   "max_level": 110,
+   "random_pool": false,
+   "thumb": "tier22_royal_god.webp"
+  },
+  {
+   "file": "tier23_void_god.png",
+   "label": "GOD OF THE VOID",
+   "min_level": 111,
+   "max_level": 115,
+   "random_pool": false,
+   "thumb": "tier23_void_god.webp"
+  },
+  {
+   "file": "tier24_prism_god.png",
+   "label": "GOD OF ALL",
+   "min_level": 116,
+   "max_level": 120,
+   "random_pool": false,
+   "thumb": "tier24_prism_god.webp"
+  },
+  {
+   "file": "tier25_world_forger.png",
+   "label": "WORLD FORGER",
+   "min_level": 121,
+   "max_level": 125,
+   "random_pool": false,
+   "thumb": "tier25_world_forger.webp"
+  },
+  {
+   "file": "tier26_planet_creator.png",
+   "label": "PLANET CREATOR",
+   "min_level": 126,
+   "max_level": 130,
+   "random_pool": false,
+   "thumb": "tier26_planet_creator.webp"
+  },
+  {
+   "file": "tier27_star_forger.png",
+   "label": "STAR FORGER",
+   "min_level": 131,
+   "max_level": 135,
+   "random_pool": false,
+   "thumb": "tier27_star_forger.webp"
+  },
+  {
+   "file": "tier28_wrath_of_worlds.png",
+   "label": "WRATH OF WORLDS",
+   "min_level": 136,
+   "max_level": 140,
+   "random_pool": false,
+   "thumb": "tier28_wrath_of_worlds.webp"
+  },
+  {
+   "file": "tier29_world_eater.png",
+   "label": "WORLD EATER",
+   "min_level": 141,
+   "max_level": 145,
+   "random_pool": false,
+   "thumb": "tier29_world_eater.webp"
+  },
+  {
+   "file": "tier30_planet_destroyer.png",
+   "label": "PLANET DESTROYER",
+   "min_level": 146,
+   "max_level": 150,
+   "random_pool": false,
+   "thumb": "tier30_planet_destroyer.webp"
+  },
+  {
+   "file": "tier31_galaxy_tyrant.png",
+   "label": "GALAXY TYRANT",
+   "min_level": 151,
+   "max_level": 155,
+   "random_pool": false,
+   "thumb": "tier31_galaxy_tyrant.webp"
+  },
+  {
+   "file": "tier32_cosmic_wrath.png",
+   "label": "COSMIC WRATH",
+   "min_level": 156,
+   "max_level": 160,
+   "random_pool": false,
+   "thumb": "tier32_cosmic_wrath.webp"
+  },
+  {
+   "file": "tier33_void_leviathan.png",
+   "label": "VOID LEVIATHAN",
+   "min_level": 161,
+   "max_level": 165,
+   "random_pool": false,
+   "thumb": "tier33_void_leviathan.webp"
+  },
+  {
+   "file": "tier34_devourer_of_universes.png",
+   "label": "DEVOURER OF UNIVERSES",
+   "min_level": 166,
+   "max_level": 170,
+   "random_pool": false,
+   "thumb": "tier34_devourer_of_universes.webp"
+  },
+  {
+   "file": "tier35_wrath_of_creation.png",
+   "label": "WRATH OF CREATION",
+   "min_level": 171,
+   "max_level": 175,
+   "random_pool": false,
+   "thumb": "tier35_wrath_of_creation.webp"
+  },
+  {
+   "file": "tier36_cosmic_omnipotence.png",
+   "label": "COSMIC OMNIPOTENCE",
+   "min_level": 176,
+   "max_level": 180,
+   "random_pool": false,
+   "thumb": "tier36_cosmic_omnipotence.webp"
+  },
+  {
+   "file": "tier37_universe_sovereign.png",
+   "label": "UNIVERSE SOVEREIGN",
+   "min_level": 181,
+   "max_level": 185,
+   "random_pool": false,
+   "thumb": "tier37_universe_sovereign.webp"
+  },
+  {
+   "file": "tier38_soul_reaper.png",
+   "label": "SOUL REAPER",
+   "min_level": 186,
+   "max_level": 190,
+   "random_pool": false,
+   "thumb": "tier38_soul_reaper.webp"
+  },
+  {
+   "file": "tier39_leviathan_fighter.png",
+   "label": "LEVIATHAN FIGHTER",
+   "min_level": 191,
+   "max_level": 195,
+   "random_pool": false,
+   "thumb": "tier39_leviathan_fighter.webp"
+  },
+  {
+   "file": "tier40_hunter.png",
+   "label": "HUNTER",
+   "min_level": 196,
+   "max_level": 200,
+   "random_pool": false,
+   "thumb": "tier40_hunter.webp"
+  },
+  {
+   "file": "tier41_medusas_pride.png",
+   "label": "MEDUSA'S PRIDE",
+   "min_level": 201,
+   "max_level": 205,
+   "random_pool": false,
+   "thumb": "tier41_medusas_pride.webp"
+  },
+  {
+   "file": "tier42_planet_swallower.png",
+   "label": "PLANET SWALLOWER",
+   "min_level": 206,
+   "max_level": 210,
+   "random_pool": false,
+   "thumb": "tier42_planet_swallower.webp"
+  },
+  {
+   "file": "tier43_spacetime_smasher.png",
+   "label": "SPACETIME SMASHER",
+   "min_level": 211,
+   "max_level": null,
+   "random_pool": false,
+   "thumb": "tier43_spacetime_smasher.webp"
+  }
+ ]
+}
