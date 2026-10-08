@@ -11,6 +11,7 @@ import logging
 from modules import ai_usage, dev_chat
 from modules import entitlements as ent
 from modules import user_subs
+from api.dash_member import pay_view
 
 logger = logging.getLogger(__name__)
 SOURCE = "dev"                 # counter source in user_ai_usage; the card plan uses "card_plan"
@@ -51,7 +52,7 @@ async def dev_status(uid, q, db):
     exp = ent.latest_expiry(rows, ent.DEV_PRODUCTS)
     return {"unlocked": unlocked, "expires_at": exp.isoformat() if (exp and unlocked) else None,
             "export_available": ent.export_allowed(rows), "plans": _dev_plans(rows),
-            "features": [dict(f) for f in FEATURES]}
+            "pay": await pay_view(db), "features": [dict(f) for f in FEATURES]}
 
 
 async def dev_overview(uid, q, db):

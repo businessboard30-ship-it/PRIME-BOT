@@ -62,7 +62,8 @@ def test_dev_status_does_not_leak_internal_fields(mem):
                  "subscription_id": "sub_SECRET", "source": "gumroad"}]
     fake.entitlements_list = lst
     st, p, _ = call("GET", {"action": "dev_status"})
-    assert "SECRET" not in str(p) and "gumroad" not in str(p)
+    rest = {k: v for k, v in p.items() if k != "pay"}      # `pay` lists the gateway buttons; the entitlement's own source must not leak
+    assert "SECRET" not in str(p) and "gumroad" not in str(rest)
 
 
 def test_every_dev_route_except_status_is_gated():
@@ -86,7 +87,7 @@ def test_dev_page_is_always_routed_and_never_uses_innerhtml():
     assert 'hash === "#/dev"' in js and 'href: "#/dev"' in js
     page = js[js.index("function devChat"):js.index("function renderOwner")]
     assert "innerHTML" not in page and 'api("dev_status")' in page
-    assert "startCheckout(" in page         # Subscribe goes through the shared server-priced checkout loader
+    assert "planGrid(" in page         # Subscribe goes through the shared server-priced checkout loader
 
 
 def test_checkout_loader_is_shared_recoverable_and_safe():
@@ -94,7 +95,7 @@ def test_checkout_loader_is_shared_recoverable_and_safe():
     js = Path("dashboard/assets/dash.js").read_text()
     css = Path("dashboard/assets/dash.css").read_text()
     fn = js[js.index("function startCheckout"):js.index("function renderMe")]
-    assert js.count('api("checkout_user"') == 1 and js.count("startCheckout(p.product") == 2      # /me and /dev share it
+    assert js.count('api("checkout_user"') == 1 and js.count("startCheckout(p.product, o.provider") == 1 and js.count("planGrid(") >= 3   # /me and /dev share one grid
     assert "ringsArt()" in fn and "innerHTML" not in fn
     assert "pageshow" in js and "endCheckoutUi" in js and "Cancel" in fn                        # not stuck after Back / slow start
     assert r'/^https:\/\//' in fn                                                              # only follows an https checkout link

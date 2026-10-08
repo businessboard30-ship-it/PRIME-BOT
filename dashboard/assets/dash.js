@@ -103,7 +103,7 @@
   function renderHeader() {
     hdrRight.textContent = "";
     var inGuild = /^#\/g\//.test(location.hash);
-    menuBtn.hidden = !(S.user && (inGuild || /^#\/owner/.test(location.hash)));
+    menuBtn.hidden = !(S.user && (inGuild || /^#\/(owner|me|dev)/.test(location.hash)));
     if (!S.user) return;
     if (S.ownerSections && S.ownerSections.length) hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/owner", text: "Owner" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/me", text: "My account" }));
@@ -1107,7 +1107,7 @@
     Array.prototype.forEach.call(document.querySelectorAll("button[data-paybusy]"), function (b) { b.disabled = false; b.removeAttribute("data-paybusy"); });
   }
   window.addEventListener("pageshow", function (ev) { if (ev.persisted || payBox) endCheckoutUi(); });
-  function startCheckout(product, btn, msg) {
+  function startCheckout(product, provider, btn, msg) {
     if (payBox) return;
     btn.disabled = true; btn.setAttribute("data-paybusy", "1"); msg.textContent = "";
     var note = h("p", { class: "muted", role: "status", text: "Opening secure checkout\u2026" });
@@ -1117,45 +1117,101 @@
     document.body.classList.add("paying");
     document.body.appendChild(payBox);
     payTimer = setTimeout(function () { note.textContent = "Taking longer than usual\u2026"; cancel.hidden = false; }, 8000);
-    api("checkout_user", null, { product: product }).then(function (r) {
+    api("checkout_user", null, { product: product, provider: provider || undefined }).then(function (r) {
       if (!/^https:\/\//.test(String(r.checkout_url || ""))) throw new Error("Couldn't start checkout.");
       window.location.href = r.checkout_url;
     }).catch(function (e) { endCheckoutUi(); msg.textContent = (e && e.message) || "Couldn't start checkout."; });
   }
 
-  function renderMe() {
-    document.body.classList.remove("menu"); S.mod = null; renderHeader();
-    var plans = section("My plans"), servers = section("My servers"), cardSec = section("Custom level-up card"), prefs = section("My preferences"), buys = section("My purchases");
-    app.textContent = "";
-    app.appendChild(h("main", { id: "main", class: "page" },
-      h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Your account" }), h("h1", { text: "My account" }),
-        h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }))),
-      plans, servers, cardSec, prefs, buys));
-    renderCardEditor(cardSec);
+  /* Plan cards: one Pay button per gateway the server offers (`pay` follows the bot's payment mode:
+     split = Paystack + Gumroad, Paystack only, or Gumroad only). The server re-checks the choice at checkout. */
+  function planGrid(offers, pay, msg) {
+    var grid = h("div", { class: "quick" });
+    var options = (pay && pay.length) ? pay : [{ provider: "", label: "Subscribe" }];
+    (offers || []).forEach(function (p) {
+      var can = p.state === "none" || p.state === "expired";
+      var per = p.period_days > 100 ? "year" : "month";
+      var actions = h("div", { class: "row", style: "display:flex;gap:.5rem;flex-wrap:wrap" });
+      if (can) options.forEach(function (o) {
+        var btn = h("button", { class: "btn sm", type: "button", text: o.label });
+        btn.addEventListener("click", function () { startCheckout(p.product, o.provider, btn, msg); });
+        actions.appendChild(btn);
+      });
+      else actions.appendChild(h("span", { class: "badge", text: STATE_LABEL[p.state] || "Active" }));
+      grid.appendChild(h("div", { class: "card rv" }, h("h3", { text: p.label }),
+        h("div", { class: "stat" }, h("b", { text: "$" + p.price_usd }), h("span", { text: "per " + per })), actions));
+    });
+    return grid;
+  }
+
+  /* ---------- member shell (same sidebar + cards layout as the server dashboard) ---------- */
+  var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"],
+    ["card", "trophy", "Level-up card"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"]];
+  function renderMemberShell(cur) {
+    document.body.classList.remove("menu"); S.mod = null;
+    app.textContent = ""; renderHeader();
+    var nav = h("nav", { class: "nav", "aria-label": "My account" });
+    function link(href, name, label, current) {
+      return h("a", { href: href, "aria-current": current ? "page" : null }, icon(name), h("span", { text: label }));
+    }
+    ME_NAV.forEach(function (n) { nav.appendChild(link("#/me" + (n[0] ? "/" + n[0] : ""), n[1], n[2], cur === n[0])); });
+    nav.appendChild(h("div", { class: "grp", text: "Builders" }));
+    nav.appendChild(link("#/dev", "code", "Developer mode", cur === "dev"));
+    var side = h("aside", { class: "side", id: "side" },
+      h("div", { class: "srvhead" }, avatar(S.user.avatar_url, S.user.username),
+        h("div", null, h("b", { text: S.user.username }), h("a", { href: "#/", text: "Switch to servers" }))), nav);
+    var main = h("main", { id: "main", class: "main" });
+    app.appendChild(h("div", { class: "shell" }, side, main));
+    side.addEventListener("click", function (e) { if (e.target.closest("a")) document.body.classList.remove("menu"); });
+    return main;
+  }
+  function pageHead(crumb, title) { return h("div", { class: "page-head rv" }, h("p", { class: "crumb", text: crumb }), h("h1", { text: title })); }
+  function when2(iso) { try { return new Date(iso).toLocaleDateString(); } catch (e) { return ""; } }
+
+  function meOverview(main) {
+    var stats = h("div", { class: "stats" }), quick = h("div", { class: "quick" });
+    function stat(v, l) { return h("div", { class: "card stat rv" }, h("b", { text: String(v) }), h("span", { text: l })); }
+    add(main, [pageHead("Overview", "Welcome, " + S.user.username), stats]);
+    var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."],
+      ["card", "trophy", "Level-up card", "Design the card shown when you level up."], ["prefs", "sliders", "Preferences", "Language, currency, AI character and pings."],
+      ["purchases", "scroll", "Purchases", "Every payment on your account."]];
+    go.forEach(function (g, i) {
+      quick.appendChild(h("div", { class: "card q rv", style: "--i:" + i }, icon(g[1]), h("div", { class: "grow" }, h("a", { href: "#/me/" + g[0], text: g[2] }), h("small", { text: g[3] })),
+        h("a", { class: "btn sm ghost", href: "#/me/" + g[0], text: "Open" })));
+    });
+    quick.appendChild(h("div", { class: "card q rv" }, icon("code"), h("div", { class: "grow" }, h("a", { href: "#/dev", text: "Developer mode" }), h("small", { text: "AI chat and tools for builders." })),
+      h("a", { class: "btn sm ghost", href: "#/dev", text: "Open" })));
+    main.appendChild(h("h2", { text: "Your account" })); main.appendChild(quick);
+    Promise.all([api("member_servers"), api("member_status")]).then(function (res) {
+      var list = res[0].servers || [], items = (res[1].entitlements || []).filter(function (e) { return e.state === "active" || e.state === "cancelled" || e.state === "past_due"; });
+      var best = list.reduce(function (m, g) { return Math.max(m, g.level || 0); }, 0);
+      add(stats, [stat(list.length, "Servers with XP"), stat(best || "\u2013", "Highest level"), stat(items.length, "Active plans"), stat(S.unread || 0, "Unread messages")]);
+    }).catch(function (e) { fail(stats, e); });
+  }
+
+  function mePlans(main) {
+    var msg = h("p", { class: "muted", role: "status", text: "" }), active = section("Active plans"), shop = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
+    add(main, [pageHead("Plans & billing", "Plans"), active, h("h2", { text: "Subscribe" }),
+      h("p", { class: "muted", text: "Plans renew automatically until you cancel. Access starts after the payment is confirmed." }), shop, msg]);
     Promise.all([api("member_status"), api("member_plans")]).then(function (res) {
-      var j = res[0], offers = res[1].plans || [];
-      var items = j.entitlements || [];
-      if (!items.length) plans.appendChild(h("p", { class: "muted", text: "You have no active plans." }));
+      var items = res[0].entitlements || [];
+      if (!items.length) active.appendChild(h("p", { class: "muted", text: "You have no active plans." }));
       items.forEach(function (e) {
-        plans.appendChild(h("p", null, h("b", { text: PRODUCT_LABEL[e.product] || e.product }), " \u00b7 " + (STATE_LABEL[e.state] || e.state)
-          + (e.expires_at ? " \u00b7 until " + new Date(e.expires_at).toLocaleDateString() : "")));
+        active.appendChild(h("p", null, h("b", { text: PRODUCT_LABEL[e.product] || e.product }), " \u00b7 " + (STATE_LABEL[e.state] || e.state)
+          + (e.expires_at ? " \u00b7 until " + when2(e.expires_at) : "")));
       });
-      plans.appendChild(h("h4", { text: "Subscribe" }));
-      plans.appendChild(h("p", { class: "muted", text: "Plans renew automatically until you cancel. Access starts after the payment is confirmed." }));
-      var msg = h("p", { class: "muted", role: "status", text: "" });
-      offers.forEach(function (p) {
-        var can = p.state === "none" || p.state === "expired";
-        var per = p.period_days > 100 ? "year" : "month";
-        var btn = h("button", { class: "btn sm", type: "button", text: can ? "Subscribe" : (STATE_LABEL[p.state] || "Active") });
-        btn.disabled = !can;
-        btn.addEventListener("click", function () { startCheckout(p.product, btn, msg); });
-        plans.appendChild(h("div", { class: "row" }, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " / " + per + " ", btn));
-      });
-      plans.appendChild(msg);
-    }).catch(function (e) { fail(plans, e); });
+      shop.textContent = ""; shop.appendChild(planGrid(res[1].plans, res[1].pay, msg));
+    }).catch(function (e) { shop.textContent = ""; fail(shop, e); });
+  }
+
+  function meServers(main) {
+    var box = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
+    add(main, [pageHead("My servers", "Your levels"), box]);
     api("member_servers").then(function (j) {
+      box.textContent = "";
       var list = j.servers || [];
-      if (!list.length) { servers.appendChild(h("p", { class: "muted", text: "Chat in a server with the bot to start earning XP. Your levels will show up here." })); return; }
+      if (!list.length) { box.appendChild(h("div", { class: "card empty" }, h("p", { class: "muted", text: "Chat in a server with the bot to start earning XP. Your levels will show up here." }))); return; }
+      var grid = h("div", { class: "grid" }); box.appendChild(grid);
       list.forEach(function (g) {
         var pct = g.xp_for_next ? Math.min(100, Math.round(100 * g.xp_in_level / g.xp_for_next)) : 0;
         var ping = h("input", { type: "checkbox", "aria-label": "Level-up pings in " + g.name }); ping.checked = !g.ping_optout;
@@ -1163,15 +1219,19 @@
           api("member_pref_set", null, { kind: "level_ping", guild_id: g.guild_id, value: !ping.checked }).then(function () { toast("Saved"); })
             .catch(function (e) { ping.checked = !ping.checked; toast(e.message, "err"); });
         });
-        servers.appendChild(h("div", { style: "margin:12px 0" },
-          h("p", null, h("b", { text: g.name }), " \u00b7 Level " + g.level + " \u00b7 Rank #" + g.rank + " of " + g.players
-            + (g.coins == null ? "" : " \u00b7 " + g.coin_symbol + " " + g.coins.toLocaleString() + " " + g.coin_name)),
-          h("div", { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct, "aria-label": "Progress to next level",
-            style: "height:8px;border-radius:4px;background:var(--tint)" }, h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
+        grid.appendChild(h("div", { class: "card rv" }, h("h3", { text: g.name }),
+          h("p", { class: "muted", text: "Level " + g.level + " \u00b7 Rank #" + g.rank + " of " + g.players + (g.coins == null ? "" : " \u00b7 " + g.coin_symbol + " " + g.coins.toLocaleString() + " " + g.coin_name) }),
+          h("div", { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct, "aria-label": "Progress to next level", style: "height:8px;border-radius:4px;background:var(--tint)" },
+            h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
           h("p", { class: "muted", text: g.xp_in_level.toLocaleString() + " / " + g.xp_for_next.toLocaleString() + " XP to level " + (g.level + 1) }),
           h("label", null, ping, " Ping me when I level up")));
       });
-    }).catch(function (e) { fail(servers, e); });
+    }).catch(function (e) { box.textContent = ""; fail(box, e); });
+  }
+
+  function mePrefs(main) {
+    var prefs = section("My preferences");
+    add(main, [pageHead("Preferences", "Preferences"), prefs]);
     api("member_prefs").then(function (j) {
       prefs.appendChild(selectRow("Language", Object.keys(j.languages).map(function (k) { return [k, j.languages[k]]; }), j.language, "language"));
       prefs.appendChild(selectRow("Currency", [["", "Default"]].concat(j.currencies.map(function (c) { return [c, c]; })), j.currency, "currency"));
@@ -1179,14 +1239,31 @@
       prefs.appendChild(selectRow("AI voice notes", [["auto", "Automatic"], ["off", "Off"]], j.voice, "voice"));
       prefs.appendChild(h("p", { class: "muted", text: "Language applies to the main bot. Theme is in the header." }));
     }).catch(function (e) { fail(prefs, e); });
+  }
+
+  function mePurchases(main) {
+    var buys = section("My purchases");
+    add(main, [pageHead("Purchases", "Purchases"), buys]);
     api("member_purchases").then(function (j) {
       var list = j.purchases || [];
       if (!list.length) { buys.appendChild(h("p", { class: "muted", text: "No purchases yet." })); return; }
       list.forEach(function (p) {
-        buys.appendChild(h("p", null, h("b", { text: p.type.replace(/_/g, " ") }), " \u00b7 " + p.amount.toFixed(2) + " \u00b7 " + p.status
-          + (p.at ? " \u00b7 " + new Date(p.at).toLocaleDateString() : "")));
+        buys.appendChild(h("p", null, h("b", { text: p.type.replace(/_/g, " ") }), " \u00b7 " + p.amount.toFixed(2) + " \u00b7 " + p.status + (p.at ? " \u00b7 " + when2(p.at) : "")));
       });
     }).catch(function (e) { fail(buys, e); });
+  }
+
+  function meCard(main) {
+    var cardSec = section("Custom level-up card");
+    add(main, [pageHead("Level-up card", "Level-up card"), cardSec]);
+    renderCardEditor(cardSec);
+  }
+
+  function renderMe(sec) {
+    var pages = { "": meOverview, plans: mePlans, servers: meServers, prefs: mePrefs, purchases: mePurchases, card: meCard };
+    sec = sec || "";
+    if (!pages[sec]) { location.hash = "#/me"; return; }
+    pages[sec](renderMemberShell(sec));
   }
 
   /* ---------- Developer mode (#/dev): always opens; the server decides what is unlocked (402 on every other dev_* route) ---------- */
@@ -1227,19 +1304,15 @@
   }
 
   function renderDev() {
-    document.body.classList.remove("menu"); S.mod = null; renderHeader();
+    var main = renderMemberShell("dev");
     var body = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
-    app.textContent = "";
-    app.appendChild(h("main", { id: "main", class: "page" },
-      h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "For builders" }), h("h1", { text: "Developer mode" }),
-        h("div", null, h("a", { class: "btn sm ghost", href: "#/me", text: "My account" }))),
-      body));
+    add(main, [pageHead("For builders", "Developer mode"), body]);
     api("dev_status").then(function (st) {
       body.textContent = "";
       var feats = h("ul", null, (st.features || []).map(function (f) { return h("li", { text: f.label + (f.ready ? "" : " (coming soon)") }); }));
       if (st.unlocked) {
         var c = section("Developer mode is active");
-        c.appendChild(h("p", { class: "muted", text: "Active" + (st.expires_at ? " until " + new Date(st.expires_at).toLocaleDateString() : "") + ". Features are switched on one at a time as they ship." }));
+        c.appendChild(h("p", { class: "muted", text: "Active" + (st.expires_at ? " until " + when2(st.expires_at) : "") + ". Features are switched on one at a time as they ship." }));
         c.appendChild(feats); body.appendChild(c);
         body.appendChild(devChat());
         return;
@@ -1250,15 +1323,8 @@
       if (st.export_available) lock.appendChild(h("p", { class: "muted", text: "Your plan has ended. Export stays available for 7 days after it ends." }));
       var msg = h("p", { class: "muted", role: "status", text: "" });
       lock.appendChild(h("p", { class: "muted", text: "Plans renew automatically until you cancel. Access starts after the payment is confirmed." }));
-      (st.plans || []).forEach(function (p) {
-        var can = p.state === "none" || p.state === "expired";
-        var per = p.period_days > 100 ? "year" : "month";
-        var btn = h("button", { class: "btn sm", type: "button", text: can ? "Subscribe" : (STATE_LABEL[p.state] || "Active") });
-        btn.disabled = !can;
-        btn.addEventListener("click", function () { startCheckout(p.product, btn, msg); });
-        lock.appendChild(h("div", { class: "row" }, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " / " + per + " ", btn));
-      });
-      lock.appendChild(msg); body.appendChild(lock);
+      body.appendChild(lock);
+      body.appendChild(planGrid(st.plans, st.pay, msg)); body.appendChild(msg);
     }).catch(function (e) { body.textContent = ""; fail(body, e); });
   }
 
@@ -1277,7 +1343,8 @@
     showAnnouncements();
     if (/^#\/owner(\/|$)/.test(hash)) return renderOwner(hash);
     if (hash === "#/inbox") { S.guild = null; S.clone = null; return renderInbox(); }
-    if (hash === "#/me") { S.guild = null; S.clone = null; return renderMe(); }
+    var me = hash.match(/^#\/me(?:\/([a-z]+))?$/);
+    if (me) { S.guild = null; S.clone = null; return renderMe(me[1]); }
     if (hash === "#/dev") { S.guild = null; S.clone = null; return renderDev(); }
     if (hash === "#/tiers") { S.guild = null; S.clone = null; return renderTiers(); }
     if (!m) { S.guild = null; S.clone = null; return renderServers(); }

@@ -100,8 +100,18 @@ def _plans_view(rows) -> list:
     return out
 
 
+async def pay_view(db) -> list:
+    """The payment buttons the dashboard shows. Follows the bot's payment mode (split / Paystack only / Gumroad only)."""
+    try:
+        mode = await db.get_payment_mode(None)
+    except Exception:
+        logger.warning("pay_view: payment mode lookup failed, defaulting to split", exc_info=True)
+        mode = "split"
+    return user_subs.pay_options(mode)
+
+
 async def member_plans(uid, q, db):
-    return {"plans": _plans_view(await db.entitlements_list(uid))}
+    return {"plans": _plans_view(await db.entitlements_list(uid)), "pay": await pay_view(db)}
 
 
 async def checkout_user(uid, body, db):
@@ -115,11 +125,18 @@ async def checkout_user(uid, body, db):
     if not base:
         logger.error("checkout_user: PUBLIC_BASE_URL is not set")
         return {"_status": 503, "message": "Checkout isn't available right now."}
+    options = await pay_view(db)
+    provider = (body or {}).get("provider")
+    if provider in (None, ""):
+        provider = options[0]["provider"] if len(options) == 1 else None      # split: the /pay page picks by country
+    elif provider not in [o["provider"] for o in options]:
+        return {"_status": 422, "message": "That payment method isn't available right now."}
     token = secrets.token_urlsafe(18)
     intent = {"payment_type": product, "user_id": uid, "guild_id": None, "clone_id": None,
               "price_usd": user_subs.price_usd(product), "extra": {}, "created": time.time()}
     await db.set_global_setting(f"payintent:{token}", json.dumps(intent))
-    return {"checkout_url": f"{base}/pay?t={token}", "product": product,
+    region = f"&r={user_subs.PAY_PROVIDERS[provider]['region']}" if provider else ""
+    return {"checkout_url": f"{base}/pay?t={token}{region}", "provider": provider, "pay": options, "product": product,
             "price_usd": user_subs.price_usd(product), "period_days": user_subs.PLANS[product]["period_days"]}
 
 

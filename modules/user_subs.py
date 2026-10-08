@@ -88,3 +88,19 @@ def transition(current: Optional[dict], product: str, kind: str, now=None,
     if exp and exp > now:
         return {"status": "cancelled", "expires_at": exp, "cancel_at_period_end": True}
     return {"status": "expired", "expires_at": exp, "cancel_at_period_end": False}
+
+
+# ---- checkout buttons: which gateways the dashboard offers, from the bot's payment mode ----
+# split  -> Paystack AND Gumroad (the buyer picks)      auto    -> Paystack only
+# gumroad -> Gumroad only                               anything else -> split
+PAY_PROVIDERS = {
+    "paystack": {"label": "Pay with Paystack", "region": "gh"},
+    "gumroad": {"label": "Pay with Gumroad", "region": "intl"},
+}
+
+
+def pay_options(mode) -> list:
+    """Buttons to show for the given payment mode. Pure; the server re-checks the choice at checkout."""
+    m = (mode or "split").strip().lower()
+    keys = ["paystack"] if m == "auto" else ["gumroad"] if m == "gumroad" else ["paystack", "gumroad"]
+    return [{"provider": k, "label": PAY_PROVIDERS[k]["label"]} for k in keys]

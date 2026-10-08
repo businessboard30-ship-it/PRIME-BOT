@@ -80,6 +80,16 @@ class handler(BaseHTTPRequestHandler):
             self._html(410, "<h3>This payment link has expired. Please start the purchase again in Discord.</h3>")
             return
 
+        # Dashboard plans follow the bot's payment mode: Paystack only / Gumroad only are forced here, so a
+        # hand-edited ?r= can never reach a gateway the owner switched off. Split keeps the country logic.
+        from modules import user_subs
+        if user_subs.is_plan(intent.get("payment_type")):
+            mode = asyncio.run(db.get_payment_mode(None))
+            if mode == "auto":
+                override = "gh"
+            elif mode == "gumroad":
+                override = "intl"
+
         if override in ("gh", "intl"):
             region = "GH" if override == "gh" else "XX"
         else:
