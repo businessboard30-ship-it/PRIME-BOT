@@ -119,6 +119,22 @@ export default function ManualPage() {
           <ThemePicker theme={theme} onChange={setTheme} />
         </div>
 
+        <div className="manual-panel mt-6 rounded-lg border p-4">
+          <p className="manual-fg text-sm font-medium">New here? Start with the website and the setup video.</p>
+          <p className="manual-muted mt-1 text-sm">
+            The bot has received a lot of changes and updates since the video was recorded, so some things have
+            changed. This manual and the website are always the current reference.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <a href="https://prime-bot-site.pages.dev" className="manual-btn" target="_blank" rel="noopener noreferrer">
+              Visit the website
+            </a>
+            <a href="https://youtu.be/aleJjsJdJxI" className="manual-btn" target="_blank" rel="noopener noreferrer">
+              Watch the setup video
+            </a>
+          </div>
+        </div>
+
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <input
             className="manual-input w-full max-w-sm"

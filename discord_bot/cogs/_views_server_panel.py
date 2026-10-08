@@ -316,6 +316,22 @@ class ServerPanelView(discord.ui.LayoutView):
 
 # ── home ─────────────────────────────────────────────────────────────────
 
+def _site_links() -> str:
+    """Masked text links, same style as the join DM's manual/support row."""
+    try:
+        import config as _cfg
+        WEBSITE_URL = getattr(_cfg, "WEBSITE_URL", "")
+        DISCORD_SUPPORT_SERVER_INVITE = getattr(_cfg, "DISCORD_SUPPORT_SERVER_INVITE", "")
+    except Exception:
+        return ""
+    bits = []
+    if WEBSITE_URL:
+        bits.append(f"🌐 [Website]({WEBSITE_URL})")
+    if DISCORD_SUPPORT_SERVER_INVITE:
+        bits.append(f"🆘 [Support server]({DISCORD_SUPPORT_SERVER_INVITE})")
+    return "  •  ".join(bits)
+
+
 class HomeView(ServerPanelView):
     title = "Server panel"
 
@@ -345,6 +361,7 @@ class HomeView(ServerPanelView):
             f"**{d.get('name', 'This server')}** — {d.get('members', '?')} members",
             f"{'🟢 Bot online' if d.get('online') else '🔴 Bot reconnecting'}  ·  {prem_line}",
             f"Setup score: **{d.get('done', 0)}/{d.get('total', 8)}** core features configured",
+            *([_site_links()] if _site_links() else []),
         ]
 
     def controls(self):

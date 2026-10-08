@@ -31,7 +31,7 @@ import discord
 from modules.text_styles import plain_name as _plain_name
 
 from database import db
-from config import DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, CUSTOM_ROLE_FEE_USD, AD_PLACEMENT_FEE_USD
+from config import DISCORD_CLONE_ADMIN_IDS, DASHBOARD_BASE_URL, DISCORD_SUPPORT_SERVER_INVITE, WEBSITE_URL, CUSTOM_ROLE_FEE_USD, AD_PLACEMENT_FEE_USD
 import config as _cfg
 from modules.ads_marketplace import submit_ad
 from gumroad_payments import start_gumroad_payment
@@ -328,6 +328,8 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         link_bits = [f"📖 [Read bot manual]({_manual_base}/manual{'/' if _cfg.STABLE_BASE_URL else ''}#moderation)"]
         if DISCORD_SUPPORT_SERVER_INVITE:
             link_bits.append(f"🆘 [Join our support server]({DISCORD_SUPPORT_SERVER_INVITE})")
+        if WEBSITE_URL:
+            link_bits.append(f"🌐 [Website]({WEBSITE_URL})")
         container.add_item(discord.ui.TextDisplay("  •  ".join(link_bits)))
         if extra_connect_row is not None:
             container.add_item(extra_connect_row)
@@ -1775,6 +1777,11 @@ class _BuildBotTokenModal(discord.ui.Modal, title="Paste your bot's token"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if interaction.user.id not in DISCORD_CLONE_ADMIN_IDS:
+            from modules import admin_controls as _ac
+            if not await _ac.build_bot_open():
+                await interaction.followup.send(_ac.MSG_BUILD_BOT_LOCKED, ephemeral=True)
+                return
         # Shared with /registerclone — see clone_admin.py's
         # register_clone_token, which both entry points call so
         # validation/payment/creation logic only ever lives in one place.
@@ -1843,6 +1850,11 @@ class _BuildBotPasteButton(discord.ui.DynamicItem[discord.ui.Button],
         return cls(guild_id, clone_id)
 
     async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id not in DISCORD_CLONE_ADMIN_IDS:
+            from modules import admin_controls as _ac
+            if not await _ac.build_bot_open():
+                await interaction.response.send_message(_ac.MSG_BUILD_BOT_LOCKED, ephemeral=True)
+                return
         await interaction.response.send_modal(_BuildBotTokenModal(self.guild_id, self.clone_id))
 
 
@@ -1980,10 +1992,14 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         # Creature catching is limited to the support server for now: dim the button everywhere
         # else (see modules/catch_gate.py; _enable_catch refuses too for stale, older DMs).
         locked = feature_key == "catch" and not _catch_guild_allowed(guild_id)
+        # Build Bot is owner-only unless the bot owner opened it in the admin panel. Dimmed (grey) but not
+        # disabled, so the owner can still use it; everyone else is refused on click.
+        from modules import admin_controls as _ac
+        build_locked = feature_key == "build_bot" and not _ac.build_bot_open_cached()
         super().__init__(
             discord.ui.Button(
-                label=f"{label}: support server only" if locked else (label if is_premium else f"Turn on: {label}"),
-                style=(discord.ButtonStyle.secondary if locked else discord.ButtonStyle.primary if is_premium else discord.ButtonStyle.success),
+                label=(f"{label}: owner only" if build_locked else f"{label}: support server only" if locked else (label if is_premium else f"Turn on: {label}")),
+                style=(discord.ButtonStyle.secondary if (locked or build_locked) else discord.ButtonStyle.primary if is_premium else discord.ButtonStyle.success),
                 emoji=emoji, custom_id=f"join_dm_feat:{feature_key}:{guild_id}:{'-' if clone_id is None else clone_id}",
                 row=row, disabled=locked,
             )
@@ -2022,6 +2038,11 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         # Handlers take guild explicitly (interaction.guild is None here —
         # this button is clicked from a DM, and Interaction.guild has no
         # setter, so it can't be patched onto the interaction).
+        if self.feature_key == "build_bot" and interaction.user.id not in DISCORD_CLONE_ADMIN_IDS:
+            from modules import admin_controls as _ac
+            if not await _ac.build_bot_open():
+                await interaction.followup.send(_ac.MSG_BUILD_BOT_LOCKED, ephemeral=True)
+                return
         label, _, handler, options_view_cls, _ = FEATURE_TOGGLES[self.feature_key]
         try:
             success, message = await handler(interaction, guild, self.clone_id)

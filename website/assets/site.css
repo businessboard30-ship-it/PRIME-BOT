@@ -276,3 +276,14 @@ details.faq .a{padding:0 1.2rem 1.1rem;color:var(--muted)}
 @media (max-width:640px){.cmd-row{grid-template-columns:1fr}}
 .seg{margin:.9rem 0 .4rem}
 [data-circuit]{display:block;height:80px}
+/* video card */
+.vid{display:grid;place-items:center;min-height:300px;text-decoration:none;color:#fff;overflow:hidden;background:radial-gradient(circle at 50% 45%,rgba(120,170,220,.18),rgba(4,10,18,.7) 70%)}
+.vid-rings{width:min(70%,260px);height:auto;display:block}
+.vspin{transform-origin:100px 100px;animation:spin var(--s,28s) linear infinite}
+.vspin.rev{animation-direction:reverse}
+.vplay{filter:drop-shadow(0 0 8px #9fd0ff);transform-origin:100px 100px;transition:transform .3s}
+.vid:hover .vplay{transform:scale(1.15)}
+.vid-cap{position:absolute;left:1rem;top:.9rem;font-size:.68rem;letter-spacing:.18em;color:var(--muted)}
+.vid-cta{position:absolute;right:1rem;bottom:.9rem;font-size:.78rem;letter-spacing:.14em;text-transform:uppercase}
+.no-motion .vspin{animation:none}
+@media (prefers-reduced-motion:reduce){.vspin{animation:none}}
