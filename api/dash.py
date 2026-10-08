@@ -56,6 +56,8 @@ Routes (all on /api/dash):
   GET  ?action=owner_helpers|owner_clones|owner_database -> OWNER (access / servers / database): helpers, clones (never the token), table counts (api/dash_owner_ops.py)
   GET  ?action=member_plans -> any signed-in user: the plan list with server prices and the user's own state
   POST ?action=checkout_user {product} -> any signed-in user: a /pay checkout link for the SESSION user (webhook grants, never this call)
+  GET  ?action=dev_status -> ANY signed-in user (#/dev): {unlocked, expires_at, export_available, plans, features}; drives the locked screen only
+  GET  ?action=dev_overview (and every later dev_* route) -> 402 {code: subscription_required} without an active Developer entitlement (api/dash_dev.py, require_dev)
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
   POST {action: member_pref_set, kind: language|currency|character|voice|level_ping, value[, guild_id]} -> own preference only (allowlisted)
@@ -239,8 +241,8 @@ class _Reply(Exception):
         self.status, self.payload, self.location = status, payload, location
 
 
-def _fail(status, message):
-    raise _Reply(status, {"ok": False, "message": message})
+def _fail(status, message, code=None):
+    raise _Reply(status, {"ok": False, "message": message, **({"code": code} if code else {})})
 
 
 def _bearer(headers) -> str:
@@ -324,13 +326,13 @@ def _merged(attr: str) -> dict:
 
 
 def _member_routes() -> dict:
-    from api import dash_member
-    return dash_member.ROUTES
+    from api import dash_dev, dash_member
+    return {**dash_member.ROUTES, **dash_dev.ROUTES}
 
 
 def _member_writes() -> dict:
-    from api import dash_member
-    return dash_member.WRITES
+    from api import dash_dev, dash_member
+    return {**dash_member.WRITES, **dash_dev.WRITES}
 
 
 def _owner_routes() -> dict:
@@ -1073,6 +1075,8 @@ async def _route(method: str, query: dict, headers, body: dict):
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, 60, 60)
         out = await _member_routes()[action](uid, q, db)
+        if out.get("_status"):
+            _fail(out["_status"], out.get("message") or "Something went wrong.", out.get("code"))
         raise _Reply(200, {"ok": True, **out})
 
     if method == "POST" and action in _member_writes():
@@ -1080,7 +1084,7 @@ async def _route(method: str, query: dict, headers, body: dict):
         _owner_rate(sess, "member:" + action, *((10, 300) if action == "checkout_user" else (30, 60)))
         out = await _member_writes()[action](uid, body, db)
         if out.get("_status"):
-            _fail(out["_status"], out.get("message") or "Something went wrong.")
+            _fail(out["_status"], out.get("message") or "Something went wrong.", out.get("code"))
         raise _Reply(200, {"ok": True, **out})
 
     if method == "POST" and action == "owner_stepup":
