@@ -158,6 +158,7 @@ ROUTES = {
     "/api/gumroad_webhook": "api.gumroad_webhook",
     "/api/topgg_webhook": "api.topgg_webhook",
     "/api/verify_captcha": "api.verify_captcha",
+    "/api/dash": "api.dash",
     "/pay": "api.pay_redirect",
     # Discord app-verification requires real, permanently reachable ToS/
     # Privacy URLs — these were written in api/legal_pages.py but never

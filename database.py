@@ -14309,16 +14309,16 @@ class Database:
             )
             return session_id
 
-    async def get_login_session(self, session_id: str) -> Optional[dict]:
-        """30 minute TTL, read-only (not popped) — the /login/servers page
+    async def get_login_session(self, session_id: str, ttl_minutes: int = 30) -> Optional[dict]:
+        """30 minute TTL by default (the web dashboard passes a longer one), read-only (not popped) — the /login/servers page
         may reload or re-fetch, and a stolen session id is no more
         sensitive than one of the dashboard links it contains."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """SELECT payload FROM discord_login_sessions
-                   WHERE session_id = $1 AND created_at > NOW() - INTERVAL '30 minutes'""",
-                session_id,
+                   WHERE session_id = $1 AND created_at > NOW() - make_interval(mins => $2)""",
+                session_id, int(ttl_minutes),
             )
             if not row:
                 return None
