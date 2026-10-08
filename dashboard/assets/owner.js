@@ -3,52 +3,91 @@
    Server data is only ever written with textContent (via h(..., {text}) or string children). */
 (function () {
   "use strict";
-  var H = window.DashOwnerHost, S = H.S, api = H.api, h = H.h, app = H.app, toast = H.toast;
+  var H = window.DashOwnerHost, S = H.S, api = H.api, h = H.h, app = H.app, toast = H.toast, icon = H.icon;
 
-  // Phase 0 pages. Later phases add entries here; each needs the matching server-side section.
+  // Every page: group (sidebar heading), icon, one-line description. `need` is the server-side section.
   var PAGES = [
-    { id: "", label: "Overview", need: null },
-    { id: "health", label: "Health", need: "health" },
-    { id: "servers", label: "Servers", need: "servers" },
-    { id: "users", label: "Users", need: "inspect" },
-    { id: "payments", label: "Payments", need: "money" },
-    { id: "controls", label: "Controls", need: "controls" },
-    { id: "blacklist", label: "Blacklist", need: "blacklist" },
-    { id: "premium", label: "Premium", need: "premium" },
-    { id: "ads", label: "Ads and Marketplace", need: "ads" },
-    { id: "bump", label: "Bump network", need: "bump" },
-    { id: "watchlist", label: "Abuse watchlist", need: "watchlist" },
-    { id: "reports", label: "Report queue", need: "reports" },
-    { id: "status", label: "Bot status", need: "status" },
-    { id: "honeypot", label: "Honeypots", need: "honeypot" },
-    { id: "scamshield", label: "Scam Shield", need: "scamshield" },
-    { id: "helpers", label: "Helpers", need: "access" },
-    { id: "clones", label: "Clones", need: "servers" },
-    { id: "database", label: "Database", need: "database" },
-    { id: "announce", label: "Announcements", need: "broadcast" },
-    { id: "feedback", label: "Feedback", need: "feedback" },
-    { id: "logs", label: "Logs", need: "logs" },
-    { id: "config", label: "Config", need: "config" },
-    { id: "audit", label: "Audit log", need: "audit" },
-    { id: "security", label: "Security", need: "controls" }
+    { id: "", label: "Overview", icon: "home", group: "", need: null, desc: "Your bot at a glance." },
+    { id: "health", label: "Health", icon: "pulse", group: "Monitor", need: "health", desc: "Is the bot up, how fast, and are any clones quiet." },
+    { id: "servers", label: "Servers", icon: "server", group: "Monitor", need: "servers", desc: "Every server the bot and its clones are in." },
+    { id: "users", label: "Users", icon: "users", group: "Monitor", need: "inspect", desc: "Look up one person by their Discord id." },
+    { id: "logs", label: "Logs", icon: "scroll", group: "Monitor", need: "logs", desc: "Recent warnings and errors, with secrets hidden." },
+    { id: "payments", label: "Payments", icon: "coins", group: "Money", need: "money", desc: "Look up, reverse and review payments, coupons and failures." },
+    { id: "premium", label: "Premium", icon: "star", group: "Money", need: "premium", desc: "Give, extend or remove a server's premium." },
+    { id: "controls", label: "Kill switches", icon: "sliders", group: "Controls", need: "controls", desc: "Turn features off for everyone, or put the bot in maintenance." },
+    { id: "blacklist", label: "Blacklist", icon: "gavel", group: "Controls", need: "blacklist", desc: "Block a user or a whole server." },
+    { id: "announce", label: "Announcements", icon: "mega", group: "Controls", need: "broadcast", desc: "Message every server admin through the Drop box." },
+    { id: "feedback", label: "Feedback", icon: "mail", group: "Controls", need: "feedback", desc: "What people are telling you." },
+    { id: "watchlist", label: "Abuse watchlist", icon: "siren", group: "Safety", need: "watchlist", desc: "Users and servers that keep getting reported." },
+    { id: "reports", label: "Report queue", icon: "flag", group: "Safety", need: "reports", desc: "Reports waiting for a decision." },
+    { id: "scamshield", label: "Scam Shield", icon: "shield-check", group: "Safety", need: "scamshield", desc: "Words and links deleted in every server." },
+    { id: "honeypot", label: "Honeypots", icon: "bug", group: "Safety", need: "honeypot", desc: "Trap channels set up across servers." },
+    { id: "status", label: "Bot status", icon: "wave", group: "Safety", need: "status", desc: "What the bot shows as its status." },
+    { id: "ads", label: "Ads & Marketplace", icon: "trophy", group: "Growth", need: "ads", desc: "Approve ads and manage marketplace listings." },
+    { id: "bump", label: "Bump network", icon: "link", group: "Growth", need: "bump", desc: "The bump network and its cooldown." },
+    { id: "helpers", label: "Helpers", icon: "users", group: "Owner only", need: "access", desc: "Who can use parts of the panel in Discord." },
+    { id: "clones", label: "Clones", icon: "server", group: "Owner only", need: "servers", desc: "Custom bots: register, relink or stop." },
+    { id: "database", label: "Database", icon: "db", group: "Owner only", need: "database", desc: "Table sizes and the one safe cleanup." },
+    { id: "config", label: "Config", icon: "code", group: "Owner only", need: "config", desc: "Settings the bot is running with (secrets hidden)." },
+    { id: "audit", label: "Audit log", icon: "scroll", group: "Owner only", need: "audit", desc: "Everything done from the panel and Discord." },
+    { id: "security", label: "Security", icon: "lock", group: "Owner only", need: "controls", desc: "Confirm it's you, or sign out everywhere." }
   ];
   function allowed(p) { return !p.need || (S.ownerSections || []).indexOf(p.need) !== -1; }
+  function pageById(id) { return PAGES.filter(function (p) { return p.id === id; })[0]; }
 
+  // Same layout as a server's settings: sidebar on the left, page header, then cards.
   function shell(current, content) {
-    var nav = h("nav", { class: "owner-nav", "aria-label": "Owner sections" });
+    var me = pageById(current) || PAGES[0];
+    app.textContent = ""; document.body.classList.remove("menu");
+    var nav = h("nav", { class: "nav", "aria-label": "Owner sections" });
+    var search = h("input", { type: "text", class: "search", placeholder: "Search the owner panel", "aria-label": "Search the owner panel", autocomplete: "off" });
+    var group = null;
     PAGES.filter(allowed).forEach(function (p) {
-      nav.appendChild(h("a", { class: "btn sm " + (p.id === current ? "primary" : "ghost"), href: "#/owner" + (p.id ? "/" + p.id : ""), text: p.label }));
+      if (p.group !== group) { group = p.group; if (group) nav.appendChild(h("div", { class: "grp", text: group })); }
+      nav.appendChild(h("a", { href: "#/owner" + (p.id ? "/" + p.id : ""), "aria-current": p.id === current ? "page" : null, "data-q": (p.label + " " + p.desc).toLowerCase() },
+        icon(p.icon), h("span", { text: p.label })));
     });
-    var main = h("main", { id: "main", class: "owner-main" }, h("h1", { text: "Owner" }), nav, content);
-    app.textContent = ""; app.appendChild(main); window.scrollTo(0, 0);
+    search.addEventListener("input", function () {
+      var q = search.value.trim().toLowerCase();
+      nav.querySelectorAll("a").forEach(function (a) { a.style.display = !q || a.getAttribute("data-q").indexOf(q) > -1 ? "" : "none"; });
+      nav.querySelectorAll(".grp").forEach(function (g) {
+        var n = g.nextElementSibling, any = false;
+        while (n && !n.classList.contains("grp")) { if (n.style.display !== "none") any = true; n = n.nextElementSibling; }
+        g.style.display = any ? "" : "none";
+      });
+    });
+    var ava = h("div", { class: "ava" });
+    if (S.user && S.user.avatar_url) ava.appendChild(h("img", { src: S.user.avatar_url, alt: "", referrerpolicy: "no-referrer" })); else ava.textContent = "O";
+    var side = h("aside", { class: "side", id: "side" },
+      h("div", { class: "srvhead" }, ava, h("div", null, h("b", { text: "Owner panel" }), h("small", { class: "muted", text: S.user && S.user.username || "" }), h("a", { href: "#/", text: "Back to servers" }))),
+      search, nav);
+    side.addEventListener("click", function (e) { if (e.target.closest("a")) document.body.classList.remove("menu"); });
+    var main = h("main", { id: "main", class: "main owner-page" },
+      h("div", { class: "page-head" }, h("p", { class: "crumb", text: me.group || "Owner" }), h("h1", { text: me.label }), h("p", { class: "muted", text: me.desc })),
+      content);
+    app.appendChild(h("div", { class: "shell" }, side, main)); window.scrollTo(0, 0);
   }
 
   function overview() {
-    var sections = (S.ownerSections || []).slice().sort();
-    shell("", h("div", { class: "card" },
-      h("p", { text: "Signed in as " + (S.user && S.user.username || "owner") + ". Owner sessions last about 2 hours." }),
-      h("p", { class: "muted", text: "Pages appear here as they ship. Access is decided by the server, not this page." }),
-      h("p", { class: "muted mono", text: "Sections: " + (sections.join(", ") || "none") })));
+    var wrap = h("div", null), stats = h("div", { class: "stats" }), quick = h("div", { class: "quick" });
+    var seen = null;
+    PAGES.filter(function (p) { return p.id && allowed(p); }).forEach(function (p, i) {
+      if (p.group !== seen) { seen = p.group; if (quick.childNodes.length) { wrap.appendChild(quick); quick = h("div", { class: "quick" }); } wrap.appendChild(h("h2", { text: p.group })); }
+      quick.appendChild(h("div", { class: "card q" }, icon(p.icon), h("div", { class: "grow" }, h("a", { href: "#/owner/" + p.id, text: p.label }), h("small", { text: p.desc })),
+        h("a", { class: "btn sm ghost", href: "#/owner/" + p.id, text: "Open" })));
+    });
+    wrap.appendChild(quick);
+    function stat(v, l) { return h("div", { class: "card stat" }, h("b", { text: String(v) }), h("span", { text: l })); }
+    var top = h("div", null, stats);
+    shell("", h("div", null, top, wrap));
+    if (allowed(pageById("health"))) api("owner_health").then(function (j) {
+      var sv = j.servers || {}, lb = j.live_bot;
+      stats.appendChild(stat((sv.main || 0) + (sv.clones || 0), "Servers"));
+      stats.appendChild(stat(j.clones_active == null ? "–" : j.clones_active, "Active clones"));
+      stats.appendChild(stat(j.db_ping_ms == null ? "Down" : Math.round(j.db_ping_ms) + " ms", "Database"));
+      stats.appendChild(stat(!lb ? "No data" : lb.stale ? "Stale" : "Online", "Bot worker"));
+      if (j.clones_quiet && j.clones_quiet.length) top.appendChild(h("div", { class: "notice" }, j.clones_quiet.length + " clone(s) have gone quiet. ", h("a", { href: "#/owner/health", text: "See Health" })));
+    }).catch(function () {});
   }
 
   function fmt(iso) { try { return new Date(iso).toLocaleString(); } catch (e) { return String(iso); } }
@@ -58,8 +97,9 @@
   function table(headers, rows) {
     return h("div", { class: "owner-scroll" }, h("table", { class: "owner-table" },
       h("thead", null, h("tr", null, headers.map(function (t) { return h("th", { text: t }); }))),
-      h("tbody", null, rows.map(function (r) { return h("tr", null, r.map(function (v) { return h("td", { text: String(v == null ? "" : v) }); })); }))));
+      h("tbody", null, rows.map(function (r) { return h("tr", null, r.map(function (v) { return v && v.nodeType ? h("td", { class: "act" }, v) : h("td", { text: String(v == null ? "" : v) }); })); }))));
   }
+  function rowBtn(label, fn) { return h("button", { class: "btn sm ghost", text: label, onclick: fn }); }
   function loadInto(box, action, params, draw) {
     box.textContent = ""; box.appendChild(h("p", { class: "muted", text: "Loading" }));
     api(action, params || {}).then(function (j) { box.textContent = ""; draw(j); })
@@ -532,10 +572,10 @@
       loadInto(out, "owner_status", {}, function (j) {
         out.appendChild(h("p", { class: "muted", text: j.note }));
         out.appendChild(h("p", { text: "Presence: " + (j.presences[j.presence] || j.presence) }));
-        Object.keys(j.presences).forEach(function (k) { out.appendChild(h("button", { class: "btn sm " + (j.presence === k ? "primary" : "ghost"), text: j.presences[k], onclick: function () { api("owner_presence_set", {}, { presence: k }).then(function () { draw(); }).catch(fail); } })); });
+        var presBar = h("div", { class: "owner-bar" }); out.appendChild(presBar);
+        Object.keys(j.presences).forEach(function (k) { presBar.appendChild(h("button", { class: "btn sm " + (j.presence === k ? "primary" : "ghost"), text: j.presences[k], onclick: function () { api("owner_presence_set", {}, { presence: k }).then(function () { draw(); }).catch(fail); } })); });
         out.appendChild(h("h3", { text: "Custom statuses (" + j.entries.length + "/" + j.max_entries + ")" }));
-        out.appendChild(j.entries.length ? table(["Id", "Type", "Text"], j.entries.map(function (e) { return [e.id, j.kinds[e.kind] || e.kind, e.text]; })) : h("p", { class: "muted", text: "None: the bot uses its built-in rotation." }));
-        j.entries.forEach(function (e) { out.appendChild(h("button", { class: "btn sm ghost", text: "Remove " + e.id, onclick: function () { api("owner_status_remove", {}, { id: String(e.id) }).then(function () { draw(); }).catch(fail); } })); });
+        out.appendChild(j.entries.length ? table(["Id", "Type", "Text", ""], j.entries.map(function (e) { return [e.id, j.kinds[e.kind] || e.kind, e.text, rowBtn("Remove", function () { api("owner_status_remove", {}, { id: String(e.id) }).then(function () { draw(); }).catch(fail); })]; })) : h("p", { class: "muted", text: "None: the bot uses its built-in rotation." }));
         var kind = h("select", { "aria-label": "Status type" }, Object.keys(j.kinds).map(function (k) { return h("option", { value: k, text: j.kinds[k] }); }));
         var text = h("input", { type: "text", maxlength: String(j.max_text), placeholder: "e.g. over {servers} servers", "aria-label": "Status text" });
         out.appendChild(h("div", { class: "owner-bar" }, kind, text, h("button", { class: "btn sm", text: "Add", onclick: function () {
@@ -577,8 +617,7 @@
           api("owner_scam_add", {}, { text: t.value }).then(function (r) { toast(r.message, r.added ? "ok" : "bad"); draw(); }).catch(fail);
         } })));
         out.appendChild(h("h3", { text: "Rules" }));
-        out.appendChild(j.rules.length ? table(["#", "Kind", "Pattern", "Note"], j.rules.map(function (r) { return [r.id, r.kind, r.kind === "image" ? "image " + r.pattern : r.pattern, r.note || ""]; })) : h("p", { class: "muted", text: "No rules yet." }));
-        j.rules.forEach(function (r) { out.appendChild(h("button", { class: "btn sm ghost", text: "Remove #" + r.id, onclick: function () { api("owner_scam_remove", {}, { id: String(r.id) }).then(function (x) { toast(x.message, x.removed ? "ok" : "bad"); draw(); }).catch(fail); } })); });
+        out.appendChild(j.rules.length ? table(["#", "Kind", "Pattern", "Note", ""], j.rules.map(function (r) { return [r.id, r.kind, r.kind === "image" ? "image " + r.pattern : r.pattern, r.note || "", rowBtn("Remove", function () { api("owner_scam_remove", {}, { id: String(r.id) }).then(function (x) { toast(x.message, x.removed ? "ok" : "bad"); draw(); }).catch(fail); })]; })) : h("p", { class: "muted", text: "No rules yet." }));
         out.appendChild(h("h3", { text: "Latest catches" }));
         out.appendChild(j.hits.length ? table(["When", "Server", "User", "Kind", "Deleted"], j.hits.map(function (x) { return [fmt(x.created_at), x.guild_id, x.user_id, x.kind, x.deleted ? "yes" : "NO"]; })) : h("p", { class: "muted", text: "None yet." }));
       });
@@ -603,11 +642,10 @@
           api("owner_helper_set", {}, { user_id: uid.value.trim(), sections: sections }).then(function (r) { toast(r.message, "ok"); draw(); }).catch(fail);
         } })));
         out.appendChild(h("h3", { text: "Current helpers" }));
-        out.appendChild(j.rows.length ? table(["User", "Sections", "Added by", "Updated"], j.rows.map(function (r) { return [r.user_id, r.sections.join(", "), r.added_by, fmt(r.updated_at || r.created_at)]; })) : h("p", { class: "muted", text: "No helpers." }));
-        j.rows.forEach(function (r) { out.appendChild(h("button", { class: "btn sm ghost", text: "Remove " + r.user_id, onclick: function () {
+        out.appendChild(j.rows.length ? table(["User", "Sections", "Added by", "Updated", ""], j.rows.map(function (r) { return [r.user_id, r.sections.join(", "), r.added_by, fmt(r.updated_at || r.created_at), rowBtn("Remove", function () {
           var c = typed("REMOVE", "Remove helper " + r.user_id + "."); if (c === null) return;
           api("owner_helper_remove", {}, { user_id: r.user_id, confirm: c }).then(function (x) { toast(x.message, x.removed ? "ok" : "bad"); draw(); }).catch(fail);
-        } })); });
+        })]; })) : h("p", { class: "muted", text: "No helpers." }));
       });
     }
     draw();
@@ -634,12 +672,11 @@
           api("owner_clone_relink", {}, { clone: rid.value.trim(), token: t, confirm: c }).then(function (r) { done(r, "Relinked to"); draw(); }).catch(fail);
         } })));
         out.appendChild(h("h3", { text: "All clones" }));
-        out.appendChild(j.rows.length ? table(["#", "Bot", "Owner", "Status", "Last heartbeat", "Created"], j.rows.map(function (r) {
-          return [r.clone_id, r.bot_username, r.owner_id, r.status, r.last_heartbeat ? fmt(r.last_heartbeat) : "never", fmt(r.created_at)]; })) : h("p", { class: "muted", text: "No clones." }));
-        j.rows.filter(function (r) { return r.status === "active"; }).forEach(function (r) { out.appendChild(h("button", { class: "btn sm ghost", text: "Stop #" + r.clone_id, onclick: function () {
-          var c = typed("STOP", "Stop clone #" + r.clone_id + " (" + (r.bot_username || "unnamed") + "). Its servers lose the bot until it is relinked."); if (c === null) return;
-          api("owner_clone_stop", {}, { clone: String(r.clone_id), confirm: c }).then(function (x) { toast(x.message, "ok"); draw(); }).catch(fail);
-        } })); });
+        out.appendChild(j.rows.length ? table(["#", "Bot", "Owner", "Status", "Last heartbeat", "Created", ""], j.rows.map(function (r) {
+          return [r.clone_id, r.bot_username, r.owner_id, r.status, r.last_heartbeat ? fmt(r.last_heartbeat) : "never", fmt(r.created_at), r.status !== "active" ? "" : rowBtn("Stop", function () {
+            var c = typed("STOP", "Stop clone #" + r.clone_id + " (" + (r.bot_username || "unnamed") + "). Its servers lose the bot until it is relinked."); if (c === null) return;
+            api("owner_clone_stop", {}, { clone: String(r.clone_id), confirm: c }).then(function (x) { toast(x.message, "ok"); draw(); }).catch(fail);
+          })]; })) : h("p", { class: "muted", text: "No clones." }));
       });
     }
     draw();
