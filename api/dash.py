@@ -469,6 +469,21 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
     return {"ok": True, "message": f"Done: posted in {summary}."}
 
 
+def _schedule_audit(sess, gid, label, summary):
+    async def go():
+        try:
+            await db.dash_audit_add(gid, str(sess["user"]["id"]), sess["user"].get("username") or "Unknown", "scheduled",
+                                    {label: {"from": None, "to": summary}}, S.AUDIT_RETENTION_DAYS)
+        except Exception:
+            logger.exception("dashboard: audit write failed for schedule")
+    return go()
+
+
+async def _live_schedules(gid: int) -> list:
+    rows = await db.list_scheduled_messages(gid, CLONE_ID)
+    return [r for r in rows if r.get("enabled")]
+
+
 async def _authorised_guild(sess: dict, raw_gid) -> int:
     try:
         gid = int(str(raw_gid))
@@ -635,6 +650,39 @@ async def _route(method: str, query: dict, headers, body: dict):
         except Exception:
             logger.exception("dashboard: audit write failed (save itself succeeded)")
         raise _Reply(200, {"ok": True, "values": after})
+
+    if method == "GET" and action == "schedules":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        rows = await _live_schedules(gid)
+        raise _Reply(200, {"ok": True, "schedules": [S.schedule_row_view(r) for r in rows[:S.SCHEDULE_MAX_ACTIVE + 5]],
+                           "limit": S.SCHEDULE_MAX_ACTIVE})
+
+    if method == "POST" and action == "schedule_add":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        meta = await _meta(gid)
+        chans, _roles = _id_sets(meta)
+        from datetime import datetime, timezone
+        clean, err = S.validate_schedule(body, chans["text"], datetime.now(timezone.utc))
+        if err:
+            _fail(422, err)
+        if len(await _live_schedules(gid)) >= S.SCHEDULE_MAX_ACTIVE:
+            _fail(422, f"You can have up to {S.SCHEDULE_MAX_ACTIVE} scheduled messages. Delete one first.")
+        job = await db.create_scheduled_message(gid, clean["channel_id"], clean["content"], clean["run_at"],
+                                                clean["interval_seconds"], int(sess["user"]["id"]), clone_id=CLONE_ID)
+        await _schedule_audit(sess, gid, "Scheduled message added", f"{_channel_name(meta, clean['channel_id'])}: {clean['content'][:80]}")
+        logger.info("dashboard schedule_add guild=%s user=%s id=%s", gid, sess["user"]["id"], job["id"])
+        raise _Reply(200, {"ok": True, "schedule": S.schedule_row_view(job)})
+
+    if method == "POST" and action == "schedule_delete":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        try:
+            sid = int(str(body.get("id")))
+        except ValueError:
+            _fail(400, "Invalid schedule.")
+        if not await db.delete_scheduled_message(gid, sid, CLONE_ID):
+            _fail(404, "That schedule no longer exists.")
+        await _schedule_audit(sess, gid, "Scheduled message removed", f"#{sid}")
+        raise _Reply(200, {"ok": True})
 
     if method == "POST" and action == "bot_action":
         gid = await _authorised_guild(sess, body.get("guild_id"))

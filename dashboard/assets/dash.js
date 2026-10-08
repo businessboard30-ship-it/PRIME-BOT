@@ -180,6 +180,7 @@
     nav.appendChild(link("#/g/" + gid, "home", "Overview", !modId));
     nav.appendChild(link("#/g/" + gid + "/billing", "star", "Premium & billing", modId === "billing"));
     nav.appendChild(link("#/g/" + gid + "/audit", "scroll", "Audit log", modId === "audit"));
+    nav.appendChild(link("#/g/" + gid + "/schedules", "scroll", "Scheduled messages", modId === "schedules"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
       if (!list.length) return;
@@ -536,6 +537,63 @@
     load(true);
   }
 
+  function fmtWhen(iso) { try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch (e) { return ""; } }
+  /* ---------- scheduled messages ---------- */
+  function everyText(sec) { var m = Math.round(sec / 60); return m % 1440 === 0 ? (m / 1440) + " day(s)" : m % 60 === 0 ? (m / 60) + " hour(s)" : m + " min"; }
+  function renderSchedules(gid, main) {
+    var list = h("div", { class: "audit" }), note = h("p", { class: "help", text: "" });
+    var chan = h("select", { id: "sc_chan", "aria-label": "Channel" }, S.meta.channels.text.map(function (c) { return h("option", { value: c.id, text: "#" + c.name }); }));
+    var mode = h("select", { id: "sc_mode", "aria-label": "How often" }, [["once", "Once, after a delay"], ["interval", "Repeat on an interval"], ["daily", "Every day at a time (UTC)"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var mins = h("input", { type: "number", min: "1", value: "60", "aria-label": "Minutes" });
+    var tod = h("input", { type: "text", value: "09:00", placeholder: "09:00", "aria-label": "Time (UTC)", hidden: true });
+    var hint = h("p", { class: "help", text: "Minutes from now." });
+    var text = h("textarea", { rows: "3", maxlength: "2000", placeholder: "What should I post?", "aria-label": "Message" });
+    var addBtn = h("button", { class: "btn sm primary", text: "Schedule it" });
+    function syncMode() {
+      tod.hidden = mode.value !== "daily"; mins.hidden = mode.value === "daily";
+      hint.textContent = mode.value === "once" ? "Minutes from now." : mode.value === "interval" ? "Repeat every this many minutes (5 or more)." : "24-hour UTC time, e.g. 09:00.";
+    }
+    mode.addEventListener("change", syncMode);
+    function load() {
+      api("schedules", { guild_id: gid }).then(function (r) {
+        list.textContent = "";
+        note.textContent = r.schedules.length + " of " + r.limit + " used.";
+        if (!r.schedules.length) { list.appendChild(h("p", { class: "muted", text: "Nothing scheduled." })); return; }
+        r.schedules.forEach(function (sc) {
+          var del = h("button", { class: "btn sm ghost", text: "Delete" });
+          del.addEventListener("click", function () {
+            if (!window.confirm("Delete this scheduled message?")) return;
+            del.disabled = true;
+            api("schedule_delete", {}, { guild_id: gid, id: sc.id }).then(function () { toast("Deleted", "ok"); load(); })
+              .catch(function (e) { toast(e.message, "bad"); del.disabled = false; });
+          });
+          var ch = S.meta.channels.text.filter(function (c) { return c.id === sc.channel_id; })[0];
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: (ch ? "#" + ch.name : "a deleted channel") + (sc.interval_seconds ? " · every " + everyText(sc.interval_seconds) : " · once") }),
+            h("p", { class: "help", text: "Next: " + fmtWhen(sc.next_run_at) }),
+            h("p", { text: sc.content, style: "white-space:pre-wrap;word-break:break-word" })), del));
+        });
+      }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    addBtn.addEventListener("click", function () {
+      var body = { guild_id: gid, channel_id: chan.value, mode: mode.value, content: text.value };
+      if (mode.value === "daily") body.time_utc = tod.value; else body.minutes = Number(mins.value);
+      addBtn.classList.add("busy"); addBtn.disabled = true;
+      api("schedule_add", {}, body).then(function () { toast("Scheduled", "ok"); text.value = ""; load(); })
+        .catch(function (e) { toast(e.message, "bad"); }).then(function () { addBtn.classList.remove("busy"); addBtn.disabled = false; });
+    });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Scheduled messages" }),
+      h("p", { class: "muted", text: "Post a message later, or on repeat. These are the same schedules as /schedule in Discord. Times are UTC." })),
+      h("a", { class: "btn sm ghost", href: "#/g/" + gid, text: "Overview" })),
+      h("div", { class: "card fields rv" }, h("h2", { text: "New message" }),
+        h("div", { class: "field" }, h("div", null, h("label", { for: "sc_chan", text: "Channel" })), chan),
+        h("div", { class: "field" }, h("div", null, h("label", { for: "sc_mode", text: "When" }), hint), h("div", null, mode, mins, tod)),
+        h("div", { class: "field" }, h("div", null, h("label", { text: "Message" }), h("p", { class: "help", text: "Up to 2000 characters. Mentions like @everyone will ping, same as the command." })), text),
+        h("div", { class: "action" }, h("div", { class: "grow" }), addBtn)),
+      h("div", { class: "card rv" }, h("h2", { text: "Upcoming" }), note, list)]);
+    syncMode(); load();
+  }
+
   /* ---------- premium & billing ---------- */
   function renderBilling(gid, main) {
     var body = h("div", { class: "billing" }, h("div", { class: "skel", style: "height:140px" }));
@@ -620,9 +678,9 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      if (modId && modId !== "audit" && modId !== "billing" && !mod) { location.hash = "#/g/" + gid; return; }
+      if (modId && modId !== "audit" && modId !== "billing" && modId !== "schedules" && !mod) { location.hash = "#/g/" + gid; return; }
       var main = renderShell(gid, modId);
-      if (modId === "audit") renderAudit(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
+      if (modId === "audit") renderAudit(gid, main); else if (modId === "schedules") renderSchedules(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
       window.scrollTo(0, 0);
     }).catch(function (e) {
       if (e.message === "401") return;
