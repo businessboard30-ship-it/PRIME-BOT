@@ -123,6 +123,52 @@ async def checkout_user(uid, body, db):
             "price_usd": user_subs.price_usd(product), "period_days": user_subs.PLANS[product]["period_days"]}
 
 
+async def member_card(uid, q, db):
+    """The member's saved design + what the editor may offer. `access` only drives the UI; Save re-checks."""
+    from modules import ai_usage, level_card_design as lcd
+    rows = await db.entitlements_list(uid)
+    raw = await db.user_card_get(uid)
+    design = None
+    if raw:
+        try:
+            design, _ = lcd.validate(json.loads(raw))
+        except Exception:
+            design = None
+    access = ent.has_access(rows, ("card_plan",))
+    out = {"design": design or dict(lcd.DEFAULT_DESIGN), "saved": bool(design), "access": access,
+           "options": lcd.options()}
+    if access:
+        out["ai"] = await ai_usage.status(db, uid, "card_plan")
+    return out
+
+
+async def member_card_preview(uid, body, db):
+    """Render the design on a placeholder avatar. Open to everyone (preview mode); nothing is stored."""
+    from modules import level_card_design as lcd
+    design, err = lcd.validate((body or {}).get("design"))
+    if err:
+        return {"_status": 422, "message": err}
+    return {"image": await lcd.preview_data_url_async(design)}
+
+
+async def member_card_save(uid, body, db):
+    """Save the design for the SESSION user. Entitlement is checked here, server-side: no plan -> 402 + checkout link."""
+    from modules import level_card_design as lcd
+    design, err = lcd.validate((body or {}).get("design"))
+    if err:
+        return {"_status": 422, "message": err}
+    if not ent.has_access(await db.entitlements_list(uid), ("card_plan",)):
+        extra = {}
+        started = await checkout_user(uid, {"product": "card_plan"}, db)
+        if started.get("checkout_url"):
+            extra["checkout_url"] = started["checkout_url"]
+        return {"_status": 402, "message": "The custom level-up card needs the card plan. Subscribe to save your design.",
+                "extra": extra}
+    await db.user_card_set(uid, json.dumps(design, separators=(",", ":")))
+    return {"design": design}
+
+
 ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_plans": member_plans,
-          "member_prefs": member_prefs, "member_purchases": member_purchases}
-WRITES = {"member_pref_set": member_pref_set, "checkout_user": checkout_user}
+          "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card}
+WRITES = {"member_pref_set": member_pref_set, "checkout_user": checkout_user,
+          "member_card_preview": member_card_preview, "member_card_save": member_card_save}

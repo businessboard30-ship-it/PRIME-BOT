@@ -157,9 +157,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "63"
+SCHEMA_VERSION = "64"
 # "61" -> "62" creates user_entitlements (per-user paid products: card_plan, dev_monthly, dev_yearly; only the payment webhook may write it) and dash_web_users (everyone who has signed in to the web dashboard; member messaging depends on it). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "62" -> "63" creates user_billing_events (one row per gateway billing event id, claimed before an entitlement is changed so a duplicate or retried webhook can never double-extend a plan). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
+# "63" -> "64" creates user_level_cards (a member's saved custom level-up card design) and user_ai_usage (weekly website-only AI chat counter per user/week/source). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "59" -> "60" creates dash_owner_audit (web owner area audit trail, also written by the Discord owner panel) + its indexes. Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "60" -> "61" creates bot_status_snapshots (the bot worker publishes live health, masked logs and masked config here every ~60s so the web owner area, a separate process, can show them). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if _create_tables changes without a bump.
 # "58" -> "59" actually creates the web-dashboard tables dash_dropbox_messages, dash_dropbox_reads, dash_dropbox_dm and dash_audit (+ the audience/min_members/target_guild_id/push_dm columns). They were added to _create_tables in the dashboard PRs without a bump, so DBs stamped '58' hit UndefinedTableError on every Drop Box / Audit request. Same bump-or-it-never-runs trap.
@@ -4203,6 +4204,26 @@ class Database:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (user_id, product)
+            )
+        """)
+
+        # Custom level-up card design (card plan). Kept after expiry; the bot only draws it while the plan is effective.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_level_cards (
+                user_id TEXT PRIMARY KEY,
+                design TEXT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # Weekly website-only AI chat counter. week_start = Monday (UTC); source keeps card_plan and dev counters apart.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_ai_usage (
+                user_id TEXT NOT NULL,
+                week_start DATE NOT NULL,
+                source TEXT NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, week_start, source)
             )
         """)
 
@@ -14784,6 +14805,36 @@ class Database:
                 """SELECT product, status, expires_at, source, subscription_id, cancel_at_period_end
                    FROM user_entitlements WHERE user_id = $1 AND product = $2""", str(user_id), str(product))
         return dict(r) if r else None
+
+    async def user_card_get(self, user_id: str):
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval("SELECT design FROM user_level_cards WHERE user_id = $1", str(user_id))
+
+    async def user_card_set(self, user_id: str, design_json: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO user_level_cards (user_id, design) VALUES ($1, $2)
+                   ON CONFLICT (user_id) DO UPDATE SET design = $2, updated_at = NOW()""",
+                str(user_id), str(design_json))
+
+    async def ai_usage_get(self, user_id: str, week_start, source: str) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            v = await conn.fetchval("SELECT used FROM user_ai_usage WHERE user_id = $1 AND week_start = $2 AND source = $3",
+                                    str(user_id), week_start, str(source))
+        return int(v or 0)
+
+    async def ai_usage_consume(self, user_id: str, week_start, source: str, limit: int):
+        """Atomically +1 while used < limit. Returns the new count, or None when the allowance is spent."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                """INSERT INTO user_ai_usage (user_id, week_start, source, used) VALUES ($1, $2, $3, 1)
+                   ON CONFLICT (user_id, week_start, source) DO UPDATE SET used = user_ai_usage.used + 1
+                   WHERE user_ai_usage.used < $4 RETURNING used""",
+                str(user_id), week_start, str(source), int(limit))
 
     async def entitlement_by_subscription(self, subscription_id: str):
         """Find the (user_id, product) that owns a gateway subscription id."""
