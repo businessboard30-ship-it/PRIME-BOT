@@ -51,7 +51,7 @@ import logging
 import secrets as _secrets
 import time
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse, parse_qs, urlencode, quote
 
 import aiohttp
 
@@ -512,6 +512,139 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
     return {"ok": True, "message": f"Done: posted in {summary}."}
 
 
+async def _bot_request(method: str, path: str, reason=None, json_body=None):
+    """PUT/PATCH/DELETE as the bot. Returns the status code; callers decide what each means."""
+    headers = {"Authorization": f"Bot {config.DISCORD_BOT_TOKEN}"}
+    if reason:
+        headers["X-Audit-Log-Reason"] = quote(reason[:400], safe="")
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        for attempt in range(2):
+            kw = {"json": json_body} if json_body is not None else {}
+            async with s.request(method, f"{DISCORD_API}{path}", headers=headers, **kw) as r:
+                if r.status == 429 and attempt == 0:
+                    retry = float((await r.json(content_type=None)).get("retry_after", 1))
+                    await asyncio.sleep(min(retry, 3))
+                    continue
+                return r.status
+
+
+RAID_LIST_MAX = 50
+_last_raid_op: dict = {}
+RAID_OP_MIN_INTERVAL = 0.8
+
+
+async def _actor_perms(gid: int, uid: int):
+    """(owner_id, member role ids, role permission map, role position map) for the signed-in admin."""
+    info = await _guild_info(gid)
+    member = await _bot_get(f"/guilds/{gid}/members/{uid}")
+    roles = {int(r["id"]): int(r.get("permissions") or 0) for r in info.get("roles", [])}
+    pos = {int(r["id"]): int(r.get("position") or 0) for r in info.get("roles", [])}
+    return int(info["owner_id"]), [int(x) for x in member.get("roles", [])], roles, pos
+
+
+async def _raid_review(gid: int) -> dict:
+    rows = [r for r in await db.list_quarantined(gid, CLONE_ID, 200) if S.is_raid_row(r)]
+    rows.sort(key=lambda r: r.get("created_at") or 0)
+    total = len(rows)
+    rows = rows[:RAID_LIST_MAX]
+
+    async def one(row):
+        try:
+            return S.raid_row_view(row, await _bot_get(f"/guilds/{gid}/members/{int(row['user_id'])}"))
+        except DiscordError as e:
+            if e.status == 404:
+                return S.raid_row_view(row, None)
+            raise
+    people = await asyncio.gather(*[one(r) for r in rows])
+    return {"ok": True, "people": list(people), "total": total}
+
+
+async def _raid_action(sess: dict, gid: int, raw_user, op) -> dict:
+    uid = int(sess["user"]["id"])
+    now = time.monotonic()
+    if now - _last_raid_op.get(uid, 0) < RAID_OP_MIN_INTERVAL:
+        _fail(429, "Slow down a little.")
+    _last_raid_op[uid] = now
+    if len(_last_raid_op) > 5000:
+        _last_raid_op.clear()
+    try:
+        target = int(str(raw_user))
+    except (TypeError, ValueError):
+        _fail(400, "Pick a person first.")
+    op = str(op or "")
+    owner_id, my_roles, role_perms, role_pos = await _actor_perms(gid, uid)
+    why = S.raid_op_allowed(
+        op,
+        S.has_permission(owner_id, uid, my_roles, role_perms, gid, S.MANAGE_GUILD | S.BAN_MEMBERS),
+        S.has_permission(owner_id, uid, my_roles, role_perms, gid, S.BAN_MEMBERS),
+        S.has_permission(owner_id, uid, my_roles, role_perms, gid, S.KICK_MEMBERS))
+    if why:
+        _fail(403, why)
+    # Only people the anti-raid itself holds can be acted on here, never an arbitrary member id.
+    row = await db.get_quarantined(gid, CLONE_ID, target)
+    if row is None or not S.is_raid_row(row):
+        _fail(404, "They're no longer waiting for review. Refresh the list.")
+    try:
+        member = await _bot_get(f"/guilds/{gid}/members/{target}")
+    except DiscordError as e:
+        if e.status != 404:
+            raise
+        member = None
+    if member is not None and uid != owner_id and op != "approve":
+        if S.top_position([int(x) for x in member.get("roles", [])], role_pos) >= S.top_position(my_roles, role_pos):
+            _fail(403, "You can only act on people ranked below you.")
+    actor_name = sess["user"].get("username") or "Unknown"
+    reason = f"[anti-raid review] {op} by {actor_name} via dashboard"
+    q_role = await db.get_quarantine_role(gid, CLONE_ID)
+
+    if op == "approve":
+        if member is None:
+            await db.remove_quarantined(gid, CLONE_ID, target)
+            done = "They'd already left, so they were removed from the list."
+        else:
+            existing = [int(x) for x in member.get("roles", [])]
+            valid = set(role_pos)
+            keep = [r for r in existing if not (q_role and r == int(q_role))]
+            restore = [int(r) for r in (row.get("saved_role_ids") or []) if int(r) in valid and int(r) not in keep]
+            st = await _bot_request("PATCH", f"/guilds/{gid}/members/{target}", reason=reason,
+                                    json_body={"roles": [str(r) for r in keep + restore]})
+            if st == 403:
+                _fail(422, "Discord refused to change their roles. Make sure my role is above theirs and above the roles being restored.")
+            if st not in (200, 204):
+                _fail(502, "Discord didn't accept that. Try again.")
+            await db.remove_quarantined(gid, CLONE_ID, target)
+            done = f"Released. {len(restore)} role(s) restored."
+    elif op == "ban":
+        st = await _bot_request("PUT", f"/guilds/{gid}/bans/{target}", reason=reason,
+                                json_body={"delete_message_seconds": 3600})
+        if st == 403:
+            _fail(422, "Discord refused that ban. Make sure my role is above theirs and I have Ban Members. They stay quarantined.")
+        if st not in (200, 201, 204):
+            _fail(502, "Discord didn't accept that. Try again.")
+        await db.remove_quarantined(gid, CLONE_ID, target)
+        done = "Banned."
+    else:  # kick
+        if member is None:
+            await db.remove_quarantined(gid, CLONE_ID, target)
+            done = "They'd already left, so they were removed from the list."
+        else:
+            st = await _bot_request("DELETE", f"/guilds/{gid}/members/{target}", reason=reason)
+            if st == 403:
+                _fail(422, "Discord refused that kick. Make sure my role is above theirs and I have Kick Members. They stay quarantined.")
+            if st not in (200, 204):
+                _fail(502, "Discord didn't accept that. Try again.")
+            await db.remove_quarantined(gid, CLONE_ID, target)
+            done = "Kicked."
+    try:
+        await db.dash_audit_add(gid, str(uid), actor_name, "antiraid",
+                                {f"Review: {op}": {"from": None, "to": str(target)}}, S.AUDIT_RETENTION_DAYS)
+    except Exception:
+        logger.exception("dashboard: audit write failed for raid action")
+    logger.info("dashboard raid_action guild=%s user=%s op=%s target=%s", gid, uid, op, target)
+    return {"ok": True, "message": done}
+
+
 async def _authorised_guild(sess: dict, raw_gid) -> int:
     try:
         gid = int(str(raw_gid))
@@ -801,6 +934,13 @@ async def _route(method: str, query: dict, headers, body: dict):
         if err:
             _fail(422, err)
         raise _Reply(200, {"ok": True, "values": values, "skipped": skipped})
+    if method == "GET" and action == "raid_review":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        raise _Reply(200, await _raid_review(gid))
+
+    if method == "POST" and action == "raid_action":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        raise _Reply(200, await _raid_action(sess, gid, body.get("user_id"), body.get("op")))
 
     if method == "POST" and action == "bot_action":
         gid = await _authorised_guild(sess, body.get("guild_id"))

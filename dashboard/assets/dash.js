@@ -190,6 +190,10 @@
     nav.appendChild(link(gpath(gid), "home", "Overview", !modId));
     nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
+    nav.appendChild(link("#/g/" + gid, "home", "Overview", !modId));
+    nav.appendChild(link("#/g/" + gid + "/billing", "star", "Premium & billing", modId === "billing"));
+    nav.appendChild(link("#/g/" + gid + "/audit", "scroll", "Audit log", modId === "audit"));
+    nav.appendChild(link("#/g/" + gid + "/raid", "siren", "Anti-raid review", modId === "raid"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
       if (!list.length) return;
@@ -588,6 +592,46 @@
     load(true);
   }
 
+  /* ---------- anti-raid review ---------- */
+  function ago(ms) {
+    var d = Math.max(0, (Date.now() - ms) / 86400000);
+    return d < 1 ? "under a day" : d < 60 ? Math.floor(d) + " days" : d < 730 ? Math.floor(d / 30) + " months" : Math.floor(d / 365) + " years";
+  }
+  function renderRaid(gid, main) {
+    var list = h("div", { class: "audit" }), note = h("p", { class: "muted", text: "" });
+    var head = h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Anti-raid review" }),
+      h("p", { class: "muted", text: "People the anti-raid is holding in quarantine. Release them, kick them, or ban them." })),
+      h("a", { class: "btn sm ghost", href: "#/g/" + gid, text: "Overview" }));
+    add(main, [head, h("div", { class: "card rv" }, note, list)]);
+    list.appendChild(h("div", { class: "skel", style: "height:80px" }));
+    function act(p, op, row, btns) {
+      if (op === "ban" && !window.confirm("Ban " + p.name + "? This can't be undone from here.")) return;
+      btns.forEach(function (b) { b.disabled = true; });
+      api("raid_action", {}, { guild_id: gid, user_id: p.user_id, op: op }).then(function (r) {
+        toast(r.message, "ok"); row.remove(); if (!list.children.length) load();
+      }).catch(function (e) { toast(e.message, "bad"); btns.forEach(function (b) { b.disabled = false; }); });
+    }
+    function load() {
+      api("raid_review", { guild_id: gid }).then(function (r) {
+        list.textContent = "";
+        note.textContent = r.total > r.people.length ? "Showing the oldest " + r.people.length + " of " + r.total + "." : "";
+        if (!r.people.length) { list.appendChild(h("p", { class: "muted", text: "Nobody is waiting for review." })); return; }
+        r.people.forEach(function (p) {
+          var btns = [h("button", { class: "btn sm", text: "Release" }), h("button", { class: "btn sm ghost", text: "Kick" }), h("button", { class: "btn sm ghost", text: "Ban" })];
+          var row = h("div", { class: "action" }, avatar(p.avatar_url, p.name),
+            h("div", { class: "grow" }, h("b", { text: p.name }),
+              h("p", { class: "help", text: "Account " + ago(p.account_created_ms) + " old" + (p.in_server ? "" : " · already left") + (p.reason ? " · " + p.reason : "") })),
+            btns);
+          btns[0].addEventListener("click", function () { act(p, "approve", row, btns); });
+          btns[1].addEventListener("click", function () { act(p, "kick", row, btns); });
+          btns[2].addEventListener("click", function () { act(p, "ban", row, btns); });
+          list.appendChild(row);
+        });
+      }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    load();
+  }
+
   /* ---------- premium & billing ---------- */
   function renderBilling(gid, main) {
     var body = h("div", { class: "billing" }, h("div", { class: "skel", style: "height:140px" }));
@@ -679,8 +723,9 @@
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
       if (modId && modId !== "audit" && modId !== "billing" && !mod) { location.hash = gpath(gid); return; }
+      if (modId && modId !== "audit" && modId !== "billing" && modId !== "raid" && !mod) { location.hash = "#/g/" + gid; return; }
       var main = renderShell(gid, modId);
-      if (modId === "audit") renderAudit(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
+      if (modId === "audit") renderAudit(gid, main); else if (modId === "raid") renderRaid(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
       window.scrollTo(0, 0);
     }).catch(function (e) {
       if (e.message === "401") return;
