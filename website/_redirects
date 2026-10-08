@@ -1,0 +1,6 @@
+# Friendly aliases (the bot's API server uses these paths for its own legal pages)
+/tos /terms/ 301
+/privacy-policy /privacy/ 301
+/refund-policy /refund/ 301
+/help /commands/ 301
+/faq /docs/ 301

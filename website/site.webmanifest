@@ -1,0 +1,20 @@
+{
+ "name": "PRIME BOT \u00d7 WELCOME BOT",
+ "short_name": "PRIME \u00b7 WELCOME",
+ "start_url": "/",
+ "display": "standalone",
+ "background_color": "#020407",
+ "theme_color": "#020407",
+ "icons": [
+  {
+   "src": "/icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png"
+  },
+  {
+   "src": "/icon-512.png",
+   "sizes": "512x512",
+   "type": "image/png"
+  }
+ ]
+}
