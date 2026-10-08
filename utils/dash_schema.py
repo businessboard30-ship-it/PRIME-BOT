@@ -798,3 +798,21 @@ def parse_mod_user(raw):
     if not (s.isdigit() and 10 <= len(s) <= 20 and int(s) < 2 ** 63):
         raise ValueError("Enter a Discord user ID (10 to 20 digits).")
     return int(s)
+
+
+GIVEAWAY_STATUSES = ("active", "ended")
+GIVEAWAY_PRIZE_MAX = 200
+
+
+def giveaway_view(row: dict) -> dict:
+    """One giveaway for the web page. Snowflakes are strings; entrant ids are never sent, only a count."""
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    entrants = row.get("entrant_ids")
+    return {"id": str(row["id"]), "channel_id": str(row["channel_id"]) if row.get("channel_id") else None,
+            "message_id": str(row["message_id"]) if row.get("message_id") else None,
+            "host_id": str(row["host_id"]) if row.get("host_id") else None,
+            "prize": _clean_text(row.get("prize"), GIVEAWAY_PRIZE_MAX), "winner_count": int(row.get("winner_count") or 1),
+            "entrants": int(row["entrant_count"]) if row.get("entrant_count") is not None else len(entrants or []),
+            "winner_ids": [str(w) for w in (row.get("winner_ids") or [])][:50],
+            "status": row.get("status") if row.get("status") in GIVEAWAY_STATUSES else "ended",
+            "ends_at": iso(row.get("ends_at"))}

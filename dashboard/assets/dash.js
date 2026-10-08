@@ -204,6 +204,7 @@
     nav.appendChild(link(gpath(gid), "home", "Overview", !modId));
     nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
     nav.appendChild(link(gpath(gid, "moderation"), "gavel", "Moderation", modId === "moderation"));
+    nav.appendChild(link(gpath(gid, "giveaways"), "star", "Giveaways", modId === "giveaways"));
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
     nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
@@ -760,6 +761,39 @@
     load(true);
   }
 
+  /* ---------- giveaways (read-only; start, end and reroll stay in Discord) ---------- */
+  function renderGiveaways(gid, main) {
+    var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
+    var filter = h("select", { "aria-label": "Filter by status" }, [["", "All giveaways"], ["active", "Running"], ["ended", "Ended"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var last = null;
+    function load(reset) {
+      if (reset) { list.textContent = ""; last = null; }
+      var params = { guild_id: gid };
+      if (filter.value) params.status = filter.value;
+      if (last) params.before = last;
+      api("giveaways", params).then(function (r) {
+        r.giveaways.forEach(function (g) {
+          var ch = S.meta.channels.text.filter(function (c) { return c.id === g.channel_id; })[0];
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: g.prize || "Giveaway #" + g.id }), h("span", { class: "help", text: "  " + (g.status === "active" ? "Running" : "Ended") }),
+            h("p", { class: "help", text: g.entrants + (g.entrants === 1 ? " entry" : " entries") + " \u00b7 " + g.winner_count + (g.winner_count === 1 ? " winner" : " winners")
+              + (ch ? " \u00b7 #" + ch.name : "") + (g.ends_at ? " \u00b7 " + (g.status === "active" ? "ends " : "ended ") + fmtWhen(g.ends_at) : "") }),
+            g.winner_ids.length ? h("p", { text: "Winners: " + g.winner_ids.join(", ") }) : null)));
+          last = g.id;
+        });
+        if (!list.children.length) list.appendChild(h("p", { class: "muted", text: "No giveaways yet. Start one in Discord with /giveaway start." }));
+        moreBtn.hidden = !r.more;
+      }).catch(function (e) { toast(e.message, "bad"); });
+    }
+    filter.addEventListener("change", function () { load(true); });
+    moreBtn.addEventListener("click", function () { load(false); });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Giveaways" }),
+      h("p", { class: "muted", text: "Giveaways run by the bot in this server, newest first. Read-only: start, end and reroll them with /giveaway in Discord." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card rv" }, h("div", { class: "owner-bar" }, filter), list, moreBtn)]);
+    load(true);
+  }
+
   function renderTickets(gid, main) {
     var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
     var filter = h("select", { "aria-label": "Filter by status" }, [["", "All tickets"], ["open", "Open"], ["closed", "Closed"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
@@ -985,7 +1019,7 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      var PAGES = { moderation: renderModeration, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
+      var PAGES = { moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
       if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
