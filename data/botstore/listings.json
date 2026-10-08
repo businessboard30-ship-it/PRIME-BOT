@@ -1,0 +1,27 @@
+{
+  "listings": [],
+  "ratings": [],
+  "featured_listings": [],
+  "config": {
+    "listing_categories": [
+      "Bots",
+      "Groups",
+      "Channels",
+      "Tools",
+      "Games",
+      "News",
+      "Utilities",
+      "Entertainment",
+      "Education",
+      "Community",
+      "Business"
+    ],
+    "listing_price_featured_ghs": 50,
+    "listing_duration_days": 30,
+    "max_listings_per_user": 5,
+    "max_featured_listings": 10,
+    "click_tracking_enabled": true,
+    "rating_system_enabled": true,
+    "last_updated": "2026-10-08T11:18:45.749765"
+  }
+}

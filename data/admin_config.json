@@ -1,0 +1,65 @@
+{
+  "botstore": {
+    "listing_categories": [
+      "Bots",
+      "Groups",
+      "Channels",
+      "Tools",
+      "Games",
+      "News",
+      "Utilities",
+      "Entertainment",
+      "Education",
+      "Community",
+      "Business"
+    ],
+    "listing_price_featured_ghs": 50,
+    "listing_duration_days": 30,
+    "max_listings_per_user": 5,
+    "max_featured_listings": 10,
+    "click_tracking_enabled": true,
+    "rating_system_enabled": true,
+    "last_updated": "2026-10-08T11:18:45.749765"
+  },
+  "superbot": {
+    "tiers": {
+      "basic": {
+        "name": "Basic",
+        "price": 0,
+        "features": [
+          "leaderboard",
+          "stats"
+        ]
+      },
+      "pro": {
+        "name": "Pro",
+        "price": 100,
+        "features": [
+          "leaderboard",
+          "stats",
+          "alerts",
+          "referrals"
+        ]
+      },
+      "elite": {
+        "name": "Elite",
+        "price": 300,
+        "features": [
+          "leaderboard",
+          "stats",
+          "alerts",
+          "referrals",
+          "analytics"
+        ]
+      }
+    },
+    "referral_reward_coins": 100,
+    "alert_check_interval_hours": 1,
+    "max_alerts_per_user_pro": 5,
+    "max_alerts_per_user_elite": 20,
+    "leaderboard_update_interval_hours": 6,
+    "featured_coins_multiplier": 1.5,
+    "last_updated": "2026-10-08T11:18:45.749872"
+  },
+  "last_initialized": "2026-10-08T11:18:45.749879"
+}

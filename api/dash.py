@@ -33,6 +33,7 @@ Routes (all on /api/dash):
   GET  ?action=billing&guild_id         -> Premium status + plans with server-side prices
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
+  GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count); read-only
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
   POST {action: dropbox_read, id?}      -> mark one (or all) read
@@ -48,9 +49,11 @@ Routes (all on /api/dash):
   GET  ?action=owner_controls|owner_blacklist|owner_premium|owner_feedback|owner_botaudit|owner_payment|owner_coupons -> OWNER, read-only
   GET  ?action=owner_ads|owner_ad|owner_market|owner_bump -> OWNER (ads / bump): ads queue, one ad, marketplace listings, bump network (api/dash_owner_growth.py)
   GET  ?action=owner_watchlist|owner_reports|owner_status|owner_honeypot|owner_scamshield -> OWNER: safety pages (api/dash_owner_safety.py)
+  GET  ?action=owner_search|owner_alerts|owner_growth -> OWNER (inspect / health / servers): global search, alerts (notifications), server growth series (api/dash_owner_insights.py)
   POST {action: owner_ad_approve|owner_ad_reject|owner_ad_deactivate|owner_ad_reactivate|owner_listing_remove|owner_bump_cooldown, ...} -> OWNER (ads / bump)
   POST {action: owner_report_resolve|owner_status_add|owner_status_remove|owner_presence_set|owner_status_reset|owner_scam_toggle|owner_scam_add|owner_scam_remove, ...} -> OWNER (safety)
   GET  ?action=owner_helpers|owner_clones|owner_database -> OWNER (access / servers / database): helpers, clones (never the token), table counts (api/dash_owner_ops.py)
+  GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
   POST {action: owner_helper_set|owner_helper_remove|owner_clone_register|owner_clone_relink|owner_clone_stop|owner_db_cleanup_stale, ...} -> OWNER (Phase 5): step-up + typed confirm on all but helper_set
   POST {action: owner_switch|owner_blacklist_add|owner_blacklist_remove|owner_premium_revoke|owner_premium_grant|owner_payment_reverse|owner_coupon_create|owner_coupon_toggle|owner_failure_dismiss|owner_pending_clear|owner_announce|owner_announce_delete, ...}
                                         -> OWNER writes (api/dash_owner.WRITES): section + rate limit, step-up and typed confirm where destructive, fail-closed audit
@@ -269,6 +272,15 @@ def _owner_sections(sess: dict) -> set:
     return compute_sections(uid, config.DASH_OWNER_IDS, config.DISCORD_OWNER_BROADCAST_IDS)
 
 
+def _require_member(sess: dict) -> str:
+    """Any valid dashboard session. Returns the user id FROM THE SESSION; member routes never take an id from the client."""
+    try:
+        uid = str(int(sess["user"]["id"]))
+    except (KeyError, TypeError, ValueError):
+        _fail(401, "Your session expired. Sign in again.")
+    return uid
+
+
 def _require_section(sess: dict, section: str) -> None:
     """403 unless this user may open `section`; 401 if the owner session is older than
     DASH_OWNER_SESSION_MINUTES (owners sign in again more often than guild admins)."""
@@ -295,15 +307,20 @@ def _require_confirm(body: dict, expected: str) -> None:
 
 def _merged(attr: str) -> dict:
     """ROUTES / WRITES of every owner module. A duplicate action name is a bug, so fail loudly (tested)."""
-    from api import dash_owner, dash_owner_growth, dash_owner_ops, dash_owner_safety
+    from api import dash_owner, dash_owner_growth, dash_owner_insights, dash_owner_ops, dash_owner_safety
     out: dict = {}
-    for mod in (dash_owner, dash_owner_growth, dash_owner_safety, dash_owner_ops):
+    for mod in (dash_owner, dash_owner_growth, dash_owner_safety, dash_owner_ops, dash_owner_insights):
         part = getattr(mod, attr)
         dup = out.keys() & part.keys()
         if dup:
             raise RuntimeError(f"duplicate owner {attr} action(s): {sorted(dup)}")
         out.update(part)
     return out
+
+
+def _member_routes() -> dict:
+    from api import dash_member
+    return dash_member.ROUTES
 
 
 def _owner_routes() -> dict:
@@ -895,6 +912,10 @@ async def _oauth_callback(query: dict):
         "user": {"id": uid, "username": me.get("global_name") or me.get("username") or "Discord user", "avatar_url": avatar},
         "guilds": S.guild_list_manageable(guilds),
     })
+    try:                                    # registry for member messaging; never blocks a sign-in
+        await db.dash_web_user_touch(uid)
+    except Exception:
+        logger.exception("dashboard: web-user registry write failed")
     _back("session=" + sid)
 
 
@@ -1035,8 +1056,14 @@ async def _route(method: str, query: dict, headers, body: dict):
             logger.exception("dashboard: dropbox unread count failed")
             unread = 0
         raise _Reply(200, {"ok": True, "user": sess["user"], "servers": servers,
-                           "is_owner": _is_owner(sess), "unread": unread,
+                           "is_owner": _is_owner(sess), "unread": unread, "member": True,
                            "owner_sections": sorted(_owner_sections(sess))})
+
+    if method == "GET" and action in _member_routes():
+        uid = _require_member(sess)
+        _owner_rate(sess, "member:" + action, 60, 60)
+        out = await _member_routes()[action](uid, q, db)
+        raise _Reply(200, {"ok": True, **out})
 
     if method == "POST" and action == "owner_stepup":
         _require_section(sess, "controls")      # any real owner; helpers never get here
@@ -1073,7 +1100,7 @@ async def _route(method: str, query: dict, headers, body: dict):
         _require_section(sess, section)
         _owner_rate(sess, "read:" + action, 60, 60)
         from api import dash_owner
-        out = handler(q)
+        out = handler(q, _owner_sections(sess)) if getattr(handler, "wants_sections", False) else handler(q)
         out = await out if hasattr(out, "__await__") else out
         if "_error" in out:
             _fail(*out["_error"])
@@ -1302,6 +1329,27 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(400, "Invalid page.")
         rows = await db.dash_audit_list(gid, before, mod, 31)
         raise _Reply(200, {"ok": True, "entries": rows[:30], "more": len(rows) > 30})
+
+    if method == "GET" and action == "moderation":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        try:
+            user = S.parse_mod_user(q("user_id"))
+            before = int(q("before")) if q("before") else None
+        except ValueError as e:
+            _fail(400, str(e) if "user ID" in str(e) else "Invalid page.")
+        if before is not None and not 0 < before < 2 ** 31:
+            _fail(400, "Invalid page.")
+        kind = q("kind") or None
+        if kind and not S.MOD_KIND_RE.match(kind):
+            _fail(400, "Unknown action type.")
+        rows = await db.dash_mod_cases(gid, user, kind, before, 31)
+        out = {"ok": True, "cases": [S.mod_case_view(r) for r in rows[:30]], "more": len(rows) > 30}
+        if before is None:
+            out["kinds"] = [k for k in await db.dash_mod_kinds(gid) if S.MOD_KIND_RE.match(str(k))]
+        if user is not None and before is None:
+            warns, total = await db.dash_mod_warns(gid, user)
+            out["warns"], out["warn_count"] = [S.mod_warn_view(w) for w in warns], total
+        raise _Reply(200, out)
 
     if method == "GET" and action == "welcome_preview":
         gid = await _authorised_guild(sess, q("guild_id"))

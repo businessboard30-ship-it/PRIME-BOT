@@ -7,7 +7,11 @@ warn count (/warns) right after an action, without retyping either command.
 Kept separate from moderation.py for the same reason as _views_economy.py.
 """
 
+import logging
+
 import discord
+
+logger = logging.getLogger(__name__)
 
 
 def get_mod_cog(interaction: discord.Interaction):
@@ -45,7 +49,20 @@ class ConfirmActionView(discord.ui.View):
     async def confirm_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         for item in self.children:
             item.disabled = True
-        await self.on_confirm(interaction)
+        try:
+            await self.on_confirm(interaction)
+        except discord.NotFound as e:
+            # 10062 Unknown interaction: the action ran past Discord's 3s window
+            # before it acknowledged. The action itself already happened, so
+            # don't surface a traceback; just update the message directly.
+            if getattr(e, "code", None) != 10062:
+                raise
+            logger.warning("ConfirmActionView: interaction expired before on_confirm responded")
+            try:
+                if interaction.message is not None:
+                    await interaction.message.edit(content="✅ Done.", view=None)
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):

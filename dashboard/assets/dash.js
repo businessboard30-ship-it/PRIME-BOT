@@ -105,6 +105,7 @@
     menuBtn.hidden = !(S.user && (inGuild || /^#\/owner/.test(location.hash)));
     if (!S.user) return;
     if (S.ownerSections && S.ownerSections.length) hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/owner", text: "Owner" }));
+    hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/me", text: "My account" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/tiers", text: "Level tiers" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost inboxbtn", href: "#/inbox", "aria-label": "Drop box, " + S.unread + " unread" }, "Drop box",
       S.unread ? h("span", { class: "badge-n", text: S.unread > 99 ? "99+" : String(S.unread) }) : null));
@@ -117,12 +118,12 @@
 
   /* ---------- login ---------- */
   function ringsArt() {
-    var c = function (cls, r, w, dash, s) { return svg("circle", { "class": cls, cx: 180, cy: 180, r: r, fill: "none", stroke: "#f2faff", "stroke-width": w, "stroke-dasharray": dash, style: "--s:" + s }); };
+    var c = function (cls, r, w, dash, s) { return svg("circle", { "class": cls, cx: 180, cy: 180, r: r, fill: "none", stroke: "currentColor", "stroke-width": w, "stroke-dasharray": dash, style: "--s:" + s }); };
     return svg("svg", { "class": "rings", viewBox: "0 0 360 360", "aria-hidden": "true" },
-      svg("polygon", { points: "345,180 262.5,322.9 97.5,322.9 15,180 97.5,37.1 262.5,37.1", fill: "none", stroke: "#f2faff", "stroke-width": 2.2 }),
+      svg("polygon", { points: "345,180 262.5,322.9 97.5,322.9 15,180 97.5,37.1 262.5,37.1", fill: "none", stroke: "currentColor", "stroke-width": 2.2 }),
       c("spin", 118, 8, "110 18 55 22 190 24 90 30", "26s"), c("spin rev", 96, 4, "40 8 12 8 200 10", "16s"),
       c("spin", 76, 11, "190 66 110 94", "10s"), c("spin rev", 142, 6, "1.6 8", "34s"),
-      svg("circle", { "class": "pulse", cx: 180, cy: 180, r: 14, fill: "#f2faff" }));
+      svg("circle", { "class": "pulse", cx: 180, cy: 180, r: 14, fill: "currentColor" }));
   }
   function renderLogin(msg) {
     document.body.classList.remove("menu");
@@ -202,6 +203,7 @@
     }
     nav.appendChild(link(gpath(gid), "home", "Overview", !modId));
     nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
+    nav.appendChild(link(gpath(gid, "moderation"), "gavel", "Moderation", modId === "moderation"));
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
     nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
@@ -711,6 +713,53 @@
   }
 
   /* ---------- ticket history ---------- */
+  function renderModeration(gid, main) {
+    var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
+    var user = h("input", { type: "text", placeholder: "Member's Discord ID (optional)", "aria-label": "Filter by member ID", inputmode: "numeric", maxlength: 20 });
+    var kind = h("select", { "aria-label": "Filter by action" }, h("option", { value: "", text: "All actions" }));
+    var go = h("button", { class: "btn sm", text: "Search" });
+    var warnsBox = h("div", { class: "card rv", hidden: true });
+    var last = null, kindsLoaded = false;
+    function load(reset) {
+      if (reset) { list.textContent = ""; last = null; warnsBox.hidden = true; }
+      var params = { guild_id: gid };
+      if (user.value.trim()) params.user_id = user.value.trim();
+      if (kind.value) params.kind = kind.value;
+      if (last) params.before = last;
+      api("moderation", params).then(function (r) {
+        if (r.kinds && !kindsLoaded) { kindsLoaded = true; r.kinds.forEach(function (k) { kind.appendChild(h("option", { value: k, text: k })); }); }
+        if (r.warns) {
+          warnsBox.hidden = false; warnsBox.textContent = "";
+          warnsBox.appendChild(h("h2", { text: r.warn_count + (r.warn_count === 1 ? " warn" : " warns") }));
+          if (!r.warns.length) warnsBox.appendChild(h("p", { class: "muted", text: "No warns for this member." }));
+          r.warns.forEach(function (w) {
+            warnsBox.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+              h("b", { text: "Warn #" + w.id }), h("span", { class: "help", text: "  " + fmtWhen(w.at) + (w.by ? " \u00b7 by " + w.by : "") }),
+              h("p", { text: w.reason || "No reason given." }))));
+          });
+        }
+        r.cases.forEach(function (c) {
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: c.kind + " #" + c.id }), h("span", { class: "help", text: "  " + fmtWhen(c.at) }),
+            h("p", { class: "help", text: (c.target_id ? "Member " + c.target_id : "No member") + (c.by ? " \u00b7 by " + c.by : "") }),
+            c.reason ? h("p", { text: c.reason }) : null)));
+          last = c.id;
+        });
+        if (!list.children.length) list.appendChild(h("p", { class: "muted", text: "No moderation actions found." }));
+        moreBtn.hidden = !r.more;
+      }).catch(function (e) { toast(e.message, "bad"); });
+    }
+    go.addEventListener("click", function () { load(true); });
+    user.addEventListener("keydown", function (e) { if (e.key === "Enter") load(true); });
+    kind.addEventListener("change", function () { load(true); });
+    moreBtn.addEventListener("click", function () { load(false); });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Moderation" }),
+      h("p", { class: "muted", text: "Kicks, bans, timeouts and warns recorded by the bot, newest first. Read-only: use the Discord commands to act." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card rv" }, h("div", { class: "owner-bar" }, user, kind, go), list, moreBtn), warnsBox]);
+    load(true);
+  }
+
   function renderTickets(gid, main) {
     var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
     var filter = h("select", { "aria-label": "Filter by status" }, [["", "All tickets"], ["open", "Open"], ["closed", "Closed"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
@@ -846,6 +895,29 @@
     });
     return ownerLoading;
   }
+  /* ---------- member area (#/me): the signed-in user's own plans; server decides everything ---------- */
+  var PRODUCT_LABEL = { card_plan: "Custom level-up card", dev_monthly: "Developer mode (monthly)", dev_yearly: "Developer mode (yearly)" };
+  var STATE_LABEL = { active: "Active", cancelled: "Ends at period end", past_due: "Payment failed (grace period)", expired: "Expired", none: "None" };
+  function renderMe() {
+    document.body.classList.remove("menu"); S.mod = null; renderHeader();
+    var list = h("div", { class: "card rv" }, h("div", { class: "skel" }));
+    app.textContent = "";
+    app.appendChild(h("main", { id: "main", class: "page" },
+      h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Your account" }), h("h1", { text: "My account" }),
+        h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }))),
+      list));
+    api("member_status").then(function (j) {
+      list.textContent = "";
+      list.appendChild(h("h3", { text: "My plans" }));
+      var items = j.entitlements || [];
+      if (!items.length) { list.appendChild(h("p", { class: "muted", text: "You have no active plans. Plans will be purchasable here soon." })); return; }
+      items.forEach(function (e) {
+        list.appendChild(h("p", null, h("b", { text: PRODUCT_LABEL[e.product] || e.product }), " \u00b7 " + (STATE_LABEL[e.state] || e.state)
+          + (e.expires_at ? " \u00b7 until " + new Date(e.expires_at).toLocaleDateString() : "")));
+      });
+    }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { text: (e && e.message) || "Couldn't load your account." })); });
+  }
+
   function renderOwner(hash) {
     S.guild = null; S.clone = null; renderHeader();
     if (!S.ownerSections || !S.ownerSections.length) { location.hash = "#/"; return; }
@@ -861,6 +933,7 @@
     showAnnouncements();
     if (/^#\/owner(\/|$)/.test(hash)) return renderOwner(hash);
     if (hash === "#/inbox") { S.guild = null; S.clone = null; return renderInbox(); }
+    if (hash === "#/me") { S.guild = null; S.clone = null; return renderMe(); }
     if (hash === "#/tiers") { S.guild = null; S.clone = null; return renderTiers(); }
     if (!m) { S.guild = null; S.clone = null; return renderServers(); }
     var clone = m[1] || null;
@@ -870,7 +943,7 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      var PAGES = { audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
+      var PAGES = { moderation: renderModeration, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
       if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);

@@ -214,6 +214,14 @@ MODULES: List[dict] = [
         ],
     },
     {
+        "id": "customrole", "title": "Custom role", "category": "Community", "icon": "users",
+        "desc": "Let members who bought the perk style their own role.",
+        "get": "get_custom_role_config", "set": "set_custom_role_config",
+        "fields": [
+            F("enabled", "Custom role perk", "toggle", "Turn off to stop members creating or restyling custom roles. Existing roles stay as they are."),
+        ],
+    },
+    {
         "id": "invites", "title": "Invite tracker", "category": "Community", "icon": "link",
         "desc": "See who invited each member.",
         "get": "get_invite_tracker_config", "set": "set_invite_tracker_config",
@@ -251,6 +259,31 @@ MODULES: List[dict] = [
             F("enabled", "Auto-post", "toggle", "Post a bot tip in the channel below on a schedule."),
             F("channel_id", "Channel", "channel", "Where the tips are posted. Needed before it can be turned on.", kind="text"),
             F("interval_hours", "Post every (hours)", "number", "1 to 720 hours.", min=1, max=720),
+        ],
+    },
+    {
+        "id": "bumpnet", "title": "Bump network", "category": "Community", "icon": "link",
+        "desc": "Receive bump posts from other servers and choose which ones.",
+        "get": "get_bump_settings_config", "set": "set_bump_settings_config", "no_quick": True,
+        "note": "Same settings as /bumpsetup. The owner can switch the whole bump feature off; if so nothing is posted whatever you set here.",
+        "fields": [
+            F("receives_bumps", "Receive bumps", "toggle", "Let the bump network post in your bump channel."),
+            F("bump_channel_id", "Bump channel", "channel", "Where incoming bumps are posted. Pick a channel to change it.", kind="text"),
+            F("language", "Language filter", "select", "Only receive bumps in this language.",
+              options=opts(("any", "Any language"), ("en", "English"), ("fr", "French"), ("es", "Spanish"),
+                           ("pt", "Portuguese"), ("ar", "Arabic"))),
+            F("nsfw_opt_in", "Allow NSFW listings", "toggle", "Off keeps 18+ servers out of your bump channel."),
+            F("intensity_level", "Intensity", "select", "How many incoming bumps you want.",
+              options=opts(("1", "1 - Low"), ("2", "2 - Light"), ("3", "3 - Normal"), ("4", "4 - Frequent"), ("5", "5 - High"))),
+        ],
+    },
+    {
+        "id": "customrole", "title": "Custom roles", "category": "Community", "icon": "star", "no_quick": True,
+        "desc": "Let members create and restyle their own role.",
+        "get": "get_custom_role_settings_config", "set": "set_custom_role_settings_config",
+        "note": "Same switch as /customrole disable_feature. Members still need Premium or a purchase to use it; the panel itself is posted from Discord.",
+        "fields": [
+            F("enabled", "Custom roles", "toggle", "Turn the feature on or off for this server."),
         ],
     },
 ]
@@ -741,3 +774,36 @@ def ticket_message_view(msg: dict) -> dict:
             "text": str(msg.get("content") or "")[:TICKET_MSG_MAX],
             "files": [str(a.get("filename") or "file")[:80] for a in (msg.get("attachments") or [])][:10],
             "embeds": len(msg.get("embeds") or [])}
+
+
+MOD_REASON_MAX = 300
+MOD_KIND_RE = re.compile(r"^[a-z_]{1,32}$")
+
+
+def _clean_text(raw, limit: int) -> str:
+    """Moderator-typed text shown back to admins: control characters out, bounded. The page also uses textContent."""
+    return "".join(ch for ch in str(raw or "") if ch == "\n" or ch >= " ")[:limit]
+
+
+def mod_case_view(row: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(row["id"]), "kind": str(row.get("action_type") or "")[:32],
+            "target_id": str(row["target_user_id"]) if row.get("target_user_id") else None,
+            "by": str(row["performed_by"]) if row.get("performed_by") else None,
+            "reason": _clean_text(row.get("reason"), MOD_REASON_MAX), "at": iso(row.get("created_at"))}
+
+
+def mod_warn_view(row: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(row["id"]), "by": str(row["warned_by"]) if row.get("warned_by") else None,
+            "reason": _clean_text(row.get("reason"), MOD_REASON_MAX), "at": iso(row.get("created_at"))}
+
+
+def parse_mod_user(raw):
+    """A Discord snowflake (10 to 20 digits that fit a BIGINT) or None. Raises ValueError on garbage."""
+    if raw in (None, ""):
+        return None
+    s = str(raw).strip()
+    if not (s.isdigit() and 10 <= len(s) <= 20 and int(s) < 2 ** 63):
+        raise ValueError("Enter a Discord user ID (10 to 20 digits).")
+    return int(s)
