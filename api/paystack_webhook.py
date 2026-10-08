@@ -24,6 +24,12 @@ except Exception:  # pragma: no cover
         return False
 
 
+USER_PLAN_EVENTS = frozenset({
+    'charge.success', 'subscription.not_renew', 'subscription.disable',
+    'invoice.payment_failed', 'invoice.update',
+})
+
+
 class handler(BaseHTTPRequestHandler):
     """Handle Paystack webhook events"""
     
@@ -62,7 +68,13 @@ class handler(BaseHTTPRequestHandler):
         data = payload.get('data', {})
         
         try:
-            if event_type == 'charge.success':
+            if event_type in USER_PLAN_EVENTS:
+                # Per-user plans (card plan / Developer mode). None = not one of ours, fall through.
+                from modules import paystack_user_plans
+                handled = asyncio.run(paystack_user_plans.handle(db, event_type, data))
+                if handled is None and event_type == 'charge.success':
+                    asyncio.run(self._handle_charge_success(data))
+            elif event_type == 'charge.success':
                 asyncio.run(self._handle_charge_success(data))
             
             # Always return 200 quickly to acknowledge receipt

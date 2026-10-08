@@ -57,6 +57,9 @@ _GUILD_SCOPED_TYPES = {"welcome_card_pack", "ultra_welcome_pack", "custom_role",
 
 
 def expected_price_usd(payment_type: str) -> Optional[float]:
+    from modules import user_subs
+    if user_subs.is_plan(payment_type):
+        return user_subs.price_usd(payment_type)
     if payment_type in _PRICE_ATTRS:
         return float(getattr(config, _PRICE_ATTRS[payment_type]))
     tier = config.XP_SERVER_BOOST_TIERS.get(payment_type)
@@ -402,6 +405,69 @@ async def _process_premium_renewal(fields: dict, subscription_id: str, accept_te
     return 200, "ok"
 
 
+def _user_plan_event_id(fields: dict, kind: str, subscription_id: str) -> str:
+    """Stable per gateway event, so a retried ping can never apply twice."""
+    sale = fields.get("sale_id") or ""
+    if kind == "charge" and sale:
+        return f"gum:sale:{sale}"
+    return f"gum:{kind}:{subscription_id}:{fields.get('cancelled_at') or fields.get('ended_at') or fields.get('resource_name') or ''}"
+
+
+def _user_plan_kind(fields: dict) -> str:
+    """charge | cancel | ended for a Gumroad subscription ping."""
+    resource = str(fields.get("resource_name") or "").lower()
+    if resource in ("cancellation", "subscription_cancelled") or str(fields.get("cancelled", "")).lower() == "true":
+        return "cancel"
+    if resource in ("subscription_ended", "subscription_ended_notification") or str(fields.get("ended", "")).lower() == "true":
+        return "ended"
+    return "charge"
+
+
+async def _process_user_plan_subscription(fields: dict, subscription_id: str, reference, accept_test: bool):
+    """Per-user plans (card_plan / dev_*): first sale, renewal, cancel, ended.
+
+    Returns None when this ping is not for a per-user plan (the caller carries on with the
+    existing guild-premium logic), else (http_status, message). The webhook, never the browser,
+    writes user_entitlements, and every event is claimed by its gateway id first."""
+    from modules import user_billing, user_subs
+    kind = _user_plan_kind(fields)
+    owner = await db.entitlement_by_subscription(subscription_id)
+    product = owner["product"] if owner else None
+    user_id = owner["user_id"] if owner else None
+    if not owner and reference:
+        row = await db.get_payment_by_reference(reference)
+        if row and row.get("provider") == PROVIDER and user_subs.is_plan(row.get("payment_type")):
+            if row.get("status") != "pending":
+                return 200, "already processed"
+            product, user_id = row["payment_type"], str(row["user_id"])
+    if not (product and user_id):
+        return None
+    if kind == "charge":
+        if not _matches_product(product, fields):
+            return 200, "product mismatch"
+        if not user_subs.paid_enough(product, fields.get("price", 0)):
+            return 200, "underpaid"
+        if not accept_test and not await _sale_is_valid(fields.get("sale_id", ""), product):
+            return 200, "sale not verified"
+    try:
+        result = await user_billing.apply_event(
+            db, event_id=_user_plan_event_id(fields, kind, subscription_id), user_id=user_id, product=product,
+            kind=kind, provider=PROVIDER, subscription_id=subscription_id)
+    except Exception:
+        logger.exception("[gumroad] user plan event failed (%s, user %s)", kind, user_id)
+        return 500, "unlock failed"
+    if kind == "charge" and result in ("applied", "duplicate") and reference:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE payment_logs SET status = 'completed' WHERE paystack_reference = $1 AND status = 'pending'",
+                reference)
+    if kind == "charge" and result == "applied":
+        await _dm(int(user_id), None, f"✅ Your **{user_subs.PLANS[product]['label']}** payment was received. "
+                                      "You can see the next renewal date under My account on the dashboard.")
+    return 200, "ok"
+
+
 async def _process_gumroad_ping_inner(fields: dict) -> tuple:
     """Returns (http_status, message). 200 = handled/ignored (don't retry);
     500 = unlock failed after claim (claim reverted, Gumroad may retry)."""
@@ -422,6 +488,10 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
     # on the first charge, so later ones arrive with a subscription_id and no
     # order reference. Match them to the guild via that id.
     subscription_id = fields.get("subscription_id")
+    if subscription_id:
+        handled = await _process_user_plan_subscription(fields, subscription_id, reference, is_test and accept_test)
+        if handled is not None:
+            return handled
     if subscription_id and (str(fields.get("is_recurring_charge", "")).lower() == "true" or not reference):
         return await _process_premium_renewal(fields, subscription_id, is_test and accept_test)
 
