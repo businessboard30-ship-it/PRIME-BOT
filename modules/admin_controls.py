@@ -42,6 +42,12 @@ FEATURES: Dict[str, Tuple[str, Set[str]]] = {
     "clone_registration": ("Clone registration", {"registerclone"}),
 }
 
+# Opt-in switches: engaged means ON (the opposite of FEATURES above, where engaged means turned off).
+# Default is not engaged, so the feature stays owner-only until turned on from the owner panel.
+OPT_IN: Dict[str, str] = {
+    "build_bot_public": "Build Bot button open to everyone",
+}
+
 _ROOT_TO_FEATURE: Dict[str, str] = {root: key for key, (_, roots) in FEATURES.items() for root in roots}
 
 MSG_MAINTENANCE = "\N{HAMMER AND WRENCH}\N{VARIATION SELECTOR-16} The bot is in maintenance mode right now. Please try again in a little while."
@@ -87,6 +93,24 @@ async def current_switches() -> Set[str]:
     CACHE_TTL seconds). Fails open: an empty set when nothing is known."""
     await _refresh()
     return set(_snapshot["switches"])
+
+
+def build_bot_open_cached() -> bool:
+    """Sync read for rendering buttons: True only when the owner turned the Build Bot button on for
+    everyone. Fails closed (no snapshot yet or database down -> owner-only)."""
+    return bool(_snapshot["ok"] and "build_bot_public" in _snapshot["switches"])
+
+
+async def build_bot_open() -> bool:
+    """True when anyone may use the Build Bot button; otherwise only owners (DISCORD_CLONE_ADMIN_IDS)."""
+    try:
+        await _refresh()
+    except Exception:
+        return False
+    return build_bot_open_cached()
+
+
+MSG_BUILD_BOT_LOCKED = "\N{LOCK} Build Bot is limited to the bot owner for now. Ask in the support server if you'd like access."
 
 
 async def block_reason(interaction) -> Optional[str]:
@@ -148,7 +172,7 @@ async def get_engaged_switches() -> Set[str]:
 
 
 async def set_switch(switch: str, engaged: bool, by: int) -> None:
-    if switch != MAINTENANCE and switch not in FEATURES:
+    if switch != MAINTENANCE and switch not in FEATURES and switch not in OPT_IN:
         raise ValueError(f"unknown switch {switch!r}")
     pool = await _pool()
     async with pool.acquire() as conn:

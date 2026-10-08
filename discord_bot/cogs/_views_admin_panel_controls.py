@@ -148,11 +148,13 @@ class ControlsView(PanelView):
     def body(self):
         lines = ["Turn a feature's slash commands off instantly (and back on). Owners are never blocked. "
                  "Takes effect within seconds. **Clone registration** also stops the Build Bot button, "
-                 "so nobody can register a new clone while it's off."]
+                 "so nobody can register a new clone while it's off. **Build Bot button** is owner-only until you open it below."]
         if self.error:
             lines.append("⚠️ Couldn't read the current state, so the buttons below may be out of date. Press Refresh.")
         for key, (label, _) in ac.FEATURES.items():
             lines.append(f"{'⛔ OFF' if key in self.engaged else '✅ on'} — {label}")
+        for key, label in ac.OPT_IN.items():
+            lines.append(f"{'🔓 OPEN to everyone' if key in self.engaged else '🔒 owner only'} — {label}")
         if ac.MAINTENANCE in self.engaged:
             lines.append("🛠️ **Maintenance mode is ON** — every slash command is refused for non-owners.")
         elif self._confirm:
@@ -168,6 +170,10 @@ class ControlsView(PanelView):
             btn = _btn(f"{label}: {'OFF' if off else 'on'}"[:80], D if off else G,
                        self._make_toggle(key), "⛔" if off else "✅")
             items.append(btn)
+        for key, label in ac.OPT_IN.items():
+            on = key in self.engaged
+            items.append(_btn(f"Build Bot: {'open to everyone' if on else 'owner only'}"[:80], G if on else S,
+                              self._make_toggle(key), "🔓" if on else "🔒"))
         maint_on = ac.MAINTENANCE in self.engaged
         if maint_on:
             items.append(_btn("Turn maintenance OFF", G, self._maintenance_off, "🛠️"))
