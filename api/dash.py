@@ -24,6 +24,9 @@ Routes (all on /api/dash):
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
   POST {action: logout}
+  POST {action: reset, guild_id, module} -> put one module back to factory settings (audited)
+  GET  ?action=export&guild_id&module   -> downloadable settings file for one module
+  POST {action: import_check, guild_id, module, data} -> validate an uploaded file, returns values to load as unsaved changes
   POST {action: bot_action, guild_id, id} -> bot posts a panel/test card (whitelist: S.BOT_ACTIONS)
   GET  ?action=billing&guild_id         -> Premium status + plans with server-side prices
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
@@ -34,16 +37,21 @@ Routes (all on /api/dash):
   POST {action: dropbox_send, ...}      -> OWNER ONLY (config.DISCORD_OWNER_BROADCAST_IDS)
   POST {action: dropbox_delete, id}     -> OWNER ONLY
   GET  ?action=dropbox_delivery&id      -> OWNER ONLY: DM sent/failed/pending counts + reads
-Scope: the main PRIME BOT (clone_id None). Clone bots are not covered yet.
+Clone bots: every guild route also accepts `clone_id` (query or JSON body). The dashboard then
+acts as that clone: its own bot token for every Discord call, its own settings rows (clone_id),
+its own Premium state. Authorisation is unchanged and still checked against Discord with the
+clone's token. Billing/checkout stay main-bot only (clone owners run their own monetisation).
+  GET  ?action=me   -> each server also lists `clones` (active clone bots present in it)
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import secrets as _secrets
 import time
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse, parse_qs, urlencode, quote
 
 import aiohttp
 
@@ -57,13 +65,26 @@ DISCORD_API = "https://discord.com/api/v10"
 AUTHORIZE_URL = "https://discord.com/api/oauth2/authorize"
 TOKEN_URL = "https://discord.com/api/oauth2/token"
 MAX_BODY = 64 * 1024
-CLONE_ID = None
+CLONE_ID = None            # main bot. Per-request clone context lives in _BOT below.
+MAX_CLONE_SCAN = 60
+
+# (clone_id, bot_token) for the current request; (None, None) means the main bot.
+_BOT = contextvars.ContextVar("dash_bot", default=(None, None))
+
+
+def _cid():
+    return _BOT.get()[0]
+
+
+def _token():
+    return _BOT.get()[1] or config.DISCORD_BOT_TOKEN
 
 _initialized = False
 _cache: dict = {}
 
 
 def _cached(key, ttl):
+    key = (_cid(), key)
     hit = _cache.get(key)
     if hit and hit[0] > time.monotonic():
         return hit[1]
@@ -71,6 +92,7 @@ def _cached(key, ttl):
 
 
 def _store(key, ttl, value):
+    key = (_cid(), key)
     _cache[key] = (time.monotonic() + ttl, value)
     if len(_cache) > 2000:
         now = time.monotonic()
@@ -86,7 +108,7 @@ class DiscordError(Exception):
 
 
 async def _bot_get(path: str):
-    headers = {"Authorization": f"Bot {config.DISCORD_BOT_TOKEN}"}
+    headers = {"Authorization": f"Bot {_token()}"}
     timeout = aiohttp.ClientTimeout(total=10)
     async with aiohttp.ClientSession(timeout=timeout) as s:
         for attempt in range(2):
@@ -163,7 +185,23 @@ def _id_sets(meta: dict):
 
 
 async def _get_cfg(module: dict, guild_id: int) -> dict:
-    return await getattr(db, module["get"])(guild_id, CLONE_ID)
+    return await getattr(db, module["get"])(guild_id, _cid())
+
+
+async def _write_values(sess: dict, gid: int, module: dict, clean: dict, before_cfg: dict, note=None) -> dict:
+    """Shared by save and reset: write, then record who changed what. An audit failure never
+    blocks the change itself."""
+    await getattr(db, module["set"])(gid, _cid(), **clean)
+    logger.info("dashboard %s guild=%s user=%s module=%s keys=%s", note or "save", gid, sess["user"]["id"], module["id"], sorted(clean))
+    after = S.export_values(module, await _get_cfg(module, gid))
+    try:
+        changes = S.diff_values(module, S.export_values(module, before_cfg), after)
+        if changes:
+            await db.dash_audit_add(gid, str(sess["user"]["id"]), sess["user"].get("username") or "Unknown",
+                                    module["id"], changes, S.AUDIT_RETENTION_DAYS)
+    except Exception:
+        logger.exception("dashboard: audit write failed (change itself succeeded)")
+    return after
 
 
 # ───────────────────────── request handling ─────────────────────────
@@ -259,7 +297,7 @@ async def _welcome_preview(sess: dict, gid: int, q) -> dict:
     use_template = (q("use_template") or "1") != "0"
     welcome = S.BY_ID["welcome"]
     cfg = await _get_cfg(welcome, gid)
-    premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+    premium = bool(await db.is_guild_premium_active(gid, _cid()))
     if use_template and theme in wc.PREMIUM_THEMES and not _eff_premium(welcome, premium, cfg):
         _fail(403, "That theme needs Premium or the card pack.")
     info = await _guild_info(gid)
@@ -300,10 +338,13 @@ def _pay_base() -> str:
 
 
 async def _billing(gid: int) -> dict:
+    if _cid() is not None:
+        active = bool(await db.is_guild_premium_active(gid, _cid()))
+        return {"premium": active, "expires_at": None, "card_pack": False, "plans": [], "clone": True}
     welcome = S.BY_ID["welcome"]
     cfg = await _get_cfg(welcome, gid)
-    row = await db.get_guild_premium(gid, CLONE_ID)
-    active = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+    row = await db.get_guild_premium(gid, _cid())
+    active = bool(await db.is_guild_premium_active(gid, _cid()))
     expires = row.get("expires_at") if row else None
     plans = []
     for p in PLANS:
@@ -325,6 +366,8 @@ async def _checkout(sess: dict, gid: int, plan_id) -> dict:
     _last_checkout[uid] = now
     if len(_last_checkout) > 5000:
         _last_checkout.clear()
+    if _cid() is not None:
+        _fail(409, "Premium for this bot is managed by its owner, not through the main checkout.")
     plan = PLAN_BY_ID.get(str(plan_id or ""))
     if not plan:
         _fail(422, "Unknown plan.")
@@ -338,7 +381,7 @@ async def _checkout(sess: dict, gid: int, plan_id) -> dict:
     if not base:
         _fail(503, "Checkout isn't configured yet.")
     token = _secrets.token_urlsafe(16)
-    intent = {"payment_type": plan["id"], "user_id": int(uid), "guild_id": gid, "clone_id": CLONE_ID,
+    intent = {"payment_type": plan["id"], "user_id": int(uid), "guild_id": gid, "clone_id": _cid(),
               "price_usd": entry["price_usd"], "extra": {"source": "dashboard"}, "created": time.time()}
     await db.set_global_setting(f"payintent:{token}", json.dumps(intent))
     logger.info("dashboard checkout guild=%s user=%s plan=%s", gid, uid, plan["id"])
@@ -353,7 +396,7 @@ PANEL_PERMS_HINT = "Give me View Channel, Send Messages, Embed Links and Attach 
 async def _bot_post(path: str, json_body=None, form=None):
     """POST as the bot. JSON bodies retry once on a rate limit; multipart uploads can't be
     replayed, so a 429 there is reported to the caller instead."""
-    headers = {"Authorization": f"Bot {config.DISCORD_BOT_TOKEN}"}
+    headers = {"Authorization": f"Bot {_token()}"}
     timeout = aiohttp.ClientTimeout(total=15)
     async with aiohttp.ClientSession(timeout=timeout) as s:
         for attempt in range(2):
@@ -395,7 +438,7 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
     if not mod_id:
         _fail(422, "Unknown action.")
     now = time.monotonic()
-    key = (uid, gid, action_id)
+    key = (uid, gid, action_id, _cid())
     if now - _last_action.get(key, 0) < ACTION_MIN_INTERVAL:
         _fail(429, "Just did that. Wait a few seconds.")
     _last_action[key] = now
@@ -425,7 +468,7 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
             "components": [{"type": 1, "components": [{"type": 2, "style": 3, "label": "I'm not a bot",
                                                         "emoji": {"name": "✅"}, "custom_id": f"verify_btn:{gid}"}]}],
             "allowed_mentions": {"parse": []}})
-        await db.set_verification_config(gid, CLONE_ID, message_id=int(msg["id"]))
+        await db.set_verification_config(gid, _cid(), message_id=int(msg["id"]))
         summary, label = _channel_name(meta, cid), "Verify panel posted"
     elif action_id == "ticket_panel":
         cid = need_channel("panel_channel_id", "panel channel")
@@ -435,12 +478,12 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
             "components": [{"type": 1, "components": [{"type": 2, "style": 1, "label": "Open Ticket",
                                                         "emoji": {"name": "🎫"}, "custom_id": "ticket:open"}]}],
             "allowed_mentions": {"parse": []}})
-        await db.set_ticket_config(gid, CLONE_ID, panel_channel_id=cid, panel_message_id=int(msg["id"]))
+        await db.set_ticket_config(gid, _cid(), panel_channel_id=cid, panel_message_id=int(msg["id"]))
         summary, label = _channel_name(meta, cid), "Ticket panel posted"
     else:  # welcome_test
         from modules import welcome_card as wc
         cid = need_channel("channel_id", "welcome channel")
-        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
         theme = cfg.get("card_theme") or "wolf"
         if theme not in wc.THEME_BACKGROUNDS or (theme in wc.PREMIUM_THEMES and not _eff_premium(module, premium, cfg)):
             theme = "wolf"
@@ -467,6 +510,175 @@ async def _bot_action(sess: dict, gid: int, action_id) -> dict:
         logger.exception("dashboard: audit write failed for bot action")
     logger.info("dashboard bot_action guild=%s user=%s action=%s", gid, uid, action_id)
     return {"ok": True, "message": f"Done: posted in {summary}."}
+
+
+async def _bot_request(method: str, path: str, reason=None, json_body=None):
+    """PUT/PATCH/DELETE as the bot. Returns the status code; callers decide what each means."""
+    headers = {"Authorization": f"Bot {_token()}"}
+    if reason:
+        headers["X-Audit-Log-Reason"] = quote(reason[:400], safe="")
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        for attempt in range(2):
+            kw = {"json": json_body} if json_body is not None else {}
+            async with s.request(method, f"{DISCORD_API}{path}", headers=headers, **kw) as r:
+                if r.status == 429 and attempt == 0:
+                    retry = float((await r.json(content_type=None)).get("retry_after", 1))
+                    await asyncio.sleep(min(retry, 3))
+                    continue
+                return r.status
+
+
+RAID_LIST_MAX = 50
+_last_raid_op: dict = {}
+RAID_OP_MIN_INTERVAL = 0.8
+
+
+async def _actor_perms(gid: int, uid: int):
+    """(owner_id, member role ids, role permission map, role position map) for the signed-in admin."""
+    info = await _guild_info(gid)
+    member = await _bot_get(f"/guilds/{gid}/members/{uid}")
+    roles = {int(r["id"]): int(r.get("permissions") or 0) for r in info.get("roles", [])}
+    pos = {int(r["id"]): int(r.get("position") or 0) for r in info.get("roles", [])}
+    return int(info["owner_id"]), [int(x) for x in member.get("roles", [])], roles, pos
+
+
+async def _raid_review(gid: int) -> dict:
+    rows = [r for r in await db.list_quarantined(gid, _cid(), 200) if S.is_raid_row(r)]
+    rows.sort(key=lambda r: r.get("created_at") or 0)
+    total = len(rows)
+    rows = rows[:RAID_LIST_MAX]
+
+    async def one(row):
+        try:
+            return S.raid_row_view(row, await _bot_get(f"/guilds/{gid}/members/{int(row['user_id'])}"))
+        except DiscordError as e:
+            if e.status == 404:
+                return S.raid_row_view(row, None)
+            raise
+    people = await asyncio.gather(*[one(r) for r in rows])
+    return {"ok": True, "people": list(people), "total": total}
+
+
+async def _raid_action(sess: dict, gid: int, raw_user, op) -> dict:
+    uid = int(sess["user"]["id"])
+    now = time.monotonic()
+    if now - _last_raid_op.get(uid, 0) < RAID_OP_MIN_INTERVAL:
+        _fail(429, "Slow down a little.")
+    _last_raid_op[uid] = now
+    if len(_last_raid_op) > 5000:
+        _last_raid_op.clear()
+    try:
+        target = int(str(raw_user))
+    except (TypeError, ValueError):
+        _fail(400, "Pick a person first.")
+    op = str(op or "")
+    owner_id, my_roles, role_perms, role_pos = await _actor_perms(gid, uid)
+    why = S.raid_op_allowed(
+        op,
+        S.has_permission(owner_id, uid, my_roles, role_perms, gid, S.MANAGE_GUILD | S.BAN_MEMBERS),
+        S.has_permission(owner_id, uid, my_roles, role_perms, gid, S.BAN_MEMBERS),
+        S.has_permission(owner_id, uid, my_roles, role_perms, gid, S.KICK_MEMBERS))
+    if why:
+        _fail(403, why)
+    # Only people the anti-raid itself holds can be acted on here, never an arbitrary member id.
+    row = await db.get_quarantined(gid, _cid(), target)
+    if row is None or not S.is_raid_row(row):
+        _fail(404, "They're no longer waiting for review. Refresh the list.")
+    try:
+        member = await _bot_get(f"/guilds/{gid}/members/{target}")
+    except DiscordError as e:
+        if e.status != 404:
+            raise
+        member = None
+    if member is not None and uid != owner_id and op != "approve":
+        if S.top_position([int(x) for x in member.get("roles", [])], role_pos) >= S.top_position(my_roles, role_pos):
+            _fail(403, "You can only act on people ranked below you.")
+    actor_name = sess["user"].get("username") or "Unknown"
+    reason = f"[anti-raid review] {op} by {actor_name} via dashboard"
+    q_role = await db.get_quarantine_role(gid, _cid())
+
+    if op == "approve":
+        if member is None:
+            await db.remove_quarantined(gid, _cid(), target)
+            done = "They'd already left, so they were removed from the list."
+        else:
+            existing = [int(x) for x in member.get("roles", [])]
+            valid = set(role_pos)
+            keep = [r for r in existing if not (q_role and r == int(q_role))]
+            restore = [int(r) for r in (row.get("saved_role_ids") or []) if int(r) in valid and int(r) not in keep]
+            st = await _bot_request("PATCH", f"/guilds/{gid}/members/{target}", reason=reason,
+                                    json_body={"roles": [str(r) for r in keep + restore]})
+            if st == 403:
+                _fail(422, "Discord refused to change their roles. Make sure my role is above theirs and above the roles being restored.")
+            if st not in (200, 204):
+                _fail(502, "Discord didn't accept that. Try again.")
+            await db.remove_quarantined(gid, _cid(), target)
+            done = f"Released. {len(restore)} role(s) restored."
+    elif op == "ban":
+        st = await _bot_request("PUT", f"/guilds/{gid}/bans/{target}", reason=reason,
+                                json_body={"delete_message_seconds": 3600})
+        if st == 403:
+            _fail(422, "Discord refused that ban. Make sure my role is above theirs and I have Ban Members. They stay quarantined.")
+        if st not in (200, 201, 204):
+            _fail(502, "Discord didn't accept that. Try again.")
+        await db.remove_quarantined(gid, _cid(), target)
+        done = "Banned."
+    else:  # kick
+        if member is None:
+            await db.remove_quarantined(gid, _cid(), target)
+            done = "They'd already left, so they were removed from the list."
+        else:
+            st = await _bot_request("DELETE", f"/guilds/{gid}/members/{target}", reason=reason)
+            if st == 403:
+                _fail(422, "Discord refused that kick. Make sure my role is above theirs and I have Kick Members. They stay quarantined.")
+            if st not in (200, 204):
+                _fail(502, "Discord didn't accept that. Try again.")
+            await db.remove_quarantined(gid, _cid(), target)
+            done = "Kicked."
+    try:
+        await db.dash_audit_add(gid, str(uid), actor_name, "antiraid",
+                                {f"Review: {op}": {"from": None, "to": str(target)}}, S.AUDIT_RETENTION_DAYS)
+    except Exception:
+        logger.exception("dashboard: audit write failed for raid action")
+    logger.info("dashboard raid_action guild=%s user=%s op=%s target=%s", gid, uid, op, target)
+    return {"ok": True, "message": done}
+def _schedule_audit(sess, gid, label, summary):
+    async def go():
+        try:
+            await db.dash_audit_add(gid, str(sess["user"]["id"]), sess["user"].get("username") or "Unknown", "scheduled",
+                                    {label: {"from": None, "to": summary}}, S.AUDIT_RETENTION_DAYS)
+        except Exception:
+            logger.exception("dashboard: audit write failed for schedule")
+    return go()
+
+
+async def _live_schedules(gid: int) -> list:
+    rows = await db.list_scheduled_messages(gid, _cid())
+    return [r for r in rows if r.get("enabled")]
+async def _ticket_messages(channel_id: int) -> tuple:
+    """Up to TICKET_HISTORY_MAX messages, oldest first. (messages, truncated) or (None, False)
+    when the channel is gone."""
+    key = ("tkmsgs", channel_id)
+    hit = _cached(key, 30)
+    if hit is not None:
+        return hit
+    out, before = [], None
+    for _ in range(S.TICKET_HISTORY_MAX // 100):
+        path = f"/channels/{channel_id}/messages?limit=100" + (f"&before={before}" if before else "")
+        try:
+            page = await _bot_get(path)
+        except DiscordError as e:
+            if e.status in (403, 404):
+                if not out:
+                    return _store(key, 15, (None, False))
+                return _store(key, 30, ([S.ticket_message_view(m) for m in out[::-1]], True))
+            raise
+        out.extend(page)
+        if len(page) < 100:
+            return _store(key, 30, ([S.ticket_message_view(m) for m in out[::-1]], False))
+        before = page[-1]["id"]
+    return _store(key, 30, ([S.ticket_message_view(m) for m in out[::-1]], True))
 
 
 async def _authorised_guild(sess: dict, raw_gid) -> int:
@@ -539,6 +751,97 @@ async def _oauth_callback(query: dict):
     _back("session=" + sid)
 
 
+# ───────────────────────── clone bots ─────────────────────────
+
+_clone_rows: dict = {}
+
+
+async def _clone_row(clone_id: int):
+    """Active clone row (cached 60s). Contains the encrypted token; never sent to the browser."""
+    hit = _clone_rows.get(clone_id)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    row = await db.get_discord_clone(clone_id)
+    if row and row.get("status") != "active":
+        row = None
+    _clone_rows[clone_id] = (time.monotonic() + 60, row)
+    if len(_clone_rows) > 500:
+        _clone_rows.clear()
+    return row
+
+
+def _clone_token(row) -> str:
+    try:
+        from utils.crypto import secret_manager
+        return secret_manager.decrypt(row["bot_token_encrypted"]) or ""
+    except Exception:
+        logger.exception("dashboard: couldn't decrypt a clone token")
+        return ""
+
+
+def _parse_clone_id(raw):
+    if raw in (None, "", "0", 0, "main"):
+        return None
+    try:
+        n = int(str(raw))
+    except (TypeError, ValueError):
+        _fail(400, "Unknown bot.")
+    if n <= 0:
+        _fail(400, "Unknown bot.")
+    return n
+
+
+async def _enter_clone(raw):
+    """Point every Discord call and settings read/write of this request at the chosen clone.
+    Anyone may ask for any clone id; what protects a server is still _authorised_guild, which
+    checks Discord (with that clone's token) that the bot is in the guild and the user manages it."""
+    cid = _parse_clone_id(raw)
+    if cid is None:
+        _BOT.set((None, None))
+        return
+    row = await _clone_row(cid)
+    token = _clone_token(row) if row else ""
+    if not token:
+        _fail(404, "That bot isn't available.")
+    _BOT.set((cid, token))
+
+
+async def _clone_guild_ids(row) -> set:
+    """Guild ids a clone bot is in (cached 60s per clone), scoped by its own token."""
+    cid = int(row["clone_id"])
+    token = _clone_token(row)
+    if not token:
+        return set()
+    _BOT.set((cid, token))
+    try:
+        return await _bot_guild_ids()
+    except Exception:
+        return set()
+
+
+async def _clone_presence(user_guild_ids: set) -> dict:
+    """{guild_id: [{clone_id, name}]} for active clones present in the user's servers."""
+    try:
+        listed = (await db.list_active_discord_clones())[:MAX_CLONE_SCAN]
+    except Exception:
+        logger.exception("dashboard: clone list failed")
+        return {}
+    sem = asyncio.Semaphore(8)
+
+    async def one(c):
+        async with sem:
+            row = await _clone_row(int(c["clone_id"]))
+            if not row:
+                return c, set()
+            return c, await _clone_guild_ids(row)
+
+    out: dict = {}
+    for c, ids in await asyncio.gather(*[one(c) for c in listed], return_exceptions=False):
+        for gid in ids & user_guild_ids:
+            out.setdefault(gid, []).append({"clone_id": int(c["clone_id"]), "name": c.get("bot_username") or f"Clone {c['clone_id']}"})
+    return out
+
+
 def _icon(g):
     return f"https://cdn.discordapp.com/icons/{g['id']}/{g['icon']}.png?size=128" if g.get("icon") else None
 
@@ -566,13 +869,18 @@ async def _route(method: str, query: dict, headers, body: dict):
         await db.delete_login_session(_bearer(headers))
         raise _Reply(200, {"ok": True})
 
+    if action != "me":
+        await _enter_clone(body.get("clone_id") if method == "POST" else q("clone_id"))
+
     if method == "GET" and action == "me":
         try:
             present = await _bot_guild_ids()
         except DiscordError:
             _fail(502, "Couldn't reach Discord. Try again in a moment.")
-        servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present} for g in sess.get("guilds", [])]
-        servers.sort(key=lambda g: (not g["bot_present"], g["name"].lower()))
+        clones = await _clone_presence({g["id"] for g in sess.get("guilds", [])})
+        servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present, "clones": clones.get(g["id"], [])}
+                   for g in sess.get("guilds", [])]
+        servers.sort(key=lambda g: (not (g["bot_present"] or g["clones"]), g["name"].lower()))
         uid = str(sess["user"]["id"])
         try:
             unread = sum(1 for m in await db.dropbox_list(uid) if not m["read"])
@@ -585,7 +893,7 @@ async def _route(method: str, query: dict, headers, body: dict):
     if method == "GET" and action == "guild":
         gid = await _authorised_guild(sess, q("guild_id"))
         info = await _guild_info(gid)
-        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
         status = {}
         for m in S.MODULES:
             try:
@@ -597,7 +905,8 @@ async def _route(method: str, query: dict, headers, body: dict):
         raise _Reply(200, {"ok": True, "guild": {
             "id": str(gid), "name": info.get("name"), "icon_url": _icon(info),
             "members": info.get("approximate_member_count"), "online": info.get("approximate_presence_count"),
-            "premium": premium, "status": status}})
+            "premium": premium, "status": status,
+            "bot_name": ((await _clone_row(_cid())) or {}).get("bot_username") if _cid() else None}})
 
     if method == "GET" and action == "meta":
         gid = await _authorised_guild(sess, q("guild_id"))
@@ -608,7 +917,7 @@ async def _route(method: str, query: dict, headers, body: dict):
         module = S.BY_ID.get(q("module") or "")
         if not module:
             _fail(404, "Unknown module.")
-        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
         cfg = await _get_cfg(module, gid)
         raise _Reply(200, {"ok": True, "values": S.export_values(module, cfg), "premium": _eff_premium(module, premium, cfg)})
 
@@ -619,22 +928,111 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(404, "Unknown module.")
         meta = await _meta(gid)
         chans, roles = _id_sets(meta)
-        premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
         before_cfg = await _get_cfg(module, gid)
         clean, errors = S.validate_values(module, body.get("values"), chans, roles, _eff_premium(module, premium, before_cfg))
         if errors:
             raise _Reply(422, {"ok": False, "message": errors[0], "errors": errors})
-        await getattr(db, module["set"])(gid, CLONE_ID, **clean)
-        logger.info("dashboard save guild=%s user=%s module=%s keys=%s", gid, sess["user"]["id"], module["id"], sorted(clean))
-        after = S.export_values(module, await _get_cfg(module, gid))
-        try:
-            changes = S.diff_values(module, S.export_values(module, before_cfg), after)
-            if changes:
-                await db.dash_audit_add(gid, str(sess["user"]["id"]), sess["user"].get("username") or "Unknown",
-                                        module["id"], changes, S.AUDIT_RETENTION_DAYS)
-        except Exception:
-            logger.exception("dashboard: audit write failed (save itself succeeded)")
+        after = await _write_values(sess, gid, module, clean, before_cfg)
         raise _Reply(200, {"ok": True, "values": after})
+
+    if method == "POST" and action == "reset":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        module = S.BY_ID.get(str(body.get("module") or ""))
+        if not module:
+            _fail(404, "Unknown module.")
+        before_cfg = await _get_cfg(module, gid)
+        defaults, left = S.default_values(module, await getattr(db, module["get"])(0, _cid()))
+        if not defaults:
+            _fail(422, "Nothing to reset here.")
+        after = await _write_values(sess, gid, module, defaults, before_cfg, note="reset")
+        raise _Reply(200, {"ok": True, "values": after, "left_alone": left})
+
+    if method == "GET" and action == "export":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        module = S.BY_ID.get(q("module") or "")
+        if not module:
+            _fail(404, "Unknown module.")
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        raise _Reply(200, {"ok": True, "file": S.export_payload(module, await _get_cfg(module, gid), stamp),
+                           "filename": f"prime-bot-{module['id']}-settings.json"})
+
+    if method == "POST" and action == "import_check":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        module = S.BY_ID.get(str(body.get("module") or ""))
+        if not module:
+            _fail(404, "Unknown module.")
+        meta = await _meta(gid)
+        chans, roles = _id_sets(meta)
+        premium = bool(await db.is_guild_premium_active(gid, _cid()))
+        cfg = await _get_cfg(module, gid)
+        values, skipped, err = S.import_values(module, body.get("data"), chans, roles, _eff_premium(module, premium, cfg))
+        if err:
+            _fail(422, err)
+        raise _Reply(200, {"ok": True, "values": values, "skipped": skipped})
+    if method == "GET" and action == "raid_review":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        raise _Reply(200, await _raid_review(gid))
+
+    if method == "POST" and action == "raid_action":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        raise _Reply(200, await _raid_action(sess, gid, body.get("user_id"), body.get("op")))
+    if method == "GET" and action == "schedules":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        rows = await _live_schedules(gid)
+        raise _Reply(200, {"ok": True, "schedules": [S.schedule_row_view(r) for r in rows[:S.SCHEDULE_MAX_ACTIVE + 5]],
+                           "limit": S.SCHEDULE_MAX_ACTIVE})
+
+    if method == "POST" and action == "schedule_add":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        meta = await _meta(gid)
+        chans, _roles = _id_sets(meta)
+        from datetime import datetime, timezone
+        clean, err = S.validate_schedule(body, chans["text"], datetime.now(timezone.utc))
+        if err:
+            _fail(422, err)
+        if len(await _live_schedules(gid)) >= S.SCHEDULE_MAX_ACTIVE:
+            _fail(422, f"You can have up to {S.SCHEDULE_MAX_ACTIVE} scheduled messages. Delete one first.")
+        job = await db.create_scheduled_message(gid, clean["channel_id"], clean["content"], clean["run_at"],
+                                                clean["interval_seconds"], int(sess["user"]["id"]), clone_id=_cid())
+        await _schedule_audit(sess, gid, "Scheduled message added", f"{_channel_name(meta, clean['channel_id'])}: {clean['content'][:80]}")
+        logger.info("dashboard schedule_add guild=%s user=%s id=%s", gid, sess["user"]["id"], job["id"])
+        raise _Reply(200, {"ok": True, "schedule": S.schedule_row_view(job)})
+
+    if method == "POST" and action == "schedule_delete":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        try:
+            sid = int(str(body.get("id")))
+        except ValueError:
+            _fail(400, "Invalid schedule.")
+        if not await db.delete_scheduled_message(gid, sid, _cid()):
+            _fail(404, "That schedule no longer exists.")
+        await _schedule_audit(sess, gid, "Scheduled message removed", f"#{sid}")
+        raise _Reply(200, {"ok": True})
+    if method == "GET" and action == "tickets":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        status = q("status")
+        if status and status not in S.TICKET_STATUSES:
+            _fail(400, "Unknown status.")
+        try:
+            before = int(q("before")) if q("before") else None
+        except ValueError:
+            _fail(400, "Invalid page.")
+        rows = await db.list_tickets(gid, _cid(), status or None, before, 31)
+        raise _Reply(200, {"ok": True, "tickets": [S.ticket_row_view(r) for r in rows[:30]], "more": len(rows) > 30})
+
+    if method == "GET" and action == "ticket_messages":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        try:
+            tid = int(str(q("id")))
+        except ValueError:
+            _fail(400, "Invalid ticket.")
+        row = await db.get_ticket_by_id(gid, _cid(), tid)     # the channel comes from OUR row, never from the client
+        if row is None:
+            _fail(404, "That ticket doesn't exist.")
+        msgs, truncated = await _ticket_messages(int(row["channel_id"]))
+        raise _Reply(200, {"ok": True, "ticket": S.ticket_row_view(row), "messages": msgs, "truncated": truncated,
+                           "gone": msgs is None})
 
     if method == "POST" and action == "bot_action":
         gid = await _authorised_guild(sess, body.get("guild_id"))

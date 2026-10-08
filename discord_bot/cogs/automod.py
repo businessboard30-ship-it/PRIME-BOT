@@ -953,7 +953,7 @@ class AutomodCog(GuildOnlyCog):
         from utils.dash_links import dashboard_url, dashboard_supported
         if dashboard_supported(clone_id):
             # The legacy token site is retired for the main bot: send people to the new dashboard.
-            msg = await tr("🖥️ Auto-moderation now lives in the web dashboard (sign in with Discord):\n{url}\nYou can also use /dashboard.", lang, url=dashboard_url(interaction.guild_id))
+            msg = await tr("🖥️ Auto-moderation now lives in the web dashboard (sign in with Discord):\n{url}\nYou can also use /dashboard.", lang, url=dashboard_url(interaction.guild_id, clone_id))
             await interaction.followup.send(msg, ephemeral=True)
             return
         token = await db.get_or_create_dashboard_token(interaction.guild_id, clone_id=clone_id)

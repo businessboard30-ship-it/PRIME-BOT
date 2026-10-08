@@ -17,9 +17,10 @@ def test_no_secret_in_link():
     assert "token" not in L.dashboard_url(123)
 
 
-def test_clone_bots_are_not_supported_yet():
-    assert L.dashboard_supported(None) and not L.dashboard_supported(7)
-    assert L.dashboard_link_button(1, clone_id=7) is None
+def test_clone_bots_are_supported():
+    assert L.dashboard_supported(None) and L.dashboard_supported(7)
+    assert L.dashboard_url(5, 7).endswith("/#/c/7/g/5")
+    assert L.dashboard_link_button(1, clone_id=7).url.endswith("/#/c/7/g/1")
     b = L.dashboard_link_button(1)
     assert b.url.endswith("/#/g/1") and b.style.name == "link"
 
@@ -27,7 +28,7 @@ def test_clone_bots_are_not_supported_yet():
 def test_server_panel_masked_link():
     from discord_bot.cogs._views_server_panel import _site_links
     assert "[Web dashboard](" in _site_links(55, None)
-    assert "Web dashboard" not in _site_links(55, 3)      # clones keep the old behaviour
+    assert "/#/c/3/g/55" in _site_links(55, 3)
     assert "Web dashboard" not in _site_links(None, None)  # inspecting another server: no link
 
 
@@ -71,10 +72,9 @@ def test_dashboard_command_main_bot_gets_the_new_link(perms):
     assert view.children[0].url == f"{config.DASH_PAGES_URL}/#/g/999" and "token" not in view.children[0].url
 
 
-def test_dashboard_command_clone_keeps_legacy_link(monkeypatch):
+def test_dashboard_command_clone_gets_clone_link():
     from discord_bot.cogs import dashboard as D
-    async def tok(gid, clone_id=None): return "SECRET"
-    monkeypatch.setattr(D, "db", SimpleNamespace(get_or_create_dashboard_token=tok))
     i, r, follow = _interaction(SimpleNamespace(administrator=True, manage_guild=False), clone_id=4)
     _run(D.DashboardCog(None), i)
-    assert r.deferred and "token=SECRET" in follow.sent[1].children[0].url and follow.sent[2] is True
+    url = r.sent[1].children[0].url
+    assert url == f"{config.DASH_PAGES_URL}/#/c/4/g/999" and "token" not in url

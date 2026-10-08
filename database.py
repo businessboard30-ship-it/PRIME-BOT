@@ -10771,6 +10771,30 @@ class Database:
             )
             return dict(row) if row else None
 
+    async def list_tickets(self, guild_id: int, clone_id: Optional[int] = None, status: Optional[str] = None,
+                           before_id: Optional[int] = None, limit: int = 31) -> list:
+        """Newest first. Read-only (web dashboard ticket history)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM discord_tickets
+                WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                  AND ($3::text IS NULL OR status = $3)
+                  AND ($4::int IS NULL OR id < $4)
+                ORDER BY id DESC LIMIT $5
+                """,
+                guild_id, clone_id, status, before_id, limit)
+            return [dict(r) for r in rows]
+
+    async def get_ticket_by_id(self, guild_id: int, clone_id: Optional[int], ticket_id: int) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_tickets WHERE id = $1 AND guild_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
+                ticket_id, guild_id, clone_id)
+            return dict(row) if row else None
+
     async def create_giveaway(self, guild_id: int, channel_id: int, message_id: int, host_id: int,
                                prize: str, winner_count: int, ends_at, clone_id: Optional[int] = None,
                                role_requirement_id: Optional[int] = None) -> Dict:

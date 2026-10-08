@@ -270,6 +270,49 @@ def can_manage(owner_id: Optional[int], user_id: int, member_role_ids: List[int]
     return bool(perms & (ADMINISTRATOR | MANAGE_GUILD))
 
 
+KICK_MEMBERS = 0x2
+BAN_MEMBERS = 0x4
+RAID_REASON_PREFIX = "[anti-raid]"          # same marker modules/antiraid_pro.py writes
+RAID_OPS = ("approve", "kick", "ban")
+
+
+def has_permission(owner_id: Optional[int], user_id: int, member_role_ids: List[int],
+                   roles_by_id: Dict[int, int], guild_id: int, mask: int) -> bool:
+    """Owner, Administrator, or any bit in `mask` held through @everyone or the member's roles."""
+    if owner_id is not None and int(owner_id) == int(user_id):
+        return True
+    perms = int(roles_by_id.get(int(guild_id), 0))
+    for rid in member_role_ids:
+        perms |= int(roles_by_id.get(int(rid), 0))
+    return bool(perms & (ADMINISTRATOR | mask))
+
+
+def top_position(member_role_ids: List[int], positions: Dict[int, int]) -> int:
+    return max([int(positions.get(int(r), 0)) for r in member_role_ids] or [0])
+
+
+def raid_op_allowed(op: str, may_review: bool, may_ban: bool, may_kick: bool) -> Optional[str]:
+    """None when allowed, else the reason. Mirrors the in-Discord review: releasing needs Ban
+    Members or Manage Server; banning needs Ban Members; kicking needs Kick Members."""
+    if op not in RAID_OPS:
+        return "Unknown action."
+    if op == "approve" and not (may_review or may_ban):
+        return "You need Manage Server or Ban Members to release people."
+    if op == "ban" and not may_ban:
+        return "You need the Ban Members permission to ban people."
+    if op == "kick" and not may_kick:
+        return "You need the Kick Members permission to kick people."
+    return None
+
+
+def is_raid_row(row: dict) -> bool:
+    return str(row.get("reason") or "").startswith(RAID_REASON_PREFIX)
+
+
+def snowflake_ms(user_id: int) -> int:
+    return (int(user_id) >> 22) + 1420070400000
+
+
 def guild_list_manageable(guilds: List[dict]) -> List[dict]:
     """From Discord's /users/@me/guilds payload: only servers the user can manage."""
     out = []
@@ -400,6 +443,71 @@ def validate_values(module: dict, values: Any, channels: Dict[str, set], roles: 
     return clean, errors
 
 
+# ───────────────────────── reset to defaults + import / export ─────────────────────────
+
+EXPORT_FORMAT = "prime-bot-settings"
+EXPORT_VERSION = 1
+IMPORT_MAX_BYTES = 48 * 1024
+
+
+def default_values(module: dict, default_cfg: dict) -> Tuple[Dict[str, Any], List[str]]:
+    """Values that put a module back to factory settings. `default_cfg` is what the module's
+    getter returns for a server with no saved row. A field whose default can't be expressed
+    through the dashboard (e.g. an unset number) is left alone and named in the second item."""
+    exported = export_values(module, default_cfg or {})
+    clean, left = {}, []
+    for f in module["fields"]:
+        try:
+            clean[f["key"]] = _coerce(f, exported.get(f["key"]), {}, set())
+        except ValidationError:
+            left.append(f["label"])
+    return clean, left
+
+
+def export_payload(module: dict, cfg: dict, exported_at: str) -> dict:
+    """The JSON a user downloads. Only declared keys, same shape the dashboard saves."""
+    return {"format": EXPORT_FORMAT, "version": EXPORT_VERSION, "module": module["id"],
+            "exported_at": exported_at, "values": export_values(module, cfg)}
+
+
+def import_values(module: dict, payload: Any, channels: Dict[str, set], roles: set,
+                  is_premium: bool) -> Tuple[Dict[str, Any], List[str], Optional[str]]:
+    """Check an uploaded settings file against THIS server. Returns (values, skipped, error).
+
+    Nothing is written: the dashboard loads `values` into the form as unsaved changes, and
+    the normal save path validates them again. Anything that doesn't fit this server (a
+    channel or role from another server, a Premium option on a free server, an out-of-range
+    number, a key this version doesn't know) is skipped and named, never guessed at."""
+    if not isinstance(payload, dict) or payload.get("format") != EXPORT_FORMAT:
+        return {}, [], "That isn't a PRIME BOT settings file."
+    if payload.get("version") != EXPORT_VERSION:
+        return {}, [], "That settings file is from a different version."
+    if payload.get("module") != module["id"]:
+        return {}, [], f"That file is for a different module ({str(payload.get('module'))[:40]}), not {module['title']}."
+    values = payload.get("values")
+    if not isinstance(values, dict) or not values:
+        return {}, [], "That settings file is empty."
+    fields = {f["key"]: f for f in module["fields"]}
+    clean, skipped = {}, []
+    for key, raw in values.items():
+        f = fields.get(key)
+        if f is None:
+            skipped.append(f"{str(key)[:40]}: not a setting here")
+            continue
+        try:
+            v = _coerce(f, raw, channels, roles)
+        except ValidationError as e:
+            skipped.append(str(e))
+            continue
+        if not is_premium and (f.get("premium") or v in (f.get("premium_values") or [])):
+            skipped.append(f"{f['label']}: needs Premium")
+            continue
+        clean[key] = v
+    if not clean:
+        return {}, skipped, "Nothing in that file fits this server."
+    return clean, skipped, None
+
+
 # ───────────────────────── drop box (owner -> every dashboard admin) ─────────────────────────
 
 DROPBOX_KINDS = ("info", "update", "warning", "maintenance")
@@ -490,3 +598,111 @@ def diff_values(module: dict, before: dict, after: dict) -> Dict[str, dict]:
 # ───────────────────────── bot actions (the bot posts something) ─────────────────────────
 
 BOT_ACTIONS = {"verify_panel": "verification", "ticket_panel": "tickets", "welcome_test": "welcome"}
+
+
+RAID_REASON_MAX = 160
+
+
+def raid_row_view(row: dict, member: Optional[dict]) -> dict:
+    """One quarantined person as the review screen shows it. Text is plain; the page renders it
+    with textContent. `member` is Discord's guild-member object, or None if they left."""
+    uid = int(row["user_id"])
+    user = (member or {}).get("user") or {}
+    name = user.get("global_name") or user.get("username") or "Unknown user"
+    avatar = (f"https://cdn.discordapp.com/avatars/{uid}/{user['avatar']}.png?size=64" if user.get("avatar")
+              else f"https://cdn.discordapp.com/embed/avatars/{(uid >> 22) % 6}.png")
+    created = row.get("created_at")
+    reason = str(row.get("reason") or "")[len(RAID_REASON_PREFIX):].strip()
+    return {"user_id": str(uid), "name": str(name)[:40], "avatar_url": avatar, "in_server": member is not None,
+            "account_created_ms": snowflake_ms(uid), "reason": reason[:RAID_REASON_MAX],
+            "quarantined_at": created.isoformat() if hasattr(created, "isoformat") else None,
+            "roles_held": len(row.get("saved_role_ids") or [])}
+# ───────────────────────── scheduled messages (same table the /schedule command uses) ─────────────────────────
+
+SCHEDULE_MODES = ("once", "interval", "daily")
+SCHEDULE_TEXT_MAX = 2000
+SCHEDULE_MIN_INTERVAL_MIN = 5            # the command allows 1m; the dashboard is stricter to avoid channel spam
+SCHEDULE_MAX_INTERVAL_MIN = 60 * 24 * 365
+SCHEDULE_MAX_DELAY_MIN = 60 * 24 * 365
+SCHEDULE_MAX_ACTIVE = 25
+_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def validate_schedule(raw: Any, text_channels: set, now) -> Tuple[Optional[dict], Optional[str]]:
+    """-> ({channel_id, content, run_at, interval_seconds}, None) or (None, error).
+    `now` is a timezone-aware datetime (injected so this stays pure and testable)."""
+    from datetime import timedelta
+    if not isinstance(raw, dict):
+        return None, "Invalid request."
+    cid = str(raw.get("channel_id") or "")
+    if not cid.isdigit() or cid not in text_channels:
+        return None, "Pick a text channel from this server."
+    text = raw.get("content")
+    if not isinstance(text, str) or not text.strip():
+        return None, "Write the message to post."
+    text = text.strip()
+    if len(text) > SCHEDULE_TEXT_MAX:
+        return None, f"Keep the message under {SCHEDULE_TEXT_MAX} characters."
+    mode = raw.get("mode")
+
+    def minutes(key, label, lo, hi):
+        v = raw.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+            return None, f"{label}: enter a number."
+        try:
+            n = int(float(v))
+        except ValueError:
+            return None, f"{label}: enter a number."
+        if n < lo or n > hi:
+            return None, f"{label}: must be between {lo} and {hi} minutes."
+        return n, None
+
+    if mode == "once":
+        n, err = minutes("minutes", "Delay", 1, SCHEDULE_MAX_DELAY_MIN)
+        if err:
+            return None, err
+        return {"channel_id": int(cid), "content": text, "run_at": now + timedelta(minutes=n), "interval_seconds": None}, None
+    if mode == "interval":
+        n, err = minutes("minutes", "Repeat every", SCHEDULE_MIN_INTERVAL_MIN, SCHEDULE_MAX_INTERVAL_MIN)
+        if err:
+            return None, err
+        return {"channel_id": int(cid), "content": text, "run_at": now + timedelta(minutes=n), "interval_seconds": n * 60}, None
+    if mode == "daily":
+        m = _TIME_RE.match(str(raw.get("time_utc") or "").strip())
+        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+            return None, "Use a 24-hour UTC time like 09:00."
+        run_at = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        if run_at <= now:
+            run_at += timedelta(days=1)
+        return {"channel_id": int(cid), "content": text, "run_at": run_at, "interval_seconds": 86400}, None
+    return None, "Pick once, repeating or daily."
+
+
+def schedule_row_view(row: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    iv = row.get("interval_seconds")
+    return {"id": str(row["id"]), "channel_id": str(row["channel_id"]), "content": str(row.get("content") or "")[:SCHEDULE_TEXT_MAX],
+            "next_run_at": iso(row.get("next_run_at")), "interval_seconds": int(iv) if iv else None,
+            "enabled": bool(row.get("enabled")), "created_by": str(row.get("created_by")) if row.get("created_by") else None}
+TICKET_STATUSES = ("open", "closed")
+TICKET_MSG_MAX = 2000
+TICKET_HISTORY_MAX = 500
+
+
+def ticket_row_view(row: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(row["id"]), "opener_id": str(row["opener_id"]),
+            "claimed_by": str(row["claimed_by"]) if row.get("claimed_by") else None,
+            "status": row.get("status") if row.get("status") in TICKET_STATUSES else "open",
+            "created_at": iso(row.get("created_at")), "closed_at": iso(row.get("closed_at"))}
+
+
+def ticket_message_view(msg: dict) -> dict:
+    """One Discord message as the transcript viewer shows it: plain text only, bounded."""
+    author = msg.get("author") or {}
+    return {"id": str(msg.get("id")), "at": msg.get("timestamp"),
+            "author": str(author.get("global_name") or author.get("username") or "Unknown")[:40],
+            "bot": bool(author.get("bot")),
+            "text": str(msg.get("content") or "")[:TICKET_MSG_MAX],
+            "files": [str(a.get("filename") or "file")[:80] for a in (msg.get("attachments") or [])][:10],
+            "embeds": len(msg.get("embeds") or [])}

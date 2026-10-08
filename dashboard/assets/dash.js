@@ -6,7 +6,7 @@
   var KEY = "primebot.dash.session";
   var NS = "http://www.w3.org/2000/svg";
   var app = document.getElementById("app"), hdrRight = document.getElementById("hdrRight"), menuBtn = document.getElementById("menuBtn");
-  var S = { sid: null, user: null, servers: null, schema: null, guild: null, meta: null, orig: {}, draft: {}, mod: null, premium: false, errors: {}, unread: 0, isOwner: false, inbox: null };
+  var S = { clone: null, sid: null, user: null, servers: null, schema: null, guild: null, meta: null, orig: {}, draft: {}, mod: null, premium: false, errors: {}, unread: 0, isOwner: false, inbox: null };
 
   /* ---------- tiny DOM helpers ---------- */
   function h(tag, attrs) {
@@ -69,9 +69,10 @@
   function api(action, params, body) {
     var url = API + "?action=" + encodeURIComponent(action), k;
     for (k in (params || {})) url += "&" + k + "=" + encodeURIComponent(params[k]);
+    if (S.clone && action !== "me") url += "&clone_id=" + encodeURIComponent(S.clone);
     var opts = { headers: {}, cache: "no-store" };
     if (S.sid) opts.headers.Authorization = "Bearer " + S.sid;
-    if (body) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(Object.assign({ action: action }, body)); }
+    if (body) { opts.method = "POST"; opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(Object.assign({ action: action }, S.clone && action !== "me" ? { clone_id: S.clone } : {}, body)); }
     return fetch(url, opts).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
         if (r.status === 401) { signedOut("Your session expired. Sign in again."); throw new Error("401"); }
@@ -125,6 +126,8 @@
     renderHeader();
   }
 
+  function gpath(gid, rest) { return "#/" + (S.clone ? "c/" + S.clone + "/" : "") + "g/" + gid + (rest ? "/" + rest : ""); }
+
   /* ---------- servers ---------- */
   function renderServers() {
     document.body.classList.remove("menu"); renderHeader();
@@ -145,8 +148,15 @@
           h("span", { class: "tag" }, h("i", { class: "dot " + (g.bot_present ? "on live" : "off") }), g.bot_present ? "Bot online" : "Bot not added"))),
           h("span", { class: "btn sm " + (g.bot_present ? "primary" : "ghost"), text: g.bot_present ? "Manage" : "Add the bot" })];
         var el = g.bot_present
-          ? h("a", { class: "card srv rv", style: "--i:" + i, href: "#/g/" + g.id }, inner)
+          ? h("a", { class: "card srv rv", style: "--i:" + i, href: gpath(g.id) }, inner)
           : h("a", { class: "card srv rv", style: "--i:" + i, href: CFG.INVITE_URL + "&guild_id=" + g.id + "&disable_guild_select=true", target: "_blank", rel: "noopener" }, inner);
+        if (g.clones && g.clones.length) {
+          var chips = h("div", { class: "clonechips" }, h("small", { class: "muted", text: "Custom bots here:" }));
+          g.clones.forEach(function (c) {
+            chips.appendChild(h("a", { class: "btn sm ghost", href: "#/c/" + c.clone_id + "/g/" + g.id, text: c.name }));
+          });
+          el = h("div", { class: "srvwrap" }, el, chips);
+        }
         grid.appendChild(el);
       });
     };
@@ -161,9 +171,9 @@
   function statusOf(id) { var s = S.guild && S.guild.status ? S.guild.status[id] : null; return s === true ? "on" : s === false ? "off" : ""; }
 
   function loadGuild(gid) {
-    if (S.guild && S.guild.id === gid && S.meta) return Promise.resolve();
+    if (S.guild && S.guild.id === gid && S.guild.clone === S.clone && S.meta) return Promise.resolve();
     return Promise.all([api("guild", { guild_id: gid }), api("meta", { guild_id: gid })]).then(function (r) {
-      S.guild = r[0].guild; S.meta = r[1]; S.premium = !!S.guild.premium;
+      S.guild = r[0].guild; S.guild.clone = S.clone; S.meta = r[1]; S.premium = !!S.guild.premium;
     });
   }
   function renderShell(gid, modId) {
@@ -171,20 +181,23 @@
     var nav = h("nav", { class: "nav", "aria-label": "Settings" });
     var search = h("input", { type: "text", class: "search", placeholder: "Search settings", "aria-label": "Search settings", autocomplete: "off" });
     var side = h("aside", { class: "side", id: "side" },
-      h("div", { class: "srvhead" }, avatar(S.guild.icon_url, S.guild.name), h("div", null, h("b", { text: S.guild.name }), h("a", { href: "#/", text: "Switch server" }))),
+      h("div", { class: "srvhead" }, avatar(S.guild.icon_url, S.guild.name), h("div", null, h("b", { text: S.guild.name }), S.clone && S.guild.bot_name ? h("small", { class: "muted", text: "via " + S.guild.bot_name }) : null, h("a", { href: "#/", text: "Switch server" }))),
       search, nav);
     function link(href, name, label, current, mod) {
       return h("a", { href: href, "aria-current": current ? "page" : null, "data-q": (label + " " + ((mod && mod.desc) || "")).toLowerCase() },
         icon(name), h("span", { text: label }), mod && statusOf(mod.id) ? h("i", { class: "dot " + statusOf(mod.id), title: statusOf(mod.id) === "on" ? "Enabled" : "Disabled" }) : null);
     }
-    nav.appendChild(link("#/g/" + gid, "home", "Overview", !modId));
-    nav.appendChild(link("#/g/" + gid + "/billing", "star", "Premium & billing", modId === "billing"));
-    nav.appendChild(link("#/g/" + gid + "/audit", "scroll", "Audit log", modId === "audit"));
+    nav.appendChild(link(gpath(gid), "home", "Overview", !modId));
+    nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
+    nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
+    nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
+    nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
+    nav.appendChild(link(gpath(gid, "tickethistory"), "ticket", "Ticket history", modId === "tickethistory"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
       if (!list.length) return;
       nav.appendChild(h("div", { class: "grp", text: cat }));
-      list.forEach(function (m) { nav.appendChild(link("#/g/" + gid + "/" + m.id, m.icon, m.title, m.id === modId, m)); });
+      list.forEach(function (m) { nav.appendChild(link(gpath(gid, m.id), m.icon, m.title, m.id === modId, m)); });
     });
     search.addEventListener("input", function () {
       var q = search.value.trim().toLowerCase();
@@ -209,7 +222,7 @@
     mods().forEach(function (m, i) {
       var isToggle = m.fields.length && m.fields[0].key === "enabled" && !m.no_quick;
       var row = h("div", { class: "card q rv", style: "--i:" + Math.min(i, 12) }, icon(m.icon),
-        h("div", { class: "grow" }, h("a", { href: "#/g/" + gid + "/" + m.id, text: m.title }), h("small", { text: m.desc })));
+        h("div", { class: "grow" }, h("a", { href: gpath(gid, m.id), text: m.title }), h("small", { text: m.desc })));
       if (isToggle) {
         var sw = h("button", { class: "switch", role: "switch", "aria-label": m.title, "aria-checked": String(statusOf(m.id) === "on") });
         sw.addEventListener("click", function () {
@@ -217,11 +230,11 @@
           api("save", {}, { guild_id: gid, module: m.id, values: { enabled: next } }).then(function (r) {
             S.guild.status[m.id] = !!r.values.enabled; sw.setAttribute("aria-checked", String(!!r.values.enabled));
             toast(m.title + (r.values.enabled ? " is on" : " is off"), "ok");
-            var d = document.querySelector('.nav a[href="#/g/' + gid + "/" + m.id + '"] .dot'); if (d) d.className = "dot " + (r.values.enabled ? "on" : "off");
+            var d = document.querySelector('.nav a[href="' + gpath(gid, m.id) + '"] .dot'); if (d) d.className = "dot " + (r.values.enabled ? "on" : "off");
           }).catch(function (e) { toast(e.message, "bad"); }).then(function () { sw.disabled = false; });
         });
         row.appendChild(sw);
-      } else row.appendChild(h("a", { class: "btn sm ghost", href: "#/g/" + gid + "/" + m.id, text: "Open" }));
+      } else row.appendChild(h("a", { class: "btn sm ghost", href: gpath(gid, m.id), text: "Open" }));
       quick.appendChild(row);
     });
     add(main, [
@@ -308,6 +321,48 @@
         return h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: a.label }), h("p", { class: "help", text: a.help })), b);
       }), actionNote) : null;
 
+    var fileIn = h("input", { type: "file", accept: "application/json,.json", style: "display:none", "aria-hidden": "true" });
+    function toolBtn(label, fn) {
+      var b = h("button", { class: "btn sm ghost", text: label });
+      b.addEventListener("click", function () { b.classList.add("busy"); b.disabled = true; Promise.resolve().then(fn).catch(function (e) { toast(e.message, "bad"); }).then(function () { b.classList.remove("busy"); b.disabled = false; }); });
+      return b;
+    }
+    var toolsRow = h("div", { class: "card actions rv" }, h("h2", { text: "Backup and reset" }),
+      h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: "Export or import" }),
+        h("p", { class: "help", text: "Download this page's settings as a file, or load a file into the form. Importing only fills the form: nothing changes until you press Save." })),
+        toolBtn("Export", function () {
+          return api("export", { guild_id: gid, module: m.id }).then(function (r) {
+            var a = h("a", { href: URL.createObjectURL(new Blob([JSON.stringify(r.file, null, 2)], { type: "application/json" })), download: r.filename });
+            document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+          });
+        }),
+        toolBtn("Import", function () { fileIn.value = ""; fileIn.click(); })),
+      h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: "Reset to defaults" }),
+        h("p", { class: "help", text: "Puts every setting on this page back to factory settings. It's saved straight away and recorded in the audit log." })),
+        toolBtn("Reset", function () {
+          if (!window.confirm("Reset all " + m.title + " settings to their defaults? This is saved immediately.")) return;
+          return api("reset", {}, { guild_id: gid, module: m.id }).then(function (r) {
+            S.orig = r.values; S.draft = JSON.parse(JSON.stringify(r.values)); S.errors = {};
+            if ("enabled" in r.values) S.guild.status[m.id] = !!r.values.enabled;
+            build();
+            toast("Reset " + m.title + (r.left_alone && r.left_alone.length ? ". Left as they were: " + r.left_alone.join(", ") : ""), "ok");
+          });
+        })), fileIn);
+    fileIn.addEventListener("change", function () {
+      var f = fileIn.files && fileIn.files[0];
+      if (!f) return;
+      if (f.size > 48 * 1024) { toast("That file is too big to be a settings file.", "bad"); return; }
+      f.text().then(function (txt) {
+        var data; try { data = JSON.parse(txt); } catch (e) { throw new Error("That file isn't valid JSON."); }
+        return api("import_check", {}, { guild_id: gid, module: m.id, data: data });
+      }).then(function (r) {
+        Object.keys(r.values).forEach(function (k) { S.draft[k] = r.values[k]; });
+        build();
+        var n = Object.keys(r.values).length;
+        toast("Loaded " + n + (n === 1 ? " setting" : " settings") + " into the form. Review and Save." + (r.skipped.length ? " Skipped " + r.skipped.length + ": " + r.skipped.slice(0, 2).join("; ") + (r.skipped.length > 2 ? "…" : "") : ""), r.skipped.length ? "bad" : "ok");
+      }).catch(function (e) { toast(e.message, "bad"); });
+    });
+
     function refresh() {
       if (designer) designer.update();
       if (actionsCard) {
@@ -356,11 +411,11 @@
 
     add(main, [
       h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: m.category }), h("h1", { text: m.title }), h("p", { class: "muted", text: m.desc })),
-        h("a", { class: "btn sm ghost", href: "#/g/" + gid, text: "Overview" })),
+        h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
       m.note ? h("div", { class: "notice rv" }, m.note) : null,
       !S.premium && m.fields.some(function (f) { return f.premium || f.premium_values; })
         ? h("div", { class: "notice rv" }, "Some options here are Premium. ", h("a", { href: CFG.SITE_URL + "/pricing/", target: "_blank", rel: "noopener", text: "See plans" })) : null,
-      designer ? designer.el : null, actionsCard, form, bar]);
+      designer ? designer.el : null, actionsCard, form, toolsRow, bar]);
     form.appendChild(h("div", { class: "skel", style: "height:160px" }));
     api("config", { guild_id: gid, module: m.id }).then(function (r) {
       S.premium = !!r.premium; S.orig = r.values; S.draft = JSON.parse(JSON.stringify(r.values)); S.errors = {}; build();
@@ -536,6 +591,153 @@
     load(true);
   }
 
+  /* ---------- anti-raid review ---------- */
+  function ago(ms) {
+    var d = Math.max(0, (Date.now() - ms) / 86400000);
+    return d < 1 ? "under a day" : d < 60 ? Math.floor(d) + " days" : d < 730 ? Math.floor(d / 30) + " months" : Math.floor(d / 365) + " years";
+  }
+  function renderRaid(gid, main) {
+    var list = h("div", { class: "audit" }), note = h("p", { class: "muted", text: "" });
+    var head = h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Anti-raid review" }),
+      h("p", { class: "muted", text: "People the anti-raid is holding in quarantine. Release them, kick them, or ban them." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" }));
+    add(main, [head, h("div", { class: "card rv" }, note, list)]);
+    list.appendChild(h("div", { class: "skel", style: "height:80px" }));
+    function act(p, op, row, btns) {
+      if (op === "ban" && !window.confirm("Ban " + p.name + "? This can't be undone from here.")) return;
+      btns.forEach(function (b) { b.disabled = true; });
+      api("raid_action", {}, { guild_id: gid, user_id: p.user_id, op: op }).then(function (r) {
+        toast(r.message, "ok"); row.remove(); if (!list.children.length) load();
+      }).catch(function (e) { toast(e.message, "bad"); btns.forEach(function (b) { b.disabled = false; }); });
+    }
+    function load() {
+      api("raid_review", { guild_id: gid }).then(function (r) {
+        list.textContent = "";
+        note.textContent = r.total > r.people.length ? "Showing the oldest " + r.people.length + " of " + r.total + "." : "";
+        if (!r.people.length) { list.appendChild(h("p", { class: "muted", text: "Nobody is waiting for review." })); return; }
+        r.people.forEach(function (p) {
+          var btns = [h("button", { class: "btn sm", text: "Release" }), h("button", { class: "btn sm ghost", text: "Kick" }), h("button", { class: "btn sm ghost", text: "Ban" })];
+          var row = h("div", { class: "action" }, avatar(p.avatar_url, p.name),
+            h("div", { class: "grow" }, h("b", { text: p.name }),
+              h("p", { class: "help", text: "Account " + ago(p.account_created_ms) + " old" + (p.in_server ? "" : " · already left") + (p.reason ? " · " + p.reason : "") })),
+            btns);
+          btns[0].addEventListener("click", function () { act(p, "approve", row, btns); });
+          btns[1].addEventListener("click", function () { act(p, "kick", row, btns); });
+          btns[2].addEventListener("click", function () { act(p, "ban", row, btns); });
+          list.appendChild(row);
+        });
+      }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    load();
+  }
+
+  function fmtWhen(iso) { try { return new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }); } catch (e) { return ""; } }
+  /* ---------- scheduled messages ---------- */
+  function everyText(sec) { var m = Math.round(sec / 60); return m % 1440 === 0 ? (m / 1440) + " day(s)" : m % 60 === 0 ? (m / 60) + " hour(s)" : m + " min"; }
+  function renderSchedules(gid, main) {
+    var list = h("div", { class: "audit" }), note = h("p", { class: "help", text: "" });
+    var chan = h("select", { id: "sc_chan", "aria-label": "Channel" }, S.meta.channels.text.map(function (c) { return h("option", { value: c.id, text: "#" + c.name }); }));
+    var mode = h("select", { id: "sc_mode", "aria-label": "How often" }, [["once", "Once, after a delay"], ["interval", "Repeat on an interval"], ["daily", "Every day at a time (UTC)"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var mins = h("input", { type: "number", min: "1", value: "60", "aria-label": "Minutes" });
+    var tod = h("input", { type: "text", value: "09:00", placeholder: "09:00", "aria-label": "Time (UTC)", hidden: true });
+    var hint = h("p", { class: "help", text: "Minutes from now." });
+    var text = h("textarea", { rows: "3", maxlength: "2000", placeholder: "What should I post?", "aria-label": "Message" });
+    var addBtn = h("button", { class: "btn sm primary", text: "Schedule it" });
+    function syncMode() {
+      tod.hidden = mode.value !== "daily"; mins.hidden = mode.value === "daily";
+      hint.textContent = mode.value === "once" ? "Minutes from now." : mode.value === "interval" ? "Repeat every this many minutes (5 or more)." : "24-hour UTC time, e.g. 09:00.";
+    }
+    mode.addEventListener("change", syncMode);
+    function load() {
+      api("schedules", { guild_id: gid }).then(function (r) {
+        list.textContent = "";
+        note.textContent = r.schedules.length + " of " + r.limit + " used.";
+        if (!r.schedules.length) { list.appendChild(h("p", { class: "muted", text: "Nothing scheduled." })); return; }
+        r.schedules.forEach(function (sc) {
+          var del = h("button", { class: "btn sm ghost", text: "Delete" });
+          del.addEventListener("click", function () {
+            if (!window.confirm("Delete this scheduled message?")) return;
+            del.disabled = true;
+            api("schedule_delete", {}, { guild_id: gid, id: sc.id }).then(function () { toast("Deleted", "ok"); load(); })
+              .catch(function (e) { toast(e.message, "bad"); del.disabled = false; });
+          });
+          var ch = S.meta.channels.text.filter(function (c) { return c.id === sc.channel_id; })[0];
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: (ch ? "#" + ch.name : "a deleted channel") + (sc.interval_seconds ? " · every " + everyText(sc.interval_seconds) : " · once") }),
+            h("p", { class: "help", text: "Next: " + fmtWhen(sc.next_run_at) }),
+            h("p", { text: sc.content, style: "white-space:pre-wrap;word-break:break-word" })), del));
+        });
+      }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    addBtn.addEventListener("click", function () {
+      var body = { guild_id: gid, channel_id: chan.value, mode: mode.value, content: text.value };
+      if (mode.value === "daily") body.time_utc = tod.value; else body.minutes = Number(mins.value);
+      addBtn.classList.add("busy"); addBtn.disabled = true;
+      api("schedule_add", {}, body).then(function () { toast("Scheduled", "ok"); text.value = ""; load(); })
+        .catch(function (e) { toast(e.message, "bad"); }).then(function () { addBtn.classList.remove("busy"); addBtn.disabled = false; });
+    });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Scheduled messages" }),
+      h("p", { class: "muted", text: "Post a message later, or on repeat. These are the same schedules as /schedule in Discord. Times are UTC." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card fields rv" }, h("h2", { text: "New message" }),
+        h("div", { class: "field" }, h("div", null, h("label", { for: "sc_chan", text: "Channel" })), chan),
+        h("div", { class: "field" }, h("div", null, h("label", { for: "sc_mode", text: "When" }), hint), h("div", null, mode, mins, tod)),
+        h("div", { class: "field" }, h("div", null, h("label", { text: "Message" }), h("p", { class: "help", text: "Up to 2000 characters. Mentions like @everyone will ping, same as the command." })), text),
+        h("div", { class: "action" }, h("div", { class: "grow" }), addBtn)),
+      h("div", { class: "card rv" }, h("h2", { text: "Upcoming" }), note, list)]);
+    syncMode(); load();
+  }
+
+  /* ---------- ticket history ---------- */
+  function renderTickets(gid, main) {
+    var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
+    var filter = h("select", { "aria-label": "Filter by status" }, [["", "All tickets"], ["open", "Open"], ["closed", "Closed"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var viewer = h("div", { class: "card rv", hidden: true });
+    var last = null;
+    function openTicket(t) {
+      viewer.hidden = false; viewer.textContent = "";
+      viewer.appendChild(h("div", { class: "skel", style: "height:120px" }));
+      viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      api("ticket_messages", { guild_id: gid, id: t.id }).then(function (r) {
+        viewer.textContent = "";
+        viewer.appendChild(h("h2", { text: "Ticket #" + t.id + " · " + r.ticket.status }));
+        if (r.gone) { viewer.appendChild(h("p", { class: "muted", text: "The ticket channel was deleted, so the conversation is no longer available." })); return; }
+        if (r.truncated) viewer.appendChild(h("p", { class: "help", text: "Showing the most recent " + r.messages.length + " messages." }));
+        if (!r.messages.length) viewer.appendChild(h("p", { class: "muted", text: "No messages." }));
+        r.messages.forEach(function (m) {
+          var extra = (m.files.length ? " [" + m.files.join(", ") + "]" : "") + (m.embeds ? " [" + m.embeds + " embed" + (m.embeds > 1 ? "s" : "") + "]" : "");
+          viewer.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: m.author + (m.bot ? " (bot)" : "") }), h("span", { class: "help", text: "  " + fmtWhen(m.at) }),
+            h("p", { text: (m.text || "") + extra, style: "white-space:pre-wrap;word-break:break-word" }))));
+        });
+      }).catch(function (e) { viewer.textContent = ""; viewer.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    function load(reset) {
+      if (reset) { list.textContent = ""; last = null; viewer.hidden = true; }
+      var params = { guild_id: gid };
+      if (filter.value) params.status = filter.value;
+      if (last) params.before = last;
+      api("tickets", params).then(function (r) {
+        r.tickets.forEach(function (t) {
+          var b = h("button", { class: "btn sm ghost", text: "Read" });
+          b.addEventListener("click", function () { openTicket(t); });
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: "Ticket #" + t.id + " · " + t.status }),
+            h("p", { class: "help", text: "Opened " + fmtWhen(t.created_at) + (t.closed_at ? " · closed " + fmtWhen(t.closed_at) : "") })), b));
+          last = t.id;
+        });
+        if (!list.children.length) list.appendChild(h("p", { class: "muted", text: "No tickets yet." }));
+        moreBtn.hidden = !r.more;
+      }).catch(function (e) { toast(e.message, "bad"); });
+    }
+    filter.addEventListener("change", function () { load(true); });
+    moreBtn.addEventListener("click", function () { load(false); });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Ticket history" }),
+      h("p", { class: "muted", text: "Read what was said in a ticket, live from its channel. Closed tickets keep their channel hidden, so the conversation is still here." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })), h("div", { class: "card rv" }, filter, list, moreBtn), viewer]);
+    load(true);
+  }
+
   /* ---------- premium & billing ---------- */
   function renderBilling(gid, main) {
     var body = h("div", { class: "billing" }, h("div", { class: "skel", style: "height:140px" }));
@@ -549,6 +751,10 @@
         h("div", { class: "card stat rv" }, h("b", { text: r.premium ? "Active" : "Free" }), h("span", { text: "Premium" })),
         h("div", { class: "card stat rv" }, h("b", { text: until || "–" }), h("span", { text: r.premium ? "Current period ends" : "No active plan" })),
         h("div", { class: "card stat rv" }, h("b", { text: r.card_pack || r.premium ? "Unlocked" : "Locked" }), h("span", { text: "Welcome card themes" }))));
+      if (r.clone) {
+        body.appendChild(h("div", { class: "notice rv" }, "This custom bot's Premium is managed by the bot's owner, so there is no checkout here. Ask them (or use the bot's own /premium command in Discord) to change plans."));
+        return;
+      }
       var grid = h("div", { class: "plans" });
       r.plans.forEach(function (p, i) {
         var btn = h("button", { class: "btn primary", text: p.owned ? "Owned" : p.included ? "Included with Premium" : "Choose " + p.label.replace("Premium: ", ""), disabled: p.owned || p.included });
@@ -609,20 +815,23 @@
   /* ---------- router ---------- */
   function route() {
     document.body.classList.remove("menu"); S.mod = null;
-    var hash = location.hash || "#/", m = hash.match(/^#\/g\/(\d+)(?:\/([a-z]+))?$/);
+    var hash = location.hash || "#/", m = hash.match(/^#\/(?:c\/(\d+)\/)?g\/(\d+)(?:\/([a-z_]+))?$/);
     if (!S.sid) return renderLogin();
     showAnnouncements();
-    if (hash === "#/inbox") { S.guild = null; return renderInbox(); }
-    if (hash === "#/tiers") { S.guild = null; return renderTiers(); }
-    if (!m) { S.guild = null; return renderServers(); }
-    var gid = m[1], modId = m[2];
+    if (hash === "#/inbox") { S.guild = null; S.clone = null; return renderInbox(); }
+    if (hash === "#/tiers") { S.guild = null; S.clone = null; return renderTiers(); }
+    if (!m) { S.guild = null; S.clone = null; return renderServers(); }
+    var clone = m[1] || null;
+    if (clone !== S.clone) { S.clone = clone; S.guild = null; S.meta = null; }
+    var gid = m[2], modId = m[3];
     app.textContent = ""; app.appendChild(h("main", { id: "main", class: "center" }, h("div", { class: "boot", role: "status" }, "Loading server", h("span", { class: "dots" }))));
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      if (modId && modId !== "audit" && modId !== "billing" && !mod) { location.hash = "#/g/" + gid; return; }
+      var PAGES = { audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
+      if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
-      if (modId === "audit") renderAudit(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
+      if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
       window.scrollTo(0, 0);
     }).catch(function (e) {
       if (e.message === "401") return;
