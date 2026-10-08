@@ -250,6 +250,31 @@ MODULES: List[dict] = [
             F("vote_cooldown_hours", "Vote cooldown (hours)", "number", "", min=1, max=168),
         ],
     },
+    {
+        "id": "bumpnet", "title": "Bump network", "category": "Community", "icon": "link",
+        "desc": "Receive bump posts from other servers and choose which ones.",
+        "get": "get_bump_settings_config", "set": "set_bump_settings_config", "no_quick": True,
+        "note": "Same settings as /bumpsetup. The owner can switch the whole bump feature off; if so nothing is posted whatever you set here.",
+        "fields": [
+            F("receives_bumps", "Receive bumps", "toggle", "Let the bump network post in your bump channel."),
+            F("bump_channel_id", "Bump channel", "channel", "Where incoming bumps are posted. Pick a channel to change it.", kind="text"),
+            F("language", "Language filter", "select", "Only receive bumps in this language.",
+              options=opts(("any", "Any language"), ("en", "English"), ("fr", "French"), ("es", "Spanish"),
+                           ("pt", "Portuguese"), ("ar", "Arabic"))),
+            F("nsfw_opt_in", "Allow NSFW listings", "toggle", "Off keeps 18+ servers out of your bump channel."),
+            F("intensity_level", "Intensity", "select", "How many incoming bumps you want.",
+              options=opts(("1", "1 - Low"), ("2", "2 - Light"), ("3", "3 - Normal"), ("4", "4 - Frequent"), ("5", "5 - High"))),
+        ],
+    },
+    {
+        "id": "customrole", "title": "Custom roles", "category": "Community", "icon": "star", "no_quick": True,
+        "desc": "Let members create and restyle their own role.",
+        "get": "get_custom_role_settings_config", "set": "set_custom_role_settings_config",
+        "note": "Same switch as /customrole disable_feature. Members still need Premium or a purchase to use it; the panel itself is posted from Discord.",
+        "fields": [
+            F("enabled", "Custom roles", "toggle", "Turn the feature on or off for this server."),
+        ],
+    },
 ]
 
 BY_ID: Dict[str, dict] = {m["id"]: m for m in MODULES}
