@@ -617,3 +617,70 @@ def raid_row_view(row: dict, member: Optional[dict]) -> dict:
             "account_created_ms": snowflake_ms(uid), "reason": reason[:RAID_REASON_MAX],
             "quarantined_at": created.isoformat() if hasattr(created, "isoformat") else None,
             "roles_held": len(row.get("saved_role_ids") or [])}
+# ───────────────────────── scheduled messages (same table the /schedule command uses) ─────────────────────────
+
+SCHEDULE_MODES = ("once", "interval", "daily")
+SCHEDULE_TEXT_MAX = 2000
+SCHEDULE_MIN_INTERVAL_MIN = 5            # the command allows 1m; the dashboard is stricter to avoid channel spam
+SCHEDULE_MAX_INTERVAL_MIN = 60 * 24 * 365
+SCHEDULE_MAX_DELAY_MIN = 60 * 24 * 365
+SCHEDULE_MAX_ACTIVE = 25
+_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def validate_schedule(raw: Any, text_channels: set, now) -> Tuple[Optional[dict], Optional[str]]:
+    """-> ({channel_id, content, run_at, interval_seconds}, None) or (None, error).
+    `now` is a timezone-aware datetime (injected so this stays pure and testable)."""
+    from datetime import timedelta
+    if not isinstance(raw, dict):
+        return None, "Invalid request."
+    cid = str(raw.get("channel_id") or "")
+    if not cid.isdigit() or cid not in text_channels:
+        return None, "Pick a text channel from this server."
+    text = raw.get("content")
+    if not isinstance(text, str) or not text.strip():
+        return None, "Write the message to post."
+    text = text.strip()
+    if len(text) > SCHEDULE_TEXT_MAX:
+        return None, f"Keep the message under {SCHEDULE_TEXT_MAX} characters."
+    mode = raw.get("mode")
+
+    def minutes(key, label, lo, hi):
+        v = raw.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+            return None, f"{label}: enter a number."
+        try:
+            n = int(float(v))
+        except ValueError:
+            return None, f"{label}: enter a number."
+        if n < lo or n > hi:
+            return None, f"{label}: must be between {lo} and {hi} minutes."
+        return n, None
+
+    if mode == "once":
+        n, err = minutes("minutes", "Delay", 1, SCHEDULE_MAX_DELAY_MIN)
+        if err:
+            return None, err
+        return {"channel_id": int(cid), "content": text, "run_at": now + timedelta(minutes=n), "interval_seconds": None}, None
+    if mode == "interval":
+        n, err = minutes("minutes", "Repeat every", SCHEDULE_MIN_INTERVAL_MIN, SCHEDULE_MAX_INTERVAL_MIN)
+        if err:
+            return None, err
+        return {"channel_id": int(cid), "content": text, "run_at": now + timedelta(minutes=n), "interval_seconds": n * 60}, None
+    if mode == "daily":
+        m = _TIME_RE.match(str(raw.get("time_utc") or "").strip())
+        if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+            return None, "Use a 24-hour UTC time like 09:00."
+        run_at = now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+        if run_at <= now:
+            run_at += timedelta(days=1)
+        return {"channel_id": int(cid), "content": text, "run_at": run_at, "interval_seconds": 86400}, None
+    return None, "Pick once, repeating or daily."
+
+
+def schedule_row_view(row: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    iv = row.get("interval_seconds")
+    return {"id": str(row["id"]), "channel_id": str(row["channel_id"]), "content": str(row.get("content") or "")[:SCHEDULE_TEXT_MAX],
+            "next_run_at": iso(row.get("next_run_at")), "interval_seconds": int(iv) if iv else None,
+            "enabled": bool(row.get("enabled")), "created_by": str(row.get("created_by")) if row.get("created_by") else None}
