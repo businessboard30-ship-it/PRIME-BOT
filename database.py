@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "58"
+SCHEMA_VERSION = "59"
+# "58" -> "59" actually creates the web-dashboard tables dash_dropbox_messages, dash_dropbox_reads, dash_dropbox_dm and dash_audit (+ the audience/min_members/target_guild_id/push_dm columns). They were added to _create_tables in the dashboard PRs without a bump, so DBs stamped '58' hit UndefinedTableError on every Drop Box / Audit request. Same bump-or-it-never-runs trap.
 # "57" -> "58" adds 031_discount_and_applications.sql (premium_discount_codes, discord_application_forms, discord_application_submissions). Same bump-or-it-never-runs trap.
 # "56" -> "57" adds 4 filter_* columns to discord_antiraid_config (Anti-raid Pro: account-age / default-avatar / suspicious-name join filter) via ALTER TABLE ADD COLUMN IF NOT EXISTS — see modules/antiraid_pro.py. Same bump-or-it-never-runs trap.
 # "55" -> "56" actually creates discord_verification_passes (Cloudflare Turnstile join verification). It was added to _create_tables in the Turnstile PR without a bump, so DBs stamped '55' skipped it (UndefinedTableError). Same bump-or-it-never-runs trap.
