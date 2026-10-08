@@ -55,6 +55,9 @@ Routes (all on /api/dash):
   POST {action: owner_report_resolve|owner_status_add|owner_status_remove|owner_presence_set|owner_status_reset|owner_scam_toggle|owner_scam_add|owner_scam_remove, ...} -> OWNER (safety)
   GET  ?action=owner_helpers|owner_clones|owner_database -> OWNER (access / servers / database): helpers, clones (never the token), table counts (api/dash_owner_ops.py)
   GET  ?action=member_plans -> any signed-in user: the plan list with server prices and the user's own state
+  GET  ?action=member_card -> own saved custom level-up card design, editor options, plan access, weekly AI chat meter (B4)
+  POST ?action=member_card_preview {design} -> data-URL PNG on a placeholder avatar; open to every signed-in user, stores nothing
+  POST ?action=member_card_save {design} -> saves for the SESSION user; 402 + checkout_url without an effective card_plan
   POST ?action=checkout_user {product} -> any signed-in user: a /pay checkout link for the SESSION user (webhook grants, never this call)
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
@@ -1077,10 +1080,11 @@ async def _route(method: str, query: dict, headers, body: dict):
 
     if method == "POST" and action in _member_writes():
         uid = _require_member(sess)
-        _owner_rate(sess, "member:" + action, *((10, 300) if action == "checkout_user" else (30, 60)))
+        _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60)}.get(action, (30, 60)))
         out = await _member_writes()[action](uid, body, db)
         if out.get("_status"):
-            _fail(out["_status"], out.get("message") or "Something went wrong.")
+            raise _Reply(out["_status"], {"ok": False, "message": out.get("message") or "Something went wrong.",
+                                          **(out.get("extra") or {})})
         raise _Reply(200, {"ok": True, **out})
 
     if method == "POST" and action == "owner_stepup":

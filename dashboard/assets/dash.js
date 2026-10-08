@@ -942,14 +942,63 @@
     });
     return h("p", null, h("b", { text: label + " " }), sel);
   }
+  /* ---------- custom level-up card editor (card plan). Preview is open to all; the server gates Save (402). ---------- */
+  function renderCardEditor(box) {
+    api("member_card").then(function (j) {
+      var o = j.options, d = Object.assign({}, j.design), timer = null;
+      var img = h("img", { alt: "Level-up card preview", width: 900, height: 300 });
+      img.style.width = "100%"; img.style.maxWidth = "560px"; img.style.borderRadius = "12px";
+      var msg = h("p", { class: "muted", role: "status", text: "" });
+      var meter = h("p", { class: "muted", text: "" });
+      var pay = h("p", null);
+      function optList(map) { return Object.keys(map).map(function (k) { return [k, map[k]]; }); }
+      function sel(label, key, map) {
+        var s = h("select", { "aria-label": label }, optList(map).map(function (x) { return h("option", { value: x[0], text: x[1] }); }));
+        s.value = d[key]; s.addEventListener("change", function () { d[key] = s.value; queue(); });
+        return h("p", null, h("b", { text: label + " " }), s);
+      }
+      var color = h("input", { type: "color", "aria-label": "Accent colour" }); color.value = d.accent.toLowerCase();
+      color.addEventListener("input", function () { d.accent = color.value.toUpperCase(); queue(); });
+      var bio = h("input", { type: "text", maxlength: o.bio_max, "aria-label": "Bio line", placeholder: "Short line under your XP bar" }); bio.value = d.bio || "";
+      bio.addEventListener("input", function () { d.bio = bio.value; queue(); });
+      function preview() {
+        api("member_card_preview", null, { design: d }).then(function (r) { img.src = r.image; msg.textContent = ""; })
+          .catch(function (e) { msg.textContent = e.message; });
+      }
+      function queue() { clearTimeout(timer); timer = setTimeout(preview, 350); }
+      var save = h("button", { class: "btn sm", type: "button", text: j.access ? "Save card" : "Save (needs card plan)" });
+      save.addEventListener("click", function () {
+        save.disabled = true; pay.textContent = "";
+        api("member_card_save", null, { design: d }).then(function () { msg.textContent = "Saved. Your next level-up uses this card."; toast("Saved"); })
+          .catch(function (e) {
+            msg.textContent = e.message;
+            if (e.status === 402 && e.payload && e.payload.checkout_url) {
+              pay.appendChild(h("a", { class: "btn sm", href: e.payload.checkout_url, text: "Subscribe" }));
+            }
+          }).then(function () { save.disabled = false; });
+      });
+      box.appendChild(h("p", { class: "muted", text: j.access ? "Your design is used on your level-up cards." : "Preview any design for free. Saving needs the card plan; if it lapses, the default card comes back and your design is kept." }));
+      box.appendChild(img);
+      box.appendChild(sel("Background", "background", o.backgrounds));
+      box.appendChild(sel("Font", "font", o.fonts));
+      box.appendChild(sel("Avatar shape", "shape", o.shapes));
+      box.appendChild(h("p", null, h("b", { text: "Accent " }), color));
+      box.appendChild(h("p", null, h("b", { text: "Bio " }), bio));
+      box.appendChild(h("p", null, save)); box.appendChild(pay); box.appendChild(msg);
+      if (j.ai) { meter.textContent = "Free website AI chats this week: " + j.ai.used + " / " + j.ai.limit + " \u00b7 resets " + new Date(j.ai.resets_at).toLocaleString(); box.appendChild(meter); }
+      preview();
+    }).catch(function (e) { fail(box, e); });
+  }
+
   function renderMe() {
     document.body.classList.remove("menu"); S.mod = null; renderHeader();
-    var plans = section("My plans"), servers = section("My servers"), prefs = section("My preferences"), buys = section("My purchases");
+    var plans = section("My plans"), servers = section("My servers"), cardSec = section("Custom level-up card"), prefs = section("My preferences"), buys = section("My purchases");
     app.textContent = "";
     app.appendChild(h("main", { id: "main", class: "page" },
       h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Your account" }), h("h1", { text: "My account" }),
         h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }))),
-      plans, servers, prefs, buys));
+      plans, servers, cardSec, prefs, buys));
+    renderCardEditor(cardSec);
     Promise.all([api("member_status"), api("member_plans")]).then(function (res) {
       var j = res[0], offers = res[1].plans || [];
       var items = j.entitlements || [];
