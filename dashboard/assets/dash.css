@@ -230,3 +230,6 @@ option{background:#06101a;color:#fff}option:disabled{color:#667}
 .clonechips{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem;padding:0 .25rem}
 .actions .row{display:flex;gap:.5rem;flex-wrap:wrap}
 .btn.danger:hover{background:rgba(192,57,43,.18)}
+.review{display:flex;flex-direction:column;gap:.7rem}
+.rvrow{display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+.rvrow .grow{min-width:12rem}

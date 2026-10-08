@@ -30,6 +30,8 @@ Routes (all on /api/dash):
   POST {action: bot_action, guild_id, id} -> bot posts a panel/test card (whitelist: S.BOT_ACTIONS)
   GET  ?action=billing&guild_id         -> Premium status + plans with server-side prices
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
+  GET  ?action=antiraid_review&guild_id         -> accounts anti-raid quarantined, awaiting a decision
+  POST {action: antiraid_review_act, guild_id, user_id, decision: release|kick|ban}
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
@@ -51,13 +53,14 @@ import logging
 import secrets as _secrets
 import time
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.parse import urlparse, parse_qs, urlencode, quote
 
 import aiohttp
 
 import config
 from database import db
 from utils import dash_schema as S
+from utils import dash_review as R
 
 logger = logging.getLogger(__name__)
 
@@ -511,6 +514,143 @@ async def _save_and_audit(sess: dict, gid: int, module: dict, before_cfg: dict, 
         logger.exception("dashboard: audit write failed (the change itself succeeded)")
 
 
+async def _bot_request(method: str, path: str, json_body=None, reason: str = ""):
+    """Any REST call as the bot (PUT/PATCH/DELETE for review actions). 2xx -> parsed JSON or {}."""
+    headers = {"Authorization": f"Bot {_token()}"}
+    if reason:
+        headers["X-Audit-Log-Reason"] = quote(reason[:400], safe=" []-:.,/")
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as s:
+        for attempt in range(2):
+            async with s.request(method, f"{DISCORD_API}{path}", headers=headers, json=json_body) as r:
+                if r.status == 429 and attempt == 0:
+                    retry = float((await r.json(content_type=None)).get("retry_after", 1))
+                    await asyncio.sleep(min(retry, 3))
+                    continue
+                if r.status not in (200, 201, 204):
+                    raise DiscordError(r.status)
+                if r.status == 204:
+                    return {}
+                return await r.json(content_type=None)
+
+
+async def _bot_user_id() -> str:
+    hit = _cached("botself", 600)
+    if hit is not None:
+        return hit
+    return _store("botself", 600, str((await _bot_get("/users/@me"))["id"]))
+
+
+_last_review: dict = {}
+REVIEW_MIN_INTERVAL = 1.0
+
+
+async def _review_list(gid: int) -> dict:
+    rows = [r for r in await db.list_quarantined(gid, _cid(), 200) if R.is_raid_row(r)]
+    rows.sort(key=lambda r: str(r.get("created_at") or ""))
+    rows = rows[:50]
+    sem = asyncio.Semaphore(5)
+
+    async def member(uid):
+        async with sem:
+            try:
+                return await _bot_get(f"/guilds/{gid}/members/{int(uid)}")
+            except DiscordError as e:
+                if e.status == 404:
+                    return None
+                raise
+    try:
+        members = await asyncio.gather(*[member(r["user_id"]) for r in rows])
+    except DiscordError:
+        _fail(502, "Couldn't reach Discord. Try again in a moment.")
+    return {"ok": True, "entries": [R.review_row(r, m) for r, m in zip(rows, members)],
+            "total": len(rows), "can_ban": None}
+
+
+async def _review_act(sess: dict, gid: int, raw_uid, decision) -> dict:
+    uid = str(sess["user"]["id"])
+    decision = str(decision or "")
+    if decision not in R.DECISIONS:
+        _fail(422, "Unknown decision.")
+    try:
+        target = int(str(raw_uid))
+    except (TypeError, ValueError):
+        _fail(400, "Invalid account.")
+    now = time.monotonic()
+    if now - _last_review.get(uid, 0) < REVIEW_MIN_INTERVAL:
+        _fail(429, "One moment, then try again.")
+    _last_review[uid] = now
+    if len(_last_review) > 5000:
+        _last_review.clear()
+    # Ban / kick need their own permission, exactly like Discord itself (Manage Server isn't enough).
+    need = R.DECISIONS[decision]
+    if need:
+        info = await _guild_info(gid)
+        member = await _bot_get(f"/guilds/{gid}/members/{int(uid)}")
+        roles = {int(r["id"]): int(r.get("permissions") or 0) for r in info.get("roles", [])}
+        if not R.has_permission(int(info["owner_id"]), int(uid), [int(x) for x in member.get("roles", [])], roles, gid, need):
+            _fail(403, f"You need the {'Ban' if decision == 'ban' else 'Kick'} Members permission for that.")
+    row = await db.get_quarantined(gid, _cid(), target)
+    if row is None or not R.is_raid_row(row):
+        _fail(404, "That account isn't waiting for review any more.")
+    actor = str(sess["user"].get("username") or "dashboard")[:60]
+    name = f"<@{target}>"
+    try:
+        if decision == "ban":
+            await _bot_request("PUT", f"/guilds/{gid}/bans/{target}", {"delete_message_seconds": R.BAN_DELETE_SECONDS},
+                               f"[anti-raid review] banned from the dashboard by {actor}")
+            msg = "Banned."
+        elif decision == "kick":
+            try:
+                await _bot_request("DELETE", f"/guilds/{gid}/members/{target}", None,
+                                   f"[anti-raid review] kicked from the dashboard by {actor}")
+            except DiscordError as e:
+                if e.status != 404:
+                    raise
+            msg = "Kicked."
+        else:
+            msg = await _release(gid, target, row, actor)
+    except DiscordError as e:
+        if e.status in (403, 404):
+            _fail(422, f"Discord refused that {decision} (it said {e.status}). Check the bot has the permission "
+                       "and that its role is above theirs. They stay in the list.")
+        raise
+    await db.remove_quarantined(gid, _cid(), target)
+    label = {"release": "Released", "kick": "Kicked", "ban": "Banned"}[decision]
+    try:
+        await db.dash_audit_add(gid, uid, sess["user"].get("username") or "Unknown", "antiraid",
+                                {f"{label} quarantined account": {"from": None, "to": str(target)}}, S.AUDIT_RETENTION_DAYS)
+    except Exception:
+        logger.exception("dashboard: audit write failed for review action")
+    try:
+        from modules.server_panel import record_change
+        await record_change(gid, _cid(), int(uid), f"antiraid.review_{decision}", target, "dashboard")
+    except Exception:
+        logger.debug("dashboard: server panel audit write failed", exc_info=True)
+    logger.info("dashboard antiraid review guild=%s user=%s target=%s decision=%s", gid, uid, target, decision)
+    return {"ok": True, "message": msg}
+
+
+async def _release(gid: int, target: int, row: dict, actor: str) -> str:
+    """Put a quarantined member's saved roles back (REST version of release_member)."""
+    try:
+        member = await _bot_get(f"/guilds/{gid}/members/{target}")
+    except DiscordError as e:
+        if e.status == 404:
+            return "They've left the server, so they come back unquarantined."
+        raise
+    info = await _guild_info(gid)
+    guild_roles = {int(r["id"]): r for r in info.get("roles", [])}
+    me = await _bot_get(f"/guilds/{gid}/members/{await _bot_user_id()}")
+    top = R.bot_top_position([int(x) for x in me.get("roles", [])], guild_roles)
+    new_roles, restored, lost = R.plan_release(
+        member.get("roles", []), row.get("saved_role_ids") or [], await db.get_quarantine_role(gid, _cid()),
+        guild_roles, top, gid)
+    await _bot_request("PATCH", f"/guilds/{gid}/members/{target}", {"roles": [str(r) for r in new_roles]},
+                       f"[quarantine] released from the dashboard by {actor}")
+    return f"Released ({restored} role(s) restored" + (f", {lost} no longer available" if lost > 0 else "") + ")."
+
+
 async def _authorised_guild(sess: dict, raw_gid) -> int:
     try:
         gid = int(str(raw_gid))
@@ -814,6 +954,14 @@ async def _route(method: str, query: dict, headers, body: dict):
         await _save_and_audit(sess, gid, module, before_cfg, clean, note="import")
         after = S.export_values(module, await _get_cfg(module, gid))
         raise _Reply(200, {"ok": True, "values": after, "applied": sorted(clean), "skipped": skipped})
+
+    if method == "GET" and action == "antiraid_review":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        raise _Reply(200, await _review_list(gid))
+
+    if method == "POST" and action == "antiraid_review_act":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        raise _Reply(200, await _review_act(sess, gid, body.get("user_id"), body.get("decision")))
 
     if method == "POST" and action == "bot_action":
         gid = await _authorised_guild(sess, body.get("guild_id"))

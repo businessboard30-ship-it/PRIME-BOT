@@ -190,6 +190,7 @@
     nav.appendChild(link(gpath(gid), "home", "Overview", !modId));
     nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
+    nav.appendChild(link(gpath(gid, "review"), "siren", "Anti-raid review", modId === "review"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
       if (!list.length) return;
@@ -603,6 +604,47 @@
     load(true);
   }
 
+  /* ---------- anti-raid review ---------- */
+  function ageText(d) { return d < 1 ? "under a day old" : d < 30 ? Math.floor(d) + " days old" : d < 365 ? Math.floor(d / 30) + " months old" : (d / 365).toFixed(1) + " years old"; }
+  function renderReview(gid, main) {
+    var list = h("div", { class: "review" }, h("div", { class: "skel", style: "height:120px" }));
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Anti-raid review" }),
+      h("p", { class: "muted", text: "Accounts anti-raid held back for a decision. Release puts their roles back. Kick and ban need that permission yourself, and the bot's role must be above theirs." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid, "antiraid"), text: "Anti-raid settings" })), list]);
+    function load() {
+      api("antiraid_review", { guild_id: gid }).then(function (r) {
+        list.textContent = "";
+        if (!r.entries.length) {
+          list.appendChild(h("div", { class: "card empty rv" }, h("h3", { text: "Nobody waiting" }), h("p", { class: "muted", text: "No accounts are quarantined by anti-raid right now." })));
+          return;
+        }
+        r.entries.forEach(function (e, i) {
+          var btns = [];
+          function act(decision, label) {
+            var b = h("button", { class: "btn sm " + (decision === "release" ? "primary" : "danger"), text: label });
+            b.addEventListener("click", function () {
+              if (decision !== "release" && !window.confirm(label + " " + e.name + "? " + (decision === "ban" ? "This also deletes their last hour of messages." : "They can rejoin with an invite."))) return;
+              btns.forEach(function (x) { x.disabled = true; });
+              api("antiraid_review_act", {}, { guild_id: gid, user_id: e.user_id, decision: decision }).then(function (res) {
+                toast(res.message, "ok"); row.remove();
+                if (!list.querySelector(".rvrow")) load();
+              }).catch(function (err) { toast(err.message, "bad"); btns.forEach(function (x) { x.disabled = false; }); });
+            });
+            btns.push(b); return b;
+          }
+          var row = h("div", { class: "card rvrow rv", style: "--i:" + Math.min(i, 8) }, avatar(e.avatar_url, e.name),
+            h("div", { class: "grow" }, h("b", { text: e.name }),
+              h("p", { class: "help", text: ageText(e.account_age_days) + (e.in_server ? "" : " \u00b7 already left the server") + (e.reason ? " \u00b7 " + e.reason : "") }),
+              h("p", { class: "help", text: "Quarantined " + (e.quarantined_at ? when(e.quarantined_at) : "earlier") + " \u00b7 " + e.saved_roles + " role(s) saved" })),
+            h("div", { class: "row" }, act("release", "Release"), act("kick", "Kick"), act("ban", "Ban")));
+          list.appendChild(row);
+        });
+        if (r.total >= 50) list.appendChild(h("p", { class: "muted", text: "Showing the oldest 50. Decide on these and more will appear." }));
+      }).catch(function (e) { if (e.message !== "401") { list.textContent = ""; list.appendChild(h("p", { text: e.message })); } });
+    }
+    load();
+  }
+
   /* ---------- premium & billing ---------- */
   function renderBilling(gid, main) {
     var body = h("div", { class: "billing" }, h("div", { class: "skel", style: "height:140px" }));
@@ -693,9 +735,9 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      if (modId && modId !== "audit" && modId !== "billing" && !mod) { location.hash = gpath(gid); return; }
+      if (modId && modId !== "audit" && modId !== "billing" && modId !== "review" && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
-      if (modId === "audit") renderAudit(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
+      if (modId === "audit") renderAudit(gid, main); else if (modId === "review") renderReview(gid, main); else if (modId === "billing") renderBilling(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
       window.scrollTo(0, 0);
     }).catch(function (e) {
       if (e.message === "401") return;
