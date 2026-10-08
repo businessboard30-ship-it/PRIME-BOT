@@ -50,6 +50,8 @@ MODULES: List[dict] = [
             F("background_color", "Background colour", "color", "Used by the plain colour card."),
         ],
         "designer": "welcome",
+        "actions": [{"id": "welcome_test", "label": "Send test welcome",
+                     "help": "Posts a sample card for you in the welcome channel (saved settings)."}],
     },
     {
         "id": "verification", "title": "Join verification", "category": "Onboarding", "icon": "shield-check",
@@ -66,6 +68,8 @@ MODULES: List[dict] = [
             F("timeout_seconds", "Time limit (seconds)", "number", "How long a member has to verify.", min=30, max=3600),
             F("max_attempts", "Max attempts", "number", "Wrong answers allowed before a kick.", min=1, max=10),
         ],
+        "actions": [{"id": "verify_panel", "label": "Post verify panel",
+                     "help": "Posts the verify button message in the verify channel (needs the channel and Unverified role saved). Does not lock any channels; /setupverification does that."}],
     },
     {
         "id": "antiraid", "title": "Anti-raid", "category": "Security", "icon": "siren",
@@ -193,10 +197,13 @@ MODULES: List[dict] = [
         "desc": "Private support channels for your members.",
         "get": "get_ticket_config", "set": "set_ticket_config",
         "fields": [
+            F("panel_channel_id", "Panel channel", "channel", "Where the Open Ticket button message is posted.", kind="text"),
             F("support_role_id", "Support role", "role", "Can see and answer tickets."),
             F("category_id", "Ticket category", "channel", "New tickets are created here.", kind="category"),
             F("welcome_message", "Opening message", "textarea", "Posted inside each new ticket.", maxlen=1000),
         ],
+        "actions": [{"id": "ticket_panel", "label": "Post ticket panel",
+                     "help": "Posts the Open Ticket button message in the panel channel (saved settings)."}],
     },
     {
         "id": "suggestions", "title": "Suggestions", "category": "Community", "icon": "bulb",
@@ -450,3 +457,8 @@ def diff_values(module: dict, before: dict, after: dict) -> Dict[str, dict]:
         if before.get(k) != after.get(k):
             out[k] = {"from": _audit_val(before.get(k)), "to": _audit_val(after.get(k))}
     return out
+
+
+# ───────────────────────── bot actions (the bot posts something) ─────────────────────────
+
+BOT_ACTIONS = {"verify_panel": "verification", "ticket_panel": "tickets", "welcome_test": "welcome"}
