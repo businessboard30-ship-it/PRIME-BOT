@@ -38,6 +38,7 @@ def env(monkeypatch):
     db.get_starboard_config = AsyncMock(return_value={"channel_id": None, "threshold": 5, "emoji": "⭐"})
     db.get_suggestion_config = AsyncMock(return_value={"approved_log_channel_id": None})
     db.get_reaction_role_panels_for_guild = AsyncMock(return_value=[])
+    db.get_application_forms = AsyncMock(return_value=[])
     db.get_level_roles = AsyncMock(return_value=[{"level": 5, "role_id": 77}])
     db.get_ticket_config = AsyncMock(return_value={
         "support_role_id": None, "category_id": None, "panel_channel_id": None, "welcome_message": None})

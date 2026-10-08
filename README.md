@@ -54,6 +54,7 @@ Set these in Railway (or your host)'s environment settings — there's no
 
 **Recommended:**
 - `GROQ_API_KEY` — enables AI features (recommendations, scam-risk classifier, category suggestions). Everything degrades gracefully without it.
+- `AI_TTS_MODEL` — optional; text-to-speech model for AI voice replies (default `canopylabs/orpheus-v1-english`, uses the same `GROQ_API_KEY`)
 - `ENCRYPTION_KEY` — used by `utils/crypto.py` to encrypt stored clone bot tokens
 - `PAYSTACK_SECRET_KEY` / `PAYSTACK_PUBLIC_KEY` — payments (premium, clone registration fees, boosts)
 - `PUBLIC_BASE_URL` — base URL of your deployed API server, used to build OAuth redirect/webhook URLs
@@ -199,7 +200,17 @@ Creature catching (`/catch`) is a hub with six categories; see [Catch game](#cat
   **Heist Wars** (`/heist`), **giveaways** (`/giveaway`), roast battles and ship
 
 ### AI & tools
-- **AI chat and images** (`/aichat`, `/aiimage`) via Groq — degrades gracefully if unset
+- **AI chat and images** (`/aichat`, `/aiimage`) via Groq — degrades gracefully if unset.
+  Chat also works with no command: reply to the bot, @mention it, or DM it. Free
+  users get 6 AI chats/day (30 in a Premium server).
+  - **Characters** — Gen Z, Gentle or Sensei (`modules/ai_prefs.py`). Users switch by
+    asking in chat ("switch to gentle", "change your character" opens a picker).
+  - **Voice replies** — no command: the AI may answer with a voice note when it fits,
+    or the user asks ("reply with a voice note"). "No more voice notes" turns the
+    automatic ones off per user. Text is always sent alongside the audio and any TTS
+    failure falls back to text (`modules/ai_voice.py`).
+  - **Links** — http(s) links in a message are read and used in the answer
+    (`modules/ai_web.py`; public sites only, SSRF-guarded). The AI never advertises the XP boost.
 - **AI Store** (`/aistore`) — paid AI personas; sellers can connect their own key
 - **Music**, `/download`, `/news`, `/convert`, `/stock`, `/crypto`, **price alerts**,
   **reverse image search**, **Media Connect** (your own Jellyfin / Plex library)
@@ -219,6 +230,8 @@ Creature catching (`/catch`) is a hub with six categories; see [Catch game](#cat
 - `/admin` console — buttons, selects and forms for clones, subscribers, payments,
   referral giveaways, coupons and bot-wide controls; the original `/admin ...`
   slash commands remain as a fallback
+- **Kill switches** (`/admin` → Kill switches) — turn features off instantly, including
+  **Clone registration** (blocks `/registerclone` and the Build Bot button; owners exempt)
 
 ---
 

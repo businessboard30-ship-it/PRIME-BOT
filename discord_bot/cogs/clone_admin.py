@@ -91,6 +91,20 @@ async def register_clone_token(interaction: discord.Interaction, token: str, own
     any extra command or know their old clone_id — their economy/
     leveling/referral/premium history carries straight over. No payment
     gate on this path either, same reasoning as relink_clone_token."""
+    # Owner-panel kill switch ("Clone registration"). Checked here, not just on
+    # /registerclone, so the Build Bot button wizard is stopped as well. Owners
+    # are exempt; a failed lookup fails open (current_switches returns what it
+    # last knew, or nothing). A payment already in flight still completes —
+    # that path goes through payments_manual, not this function.
+    if not _is_clone_admin(owner_id):
+        from modules import admin_controls
+        if "clone_registration" in await admin_controls.current_switches():
+            await interaction.followup.send(
+                admin_controls.MSG_FEATURE.format(label=admin_controls.FEATURES["clone_registration"][0]),
+                ephemeral=True,
+            )
+            return
+
     existing = await db.get_discord_clones_by_owner(owner_id)
     if existing:
         target = existing[-1]  # most recently created row for this owner

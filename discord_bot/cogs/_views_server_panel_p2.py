@@ -66,14 +66,20 @@ class CommunityView(ServerPanelView):
         from database import db
         gid, cid = interaction.guild_id, clone_id_of(interaction)
         import asyncio
-        lv, sb, sg, rr, lr = await asyncio.gather(
+        async def _live():
+            try:
+                return sum(1 for f in await db.get_application_forms(gid, cid) if f["status"] == "active")
+            except Exception:
+                return 0
+        lv, sb, sg, rr, lr, live = await asyncio.gather(
             db.get_leveling_config(gid, cid),
             db.get_starboard_config(gid, cid),
             db.get_suggestion_config(gid, cid),
             db.get_reaction_role_panels_for_guild(gid, cid),
             db.get_level_roles(gid, cid),
+            _live(),
         )
-        return {"lv": lv, "sb": sb, "sg": sg, "rr": rr, "lr": lr}
+        return {"lv": lv, "sb": sb, "sg": sg, "rr": rr, "lr": lr, "app_live": live}
 
     def body(self):
         d = self.data
@@ -85,6 +91,7 @@ class CommunityView(ServerPanelView):
             f"· {d.get('sb', {}).get('threshold', 5)} {d.get('sb', {}).get('emoji', '⭐')}",
             f"Suggestions log: {_chan(None, d.get('sg', {}).get('approved_log_channel_id'))}",
             f"Reaction-role panels: {len(panels)}",
+            f"Application forms: {d.get('app_live', 0)} live",
         ]
 
     def controls(self):
@@ -95,6 +102,7 @@ class CommunityView(ServerPanelView):
             _btn("Suggestions", P, self.nav_p2("SuggestionsView"), "💡"),
             _btn("Giveaways", P, self.nav_p2("GiveawaysView"), "🎁"),
             _btn("Reaction roles", P, self.nav_p2("ReactionRolesView"), "🎭"),
+            _btn("Applications", P, self.nav_p2("ApplicationsView"), "📝"),
             self.back_button(),
         ]
 
@@ -427,6 +435,84 @@ class GiveawaysView(ServerPanelView):
         await sp.record_change(interaction.guild_id, self.clone_id, interaction.user.id,
                                "giveaway.wizard_opened", None, interaction.channel_id)
         await cog.setup_wizard.callback(cog, interaction)
+
+
+# ── application forms (launches the /application wizard) ─────────────────
+
+class ApplicationsView(ServerPanelView):
+    title = "📝 Application forms"
+
+    @classmethod
+    async def load(cls, interaction):
+        from modules import applications as apps
+        gid, cid = interaction.guild_id, clone_id_of(interaction)
+        from database import db
+        forms = await db.get_application_forms(gid, cid)
+        return {"forms": forms, "premium": await apps.is_premium(gid, cid)}
+
+    def body(self):
+        from modules import applications as apps
+        forms = self.data.get("forms", [])
+        premium = self.data.get("premium", False)
+        live = sum(1 for f in forms if f["status"] == "active")
+        lines = [f"Live forms: **{live}/{apps.max_forms(premium)}**"
+                 + ("" if premium else " · 💎 Premium allows 10, 5 questions, 10 colours and an auto-role.")]
+        for f in forms[:8]:
+            mark = "🟢" if f["status"] == "active" else "⚪ closed"
+            where = f" in <#{f['panel_channel_id']}>" if f.get("panel_channel_id") else ""
+            lines.append(f"{mark} **{f['title'][:40]}**{where} · {f['pending']} waiting for review")
+        if not forms:
+            lines.append("No forms yet. The wizard posts its setup message in **this channel**; "
+                         "you can also run `/application` anywhere.")
+        return lines
+
+    def controls(self):
+        out = [_btn("New form in this channel", G, self._new, "➕")]
+        forms = self.data.get("forms", [])
+        if forms:
+            sel = discord.ui.Select(placeholder="Close or reopen a form", min_values=1, max_values=1, options=[
+                discord.SelectOption(label=(("Close: " if f["status"] == "active" else "Reopen: ") + f["title"])[:100],
+                                     value=str(f["id"]), emoji="🔒" if f["status"] == "active" else "🔓")
+                for f in forms[:25]])
+
+            async def cb(interaction: discord.Interaction, _sel=sel):
+                await self._toggle(interaction, int(_sel.values[0]))
+            sel.callback = cb
+            out.append(sel)
+        out.append(self.back_button(CommunityView))
+        return out
+
+    async def _new(self, interaction):
+        from discord_bot.cogs.applications import open_wizard
+        try:
+            await open_wizard(interaction.guild, self.clone_id, interaction.user.id, channel=interaction.channel)
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "I couldn't post the wizard here — give me **Send Messages** in this channel.", ephemeral=True)
+            return
+        await sp.record_change(interaction.guild_id, self.clone_id, interaction.user.id,
+                               "application.wizard_opened", None, interaction.channel_id)
+        await interaction.response.send_message("📝 The application-form wizard is open in this channel.", ephemeral=True)
+
+    async def _toggle(self, interaction, form_id: int):
+        from modules import applications as apps
+        form = await apps.get_form(form_id)
+        if not form or form["guild_id"] != interaction.guild_id:
+            await interaction.response.send_message("That form no longer exists.", ephemeral=True)
+            return
+        reopening = form["status"] != "active"
+        if reopening:
+            premium = await apps.is_premium(interaction.guild_id, self.clone_id)
+            if await apps.count_active_forms(interaction.guild_id, self.clone_id, form_id) >= apps.max_forms(premium):
+                await interaction.response.send_message(
+                    "You're at your live-form limit — close another form first"
+                    + ("" if premium else " (or go 💎 Premium for 10)."), ephemeral=True)
+                return
+        await interaction.response.defer()
+        await apps.update_form(form_id, status="active" if reopening else "closed")
+        await sp.record_change(interaction.guild_id, self.clone_id, interaction.user.id,
+                               f"application.{form_id}.status", form["status"], "active" if reopening else "closed")
+        await self.reload(interaction)
 
 
 # ── reaction roles ───────────────────────────────────────────────────────

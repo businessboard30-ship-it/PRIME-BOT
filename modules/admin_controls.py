@@ -37,6 +37,9 @@ FEATURES: Dict[str, Tuple[str, Set[str]]] = {
     "economy": ("Economy & heists", {"economy", "shop", "ecoconfig", "heist", "inventory", "loadout"}),
     "bump": ("Bump & discovery", {"bump", "bumpsetup", "discover"}),
     "leveling": ("Leveling & cards", {"rank", "leaderboard", "clan", "card", "levelrole"}),
+    # Also enforced inside clone_admin.register_clone_token, so the "Build Bot"
+    # button wizard is stopped too (it isn't a slash command).
+    "clone_registration": ("Clone registration", {"registerclone"}),
 }
 
 _ROOT_TO_FEATURE: Dict[str, str] = {root: key for key, (_, roots) in FEATURES.items() for root in roots}

@@ -494,6 +494,8 @@ def test_premium_perks_list_mentions_anti_raid_pro():
 
 def test_database_schema_covers_filter_columns():
     src = (ROOT / "database.py").read_text(encoding="utf-8")
-    assert 'SCHEMA_VERSION = "57"' in src
+    import re as _re
+    # The anti-raid columns landed at schema 57; later bumps (other features) must not break this.
+    assert int(_re.search(r'^SCHEMA_VERSION = "(\d+)"', src, _re.M).group(1)) >= 57
     for col in ("filter_age_days", "filter_default_avatar", "filter_suspicious_name", "filter_action"):
         assert src.count(col) >= 6, col       # ALTER, fields tuple, default dict, INSERT, UPDATE, args

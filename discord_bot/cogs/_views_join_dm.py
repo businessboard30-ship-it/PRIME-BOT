@@ -299,8 +299,16 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         # "Remind me later" no longer rendered (_RemindLaterButton stays registered
         # below so buttons on already-sent DMs keep working).
         bottom_children = [_AdvertiseButton(guild_id, clone_id)]
-        if page == 0:
+        extra_connect_row = None
+        if page == 1:
+            # Connect lives on page 2 now (page 1 has the Apply button in its slot).
             bottom_children.insert(0, _ConnectButton(guild_id, clone_id))
+        elif page == 0 and total_pages == 1:
+            # A one-page DM has no page 2, so Connect gets its own row rather than vanishing
+            # (page 1's button row is already full at 5).
+            extra_connect_row = discord.ui.ActionRow(_ConnectButton(guild_id, clone_id))
+        if page == 0:
+            bottom_children.insert(0, _ApplyFormButton(guild_id, clone_id))
             # Partnership (bump network) — first page only, appended AFTER the
             # existing buttons so Connect/Advertise keep their positions.
             bottom_children.append(_PartnershipButton(guild_id, clone_id))
@@ -321,6 +329,8 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         if DISCORD_SUPPORT_SERVER_INVITE:
             link_bits.append(f"🆘 [Join our support server]({DISCORD_SUPPORT_SERVER_INVITE})")
         container.add_item(discord.ui.TextDisplay("  •  ".join(link_bits)))
+        if extra_connect_row is not None:
+            container.add_item(extra_connect_row)
         container.add_item(discord.ui.ActionRow(*bottom_children))
 
         self.add_item(container)
@@ -565,6 +575,55 @@ class _ConnectButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join
         from discord_bot.cogs._views_connect import Ctx, build_hub
         ctx = Ctx(interaction.user.id, interaction.guild, getattr(interaction.client, "clone_id", None))
         await interaction.response.send_message(view=build_hub(ctx), ephemeral=interaction.guild is not None)
+
+
+class _ApplyFormButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_apply:(\d+):(-|\d+)$"):
+    """"Applications" — same one-tap pattern as Anti-raid/Honeypot: resolves the guild from the
+    custom_id (clicked from a DM), checks Manage Server, then posts the /application wizard into
+    the server. Took Connect's slot on page 1 (Connect moved to page 2)."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(
+            discord.ui.Button(
+                label="Applications", style=discord.ButtonStyle.primary,
+                emoji="📝", custom_id=_encode("apply", guild_id, clone_id), row=4,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.client.get_guild(self.guild_id)
+        if guild is None:
+            await interaction.followup.send("I'm not in that server any more.", ephemeral=True)
+            return
+        if not await user_can_manage_guild(guild, interaction.user.id):
+            await interaction.followup.send("You need the **Manage Server** permission to create application forms.", ephemeral=True)
+            return
+        channel = _default_text_channel(guild)
+        if channel is None:
+            await interaction.followup.send(
+                "I couldn't find a channel I'm able to post in — give me **Send Messages** in one and tap this again.",
+                ephemeral=True)
+            return
+        try:
+            from discord_bot.cogs.applications import open_wizard
+            await open_wizard(guild, self.clone_id, interaction.user.id, channel=channel)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("join_dm apply wizard failed for guild %s", self.guild_id)
+            await interaction.followup.send("I couldn't post the wizard — make sure I can **Send Messages** in your server's channels.", ephemeral=True)
+            return
+        except Exception:
+            logger.exception("join_dm apply wizard failed for guild %s", self.guild_id)
+            await interaction.followup.send("Something went wrong — try again in a moment, or run `/application` in your server.", ephemeral=True)
+            return
+        await interaction.followup.send(f"📝 The application-form wizard is open in {channel.mention} — head there to build it.", ephemeral=True)
 
 
 class _PartnershipButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_bump:(\d+):(-|\d+)$"):
@@ -2091,7 +2150,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 DYNAMIC_ITEMS = (
     _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
-    _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton,
+    _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton, _ApplyFormButton,
 )
 
 # Compact quick-start message buttons (Open server panel / Full setup guide).

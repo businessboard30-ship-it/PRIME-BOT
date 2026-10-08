@@ -34,10 +34,11 @@ _PERKS = (
     "🔤 **Fonts & Designs** — 20+ fonts, frames & emoji tags\n"
     "🎨 **Custom Roles** — every member styles their own\n"
     "💀 **Hardcore Roast** — unfiltered roast battles\n"
-    "🤖 **AI Chat** — 3x daily limit (30/day)\n"
+    "🤖 **AI Chat** — 5x daily limit (30/day)\n"
     "🖼️ **Bot Branding** — your own bot name, avatar & banner\n"
     "🎮 **Roblox Alerts** — auto game update posts\n"
     "🛡️ **Anti-raid Pro** — join-profile filter, raid reports & quarantine-and-review\n"
+    "📝 **Application Forms** — 10 live forms, 5 questions, 10 colours & auto-role on accept\n"
     "🆕 **Every future feature** — free, automatically"
 )
 def _yearly_savings_pct() -> int:
@@ -115,6 +116,29 @@ class _PlanView(discord.ui.View):
             "premium_yearly", f"Yearly — ${config.PREMIUM_YEARLY_FEE_USD:g} (save {pct}%)", discord.ButtonStyle.primary, "💎"))
         self.add_item(self._plan_button(
             "premium_lifetime", f"Lifetime — ${config.PREMIUM_LIFETIME_FEE_USD:g}", discord.ButtonStyle.success, "♾️"))
+        self.add_item(self._discount_button())
+
+    def _discount_button(self) -> discord.ui.Button:
+        """50% off Yearly, first payment only. Shown to everyone; eligibility is checked on click
+        (premium_discount.py), so a person who already paid sees why instead of a missing button."""
+        import premium_discount as pd
+        btn = discord.ui.Button(
+            label=f"First-time offer — Yearly ${pd.discounted_usd():g} (50% off)",
+            style=discord.ButtonStyle.success, emoji="🎟️", row=1)
+
+        async def _cb(interaction: discord.Interaction):
+            if interaction.user.id != self.buyer_id:
+                await interaction.response.send_message("This menu isn't for you.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            row = await db.get_guild_premium(self.guild.id, clone_id=self.clone_id)
+            if row and await db.is_guild_premium_active(self.guild.id, self.clone_id) and _is_lifetime_expiry(row["expires_at"]):
+                await interaction.followup.send("♾️ This server already has **Lifetime Premium**.", ephemeral=True)
+                return
+            await pd.start_discount_checkout(interaction, self.guild, self.clone_id)
+
+        btn.callback = _cb
+        return btn
 
     def _plan_button(self, plan: str, label: str, style, emoji: str) -> discord.ui.Button:
         btn = discord.ui.Button(label=label, style=style, emoji=emoji)

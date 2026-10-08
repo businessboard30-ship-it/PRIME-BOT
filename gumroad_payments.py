@@ -70,11 +70,15 @@ def new_reference(payment_type: str, user_id: int) -> str:
     return f"gum_{payment_type}_{user_id}_{secrets.token_hex(4)}"
 
 
-def build_link(payment_type: str, user_id: int, reference: str) -> Optional[str]:
+def build_link(payment_type: str, user_id: int, reference: str, discount_code: Optional[str] = None) -> Optional[str]:
     base = _auto.link_for(payment_type)
     if not base:
         return None
     params = {"wanted": "true", "reference": reference}
+    if discount_code:
+        # Gumroad applies an offer code from the path (…/l/<product>/<CODE>) and from ?code=.
+        base = f"{base.rstrip('/')}/{discount_code}"
+        params["code"] = discount_code
     return f"{base}{'&' if '?' in base else '?'}{urlencode(params)}"
 
 
@@ -82,7 +86,8 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
                                  amount_display: str, guild_id: Optional[int] = None,
                                  reference: Optional[str] = None,
                                  amount_usd: Optional[float] = None,
-                                 intro: Optional[str] = None) -> str:
+                                 intro: Optional[str] = None,
+                                 discount_code: Optional[str] = None) -> str:
     """Same calling convention as payments_manual.start_manual_payment
     (call after interaction.response.defer). Returns the reference.
 
@@ -99,13 +104,13 @@ async def start_gumroad_payment(interaction: discord.Interaction, payment_type: 
             interaction, payment_type,
             lambda i, gid: start_gumroad_payment(
                 i, payment_type, amount_display, guild_id=gid, reference=reference,
-                amount_usd=amount_usd, intro=intro),
+                amount_usd=amount_usd, intro=intro, discount_code=discount_code),
         )
         return reference or ""
     reference = reference or new_reference(payment_type, user.id)
     clone_id = getattr(interaction.client, "clone_id", None)
     await _auto.load_runtime()
-    link = build_link(payment_type, user.id, reference)
+    link = build_link(payment_type, user.id, reference, discount_code=discount_code)
     if not link:
         await interaction.followup.send("Checkout isn't set up for this yet — please try again later.", ephemeral=True)
         logger.error(f"[gumroad] no GUMROAD_PRODUCT_LINKS entry for {payment_type}")
@@ -437,6 +442,11 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
         return 200, "product mismatch"
 
     expected = expected_price_usd(payment_type)
+    if payment_type == "premium_yearly":
+        # 50% first-payment code: only the order it was reserved for, by the person it belongs to.
+        from premium_discount import discount_for_reference, discounted_usd
+        if await discount_for_reference(reference, row["user_id"]):
+            expected = discounted_usd()
     try:
         paid_cents = int(float(fields.get("price", 0)))
     except (TypeError, ValueError):
@@ -475,6 +485,13 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
         async with pool.acquire() as conn:
             await conn.execute("UPDATE payment_logs SET status = 'pending' WHERE paystack_reference = $1", reference)
         return 500, "unlock failed"
+
+    if payment_type == "premium_yearly":
+        try:
+            from premium_discount import mark_redeemed
+            await mark_redeemed(reference)
+        except Exception:
+            logger.exception(f"[gumroad] couldn't mark discount redeemed for {reference}")
 
     if payment_type == "premium" and subscription_id and row.get("chat_id"):
         try:
