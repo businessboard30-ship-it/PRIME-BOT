@@ -562,6 +562,17 @@ def _status_lines(guild: discord.Guild, cfg: dict, premium: bool, stats: dict | 
     return lines
 
 
+def _dash_line(guild_id: int, clone_id) -> str:
+    """Masked link to this server's Honeypot page in the web dashboard."""
+    try:
+        from utils.dash_links import dashboard_url, dashboard_supported
+        if dashboard_supported(clone_id):
+            return f"\n🖥️ [Edit in the web dashboard]({dashboard_url(guild_id, clone_id, 'honeypot')})"
+    except Exception:
+        pass
+    return ""
+
+
 def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: str = "",
                 stats: dict | None = None) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
@@ -575,6 +586,7 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: 
     container.add_item(discord.ui.TextDisplay(
         "### 🍯 Honeypot\n"
         + "\n".join(perm_check.lines(guild.id, clone_id) + _status_lines(guild, cfg, premium, stats))
+        + _dash_line(guild.id, clone_id)
         + "\n\n-# Anyone who posts in the trap channel gets the action below. Staff (mod/admin perms) get a warning instead."
     ))
     container.add_item(discord.ui.Separator())

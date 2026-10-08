@@ -117,6 +117,8 @@ class ServerPanelView(discord.ui.LayoutView):
 
     switch_key: Optional[str] = None      # owner kill switch that makes this whole screen read-only
     banner_keys: tuple = ()               # extra switches to mention on this screen (hubs)
+    dash_module: Optional[str] = None     # dashboard page that matches this screen (None = overview)
+    show_dash_link: bool = True           # Home already carries a links row of its own
 
     def __init__(self, guild_id: int, clone_id: Optional[int], opener_id: int, data: Optional[dict] = None,
                  inspect: Optional[InspectContext] = None):
@@ -173,7 +175,9 @@ class ServerPanelView(discord.ui.LayoutView):
         notes = self._notes()
         footer = (f"-# 🔍 Read-only view of **{self.inspect.guild.name}** — nothing here can be changed."
                   if self.inspect is not None else HINT)
-        children: list = [discord.ui.TextDisplay("\n".join([f"### {self.title}", *notes, *self.body(), footer]))]
+        dash = self._dash_link()
+        children: list = [discord.ui.TextDisplay("\n".join(
+            [f"### {self.title}", *notes, *self.body(), *([dash] if dash else []), footer]))]
         items = self.controls()
         if self.read_only:
             # Navigation and refresh only: no writes, no modals, no selects.
@@ -195,6 +199,20 @@ class ServerPanelView(discord.ui.LayoutView):
             if row:
                 children.append(discord.ui.ActionRow(*row))
         self.add_item(discord.ui.Container(*children, accent_colour=self.accent))
+
+    def _dash_link(self) -> str:
+        """Masked dashboard link, same style as the join DM. Not shown when an owner is
+        inspecting someone else's server (the link would open the wrong context)."""
+        if not self.show_dash_link or self.inspect is not None or not self.guild_id:
+            return ""
+        try:
+            from utils.dash_links import dashboard_url, dashboard_supported
+            if not dashboard_supported(self.clone_id):
+                return ""
+            label = "Edit this in the web dashboard" if self.dash_module else "Web dashboard"
+            return f"🖥️ [{label}]({dashboard_url(self.guild_id, self.clone_id, self.dash_module)})"
+        except Exception:
+            return ""
 
     def _notes(self) -> List[str]:
         """One line per owner-disabled feature this screen touches."""
@@ -337,6 +355,7 @@ def _site_links(guild_id: Optional[int] = None, clone_id: Optional[int] = None) 
 
 class HomeView(ServerPanelView):
     title = "Server panel"
+    show_dash_link = False   # body() already shows the full links row
 
     @classmethod
     async def load(cls, interaction):
@@ -501,6 +520,7 @@ class WelcomeMessageModal(discord.ui.Modal, title="Edit welcome message"):
 
 class WelcomeView(ServerPanelView):
     title = "👋 Welcome"
+    dash_module = "welcome"
 
     @classmethod
     async def load(cls, interaction):
@@ -602,6 +622,7 @@ class WelcomeView(ServerPanelView):
 
 class VerificationView(ServerPanelView):
     title = "🔐 Verification gate"
+    dash_module = "verification"
 
     @classmethod
     async def load(cls, interaction):
@@ -665,6 +686,7 @@ class BannedWordsModal(discord.ui.Modal, title="Add banned words"):
 
 class ModerationView(ServerPanelView):
     title = "🛡️ Moderation"
+    dash_module = "automod"
 
     @classmethod
     async def load(cls, interaction):
