@@ -49,6 +49,7 @@
     wave: "M3 12c2-4 4-4 6 0s4 4 6 0 4-4 6 0",
     "shield-check": "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z M8.5 12l2.5 2.5 4.5-5",
     siren: "M6 18v-6a6 6 0 0 1 12 0v6 M4 18h16 M12 3v2 M3.5 6.5l1.5 1.5 M20.5 6.5L19 8",
+    chart: "M4 20V11 M10 20V4 M16 20v-6 M22 20H2",
     gavel: "M14 4l6 6-3 3-6-6z M11 7L4 14l3 3 7-7 M4 20h9",
     scroll: "M6 4h12v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2z M9 8h6 M9 12h6 M9 16h3",
     bug: "M9 9a3 3 0 0 1 6 0v6a3 3 0 0 1-6 0z M4 10l3 1 M20 10l-3 1 M4 18l3-1 M20 18l-3-1 M9 5L7 3 M15 5l2-2",
@@ -204,6 +205,7 @@
     nav.appendChild(link(gpath(gid), "home", "Overview", !modId));
     nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
     nav.appendChild(link(gpath(gid, "moderation"), "gavel", "Moderation", modId === "moderation"));
+    nav.appendChild(link(gpath(gid, "analytics"), "chart", "Analytics", modId === "analytics"));
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
     nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
@@ -712,6 +714,65 @@
       h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" }))].concat(sched, ann));
   }
 
+  /* ---------- analytics (read-only) ---------- */
+  function barChart(labels, series, title) {
+    var W = 640, H = 180, padL = 40, padB = 22, padT = 10, n = labels.length, max = 0;
+    series.forEach(function (s2) { s2.values.forEach(function (v) { if (v > max) max = v; }); });
+    if (max <= 0) max = 1;
+    var root = svg("svg", { viewBox: "0 0 " + W + " " + H, class: "owner-chart", role: "img", "aria-label": title, preserveAspectRatio: "xMidYMid meet" });
+    var t = svg("title", {}); t.textContent = title; root.appendChild(t);
+    var plotW = W - padL - 6, plotH = H - padB - padT, slot = plotW / Math.max(n, 1), bw = Math.max(1, Math.min(18, slot * 0.8 / series.length));
+    [0, 0.5, 1].forEach(function (f) {
+      var y = padT + plotH - plotH * f, tick = svg("text", { x: padL - 5, y: y + 3, class: "tick", "text-anchor": "end" });
+      tick.textContent = String(Math.round(max * f * 10) / 10);
+      root.appendChild(svg("line", { x1: padL, x2: W - 6, y1: y, y2: y, class: "grid" })); root.appendChild(tick);
+    });
+    series.forEach(function (s2, si) {
+      s2.values.forEach(function (v, i) {
+        var bh = plotH * (v / max), x = padL + i * slot + (slot - bw * series.length) / 2 + si * bw;
+        var r = svg("rect", { x: x, y: padT + plotH - bh, width: bw, height: Math.max(bh, v > 0 ? 1 : 0), class: "bar " + s2.cls });
+        var rt = svg("title", {}); rt.textContent = labels[i] + ": " + s2.name + " " + v; r.appendChild(rt); root.appendChild(r);
+      });
+    });
+    var step = Math.max(1, Math.ceil(n / 8));
+    labels.forEach(function (l, i) {
+      if (i % step !== 0 && i !== n - 1) return;
+      var tx = svg("text", { x: padL + i * slot + slot / 2, y: H - 6, class: "tick", "text-anchor": "middle" }); tx.textContent = l; root.appendChild(tx);
+    });
+    return h("div", { class: "owner-chartwrap" }, root, h("div", { class: "owner-legend" }, series.map(function (s2) { return h("span", null, h("i", { class: "sw " + s2.cls }), s2.name); })));
+  }
+  function renderAnalytics(gid, main) {
+    var range = h("select", { "aria-label": "Time range" }, [[7, "Last 7 days"], [30, "Last 30 days"], [90, "Last 90 days"]].map(function (o) { return h("option", { value: String(o[0]), text: o[1], selected: o[0] === 30 }); }));
+    var body = h("div", null);
+    function stat(label, value) { return h("div", { class: "card" }, h("p", { class: "muted", text: label }), h("h2", { text: value == null ? "N/A" : Number(value).toLocaleString() })); }
+    function topList(title, rows, line, empty) {
+      var c = h("div", { class: "card rv" }, h("h2", { text: title }));
+      if (!rows.length) c.appendChild(h("p", { class: "muted", text: empty }));
+      rows.forEach(function (r, i) { c.appendChild(h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: "#" + (i + 1) + "  Member " + r.id }), h("p", { class: "help", text: line(r) })))); });
+      return c;
+    }
+    function load() {
+      body.textContent = ""; body.appendChild(h("div", { class: "skel", style: "height:160px" }));
+      api("analytics", { guild_id: gid, days: range.value }).then(function (r) {
+        body.textContent = "";
+        body.appendChild(h("div", { class: "grid" }, stat("Members now", r.members), stat("Joined (" + r.days + "d)", r.joined), stat("Left (" + r.days + "d)", r.left),
+          stat("Active today", r.active.d1), stat("Active (7d)", r.active.d7), stat("Active (30d)", r.active.d30)));
+        var labels = r.series.map(function (d) { var p = d.day.split("-"); return Number(p[1]) + "/" + Number(p[2]); });
+        body.appendChild(h("div", { class: "card rv" }, h("h2", { text: "Joins and leaves per day" }),
+          barChart(labels, [{ name: "Joined", cls: "a", values: r.series.map(function (d) { return d.joined; }) }, { name: "Left", cls: "b", values: r.series.map(function (d) { return d.left; }) }], "Members joined and left per day (UTC)"),
+          h("p", { class: "help", text: r.tracking_since ? "Join and leave tracking started " + fmtWhen(r.tracking_since) + ". Anyone who left before that is not counted. Days are UTC." : "No joins recorded yet. Days are UTC." })));
+        body.appendChild(topList("Top members by XP", r.top_members, function (m) { return "Level " + m.level + " \u00b7 " + m.xp.toLocaleString() + " XP"; }, "Nobody has earned XP yet."));
+        body.appendChild(topList("Top inviters", r.top_inviters, function (m) { return m.net + " still here \u00b7 " + m.joins + " joined in total"; }, "No tracked invites yet."));
+        body.appendChild(h("p", { class: "help", text: "\"Active\" means at least one XP-earning message, which is a rough proxy rather than an exact message count. The bot does not store per-message or per-channel data, so message totals and top channels are not shown." }));
+      }).catch(function (e) { body.textContent = ""; toast(e.message, "bad"); });
+    }
+    range.addEventListener("change", load);
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Analytics" }),
+      h("p", { class: "muted", text: "Joins, leaves and activity for this server. Read-only; the same data as /serveranalytics, with history." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })), h("div", { class: "owner-bar" }, range), body]);
+    load();
+  }
+
   /* ---------- ticket history ---------- */
   function renderModeration(gid, main) {
     var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
@@ -985,7 +1046,7 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      var PAGES = { moderation: renderModeration, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
+      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
       if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);

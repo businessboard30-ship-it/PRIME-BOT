@@ -34,6 +34,7 @@ Routes (all on /api/dash):
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
   GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count); read-only
+  GET  ?action=analytics&guild_id[&days=7|30|90] -> joins/leaves per day, active members, top XP members and inviters; read-only, no schema change (30 reads/min)
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
   POST {action: dropbox_read, id?}      -> mark one (or all) read
@@ -1365,6 +1366,24 @@ async def _route(method: str, query: dict, headers, body: dict):
             warns, total = await db.dash_mod_warns(gid, user)
             out["warns"], out["warn_count"] = [S.mod_warn_view(w) for w in warns], total
         raise _Reply(200, out)
+
+    if method == "GET" and action == "analytics":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        try:
+            days = S.parse_analytics_days(q("days"))
+        except ValueError as e:
+            _fail(400, str(e))
+        _owner_rate(sess, "analytics", 30, 60)
+        ck = ("analytics", gid, days)
+        out = _cached(ck, 60)
+        if out is None:
+            try:
+                info = await _guild_info(gid)
+            except DiscordError:
+                info = {}
+            data = await db.dash_analytics(gid, _cid(), days)
+            out = _store(ck, 60, S.analytics_view(data, info.get("approximate_member_count")))
+        raise _Reply(200, {"ok": True, **out})
 
     if method == "GET" and action == "welcome_preview":
         gid = await _authorised_guild(sess, q("guild_id"))
