@@ -113,7 +113,7 @@ def test_setup_refresh_responds_before_permission_and_saves(monkeypatch):
     monkeypatch.setattr(catch, "save_setup", slow(rec, "save"))
     monkeypatch.setattr(catch, "set_feature_flag", slow(rec, "flag"))
     view = catch.CatchSetupView(catch.CatchSetup(), guild_id=1)
-    asyncio.run(view._refresh(make_interaction(rec)))
+    asyncio.run(view._redraw(make_interaction(rec)))
     assert_response_first(rec)
     assert rec.calls.index("perm") < rec.calls.index("save") < rec.calls.index("flag")
 
@@ -124,7 +124,7 @@ def test_setup_refresh_without_manage_server_saves_nothing(monkeypatch):
     monkeypatch.setattr(catch, "save_setup", slow(rec, "save"))
     monkeypatch.setattr(catch, "set_feature_flag", slow(rec, "flag"))
     view = catch.CatchSetupView(catch.CatchSetup(), guild_id=1)
-    asyncio.run(view._refresh(make_interaction(rec)))
+    asyncio.run(view._redraw(make_interaction(rec)))
     assert "save" not in rec.calls and "flag" not in rec.calls
 
 
@@ -144,5 +144,5 @@ def test_setup_view_passes_clone_id_to_storage(monkeypatch):
     monkeypatch.setattr(catch, "save_setup", fake_save)
     monkeypatch.setattr(catch, "set_feature_flag", fake_flag)
     view = catch.CatchSetupView(catch.CatchSetup(), guild_id=1, clone_id=42)
-    asyncio.run(view._refresh(make_interaction(Recorder())))
+    asyncio.run(view._redraw(make_interaction(Recorder())))
     assert seen == {"save": 42, "flag": 42}

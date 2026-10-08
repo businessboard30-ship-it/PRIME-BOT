@@ -202,3 +202,13 @@ Reads: `owner_helpers`, `owner_clones` (never selects the token column), `owner_
 **Not built:** starting a stopped clone (not in the plan; relinking brings a clone back), sub-clone registration, Discord's `register_clone_token` was NOT refactored onto `modules/admin_clones.py` (it carries the payment path; a parity refactor is a separate PR), no raw SQL, no other cleanups.
 
 **Before merging:** real-browser run with a second Discord account (JS is syntax-checked only), and register/relink with a real throwaway bot token.
+
+## Phase 6 (polish) - built on `feat/owner-phase6`
+
+- **Live status:** the Health page re-fetches every 15 s while the tab is visible (checkbox to pause). Polling only, no SSE: the bot worker publishes a snapshot every ~60 s, so a push channel would add nothing.
+- **Charts:** inline SVG bar charts (no library, `textContent` only): revenue per day on Payments > Revenue, server joins/leaves on Servers (`owner_growth`, from `discord_guilds.joined_at/left_at`).
+- **Global search:** box at the top of every owner page (`owner_search`): server name/id, user id, payment reference. Results jump to the existing Servers / Users / Payments pages pre-filled. Each source is only searched if the caller holds its section.
+- **Notifications:** Alerts bell (`owner_alerts`, polled every 60 s while visible): stale worker snapshot, quiet clones, open payment failures, checkouts pending > 6 h, report backlog (>= 5). Computed on read from existing data; nothing is stored.
+- **No schema change**, so `SCHEMA_VERSION` stays at 61.
+- Router: a read handler marked `wants_sections` also receives the caller's sections (`api/dash_owner_insights.py`).
+- Tests: `tests/unit/test_dash_owner_phase6.py`.

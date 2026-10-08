@@ -117,7 +117,7 @@ def test_refresh_after_an_action_redraws_the_card(monkeypatch):
     view = make_view(rec)
     inter = make_interaction(rec)
     edits = edits_to(inter)
-    asyncio.run(view._refresh(inter, "done"))
+    asyncio.run(view._redraw(inter, "done"))
     assert edits[0]["content"] == "done" and len(edits[0]["attachments"]) == 1
 
 

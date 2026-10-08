@@ -105,6 +105,7 @@
     menuBtn.hidden = !(S.user && (inGuild || /^#\/owner/.test(location.hash)));
     if (!S.user) return;
     if (S.ownerSections && S.ownerSections.length) hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/owner", text: "Owner" }));
+    hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/me", text: "My account" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/tiers", text: "Level tiers" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost inboxbtn", href: "#/inbox", "aria-label": "Drop box, " + S.unread + " unread" }, "Drop box",
       S.unread ? h("span", { class: "badge-n", text: S.unread > 99 ? "99+" : String(S.unread) }) : null));
@@ -117,12 +118,12 @@
 
   /* ---------- login ---------- */
   function ringsArt() {
-    var c = function (cls, r, w, dash, s) { return svg("circle", { "class": cls, cx: 180, cy: 180, r: r, fill: "none", stroke: "#f2faff", "stroke-width": w, "stroke-dasharray": dash, style: "--s:" + s }); };
+    var c = function (cls, r, w, dash, s) { return svg("circle", { "class": cls, cx: 180, cy: 180, r: r, fill: "none", stroke: "currentColor", "stroke-width": w, "stroke-dasharray": dash, style: "--s:" + s }); };
     return svg("svg", { "class": "rings", viewBox: "0 0 360 360", "aria-hidden": "true" },
-      svg("polygon", { points: "345,180 262.5,322.9 97.5,322.9 15,180 97.5,37.1 262.5,37.1", fill: "none", stroke: "#f2faff", "stroke-width": 2.2 }),
+      svg("polygon", { points: "345,180 262.5,322.9 97.5,322.9 15,180 97.5,37.1 262.5,37.1", fill: "none", stroke: "currentColor", "stroke-width": 2.2 }),
       c("spin", 118, 8, "110 18 55 22 190 24 90 30", "26s"), c("spin rev", 96, 4, "40 8 12 8 200 10", "16s"),
       c("spin", 76, 11, "190 66 110 94", "10s"), c("spin rev", 142, 6, "1.6 8", "34s"),
-      svg("circle", { "class": "pulse", cx: 180, cy: 180, r: 14, fill: "#f2faff" }));
+      svg("circle", { "class": "pulse", cx: 180, cy: 180, r: 14, fill: "currentColor" }));
   }
   function renderLogin(msg) {
     document.body.classList.remove("menu");
@@ -885,6 +886,29 @@
     });
     return ownerLoading;
   }
+  /* ---------- member area (#/me): the signed-in user's own plans; server decides everything ---------- */
+  var PRODUCT_LABEL = { card_plan: "Custom level-up card", dev_monthly: "Developer mode (monthly)", dev_yearly: "Developer mode (yearly)" };
+  var STATE_LABEL = { active: "Active", cancelled: "Ends at period end", past_due: "Payment failed (grace period)", expired: "Expired", none: "None" };
+  function renderMe() {
+    document.body.classList.remove("menu"); S.mod = null; renderHeader();
+    var list = h("div", { class: "card rv" }, h("div", { class: "skel" }));
+    app.textContent = "";
+    app.appendChild(h("main", { id: "main", class: "page" },
+      h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Your account" }), h("h1", { text: "My account" }),
+        h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }))),
+      list));
+    api("member_status").then(function (j) {
+      list.textContent = "";
+      list.appendChild(h("h3", { text: "My plans" }));
+      var items = j.entitlements || [];
+      if (!items.length) { list.appendChild(h("p", { class: "muted", text: "You have no active plans. Plans will be purchasable here soon." })); return; }
+      items.forEach(function (e) {
+        list.appendChild(h("p", null, h("b", { text: PRODUCT_LABEL[e.product] || e.product }), " \u00b7 " + (STATE_LABEL[e.state] || e.state)
+          + (e.expires_at ? " \u00b7 until " + new Date(e.expires_at).toLocaleDateString() : "")));
+      });
+    }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { text: (e && e.message) || "Couldn't load your account." })); });
+  }
+
   function renderOwner(hash) {
     S.guild = null; S.clone = null; renderHeader();
     if (!S.ownerSections || !S.ownerSections.length) { location.hash = "#/"; return; }
@@ -900,6 +924,7 @@
     showAnnouncements();
     if (/^#\/owner(\/|$)/.test(hash)) return renderOwner(hash);
     if (hash === "#/inbox") { S.guild = null; S.clone = null; return renderInbox(); }
+    if (hash === "#/me") { S.guild = null; S.clone = null; return renderMe(); }
     if (hash === "#/tiers") { S.guild = null; S.clone = null; return renderTiers(); }
     if (!m) { S.guild = null; S.clone = null; return renderServers(); }
     var clone = m[1] || null;
