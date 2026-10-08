@@ -35,6 +35,7 @@ Routes (all on /api/dash):
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
   GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count); read-only
   GET  ?action=analytics&guild_id[&days=7|30|90] -> joins/leaves per day, active members, top XP members and inviters; read-only, no schema change (30 reads/min)
+  GET  ?action=giveaways&guild_id=&status=&before= -> giveaways for this server (prize, status, entrant count, winners); read-only
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
   POST {action: dropbox_read, id?}      -> mark one (or all) read
@@ -54,6 +55,15 @@ Routes (all on /api/dash):
   POST {action: owner_ad_approve|owner_ad_reject|owner_ad_deactivate|owner_ad_reactivate|owner_listing_remove|owner_bump_cooldown, ...} -> OWNER (ads / bump)
   POST {action: owner_report_resolve|owner_status_add|owner_status_remove|owner_presence_set|owner_status_reset|owner_scam_toggle|owner_scam_add|owner_scam_remove, ...} -> OWNER (safety)
   GET  ?action=owner_helpers|owner_clones|owner_database -> OWNER (access / servers / database): helpers, clones (never the token), table counts (api/dash_owner_ops.py)
+  GET  ?action=member_plans -> any signed-in user: the plan list with server prices and the user's own state
+  GET  ?action=member_card -> own saved custom level-up card design, editor options, plan access, weekly AI chat meter (B4)
+  POST ?action=member_card_preview {design} -> data-URL PNG on a placeholder avatar; open to every signed-in user, stores nothing
+  POST ?action=member_card_save {design} -> saves for the SESSION user; 402 + checkout_url without an effective card_plan
+  POST ?action=member_card_asset {kind: background|logo, data: base64} -> card plan only; validated, re-encoded, AI-moderated (approved/pending/rejected)
+  POST ?action=member_card_asset_delete {kind} -> removes the member's own upload
+  POST ?action=checkout_user {product} -> any signed-in user: a /pay checkout link for the SESSION user (webhook grants, never this call)
+  GET  ?action=dev_status -> ANY signed-in user (#/dev): {unlocked, expires_at, export_available, plans, features}; drives the locked screen only
+  GET  ?action=dev_overview (and every later dev_* route) -> 402 {code: subscription_required} without an active Developer entitlement (api/dash_dev.py, require_dev)
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
   POST {action: member_pref_set, kind: language|currency|character|voice|level_ping, value[, guild_id]} -> own preference only (allowlisted)
@@ -88,6 +98,7 @@ DISCORD_API = "https://discord.com/api/v10"
 AUTHORIZE_URL = "https://discord.com/api/oauth2/authorize"
 TOKEN_URL = "https://discord.com/api/oauth2/token"
 MAX_BODY = 64 * 1024
+MAX_UPLOAD_BODY = 3 * 1024 * 1024      # only member_card_asset, and only with an Authorization header
 CLONE_ID = None            # main bot. Per-request clone context lives in _BOT below.
 MAX_CLONE_SCAN = 60
 
@@ -237,8 +248,8 @@ class _Reply(Exception):
         self.status, self.payload, self.location = status, payload, location
 
 
-def _fail(status, message):
-    raise _Reply(status, {"ok": False, "message": message})
+def _fail(status, message, code=None):
+    raise _Reply(status, {"ok": False, "message": message, **({"code": code} if code else {})})
 
 
 def _bearer(headers) -> str:
@@ -322,13 +333,13 @@ def _merged(attr: str) -> dict:
 
 
 def _member_routes() -> dict:
-    from api import dash_member
-    return dash_member.ROUTES
+    from api import dash_dev, dash_member
+    return {**dash_member.ROUTES, **dash_dev.ROUTES}
 
 
 def _member_writes() -> dict:
-    from api import dash_member
-    return dash_member.WRITES
+    from api import dash_dev, dash_member
+    return {**dash_member.WRITES, **dash_dev.WRITES}
 
 
 def _owner_routes() -> dict:
@@ -1071,14 +1082,18 @@ async def _route(method: str, query: dict, headers, body: dict):
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, 60, 60)
         out = await _member_routes()[action](uid, q, db)
+        if out.get("_status"):
+            _fail(out["_status"], out.get("message") or "Something went wrong.", out.get("code"))
         raise _Reply(200, {"ok": True, **out})
 
     if method == "POST" and action in _member_writes():
         uid = _require_member(sess)
-        _owner_rate(sess, "member:" + action, 30, 60)
+        _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
+                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300)}.get(action, (30, 60)))
         out = await _member_writes()[action](uid, body, db)
         if out.get("_status"):
-            _fail(out["_status"], out.get("message") or "Something went wrong.")
+            raise _Reply(out["_status"], {"ok": False, "message": out.get("message") or "Something went wrong.",
+                                          **({"code": out["code"]} if out.get("code") else {}), **(out.get("extra") or {})})
         raise _Reply(200, {"ok": True, **out})
 
     if method == "POST" and action == "owner_stepup":
@@ -1384,6 +1399,20 @@ async def _route(method: str, query: dict, headers, body: dict):
             data = await db.dash_analytics(gid, _cid(), days)
             out = _store(ck, 60, S.analytics_view(data, info.get("approximate_member_count")))
         raise _Reply(200, {"ok": True, **out})
+    if method == "GET" and action == "giveaways":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        _owner_rate(sess, "giveaways_read", 60, 60)
+        status = q("status") or None
+        if status and status not in S.GIVEAWAY_STATUSES:
+            _fail(400, "Unknown status.")
+        try:
+            before = int(q("before")) if q("before") else None
+        except ValueError:
+            _fail(400, "Invalid page.")
+        if before is not None and not 0 < before < 2 ** 31:
+            _fail(400, "Invalid page.")
+        rows = await db.dash_giveaways(gid, _cid(), status, before, 31)
+        raise _Reply(200, {"ok": True, "giveaways": [S.giveaway_view(r) for r in rows[:30]], "more": len(rows) > 30})
 
     if method == "GET" and action == "welcome_preview":
         gid = await _authorised_guild(sess, q("guild_id"))
@@ -1488,7 +1517,8 @@ class handler(BaseHTTPRequestHandler):
         if method == "POST":
             try:
                 n = int(self.headers.get("Content-Length", 0))
-                if n > MAX_BODY:
+                big = query.get("action", [""])[0] == "member_card_asset" and bool(self.headers.get("Authorization"))
+                if n > (MAX_UPLOAD_BODY if big else MAX_BODY):
                     raise ValueError
                 body = json.loads(self.rfile.read(n) or b"{}")
                 if not isinstance(body, dict):

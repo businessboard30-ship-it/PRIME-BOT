@@ -4,9 +4,14 @@ No member route accepts a user id from the client (a test asserts it). Read-only
 
 ROUTES[action] = handler(uid: str, q) -> dict. dash.py runs _require_member and the per-user rate limit first.
 """
+import json
 import logging
+import secrets
+import time
 
+import config
 from modules import entitlements as ent
+from modules import user_subs
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +89,138 @@ async def member_pref_set(uid, body, db):
     return {}
 
 
-ROUTES = {"member_status": member_status, "member_servers": member_servers,
-          "member_prefs": member_prefs, "member_purchases": member_purchases}
-WRITES = {"member_pref_set": member_pref_set}
+def _plans_view(rows) -> list:
+    """Server-priced plan list for the page (price and period never come from the client)."""
+    by_product = {r.get("product"): r for r in rows or []}
+    out = []
+    for product, plan in user_subs.PLANS.items():
+        e = ent.effective(by_product[product]) if product in by_product else {"access": False, "state": "none"}
+        out.append({"product": product, "label": plan["label"], "price_usd": plan["price_usd"],
+                    "period_days": plan["period_days"], "state": e["state"]})
+    return out
+
+
+async def member_plans(uid, q, db):
+    return {"plans": _plans_view(await db.entitlements_list(uid))}
+
+
+async def checkout_user(uid, body, db):
+    """Start checkout for ONE plan for the SIGNED-IN user. The user id is the session's; the price
+    is the server's. Returns a /pay link that detects the buyer's country (Paystack in Ghana,
+    Gumroad elsewhere). Nothing is granted here: only the payment webhook can grant."""
+    product = (body or {}).get("product")
+    if not user_subs.is_plan(product):
+        return {"_status": 422, "message": "Unknown plan."}
+    base = (getattr(config, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+    if not base:
+        logger.error("checkout_user: PUBLIC_BASE_URL is not set")
+        return {"_status": 503, "message": "Checkout isn't available right now."}
+    token = secrets.token_urlsafe(18)
+    intent = {"payment_type": product, "user_id": uid, "guild_id": None, "clone_id": None,
+              "price_usd": user_subs.price_usd(product), "extra": {}, "created": time.time()}
+    await db.set_global_setting(f"payintent:{token}", json.dumps(intent))
+    return {"checkout_url": f"{base}/pay?t={token}", "product": product,
+            "price_usd": user_subs.price_usd(product), "period_days": user_subs.PLANS[product]["period_days"]}
+
+
+async def member_card(uid, q, db):
+    """The member's saved design + what the editor may offer. `access` only drives the UI; Save re-checks."""
+    from modules import ai_usage, level_card_design as lcd
+    rows = await db.entitlements_list(uid)
+    raw = await db.user_card_get(uid)
+    design = None
+    if raw:
+        try:
+            design, _ = lcd.validate(json.loads(raw))
+        except Exception:
+            design = None
+    access = ent.has_access(rows, ("card_plan",))
+    from modules import card_assets
+    assets = {}
+    for kind in card_assets.KINDS:
+        a = await db.card_asset_get(uid, kind)
+        assets[kind] = {"status": a["status"], "reason": a["reason"]} if a else None
+    out = {"design": design or dict(lcd.DEFAULT_DESIGN), "saved": bool(design), "access": access,
+           "options": lcd.options(), "assets": assets, "prompt": card_assets.prompt_template()}
+    if access:
+        out["ai"] = await ai_usage.status(db, uid, "card_plan")
+    return out
+
+
+async def member_card_preview(uid, body, db):
+    """Render the design on a placeholder avatar. Open to everyone (preview mode); nothing is stored."""
+    from modules import level_card_design as lcd
+    design, err = lcd.validate((body or {}).get("design"))
+    if err:
+        return {"_status": 422, "message": err}
+    bg = logo = None
+    for kind, flag in (("background", "custom_bg"), ("logo", "logo")):
+        if design.get(flag):                      # the member's OWN upload, even while pending (never rejected ones)
+            a = await db.card_asset_get(uid, kind)
+            if a and a.get("status") != "rejected":
+                if kind == "background":
+                    bg = bytes(a["data"])
+                else:
+                    logo = bytes(a["data"])
+    return {"image": await lcd.preview_data_url_async(design, bg, logo)}
+
+
+async def _need_card_plan(uid, db):
+    if ent.has_access(await db.entitlements_list(uid), ("card_plan",)):
+        return None
+    extra = {}
+    started = await checkout_user(uid, {"product": "card_plan"}, db)
+    if started.get("checkout_url"):
+        extra["checkout_url"] = started["checkout_url"]
+    return {"_status": 402, "message": "Uploading needs the card plan. Subscribe to upload.", "extra": extra}
+
+
+async def member_card_asset(uid, body, db):
+    """POST {kind, data(base64)}. Plan-gated, validated, re-encoded, moderated. The user id is the session's."""
+    from modules import card_assets
+    kind = (body or {}).get("kind")
+    if kind not in card_assets.KINDS:
+        return {"_status": 422, "message": "Unknown upload type."}
+    raw = card_assets.decode_b64((body or {}).get("data"))
+    if raw is None:
+        return {"_status": 422, "message": "Couldn't read that file."}
+    gate = await _need_card_plan(uid, db)
+    if gate:
+        return gate
+    res = await card_assets.submit(db, uid, kind, raw)
+    if not res["ok"]:
+        return {"_status": 422, "message": res["message"]}
+    return {"status": res["status"], "reason": res["reason"]}
+
+
+async def member_card_asset_delete(uid, body, db):
+    from modules import card_assets
+    kind = (body or {}).get("kind")
+    if kind not in card_assets.KINDS:
+        return {"_status": 422, "message": "Unknown upload type."}
+    await db.card_asset_delete(uid, kind)
+    return {}
+
+
+async def member_card_save(uid, body, db):
+    """Save the design for the SESSION user. Entitlement is checked here, server-side: no plan -> 402 + checkout link."""
+    from modules import level_card_design as lcd
+    design, err = lcd.validate((body or {}).get("design"))
+    if err:
+        return {"_status": 422, "message": err}
+    if not ent.has_access(await db.entitlements_list(uid), ("card_plan",)):
+        extra = {}
+        started = await checkout_user(uid, {"product": "card_plan"}, db)
+        if started.get("checkout_url"):
+            extra["checkout_url"] = started["checkout_url"]
+        return {"_status": 402, "message": "The custom level-up card needs the card plan. Subscribe to save your design.",
+                "extra": extra}
+    await db.user_card_set(uid, json.dumps(design, separators=(",", ":")))
+    return {"design": design}
+
+
+ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_plans": member_plans,
+          "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card}
+WRITES = {"member_pref_set": member_pref_set, "checkout_user": checkout_user,
+          "member_card_preview": member_card_preview, "member_card_save": member_card_save,
+          "member_card_asset": member_card_asset, "member_card_asset_delete": member_card_asset_delete}

@@ -328,6 +328,12 @@ GUMROAD_PRODUCT_LINKS = {
     # min $2 — keep it in step with AD_PLACEMENT_FEE_USD) and paste its link/id here or set GUMROAD_AD_PLACEMENT_LINK /
     # GUMROAD_AD_PLACEMENT_ID env vars.
     "ad_placement": os.getenv("GUMROAD_AD_PLACEMENT_LINK", "https://boardmaster87.gumroad.com/l/tfrgcw"),
+    # Per-user plans (member dashboard). Each is a Gumroad MEMBERSHIP created by hand in the Gumroad
+    # dashboard. Empty until set, so checkout refuses to start rather than selling something that
+    # can't be matched (see modules/user_subs.py for prices and periods).
+    "card_plan": os.getenv("GUMROAD_CARD_PLAN_LINK", ""),
+    "dev_monthly": os.getenv("GUMROAD_DEV_MONTHLY_LINK", ""),
+    "dev_yearly": os.getenv("GUMROAD_DEV_YEARLY_LINK", ""),
 }
 GUMROAD_PRODUCT_IDS = {
     "welcome_card_pack": "dE2cyP0dOzPPAqn2wZerqw==",
@@ -346,6 +352,16 @@ GUMROAD_PRODUCT_IDS = {
     "premium_lifetime": os.getenv("GUMROAD_PREMIUM_LIFETIME_ID", ""),
     "hardcore_roast": os.getenv("GUMROAD_HARDCORE_ROAST_ID", ""),
     "ad_placement": os.getenv("GUMROAD_AD_PLACEMENT_ID", ""),
+    "card_plan": os.getenv("GUMROAD_CARD_PLAN_ID", ""),
+    "dev_monthly": os.getenv("GUMROAD_DEV_MONTHLY_ID", ""),
+    "dev_yearly": os.getenv("GUMROAD_DEV_YEARLY_ID", ""),
+}
+# Paystack recurring plan codes (PLN_...) for the per-user plans, created in the Paystack dashboard.
+# Empty = the Ghana checkout for that plan is unavailable (fails closed, never a one-off charge).
+USER_PLAN_PAYSTACK_CODES = {
+    "card_plan": os.getenv("PAYSTACK_PLAN_CARD_PLAN", "").strip(),
+    "dev_monthly": os.getenv("PAYSTACK_PLAN_DEV_MONTHLY", "").strip(),
+    "dev_yearly": os.getenv("PAYSTACK_PLAN_DEV_YEARLY", "").strip(),
 }
 
 # Minimum price for a sponsored ad placement (1 week). Advertisers can name

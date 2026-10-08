@@ -107,6 +107,7 @@
     if (!S.user) return;
     if (S.ownerSections && S.ownerSections.length) hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/owner", text: "Owner" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/me", text: "My account" }));
+    hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/dev", text: "Developer" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost", href: "#/tiers", text: "Level tiers" }));
     hdrRight.appendChild(h("a", { class: "btn sm ghost inboxbtn", href: "#/inbox", "aria-label": "Drop box, " + S.unread + " unread" }, "Drop box",
       S.unread ? h("span", { class: "badge-n", text: S.unread > 99 ? "99+" : String(S.unread) }) : null));
@@ -206,6 +207,7 @@
     nav.appendChild(link(gpath(gid, "billing"), "star", "Premium & billing", modId === "billing"));
     nav.appendChild(link(gpath(gid, "moderation"), "gavel", "Moderation", modId === "moderation"));
     nav.appendChild(link(gpath(gid, "analytics"), "chart", "Analytics", modId === "analytics"));
+    nav.appendChild(link(gpath(gid, "giveaways"), "star", "Giveaways", modId === "giveaways"));
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
     nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
@@ -821,6 +823,39 @@
     load(true);
   }
 
+  /* ---------- giveaways (read-only; start, end and reroll stay in Discord) ---------- */
+  function renderGiveaways(gid, main) {
+    var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
+    var filter = h("select", { "aria-label": "Filter by status" }, [["", "All giveaways"], ["active", "Running"], ["ended", "Ended"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var last = null;
+    function load(reset) {
+      if (reset) { list.textContent = ""; last = null; }
+      var params = { guild_id: gid };
+      if (filter.value) params.status = filter.value;
+      if (last) params.before = last;
+      api("giveaways", params).then(function (r) {
+        r.giveaways.forEach(function (g) {
+          var ch = S.meta.channels.text.filter(function (c) { return c.id === g.channel_id; })[0];
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: g.prize || "Giveaway #" + g.id }), h("span", { class: "help", text: "  " + (g.status === "active" ? "Running" : "Ended") }),
+            h("p", { class: "help", text: g.entrants + (g.entrants === 1 ? " entry" : " entries") + " \u00b7 " + g.winner_count + (g.winner_count === 1 ? " winner" : " winners")
+              + (ch ? " \u00b7 #" + ch.name : "") + (g.ends_at ? " \u00b7 " + (g.status === "active" ? "ends " : "ended ") + fmtWhen(g.ends_at) : "") }),
+            g.winner_ids.length ? h("p", { text: "Winners: " + g.winner_ids.join(", ") }) : null)));
+          last = g.id;
+        });
+        if (!list.children.length) list.appendChild(h("p", { class: "muted", text: "No giveaways yet. Start one in Discord with /giveaway start." }));
+        moreBtn.hidden = !r.more;
+      }).catch(function (e) { toast(e.message, "bad"); });
+    }
+    filter.addEventListener("change", function () { load(true); });
+    moreBtn.addEventListener("click", function () { load(false); });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Giveaways" }),
+      h("p", { class: "muted", text: "Giveaways run by the bot in this server, newest first. Read-only: start, end and reroll them with /giveaway in Discord." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card rv" }, h("div", { class: "owner-bar" }, filter), list, moreBtn)]);
+    load(true);
+  }
+
   function renderTickets(gid, main) {
     var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
     var filter = h("select", { "aria-label": "Filter by status" }, [["", "All tickets"], ["open", "Open"], ["closed", "Closed"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
@@ -969,21 +1004,131 @@
     });
     return h("p", null, h("b", { text: label + " " }), sel);
   }
+  /* ---------- custom level-up card editor (card plan). Preview is open to all; the server gates Save (402). ---------- */
+  function renderCardEditor(box) {
+    api("member_card").then(function (j) {
+      var o = j.options, d = Object.assign({}, j.design), timer = null;
+      var img = h("img", { alt: "Level-up card preview", width: 900, height: 300 });
+      img.style.width = "100%"; img.style.maxWidth = "560px"; img.style.borderRadius = "12px";
+      var msg = h("p", { class: "muted", role: "status", text: "" });
+      var meter = h("p", { class: "muted", text: "" });
+      var pay = h("p", null);
+      function optList(map) { return Object.keys(map).map(function (k) { return [k, map[k]]; }); }
+      function sel(label, key, map) {
+        var s = h("select", { "aria-label": label }, optList(map).map(function (x) { return h("option", { value: x[0], text: x[1] }); }));
+        s.value = d[key]; s.addEventListener("change", function () { d[key] = s.value; queue(); });
+        return h("p", null, h("b", { text: label + " " }), s);
+      }
+      var color = h("input", { type: "color", "aria-label": "Accent colour" }); color.value = d.accent.toLowerCase();
+      color.addEventListener("input", function () { d.accent = color.value.toUpperCase(); queue(); });
+      var bio = h("input", { type: "text", maxlength: o.bio_max, "aria-label": "Bio line", placeholder: "Short line under your XP bar" }); bio.value = d.bio || "";
+      bio.addEventListener("input", function () { d.bio = bio.value; queue(); });
+      function preview() {
+        api("member_card_preview", null, { design: d }).then(function (r) { img.src = r.image; msg.textContent = ""; })
+          .catch(function (e) { msg.textContent = e.message; });
+      }
+      function queue() { clearTimeout(timer); timer = setTimeout(preview, 350); }
+      var save = h("button", { class: "btn sm", type: "button", text: j.access ? "Save card" : "Save (needs card plan)" });
+      save.addEventListener("click", function () {
+        save.disabled = true; pay.textContent = "";
+        api("member_card_save", null, { design: d }).then(function () { msg.textContent = "Saved. Your next level-up uses this card."; toast("Saved"); })
+          .catch(function (e) {
+            msg.textContent = e.message;
+            if (e.status === 402 && e.payload && e.payload.checkout_url) {
+              pay.appendChild(h("a", { class: "btn sm", href: e.payload.checkout_url, text: "Subscribe" }));
+            }
+          }).then(function () { save.disabled = false; });
+      });
+      box.appendChild(h("p", { class: "muted", text: j.access ? "Your design is used on your level-up cards." : "Preview any design for free. Saving needs the card plan; if it lapses, the default card comes back and your design is kept." }));
+      box.appendChild(img);
+      box.appendChild(sel("Background", "background", o.backgrounds));
+      box.appendChild(sel("Font", "font", o.fonts));
+      box.appendChild(sel("Avatar shape", "shape", o.shapes));
+      box.appendChild(h("p", null, h("b", { text: "Accent " }), color));
+      box.appendChild(h("p", null, h("b", { text: "Bio " }), bio));
+      /* uploads: background + logo (card plan). Server validates, re-encodes and moderates; only approved files are drawn. */
+      var ST = { approved: "Approved", pending: "Waiting for a check (not shown on your card yet)", rejected: "Rejected" };
+      function upRow(kind, label, flag, maxBytes, help) {
+        var status = h("span", { class: "muted", text: "" }), use = h("input", { type: "checkbox", "aria-label": "Use my " + label }), file = h("input", { type: "file", accept: "image/png,image/jpeg", "aria-label": "Upload " + label });
+        var del = h("button", { class: "btn sm ghost", type: "button", text: "Remove" });
+        use.checked = !!d[flag];
+        use.addEventListener("change", function () { d[flag] = use.checked; queue(); });
+        function show(a) { status.textContent = a ? " " + (ST[a.status] || a.status) + (a.reason && a.status !== "approved" ? " \u2013 " + a.reason : "") : " Nothing uploaded"; del.hidden = !a; }
+        show(j.assets && j.assets[kind]);
+        file.addEventListener("change", function () {
+          var f = file.files && file.files[0]; if (!f) return;
+          if (f.size > maxBytes) { msg.textContent = label + " is too big (max " + (maxBytes / 1000000) + " MB)."; file.value = ""; return; }
+          status.textContent = " Uploading and checking\u2026"; pay.textContent = "";
+          var r = new FileReader();
+          r.onload = function () {
+            api("member_card_asset", null, { kind: kind, data: String(r.result).split(",")[1] || "" }).then(function (res) {
+              show({ status: res.status, reason: res.reason }); if (res.status !== "rejected") { d[flag] = true; use.checked = true; } queue();
+            }).catch(function (e) {
+              show(j.assets && j.assets[kind]); msg.textContent = e.message;
+              if (e.status === 402 && e.payload && e.payload.checkout_url) pay.appendChild(h("a", { class: "btn sm", href: e.payload.checkout_url, text: "Subscribe" }));
+            }).then(function () { file.value = ""; });
+          };
+          r.readAsDataURL(f);
+        });
+        del.addEventListener("click", function () {
+          api("member_card_asset_delete", null, { kind: kind }).then(function () { d[flag] = false; use.checked = false; show(null); queue(); })
+            .catch(function (e) { msg.textContent = e.message; });
+        });
+        return h("div", { style: "margin:10px 0" }, h("p", null, h("b", { text: label }), status), h("p", { class: "muted", text: help }),
+          h("p", null, file, " ", del), h("label", null, use, " Use my " + label.toLowerCase()));
+      }
+      box.appendChild(h("h4", { text: "Your own artwork" }));
+      box.appendChild(upRow("background", "Background", "custom_bg", 1500000, "PNG or JPEG, about 3:1 (900x300 is ideal), up to 1.5 MB. Keep the left 280px calm (avatar) and the middle dark and plain (text)."));
+      box.appendChild(upRow("logo", "Logo or picture", "logo", 1000000, "PNG with transparency works best, up to 1 MB. It is placed in the right-hand box and never covers the text."));
+      var idea = h("input", { type: "text", maxlength: 120, "aria-label": "Your style idea", placeholder: "e.g. neon city at night, purple and gold" });
+      var copy = h("button", { class: "btn sm ghost", type: "button", text: "Copy AI prompt" });
+      copy.addEventListener("click", function () {
+        var t = String(j.prompt || "").replace("{idea}", idea.value.trim() || "your idea");
+        (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { toast("Prompt copied"); })
+          .catch(function () { msg.textContent = "Couldn't copy. Select and copy it from the box below."; box.appendChild(h("textarea", { readonly: "readonly", rows: 6, "aria-label": "AI prompt" , text: t })); });
+      });
+      box.appendChild(h("p", null, h("b", { text: "Make it with AI " }), idea, " ", copy));
+      box.appendChild(h("p", { class: "muted", text: "Paste the prompt into any AI image tool, then upload the result above. Uploads are checked automatically; anything rejected is never shown." }));
+      box.appendChild(h("p", null, save)); box.appendChild(pay); box.appendChild(msg);
+      if (j.ai) { meter.textContent = "Free website AI chats this week: " + j.ai.used + " / " + j.ai.limit + " \u00b7 resets " + new Date(j.ai.resets_at).toLocaleString(); box.appendChild(meter); }
+      preview();
+    }).catch(function (e) { fail(box, e); });
+  }
+
   function renderMe() {
     document.body.classList.remove("menu"); S.mod = null; renderHeader();
-    var plans = section("My plans"), servers = section("My servers"), prefs = section("My preferences"), buys = section("My purchases");
+    var plans = section("My plans"), servers = section("My servers"), cardSec = section("Custom level-up card"), prefs = section("My preferences"), buys = section("My purchases");
     app.textContent = "";
     app.appendChild(h("main", { id: "main", class: "page" },
       h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Your account" }), h("h1", { text: "My account" }),
         h("div", null, h("a", { class: "btn sm ghost", href: "#/", text: "Back to servers" }))),
-      plans, servers, prefs, buys));
-    api("member_status").then(function (j) {
+      plans, servers, cardSec, prefs, buys));
+    renderCardEditor(cardSec);
+    Promise.all([api("member_status"), api("member_plans")]).then(function (res) {
+      var j = res[0], offers = res[1].plans || [];
       var items = j.entitlements || [];
-      if (!items.length) { plans.appendChild(h("p", { class: "muted", text: "You have no active plans. Plans will be purchasable here soon." })); return; }
+      if (!items.length) plans.appendChild(h("p", { class: "muted", text: "You have no active plans." }));
       items.forEach(function (e) {
         plans.appendChild(h("p", null, h("b", { text: PRODUCT_LABEL[e.product] || e.product }), " \u00b7 " + (STATE_LABEL[e.state] || e.state)
           + (e.expires_at ? " \u00b7 until " + new Date(e.expires_at).toLocaleDateString() : "")));
       });
+      plans.appendChild(h("h4", { text: "Subscribe" }));
+      plans.appendChild(h("p", { class: "muted", text: "Plans renew automatically until you cancel. Access starts after the payment is confirmed." }));
+      var msg = h("p", { class: "muted", role: "status", text: "" });
+      offers.forEach(function (p) {
+        var can = p.state === "none" || p.state === "expired";
+        var per = p.period_days > 100 ? "year" : "month";
+        var btn = h("button", { class: "btn sm", type: "button", text: can ? "Subscribe" : (STATE_LABEL[p.state] || "Active") });
+        btn.disabled = !can;
+        btn.addEventListener("click", function () {
+          btn.disabled = true; msg.textContent = "Opening checkout\u2026";
+          api("checkout_user", null, { product: p.product }).then(function (r) {
+            window.location.href = r.checkout_url;
+          }).catch(function (e) { btn.disabled = false; msg.textContent = (e && e.message) || "Couldn't start checkout."; });
+        });
+        plans.appendChild(h("div", { class: "row" }, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " / " + per + " ", btn));
+      });
+      plans.appendChild(msg);
     }).catch(function (e) { fail(plans, e); });
     api("member_servers").then(function (j) {
       var list = j.servers || [];
@@ -1021,6 +1166,46 @@
     }).catch(function (e) { fail(buys, e); });
   }
 
+  /* ---------- Developer mode (#/dev): always opens; the server decides what is unlocked (402 on every other dev_* route) ---------- */
+  function renderDev() {
+    document.body.classList.remove("menu"); S.mod = null; renderHeader();
+    var body = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
+    app.textContent = "";
+    app.appendChild(h("main", { id: "main", class: "page" },
+      h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "For builders" }), h("h1", { text: "Developer mode" }),
+        h("div", null, h("a", { class: "btn sm ghost", href: "#/me", text: "My account" }))),
+      body));
+    api("dev_status").then(function (st) {
+      body.textContent = "";
+      var feats = h("ul", null, (st.features || []).map(function (f) { return h("li", { text: f.label + (f.ready ? "" : " (coming soon)") }); }));
+      if (st.unlocked) {
+        var c = section("Developer mode is active");
+        c.appendChild(h("p", { class: "muted", text: "Active" + (st.expires_at ? " until " + new Date(st.expires_at).toLocaleDateString() : "") + ". Features are switched on one at a time as they ship." }));
+        c.appendChild(feats); body.appendChild(c);
+        return;
+      }
+      var lock = section("Locked");
+      lock.appendChild(h("p", null, "Developer mode needs a subscription. This is what it includes:"));
+      lock.appendChild(feats);
+      if (st.export_available) lock.appendChild(h("p", { class: "muted", text: "Your plan has ended. Export stays available for 7 days after it ends." }));
+      var msg = h("p", { class: "muted", role: "status", text: "" });
+      lock.appendChild(h("p", { class: "muted", text: "Plans renew automatically until you cancel. Access starts after the payment is confirmed." }));
+      (st.plans || []).forEach(function (p) {
+        var can = p.state === "none" || p.state === "expired";
+        var per = p.period_days > 100 ? "year" : "month";
+        var btn = h("button", { class: "btn sm", type: "button", text: can ? "Subscribe" : (STATE_LABEL[p.state] || "Active") });
+        btn.disabled = !can;
+        btn.addEventListener("click", function () {
+          btn.disabled = true; msg.textContent = "Opening checkout\u2026";
+          api("checkout_user", null, { product: p.product }).then(function (r) { window.location.href = r.checkout_url; })
+            .catch(function (e) { btn.disabled = false; msg.textContent = (e && e.message) || "Couldn't start checkout."; });
+        });
+        lock.appendChild(h("div", { class: "row" }, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " / " + per + " ", btn));
+      });
+      lock.appendChild(msg); body.appendChild(lock);
+    }).catch(function (e) { body.textContent = ""; fail(body, e); });
+  }
+
   function renderOwner(hash) {
     S.guild = null; S.clone = null; renderHeader();
     if (!S.ownerSections || !S.ownerSections.length) { location.hash = "#/"; return; }
@@ -1037,6 +1222,7 @@
     if (/^#\/owner(\/|$)/.test(hash)) return renderOwner(hash);
     if (hash === "#/inbox") { S.guild = null; S.clone = null; return renderInbox(); }
     if (hash === "#/me") { S.guild = null; S.clone = null; return renderMe(); }
+    if (hash === "#/dev") { S.guild = null; S.clone = null; return renderDev(); }
     if (hash === "#/tiers") { S.guild = null; S.clone = null; return renderTiers(); }
     if (!m) { S.guild = null; S.clone = null; return renderServers(); }
     var clone = m[1] || null;
@@ -1046,7 +1232,7 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
+      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
       if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);

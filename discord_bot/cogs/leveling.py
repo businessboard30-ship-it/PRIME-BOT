@@ -459,7 +459,21 @@ class LevelingCog(GuildOnlyCog):
             # runs; card_style ("card"/"text"/"off") semantics above are
             # untouched.
             tier_image = get_tier_image_for_level(new_level)
-            if tier_image is not None:
+            # Card plan: a paying member's own design replaces the automatic card while the plan is effective;
+            # when it lapses design_for_user() returns None and the normal card comes back (design is kept).
+            try:
+                from modules import level_card_design as _lcd
+                custom_card = await _lcd.card_for_user(db, member.id)
+            except Exception as e:
+                logger.warning(f"[v0] custom level card lookup failed for {member.id}: {e}")
+                custom_card = None
+            if custom_card is not None:
+                card_bytes = await asyncio.to_thread(
+                    _lcd.render_custom_level_card,
+                    avatar_bytes, member.display_name, new_level,
+                    p["current_xp_in_level"], p["xp_needed_for_next_level"], *custom_card,
+                )
+            elif tier_image is not None:
                 tier_filename, tier_label = tier_image
                 card_bytes = await asyncio.to_thread(
                     render_level_card_tiered,
