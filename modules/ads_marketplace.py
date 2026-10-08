@@ -119,6 +119,13 @@ async def submit_ad(user_id: int, company_name: str, ad_title: str,
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
+            # ad_submissions.user_id REFERENCES users(user_id): a Discord user who
+            # never touched the bot before has no users row yet, which made the
+            # insert fail with ad_submissions_user_id_fkey. Ensure it exists.
+            await conn.execute(
+                "INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+                user_id,
+            )
             row = await conn.fetchrow("""
                 INSERT INTO ad_submissions
                     (user_id, company_name, ad_title, ad_description, target_url, budget_usd, status,
