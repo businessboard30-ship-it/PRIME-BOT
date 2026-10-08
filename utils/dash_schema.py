@@ -270,6 +270,49 @@ def can_manage(owner_id: Optional[int], user_id: int, member_role_ids: List[int]
     return bool(perms & (ADMINISTRATOR | MANAGE_GUILD))
 
 
+KICK_MEMBERS = 0x2
+BAN_MEMBERS = 0x4
+RAID_REASON_PREFIX = "[anti-raid]"          # same marker modules/antiraid_pro.py writes
+RAID_OPS = ("approve", "kick", "ban")
+
+
+def has_permission(owner_id: Optional[int], user_id: int, member_role_ids: List[int],
+                   roles_by_id: Dict[int, int], guild_id: int, mask: int) -> bool:
+    """Owner, Administrator, or any bit in `mask` held through @everyone or the member's roles."""
+    if owner_id is not None and int(owner_id) == int(user_id):
+        return True
+    perms = int(roles_by_id.get(int(guild_id), 0))
+    for rid in member_role_ids:
+        perms |= int(roles_by_id.get(int(rid), 0))
+    return bool(perms & (ADMINISTRATOR | mask))
+
+
+def top_position(member_role_ids: List[int], positions: Dict[int, int]) -> int:
+    return max([int(positions.get(int(r), 0)) for r in member_role_ids] or [0])
+
+
+def raid_op_allowed(op: str, may_review: bool, may_ban: bool, may_kick: bool) -> Optional[str]:
+    """None when allowed, else the reason. Mirrors the in-Discord review: releasing needs Ban
+    Members or Manage Server; banning needs Ban Members; kicking needs Kick Members."""
+    if op not in RAID_OPS:
+        return "Unknown action."
+    if op == "approve" and not (may_review or may_ban):
+        return "You need Manage Server or Ban Members to release people."
+    if op == "ban" and not may_ban:
+        return "You need the Ban Members permission to ban people."
+    if op == "kick" and not may_kick:
+        return "You need the Kick Members permission to kick people."
+    return None
+
+
+def is_raid_row(row: dict) -> bool:
+    return str(row.get("reason") or "").startswith(RAID_REASON_PREFIX)
+
+
+def snowflake_ms(user_id: int) -> int:
+    return (int(user_id) >> 22) + 1420070400000
+
+
 def guild_list_manageable(guilds: List[dict]) -> List[dict]:
     """From Discord's /users/@me/guilds payload: only servers the user can manage."""
     out = []
@@ -490,3 +533,22 @@ def diff_values(module: dict, before: dict, after: dict) -> Dict[str, dict]:
 # ───────────────────────── bot actions (the bot posts something) ─────────────────────────
 
 BOT_ACTIONS = {"verify_panel": "verification", "ticket_panel": "tickets", "welcome_test": "welcome"}
+
+
+RAID_REASON_MAX = 160
+
+
+def raid_row_view(row: dict, member: Optional[dict]) -> dict:
+    """One quarantined person as the review screen shows it. Text is plain; the page renders it
+    with textContent. `member` is Discord's guild-member object, or None if they left."""
+    uid = int(row["user_id"])
+    user = (member or {}).get("user") or {}
+    name = user.get("global_name") or user.get("username") or "Unknown user"
+    avatar = (f"https://cdn.discordapp.com/avatars/{uid}/{user['avatar']}.png?size=64" if user.get("avatar")
+              else f"https://cdn.discordapp.com/embed/avatars/{(uid >> 22) % 6}.png")
+    created = row.get("created_at")
+    reason = str(row.get("reason") or "")[len(RAID_REASON_PREFIX):].strip()
+    return {"user_id": str(uid), "name": str(name)[:40], "avatar_url": avatar, "in_server": member is not None,
+            "account_created_ms": snowflake_ms(uid), "reason": reason[:RAID_REASON_MAX],
+            "quarantined_at": created.isoformat() if hasattr(created, "isoformat") else None,
+            "roles_held": len(row.get("saved_role_ids") or [])}
