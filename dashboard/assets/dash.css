@@ -183,3 +183,22 @@ option{background:#06101a;color:#fff}option:disabled{color:#667}
 .msgbody{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
 .msg-actions{display:flex;gap:8px;flex-wrap:wrap}
 .btn.danger{color:#ff8a8a}
+
+/* welcome designer + audit log */
+.preview{display:grid;gap:12px;margin-bottom:16px}
+.pv-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.pv-head h2{margin:0}
+.pv-stage{display:grid;place-items:center;min-height:120px}
+.pv-img{display:none;width:100%;max-width:720px;height:auto;border:1px solid var(--line);box-shadow:0 0 24px var(--glow-soft)}
+.pv-img.ready{display:block}
+.pv-note:empty{display:none}
+.preview.busy .pv-img{opacity:.45;transition:opacity .2s}
+.audit{display:grid;gap:12px}
+.entry{display:grid;gap:8px}
+.entry-top{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.entry-top small{margin-left:auto;opacity:.65}
+.entry ul{margin:0;padding-left:1.1rem;display:grid;gap:4px}
+.entry li{overflow-wrap:anywhere}
+.entry .old{opacity:.6;text-decoration:line-through}
+.entry .new{color:#fff}
+.more{display:flex;justify-content:center;margin-top:12px}

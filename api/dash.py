@@ -24,6 +24,8 @@ Routes (all on /api/dash):
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
   POST {action: logout}
+  GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
+  GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
   POST {action: dropbox_read, id?}      -> mark one (or all) read
   POST {action: dropbox_send, ...}      -> OWNER ONLY (config.DISCORD_OWNER_BROADCAST_IDS)
@@ -191,6 +193,81 @@ def _is_owner(sess: dict) -> bool:
         return False
 
 
+_last_preview: dict = {}
+PREVIEW_MIN_INTERVAL = 1.5
+
+
+def _eff_premium(module: dict, premium: bool, cfg: dict) -> bool:
+    """Welcome card themes are also sold as a one-time card pack, so a guild that bought
+    the pack (card_pack_unlocked) may use them without a Premium subscription."""
+    return bool(premium or (module["id"] == "welcome" and cfg.get("card_pack_unlocked")))
+
+
+async def _avatar_bytes(url: str) -> bytes:
+    """The viewer's own Discord avatar (CDN only), or a generated placeholder."""
+    from io import BytesIO
+    from PIL import Image, ImageDraw
+    if isinstance(url, str) and url.startswith("https://cdn.discordapp.com/"):
+        try:
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                async with s.get(url.replace("size=64", "size=256")) as r:
+                    if r.status == 200:
+                        data = await r.read()
+                        if len(data) < 2_000_000:
+                            Image.open(BytesIO(data)).verify()
+                            return data
+        except Exception:
+            pass
+    img = Image.new("RGB", (256, 256), (88, 101, 242))
+    ImageDraw.Draw(img).ellipse((78, 56, 178, 156), fill=(255, 255, 255))
+    ImageDraw.Draw(img).ellipse((48, 170, 208, 330), fill=(255, 255, 255))
+    out = BytesIO(); img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _render_card_sync(avatar: bytes, name: str, sub: str, guild_name: str, opts: dict) -> bytes:
+    from modules import welcome_card as wc
+    data, _fmt = wc.render_welcome_card(
+        avatar, name, sub, background_color=opts["bg"], accent_color=opts["accent"], animate=False,
+        avatar_shape=opts["shape"], guild_name=guild_name, use_template=opts["use_template"], theme=opts["theme"])
+    return data
+
+
+async def _welcome_preview(sess: dict, gid: int, q) -> dict:
+    import base64
+    from modules import welcome_card as wc
+    uid = str(sess["user"]["id"])
+    now = time.monotonic()
+    if now - _last_preview.get(uid, 0) < PREVIEW_MIN_INTERVAL:
+        _fail(429, "Slow down a little.")
+    _last_preview[uid] = now
+    if len(_last_preview) > 5000:
+        _last_preview.clear()
+    theme, shape = q("theme") or "wolf", q("shape") or "circle"
+    if theme not in wc.THEME_BACKGROUNDS:
+        _fail(422, "Unknown theme.")
+    if shape not in wc.AVATAR_SHAPES:
+        _fail(422, "Unknown avatar shape.")
+    bg, accent = q("bg") or "#2b2d31", q("accent") or "#5865F2"
+    if not (S._HEX.match(bg) and S._HEX.match(accent)):
+        _fail(422, "Colours must look like #RRGGBB.")
+    use_template = (q("use_template") or "1") != "0"
+    welcome = S.BY_ID["welcome"]
+    cfg = await _get_cfg(welcome, gid)
+    premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
+    if use_template and theme in wc.PREMIUM_THEMES and not _eff_premium(welcome, premium, cfg):
+        _fail(403, "That theme needs Premium or the card pack.")
+    info = await _guild_info(gid)
+    avatar = await _avatar_bytes(sess["user"].get("avatar_url"))
+    opts = {"bg": bg, "accent": accent, "shape": shape, "theme": theme, "use_template": use_template}
+    count = info.get("approximate_member_count") or 1
+    png = await asyncio.get_running_loop().run_in_executor(
+        None, _render_card_sync, avatar, str(sess["user"].get("username") or "Member")[:32],
+        f"Member #{count}", str(info.get("name") or "Server")[:40], opts)
+    return {"ok": True, "image": "data:image/png;base64," + base64.b64encode(png).decode()}
+
+
 async def _authorised_guild(sess: dict, raw_gid) -> int:
     try:
         gid = int(str(raw_gid))
@@ -331,7 +408,8 @@ async def _route(method: str, query: dict, headers, body: dict):
         if not module:
             _fail(404, "Unknown module.")
         premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
-        raise _Reply(200, {"ok": True, "values": S.export_values(module, await _get_cfg(module, gid)), "premium": premium})
+        cfg = await _get_cfg(module, gid)
+        raise _Reply(200, {"ok": True, "values": S.export_values(module, cfg), "premium": _eff_premium(module, premium, cfg)})
 
     if method == "POST" and action == "save":
         gid = await _authorised_guild(sess, body.get("guild_id"))
@@ -341,12 +419,37 @@ async def _route(method: str, query: dict, headers, body: dict):
         meta = await _meta(gid)
         chans, roles = _id_sets(meta)
         premium = bool(await db.is_guild_premium_active(gid, CLONE_ID))
-        clean, errors = S.validate_values(module, body.get("values"), chans, roles, premium)
+        before_cfg = await _get_cfg(module, gid)
+        clean, errors = S.validate_values(module, body.get("values"), chans, roles, _eff_premium(module, premium, before_cfg))
         if errors:
             raise _Reply(422, {"ok": False, "message": errors[0], "errors": errors})
         await getattr(db, module["set"])(gid, CLONE_ID, **clean)
         logger.info("dashboard save guild=%s user=%s module=%s keys=%s", gid, sess["user"]["id"], module["id"], sorted(clean))
-        raise _Reply(200, {"ok": True, "values": S.export_values(module, await _get_cfg(module, gid))})
+        after = S.export_values(module, await _get_cfg(module, gid))
+        try:
+            changes = S.diff_values(module, S.export_values(module, before_cfg), after)
+            if changes:
+                await db.dash_audit_add(gid, str(sess["user"]["id"]), sess["user"].get("username") or "Unknown",
+                                        module["id"], changes, S.AUDIT_RETENTION_DAYS)
+        except Exception:
+            logger.exception("dashboard: audit write failed (save itself succeeded)")
+        raise _Reply(200, {"ok": True, "values": after})
+
+    if method == "GET" and action == "audit":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        mod = q("module")
+        if mod and mod not in S.BY_ID:
+            _fail(404, "Unknown module.")
+        try:
+            before = int(q("before")) if q("before") else None
+        except ValueError:
+            _fail(400, "Invalid page.")
+        rows = await db.dash_audit_list(gid, before, mod, 31)
+        raise _Reply(200, {"ok": True, "entries": rows[:30], "more": len(rows) > 30})
+
+    if method == "GET" and action == "welcome_preview":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        raise _Reply(200, await _welcome_preview(sess, gid, q))
 
     if method == "GET" and action == "dropbox":
         msgs = await db.dropbox_list(str(sess["user"]["id"]))

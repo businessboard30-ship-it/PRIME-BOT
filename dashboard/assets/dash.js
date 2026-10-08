@@ -177,6 +177,7 @@
         icon(name), h("span", { text: label }), mod && statusOf(mod.id) ? h("i", { class: "dot " + statusOf(mod.id), title: statusOf(mod.id) === "on" ? "Enabled" : "Disabled" }) : null);
     }
     nav.appendChild(link("#/g/" + gid, "home", "Overview", !modId));
+    nav.appendChild(link("#/g/" + gid + "/audit", "scroll", "Audit log", modId === "audit"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
       if (!list.length) return;
@@ -290,8 +291,10 @@
     var resetBtn = h("button", { class: "btn sm ghost", text: "Discard" });
     bar.appendChild(msg); bar.appendChild(resetBtn); bar.appendChild(saveBtn);
     var form = h("div", { class: "card fields rv" });
+    var designer = m.designer === "welcome" ? makeWelcomePreview(gid) : null;
 
     function refresh() {
+      if (designer) designer.update();
       var keys = dirtyKeys();
       form.querySelectorAll(".field").forEach(function (row) { row.classList.toggle("chg", keys.indexOf(row.getAttribute("data-key")) > -1); });
       msg.textContent = keys.length + (keys.length === 1 ? " unsaved change" : " unsaved changes");
@@ -315,6 +318,9 @@
       var keys = dirtyKeys(), vals = {};
       if (!keys.length) return;
       keys.forEach(function (k) { vals[k] = S.draft[k]; });
+      /* The server flips a welcome card to the plain style when a colour is saved without a card type.
+         Send the card type explicitly so what you saved is what the preview showed. */
+      if (m.id === "welcome" && (("accent_color" in vals) || ("background_color" in vals)) && !("use_template" in vals)) vals.use_template = !!S.draft.use_template;
       saveBtn.classList.add("busy"); S.errors = {};
       api("save", {}, { guild_id: gid, module: m.id, values: vals }).then(function (r) {
         S.orig = r.values; S.draft = JSON.parse(JSON.stringify(r.values));
@@ -334,7 +340,7 @@
       m.note ? h("div", { class: "notice rv" }, m.note) : null,
       !S.premium && m.fields.some(function (f) { return f.premium || f.premium_values; })
         ? h("div", { class: "notice rv" }, "Some options here are Premium. ", h("a", { href: CFG.SITE_URL + "/pricing/", target: "_blank", rel: "noopener", text: "See plans" })) : null,
-      form, bar]);
+      designer ? designer.el : null, form, bar]);
     form.appendChild(h("div", { class: "skel", style: "height:160px" }));
     api("config", { guild_id: gid, module: m.id }).then(function (r) {
       S.premium = !!r.premium; S.orig = r.values; S.draft = JSON.parse(JSON.stringify(r.values)); S.errors = {}; build();
@@ -420,6 +426,77 @@
     load();
   }
 
+  /* ---------- welcome card designer (live preview) ---------- */
+  function makeWelcomePreview(gid) {
+    var img = h("img", { alt: "Welcome card preview", class: "pv-img" });
+    var note = h("p", { class: "muted pv-note", text: "Loading preview…" });
+    var box = h("div", { class: "card preview rv" },
+      h("div", { class: "pv-head" }, h("h2", { text: "Live preview" }), h("small", { text: "Rendered with your name and avatar" })),
+      h("div", { class: "pv-stage" }, img), note);
+    var timer = null, seq = 0, lastKey = "", hex = /^#[0-9a-f]{6}$/i;
+    function update() {
+      var d0 = S.draft, key = JSON.stringify([d0.card_theme, d0.avatar_shape, d0.use_template, d0.background_color, d0.accent_color]);
+      if (key === lastKey) return;
+      lastKey = key; clearTimeout(timer);
+      timer = setTimeout(function () {
+        var d = S.draft, my = ++seq;
+        box.classList.add("busy");
+        api("welcome_preview", { guild_id: gid, theme: d.card_theme || "wolf", shape: d.avatar_shape || "circle", use_template: d.use_template === false ? "0" : "1",
+          bg: hex.test(d.background_color || "") ? d.background_color : "#2b2d31", accent: hex.test(d.accent_color || "") ? d.accent_color : "#5865F2" })
+          .then(function (r) { if (my !== seq) return; img.src = r.image; img.classList.add("ready"); note.textContent = ""; })
+          .catch(function (e) {
+            if (my !== seq || e.message === "401") return;
+            if (e.status === 429) { lastKey = ""; setTimeout(update, 1600); return; }
+            note.textContent = e.message;
+          }).then(function () { if (my === seq) box.classList.remove("busy"); });
+      }, 500);
+    }
+    return { el: box, update: update };
+  }
+
+  /* ---------- audit log ---------- */
+  function fmtVal(f, v) {
+    if (v == null || v === "") return "not set";
+    if (f && f.type === "toggle") return v ? "On" : "Off";
+    if (f && (f.type === "channel" || f.type === "role")) {
+      var pool = f.type === "role" ? S.meta.roles : [].concat(S.meta.channels.text, S.meta.channels.voice, S.meta.channels.category);
+      var hit = pool.filter(function (c) { return c.id === String(v); })[0];
+      return hit ? (f.type === "role" ? "@" : "#") + hit.name : "(deleted " + f.type + ")";
+    }
+    if (f && f.type === "select") { var o = (f.options || []).filter(function (x) { return String(x[0]) === String(v); })[0]; return o ? o[1] : String(v); }
+    if (Array.isArray(v)) return v.length ? v.slice(0, 5).join(", ") + (v.length > 5 ? " … +" + (v.length - 5) : "") : "empty list";
+    return String(v);
+  }
+  function renderAudit(gid, main) {
+    var list = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
+    var filter = h("select", { "aria-label": "Filter by area" }, h("option", { value: "", text: "All areas" }), mods().map(function (m) { return h("option", { value: m.id, text: m.title }); }));
+    var cursor = null;
+    function load(reset) {
+      if (reset) { list.textContent = ""; cursor = null; list.appendChild(h("div", { class: "skel", style: "height:90px" })); }
+      var params = { guild_id: gid }; if (cursor) params.before = cursor; if (filter.value) params.module = filter.value;
+      api("audit", params).then(function (r) {
+        if (reset) list.textContent = "";
+        if (!r.entries.length && reset) list.appendChild(h("div", { class: "card empty" }, h("h3", { text: "No changes yet" }), h("p", { class: "muted", text: "Changes saved from this dashboard will be listed here." })));
+        r.entries.forEach(function (e) {
+          var m = modById(e.module), title = m ? m.title : e.module;
+          var rows = Object.keys(e.changes || {}).map(function (k) {
+            var f = m ? m.fields.filter(function (x) { return x.key === k; })[0] : null, c = e.changes[k];
+            return h("li", null, h("b", { text: (f ? f.label : k) + ": " }), h("span", { class: "old", text: fmtVal(f, c.from) }), " → ", h("span", { class: "new", text: fmtVal(f, c.to) }));
+          });
+          list.appendChild(h("div", { class: "card entry rv" }, h("div", { class: "entry-top" }, h("b", { text: e.user_name }), h("span", { class: "tag", text: title }), h("small", { text: when(e.created_at) })), h("ul", null, rows)));
+        });
+        if (r.entries.length) cursor = r.entries[r.entries.length - 1].id;
+        moreBtn.hidden = !r.more;
+      }).catch(function (e) { if (e.message !== "401") { list.textContent = ""; list.appendChild(h("p", { text: e.message })); } });
+    }
+    filter.addEventListener("change", function () { load(true); });
+    moreBtn.addEventListener("click", function () { load(false); });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Server" }), h("h1", { text: "Audit log" }),
+        h("p", { class: "muted", text: "Who changed which setting, and when. Kept for 180 days. Changes made with slash commands in Discord are not listed." })), filter),
+      list, h("div", { class: "more" }, moreBtn)]);
+    load(true);
+  }
+
   /* ---------- router ---------- */
   function route() {
     document.body.classList.remove("menu"); S.mod = null;
@@ -433,9 +510,9 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      if (modId && !mod) { location.hash = "#/g/" + gid; return; }
+      if (modId && modId !== "audit" && !mod) { location.hash = "#/g/" + gid; return; }
       var main = renderShell(gid, modId);
-      if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
+      if (modId === "audit") renderAudit(gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
       window.scrollTo(0, 0);
     }).catch(function (e) {
       if (e.message === "401") return;

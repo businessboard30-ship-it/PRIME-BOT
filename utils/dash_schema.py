@@ -38,9 +38,18 @@ MODULES: List[dict] = [
             F("enabled", "Welcome messages", "toggle", "Post a welcome when someone joins."),
             F("channel_id", "Welcome channel", "channel", "Where the welcome is posted.", kind="text"),
             F("message_template", "Message", "textarea", "Placeholders: {member}, {guild}, {count}.", maxlen=500),
-            F("accent_color", "Accent colour", "color", "Used by the flat card style."),
-            F("background_color", "Background colour", "color", "Used by the flat card style."),
+            F("use_template", "Designed card", "toggle", "On: artwork card with a theme. Off: plain colour card (uses the colours below)."),
+            F("card_theme", "Card theme", "select", "Artwork used by the designed card. Only Wolf is free.",
+              options=opts(("wolf", "Wolf (free)"), ("reaper", "Reaper"), ("shadow", "Shadow"), ("sorcerer", "Sorcerer"),
+                           ("spider", "Spider"), ("spider_pro", "Spider Pro")),
+              premium_values=["reaper", "shadow", "sorcerer", "spider", "spider_pro"]),
+            F("avatar_shape", "Avatar shape", "select", "Shape of the member's picture on the card.",
+              options=opts(("circle", "Circle"), ("rounded_square", "Rounded square"), ("square", "Square"),
+                           ("hexagon", "Hexagon"), ("diamond", "Diamond"))),
+            F("accent_color", "Accent colour", "color", "Used by the plain colour card."),
+            F("background_color", "Background colour", "color", "Used by the plain colour card."),
         ],
+        "designer": "welcome",
     },
     {
         "id": "verification", "title": "Join verification", "category": "Onboarding", "icon": "shield-check",
@@ -416,3 +425,28 @@ def validate_dropbox(raw: Any) -> Tuple[Optional[dict], Optional[str]]:
         hours = int(hours)
     return {"title": title, "body": body, "kind": kind,
             "announce": bool(raw.get("announce")), "expires_hours": hours}, None
+
+
+# ───────────────────────── audit log ─────────────────────────
+
+AUDIT_VALUE_MAX = 200
+AUDIT_RETENTION_DAYS = 180
+
+
+def _audit_val(v: Any) -> Any:
+    if isinstance(v, str):
+        return v if len(v) <= AUDIT_VALUE_MAX else v[:AUDIT_VALUE_MAX] + "…"
+    if isinstance(v, list):
+        return [_audit_val(x) for x in v[:50]]
+    return v
+
+
+def diff_values(module: dict, before: dict, after: dict) -> Dict[str, dict]:
+    """{key: {"from": old, "to": new}} for declared fields whose value changed.
+    Only schema keys are ever recorded, and long text is truncated."""
+    out = {}
+    for f in module["fields"]:
+        k = f["key"]
+        if before.get(k) != after.get(k):
+            out[k] = {"from": _audit_val(before.get(k)), "to": _audit_val(after.get(k))}
+    return out
