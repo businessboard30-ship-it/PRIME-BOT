@@ -4102,6 +4102,40 @@ class Database:
             )
         """)
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_dropbox_messages (
+                id BIGSERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'info',
+                announce BOOLEAN NOT NULL DEFAULT FALSE,
+                created_by TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_dropbox_reads (
+                message_id BIGINT NOT NULL REFERENCES dash_dropbox_messages(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (message_id, user_id)
+            )
+        """)
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_audit (
+                id BIGSERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                user_id TEXT NOT NULL,
+                user_name TEXT NOT NULL,
+                module TEXT NOT NULL,
+                changes JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS dash_audit_guild_idx ON dash_audit (guild_id, id DESC)")
+
         # Referral-boost click log — just a visit counter (no auth, no
         # cookies/sessions to correlate: see the note on invite_code/
         # last_known_invite_uses below for why conversion doesn't need
@@ -14309,16 +14343,16 @@ class Database:
             )
             return session_id
 
-    async def get_login_session(self, session_id: str) -> Optional[dict]:
-        """30 minute TTL, read-only (not popped) — the /login/servers page
+    async def get_login_session(self, session_id: str, ttl_minutes: int = 30) -> Optional[dict]:
+        """30 minute TTL by default (the web dashboard passes a longer one), read-only (not popped) — the /login/servers page
         may reload or re-fetch, and a stolen session id is no more
         sensitive than one of the dashboard links it contains."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """SELECT payload FROM discord_login_sessions
-                   WHERE session_id = $1 AND created_at > NOW() - INTERVAL '30 minutes'""",
-                session_id,
+                   WHERE session_id = $1 AND created_at > NOW() - make_interval(mins => $2)""",
+                session_id, int(ttl_minutes),
             )
             if not row:
                 return None
@@ -14338,6 +14372,97 @@ class Database:
                 session_id,
             )
             return row is not None
+
+    # ── Web dashboard drop box (owner -> every dashboard admin) ──
+
+    async def dropbox_create(self, title: str, body: str, kind: str, announce: bool,
+                             created_by: str, expires_hours: Optional[int] = None) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO dash_dropbox_messages (title, body, kind, announce, created_by, expires_at)
+                   VALUES ($1, $2, $3, $4, $5,
+                           CASE WHEN $6::int IS NULL THEN NULL ELSE NOW() + make_interval(hours => $6::int) END)
+                   RETURNING id""",
+                title, body, kind, bool(announce), str(created_by), expires_hours,
+            )
+            return int(row["id"])
+
+    async def dropbox_list(self, user_id: str, limit: int = 50) -> list:
+        """Live (unexpired) messages, newest first, each with this user's read flag."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT m.id, m.title, m.body, m.kind, m.announce, m.created_at,
+                          (r.user_id IS NOT NULL) AS read
+                   FROM dash_dropbox_messages m
+                   LEFT JOIN dash_dropbox_reads r ON r.message_id = m.id AND r.user_id = $1
+                   WHERE m.expires_at IS NULL OR m.expires_at > NOW()
+                   ORDER BY m.id DESC LIMIT $2""",
+                str(user_id), int(limit),
+            )
+            return [{"id": str(r["id"]), "title": r["title"], "body": r["body"], "kind": r["kind"],
+                     "announce": r["announce"], "created_at": r["created_at"].isoformat(),
+                     "read": r["read"]} for r in rows]
+
+    async def dropbox_mark_read(self, user_id: str, message_id: Optional[int] = None) -> None:
+        """One message, or every live message when message_id is None."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO dash_dropbox_reads (message_id, user_id)
+                   SELECT id, $1 FROM dash_dropbox_messages
+                   WHERE ($2::bigint IS NULL OR id = $2::bigint)
+                     AND (expires_at IS NULL OR expires_at > NOW())
+                   ON CONFLICT DO NOTHING""",
+                str(user_id), message_id,
+            )
+
+    async def dropbox_delete(self, message_id: int) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("DELETE FROM dash_dropbox_messages WHERE id = $1 RETURNING id", int(message_id))
+            return row is not None
+
+    async def dropbox_stats(self, message_id: int) -> dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            n = await conn.fetchval("SELECT COUNT(*) FROM dash_dropbox_reads WHERE message_id = $1", int(message_id))
+            return {"reads": int(n or 0)}
+
+    # ── Web dashboard audit log ──
+
+    async def dash_audit_add(self, guild_id: int, user_id: str, user_name: str, module: str,
+                             changes: dict, retention_days: int = 180) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO dash_audit (guild_id, user_id, user_name, module, changes) VALUES ($1, $2, $3, $4, $5::jsonb)",
+                int(guild_id), str(user_id), str(user_name)[:80], module, json.dumps(changes),
+            )
+            await conn.execute(
+                "DELETE FROM dash_audit WHERE guild_id = $1 AND created_at < NOW() - make_interval(days => $2)",
+                int(guild_id), int(retention_days),
+            )
+
+    async def dash_audit_list(self, guild_id: int, before_id: Optional[int] = None,
+                              module: Optional[str] = None, limit: int = 30) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, user_id, user_name, module, changes, created_at FROM dash_audit
+                   WHERE guild_id = $1 AND ($2::bigint IS NULL OR id < $2::bigint)
+                     AND ($3::text IS NULL OR module = $3::text)
+                   ORDER BY id DESC LIMIT $4""",
+                int(guild_id), before_id, module, int(limit),
+            )
+            out = []
+            for r in rows:
+                ch = r["changes"]
+                out.append({"id": str(r["id"]), "user_id": r["user_id"], "user_name": r["user_name"],
+                            "module": r["module"], "changes": json.loads(ch) if isinstance(ch, str) else ch,
+                            "created_at": r["created_at"].isoformat()})
+            return out
 
     async def record_site_visit(self) -> int:
         """Atomically increments the single-row site_visit_counter and

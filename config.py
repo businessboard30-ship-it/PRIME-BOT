@@ -754,3 +754,15 @@ TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "").strip()
 TURNSTILE_PAGES_URL = os.getenv("TURNSTILE_PAGES_URL", "").strip().rstrip("/")
 VERIFY_SIGNING_SECRET = os.getenv("VERIFY_SIGNING_SECRET", "").strip()
 TURNSTILE_ENABLED = bool(TURNSTILE_SECRET_KEY and TURNSTILE_PAGES_URL and VERIFY_SIGNING_SECRET)
+
+
+# ── Web dashboard (dashboard/ on Cloudflare Pages; backend in api/dash.py) ──
+# DASH_PAGES_URL: where dashboard/ is deployed, e.g. https://prime-bot-dash.pages.dev
+# DASH_OAUTH_REDIRECT_URI: https://<this backend>/api/dash. It must also be added under
+#   Redirects in the Discord Developer Portal (OAuth2) for the PRIME BOT application.
+# Both default to the values from dashboard/README.md, so nothing has to be set on Railway;
+# an env var still overrides (e.g. if Cloudflare gave the project a different pages.dev name).
+DASH_PAGES_URL = os.getenv("DASH_PAGES_URL", "https://prime-bot-dash.pages.dev").strip().rstrip("/")
+DASH_OAUTH_REDIRECT_URI = os.getenv(
+    "DASH_OAUTH_REDIRECT_URI", "https://web-production-74667a.up.railway.app/api/dash").strip()
+DASH_SESSION_MINUTES = int(os.getenv("DASH_SESSION_MINUTES", "720"))
