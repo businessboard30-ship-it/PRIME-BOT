@@ -12,6 +12,7 @@ function rng(seed){var s=seed|0;return function(){s|=0;s=s+0x6D2B79F5|0;var t=Ma
 
 /* ---- config-driven links ---- */
 $$("[data-invite]").forEach(function(a){var u=a.dataset.invite==="prime"?C.PRIME_INVITE_URL:C.WELCOME_INVITE_URL;if(u){a.href=u;a.rel="noopener"}});
+$$("[data-dash]").forEach(function(a){if(C.DASHBOARD_URL){a.href=C.DASHBOARD_URL+"/";a.rel="noopener"}});
 $$("[data-support]").forEach(function(a){if(C.SUPPORT_SERVER_URL){a.href=C.SUPPORT_SERVER_URL;a.rel="noopener"}});
 $$("[data-topgg]").forEach(function(a){if(C.TOPGG_URL){a.href=C.TOPGG_URL;a.rel="noopener"}else{a.hidden=true}});
 

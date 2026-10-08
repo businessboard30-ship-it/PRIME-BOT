@@ -325,7 +325,11 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         # Manual + support are masked text links (not buttons), so the row below
         # only holds the action buttons (Connect / Advertise).
         _manual_base = _cfg.STABLE_BASE_URL or DASHBOARD_BASE_URL
-        link_bits = [f"📖 [Read bot manual]({_manual_base}/manual{'/' if _cfg.STABLE_BASE_URL else ''}#moderation)"]
+        from utils.dash_links import dashboard_url, dashboard_supported
+        link_bits = []
+        if dashboard_supported(clone_id):
+            link_bits.append(f"🖥️ [Open dashboard]({dashboard_url(guild_id)})")
+        link_bits += [f"📖 [Read bot manual]({_manual_base}/manual{'/' if _cfg.STABLE_BASE_URL else ''}#moderation)"]
         if DISCORD_SUPPORT_SERVER_INVITE:
             link_bits.append(f"🆘 [Join our support server]({DISCORD_SUPPORT_SERVER_INVITE})")
         if WEBSITE_URL:

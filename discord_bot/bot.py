@@ -265,6 +265,7 @@ class AnimeBotDiscord(commands.Bot):
 
         await self.load_extension("discord_bot.cogs.catch")
         await self.load_extension("discord_bot.cogs.help")
+        await self.load_extension("discord_bot.cogs.dashboard")
         # archive / archive_automation dropped: feature retired to free up
         # global slash-command slots (see CommandLimitReached in clone_admin
         # setup). Cogs left in place; re-add these two lines to restore.

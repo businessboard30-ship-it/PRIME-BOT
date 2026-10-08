@@ -838,7 +838,7 @@ class AutomodCog(GuildOnlyCog):
             await _deny(interaction, "Manage Server", lang)
             return
         config = await db.get_automod_config(interaction.guild_id, clone_id=_clone_id_of(interaction))
-        view = AutomodPanelView(config, interaction.user.id, clone_id=_clone_id_of(interaction))
+        view = AutomodPanelView(config, interaction.user.id, clone_id=_clone_id_of(interaction), guild_id=interaction.guild_id)
         await interaction.followup.send(view=view, ephemeral=True)
 
     @group.command(name="toggle", description="Turn a filter on or off")
@@ -950,10 +950,14 @@ class AutomodCog(GuildOnlyCog):
             await _deny(interaction, "Manage Server", lang)
             return
         clone_id = _clone_id_of(interaction)
+        from utils.dash_links import dashboard_url, dashboard_supported
+        if dashboard_supported(clone_id):
+            # The legacy token site is retired for the main bot: send people to the new dashboard.
+            msg = await tr("🖥️ Auto-moderation now lives in the web dashboard (sign in with Discord):\n{url}\nYou can also use /dashboard.", lang, url=dashboard_url(interaction.guild_id))
+            await interaction.followup.send(msg, ephemeral=True)
+            return
         token = await db.get_or_create_dashboard_token(interaction.guild_id, clone_id=clone_id)
-        url = f"{DASHBOARD_BASE_URL}/dashboard/{interaction.guild_id}?token={token}"
-        if clone_id is not None:
-            url += f"&clone_id={clone_id}"
+        url = f"{DASHBOARD_BASE_URL}/dashboard/{interaction.guild_id}?token={token}&clone_id={clone_id}"
         msg = await tr(
             "🔧 Dashboard link (keep this private — it grants config access, same as a password):\n{url}",
             lang, url=url

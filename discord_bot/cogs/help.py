@@ -100,6 +100,7 @@ CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
         (["botmanager"], "manage Discord bots you own by token"),
     ],
     "⚙️ Utility & Server Setup": [
+        (["dashboard"], "open the web dashboard to configure this server from your browser"),
         (["language"], "set your preferred language"),
         (["feedback"], "send feedback to the bot owner"),
         (["suggest"], "submit a suggestion for staff and members to vote on"),
@@ -240,11 +241,15 @@ class CategorySelect(discord.ui.Select):
 
 
 class HelpView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, guild_id=None, clone_id=None):
         super().__init__(timeout=180)
         self.add_item(CategorySelect())
         self.add_item(SearchButton())
         self.add_item(_HelpGoPremiumButton())
+        from utils.dash_links import dashboard_link_button
+        link = dashboard_link_button(guild_id, clone_id, row=1)
+        if link is not None:
+            self.add_item(link)
         if DISCORD_SUPPORT_SERVER_INVITE:
             self.add_item(discord.ui.Button(
                 label="Join our support server", style=discord.ButtonStyle.link,
@@ -278,7 +283,8 @@ class HelpCog(commands.Cog):
             ),
             color=discord.Color.blurple(),
         )
-        await interaction.response.send_message(embed=embed, view=HelpView(), ephemeral=True)
+        await interaction.response.send_message(
+            embed=embed, view=HelpView(interaction.guild_id, getattr(interaction.client, "clone_id", None)), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

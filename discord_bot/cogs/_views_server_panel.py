@@ -316,7 +316,7 @@ class ServerPanelView(discord.ui.LayoutView):
 
 # ── home ─────────────────────────────────────────────────────────────────
 
-def _site_links() -> str:
+def _site_links(guild_id: Optional[int] = None, clone_id: Optional[int] = None) -> str:
     """Masked text links, same style as the join DM's manual/support row."""
     try:
         import config as _cfg
@@ -325,6 +325,9 @@ def _site_links() -> str:
     except Exception:
         return ""
     bits = []
+    from utils.dash_links import dashboard_url, dashboard_supported
+    if guild_id and dashboard_supported(clone_id):
+        bits.append(f"🖥️ [Web dashboard]({dashboard_url(guild_id)})")
     if WEBSITE_URL:
         bits.append(f"🌐 [Website]({WEBSITE_URL})")
     if DISCORD_SUPPORT_SERVER_INVITE:
@@ -361,7 +364,7 @@ class HomeView(ServerPanelView):
             f"**{d.get('name', 'This server')}** — {d.get('members', '?')} members",
             f"{'🟢 Bot online' if d.get('online') else '🔴 Bot reconnecting'}  ·  {prem_line}",
             f"Setup score: **{d.get('done', 0)}/{d.get('total', 8)}** core features configured",
-            *([_site_links()] if _site_links() else []),
+            *([lnk] if (lnk := _site_links(None if self.inspect is not None else self.guild_id, self.clone_id)) else []),
         ]
 
     def controls(self):

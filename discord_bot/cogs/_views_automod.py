@@ -39,8 +39,9 @@ class AutomodPanelView(discord.ui.LayoutView):
     as FILTER_FIELDS' 4 entries); toggling one rebuilds the container's
     children so the new on/off styling shows immediately."""
 
-    def __init__(self, config: dict, invoker_id: int, clone_id=None):
+    def __init__(self, config: dict, invoker_id: int, clone_id=None, guild_id=None):
         super().__init__(timeout=300)
+        self.guild_id = guild_id
         self.config = config
         self.invoker_id = invoker_id
         self.clone_id = clone_id
@@ -60,6 +61,12 @@ class AutomodPanelView(discord.ui.LayoutView):
         self.container.add_item(text)
         self.container.add_item(discord.ui.Separator())
         self.container.add_item(row)
+        if self.guild_id:
+            from utils.dash_links import dashboard_link_button
+            link = dashboard_link_button(self.guild_id, self.clone_id)
+            if link is not None:
+                self.container.add_item(discord.ui.TextDisplay("-# More auto-mod settings are in the web dashboard."))
+                self.container.add_item(discord.ui.ActionRow(link))
 
     def _make_toggle_callback(self, field: str):
         async def _toggle(interaction: discord.Interaction):
