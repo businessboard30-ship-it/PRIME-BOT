@@ -831,7 +831,7 @@ def test_dm_notice_is_generic_opt_in_and_disables_itself_on_closed_dms(monkeypat
 def test_messages_page_never_uses_innerhtml_and_never_stores_anything():
     js = (Path(dash.__file__).parent.parent / "dashboard" / "assets" / "dash.js").read_text()
     i = js.index("function meMessages(")
-    body = js[i:js.index("function renderMe(", i)]
+    body = js[i:js.index("function mePrivacy(", i)]
     assert "innerHTML" not in body and "localStorage" not in body and "sessionStorage" not in body and "outerHTML" not in body
     owner = (Path(dash.__file__).parent.parent / "dashboard" / "assets" / "owner.js").read_text()
     j = owner.index("function msgReports(")
@@ -843,7 +843,7 @@ def test_schema_has_the_four_tables_and_indexes():
     for t in ("dash_friends", "dash_member_messages", "dash_member_reports", "dash_member_prefs"):
         assert f"CREATE TABLE IF NOT EXISTS {t}" in src
     assert "CHECK (user_a <> user_b)" in src and "CHECK (status IN ('pending', 'accepted', 'blocked'))" in src
-    assert 'SCHEMA_VERSION = "67"' in src
+    assert 'SCHEMA_VERSION = "69"' in src
 
 
 def test_report_snapshots_are_purged_90_days_after_resolution_and_the_privacy_page_says_so():

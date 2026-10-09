@@ -66,6 +66,22 @@ class handler(BaseHTTPRequestHandler):
                 logger.info(f"[v0] cron member reports purged={asyncio.run(db.msg_reports_purge(member_msg.REPORT_RETENTION_DAYS))}")
             except Exception as e:
                 logger.error(f"[v0] cron member messages purge failed: {type(e).__name__}")
+            try:                          # renewal / ending reminders, at most one DM per plan per period
+                from modules import renewal_reminders
+                import aiohttp
+                from config import DISCORD_BOT_TOKEN, DASH_PAGES_URL
+                from api.cron_discord_owner_broadcast import _dm_user
+
+                async def _remind():
+                    if not DISCORD_BOT_TOKEN:
+                        return {"error": "no_bot_token"}
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as sess:
+                        async def send(uid, text):
+                            return await _dm_user(sess, DISCORD_BOT_TOKEN, uid, text)
+                        return await renewal_reminders.run(db, send, DASH_PAGES_URL)
+                logger.info(f"[v0] cron renewal reminders: {asyncio.run(_remind())}")
+            except Exception as e:
+                logger.error(f"[v0] cron renewal reminders failed: {type(e).__name__}")
             logger.info(f"[v0] cron_expire_monetization reverted clone_ids={reverted}")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

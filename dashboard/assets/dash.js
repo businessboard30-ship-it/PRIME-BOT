@@ -798,7 +798,12 @@
           r.warns.forEach(function (w) {
             warnsBox.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
               h("b", { text: "Warn #" + w.id }), h("span", { class: "help", text: "  " + fmtWhen(w.at) + (w.by ? " \u00b7 by " + w.by : "") }),
-              h("p", { text: w.reason || "No reason given." }))));
+              h("p", { text: w.reason || "No reason given." })),
+              h("button", { class: "btn sm ghost", type: "button", text: "Remove", "aria-label": "Remove warn " + w.id, onclick: function () {
+                if (!confirm("Remove warn #" + w.id + "? This is recorded in the audit log.")) return;
+                api("warn_remove", null, { guild_id: gid, user_id: user.value.trim(), warn_id: w.id }).then(function (x) { toast(x.message); load(true); })
+                  .catch(function (e) { toast((e && e.message) || "Couldn't remove that warn.", "bad"); });
+              } })));
           });
         }
         r.cases.forEach(function (c) {
@@ -817,7 +822,7 @@
     kind.addEventListener("change", function () { load(true); });
     moreBtn.addEventListener("click", function () { load(false); });
     add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Moderation" }),
-      h("p", { class: "muted", text: "Kicks, bans, timeouts and warns recorded by the bot, newest first. Read-only: use the Discord commands to act." })),
+      h("p", { class: "muted", text: "Kicks, bans, timeouts and warns recorded by the bot, newest first. You can remove a single warn here (it is audited). To clear all of a member\u2019s warns, use /unwarn in Discord." })),
       h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
       h("div", { class: "card rv" }, h("div", { class: "owner-bar" }, user, kind, go), list, moreBtn), warnsBox]);
     load(true);
@@ -1013,6 +1018,41 @@
     });
     return h("p", null, h("b", { text: label + " " }), sel);
   }
+  /* Card plan: 10 free website AI chats a week. The conversation lives only in this page (never stored); the server
+     enforces the plan and the weekly allowance. */
+  function cardChat(usage, meter) {
+    var history = [], busy = false;
+    var box = section("Free AI chat (card plan)");
+    var log = h("div", { "aria-live": "polite", style: "max-height:360px;overflow:auto;margin:8px 0" });
+    var input = h("textarea", { rows: 3, maxlength: 4000, "aria-label": "Message", placeholder: "Ask for card ideas, or anything else\u2026", style: "width:100%" });
+    var send = h("button", { class: "btn sm", type: "button", text: "Send" });
+    var fresh = h("button", { class: "btn sm ghost", type: "button", text: "New chat" });
+    function line(role, text) {
+      log.appendChild(h("div", { style: "margin:8px 0;white-space:pre-wrap;word-break:break-word" }, h("b", { text: role === "user" ? "You: " : "AI: " }), h("span", { text: text })));
+      log.scrollTop = log.scrollHeight;
+    }
+    function show(u) { meter.textContent = "Free website AI chats this week: " + u.used + " / " + u.limit + " \u00b7 resets " + new Date(u.resets_at).toLocaleString(); }
+    if (usage) show(usage);
+    function go() {
+      var text = input.value.trim();
+      if (!text || busy) return;
+      busy = true; send.disabled = true; input.value = "";
+      history.push({ role: "user", content: text }); line("user", text);
+      api("member_chat", null, { messages: history }).then(function (r) {
+        history.push({ role: "assistant", content: r.reply }); line("assistant", r.reply); show(r);
+      }).catch(function (e) {
+        history.pop(); input.value = text; meter.textContent = (e && e.message) || "That didn't work. Try again.";
+      }).then(function () { busy = false; send.disabled = false; input.focus(); });
+    }
+    send.addEventListener("click", go);
+    input.addEventListener("keydown", function (ev) { if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") go(); });
+    fresh.addEventListener("click", function () { history = []; log.textContent = ""; });
+    box.appendChild(h("p", { class: "muted", text: "10 free chats a week with the bot's AI, on this website only. Chats aren't saved on our servers; closing this page clears the conversation. Never paste passwords or API keys." }));
+    box.appendChild(log); box.appendChild(input);
+    box.appendChild(h("div", { class: "row" }, send, " ", fresh));
+    return box;
+  }
+
   /* ---------- custom level-up card editor (card plan). Preview is open to all; the server gates Save (402). ---------- */
   function renderCardEditor(box) {
     api("member_card").then(function (j) {
@@ -1100,6 +1140,7 @@
       box.appendChild(h("p", { class: "muted", text: "Paste the prompt into any AI image tool, then upload the result above. Uploads are checked automatically; anything rejected is never shown." }));
       box.appendChild(h("p", null, save)); box.appendChild(pay); box.appendChild(msg);
       if (j.ai) { meter.textContent = "Free website AI chats this week: " + j.ai.used + " / " + j.ai.limit + " \u00b7 resets " + new Date(j.ai.resets_at).toLocaleString(); box.appendChild(meter); }
+      if (j.access) { box.appendChild(cardChat(j.ai, meter)); }
       preview();
     }).catch(function (e) { fail(box, e); });
   }
@@ -1155,7 +1196,7 @@
 
   /* ---------- member shell (same sidebar + cards layout as the server dashboard) ---------- */
   var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"],
-    ["card", "trophy", "Level-up card"], ["messages", "mail", "Messages"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"]];
+    ["card", "trophy", "Level-up card"], ["messages", "mail", "Messages"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"], ["privacy", "lock", "Privacy & data"]];
   function renderMemberShell(cur) {
     document.body.classList.remove("menu"); S.mod = null;
     app.textContent = ""; renderHeader();
@@ -1184,13 +1225,24 @@
     add(main, [pageHead("Overview", "Welcome, " + S.user.username), stats]);
     var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."],
       ["card", "trophy", "Level-up card", "Design the card shown when you level up."], ["prefs", "sliders", "Preferences", "Language, currency, AI character and pings."],
-      ["messages", "mail", "Messages", "Message friends from your servers."], ["purchases", "scroll", "Purchases", "Every payment on your account."]];
+      ["messages", "mail", "Messages", "Message friends from your servers."], ["purchases", "scroll", "Purchases", "Every payment on your account."], ["privacy", "lock", "Privacy & data", "Pricing, what we store, and deleting your data."]];
     go.forEach(function (g, i) {
       quick.appendChild(h("div", { class: "card q rv", style: "--i:" + i }, icon(g[1]), h("div", { class: "grow" }, h("a", { href: "#/me/" + g[0], text: g[2] }), h("small", { text: g[3] })),
         h("a", { class: "btn sm ghost", href: "#/me/" + g[0], text: "Open" })));
     });
     quick.appendChild(h("div", { class: "card q rv" }, icon("code"), h("div", { class: "grow" }, h("a", { href: "#/dev", text: "Developer mode" }), h("small", { text: "AI chat and tools for builders." })),
       h("a", { class: "btn sm ghost", href: "#/dev", text: "Open" })));
+    var meters = h("div", null);
+    main.appendChild(meters);
+    api("member_usage").then(function (j) {
+      (j.meters || []).forEach(function (m) {
+        var pct = m.limit ? Math.min(100, Math.round(100 * m.used / m.limit)) : 0;
+        meters.appendChild(h("div", { class: "card rv", style: "margin-bottom:12px" }, h("h3", { text: m.label }),
+          h("div", { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": m.limit, "aria-valuenow": m.used, "aria-label": m.label, style: "height:8px;border-radius:4px;background:var(--tint)" },
+            h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
+          h("p", { class: "muted", text: m.used + " of " + m.limit + " used \u00b7 resets " + new Date(m.resets_at).toLocaleString() })));
+      });
+    }).catch(function () { /* meters are optional; the rest of the page still works */ });
     main.appendChild(h("h2", { text: "Your account" })); main.appendChild(quick);
     Promise.all([api("member_servers"), api("member_status")]).then(function (res) {
       var list = res[0].servers || [], items = (res[1].entitlements || []).filter(function (e) { return e.state === "active" || e.state === "cancelled" || e.state === "past_due"; });
@@ -1409,8 +1461,48 @@
     load();
   }
 
+  function mePrivacy(main) {
+    var plans = section("Pricing"), data = section("Your data"), danger = section("Delete my data");
+    var note = h("p", { class: "muted", role: "status", text: "" });
+    add(main, [pageHead("Privacy & data", "Privacy & data"), plans, data, danger]);
+    plans.appendChild(h("p", { class: "muted", text: "Prices are in USD. Plans renew automatically and you can cancel any time; access runs to the end of the period you paid for." }));
+    api("member_plans").then(function (j) {
+      (j.plans || []).forEach(function (p) {
+        plans.appendChild(h("p", null, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " per " + (p.period_days >= 360 ? "year" : "month")));
+      });
+      plans.appendChild(h("a", { class: "btn sm ghost", href: "#/me/plans", text: "Plans & billing" }));
+    }).catch(function (e) { fail(plans, e); });
+    [["What we store", "Your level-up card design and uploads, your saved AI provider keys (encrypted, never shown again), receipts for saved exports (the files themselves are encrypted), and a record that you signed in to this dashboard."],
+     ["What we keep either way", "Payment records and your plans (needed for billing and refunds), weekly chat counters (so limits can't be reset), and your XP, coins and moderation records inside servers."],
+     ["What we don't store", "Your AI chats. They live only in this page and disappear when you close it."]
+    ].forEach(function (r) { data.appendChild(h("p", null, h("b", { text: r[0] + ". " }), r[1])); });
+    danger.appendChild(h("p", { class: "muted", text: "This removes your card design and uploads, saved AI keys, export receipts and files, and signs you out everywhere. It can't be undone. Payments and in-server records are kept." }));
+    var box = h("input", { type: "text", autocomplete: "off", spellcheck: "false", "aria-label": "Type DELETE MY DATA to confirm", placeholder: "DELETE MY DATA", style: "max-width:260px" });
+    var go = h("button", { class: "btn sm", type: "button", text: "Delete my data" });
+    function stepUp() {
+      note.textContent = "Confirm it's you: opening Discord\u2026";
+      api("member_stepup", null, {}).then(function (r) { location.href = r.url; })
+        .catch(function (e) { note.textContent = (e && e.message) || "Couldn't start the sign-in."; });
+    }
+    go.addEventListener("click", function () {
+      if (box.value !== "DELETE MY DATA") { note.textContent = "Type DELETE MY DATA to confirm."; return; }
+      go.disabled = true; note.textContent = "Deleting\u2026";
+      api("member_data_delete", null, { confirm: box.value }).then(function () {
+        localStorage.removeItem(KEY); note.textContent = "Your data was deleted. Signing you out\u2026";
+        setTimeout(function () { location.href = location.pathname; }, 1500);
+      }).catch(function (e) {
+        go.disabled = false;
+        if (e && e.payload && e.payload.code === "stepup_required") {
+          note.textContent = ""; note.appendChild(document.createTextNode("Confirm it's you first. "));
+          note.appendChild(h("button", { class: "btn sm ghost", type: "button", text: "Sign in with Discord again", onclick: stepUp }));
+        } else { note.textContent = (e && e.message) || "That didn't work. Try again."; }
+      });
+    });
+    danger.appendChild(h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, box, go)); danger.appendChild(note);
+  }
+
   function renderMe(sec) {
-    var pages = { "": meOverview, plans: mePlans, servers: meServers, prefs: mePrefs, purchases: mePurchases, card: meCard, messages: meMessages };
+    var pages = { "": meOverview, plans: mePlans, servers: meServers, prefs: mePrefs, purchases: mePurchases, card: meCard, messages: meMessages, privacy: mePrivacy };
     sec = sec || "";
     if (!pages[sec]) { location.hash = "#/me"; return; }
     pages[sec](renderMemberShell(sec));
@@ -1426,6 +1518,8 @@
     var pick = h("select", { "aria-label": "Model", style: "margin-right:8px" }, h("option", { value: "default", text: "Bot AI (default)" }));
     var send = h("button", { class: "btn sm", type: "button", text: "Send" });
     var fresh = h("button", { class: "btn sm ghost", type: "button", text: "New chat" });
+    var saveChat = h("button", { class: "btn sm ghost", type: "button", text: "Save chat" });
+    S.chatInsert = function (text) { input.value = (input.value ? input.value + "\n\n" : "") + text; input.focus(); };
     function line(role, text) {
       log.appendChild(h("div", { style: "margin:8px 0;white-space:pre-wrap;word-break:break-word" }, h("b", { text: role === "user" ? "You: " : "AI: " }), h("span", { text: text })));
       log.scrollTop = log.scrollHeight;
@@ -1456,9 +1550,53 @@
     send.addEventListener("click", go);
     input.addEventListener("keydown", function (ev) { if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") go(); });
     fresh.addEventListener("click", function () { history = []; log.textContent = ""; });
+    saveChat.addEventListener("click", function () {
+      if (!history.length) { meter.textContent = "Nothing to save yet."; return; }
+      var md = history.map(function (m) { return (m.role === "user" ? "**You:** " : "**AI:** ") + m.content; }).join("\n\n");
+      saveChat.disabled = true;
+      api("dev_export_create", null, { kind: "note", name: "chat " + new Date().toISOString().slice(0, 16).replace("T", " "), content: md })
+        .then(function (r) { meter.textContent = r.dm_sent ? "Saved. A copy is in your DMs and on this page under Exports." : "Saved under Exports below (we couldn't DM you)."; refreshExports(); })
+        .catch(function (e) { meter.textContent = (e && e.message) || "Couldn't save the chat."; })
+        .then(function () { saveChat.disabled = false; });
+    });
     box.appendChild(h("p", { class: "muted", text: "Uses the bot's own AI. Chats aren't saved on our servers; closing this page clears the conversation. Never paste passwords or API keys." }));
     box.appendChild(meter); box.appendChild(log); box.appendChild(input);
-    box.appendChild(h("div", { class: "row" }, pick, send, " ", fresh));
+    box.appendChild(h("div", { class: "row" }, pick, send, " ", fresh, " ", saveChat));
+    return box;
+  }
+
+  /* Exports: files are encrypted before they leave this server; the list shows names, sizes and dates only. */
+  var refreshExports = function () {};
+  function devExports() {
+    var box = section("Exports");
+    var note = h("p", { class: "muted", role: "status", text: "" });
+    var list = h("div", null);
+    box.appendChild(h("p", { class: "muted", text: "Saved chats and files. They are encrypted when stored. You also get a copy by DM when you save one. After your plan ends you can still download them for 7 days." }));
+    box.appendChild(list); box.appendChild(note);
+    function save(name, text) {
+      var url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+      var a = h("a", { href: url, download: name }); document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+    }
+    function draw(r) {
+      list.textContent = "";
+      var xs = r.exports || [];
+      if (!xs.length) list.appendChild(h("p", { class: "muted", text: "Nothing exported yet. Use \"Save chat\" in the chat." }));
+      xs.forEach(function (x) {
+        var dl = h("button", { class: "btn sm ghost", type: "button", text: "Download" });
+        var rm = h("button", { class: "btn sm ghost", type: "button", text: "Delete" });
+        dl.addEventListener("click", function () {
+          api("dev_export_download", { id: x.id }).then(function (f) { save(f.name, f.content); }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't download that."; });
+        });
+        rm.addEventListener("click", function () {
+          api("dev_export_delete", null, { id: x.id }).then(load).catch(function (e) { note.textContent = (e && e.message) || "Couldn't delete that."; });
+        });
+        list.appendChild(h("div", { class: "row", style: "margin:6px 0;gap:8px;align-items:center" },
+          h("b", { text: x.name }), h("span", { class: "muted", text: Math.max(1, Math.round(x.size / 1024)) + " KB \u00b7 " + when2(x.created_at) }), dl, rm));
+      });
+    }
+    function load() { return api("dev_export_list").then(draw).catch(function (e) { list.textContent = ""; fail(list, e); }); }
+    refreshExports = load; load();
     return box;
   }
 
@@ -1520,6 +1658,107 @@
     return box;
   }
 
+  /* GitHub connect (C4, read-only): browse a repo, attach a file or a diff to the AI chat. Server data only ever goes in via textContent. */
+  function devGithub() {
+    var box = section("GitHub (read-only)");
+    var note = h("p", { class: "muted", role: "status", text: "" });
+    var body = h("div", null);
+    box.appendChild(h("p", { class: "muted", text: "Connect GitHub to browse your repositories and attach a file or a diff to your AI chat. It is read-only: nothing is ever written to GitHub from here. The token is encrypted and never shown again, and you can disconnect any time." }));
+    box.appendChild(body); box.appendChild(note);
+    function stepUp() {
+      note.textContent = "Confirm it's you: opening Discord\u2026";
+      api("dev_stepup", null, {}).then(function (r) { location.href = r.url; })
+        .catch(function (e) { note.textContent = (e && e.message) || "Couldn't start the sign-in."; });
+    }
+    function guard(p) {
+      return p.catch(function (e) {
+        if (e && e.payload && e.payload.code === "stepup_required") {
+          note.textContent = "";
+          note.appendChild(document.createTextNode("Confirm it's you first. "));
+          note.appendChild(h("button", { class: "btn sm ghost", type: "button", text: "Sign in with Discord again", onclick: stepUp }));
+          return null;
+        }
+        note.textContent = (e && e.message) || "That didn't work. Try again."; return null;
+      });
+    }
+    function attach(label, text) {
+      var room = 3500 - label.length - 16;
+      var clipped = text.length > room;
+      var msg = label + "\n```\n" + text.slice(0, room) + "\n```" + (clipped ? "\n(first " + room + " characters)" : "");
+      if (S.chatInsert) { S.chatInsert(msg); note.textContent = clipped ? "Attached the first " + room + " characters to your chat message." : "Attached to your chat message."; }
+    }
+    function viewer(label, text, extra) {
+      var pre = h("pre", { style: "max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:8px 0", text: text });
+      var go = h("button", { class: "btn sm", type: "button", text: "Attach to chat", onclick: function () { attach(label, text); } });
+      return h("div", null, extra || null, pre, go);
+    }
+    function drawBrowser(wrap) {
+      var crumb = h("p", { class: "muted", text: "" }), list = h("div", null), view = h("div", null), cur = { repo: "", path: "" };
+      function open(repo, path) {
+        cur.repo = repo; cur.path = path; view.textContent = ""; list.textContent = "";
+        crumb.textContent = repo + (path ? "/" + path : "");
+        api("dev_github_browse", { repo: repo, path: path }).then(function (r) {
+          if (r.type === "file") {
+            if (r.text === null) { view.appendChild(h("p", { class: "muted", text: r.note || "This file can't be shown." })); return; }
+            view.appendChild(viewer("File " + repo + "/" + r.path + ":", r.text, r.truncated ? h("p", { class: "muted", text: "Showing the first part of a long file." }) : null));
+            return;
+          }
+          if (path) list.appendChild(h("button", { class: "btn sm ghost", type: "button", text: "\u2190 Up", onclick: function () { open(repo, path.split("/").slice(0, -1).join("/")); } }));
+          (r.entries || []).forEach(function (en) {
+            list.appendChild(h("div", null, h("button", { class: "btn sm ghost", type: "button", text: (en.type === "dir" ? "\uD83D\uDCC1 " : "") + en.name, onclick: function () { open(repo, en.path); } })));
+          });
+          if (!(r.entries || []).length) list.appendChild(h("p", { class: "muted", text: "This folder is empty." }));
+        }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't open that."; });
+      }
+      var repos = h("div", null);
+      api("dev_github_repos").then(function (r) {
+        if (!(r.repos || []).length) repos.appendChild(h("p", { class: "muted", text: "No repositories found." }));
+        (r.repos || []).forEach(function (rp) {
+          repos.appendChild(h("div", { style: "margin:4px 0" }, h("button", { class: "btn sm ghost", type: "button", text: rp.full_name + (rp.private ? " (private)" : ""), onclick: function () { open(rp.full_name, ""); } }),
+            rp.description ? h("span", { class: "muted", text: "  " + rp.description }) : null));
+        });
+      }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't load your repositories."; });
+      // diff loader
+      var repoIn = h("input", { type: "text", maxlength: 201, placeholder: "owner/repo", "aria-label": "Repository", style: "max-width:200px" });
+      var kind = h("select", { "aria-label": "Diff type" }, h("option", { value: "commit", text: "Commit" }), h("option", { value: "pull", text: "Pull request" }), h("option", { value: "compare", text: "Compare two refs" }));
+      var a = h("input", { type: "text", maxlength: 100, placeholder: "hash / number / base", "aria-label": "First value", style: "max-width:170px" });
+      var b = h("input", { type: "text", maxlength: 100, placeholder: "head (compare only)", "aria-label": "Second value", style: "max-width:170px" });
+      var dview = h("div", null);
+      var load = h("button", { class: "btn sm", type: "button", text: "Load diff", onclick: function () {
+        dview.textContent = "";
+        api("dev_github_diff", { repo: repoIn.value.trim(), kind: kind.value, a: a.value.trim(), b: b.value.trim() }).then(function (r) {
+          dview.appendChild(viewer("Diff " + repoIn.value.trim() + " (" + kind.value + " " + a.value.trim() + (kind.value === "compare" ? "..." + b.value.trim() : "") + "):", r.diff || "(empty diff)", r.truncated ? h("p", { class: "muted", text: "Showing the first part of a long diff." }) : null));
+        }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't load that diff."; });
+      } });
+      add(wrap, [h("h3", { text: "Your repositories" }), repos, crumb, list, view, h("h3", { text: "Attach a diff" }),
+        h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, repoIn, kind, a, b, load), dview]);
+    }
+    function draw(st) {
+      body.textContent = "";
+      if (!st.configured) { body.appendChild(h("p", { class: "muted", text: "GitHub connect isn't set up yet." })); return; }
+      if (!st.connected) {
+        body.appendChild(h("button", { class: "btn sm", type: "button", text: "Connect GitHub", onclick: function () {
+          guard(api("dev_github_connect", null, {})).then(function (r) { if (r && r.url) location.href = r.url; });
+        } }));
+        return;
+      }
+      var off = h("button", { class: "btn sm ghost", type: "button", text: "Disconnect", onclick: function () {
+        if (!window.confirm("Disconnect GitHub? The saved token is deleted.")) return;
+        guard(api("dev_github_disconnect", null, {})).then(function (x) { if (x) { note.textContent = "GitHub disconnected."; draw(x); } });
+      } });
+      body.appendChild(h("div", { class: "row", style: "gap:8px;align-items:center" }, h("b", { text: "Connected as " + st.login }), off));
+      var wrap = h("div", null); body.appendChild(wrap); drawBrowser(wrap);
+    }
+    function loadStatus() { return api("dev_github").then(draw).catch(function (e) { fail(box, e); }); }
+    if (S.ghError) { S.ghError = false; note.textContent = "The GitHub connection was cancelled."; }
+    if (S.ghPending) {
+      var pend = S.ghPending; S.ghPending = null; note.textContent = "Finishing the GitHub connection\u2026";
+      api("dev_github_finish", null, pend).then(function (st) { note.textContent = "GitHub connected."; draw(st); })
+        .catch(function (e) { note.textContent = (e && e.message) || "Couldn't finish the GitHub connection."; loadStatus(); });
+    } else loadStatus();
+    return box;
+  }
+
   function renderDev() {
     var main = renderMemberShell("dev");
     var body = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
@@ -1532,7 +1771,9 @@
         c.appendChild(h("p", { class: "muted", text: "Active" + (st.expires_at ? " until " + when2(st.expires_at) : "") + ". Features are switched on one at a time as they ship." }));
         c.appendChild(feats); body.appendChild(c);
         body.appendChild(devChat());
+        body.appendChild(devExports());
         body.appendChild(devKeys());
+        body.appendChild(devGithub());
         return;
       }
       var lock = section("Locked");
@@ -1543,6 +1784,7 @@
       lock.appendChild(h("p", { class: "muted", text: "Plans renew automatically until you cancel. Access starts after the payment is confirmed." }));
       body.appendChild(lock);
       body.appendChild(planGrid(st.plans, st.pay, msg)); body.appendChild(msg);
+      if (st.export_available) body.appendChild(devExports());
     }).catch(function (e) { body.textContent = ""; fail(body, e); });
   }
 
@@ -1589,7 +1831,10 @@
   /* ---------- boot ---------- */
   function boot() {
     var frag = new URLSearchParams(location.hash.replace(/^#/, "")), err = null;
-    if (frag.get("dev") === "stepup_ok") { history.replaceState(null, "", location.pathname + "#/dev"); }
+    if (frag.get("me") === "stepup_ok") { history.replaceState(null, "", location.pathname + "#/me/privacy"); }
+    else if (frag.get("gh_code") && frag.get("gh_state")) { S.ghPending = { code: frag.get("gh_code"), state: frag.get("gh_state") }; history.replaceState(null, "", location.pathname + "#/dev"); }
+    else if (frag.get("gh_error")) { S.ghError = true; history.replaceState(null, "", location.pathname + "#/dev"); }
+    else if (frag.get("dev") === "stepup_ok") { history.replaceState(null, "", location.pathname + "#/dev"); }
     else if (frag.get("owner") === "stepup_ok") { S.stepupDone = true; history.replaceState(null, "", location.pathname + "#/owner/security"); }
     else if (frag.get("session")) { localStorage.setItem(KEY, frag.get("session")); history.replaceState(null, "", location.pathname + "#/"); }
     else if (frag.get("error")) { err = frag.get("error"); history.replaceState(null, "", location.pathname); }

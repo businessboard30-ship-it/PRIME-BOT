@@ -234,8 +234,94 @@ async def member_card_save(uid, body, db):
     return {"design": design}
 
 
+CARD_SOURCE = "card_plan"          # counter source in user_ai_usage: 10 website-only chats per week; Discord never spends it
+
+
+def _card_usage_view(st: dict) -> dict:
+    from modules import ai_usage
+    limit = ai_usage.LIMITS[CARD_SOURCE]
+    return {"used": st["used"], "limit": limit, "remaining": max(limit - st["used"], 0), "resets_at": st["resets_at"]}
+
+
+async def member_chat(uid, body, db):
+    """POST {messages: [{role, content}]}: the card plan's free website chats (10 a week, bot-provided AI).
+    Order matters: plan gate (402), kill switch, validate, spend one chat atomically, ask, refund on failure.
+    The conversation stays in the browser; only the weekly counter is stored."""
+    from modules import ai_usage, dev_chat
+    if not ent.has_access(await db.entitlements_list(uid), ("card_plan",)):
+        return {"_status": 402, "code": "subscription_required", "message": "The free website chats come with the card plan.",
+                "extra": {"plans_path": "#/me/plans", "pay": await pay_view(db)}}
+    from modules import admin_controls
+    if "ai" in await admin_controls.current_switches():
+        return {"_status": 503, "message": "AI chat is switched off right now."}
+    messages, err = dev_chat.clean_messages((body or {}).get("messages"))
+    if err:
+        return {"_status": 422, "message": err}
+    ws = ai_usage.week_start()
+    ok, st = await ai_usage.consume(db, uid, CARD_SOURCE)
+    if not ok:
+        reset = ai_usage.resets_at().strftime("%a %d %b, %H:%M UTC")
+        return {"_status": 429, "code": "weekly_limit",
+                "message": f"You've used all {ai_usage.LIMITS[CARD_SOURCE]} free chats this week. They reset {reset}."}
+    try:
+        text = await dev_chat.ask(messages, system=dev_chat.MEMBER_SYSTEM_PROMPT)
+    except Exception as e:
+        await db.ai_usage_refund(uid, ws, CARD_SOURCE)
+        if not isinstance(e, RuntimeError):
+            logger.exception("member chat failed")
+        return {"_status": 502, "message": str(e) if isinstance(e, RuntimeError) else "The AI service is busy. Try again in a moment."}
+    return {"reply": text, **_card_usage_view(st)}
+
+
+DELETE_PHRASE = "DELETE MY DATA"
+
+
+async def member_usage(uid, q, db):
+    """Usage meters for the plans this person actually has. Counters are the server's; nothing here can spend them."""
+    from modules import ai_usage
+    rows = await db.entitlements_list(uid)
+    meters = []
+    for source, products, label in (("card_plan", ("card_plan",), "Card plan AI chats this week"),
+                                    ("dev", ent.DEV_PRODUCTS, "Developer AI chats this week")):
+        if ent.has_access(rows, products):
+            st = await ai_usage.status(db, uid, source)
+            meters.append({"id": source, "label": label, "used": st["used"], "limit": st["limit"], "resets_at": st["resets_at"]})
+    return {"meters": meters}
+
+
+async def member_stepup(uid, body, db):
+    """Handled in the router (it needs the session); present so the action name is registered and rate limited."""
+    return {"_status": 400, "message": "Not available."}
+
+
+async def member_data_delete(uid, body, db):
+    """POST {confirm: "DELETE MY DATA"}. The router has already required a fresh Discord sign-in. Deletes what the
+    dashboard stores about the SESSION user (never an id from the body). Payments, plans, usage counters and in-server
+    records are kept; the response says so. Stored export files are removed from the storage channel first; if any
+    can't be removed nothing is deleted, so the person can simply retry."""
+    if ((body or {}).get("confirm") or "") != DELETE_PHRASE:
+        return {"_status": 422, "message": f"Type {DELETE_PHRASE} to confirm."}
+    from api import dash, dash_dev
+    channel = dash_dev._storage_channel()
+    receipts = await db.dev_export_list(uid, 1000)
+    if receipts and not channel:
+        return {"_status": 502, "message": "Couldn't remove your saved exports right now. Try again later."}
+    for r in receipts:
+        try:
+            status = await dash._bot_request("DELETE", f"/channels/{channel}/messages/{r['message_id']}")
+        except Exception:
+            status = None
+        if status not in (200, 204, 404):
+            return {"_status": 502, "message": "Couldn't remove your saved exports right now. Nothing was deleted; try again in a moment."}
+    counts = await db.member_data_delete(uid)
+    logger.info("member data delete: user=%s removed=%s", uid, {k: v for k, v in counts.items() if v})
+    return {"deleted": True, "removed": counts, "kept": ["payments and plans", "weekly usage counters", "XP, coins and moderation records in servers"]}
+
+
 ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_plans": member_plans,
-          "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card}
+          "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card, "member_usage": member_usage}
 WRITES = {"member_pref_set": member_pref_set, "checkout_user": checkout_user,
           "member_card_preview": member_card_preview, "member_card_save": member_card_save,
-          "member_card_asset": member_card_asset, "member_card_asset_delete": member_card_asset_delete}
+          "member_card_asset": member_card_asset, "member_card_asset_delete": member_card_asset_delete,
+          "member_chat": member_chat,
+          "member_stepup": member_stepup, "member_data_delete": member_data_delete}

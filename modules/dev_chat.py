@@ -15,6 +15,13 @@ SYSTEM_PROMPT = (
     "You cannot browse, run code or access accounts. Never reveal or ask for API keys, tokens or passwords."
 )
 
+MEMBER_SYSTEM_PROMPT = (
+    "You are a helpful, friendly assistant on this Discord bot's website, answering a member who has the custom "
+    "level-up card plan. Help with ideas for their card design, writing, questions and everyday tasks. Be concise and "
+    "accurate; if you are unsure, say so. You cannot browse, run code or access accounts. Never reveal or ask for "
+    "API keys, tokens or passwords."
+)
+
 # BOT_RULES rule 1 caps replies at ~900 plain-text characters for Discord; a developer chat on the website needs code blocks.
 RULE_OVERRIDE = ("\nOverride for this website developer chat only: rule 1's length and plain-text limits do not apply. "
                  "Use fenced code blocks and longer answers when the task needs them. All other rules still apply.")
@@ -45,11 +52,11 @@ def clean_messages(raw):
     return out, None
 
 
-async def ask(messages) -> str:
+async def ask(messages, system=None) -> str:
     """One call to the bot's own model. Raises RuntimeError with a SAFE message on any failure."""
     from modules import ai_features
     payload = {"model": ai_features.AI_CHAT_MODEL,
-               "messages": [{"role": "system", "content": SYSTEM_PROMPT + "\n" + ai_features.BOT_RULES + RULE_OVERRIDE}] + messages,
+               "messages": [{"role": "system", "content": (system or SYSTEM_PROMPT) + "\n" + ai_features.BOT_RULES + RULE_OVERRIDE}] + messages,
                "temperature": 0.7, "max_completion_tokens": 1200, "reasoning_effort": "low", "top_p": 1.0}
     status, data, err = await ai_features._groq_post(payload, timeout_seconds=45)
     if status != 200 or not data:
