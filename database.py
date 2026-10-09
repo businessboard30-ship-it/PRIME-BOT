@@ -15345,15 +15345,22 @@ class Database:
         return {r["user_id"] for r in rows}
 
     async def msg_guild_ids(self, user_id: str, limit: int = 25) -> list:
-        """Main-bot servers where this person has XP (candidates for the shared-server check; Discord confirms)."""
+        """Candidate servers for the shared-server check: where this person has XP on the main bot OR on an ACTIVE clone
+        (same rule as member_servers(all_bots=True)). Each row: guild_id, name, clone_id (None = main bot) and bot_username
+        (None for the main bot). The guild name is read for the same bot the XP row belongs to. Discord confirms, as that bot."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT x.guild_id, (SELECT guild_name FROM discord_guilds g WHERE g.guild_id = x.guild_id
-                          AND g.clone_id IS NULL AND g.left_at IS NULL ORDER BY joined_at DESC LIMIT 1) AS guild_name
-                   FROM discord_xp x WHERE x.user_id = $1 AND x.clone_id IS NULL AND x.total_xp > 0
+                """SELECT x.guild_id, x.clone_id, cb.bot_username,
+                          (SELECT guild_name FROM discord_guilds g WHERE g.guild_id = x.guild_id
+                              AND g.clone_id IS NOT DISTINCT FROM x.clone_id AND g.left_at IS NULL
+                           ORDER BY joined_at DESC LIMIT 1) AS guild_name
+                   FROM discord_xp x LEFT JOIN discord_cloned_bots cb ON cb.clone_id = x.clone_id
+                   WHERE x.user_id = $1 AND x.total_xp > 0 AND (x.clone_id IS NULL OR cb.status = 'active')
                    ORDER BY x.total_xp DESC LIMIT $2""", int(user_id), int(limit))
-        return [{"guild_id": str(r["guild_id"]), "name": r["guild_name"]} for r in rows if r["guild_name"]]
+        return [{"guild_id": str(r["guild_id"]), "name": r["guild_name"],
+                 "clone_id": int(r["clone_id"]) if r["clone_id"] is not None else None,
+                 "bot_username": r["bot_username"]} for r in rows if r["guild_name"]]
 
     async def msg_friend_get(self, a: str, b: str):
         lo, hi = self._pair(a, b)
