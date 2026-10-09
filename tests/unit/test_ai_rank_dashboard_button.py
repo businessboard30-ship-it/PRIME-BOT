@@ -100,3 +100,71 @@ def test_button_shown_on_clone_and_hidden_without_url(cog, monkeypatch):
 
 def test_prompt_rule_keeps_numbers_to_fact_block():
     assert "12b." in af.BOT_RULES and "never invent a level" in af.BOT_RULES
+
+
+# ---- the button can never make the AI reply vanish ----
+def test_url_without_a_scheme_is_not_attached(cog, monkeypatch):
+    monkeypatch.setattr(config, "DASH_PAGES_URL", "prime-bot-dash.pages.dev")
+    assert ai_tools.dashboard_button(cog.bot) is None
+    monkeypatch.setattr(config, "DASH_PAGES_URL", " https://dash.example/ ")
+    assert ai_tools.dashboard_button(cog.bot).url == "https://dash.example/#/me/rank"
+
+
+def test_dashboard_path_for_xp_dashboard_and_other_questions(cog):
+    assert cog._dashboard_path("what is my level") == "/me/rank"
+    assert cog._dashboard_path("where is the dashboard?") == "/me"
+    assert cog._dashboard_path("tell me a joke") is None
+    assert cog._dashboard_path(None) is None
+
+
+class _View:
+    def __init__(self, *children):
+        self.children = list(children)
+
+    def remove_item(self, item):
+        self.children.remove(item)
+
+
+def _http_error():
+    return discord.HTTPException(types.SimpleNamespace(status=400, reason="Bad Request"), "Invalid Form Body")
+
+
+def test_a_rejected_dashboard_button_is_dropped_and_the_reply_still_goes_out():
+    btn, view, sent = object(), None, []
+    view = _View(btn)
+
+    async def send(**kw):
+        sent.append(dict(kw))
+        if btn in kw["view"].children:
+            raise _http_error()
+        return "ok"
+    assert run(ai_tools.send_with_fallbacks(send, view, btn, None)) == "ok"
+    assert len(sent) == 2 and view.children == []
+
+
+def test_voice_file_is_dropped_last_and_everything_failing_raises():
+    btn = object()
+    view = _View(btn)
+    calls = []
+
+    async def send(**kw):
+        calls.append(("file" in kw, btn in view.children))
+        if "file" in kw:
+            raise _http_error()
+        return "ok"
+    assert run(ai_tools.send_with_fallbacks(send, view, btn, "VOICE")) == "ok"
+    assert calls == [(True, True), (True, False), (False, False)]
+
+    async def always_fail(**kw):
+        raise _http_error()
+    with pytest.raises(discord.HTTPException):
+        run(ai_tools.send_with_fallbacks(always_fail, _View(), None, None))
+
+
+def test_plain_reply_with_no_view_sends_once_without_a_view_argument():
+    seen = []
+
+    async def send(**kw):
+        seen.append(kw)
+        return "ok"
+    assert run(ai_tools.send_with_fallbacks(send, None, None, None)) == "ok" and seen == [{}]
