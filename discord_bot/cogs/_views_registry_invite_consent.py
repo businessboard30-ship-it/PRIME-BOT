@@ -19,6 +19,7 @@ import logging
 import discord
 
 from database import db
+from utils.guild_owner import resolve_guild_owner
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ async def offer_registry_invite_consent(bot, guild: discord.Guild) -> None:
     etc) just means the registry entry stays without an invite_url,
     same as it always could before this feature existed."""
     try:
-        owner = guild.owner or (await guild.fetch_owner() if guild.owner_id else None)
+        owner = await resolve_guild_owner(guild)
     except (discord.HTTPException, discord.Forbidden):
         owner = None
     if owner is None or owner.bot:

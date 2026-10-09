@@ -62,6 +62,7 @@ from discord_bot.cogs._views_automod_wizard import (
     refresh_posted_wizard as refresh_automod_wizard,
 )
 from discord_bot.cogs._views_automod_reminders import build_reminder_view
+from utils.guild_owner import resolve_guild_owner
 
 # Curated list (LDNOOBW's public "en" list, deduped/sorted) bundled at
 # data/preset_banned_words.txt so /automod bannedword preset works offline —
@@ -393,7 +394,7 @@ class AutomodCog(GuildOnlyCog):
 
     async def _resolve_owner(self, guild: discord.Guild):
         try:
-            owner = guild.owner or (await guild.fetch_owner() if guild.owner_id else None)
+            owner = await resolve_guild_owner(guild)
         except (discord.HTTPException, discord.Forbidden):
             return None
         return owner if (owner is not None and not owner.bot) else None

@@ -29,6 +29,7 @@ from discord.ext import commands, tasks
 
 from database import db
 from discord_bot.cogs.setup_channels import scan_missing_channels, build_suggestions_embed, SetupSuggestView
+from utils.guild_owner import resolve_guild_owner
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ class QuickstartCog(commands.Cog):
         channel won't be asked again. Best-effort, never raises."""
         try:
             if owner is None:
-                owner = guild.owner or (await guild.fetch_owner() if guild.owner_id else None)
+                owner = await resolve_guild_owner(guild)
             if owner is None:
                 return
             clone_id = getattr(self.bot, "clone_id", None)
@@ -163,7 +164,7 @@ class QuickstartCog(commands.Cog):
                 if await self._guild_has_any_setup(guild.id, clone_id):
                     await db.mark_quickstart_followup_skipped(guild.id, clone_id)
                     continue
-                owner = guild.owner or (await guild.fetch_owner() if guild.owner_id else None)
+                owner = await resolve_guild_owner(guild)
                 if owner:
                     embed = self._build_embed(
                         guild,
