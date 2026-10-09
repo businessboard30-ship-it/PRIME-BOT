@@ -1,0 +1,25 @@
+name = "free-cron"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Public service: needs a URL. Add a custom domain in the Cloudflare dashboard (Workers > free-cron > Settings > Domains) if you want one.
+workers_dev = true
+preview_urls = false
+
+[vars]
+# Public values only. Secrets (GITHUB_CLIENT_SECRET, TURNSTILE_SECRET, SESSION_SECRET, ADMIN_KEY) are synced by the deploy workflow.
+GITHUB_CLIENT_ID = ""
+TURNSTILE_SITE_KEY = ""
+# Extra hostnames crons may never call (comma separated). This service's own host is always blocked.
+SELF_HOSTS = ""
+
+[[d1_databases]]
+binding = "DB"
+database_name = "free-cron"
+database_id = "da31e9fd-65f9-483e-abe2-959e587a2b2c"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[observability]
+enabled = true
