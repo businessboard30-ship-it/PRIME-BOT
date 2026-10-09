@@ -1011,11 +1011,11 @@
   var STATE_LABEL = { active: "Active", cancelled: "Ends at period end", past_due: "Payment failed (grace period)", expired: "Expired", none: "None" };
   function section(title) { return h("div", { class: "card rv", style: "margin-bottom:16px" }, h("h3", { text: title })); }
   function fail(box, e) { box.appendChild(h("p", { class: "muted", text: (e && e.message) || "Couldn't load this." })); }
-  function selectRow(label, opts, current, kind) {
+  function selectRow(label, opts, current, kind, extra) {
     var sel = h("select", { "aria-label": label }, opts.map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
     sel.value = current == null ? "" : current;
     sel.addEventListener("change", function () {
-      api("member_pref_set", null, { kind: kind, value: sel.value }).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, "err"); });
+      api("member_pref_set", null, Object.assign({ kind: kind, value: sel.value }, extra || {})).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, "err"); });
     });
     return h("p", null, h("b", { text: label + " " }), sel);
   }
@@ -1353,7 +1353,7 @@
       if (!list.length) { box.appendChild(h("div", { class: "card empty" }, h("p", { class: "muted", text: "You have no XP yet. Chat in a server with the bot and your clan will appear here." }))); return; }
       box.appendChild(h("p", { class: "muted", text: "Everyone is locked into one clan in each server, and it never changes. A chief seat goes to the top 5 players by XP who are at least level 3. Each seat keeps its own clan name, so a seat belongs to the seat, not to the person. This page is read-only." }));
       list.forEach(function (s) {
-        var card = h("div", { class: "card rv" }, h("h3", { text: s.name }),
+        var card = h("div", { class: "card rv" }, h("h3", { text: s.name + (s.bot ? " \u00b7 " + s.bot : "") }),
           h("p", { class: "muted", text: "Level " + s.level + " \u00b7 rank #" + s.rank + " of " + s.players }));
         card.appendChild(h("p", { text: s.clan ? "Your clan: " + s.clan.name + " (" + s.clan.members.toLocaleString() + " members)" : "You are not locked into a clan here yet. It happens automatically as you chat." }));
         if (s.chief) card.appendChild(h("p", { text: "You hold chief seat #" + s.chief.seat + " (" + s.chief.clan + ")." }));
@@ -1377,7 +1377,10 @@
       prefs.appendChild(selectRow("Currency", [["", "Default"]].concat(j.currencies.map(function (c) { return [c, c]; })), j.currency, "currency"));
       prefs.appendChild(selectRow("AI character", Object.keys(j.characters).map(function (k) { return [k, j.characters[k]]; }), j.character, "character"));
       prefs.appendChild(selectRow("AI voice notes", [["auto", "Automatic"], ["off", "Off"]], j.voice, "voice"));
-      prefs.appendChild(h("p", { class: "muted", text: "Language applies to the main bot. Theme is in the header." }));
+      (j.bot_languages || []).forEach(function (b) {
+        prefs.appendChild(selectRow("Language on " + b.bot, Object.keys(j.languages).map(function (k) { return [k, j.languages[k]]; }), b.language, "language", { clone: b.clone }));
+      });
+      prefs.appendChild(h("p", { class: "muted", text: "Language is saved per bot (the main bot and each custom bot you use). Theme is in the header." }));
     }).catch(function (e) { fail(prefs, e); });
   }
 

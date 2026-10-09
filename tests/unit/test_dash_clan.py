@@ -52,7 +52,7 @@ def clans(mem, monkeypatch):
     return log
 
 
-def test_keyed_to_session_and_main_bot_only(clans):
+def test_keyed_to_session_and_main_bot_rows_use_no_clone(clans):
     st, p, _ = call("GET", {"action": "member_clans", "user_id": "999"})
     assert st == 200 and ("servers", "6") in clans
     assert all(c[3] is None for c in clans if c[0] == "card") and all(c[2] == 6 for c in clans if c[0] == "card")

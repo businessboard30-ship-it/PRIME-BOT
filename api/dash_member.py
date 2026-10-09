@@ -133,21 +133,22 @@ CHIEF_SEATS = 5          # seats = ranks #1-5, same as the bot (recompute_clan_c
 
 
 async def member_clans(uid, q, db):
-    """READ-ONLY. The viewer's own clan per server (main bot only, same servers as member_servers), whether they
-    hold a chief seat, the clan's member count and the 5 seats. Seat holders appear like the web leaderboard:
+    """READ-ONLY. The viewer's own clan per server (main bot AND custom bots, same servers as member_servers, each
+    read from the bot the XP belongs to), whether they hold a chief seat, the clan's member count and the 5 seats. Seat holders appear like the web leaderboard:
     by name only if signed in and not opted out, otherwise "Hidden player". No user id is ever returned and
     nothing here can change a clan (assignment is automatic and seat-bound)."""
     import config
     from modules.clan_cards import get_clan_label
     n = int(uid)
     min_level = int(config.CHIEF_MIN_LEVEL)    # the bot's own threshold, never a copy
-    servers = [server_view(r) for r in await db.member_servers(uid)][:CLAN_MAX_SERVERS]
+    servers = [server_view(r) for r in await db.member_servers(uid, all_bots=True)][:CLAN_MAX_SERVERS]
     out = []
     for sv in servers:
         gid = int(sv["guild_id"])
-        card = await db.get_clan_card_if_assigned(gid, n)
-        seat = await db.get_chief_seat_for_user(gid, n)
-        seats = await db.get_clan_seats(gid)
+        cid = None if sv["clone_id"] is None else int(sv["clone_id"])     # None = main bot
+        card = await db.get_clan_card_if_assigned(gid, n, clone_id=cid)
+        seat = await db.get_chief_seat_for_user(gid, n, clone_id=cid)
+        seats = await db.get_clan_seats(gid, clone_id=cid)
         holders = [x["user_id"] for x in seats if x.get("user_id") is not None]
         profiles = await db.board_profiles(holders) if holders else {}
         seat_rows = []
@@ -159,8 +160,8 @@ async def member_clans(uid, q, db):
                               "filled": filled, "holder": (p["name"] if p else "Hidden player") if filled else None,
                               "you": bool(filled and int(hid) == n)})
         out.append({
-            "guild_id": sv["guild_id"], "name": sv["name"], "level": sv["level"], "rank": sv["rank"], "players": sv["players"],
-            "clan": {"name": get_clan_label(card), "members": int(await db.get_clan_member_count(gid, card) or 0)} if card else None,
+            "guild_id": sv["guild_id"], "name": sv["name"], "bot": sv["bot"], "level": sv["level"], "rank": sv["rank"], "players": sv["players"],
+            "clan": {"name": get_clan_label(card), "members": int(await db.get_clan_member_count(gid, card, clone_id=cid) or 0)} if card else None,
             "chief": {"seat": int(seat.get("seat_rank") or 0), "clan": str(seat.get("clan_slug") or "")[:40]} if seat else None,
             "seats": seat_rows,
             "needs": {"rank": CHIEF_SEATS, "level": min_level,
@@ -178,7 +179,14 @@ async def member_prefs(uid, q, db):
     from utils.currency import SUPPORTED_CURRENCIES
     n = int(uid)
     char, voice = await ai_prefs.get_prefs(n)
-    return {"language": await db.get_user_language(n, 0), "languages": dict(SUPPORTED_LANGUAGES),
+    seen, bot_languages = set(), []
+    for r in await db.member_servers(uid, all_bots=True):      # custom bots the member actually has XP on
+        if r.get("clone_id") is None or int(r["clone_id"]) in seen:
+            continue
+        seen.add(int(r["clone_id"]))
+        bot_languages.append({"clone": str(int(r["clone_id"])), "bot": str(r.get("bot_username") or "Custom bot")[:40],
+                              "language": await db.get_user_language(n, int(r["clone_id"]))})
+    return {"language": await db.get_user_language(n, 0), "bot_languages": bot_languages, "languages": dict(SUPPORTED_LANGUAGES),
             "currency": await db.get_user_currency(n), "currencies": sorted(SUPPORTED_CURRENCIES),
             "character": char, "characters": {k: v["label"] for k, v in ai_prefs.CHARACTERS.items()},
             "voice": voice}
@@ -191,7 +199,17 @@ async def member_pref_set(uid, body, db):
     from utils.currency import SUPPORTED_CURRENCIES
     n, kind, value = int(uid), body.get("kind"), body.get("value")
     if kind == "language" and isinstance(value, str) and value in SUPPORTED_LANGUAGES:
-        await db.set_user_language(n, value, 0)
+        raw = body.get("clone")           # NB "clone", not "clone_id": dash.py reserves clone_id as its clone-scope selector
+        if raw in (None, "", 0, "0"):
+            await db.set_user_language(n, value, 0)
+        else:
+            if not str(raw).isdigit():
+                return {"_status": 400, "message": "That setting isn't valid."}
+            cid = int(raw)
+            owned = {int(r["clone_id"]) for r in await db.member_servers(uid, all_bots=True) if r.get("clone_id") is not None}
+            if cid not in owned:          # only custom bots the member actually has XP on
+                return {"_status": 404, "message": "Bot not found."}
+            await db.set_user_language(n, value, cid)
     elif kind == "currency" and isinstance(value, str) and value.upper() in SUPPORTED_CURRENCIES:
         await db.set_user_currency(n, value.upper())
     elif kind == "character" and isinstance(value, str) and value in ai_prefs.CHARACTERS:
