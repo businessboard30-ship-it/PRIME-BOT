@@ -306,6 +306,7 @@ def can_manage(owner_id: Optional[int], user_id: int, member_role_ids: List[int]
 
 
 KICK_MEMBERS = 0x2
+MODERATE_MEMBERS = 1 << 40        # "Timeout Members": what /warn and /unwarn require in Discord
 BAN_MEMBERS = 0x4
 RAID_REASON_PREFIX = "[anti-raid]"          # same marker modules/antiraid_pro.py writes
 RAID_OPS = ("approve", "kick", "ban")
@@ -820,6 +821,14 @@ def mod_warn_view(row: dict) -> dict:
     iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
     return {"id": str(row["id"]), "by": str(row["warned_by"]) if row.get("warned_by") else None,
             "reason": _clean_text(row.get("reason"), MOD_REASON_MAX), "at": iso(row.get("created_at"))}
+
+
+def parse_warn_id(raw):
+    """One warn id (user_warns.id is a 32-bit SERIAL). Returns int or raises ValueError. Digits only, no signs or spaces inside."""
+    t = str(raw if raw is not None else "").strip()
+    if not t.isdigit() or not 0 < int(t) < 2 ** 31:
+        raise ValueError("That warn isn't valid.")
+    return int(t)
 
 
 def parse_mod_user(raw):

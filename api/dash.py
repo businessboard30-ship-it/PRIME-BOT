@@ -33,7 +33,8 @@ Routes (all on /api/dash):
   GET  ?action=billing&guild_id         -> Premium status + plans with server-side prices
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
-  GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count); read-only
+  GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count)
+  POST {action: warn_remove, guild_id, user_id, warn_id} -> removes ONE warn (needs Timeout Members like /unwarn; audited; logged as an unwarn case). "Clear all" stays on Discord (/unwarn)
   GET  ?action=analytics&guild_id[&days=7|30|90] -> joins/leaves per day, active members, top XP members and inviters; read-only, no schema change (30 reads/min)
   GET  ?action=giveaways&guild_id=&status=&before= -> giveaways for this server (prize, status, entrant count, winners); read-only
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
@@ -741,6 +742,40 @@ async def _raid_review(gid: int) -> dict:
     return {"ok": True, "people": list(people), "total": total}
 
 
+async def _warn_remove(sess: dict, gid: int, raw_user, raw_warn) -> dict:
+    """Remove a single warn. Same permission Discord asks for /unwarn (Timeout Members; owner/Administrator pass).
+    The delete is scoped to this server AND this member, so a warn id from anywhere else matches nothing."""
+    uid = int(sess["user"]["id"])
+    _owner_rate(sess, "warn_remove", 20, 60)
+    try:
+        target = S.parse_mod_user(raw_user)
+        warn_id = S.parse_warn_id(raw_warn)
+    except ValueError as e:
+        _fail(400, str(e))
+    if target is None:
+        _fail(400, "Pick a member first.")
+    owner_id, my_roles, role_perms, _pos = await _actor_perms(gid, uid)
+    if not S.has_permission(owner_id, uid, my_roles, role_perms, gid, S.MODERATE_MEMBERS):
+        _fail(403, "You need the Timeout Members permission to remove warns (the same as /unwarn).")
+    gone = await db.dash_warn_remove(gid, target, warn_id)
+    if gone is None:
+        _fail(404, "That warn is already gone. Refresh the list.")
+    actor_name = sess["user"].get("username") or "Unknown"
+    try:                                                    # same case trail Discord's /unwarn leaves
+        from modules import moderation_extra as modx
+        await modx.log_action(gid, "unwarn", uid, target_user_id=target, reason=f"Removed warn #{warn_id} via dashboard")
+    except Exception:
+        logger.exception("dashboard: moderation log failed for warn_remove")
+    try:
+        await db.dash_audit_add(gid, str(uid), actor_name, "moderation",
+                                {f"Warn #{warn_id} removed (member {target})": {"from": S._clean_text(gone.get("reason"), 120) or "(no reason)", "to": None}},
+                                S.AUDIT_RETENTION_DAYS)
+    except Exception:
+        logger.exception("dashboard: audit write failed for warn_remove")
+    logger.info("dashboard warn_remove guild=%s user=%s target=%s warn=%s", gid, uid, target, warn_id)
+    return {"ok": True, "message": "Warn removed.", "warn_count": gone["remaining"]}
+
+
 async def _raid_action(sess: dict, gid: int, raw_user, op) -> dict:
     uid = int(sess["user"]["id"])
     now = time.monotonic()
@@ -1280,6 +1315,10 @@ async def _route(method: str, query: dict, headers, body: dict):
     if method == "GET" and action == "raid_review":
         gid = await _authorised_guild(sess, q("guild_id"))
         raise _Reply(200, await _raid_review(gid))
+
+    if method == "POST" and action == "warn_remove":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        raise _Reply(200, await _warn_remove(sess, gid, body.get("user_id"), body.get("warn_id")))
 
     if method == "POST" and action == "raid_action":
         gid = await _authorised_guild(sess, body.get("guild_id"))
