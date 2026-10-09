@@ -26,6 +26,7 @@
     { id: "status", label: "Bot status", icon: "wave", group: "Safety", need: "status", desc: "What the bot shows as its status." },
     { id: "ads", label: "Ads & Marketplace", icon: "trophy", group: "Growth", need: "ads", desc: "Approve ads and manage marketplace listings." },
     { id: "bump", label: "Bump network", icon: "link", group: "Growth", need: "bump", desc: "The bump network and its cooldown." },
+    { id: "visitors", label: "Visitors", icon: "users", group: "Owner only", need: "access", desc: "Who opened the dashboard today, and how traffic is trending." },
     { id: "helpers", label: "Helpers", icon: "users", group: "Owner only", need: "access", desc: "Who can use parts of the panel in Discord." },
     { id: "clones", label: "Clones", icon: "server", group: "Owner only", need: "servers", desc: "Custom bots: register, relink or stop." },
     { id: "database", label: "Database", icon: "db", group: "Owner only", need: "database", desc: "Table sizes and the one safe cleanup." },
@@ -187,6 +188,9 @@
     function stat(v, l) { return h("div", { class: "card stat" }, h("b", { text: String(v) }), h("span", { text: l })); }
     var top = h("div", null, stats);
     shell("", h("div", null, top, wrap));
+    if (allowed(pageById("visitors"))) api("owner_visitors", { days: 7 }).then(function (j) {
+      stats.appendChild(stat(j.today_count, "Visitors today"));
+    }).catch(function () {});
     if (allowed(pageById("health"))) api("owner_health").then(function (j) {
       var sv = j.servers || {}, lb = j.live_bot;
       stats.appendChild(stat((sv.main || 0) + (sv.clones || 0), "Servers"));
@@ -852,6 +856,39 @@
     draw();
   }
 
+  /* ---------- Visitors (owner only: names and ids of people who used the dashboard) ---------- */
+  var PLAN_LABEL = { card_plan: "Card plan", dev_monthly: "Developer", dev_yearly: "Developer" };
+  function visitorsPage() {
+    var out = h("div", null), days = 14; shell("visitors", out);
+    function draw() {
+      out.textContent = "";
+      var box = h("div", { class: "card" }); out.appendChild(box);
+      loadInto(box, "owner_visitors", { days: days }, function (j) {
+        function stat(v, l) { return h("div", { class: "card stat" }, h("b", { text: String(v) }), h("span", { text: l })); }
+        box.appendChild(h("div", { class: "owner-bar" },
+          h("small", { class: "muted", text: "Day = " + j.timezone + " (" + j.as_of_day + "). A visit counts when someone uses the dashboard while signed in." }),
+          [7, 14, 30].map(function (n) { return h("button", { class: "btn sm " + (n === days ? "" : "ghost"), text: n + " days", onclick: function () { days = n; draw(); } }); }),
+          h("button", { class: "btn sm ghost", text: "Refresh", onclick: draw })));
+        box.appendChild(h("div", { class: "stats" },
+          stat(j.today_count, "Visitors today"), stat(j.yesterday, "Yesterday"), stat(j.unique_7d, "Unique, 7 days"), stat(j.unique_30d, "Unique, 30 days"),
+          stat(j.new_today, "New sign-ups today"), stat(j.new_7d, "New sign-ups, 7 days"), stat(j.returning_today, "Returning today"),
+          stat(j.total_users, "Everyone who signed in"), stat(j.paying, "People on a plan")));
+        box.appendChild(barChart(j.series.map(function (r) { return dayLabel(r.day); }),
+          [{ name: "Visitors", cls: "a", values: j.series.map(function (r) { return r.visitors; }) }], { title: "Unique visitors per day" }));
+        box.appendChild(h("h3", { text: "Today" }));
+        if (!j.visitors.length) { box.appendChild(h("p", { class: "muted", text: "Nobody has opened the dashboard yet today." })); return; }
+        box.appendChild(table(["Name", "User ID", "First active", "Last active", "Checks", "Tags"], j.visitors.map(function (v) {
+          var tags = [];
+          if (v.new_today) tags.push("New today"); else if (v.returning) tags.push("Returning");
+          (v.plans || []).forEach(function (p) { tags.push(PLAN_LABEL[p] || p); });
+          return [v.name || "Unknown", v.user_id, fmt(v.first_at), fmt(v.last_at), v.touches, tags.join(", ")];
+        })));
+        box.appendChild(h("p", { class: "muted", text: "Checks is how many times they were recorded (at most one about every 10 minutes), so it roughly shows how long they stayed. Rows are kept 90 days." }));
+      });
+    }
+    draw();
+  }
+
   window.DashOwner = {
     render: function (sub) {
       var page = PAGES.filter(function (p) { return p.id === (sub || "") && allowed(p); })[0];
@@ -859,7 +896,7 @@
       ({ "": overview, health: health, servers: servers, users: users, payments: payments, audit: audit, security: security,
         controls: controls, blacklist: blacklist, premium: premium, announce: announce, feedback: feedback, logs: logs, config: config,
         ads: ads, bump: bump, watchlist: watchlist, reports: reports, msgreports: msgReports, status: statusPage, honeypot: honeypot, scamshield: scamshield,
-        helpers: helpersPage, clones: clonesPage, database: databasePage })[page.id]();
+        helpers: helpersPage, visitors: visitorsPage, clones: clonesPage, database: databasePage })[page.id]();
     }
   };
 })();

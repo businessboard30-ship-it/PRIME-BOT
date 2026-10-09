@@ -184,7 +184,8 @@ deletion of your data, contact us using the details below.</p>
 <p>If you sign in to the web dashboard with Discord, we store a record that you
 signed in, with your Discord display name and avatar (used to show you on the global
 leaderboard unless you switch that off on the Leaderboard page; everyone else sees
-"Hidden player" and no user ID is shown), your level-up card design and uploads, any AI
+"Hidden player" and no user ID is shown), the days you used the dashboard (kept 90 days
+and visible only to the bot owner), your level-up card design and uploads, any AI
 provider keys you add (encrypted, never shown again), your scheduled jobs, renewal
 reminders, and receipts for exports you save (the files are encrypted). If you connect
 GitHub (read-only) we keep an encrypted access token until you disconnect, which deletes

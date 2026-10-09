@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "71"
+SCHEMA_VERSION = "72"
+# "71" -> "72" creates dash_visits (one row per web-dashboard user per UTC day, written at most every ~10 minutes per person; kept 90 days; only the owner area reads it). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "70" -> "71" creates dev_jobs (Developer-mode scheduled jobs: reminder / note / AI prompt on allowlisted presets, claimed by the cron worker). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "69" -> "70" adds display_name, avatar_url and show_on_board to dash_web_users (web leaderboard: signed-in members appear by name unless they opt out). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "68" -> "69" creates dash_friends, dash_member_messages, dash_member_reports and dash_member_prefs (Part D member messaging: friend requests, text-only messages kept 30 days, report snapshots, per-member settings). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -4391,6 +4392,20 @@ class Database:
                      "ALTER TABLE dash_web_users ADD COLUMN IF NOT EXISTS avatar_url TEXT",
                      "ALTER TABLE dash_web_users ADD COLUMN IF NOT EXISTS show_on_board BOOLEAN NOT NULL DEFAULT TRUE"):
             await conn.execute(_ddl)
+
+        # One row per signed-in dashboard user per UTC day (owner "Visitors" page). Touched at most about
+        # every 10 minutes per person; rows older than 90 days are pruned.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_visits (
+                day DATE NOT NULL,
+                user_id TEXT NOT NULL,
+                first_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                touches INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (day, user_id)
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dash_visits_user ON dash_visits (user_id)")
 
         # Referral-boost click log — just a visit counter (no auth, no
         # cookies/sessions to correlate: see the note on invite_code/
@@ -14914,6 +14929,66 @@ class Database:
                        display_name = COALESCE($2, dash_web_users.display_name),
                        avatar_url = COALESCE($3, dash_web_users.avatar_url)""", str(user_id), name, av)
 
+    DASH_VISIT_KEEP_DAYS = 90
+
+    async def dash_visit_touch(self, user_id: str) -> None:
+        """Mark this person as active on the dashboard today (UTC). Cheap upsert; callers throttle it."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO dash_visits (day, user_id) VALUES ((NOW() AT TIME ZONE 'UTC')::date, $1)
+                   ON CONFLICT (day, user_id) DO UPDATE SET last_at = NOW(), touches = dash_visits.touches + 1""",
+                str(user_id))
+
+    async def dash_visit_prune(self) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "DELETE FROM dash_visits WHERE day < (NOW() AT TIME ZONE 'UTC')::date - $1::int",
+                self.DASH_VISIT_KEEP_DAYS)
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
+
+    async def dash_visits_report(self, days: int = 14, limit: int = 200) -> dict:
+        """Owner-only. Who was active on the dashboard today (UTC), a per-day unique-visitor series and
+        sign-up / plan counts. Read-only."""
+        days = max(1, min(int(days), 30))
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            today = await conn.fetchval("SELECT (NOW() AT TIME ZONE 'UTC')::date")
+            rows = await conn.fetch(
+                """SELECT v.user_id, v.first_at, v.last_at, v.touches, u.display_name, u.first_seen,
+                          ((u.first_seen AT TIME ZONE 'UTC')::date = v.day) AS new_today,
+                          (SELECT COUNT(*) FROM dash_visits o WHERE o.user_id = v.user_id AND o.day < v.day) AS earlier_days
+                   FROM dash_visits v LEFT JOIN dash_web_users u ON u.user_id = v.user_id
+                   WHERE v.day = $1 ORDER BY v.last_at DESC LIMIT $2""", today, int(limit))
+            ids = [r["user_id"] for r in rows]
+            plans = await conn.fetch(
+                """SELECT user_id, product FROM user_entitlements
+                   WHERE user_id = ANY($1::text[]) AND status = 'active' AND (expires_at IS NULL OR expires_at > NOW())""",
+                ids) if ids else []
+            series = await conn.fetch(
+                "SELECT day, COUNT(*) AS n FROM dash_visits WHERE day > $1::date - $2::int GROUP BY day", today, days)
+            uniq7 = await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM dash_visits WHERE day > $1::date - 7", today)
+            uniq30 = await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM dash_visits WHERE day > $1::date - 30", today)
+            total = await conn.fetchval("SELECT COUNT(*) FROM dash_web_users")
+            new7 = await conn.fetchval(
+                "SELECT COUNT(*) FROM dash_web_users WHERE (first_seen AT TIME ZONE 'UTC')::date > $1::date - 7", today)
+            new_today = await conn.fetchval(
+                "SELECT COUNT(*) FROM dash_web_users WHERE (first_seen AT TIME ZONE 'UTC')::date = $1::date", today)
+            paying = await conn.fetchval(
+                """SELECT COUNT(DISTINCT user_id) FROM user_entitlements
+                   WHERE status = 'active' AND (expires_at IS NULL OR expires_at > NOW())""")
+        by_user: dict = {}
+        for r in plans:
+            by_user.setdefault(r["user_id"], []).append(r["product"])
+        return {"today": today, "visitors": [dict(r, plans=by_user.get(r["user_id"], [])) for r in rows],
+                "series": {r["day"]: int(r["n"]) for r in series},
+                "unique_7d": int(uniq7 or 0), "unique_30d": int(uniq30 or 0), "total_users": int(total or 0),
+                "new_today": int(new_today or 0), "new_7d": int(new7 or 0), "paying": int(paying or 0)}
+
     async def board_profiles(self, user_ids: list) -> dict:
         """{user_id: {name, avatar}} for the signed-in members in `user_ids` who have NOT opted out. Everyone else is absent."""
         ids = [str(i) for i in user_ids]
@@ -15620,6 +15695,7 @@ class Database:
                                  ("messages", "DELETE FROM dash_member_messages WHERE sender_id = $1 OR recipient_id = $1"),
                                  ("friends", "DELETE FROM dash_friends WHERE (user_a = $1 OR user_b = $1) AND (status <> 'blocked' OR blocked_by = $1)"),
                                  ("messaging_prefs", "DELETE FROM dash_member_prefs WHERE user_id = $1 AND msg_banned = FALSE"),
+                                 ("visits", "DELETE FROM dash_visits WHERE user_id = $1"),
                                  ("web_registry", "DELETE FROM dash_web_users WHERE user_id = $1"),
                                  ("sessions", "DELETE FROM discord_login_sessions WHERE payload->>'kind' = 'dash' AND payload->'user'->>'id' = $1")):
                     res = await conn.execute(sql, uid)
