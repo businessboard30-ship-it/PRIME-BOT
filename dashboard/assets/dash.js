@@ -95,7 +95,7 @@
     }, function () { throw new Error("Can't reach the server. Check your connection."); });
   }
   function signedOut(msg) {
-    localStorage.removeItem(KEY); S.sid = S.user = S.servers = null; S.guild = null; S.unread = 0; S.isOwner = false; S.ownerSections = []; S.inbox = null;
+    localStorage.removeItem(KEY); S.sid = S.user = S.servers = null; S.guild = null; S.unread = 0; S.msgUnread = 0; S.isOwner = false; S.ownerSections = []; S.inbox = null;
     renderHeader(); renderLogin(msg);
   }
 
@@ -177,7 +177,7 @@
       });
     };
     if (S.servers) return done(S.servers);
-    api("me").then(function (j) { S.servers = j.servers; S.user = j.user; S.unread = j.unread || 0; S.isOwner = !!j.is_owner; S.ownerSections = j.owner_sections || []; renderHeader(); done(S.servers); })
+    api("me").then(function (j) { S.servers = j.servers; S.user = j.user; S.unread = j.unread || 0; S.msgUnread = j.msg_unread || 0; S.isOwner = !!j.is_owner; S.ownerSections = j.owner_sections || []; renderHeader(); done(S.servers); })
       .catch(function (e) { if (e.message !== "401") { grid.textContent = ""; grid.appendChild(h("div", { class: "card empty", style: "grid-column:1/-1" }, h("p", { text: e.message }), h("button", { class: "btn sm", text: "Try again", onclick: renderServers }))); } });
   }
 
@@ -1155,13 +1155,14 @@
 
   /* ---------- member shell (same sidebar + cards layout as the server dashboard) ---------- */
   var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"],
-    ["card", "trophy", "Level-up card"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"]];
+    ["card", "trophy", "Level-up card"], ["messages", "mail", "Messages"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"]];
   function renderMemberShell(cur) {
     document.body.classList.remove("menu"); S.mod = null;
     app.textContent = ""; renderHeader();
     var nav = h("nav", { class: "nav", "aria-label": "My account" });
     function link(href, name, label, current) {
-      return h("a", { href: href, "aria-current": current ? "page" : null }, icon(name), h("span", { text: label }));
+      return h("a", { href: href, "aria-current": current ? "page" : null }, icon(name), h("span", { text: label }),
+        name === "mail" && S.msgUnread ? h("span", { class: "badge-n", text: S.msgUnread > 99 ? "99+" : String(S.msgUnread), "aria-label": S.msgUnread + " unread messages" }) : null);
     }
     ME_NAV.forEach(function (n) { nav.appendChild(link("#/me" + (n[0] ? "/" + n[0] : ""), n[1], n[2], cur === n[0])); });
     nav.appendChild(h("div", { class: "grp", text: "Builders" }));
@@ -1183,7 +1184,7 @@
     add(main, [pageHead("Overview", "Welcome, " + S.user.username), stats]);
     var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."],
       ["card", "trophy", "Level-up card", "Design the card shown when you level up."], ["prefs", "sliders", "Preferences", "Language, currency, AI character and pings."],
-      ["purchases", "scroll", "Purchases", "Every payment on your account."]];
+      ["messages", "mail", "Messages", "Message friends from your servers."], ["purchases", "scroll", "Purchases", "Every payment on your account."]];
     go.forEach(function (g, i) {
       quick.appendChild(h("div", { class: "card q rv", style: "--i:" + i }, icon(g[1]), h("div", { class: "grow" }, h("a", { href: "#/me/" + g[0], text: g[2] }), h("small", { text: g[3] })),
         h("a", { class: "btn sm ghost", href: "#/me/" + g[0], text: "Open" })));
@@ -1194,7 +1195,7 @@
     Promise.all([api("member_servers"), api("member_status")]).then(function (res) {
       var list = res[0].servers || [], items = (res[1].entitlements || []).filter(function (e) { return e.state === "active" || e.state === "cancelled" || e.state === "past_due"; });
       var best = list.reduce(function (m, g) { return Math.max(m, g.level || 0); }, 0);
-      add(stats, [stat(list.length, "Servers with XP"), stat(best || "\u2013", "Highest level"), stat(items.length, "Active plans"), stat(S.unread || 0, "Unread messages")]);
+      add(stats, [stat(list.length, "Servers with XP"), stat(best || "\u2013", "Highest level"), stat(items.length, "Active plans"), stat((S.unread || 0) + (S.msgUnread || 0), "Unread messages")]);
     }).catch(function (e) { fail(stats, e); });
   }
 
@@ -1268,8 +1269,148 @@
     renderCardEditor(cardSec);
   }
 
+  /* ---------- Messages (Part D): friends from your servers. Text only; the server enforces every rule. ---------- */
+  function meMessages(main) {
+    var top = h("div"), find = section("Find people"), reqBox = section("Friend requests"), friendsBox = section("Friends"),
+      threadBox = h("div"), setBox = section("Settings"), blockBox = section("Blocked");
+    add(main, [pageHead("Messages", "Messages"), top, threadBox, friendsBox, find, reqBox, setBox, blockBox]);
+    var state = null, openWith = null, timer = 0;
+
+    function person(p, extra) {
+      return h("div", { class: "row", style: "align-items:center;gap:10px;margin:6px 0" }, p.avatar ? h("img", { src: p.avatar, alt: "", width: 28, height: 28, referrerpolicy: "no-referrer", style: "border-radius:50%" }) : null,
+        h("span", { class: "grow", text: p.name }), extra || null);
+    }
+    function btn(label, fn, ghost) { return h("button", { class: "btn sm" + (ghost ? " ghost" : ""), type: "button", text: label, onclick: fn }); }
+    function act(action, body, done, okMsg) {
+      return api(action, null, body).then(function (r) { if (okMsg || r.message) toast(okMsg || r.message); if (done) done(r); return load(); })
+        .catch(function (e) { toast((e && e.message) || "That didn't work.", "bad"); });
+    }
+    function badge(n) { return n ? h("span", { class: "badge-n", text: String(n) }) : null; }
+
+    function draw() {
+      top.textContent = ""; friendsBox.textContent = ""; reqBox.textContent = ""; blockBox.textContent = ""; setBox.textContent = "";
+      friendsBox.appendChild(h("h3", { text: "Friends" })); reqBox.appendChild(h("h3", { text: "Friend requests" }));
+      blockBox.appendChild(h("h3", { text: "Blocked" })); setBox.appendChild(h("h3", { text: "Settings" }));
+      top.appendChild(h("p", { class: "muted", text: "Message people who share a server with you and have used this website, once they accept your friend request. Messages are text only and are deleted after " + state.limits.retention_days + " days. Never share passwords or codes." }));
+      if (state.banned) top.appendChild(h("p", { role: "alert", text: "Messaging is turned off for your account." }));
+      else if (state.messaging_off) top.appendChild(h("p", { role: "alert", text: "Messaging is switched off right now. You can still read, block, report and delete." }));
+
+      if (!state.friends.length) friendsBox.appendChild(h("p", { class: "muted", text: "No friends yet. Find someone from one of your servers below." }));
+      state.friends.forEach(function (f) {
+        friendsBox.appendChild(person(f, h("span", null, badge(f.unread), " ", btn("Open", function () { openThread(f.user_id); }))));
+      });
+      if (!state.incoming.length && !state.outgoing.length) reqBox.appendChild(h("p", { class: "muted", text: "No requests waiting." }));
+      state.incoming.forEach(function (p) {
+        reqBox.appendChild(person(p, h("span", null,
+          btn("Accept", function () { act("friend_respond", { other_id: p.user_id, accept: true }, null, "You're now friends."); }), " ",
+          btn("Decline", function () { act("friend_respond", { other_id: p.user_id, accept: false }, null, "Declined."); }, true), " ",
+          btn("Block", function () { act("friend_block", { other_id: p.user_id }, null, "Blocked."); }, true))));
+      });
+      state.outgoing.forEach(function (p) {
+        reqBox.appendChild(person(p, h("span", null, h("small", { class: "muted", text: "waiting " }), btn("Cancel", function () { act("friend_remove", { other_id: p.user_id }, null, "Request cancelled."); }, true))));
+      });
+      if (!state.blocked.length) blockBox.appendChild(h("p", { class: "muted", text: "Nobody blocked." }));
+      state.blocked.forEach(function (p) { blockBox.appendChild(person(p, btn("Unblock", function () { act("friend_unblock", { other_id: p.user_id }, null, "Unblocked."); }, true))); });
+
+      function toggle(label, key, help) {
+        var cb = h("input", { type: "checkbox", id: "set-" + key });
+        cb.checked = !!state.settings[key];
+        cb.addEventListener("change", function () {
+          var b = {}; b[key] = cb.checked;
+          act("msg_prefs_set", b, null, "Saved.");
+        });
+        return h("p", null, cb, " ", h("label", { for: "set-" + key, text: label }), h("br"), h("small", { class: "muted", text: help }));
+      }
+      setBox.appendChild(toggle("Let people in my servers send me friend requests", "allow_requests", "On by default. Turn it off and nobody new can ask; current friends stay."));
+      setBox.appendChild(toggle("Send me a Discord DM when I have unread messages", "dm_notify", "Off by default. At most one generic DM an hour, with no names or message text."));
+    }
+
+    function findUi() {
+      find.textContent = ""; find.appendChild(h("h3", { text: "Find people" }));
+      if (!state.servers.length) { find.appendChild(h("p", { class: "muted", text: "Earn some XP in a server where the bot is, then come back to find people there." })); return; }
+      var pick = h("select", { "aria-label": "Server" }, state.servers.map(function (g) { return h("option", { value: g.guild_id, text: g.name }); }));
+      var term = h("input", { type: "text", maxlength: 32, placeholder: "Name starts with\u2026", "aria-label": "Name starts with" });
+      var out = h("div", { "aria-live": "polite" });
+      function go() {
+        var t = term.value.trim(); if (t.length < 2) { toast("Type at least 2 letters.", "bad"); return; }
+        out.textContent = "Searching\u2026";
+        api("friends_search", { guild_id: pick.value, query: t }).then(function (r) {
+          out.textContent = "";
+          if (!r.results.length) { out.appendChild(h("p", { class: "muted", text: "Nobody found. They may not use this website yet, or they may have requests turned off." })); return; }
+          r.results.forEach(function (p) {
+            var right = p.relation === "friends" ? h("small", { class: "muted", text: "Friends" })
+              : p.relation === "pending_out" ? h("small", { class: "muted", text: "Requested" })
+              : btn(p.relation === "pending_in" ? "Accept" : "Add friend", function () { act("friend_request", { other_id: p.user_id }, function (x) { out.textContent = ""; }, null); });
+            out.appendChild(person(p, right));
+          });
+        }).catch(function (e) { out.textContent = ""; out.appendChild(h("p", { class: "muted", text: (e && e.message) || "Search failed." })); });
+      }
+      term.addEventListener("keydown", function (ev) { if (ev.key === "Enter") go(); });
+      find.appendChild(h("div", { class: "row" }, pick, " ", term, " ", btn("Search", go)));
+      find.appendChild(out);
+    }
+
+    function openThread(id) {
+      openWith = id; threadBox.textContent = "";
+      var box = section("Conversation"), log = h("div", { "aria-live": "polite", style: "max-height:420px;overflow:auto;margin:8px 0" }), note = h("p", { class: "muted", role: "status" });
+      var input = h("textarea", { rows: 3, maxlength: state.limits.max_chars, "aria-label": "Message", style: "width:100%", placeholder: "Write a message\u2026" });
+      var send = btn("Send", null), who = h("b", { text: "" });
+      box.appendChild(who); box.appendChild(log); box.appendChild(note); box.appendChild(input);
+      var bar = h("div", { class: "row" }, send, " ", btn("Refresh", function () { refresh(true); }, true), " ",
+        btn("Delete conversation", function () { if (confirm("Delete this conversation for both of you?")) act("message_thread_delete", { other_id: id }, function () { closeThread(); }, "Deleted."); }, true), " ",
+        btn("Unfriend", function () { if (confirm("Unfriend and delete the conversation?")) act("friend_remove", { other_id: id }, function () { closeThread(); }, "Removed."); }, true), " ",
+        btn("Block", function () { if (confirm("Block this person? This also deletes the conversation.")) act("friend_block", { other_id: id }, function () { closeThread(); }, "Blocked."); }, true), " ",
+        btn("Report", function () {
+          if (confirm("Send the last messages to the owner for review? You can also block them.")) {
+            var also = confirm("Block this person as well?");
+            act("message_report", { other_id: id, also_block: also }, function () { if (also) closeThread(); });
+          }
+        }, true), " ", btn("Close", closeThread, true));
+      box.appendChild(bar); threadBox.appendChild(box);
+      function paint(r) {
+        who.textContent = "Chat with " + r.with.name; log.textContent = "";
+        r.messages.forEach(function (m) {
+          log.appendChild(h("div", { style: "margin:6px 0;white-space:pre-wrap;word-break:break-word;text-align:" + (m.mine ? "right" : "left") },
+            h("small", { class: "muted", text: (m.mine ? "You" : r.with.name) + " \u00b7 " + new Date(m.at).toLocaleString() + (m.mine && m.read ? " \u00b7 read" : "") }), h("br"), h("span", { text: m.body })));
+        });
+        log.scrollTop = log.scrollHeight;
+        input.disabled = send.disabled = !r.can_send;
+        note.textContent = r.messaging_off ? "Messaging is switched off right now." : r.paused ? "Messaging is paused: you no longer share a server with this person." : "";
+      }
+      function refresh(markRead) {
+        api("messages_thread", { other_id: id }).then(function (r) {
+          if (openWith !== id) return; paint(r);
+          if (markRead && r.messages.some(function (m) { return !m.mine && !m.read; })) {
+            api("message_read", null, { other_id: id }).then(function (x) { S.msgUnread = x.unread_total || 0; load(); }).catch(function () {});
+          }
+        }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't load this conversation."; });
+      }
+      function doSend() {
+        var text = input.value.trim(); if (!text) return;
+        send.disabled = true;
+        api("message_send", null, { other_id: id, body: text }).then(function () { input.value = ""; refresh(false); })
+          .catch(function (e) { note.textContent = (e && e.message) || "That didn't send."; })
+          .then(function () { send.disabled = false; });
+      }
+      send.addEventListener("click", doSend);
+      input.addEventListener("keydown", function (ev) { if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") doSend(); });
+      refresh(true);
+      clearInterval(timer);
+      timer = setInterval(function () { if (!document.body.contains(box) || document.hidden) { if (!document.body.contains(box)) clearInterval(timer); return; } refresh(true); }, 20000);
+      box.scrollIntoView && box.scrollIntoView({ block: "nearest" });
+    }
+    function closeThread() { openWith = null; clearInterval(timer); threadBox.textContent = ""; }
+
+    function load() {
+      return api("friends_list").then(function (r) {
+        state = r; S.msgUnread = r.unread_total || 0; draw(); findUi();
+      }).catch(function (e) { top.textContent = ""; fail(top, e); });
+    }
+    load();
+  }
+
   function renderMe(sec) {
-    var pages = { "": meOverview, plans: mePlans, servers: meServers, prefs: mePrefs, purchases: mePurchases, card: meCard };
+    var pages = { "": meOverview, plans: mePlans, servers: meServers, prefs: mePrefs, purchases: mePurchases, card: meCard, messages: meMessages };
     sec = sec || "";
     if (!pages[sec]) { location.hash = "#/me"; return; }
     pages[sec](renderMemberShell(sec));
@@ -1456,7 +1597,7 @@
     fetch(API + "?action=schema", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (j) {
       S.schema = j;
       if (!S.sid) return renderLogin(err);
-      return api("me").then(function (me) { S.user = me.user; S.servers = me.servers; S.unread = me.unread || 0; S.isOwner = !!me.is_owner; S.ownerSections = me.owner_sections || []; renderHeader(); route(); });
+      return api("me").then(function (me) { S.user = me.user; S.servers = me.servers; S.unread = me.unread || 0; S.msgUnread = me.msg_unread || 0; S.isOwner = !!me.is_owner; S.ownerSections = me.owner_sections || []; renderHeader(); route(); });
     }).catch(function (e) { if (e.message !== "401") renderLogin(err || "Can't reach the server right now. Try again in a moment."); });
   }
   window.addEventListener("hashchange", function () { if (S.sid && S.schema && S.user) route(); });

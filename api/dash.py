@@ -338,13 +338,13 @@ def _merged(attr: str) -> dict:
 
 
 def _member_routes() -> dict:
-    from api import dash_dev, dash_member
-    return {**dash_member.ROUTES, **dash_dev.ROUTES}
+    from api import dash_dev, dash_member, dash_msg
+    return {**dash_member.ROUTES, **dash_dev.ROUTES, **dash_msg.ROUTES}
 
 
 def _member_writes() -> dict:
-    from api import dash_dev, dash_member
-    return {**dash_member.WRITES, **dash_dev.WRITES}
+    from api import dash_dev, dash_member, dash_msg
+    return {**dash_member.WRITES, **dash_dev.WRITES, **dash_msg.WRITES}
 
 
 def _owner_routes() -> dict:
@@ -1097,13 +1097,15 @@ async def _route(method: str, query: dict, headers, body: dict):
         except Exception:
             logger.exception("dashboard: dropbox unread count failed")
             unread = 0
+        from api import dash_msg
         raise _Reply(200, {"ok": True, "user": sess["user"], "servers": servers,
                            "is_owner": _is_owner(sess), "unread": unread, "member": True,
+                           "msg_unread": await dash_msg.unread_total(uid, db),
                            "owner_sections": sorted(_owner_sections(sess))})
 
     if method == "GET" and action in _member_routes():
         uid = _require_member(sess)
-        _owner_rate(sess, "member:" + action, 60, 60)
+        _owner_rate(sess, "member:" + action, *{"friends_search": (15, 60), "messages_thread": (40, 60)}.get(action, (60, 60)))
         out = await _member_routes()[action](uid, q, db)
         if out.get("_status"):
             _fail(out["_status"], out.get("message") or "Something went wrong.", out.get("code"))
@@ -1113,7 +1115,9 @@ async def _route(method: str, query: dict, headers, body: dict):
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
                                                       "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60),
-                                                      "dev_key_save": (6, 300), "dev_key_remove": (10, 300)}.get(action, (30, 60)))
+                                                      "dev_key_save": (6, 300), "dev_key_remove": (10, 300),
+                                                      "friend_request": (10, 300), "message_send": (15, 60), "message_report": (6, 300),
+                                                      "friend_block": (10, 300)}.get(action, (30, 60)))
         from api import dash_dev
         if action in dash_dev.FRESH_WRITES:          # gate first (402), then step-up (403); handlers never see the session
             gate = await dash_dev.require_dev(uid, db)

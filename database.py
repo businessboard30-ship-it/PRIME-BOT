@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "66"
+SCHEMA_VERSION = "67"
+# "66" -> "67" creates dash_friends, dash_member_messages, dash_member_reports and dash_member_prefs (Part D member messaging: friend requests, text-only messages kept 30 days, report snapshots, per-member settings). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "65" -> "66" creates dev_connections (a Developer-mode member's own AI provider key: encrypted, last 4 + dates only ever returned; deleted 30 days after the plan ends). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "61" -> "62" creates user_entitlements (per-user paid products: card_plan, dev_monthly, dev_yearly; only the payment webhook may write it) and dash_web_users (everyone who has signed in to the web dashboard; member messaging depends on it). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "62" -> "63" creates user_billing_events (one row per gateway billing event id, claimed before an entitlement is changed so a duplicate or retried webhook can never double-extend a plan). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -4260,6 +4261,59 @@ class Database:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (user_id, provider)
+            )
+        """)
+
+        # Part D: member messaging. Ids are TEXT snowflakes; the pair is stored lower-id-first (the code orders it by integer value).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_friends (
+                user_a TEXT NOT NULL,
+                user_b TEXT NOT NULL,
+                requested_by TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                blocked_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_a, user_b),
+                CHECK (user_a <> user_b),
+                CHECK (status IN ('pending', 'accepted', 'blocked'))
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dash_friends_b ON dash_friends (user_b)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_member_messages (
+                id BIGSERIAL PRIMARY KEY,
+                sender_id TEXT NOT NULL,
+                recipient_id TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                read_at TIMESTAMPTZ
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dash_msg_pair ON dash_member_messages (sender_id, recipient_id, id DESC)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dash_msg_recipient ON dash_member_messages (recipient_id, read_at)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dash_msg_created ON dash_member_messages (created_at)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_member_reports (
+                id BIGSERIAL PRIMARY KEY,
+                reporter_id TEXT NOT NULL,
+                reported_id TEXT NOT NULL,
+                snapshot TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'new',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                resolved_by TEXT,
+                resolved_at TIMESTAMPTZ
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dash_reports_status ON dash_member_reports (status, id)")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_member_prefs (
+                user_id TEXT PRIMARY KEY,
+                allow_requests BOOLEAN NOT NULL DEFAULT TRUE,
+                dm_notify BOOLEAN NOT NULL DEFAULT FALSE,
+                msg_banned BOOLEAN NOT NULL DEFAULT FALSE,
+                last_dm_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
 
@@ -14996,6 +15050,268 @@ class Database:
             return int(res.split()[-1])
         except Exception:
             return 0
+
+    # ---- Part D: member messaging. Every method takes ids that the caller took from the SESSION or validated as snowflakes. ----
+    @staticmethod
+    def _pair(a, b):
+        a, b = str(a), str(b)
+        return (a, b) if int(a) < int(b) else (b, a)
+
+    async def msg_prefs_get(self, user_id: str) -> dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow("SELECT allow_requests, dm_notify, msg_banned FROM dash_member_prefs WHERE user_id = $1", str(user_id))
+        return dict(r) if r else {"allow_requests": True, "dm_notify": False, "msg_banned": False}
+
+    async def msg_prefs_set(self, user_id: str, allow_requests=None, dm_notify=None) -> None:
+        """None leaves a field unchanged. Never touches msg_banned (owner only)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO dash_member_prefs (user_id, allow_requests, dm_notify)
+                   VALUES ($1, COALESCE($2, TRUE), COALESCE($3, FALSE))
+                   ON CONFLICT (user_id) DO UPDATE SET
+                       allow_requests = COALESCE($2, dash_member_prefs.allow_requests),
+                       dm_notify = COALESCE($3, dash_member_prefs.dm_notify), updated_at = NOW()""",
+                str(user_id), allow_requests, dm_notify)
+
+    async def msg_ban_set(self, user_id: str, banned: bool) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO dash_member_prefs (user_id, msg_banned) VALUES ($1, $2)
+                   ON CONFLICT (user_id) DO UPDATE SET msg_banned = $2, updated_at = NOW()""", str(user_id), bool(banned))
+
+    async def msg_eligible_ids(self, ids: list) -> set:
+        """Of `ids`, those who have used the web, allow requests and are not banned from messaging."""
+        ids = [str(i) for i in ids][:200]
+        if not ids:
+            return set()
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT w.user_id FROM dash_web_users w
+                   LEFT JOIN dash_member_prefs p ON p.user_id = w.user_id
+                   WHERE w.user_id = ANY($1::text[]) AND COALESCE(p.allow_requests, TRUE) AND NOT COALESCE(p.msg_banned, FALSE)""", ids)
+        return {r["user_id"] for r in rows}
+
+    async def msg_guild_ids(self, user_id: str, limit: int = 25) -> list:
+        """Main-bot servers where this person has XP (candidates for the shared-server check; Discord confirms)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT x.guild_id, (SELECT guild_name FROM discord_guilds g WHERE g.guild_id = x.guild_id
+                          AND g.clone_id IS NULL AND g.left_at IS NULL ORDER BY joined_at DESC LIMIT 1) AS guild_name
+                   FROM discord_xp x WHERE x.user_id = $1 AND x.clone_id IS NULL AND x.total_xp > 0
+                   ORDER BY x.total_xp DESC LIMIT $2""", int(user_id), int(limit))
+        return [{"guild_id": str(r["guild_id"]), "name": r["guild_name"]} for r in rows if r["guild_name"]]
+
+    async def msg_friend_get(self, a: str, b: str):
+        lo, hi = self._pair(a, b)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow("SELECT * FROM dash_friends WHERE user_a = $1 AND user_b = $2", lo, hi)
+        return dict(r) if r else None
+
+    async def msg_friend_request(self, a: str, b: str, by: str) -> bool:
+        """True when a NEW pending row was created (an existing row of any status is never overwritten)."""
+        lo, hi = self._pair(a, b)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "INSERT INTO dash_friends (user_a, user_b, requested_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", lo, hi, str(by))
+        return res.endswith(" 1")
+
+    async def msg_friend_accept(self, a: str, b: str, acceptor: str) -> bool:
+        """Accept only a PENDING row that the OTHER person sent."""
+        lo, hi = self._pair(a, b)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                """UPDATE dash_friends SET status = 'accepted', updated_at = NOW()
+                   WHERE user_a = $1 AND user_b = $2 AND status = 'pending' AND requested_by <> $3""", lo, hi, str(acceptor))
+        return res.endswith(" 1")
+
+    async def msg_friend_block(self, a: str, b: str, by: str) -> None:
+        lo, hi = self._pair(a, b)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO dash_friends (user_a, user_b, requested_by, status, blocked_by) VALUES ($1, $2, $3, 'blocked', $3)
+                   ON CONFLICT (user_a, user_b) DO UPDATE SET status = 'blocked', blocked_by = $3, updated_at = NOW()""", lo, hi, str(by))
+
+    async def msg_friend_delete(self, a: str, b: str, only_blocked_by: str = None, only_requested_by_not: str = None) -> bool:
+        lo, hi = self._pair(a, b)
+        sql, args = "DELETE FROM dash_friends WHERE user_a = $1 AND user_b = $2", [lo, hi]
+        if only_blocked_by is not None:
+            args.append(str(only_blocked_by)); sql += f" AND status = 'blocked' AND blocked_by = ${len(args)}"
+        if only_requested_by_not is not None:
+            args.append(str(only_requested_by_not)); sql += f" AND status = 'pending' AND requested_by <> ${len(args)}"
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(sql, *args)
+        return res.endswith(" 1")
+
+    async def msg_friends_of(self, user_id: str, limit: int = 300) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS other, requested_by, status, blocked_by, created_at
+                   FROM dash_friends WHERE user_a = $1 OR user_b = $1 ORDER BY updated_at DESC LIMIT $2""", str(user_id), int(limit))
+        return [dict(r) for r in rows]
+
+    async def msg_request_counts(self, user_id: str) -> dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow(
+                """SELECT COUNT(*) FILTER (WHERE requested_by = $1 AND created_at > NOW() - INTERVAL '1 day') AS sent_today,
+                          COUNT(*) FILTER (WHERE requested_by = $1 AND status = 'pending') AS pending_out,
+                          COUNT(*) FILTER (WHERE requested_by <> $1 AND status = 'pending') AS pending_in,
+                          COUNT(*) FILTER (WHERE status = 'accepted') AS friends
+                   FROM dash_friends WHERE user_a = $1 OR user_b = $1""", str(user_id))
+        return {k: int(r[k] or 0) for k in ("sent_today", "pending_out", "pending_in", "friends")}
+
+    async def msg_insert(self, sender: str, recipient: str, body: str) -> dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow(
+                "INSERT INTO dash_member_messages (sender_id, recipient_id, body) VALUES ($1, $2, $3) RETURNING id, created_at",
+                str(sender), str(recipient), str(body))
+        return dict(r)
+
+    async def msg_send_counts(self, sender: str, recipient: str) -> dict:
+        """Sender's messages in the last minute and day (all recipients), and how many to THIS recipient are still unread."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow(
+                """SELECT COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 minute') AS minute,
+                          COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 day') AS day,
+                          COUNT(*) FILTER (WHERE recipient_id = $2 AND read_at IS NULL) AS unread_to_them
+                   FROM dash_member_messages WHERE sender_id = $1 AND created_at > NOW() - INTERVAL '1 day'
+                      OR (sender_id = $1 AND recipient_id = $2 AND read_at IS NULL)""", str(sender), str(recipient))
+        return {k: int(r[k] or 0) for k in ("minute", "day", "unread_to_them")}
+
+    async def msg_thread(self, a: str, b: str, limit: int = 50) -> list:
+        """Oldest first, newest `limit` only."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT * FROM (SELECT id, sender_id, body, created_at, read_at FROM dash_member_messages
+                       WHERE (sender_id = $1 AND recipient_id = $2) OR (sender_id = $2 AND recipient_id = $1)
+                       ORDER BY id DESC LIMIT $3) t ORDER BY id""", str(a), str(b), int(limit))
+        return [dict(r) for r in rows]
+
+    async def msg_mark_read(self, reader: str, other: str) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE dash_member_messages SET read_at = NOW() WHERE recipient_id = $1 AND sender_id = $2 AND read_at IS NULL",
+                str(reader), str(other))
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
+
+    async def msg_unread_by_sender(self, user_id: str) -> dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT sender_id, COUNT(*) AS n FROM dash_member_messages WHERE recipient_id = $1 AND read_at IS NULL GROUP BY sender_id",
+                str(user_id))
+        return {r["sender_id"]: int(r["n"]) for r in rows}
+
+    async def msg_thread_delete(self, a: str, b: str) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "DELETE FROM dash_member_messages WHERE (sender_id = $1 AND recipient_id = $2) OR (sender_id = $2 AND recipient_id = $1)",
+                str(a), str(b))
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
+
+    async def msg_purge_old(self, days: int = 30) -> int:
+        """Retention: messages are deleted after `days`."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM dash_member_messages WHERE created_at < NOW() - ($1 * INTERVAL '1 day')", int(days))
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
+
+    async def msg_report_insert(self, reporter: str, reported: str, snapshot: str):
+        """One OPEN report per pair: a repeat returns None instead of piling up."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                """INSERT INTO dash_member_reports (reporter_id, reported_id, snapshot)
+                   SELECT $1, $2, $3 WHERE NOT EXISTS (
+                       SELECT 1 FROM dash_member_reports WHERE reporter_id = $1 AND reported_id = $2 AND status = 'new')
+                   RETURNING id""", str(reporter), str(reported), str(snapshot))
+
+    async def msg_reports_today(self, reporter: str) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return int(await conn.fetchval(
+                "SELECT COUNT(*) FROM dash_member_reports WHERE reporter_id = $1 AND created_at > NOW() - INTERVAL '1 day'", str(reporter)) or 0)
+
+    async def msg_reports_new(self, limit: int = 25) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, reporter_id, reported_id, snapshot, status, created_at FROM dash_member_reports WHERE status = 'new' ORDER BY id LIMIT $1", int(limit))
+            counts = await conn.fetch("SELECT status, COUNT(*) AS n FROM dash_member_reports GROUP BY status")
+        return [dict(r) for r in rows], {r["status"]: int(r["n"]) for r in counts}
+
+    async def msg_report_get(self, report_id: int):
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.fetchrow("SELECT * FROM dash_member_reports WHERE id = $1", int(report_id))
+        return dict(r) if r else None
+
+    async def msg_report_resolve(self, report_id: int, status: str, by: str) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE dash_member_reports SET status = $2, resolved_by = $3, resolved_at = NOW() WHERE id = $1 AND status = 'new'",
+                int(report_id), str(status), str(by))
+        return res.endswith(" 1")
+
+    async def msg_reports_purge(self, days: int = 90) -> int:
+        """Retention for the owner's queue: RESOLVED reports (and their message snapshots) go `days` after resolution.
+        Open reports are never purged."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "DELETE FROM dash_member_reports WHERE status <> 'new' AND resolved_at IS NOT NULL AND resolved_at < NOW() - ($1 * INTERVAL '1 day')",
+                int(days))
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
+
+    async def msg_notify_claim(self, limit: int = 25, cooldown_minutes: int = 60) -> list:
+        """People who opted in to a Discord DM notice, have unread messages and were not pinged in the last hour.
+        Claimed atomically (last_dm_at set) so two workers never both send."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """UPDATE dash_member_prefs p SET last_dm_at = NOW() WHERE p.user_id IN (
+                       SELECT q.user_id FROM dash_member_prefs q
+                       WHERE q.dm_notify AND NOT q.msg_banned
+                         AND (q.last_dm_at IS NULL OR q.last_dm_at < NOW() - ($2 * INTERVAL '1 minute'))
+                         AND EXISTS (SELECT 1 FROM dash_member_messages m WHERE m.recipient_id = q.user_id AND m.read_at IS NULL
+                                       AND (q.last_dm_at IS NULL OR m.created_at > q.last_dm_at))
+                       LIMIT $1 FOR UPDATE SKIP LOCKED) RETURNING p.user_id""", int(limit), int(cooldown_minutes))
+        return [r["user_id"] for r in rows]
+
+    async def msg_dm_disable(self, user_id: str) -> None:
+        """Their DMs are closed: stop trying (they can switch it on again)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE dash_member_prefs SET dm_notify = FALSE WHERE user_id = $1", str(user_id))
 
     async def card_asset_blocked(self, sha: str) -> bool:
         pool = await get_pool()

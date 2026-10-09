@@ -20,6 +20,7 @@
     { id: "feedback", label: "Feedback", icon: "mail", group: "Controls", need: "feedback", desc: "What people are telling you." },
     { id: "watchlist", label: "Abuse watchlist", icon: "siren", group: "Safety", need: "watchlist", desc: "Users and servers that keep getting reported." },
     { id: "reports", label: "Report queue", icon: "flag", group: "Safety", need: "reports", desc: "Reports waiting for a decision." },
+    { id: "msgreports", label: "Message reports", icon: "flag", group: "Safety", need: "msgreports", desc: "Reports from member messaging, with the last messages." },
     { id: "scamshield", label: "Scam Shield", icon: "shield-check", group: "Safety", need: "scamshield", desc: "Words and links deleted in every server." },
     { id: "honeypot", label: "Honeypots", icon: "bug", group: "Safety", need: "honeypot", desc: "Trap channels set up across servers." },
     { id: "status", label: "Bot status", icon: "wave", group: "Safety", need: "status", desc: "What the bot shows as its status." },
@@ -688,6 +689,35 @@
     draw();
   }
 
+  function msgReports() {
+    var out = h("div", { class: "card" }); shell("msgreports", out);
+    function draw() {
+      out.textContent = "";
+      var uid = h("input", { type: "text", placeholder: "Discord id to allow messaging again", inputmode: "numeric", "aria-label": "Discord id to allow messaging again" });
+      out.appendChild(h("div", { class: "owner-bar" }, uid, h("button", { class: "btn sm ghost", text: "Allow messaging again", onclick: function () {
+        api("owner_msg_unban", {}, { user_id: uid.value.trim() }).then(function (r) { toast(r.message, "ok"); uid.value = ""; }).catch(fail);
+      } })));
+      loadInto(out, "owner_msg_reports", {}, function (j) {
+        var c = j.counts || {};
+        out.appendChild(h("p", { class: "muted", text: "New " + (c["new"] || 0) + " | Reviewed " + (c.reviewed || 0) + " | Dismissed " + (c.dismissed || 0) + ". Showing the newest " + j.limit + ". Message text is written by members: read it, do not trust it. The switch for all messaging is under Controls (Member messaging)." }));
+        if (!j.rows.length) { out.appendChild(h("p", { class: "muted", text: "No new reports." })); return; }
+        j.rows.forEach(function (r) {
+          var bar = h("div", { class: "owner-bar" }, h("strong", { text: "#" + r.id }), h("span", { class: "muted", text: "reported " + r.reported_id + " by " + r.reporter_id + " \u00b7 " + fmt(r.created_at) }));
+          j.actions.forEach(function (a) {
+            bar.appendChild(h("button", { class: "btn sm " + (a.id === "reviewed" ? "" : "ghost"), text: a.label, onclick: function () {
+              api("owner_msg_report_resolve", {}, { report_id: String(r.id), action: a.id }).then(function (x) { toast(x.message, "ok"); draw(); }).catch(fail);
+            } }));
+          });
+          out.appendChild(bar);
+          r.messages.forEach(function (m) {
+            out.appendChild(h("p", { style: "white-space:pre-wrap;word-break:break-word;margin:2px 0" }, h("b", { text: (m.from === "reported" ? "Reported person: " : "Reporter: ") }), h("span", { text: m.body })));
+          });
+        });
+      });
+    }
+    draw();
+  }
+
   function statusPage() {
     var out = h("div", { class: "card" }); shell("status", out);
     function draw() {
@@ -828,7 +858,7 @@
       if (!page) { location.hash = "#/owner"; return; }
       ({ "": overview, health: health, servers: servers, users: users, payments: payments, audit: audit, security: security,
         controls: controls, blacklist: blacklist, premium: premium, announce: announce, feedback: feedback, logs: logs, config: config,
-        ads: ads, bump: bump, watchlist: watchlist, reports: reports, status: statusPage, honeypot: honeypot, scamshield: scamshield,
+        ads: ads, bump: bump, watchlist: watchlist, reports: reports, msgreports: msgReports, status: statusPage, honeypot: honeypot, scamshield: scamshield,
         helpers: helpersPage, clones: clonesPage, database: databasePage })[page.id]();
     }
   };

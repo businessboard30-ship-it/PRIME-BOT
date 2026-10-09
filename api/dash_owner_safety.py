@@ -65,6 +65,22 @@ async def reports(q) -> dict:
     return {"counts": await s.report_counts(), "rows": rows, "limit": REPORT_LIMIT}
 
 
+async def msg_reports(q) -> dict:
+    """Member-messaging reports with the last messages at the time of the report. Written by strangers: textContent only."""
+    from database import db
+    from modules import member_msg
+    rows, counts = await db.msg_reports_new(REPORT_LIMIT)
+    out = []
+    for r in rows:
+        at = r.get("created_at")
+        out.append({"id": r["id"], "reporter_id": str(r["reporter_id"]), "reported_id": str(r["reported_id"]),
+                    "created_at": at.isoformat() if hasattr(at, "isoformat") else None,
+                    "messages": member_msg.parse_snapshot(r.get("snapshot"))})
+    return {"counts": counts, "rows": out, "limit": REPORT_LIMIT,
+            "actions": [{"id": "reviewed", "label": "Reviewed"}, {"id": "dismiss", "label": "Dismiss"},
+                        {"id": "remove_friendship", "label": "Remove friendship"}, {"id": "ban_sender", "label": "Block sender from messaging"}]}
+
+
 async def status(q) -> dict:
     s = _safety()
     return {"entries": [{**e, "text": _clip(e.get("text"), s.STATUS_TEXT_MAX)} for e in await s.list_status_entries()],
@@ -103,6 +119,42 @@ async def prep_report_resolve(sess, body) -> dict:
         ok = bool(await s.resolve_report(rid, to, _actor(sess)))
         return {"changed": ok, "message": "Done." if ok else "Already handled by someone else."}
     return {"target": str(rid), "detail": {"status": to}, "fn": fn}
+
+
+MSG_REPORT_ACTIONS = ("reviewed", "dismiss", "remove_friendship", "ban_sender")
+
+
+async def prep_msg_report_resolve(sess, body) -> dict:
+    """reviewed | dismiss close the report. remove_friendship deletes the friendship and the conversation.
+    ban_sender stops the reported person from using member messaging at all (reversible below); both then close it."""
+    from database import db
+    rid, action = _int(body.get("report_id")), str(body.get("action") or "")
+    if rid is None or action not in MSG_REPORT_ACTIONS:
+        return {"_error": (422, "Pick a report and an action.")}
+    async def fn():
+        rep = await db.msg_report_get(rid)
+        if not rep or rep.get("status") != "new":
+            return {"changed": False, "message": "Already handled by someone else."}
+        if action in ("remove_friendship", "ban_sender"):
+            await db.msg_friend_delete(rep["reporter_id"], rep["reported_id"])
+            await db.msg_thread_delete(rep["reporter_id"], rep["reported_id"])
+        if action == "ban_sender":
+            await db.msg_ban_set(rep["reported_id"], True)
+        ok = await db.msg_report_resolve(rid, "dismissed" if action == "dismiss" else "reviewed", str(_actor(sess)))
+        return {"changed": bool(ok), "message": "Done." if ok else "Already handled by someone else."}
+    return {"target": str(rid), "detail": {"action": action}, "fn": fn}
+
+
+async def prep_msg_unban(sess, body) -> dict:
+    from database import db
+    from modules import member_msg
+    uid = member_msg.snowflake(body.get("user_id"))
+    if uid is None:
+        return {"_error": (422, "That isn't a Discord id.")}
+    async def fn():
+        await db.msg_ban_set(uid, False)
+        return {"message": "They can use member messaging again."}
+    return {"target": uid, "fn": fn}
 
 
 async def prep_status_add(sess, body) -> dict:
@@ -187,6 +239,8 @@ async def prep_scam_remove(sess, body) -> dict:
 
 WRITES = {
     "owner_report_resolve": ("reports", 30, prep_report_resolve),
+    "owner_msg_report_resolve": ("msgreports", 30, prep_msg_report_resolve),
+    "owner_msg_unban": ("msgreports", 10, prep_msg_unban),
     "owner_status_add": ("status", 10, prep_status_add),
     "owner_status_remove": ("status", 20, prep_status_remove),
     "owner_presence_set": ("status", 10, prep_presence_set),
@@ -199,6 +253,7 @@ WRITES = {
 ROUTES = {
     "owner_watchlist": ("watchlist", watchlist),
     "owner_reports": ("reports", reports),
+    "owner_msg_reports": ("msgreports", msg_reports),
     "owner_status": ("status", status),
     "owner_honeypot": ("honeypot", honeypot),
     "owner_scamshield": ("scamshield", scamshield),

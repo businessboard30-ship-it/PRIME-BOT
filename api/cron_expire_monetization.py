@@ -59,6 +59,13 @@ class handler(BaseHTTPRequestHandler):
                 logger.info(f"[v0] cron dev_connections purged={purged}")
             except Exception as e:
                 logger.error(f"[v0] cron dev_connections purge failed: {type(e).__name__}")
+            try:                          # member messages are kept 30 days (privacy page promises it)
+                from modules import member_msg
+                gone = asyncio.run(db.msg_purge_old(member_msg.RETENTION_DAYS))
+                logger.info(f"[v0] cron member messages purged={gone}")
+                logger.info(f"[v0] cron member reports purged={asyncio.run(db.msg_reports_purge(member_msg.REPORT_RETENTION_DAYS))}")
+            except Exception as e:
+                logger.error(f"[v0] cron member messages purge failed: {type(e).__name__}")
             logger.info(f"[v0] cron_expire_monetization reverted clone_ids={reverted}")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
