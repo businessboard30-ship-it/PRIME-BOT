@@ -57,7 +57,7 @@ import discord
 from database import db
 from modules import leveling
 from discord_bot.cogs._views_leveling_boost import BoostXPButton
-from discord_bot.cogs._views_leveling_wallet import build_boost_wallet_row
+from discord_bot.cogs._views_leveling_wallet import build_boost_wallet_row, BuyBoostSelect
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +174,20 @@ async def _format_stats_text(rank_row, name: str) -> str:
     )
 
 
+def _dashboard_link_button(clone_id, mode: str):
+    """Link button to the member dashboard (global mode -> the global
+    leaderboard page, local -> My rank). The dashboard shows main-bot data
+    only, so clones get no button; also none when no dashboard URL is set."""
+    import config as _cfg
+    if clone_id is not None or not _cfg.DASH_PAGES_URL:
+        return None
+    page = "/me/leaderboard" if mode == "global" else "/me/rank"
+    return discord.ui.Button(
+        label="Dashboard", emoji="📈", style=discord.ButtonStyle.link,
+        url=f"{_cfg.DASH_PAGES_URL}/#{page}",
+    )
+
+
 async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str = "local",
                                   page: int = 0, stats_for_user_id=None) -> "discord.ui.LayoutView | None":
     """Shared builder for /leaderboard, the daily autopost loop, and every
@@ -248,190 +262,204 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
         for uid in voters:
             boosts[uid] = max(boosts.get(uid, 0.0), _tg_config.TOPGG_VOTE_MULTIPLIER)
 
-    view = discord.ui.LayoutView(timeout=None)
-    container = discord.ui.Container(accent_colour=discord.Color.blurple())
+    async def _assemble(max_badges: int, max_links: int):
+        """Builds the whole message. Split out so a page that would blow
+        Discord's 40-component ceiling can be rebuilt compact instead of
+        raising ValueError at the user."""
+        view = discord.ui.LayoutView(timeout=None)
+        container = discord.ui.Container(accent_colour=discord.Color.blurple())
 
-    mode_label = "Local" if mode == "local" else "Global"
-    container.add_item(discord.ui.TextDisplay(
-        f"### 📊 {mode_label} Level Leaderboard\nLeaderboard for user levels."
-    ))
-    mode_row = discord.ui.ActionRow()
-    mode_row.add_item(LeaderboardModeSelect(guild.id, clone_id, mode))
-    container.add_item(mode_row)
-
-    if mode == "local":
-        if guild.icon:
-            guild_section = discord.ui.Section(accessory=discord.ui.Thumbnail(guild.icon.url))
-            guild_section.add_item(f"**Guild:** {guild.name}")
-            container.add_item(guild_section)
-        else:
-            container.add_item(discord.ui.TextDisplay(f"**Guild:** {guild.name}"))
-    else:
-        container.add_item(discord.ui.TextDisplay("**Global** — across all servers this bot runs in"))
-
-    container.add_item(discord.ui.Separator())
-
-    stats_text = None
-    stats_task = None
-    if stats_for_user_id is not None:
-        # Just the rank DB query now — no name resolution here (see
-        # below), so this can run purely concurrently with everything
-        # else with nothing left inside it that could race
-        # _bulk_cache_members.
-        if mode == "local":
-            stats_task = asyncio.create_task(db.get_xp_rank(guild.id, stats_for_user_id, clone_id=clone_id))
-        else:
-            stats_task = asyncio.create_task(db.get_global_xp_rank(stats_for_user_id))
-
-    # One gateway round-trip resolves every uncached row (+ the stats-line
-    # user) at once — see _bulk_cache_members' docstring for why the
-    # earlier asyncio.gather-only fix wasn't enough on its own.
-    bulk_ids = [r["user_id"] for r in rows]
-    needs_stats_display = stats_for_user_id is not None and stats_for_user_id not in bulk_ids
-    if needs_stats_display:
-        bulk_ids.append(stats_for_user_id)
-    await _bulk_cache_members(bot, guild, mode, bulk_ids)
-
-    # _resolve_display only hits a REST fetch_member/fetch_user fallback
-    # now for whatever _bulk_cache_members above didn't resolve (left the
-    # guild, etc.) — firing those via gather still helps for that
-    # remainder, it's just no longer doing the heavy lifting. The
-    # stats-panel user's name is resolved in this SAME gather (added to
-    # the batch below) rather than via its own separate _resolve_display
-    # call afterward — that separate call used to run concurrently with
-    # _bulk_cache_members above as its own task, which meant it could hit
-    # an uncached member and fire a redundant REST fetch_member before
-    # bulk-caching had finished — the exact per-row REST fallback
-    # _bulk_cache_members exists to avoid. Resolving it here instead,
-    # strictly after the cache is warm, closes that race.
-    display_ids = list(rows)
-    if needs_stats_display:
-        display_ids.append({"user_id": stats_for_user_id})
-    display_results = await asyncio.gather(
-        *[_resolve_display(bot, guild, mode, r["user_id"]) for r in display_ids]
-    )
-    display_by_user_id = {r["user_id"]: d for r, d in zip(display_ids, display_results)}
-
-    if stats_task is not None:
-        rank_row = await stats_task
-        stats_name = (display_by_user_id[stats_for_user_id][0]
-                      if stats_for_user_id in display_by_user_id else f"User {stats_for_user_id}")
-        stats_text = await _format_stats_text(rank_row, stats_name)
-    stats_section = discord.ui.Section(accessory=LeaderboardMyRankButton(guild.id, clone_id, mode, page))
-    stats_section.add_item(stats_text or "**Your Current Stats**\nTap *My Rank* to see where you stand.")
-    container.add_item(stats_section)
-    container.add_item(discord.ui.Separator())
-
-    rankings_section = discord.ui.Section(accessory=LeaderboardNavButton(guild.id, clone_id, mode, page, "top"))
-    rankings_section.add_item("**Rankings**")
-    container.add_item(rankings_section)
-
-    link_row = discord.ui.ActionRow()
-    MAX_BOOST_BADGES = 2   # real Section+button entries; each costs 3 components
-    MAX_LEADER_LINKS = 3   # link_row costs 1 (row) + N (buttons)
-    ENTRY_DIVIDER = "\n-# ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-    badge_budget = MAX_BOOST_BADGES
-    chunk_lines = []
-
-    def _flush_chunk():
-        if chunk_lines:
-            container.add_item(discord.ui.TextDisplay(ENTRY_DIVIDER.join(chunk_lines)))
-            chunk_lines.clear()
-
-    for i, row in enumerate(rows, start=offset + 1):
-        name, avatar_url, role_name, _role_color = display_by_user_id[row["user_id"]]
-        total_xp = row["total_xp"]
-        level = row["level"] if mode == "local" else leveling.compute_level(total_xp)
-        multiplier = boosts.get(row["user_id"])
-        chief_clan = chief_by_user_id.get(row["user_id"])
-        crown_prefix = f"👑 {chief_clan} " if chief_clan else ""
-        line = f"{_medal_or_rank(i)} {crown_prefix}{name}\nLvl `{level}` — {total_xp} xp"
-
-        if multiplier and badge_budget > 0:
-            # Real Section + disabled button ("own allocated button with the
-            # exact multiplier") — capped at MAX_BOOST_BADGES per page so a
-            # page that happens to be mostly-boosted users can never push
-            # this message over Discord's 40-component ceiling (see the
-            # ValueError this replaced). Any boosted entries past the cap
-            # still show their multiplier, just inline as text instead of a
-            # standalone button — flush whatever plain-text chunk is
-            # pending first so ordering on the page stays correct.
-            _flush_chunk()
-            badge_budget -= 1
-            accessory = discord.ui.Button(
-                label=f"⚡ {multiplier:g}x active", style=discord.ButtonStyle.success,
-                disabled=True, custom_id=f"lvllb_badge:{row['user_id']}:{i}",
-            )
-            entry_section = discord.ui.Section(accessory=accessory)
-            entry_section.add_item(line)
-            container.add_item(entry_section)
-            container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
-        else:
-            if multiplier:
-                line += f" · ⚡ {multiplier:g}x active"
-            chunk_lines.append(line)
-
-        if mode == "local" and len(link_row.children) < MAX_LEADER_LINKS:
-            link = leader_links.get(row["user_id"])
-            if link and link["status"] == "approved":
-                link_row.add_item(discord.ui.Button(
-                    label=f"#{i} · {name}'s server", style=discord.ButtonStyle.link, url=link["invite_url"]
-                ))
-
-    _flush_chunk()
-
-    total_line = f"-# Total players: {total}"
-    import config as _vote_config
-    if _vote_config.TOPGG_VOTE_URL:
-        # Markdown link inside the existing TextDisplay: zero extra components
-        # (this message is already close to Discord's 40-component ceiling).
-        total_line += (
-            f"\n-# 🗳️ [Vote for us on Top.gg]({_vote_config.TOPGG_VOTE_URL}) for a free "
-            f"{_vote_config.TOPGG_VOTE_MULTIPLIER:g}x XP boost ({_vote_config.TOPGG_VOTE_HOURS:g}h)"
-        )
-    container.add_item(discord.ui.TextDisplay(total_line))
-    container.add_item(discord.ui.Separator())
-
-    nav_row = discord.ui.ActionRow()
-    nav_row.add_item(LeaderboardNavButton(guild.id, clone_id, mode, page, "prev", disabled=(page <= 0)))
-    nav_row.add_item(discord.ui.Button(label=f"{page + 1}/{total_pages}", style=discord.ButtonStyle.secondary,
-                                        disabled=True, custom_id=f"lvllb_pageind:{guild.id}:{page}"))
-    nav_row.add_item(LeaderboardNavButton(guild.id, clone_id, mode, page, "next", disabled=(page >= total_pages - 1)))
-    container.add_item(nav_row)
-
-    if link_row.children:
-        container.add_item(link_row)
-
-    container.add_item(discord.ui.Separator())
-    boost_row = discord.ui.ActionRow()
-    boost_row.add_item(BoostXPButton(guild.id, clone_id))
-    boost_row.add_item(LeaderboardClansButton(guild.id, clone_id))
-    boost_row.add_item(LeaderboardPingButton(guild.id, clone_id))
-    container.add_item(boost_row)
-    container.add_item(build_boost_wallet_row(guild.id, clone_id))
-
-    # Go Premium footer — only show if guild isn't already premium.
-    # premium_task was kicked off at the very top of this function, so by
-    # the time we get here (after several DB round-trips + a gateway
-    # query_members call) it's almost certainly already resolved — this
-    # just collects the result instead of firing a brand-new query and
-    # waiting on it cold.
-    try:
-        is_prem = await premium_task
-    except Exception:
-        is_prem = False
-    if not is_prem:
-        import config as _config
-        prem_row = discord.ui.ActionRow()
-        prem_row.add_item(_LeaderboardGoPremiumButton(guild.id, clone_id))
-        container.add_item(discord.ui.Separator())
+        mode_label = "Local" if mode == "local" else "Global"
         container.add_item(discord.ui.TextDisplay(
-            f"-# 💎 **Go Premium** — ${_config.PREMIUM_FEE_USD:g}/month unlocks every feature for this server."
+            f"### 📊 {mode_label} Level Leaderboard\nLeaderboard for user levels."
         ))
-        container.add_item(prem_row)
+        mode_row = discord.ui.ActionRow()
+        mode_row.add_item(LeaderboardModeSelect(guild.id, clone_id, mode))
+        container.add_item(mode_row)
 
-    view.add_item(container)
-    return view
+        if mode == "local":
+            if guild.icon:
+                guild_section = discord.ui.Section(accessory=discord.ui.Thumbnail(guild.icon.url))
+                guild_section.add_item(f"**Guild:** {guild.name}")
+                container.add_item(guild_section)
+            else:
+                container.add_item(discord.ui.TextDisplay(f"**Guild:** {guild.name}"))
+        else:
+            container.add_item(discord.ui.TextDisplay("**Global** — across all servers this bot runs in"))
+
+        container.add_item(discord.ui.Separator())
+
+        stats_text = None
+        stats_task = None
+        if stats_for_user_id is not None:
+            # Just the rank DB query now — no name resolution here (see
+            # below), so this can run purely concurrently with everything
+            # else with nothing left inside it that could race
+            # _bulk_cache_members.
+            if mode == "local":
+                stats_task = asyncio.create_task(db.get_xp_rank(guild.id, stats_for_user_id, clone_id=clone_id))
+            else:
+                stats_task = asyncio.create_task(db.get_global_xp_rank(stats_for_user_id))
+
+        # One gateway round-trip resolves every uncached row (+ the stats-line
+        # user) at once — see _bulk_cache_members' docstring for why the
+        # earlier asyncio.gather-only fix wasn't enough on its own.
+        bulk_ids = [r["user_id"] for r in rows]
+        needs_stats_display = stats_for_user_id is not None and stats_for_user_id not in bulk_ids
+        if needs_stats_display:
+            bulk_ids.append(stats_for_user_id)
+        await _bulk_cache_members(bot, guild, mode, bulk_ids)
+
+        # _resolve_display only hits a REST fetch_member/fetch_user fallback
+        # now for whatever _bulk_cache_members above didn't resolve (left the
+        # guild, etc.) — firing those via gather still helps for that
+        # remainder, it's just no longer doing the heavy lifting. The
+        # stats-panel user's name is resolved in this SAME gather (added to
+        # the batch below) rather than via its own separate _resolve_display
+        # call afterward — that separate call used to run concurrently with
+        # _bulk_cache_members above as its own task, which meant it could hit
+        # an uncached member and fire a redundant REST fetch_member before
+        # bulk-caching had finished — the exact per-row REST fallback
+        # _bulk_cache_members exists to avoid. Resolving it here instead,
+        # strictly after the cache is warm, closes that race.
+        display_ids = list(rows)
+        if needs_stats_display:
+            display_ids.append({"user_id": stats_for_user_id})
+        display_results = await asyncio.gather(
+            *[_resolve_display(bot, guild, mode, r["user_id"]) for r in display_ids]
+        )
+        display_by_user_id = {r["user_id"]: d for r, d in zip(display_ids, display_results)}
+
+        if stats_task is not None:
+            rank_row = await stats_task
+            stats_name = (display_by_user_id[stats_for_user_id][0]
+                          if stats_for_user_id in display_by_user_id else f"User {stats_for_user_id}")
+            stats_text = await _format_stats_text(rank_row, stats_name)
+        stats_section = discord.ui.Section(accessory=LeaderboardMyRankButton(guild.id, clone_id, mode, page))
+        stats_section.add_item(stats_text or "**Your Current Stats**\nTap *My Rank* to see where you stand.")
+        container.add_item(stats_section)
+        container.add_item(discord.ui.Separator())
+
+        rankings_section = discord.ui.Section(accessory=LeaderboardNavButton(guild.id, clone_id, mode, page, "top"))
+        rankings_section.add_item("**Rankings**")
+        container.add_item(rankings_section)
+
+        link_row = discord.ui.ActionRow()
+        MAX_BOOST_BADGES = max_badges   # real Section+button entries; each costs 3 components
+        MAX_LEADER_LINKS = max_links   # link_row costs 1 (row) + N (buttons)
+        ENTRY_DIVIDER = "\n-# ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+        badge_budget = MAX_BOOST_BADGES
+        chunk_lines = []
+
+        def _flush_chunk():
+            if chunk_lines:
+                container.add_item(discord.ui.TextDisplay(ENTRY_DIVIDER.join(chunk_lines)))
+                chunk_lines.clear()
+
+        for i, row in enumerate(rows, start=offset + 1):
+            name, avatar_url, role_name, _role_color = display_by_user_id[row["user_id"]]
+            total_xp = row["total_xp"]
+            level = row["level"] if mode == "local" else leveling.compute_level(total_xp)
+            multiplier = boosts.get(row["user_id"])
+            chief_clan = chief_by_user_id.get(row["user_id"])
+            crown_prefix = f"👑 {chief_clan} " if chief_clan else ""
+            line = f"{_medal_or_rank(i)} {crown_prefix}{name}\nLvl `{level}` — {total_xp} xp"
+
+            if multiplier and badge_budget > 0:
+                # Real Section + disabled button ("own allocated button with the
+                # exact multiplier") — capped at MAX_BOOST_BADGES per page so a
+                # page that happens to be mostly-boosted users can never push
+                # this message over Discord's 40-component ceiling (see the
+                # ValueError this replaced). Any boosted entries past the cap
+                # still show their multiplier, just inline as text instead of a
+                # standalone button — flush whatever plain-text chunk is
+                # pending first so ordering on the page stays correct.
+                _flush_chunk()
+                badge_budget -= 1
+                accessory = discord.ui.Button(
+                    label=f"⚡ {multiplier:g}x active", style=discord.ButtonStyle.success,
+                    disabled=True, custom_id=f"lvllb_badge:{row['user_id']}:{i}",
+                )
+                entry_section = discord.ui.Section(accessory=accessory)
+                entry_section.add_item(line)
+                container.add_item(entry_section)
+                container.add_item(discord.ui.Separator(spacing=discord.SeparatorSpacing.small))
+            else:
+                if multiplier:
+                    line += f" · ⚡ {multiplier:g}x active"
+                chunk_lines.append(line)
+
+            if mode == "local" and len(link_row.children) < MAX_LEADER_LINKS:
+                link = leader_links.get(row["user_id"])
+                if link and link["status"] == "approved":
+                    link_row.add_item(discord.ui.Button(
+                        label=f"#{i} · {name}'s server", style=discord.ButtonStyle.link, url=link["invite_url"]
+                    ))
+
+        _flush_chunk()
+
+        total_line = f"-# Total players: {total}"
+        import config as _vote_config
+        if _vote_config.TOPGG_VOTE_URL:
+            # Markdown link inside the existing TextDisplay: zero extra components
+            # (this message is already close to Discord's 40-component ceiling).
+            total_line += (
+                f"\n-# 🗳️ [Vote for us on Top.gg]({_vote_config.TOPGG_VOTE_URL}) for a free "
+                f"{_vote_config.TOPGG_VOTE_MULTIPLIER:g}x XP boost ({_vote_config.TOPGG_VOTE_HOURS:g}h)"
+            )
+        container.add_item(discord.ui.TextDisplay(total_line))
+        container.add_item(discord.ui.Separator())
+
+        nav_row = discord.ui.ActionRow()
+        nav_row.add_item(LeaderboardNavButton(guild.id, clone_id, mode, page, "prev", disabled=(page <= 0)))
+        nav_row.add_item(discord.ui.Button(label=f"{page + 1}/{total_pages}", style=discord.ButtonStyle.secondary,
+                                            disabled=True, custom_id=f"lvllb_pageind:{guild.id}:{page}"))
+        nav_row.add_item(LeaderboardNavButton(guild.id, clone_id, mode, page, "next", disabled=(page >= total_pages - 1)))
+        container.add_item(nav_row)
+
+        if link_row.children:
+            container.add_item(link_row)
+
+        container.add_item(discord.ui.Separator())
+        # XP controls (Boost XP, level-up pings, Buy Boost) now live one click
+        # deeper behind a single "XP options" button, which also drops the
+        # wallet select's own row: 6 components -> 4 (incl. the Dashboard link).
+        boost_row = discord.ui.ActionRow()
+        boost_row.add_item(LeaderboardXPOptionsButton(guild.id, clone_id))
+        boost_row.add_item(LeaderboardClansButton(guild.id, clone_id))
+        dash_btn = _dashboard_link_button(clone_id, mode)
+        if dash_btn is not None:
+            boost_row.add_item(dash_btn)
+        container.add_item(boost_row)
+
+        # Go Premium footer — only show if guild isn't already premium.
+        # premium_task was kicked off at the very top of this function, so by
+        # the time we get here (after several DB round-trips + a gateway
+        # query_members call) it's almost certainly already resolved — this
+        # just collects the result instead of firing a brand-new query and
+        # waiting on it cold.
+        try:
+            is_prem = await premium_task
+        except Exception:
+            is_prem = False
+        if not is_prem:
+            import config as _config
+            prem_row = discord.ui.ActionRow()
+            prem_row.add_item(_LeaderboardGoPremiumButton(guild.id, clone_id))
+            container.add_item(discord.ui.Separator())
+            container.add_item(discord.ui.TextDisplay(
+                f"-# 💎 **Go Premium** — ${_config.PREMIUM_FEE_USD:g}/month unlocks every feature for this server."
+            ))
+            container.add_item(prem_row)
+
+        view.add_item(container)
+        return view
+
+    try:
+        return await _assemble(2, 3)
+    except ValueError:
+        logger.warning("[leaderboard] page over the component ceiling; rebuilding compact")
+        return await _assemble(0, 1)
 
 
 async def post_leaderboard_to_channel(bot, guild: discord.Guild, clone_id, channel_id) -> tuple:
@@ -641,6 +669,38 @@ class LeaderboardPingButton(discord.ui.DynamicItem[discord.ui.Button],
         await interaction.followup.send(_ping_status_text(muted), view=view, ephemeral=True)
 
 
+class LeaderboardXPOptionsButton(discord.ui.DynamicItem[discord.ui.Button],
+                                 template=r"^lvllb_xpopts:(\d+):(-|\d+)$"):
+    """ONE entry for every XP-related control. Opens an ephemeral menu with
+    the existing Boost XP button, Level-up pings button and Buy Boost select
+    (same DynamicItems, so each runs exactly the code it always did)."""
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="XP options", emoji="⚡", style=discord.ButtonStyle.primary,
+            custom_id=f"lvllb_xpopts:{guild_id}:{_clone_part(clone_id)}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)), _clone_from(match.group(2)))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "⚡ **XP options** — boost your XP, turn level-up pings on or off, or buy a server boost.",
+            view=build_xp_options_view(self.guild_id, self.clone_id), ephemeral=True,
+        )
+
+
+def build_xp_options_view(guild_id: int, clone_id) -> discord.ui.View:
+    view = discord.ui.View(timeout=300)
+    view.add_item(BoostXPButton(guild_id, clone_id))
+    view.add_item(LeaderboardPingButton(guild_id, clone_id))
+    view.add_item(BuyBoostSelect(guild_id, clone_id))
+    return view
+
+
 def _ping_status_text(muted: bool) -> str:
     if muted:
         return ("🔕 **Level-up pings are currently OFF.**\n"
@@ -715,4 +775,5 @@ class _LeaderboardGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
 
 
 DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton,
-                 LeaderboardClansButton, LeaderboardPingButton, _LeaderboardGoPremiumButton)
+                 LeaderboardClansButton, LeaderboardPingButton, _LeaderboardGoPremiumButton,
+                 LeaderboardXPOptionsButton)
