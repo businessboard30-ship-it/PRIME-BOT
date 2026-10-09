@@ -186,7 +186,10 @@ def test_no_route_or_db_list_method_can_return_ciphertext():
     assert "key_encrypted" not in src                      # the list query never selects the secret
     assert "secret" in inspect.getsource(importlib.import_module("database").Database.dev_connection_secret).lower()
     dev_src = Path(dash_dev.__file__).read_text()
-    assert "dev_connection_secret" in dev_src and dev_src.count("dev_connection_secret") == 1     # one caller: the own-key chat
+    # exactly two server-side callers, each decrypting only to call the provider: the own-key chat and the GitHub token reader (C4)
+    assert dev_src.count("dev_connection_secret") == 2
+    for fn in (dash_dev._chat_with_own_key, dash_dev._gh_secret):
+        assert "dev_connection_secret" in inspect.getsource(fn)
 
 
 def test_every_new_dev_handler_starts_with_the_gate():

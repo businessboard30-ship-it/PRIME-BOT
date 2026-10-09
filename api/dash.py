@@ -33,7 +33,8 @@ Routes (all on /api/dash):
   GET  ?action=billing&guild_id         -> Premium status + plans with server-side prices
   POST {action: checkout, guild_id, plan} -> {url}: existing /pay redirect bound to this server
   GET  ?action=audit&guild_id[&before][&module] -> change history for a server (newest first)
-  GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count); read-only
+  GET  ?action=moderation&guild_id=&user_id=&kind=&before= -> cases from moderation_logs (+ that user's warns and count)
+  POST {action: warn_remove, guild_id, user_id, warn_id} -> removes ONE warn (needs Timeout Members like /unwarn; audited; logged as an unwarn case). "Clear all" stays on Discord (/unwarn)
   GET  ?action=analytics&guild_id[&days=7|30|90] -> joins/leaves per day, active members, top XP members and inviters; read-only, no schema change (30 reads/min)
   GET  ?action=giveaways&guild_id=&status=&before= -> giveaways for this server (prize, status, entrant count, winners); read-only
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
@@ -62,12 +63,22 @@ Routes (all on /api/dash):
   POST ?action=member_card_asset {kind: background|logo, data: base64} -> card plan only; validated, re-encoded, AI-moderated (approved/pending/rejected)
   POST ?action=member_card_asset_delete {kind} -> removes the member's own upload
   POST ?action=member_chat {messages} -> card plan only (402 otherwise): one free website AI chat; 10 a week (source card_plan), refunded on failure
+  GET  ?action=member_usage -> weekly AI chat meters for the plans the member has (read-only)
+  POST ?action=member_stepup -> {url}: Discord re-sign-in that marks THIS session fresh (any member)
+  POST ?action=member_data_delete {confirm:"DELETE MY DATA"} -> step-up required; deletes the dashboard's own data for the session user
   POST ?action=checkout_user {product} -> any signed-in user: the gateway (Paystack or Gumroad) checkout URL for the SESSION user, no /pay hop (webhook grants, never this call)
   GET  ?action=dev_status -> ANY signed-in user (#/dev): {unlocked, expires_at, export_available, plans, features}; drives the locked screen only
   GET  ?action=dev_overview (and every later dev_* route) -> 402 {code: subscription_required} without an active Developer entitlement (api/dash_dev.py, require_dev)
   GET  ?action=dev_usage -> Developer plan only: {used, limit, remaining, resets_at, models} for the weekly bot-AI chats
   GET  ?action=dev_keys -> Developer plan only: {connections:[{provider,label,last4,added_at,updated_at}], providers}; a key is NEVER returned
   POST {action: dev_key_save, provider, key} / {action: dev_key_remove, provider} -> Developer plan + fresh Discord sign-in (403 stepup_required); the key is validated with one free provider call, encrypted, never echoed
+  GET  ?action=dev_export_list / dev_export_download&id -> active Developer plan OR within 7 days after it ends (ent.export_allowed, not require_dev): receipts / the decrypted file for the session user's own export only
+  POST {action: dev_export_create, kind: note|text|json, name?, content} -> same gate: encrypts, uploads ciphertext to the private storage channel (opaque name), stores a receipt, DMs the plain file best-effort; 429 daily_limit; 503 when the owner's `dev_export` switch is on
+  POST {action: dev_export_delete, id} -> same gate: deletes the storage message and the receipt
+  GET  ?action=dev_github -> Developer plan only: {configured, connected, login, connected_at, access}; the token is NEVER returned
+  GET  ?action=dev_github_repos|dev_github_browse&repo&path&ref|dev_github_diff&repo&kind=commit|compare|pull&a&b -> Developer plan + connected GitHub: READ-ONLY, size-capped (api/dash_dev.py, modules/dev_github.py)
+  POST {action: dev_github_connect} / {action: dev_github_disconnect} -> Developer plan + fresh Discord sign-in; connect returns the GitHub authorize URL (state + PKCE, no write scope), disconnect deletes the token and asks GitHub to revoke it
+  POST {action: dev_github_finish, code, state} -> Developer plan: the browser hands back what GitHub sent; the state must have been issued to this session's user; the token is encrypted and never echoed
   POST {action: dev_stepup} -> Developer plan only: {url}: Discord re-sign-in that makes this session fresh for DASH_STEPUP_MINUTES (returns to #/dev)
   POST {action: dev_chat, model?: default|anthropic|groq|openai, messages:[{role,content}]} -> Developer plan only: one bot-AI reply; spends 1 of 50 weekly chats (refunded if the model fails); 429 {code: weekly_limit}; 503 when the owner's `ai` switch is on. Nothing is stored.
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
@@ -336,6 +347,9 @@ def _merged(attr: str) -> dict:
             raise RuntimeError(f"duplicate owner {attr} action(s): {sorted(dup)}")
         out.update(part)
     return out
+
+
+MEMBER_FRESH_WRITES = frozenset({"member_data_delete"})
 
 
 def _member_routes() -> dict:
@@ -742,6 +756,40 @@ async def _raid_review(gid: int) -> dict:
     return {"ok": True, "people": list(people), "total": total}
 
 
+async def _warn_remove(sess: dict, gid: int, raw_user, raw_warn) -> dict:
+    """Remove a single warn. Same permission Discord asks for /unwarn (Timeout Members; owner/Administrator pass).
+    The delete is scoped to this server AND this member, so a warn id from anywhere else matches nothing."""
+    uid = int(sess["user"]["id"])
+    _owner_rate(sess, "warn_remove", 20, 60)
+    try:
+        target = S.parse_mod_user(raw_user)
+        warn_id = S.parse_warn_id(raw_warn)
+    except ValueError as e:
+        _fail(400, str(e))
+    if target is None:
+        _fail(400, "Pick a member first.")
+    owner_id, my_roles, role_perms, _pos = await _actor_perms(gid, uid)
+    if not S.has_permission(owner_id, uid, my_roles, role_perms, gid, S.MODERATE_MEMBERS):
+        _fail(403, "You need the Timeout Members permission to remove warns (the same as /unwarn).")
+    gone = await db.dash_warn_remove(gid, target, warn_id)
+    if gone is None:
+        _fail(404, "That warn is already gone. Refresh the list.")
+    actor_name = sess["user"].get("username") or "Unknown"
+    try:                                                    # same case trail Discord's /unwarn leaves
+        from modules import moderation_extra as modx
+        await modx.log_action(gid, "unwarn", uid, target_user_id=target, reason=f"Removed warn #{warn_id} via dashboard")
+    except Exception:
+        logger.exception("dashboard: moderation log failed for warn_remove")
+    try:
+        await db.dash_audit_add(gid, str(uid), actor_name, "moderation",
+                                {f"Warn #{warn_id} removed (member {target})": {"from": S._clean_text(gone.get("reason"), 120) or "(no reason)", "to": None}},
+                                S.AUDIT_RETENTION_DAYS)
+    except Exception:
+        logger.exception("dashboard: audit write failed for warn_remove")
+    logger.info("dashboard warn_remove guild=%s user=%s target=%s warn=%s", gid, uid, target, warn_id)
+    return {"ok": True, "message": "Warn removed.", "warn_count": gone["remaining"]}
+
+
 async def _raid_action(sess: dict, gid: int, raw_user, op) -> dict:
     uid = int(sess["user"]["id"])
     now = time.monotonic()
@@ -908,14 +956,26 @@ def _back(fragment: str):
     raise _Reply(302, location=f"{config.DASH_PAGES_URL}/#{fragment}")
 
 
+def _github_callback(query: dict):
+    """GitHub sends the browser back to the same URL as Discord. Nothing is exchanged here: the browser carries the
+    code and state to the signed-in dashboard, which calls dev_github_finish with its own session (so a link started by
+    someone else can't connect your account). The state is NOT consumed here."""
+    if query.get("error") or not query.get("code", [None])[0]:
+        _back("gh_error=1")
+    _back(urlencode({"gh_code": query["code"][0], "gh_state": query["state"][0]}))
+
+
 async def _oauth_callback(query: dict):
+    if (query.get("state", [""])[0] or "").startswith("gh."):
+        _github_callback(query)
     if query.get("error"):
         _back("error=" + urlencode({"": "Sign-in was cancelled."})[1:])
     state, code = query.get("state", [None])[0], query.get("code", [None])[0]
     popped = await db.pop_login_oauth_state(state) if state else None
     rt = (popped or {}).get("return_to") or ""
-    stepup_dev = rt.startswith("dash_stepup_dev:")
-    stepup_sid = (rt[len("dash_stepup_dev:"):] if stepup_dev else rt[len("dash_stepup:"):]) if (stepup_dev or rt.startswith("dash_stepup:")) else None
+    stepup_dev = rt.startswith("dash_stepup_dev:") or rt.startswith("dash_stepup_me:")
+    stepup_me = rt.startswith("dash_stepup_me:")
+    stepup_sid = (rt[rt.index(":") + 1:] if stepup_dev else rt[len("dash_stepup:"):]) if (stepup_dev or rt.startswith("dash_stepup:")) else None
     if not popped or not (rt == "dash" or stepup_sid) or not code:
         _back("error=" + urlencode({"": "That sign-in link expired. Try again."})[1:])
     try:
@@ -946,7 +1006,7 @@ async def _oauth_callback(query: dict):
             _back("error=" + urlencode({"": "That confirmation didn't match your session."})[1:])
         await db.update_login_session_payload(
             stepup_sid, {"fresh_until": int(time.time()) + config.DASH_STEPUP_MINUTES * 60})
-        _back("dev=stepup_ok" if stepup_dev else "owner=stepup_ok")
+        _back("me=stepup_ok" if stepup_me else ("dev=stepup_ok" if stepup_dev else "owner=stepup_ok"))
     avatar = (f"https://cdn.discordapp.com/avatars/{uid}/{me['avatar']}.png?size=64" if me.get("avatar")
               else f"https://cdn.discordapp.com/embed/avatars/{(int(uid) >> 22) % 6}.png")
     sid = await db.create_login_session({
@@ -1114,12 +1174,22 @@ async def _route(method: str, query: dict, headers, body: dict):
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
                                                       "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60), "member_chat": (8, 60),
-                                                      "dev_key_save": (6, 300), "dev_key_remove": (10, 300)}.get(action, (30, 60)))
+                                                      "dev_key_save": (6, 300), "dev_key_remove": (10, 300),
+                                                      "dev_export_create": (6, 300), "dev_export_delete": (10, 300),
+                                                      "dev_github_connect": (5, 300), "dev_github_finish": (8, 300), "dev_github_disconnect": (10, 300),
+                                                      "member_stepup": (5, 300), "member_data_delete": (3, 3600)}.get(action, (30, 60)))
         from api import dash_dev
         if action in dash_dev.FRESH_WRITES:          # gate first (402), then step-up (403); handlers never see the session
             gate = await dash_dev.require_dev(uid, db)
             if gate:
                 raise _Reply(gate["_status"], {"ok": False, "message": gate["message"], "code": gate["code"]})
+            _require_fresh(sess)
+        if action == "member_stepup":                # any signed-in member; same OAuth round trip as the Developer one
+            _check_oauth_configured()
+            state = _secrets.token_urlsafe(24)
+            await db.create_login_oauth_state(state, return_to="dash_stepup_me:" + sess["_sid"])
+            raise _Reply(200, {"ok": True, "url": _authorize_url(state, "consent"), "minutes": config.DASH_STEPUP_MINUTES})
+        if action in MEMBER_FRESH_WRITES:            # step-up first; the confirm phrase is checked by the handler
             _require_fresh(sess)
         out = await _member_writes()[action](uid, body, db)
         if out.get("_status"):
@@ -1281,6 +1351,10 @@ async def _route(method: str, query: dict, headers, body: dict):
     if method == "GET" and action == "raid_review":
         gid = await _authorised_guild(sess, q("guild_id"))
         raise _Reply(200, await _raid_review(gid))
+
+    if method == "POST" and action == "warn_remove":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        raise _Reply(200, await _warn_remove(sess, gid, body.get("user_id"), body.get("warn_id")))
 
     if method == "POST" and action == "raid_action":
         gid = await _authorised_guild(sess, body.get("guild_id"))
