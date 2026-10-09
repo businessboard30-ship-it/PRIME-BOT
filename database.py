@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "67"
+SCHEMA_VERSION = "68"
+# "67" -> "68" creates user_renewal_reminders (one row per user + plan + period end, so a renewal/ending reminder DM is sent at most once per period). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "66" -> "67" creates dev_exports (minimal receipt for a Developer-mode export: opaque id, owner, storage message id, display name, size, time; the file itself lives ENCRYPTED in the private storage channel). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "65" -> "66" creates dev_connections (a Developer-mode member's own AI provider key: encrypted, last 4 + dates only ever returned; deleted 30 days after the plan ends). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "61" -> "62" creates user_entitlements (per-user paid products: card_plan, dev_monthly, dev_yearly; only the payment webhook may write it) and dash_web_users (everyone who has signed in to the web dashboard; member messaging depends on it). Same bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -4274,6 +4275,18 @@ class Database:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (user_id, provider)
+            )
+        """)
+
+        # Renewal reminders already sent. The PRIMARY KEY is the once-per-period gate.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_renewal_reminders (
+                user_id TEXT NOT NULL,
+                product TEXT NOT NULL,
+                period_end TIMESTAMPTZ NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'renews',
+                sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, product, period_end)
             )
         """)
 
@@ -15053,6 +15066,60 @@ class Database:
             return int(res.split()[-1])
         except Exception:
             return 0
+
+    async def renewal_reminder_candidates(self, within_days: int = 3, limit: int = 200) -> list:
+        """Plans that renew/end within `within_days` (or failed to renew and are in grace) with no reminder sent for that period."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT e.user_id, e.product, e.status, e.expires_at, e.cancel_at_period_end
+                   FROM user_entitlements e
+                   WHERE e.expires_at IS NOT NULL
+                     AND ((e.status IN ('active', 'cancelled') AND e.expires_at > NOW()
+                           AND e.expires_at <= NOW() + ($1 * INTERVAL '1 day'))
+                          OR (e.status = 'past_due' AND e.expires_at + INTERVAL '3 days' > NOW()))
+                     AND NOT EXISTS (SELECT 1 FROM user_renewal_reminders r
+                                     WHERE r.user_id = e.user_id AND r.product = e.product AND r.period_end = e.expires_at)
+                   ORDER BY e.expires_at LIMIT $2""", int(within_days), int(limit))
+        return [dict(r) for r in rows]
+
+    async def renewal_reminder_claim(self, user_id: str, product: str, period_end, kind: str) -> bool:
+        """Atomically claim the reminder for this period. True only for the first caller."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            got = await conn.fetchval(
+                """INSERT INTO user_renewal_reminders (user_id, product, period_end, kind) VALUES ($1, $2, $3, $4)
+                   ON CONFLICT DO NOTHING RETURNING 1""", str(user_id), product, period_end, kind)
+        return bool(got)
+
+    async def renewal_reminder_release(self, user_id: str, product: str, period_end) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM user_renewal_reminders WHERE user_id = $1 AND product = $2 AND period_end = $3",
+                               str(user_id), product, period_end)
+
+    async def member_data_delete(self, user_id: str) -> dict:
+        """Delete what the DASHBOARD holds for this person, in one transaction. Never touches payments, entitlements,
+        billing events, weekly usage counters (anti-abuse) or in-server records (XP, coins, warns)."""
+        uid = str(user_id)
+        pool = await get_pool()
+        counts = {}
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for key, sql in (("card_design", "DELETE FROM user_level_cards WHERE user_id = $1"),
+                                 ("card_uploads", "DELETE FROM user_card_assets WHERE user_id = $1"),
+                                 ("ai_keys", "DELETE FROM dev_connections WHERE user_id = $1"),
+                                 ("export_receipts", "DELETE FROM dev_exports WHERE user_id = $1"),
+                                 ("reminders", "DELETE FROM user_renewal_reminders WHERE user_id = $1"),
+                                 ("read_marks", "DELETE FROM dash_dropbox_reads WHERE user_id = $1"),
+                                 ("web_registry", "DELETE FROM dash_web_users WHERE user_id = $1"),
+                                 ("sessions", "DELETE FROM discord_login_sessions WHERE payload->>'kind' = 'dash' AND payload->'user'->>'id' = $1")):
+                    res = await conn.execute(sql, uid)
+                    try:
+                        counts[key] = int(res.split()[-1])
+                    except Exception:
+                        counts[key] = 0
+        return counts
 
     async def card_asset_blocked(self, sha: str) -> bool:
         pool = await get_pool()
