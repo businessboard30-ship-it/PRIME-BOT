@@ -28,8 +28,11 @@ jobs:
       - name: Tests
         run: npm test
       # The API token needs: Workers Scripts:Edit, D1:Edit. Secrets below are repo secrets (names prefixed FREECRON_).
+      # Needs D1:Edit on the API token. The first schema was applied by hand, so a token without D1:Edit must not block the deploy:
+      # the step warns and carries on. Give the token D1:Edit before adding a new migration file.
       - name: Apply database migrations
-        run: npx --yes wrangler@4 d1 migrations apply free-cron --remote
+        continue-on-error: true
+        run: npx --yes wrangler@4 d1 migrations apply free-cron --remote || { echo "::warning::D1 migrations were not applied (API token needs D1:Edit)"; exit 1; }
       - name: Deploy worker
         run: npx --yes wrangler@4 deploy
       - name: Sync secrets
