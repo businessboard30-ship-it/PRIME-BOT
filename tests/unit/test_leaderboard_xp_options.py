@@ -1,3 +1,4 @@
+import re
 """Leaderboard: XP controls grouped under one 'XP options' button + Dashboard link."""
 import asyncio
 import types
@@ -115,10 +116,18 @@ def test_dashboard_link_button_url_per_mode(build, mode, frag):
     assert links[0].url == "https://dash.example" + frag
 
 
-def test_clone_hides_dashboard_button(build):
-    v = build("local", clone_id=3)
-    assert not [c for c in v.walk_children() if isinstance(c, discord.ui.Button) and c.label == "Dashboard"]
+@pytest.mark.parametrize("mode", ["local", "global"])
+def test_clone_gets_dashboard_button_pointing_at_its_server_dashboard(build, mode):
+    v = build(mode, clone_id=3)
+    links = [c for c in v.walk_children() if isinstance(c, discord.ui.Button) and c.label == "Dashboard"]
+    assert len(links) == 1 and links[0].style == discord.ButtonStyle.link
+    assert re.fullmatch(r"https://dash\.example/#/c/3/g/\d+", links[0].url)
     assert _count(v) <= CEILING
+
+
+def test_clone_without_guild_id_gets_no_button():
+    assert lb._dashboard_link_button(3, "local", None) is None
+    assert lb._dashboard_link_button(3, "local") is None
 
 
 def test_no_dashboard_url_hides_button(build, monkeypatch):
