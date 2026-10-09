@@ -118,6 +118,7 @@ from discord_bot.cogs._views_leveling_wallet import DYNAMIC_ITEMS as LEVELING_WA
 from discord_bot.cogs._views_leveling_leaderboard import DYNAMIC_ITEMS as LEVELING_LEADERBOARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_pending_payments import DYNAMIC_ITEMS as PENDING_PAYMENTS_DYNAMIC_ITEMS
 from discord_bot.cogs._views_gumroad_claim import DYNAMIC_ITEMS as GUMROAD_CLAIM_DYNAMIC_ITEMS
+from utils.guild_owner import resolve_guild_owner
 from discord_bot.cogs._views_payment_card import DYNAMIC_ITEMS as PAYMENT_CARD_DYNAMIC_ITEMS
 
 logging.basicConfig(
@@ -780,7 +781,7 @@ class AnimeBotDiscord(commands.Bot):
             return
 
         try:
-            owner = guild.owner or (await guild.fetch_owner() if guild.owner_id else None)
+            owner = await resolve_guild_owner(guild)
         except (discord.HTTPException, discord.Forbidden):
             owner = None
         if owner is None or owner.bot:
@@ -989,7 +990,7 @@ class AnimeBotDiscord(commands.Bot):
             return
 
         try:
-            owner = guild.owner or (await guild.fetch_owner() if guild.owner_id else None)
+            owner = await resolve_guild_owner(guild)
         except (discord.HTTPException, discord.Forbidden):
             owner = None
 

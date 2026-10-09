@@ -32,6 +32,7 @@ import discord
 
 from config import DASHBOARD_BASE_URL
 from database import db
+from utils.guild_owner import resolve_guild_owner
 
 
 async def _auto_generate_invite(guild: discord.Guild) -> str | None:
@@ -100,7 +101,7 @@ async def offer_auto_listing(bot, guild: discord.Guild) -> None:
     view.add_item(DynamicAutoListingDenyButton(guild.id))
 
     try:
-        owner = guild.owner or (await guild.fetch_owner() if guild.owner_id else None)
+        owner = await resolve_guild_owner(guild)
     except (discord.HTTPException, discord.Forbidden):
         owner = None
 

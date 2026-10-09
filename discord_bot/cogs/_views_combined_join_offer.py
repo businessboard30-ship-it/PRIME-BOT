@@ -45,6 +45,7 @@ from discord_bot.cogs._views_auto_listing_offer import (
 )
 from discord_bot.cogs._views_registry_invite_consent import _create_invite_for_registry
 from config import DASHBOARD_BASE_URL
+from utils.guild_owner import resolve_guild_owner
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ async def offer_combined_join_dm(bot, guild: discord.Guild, *, needs_invite_cons
     )
 
     try:
-        owner = guild.owner or (await guild.fetch_owner() if guild.owner_id else None)
+        owner = await resolve_guild_owner(guild)
     except (discord.HTTPException, discord.Forbidden):
         owner = None
     if owner is None or owner.bot:
