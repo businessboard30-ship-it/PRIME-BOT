@@ -39,7 +39,7 @@ cd website && python3 -m http.server 8080
 
 ## Layout
 
-- `index.html`, `features/`, `pricing/`, `premium/`, `commands/`, `docs/`, `support/`, `status/`, `terms/`, `privacy/`, `refund/`, `about/`, `404.html`
+- `index.html`, `features/`, `dashboard/`, `pricing/`, `premium/`, `commands/`, `docs/`, `support/`, `status/`, `terms/`, `privacy/`, `refund/`, `about/`, `404.html`
 - `assets/site.css`, `assets/site.js`, `assets/config.js`, `assets/boot.js`
 - `_headers` (security headers and CSP), `_redirects`, `sitemap.xml`, `robots.txt`, `site.webmanifest`, favicons, `og.png`, `og.svg`
 
