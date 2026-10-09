@@ -1461,13 +1461,14 @@
     function findUi() {
       find.textContent = ""; find.appendChild(h("h3", { text: "Find people" }));
       if (!state.servers.length) { find.appendChild(h("p", { class: "muted", text: "Earn some XP in a server where the bot is, then come back to find people there." })); return; }
-      var pick = h("select", { "aria-label": "Server" }, state.servers.map(function (g) { return h("option", { value: g.guild_id, text: g.name }); }));
+      var pick = h("select", { "aria-label": "Server" }, state.servers.map(function (g) { return h("option", { value: g.guild_id + (g.clone ? "@" + g.clone : ""), text: g.clone ? g.name + " \u00b7 " + g.bot : g.name }); }));
       var term = h("input", { type: "text", maxlength: 32, placeholder: "Name starts with\u2026", "aria-label": "Name starts with" });
       var out = h("div", { "aria-live": "polite" });
       function go() {
         var t = term.value.trim(); if (t.length < 2) { toast("Type at least 2 letters.", "bad"); return; }
         out.textContent = "Searching\u2026";
-        api("friends_search", { guild_id: pick.value, query: t }).then(function (r) {
+        var pv = pick.value.split("@"), sp = { guild_id: pv[0], query: t }; if (pv[1]) sp.clone = pv[1];
+        api("friends_search", sp).then(function (r) {
           out.textContent = "";
           if (!r.results.length) { out.appendChild(h("p", { class: "muted", text: "Nobody found. They may not use this website yet, or they may have requests turned off." })); return; }
           r.results.forEach(function (p) {
