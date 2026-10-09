@@ -123,6 +123,19 @@ def _support_button() -> Optional[discord.ui.Button]:
     )
 
 
+def dashboard_button(bot, path: str = "/me/rank", label: str = "Open dashboard") -> Optional[discord.ui.Button]:
+    """Link-style button to the member dashboard (needs a Discord sign-in
+    there). Hidden on clone bots (the member pages show main-bot data only)
+    and when no dashboard URL is configured."""
+    import config
+    if getattr(bot, "clone_id", None) is not None or not config.DASH_PAGES_URL:
+        return None
+    return discord.ui.Button(
+        label=label, style=discord.ButtonStyle.link, emoji="📈",
+        url=f"{config.DASH_PAGES_URL}/#{path}",
+    )
+
+
 def extract_support_marker(text: str, view: discord.ui.View) -> str:
     """If the AI's free-form answer wanted to point the user to the support
     server (SUPPORT_BUTTON_MARKER from modules.ai_features), strip the marker
@@ -277,11 +290,33 @@ class AIToolsCog(commands.Cog):
         mentioned members are fine to include."""
         if not self._XP_WORDS.search(message):
             return None
-        if guild is None:
-            return "FACT: XP and levels are per-server, so tell the user to ask this in a server (or use /rank there)."
         clone_id = getattr(self.bot, "clone_id", None)
+        lines = []
+        if clone_id is None:
+            # The asker's OWN global numbers only (summed over every server).
+            try:
+                g = await db.get_global_xp_rank(user_id)
+            except Exception:
+                logger.debug("[aichat] global xp lookup failed", exc_info=True)
+                g = None
+            if g:
+                total = int(g["total_xp"] or 0)
+                lines.append(
+                    f"- the person asking (GLOBAL, all servers combined): level {leveling.compute_level(total)}, "
+                    f"{total} total XP, global rank #{g['rank']} of {g['total_players']}"
+                )
+            else:
+                lines.append("- the person asking (GLOBAL, all servers combined): not ranked yet")
+        if guild is None:
+            if not lines:
+                return "FACT: XP and levels are per-server, so tell the user to ask this in a server (or use /rank there)."
+            return (
+                "FACTS about the asker's global leveling — quote these numbers exactly, share only this person's "
+                "stats, and tell them their dashboard has more analysis (per-server ranks, global leaderboard):\n"
+                + "\n".join(lines)
+            )
         ids = [user_id] + [int(i) for i in re.findall(r"<@!?(\d+)>", message)]
-        seen, lines = set(), []
+        seen, server_lines = set(), []
         for uid in ids[:4]:
             if uid in seen:
                 continue
@@ -294,18 +329,24 @@ class AIToolsCog(commands.Cog):
                 logger.debug("[aichat] xp lookup failed", exc_info=True)
                 continue
             member = guild.get_member(uid)
-            who = "the person asking" if uid == user_id else (member.display_name if member else f"user {uid}")
+            who = "the person asking (THIS SERVER)" if uid == user_id else (member.display_name if member else f"user {uid}")
             rank_txt = f", rank #{rk['rank']} of {rk['total_players']}" if rk else ", not ranked yet"
-            lines.append(
+            server_lines.append(
                 f"- {who}: level {p['level']}, {p['total_xp']} total XP "
                 f"({p['current_xp_in_level']}/{p['xp_needed_for_next_level']} toward next level){rank_txt}"
             )
+        lines = server_lines + lines
         if not lines:
             return None
         return (
-            "FACTS from this server's leveling data — quote these numbers exactly, share only these people's "
-            "stats, and tell them /rank shows the full card:\n" + "\n".join(lines)
+            "FACTS from the leveling data — quote these numbers exactly, share only these people's "
+            "stats, and tell them /rank shows the full card"
+            + ("" if clone_id is not None else " and their dashboard has more analysis (per-server ranks, global leaderboard)")
+            + ":\n" + "\n".join(lines)
         )
+
+    def _is_xp_question(self, message: str) -> bool:
+        return bool(self._XP_WORDS.search(message or ""))
 
     _CLAN_WORDS = re.compile(r"\bclan(s)?\b", re.IGNORECASE)
 
@@ -780,6 +821,10 @@ class AIToolsCog(commands.Cog):
         view = ai_reply_view(self, user_id)
         is_voice = getattr(text, "voice", False)
         text = extract_support_marker(text, view)
+        if self._is_xp_question(message):
+            dash_btn = dashboard_button(self.bot)
+            if dash_btn is not None:
+                view.add_item(dash_btn)
         voice_file = None
         if is_voice:
             voice_file = await self._voice_file(user_id, text, explicit=ai_voice.wants_voice(message))
@@ -1027,6 +1072,11 @@ class AIToolsCog(commands.Cog):
             if SUPPORT_BUTTON_MARKER in text:
                 view = view or discord.ui.View()
                 text = extract_support_marker(text, view)
+            if self._is_xp_question(content):
+                dash_btn = dashboard_button(self.bot)
+                if dash_btn is not None:
+                    view = view or discord.ui.View()
+                    view.add_item(dash_btn)
             none = discord.AllowedMentions.none()
             extra = {"view": view} if view else {}
             for attachment in ([voice_file, None] if voice_file else [None]):
