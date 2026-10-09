@@ -151,7 +151,7 @@
     app.textContent = "";
     app.appendChild(h("main", { id: "main", class: "page" },
       h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Welcome back, " + S.user.username }), h("h1", { text: "Choose a server" }),
-        h("p", { class: "muted", text: "Servers where you have Manage Server. Pick one that has the bot to configure it." })), grid));
+        h("p", { class: "muted", text: "Servers where you have Manage Server. Pick one that has the bot (or one of your custom bots) to configure it." })), grid));
     var done = function (servers) {
       grid.textContent = "";
       if (!servers.length) {
@@ -160,11 +160,16 @@
         return;
       }
       servers.forEach(function (g, i) {
+        // A server is manageable when the main bot OR any custom bot (clone) is in it; the main bot is never required.
+        var hasClone = !!(g.clones && g.clones.length);
+        var live = g.bot_present || hasClone;
+        var target = g.bot_present ? gpath(g.id) : (hasClone ? "#/c/" + g.clones[0].clone_id + "/g/" + g.id : null);
+        var statusText = g.bot_present ? "Bot online" : (hasClone ? (g.clones.length === 1 ? g.clones[0].name : "Custom bots") + " online" : "Bot not added");
         var inner = [h("div", { class: "srv-top" }, avatar(g.icon_url, g.name), h("div", null, h("h3", { text: g.name }),
-          h("span", { class: "tag" }, h("i", { class: "dot " + (g.bot_present ? "on live" : "off") }), g.bot_present ? "Bot online" : "Bot not added"))),
-          h("span", { class: "btn sm " + (g.bot_present ? "primary" : "ghost"), text: g.bot_present ? "Manage" : "Add the bot" })];
-        var el = g.bot_present
-          ? h("a", { class: "card srv rv", style: "--i:" + i, href: gpath(g.id) }, inner)
+          h("span", { class: "tag" }, h("i", { class: "dot " + (live ? "on live" : "off") }), statusText))),
+          h("span", { class: "btn sm " + (live ? "primary" : "ghost"), text: live ? "Manage" : "Add the bot" })];
+        var el = live
+          ? h("a", { class: "card srv rv", style: "--i:" + i, href: target }, inner)
           : h("a", { class: "card srv rv", style: "--i:" + i, href: CFG.INVITE_URL + "&guild_id=" + g.id + "&disable_guild_select=true", target: "_blank", rel: "noopener" }, inner);
         if (g.clones && g.clones.length) {
           var chips = h("div", { class: "clonechips" }, h("small", { class: "muted", text: "Custom bots here:" }));
