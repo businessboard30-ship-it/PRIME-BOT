@@ -83,7 +83,7 @@ class WelcomeExtrasView(ServerPanelView):
         if self.data.get("gate") and (x.get("member_role_id")):
             lines.append("-# ⚠️ Your verification gate is on — members get the auto-role immediately, "
                          "before they verify. Use the gate's own role instead if you want them locked out until then.")
-        lines.append("-# Placeholders: {name} {member} {guild} {count}. Bots leaving never post a goodbye.")
+        lines.append("-# Placeholders: {name} {member} {guild} {count} {count_ordinal} {date}. Bots leaving never post a goodbye.")
         return lines
 
     def controls(self):
