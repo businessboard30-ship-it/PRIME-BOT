@@ -1277,7 +1277,7 @@
           api("member_pref_set", null, { kind: "level_ping", guild_id: g.guild_id, value: !ping.checked }).then(function () { toast("Saved"); })
             .catch(function (e) { ping.checked = !ping.checked; toast(e.message, "err"); });
         });
-        grid.appendChild(h("div", { class: "card rv" }, h("h3", { text: g.name }),
+        grid.appendChild(h("div", { class: "card rv" }, h("h3", { text: g.name }), g.bot ? h("small", { class: "muted", text: "via " + g.bot }) : null,
           h("p", { class: "muted", text: "Level " + g.level + " \u00b7 Rank #" + g.rank + " of " + g.players + (g.coins == null ? "" : " \u00b7 " + g.coin_symbol + " " + g.coins.toLocaleString() + " " + g.coin_name) }),
           h("div", { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct, "aria-label": "Progress to next level", style: "height:8px;border-radius:4px;background:var(--tint)" },
             h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
@@ -1333,8 +1333,8 @@
           h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
         h("p", { class: "muted", text: g.xp_in_level.toLocaleString() + " / " + g.xp_for_next.toLocaleString() + " XP to level " + (g.level + 1) })));
       if (j.best) box.appendChild(h("div", { class: "card rv" }, h("h3", { text: "Server ranks" }),
-        h("p", { class: "muted", text: "Best: #" + j.best.rank + " of " + j.best.players + " in " + j.best.name }),
-        h("p", { class: "muted", text: "Lowest: #" + j.worst.rank + " of " + j.worst.players + " in " + j.worst.name }),
+        h("p", { class: "muted", text: "Best: #" + j.best.rank + " of " + j.best.players + " in " + j.best.name + (j.best.bot ? " (" + j.best.bot + ")" : "") }),
+        h("p", { class: "muted", text: "Lowest: #" + j.worst.rank + " of " + j.worst.players + " in " + j.worst.name + (j.worst.bot ? " (" + j.worst.bot + ")" : "") }),
         h("a", { class: "btn sm ghost", href: "#/me/servers", text: "All my servers" })));
     }).catch(function (e) { box.textContent = ""; fail(box, e); });
   }
@@ -1383,7 +1383,7 @@
       var list = j.purchases || [];
       if (!list.length) { buys.appendChild(h("p", { class: "muted", text: "No purchases yet." })); return; }
       list.forEach(function (p) {
-        buys.appendChild(h("p", null, h("b", { text: p.type.replace(/_/g, " ") }), " \u00b7 " + p.amount.toFixed(2) + " \u00b7 " + p.status + (p.at ? " \u00b7 " + when2(p.at) : "")));
+        buys.appendChild(h("p", null, h("b", { text: p.type.replace(/_/g, " ") }), " \u00b7 " + p.amount.toFixed(2) + " \u00b7 " + p.status + (p.at ? " \u00b7 " + when2(p.at) : "") + (p.bot ? " \u00b7 " + p.bot : "")));
       });
     }).catch(function (e) { fail(buys, e); });
   }

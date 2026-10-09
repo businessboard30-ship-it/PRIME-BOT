@@ -36,17 +36,19 @@ def server_view(r):
             "players": int(r.get("players") or 0),
             "coins": None if r.get("balance") is None else int(r["balance"]),
             "coin_symbol": str(r.get("currency_symbol") or "")[:8], "coin_name": str(r.get("currency_name") or "Coins")[:32],
-            "ping_optout": bool(r.get("ping_optout"))}
+            "ping_optout": bool(r.get("ping_optout")),
+            "clone_id": None if r.get("clone_id") is None else str(r["clone_id"]),
+            "bot": None if r.get("clone_id") is None else str(r.get("bot_username") or "Custom bot")[:40]}
 
 
 def purchase_view(r):
     return {"amount": float(r.get("amount") or 0), "status": str(r.get("status") or ""),
             "type": str(r.get("payment_type") or "payment")[:40], "provider": str(r.get("provider") or "")[:20],
-            "at": _iso(r.get("created_date"))}
+            "at": _iso(r.get("created_date")), "bot": str(r["bot_username"])[:40] if r.get("bot_username") else None}
 
 
 async def member_servers(uid, q, db):
-    return {"servers": [server_view(r) for r in await db.member_servers(uid)]}
+    return {"servers": [server_view(r) for r in await db.member_servers(uid, all_bots=True)]}
 
 
 BOARD_PAGE = 10          # same page size as the bot's /leaderboard
@@ -109,14 +111,14 @@ async def member_rank(uid, q, db):
     from modules.leveling import xp_progress
     n = int(uid)
     g = await db.get_global_xp_rank(n)
-    servers = [server_view(r) for r in await db.member_servers(uid)]
+    servers = [server_view(r) for r in await db.member_servers(uid, all_bots=True)]
     out = {"global": None, "servers": [], "best": None, "worst": None}
     if g and int(g.get("total_xp") or 0) > 0:
         xp = int(g["total_xp"])
         pr = xp_progress(xp)
         out["global"] = {"rank": int(g.get("rank") or 0), "players": int(g.get("total_players") or 0), "total_xp": xp,
                          "level": pr["level"], "xp_in_level": pr["current_xp_in_level"], "xp_for_next": pr["xp_needed_for_next_level"]}
-    ranked = [{"guild_id": s_["guild_id"], "name": s_["name"], "rank": s_["rank"], "players": s_["players"], "level": s_["level"]}
+    ranked = [{"guild_id": s_["guild_id"], "name": s_["name"], "bot": s_["bot"], "rank": s_["rank"], "players": s_["players"], "level": s_["level"]}
               for s_ in servers if s_["rank"] > 0]
     out["servers"] = ranked[:10]
     if ranked:
@@ -198,7 +200,7 @@ async def member_pref_set(uid, body, db):
         await ai_prefs.set_voice_mode(n, value)
     elif kind == "level_ping" and isinstance(value, bool) and str(body.get("guild_id") or "").isdigit():
         gid = int(body["guild_id"])
-        if gid not in {int(r["guild_id"]) for r in await db.member_servers(uid)}:   # only servers where they actually have XP
+        if gid not in {int(r["guild_id"]) for r in await db.member_servers(uid, all_bots=True)}:   # only servers where they actually have XP
             return {"_status": 404, "message": "Server not found."}
         await db.member_level_ping_set(gid, n, value)
     else:

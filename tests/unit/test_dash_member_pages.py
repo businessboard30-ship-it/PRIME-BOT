@@ -18,7 +18,7 @@ def pages(mem, monkeypatch):
     fake, seen = mem
     log = []
 
-    async def member_servers(uid):
+    async def member_servers(uid, all_bots=False):
         log.append(("servers", uid))
         return [dict(ROW)]
 
