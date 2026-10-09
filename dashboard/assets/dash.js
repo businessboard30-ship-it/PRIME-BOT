@@ -798,7 +798,12 @@
           r.warns.forEach(function (w) {
             warnsBox.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
               h("b", { text: "Warn #" + w.id }), h("span", { class: "help", text: "  " + fmtWhen(w.at) + (w.by ? " \u00b7 by " + w.by : "") }),
-              h("p", { text: w.reason || "No reason given." }))));
+              h("p", { text: w.reason || "No reason given." })),
+              h("button", { class: "btn sm ghost", type: "button", text: "Remove", "aria-label": "Remove warn " + w.id, onclick: function () {
+                if (!confirm("Remove warn #" + w.id + "? This is recorded in the audit log.")) return;
+                api("warn_remove", null, { guild_id: gid, user_id: user.value.trim(), warn_id: w.id }).then(function (x) { toast(x.message); load(true); })
+                  .catch(function (e) { toast((e && e.message) || "Couldn't remove that warn.", "bad"); });
+              } })));
           });
         }
         r.cases.forEach(function (c) {
@@ -817,7 +822,7 @@
     kind.addEventListener("change", function () { load(true); });
     moreBtn.addEventListener("click", function () { load(false); });
     add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Moderation" }),
-      h("p", { class: "muted", text: "Kicks, bans, timeouts and warns recorded by the bot, newest first. Read-only: use the Discord commands to act." })),
+      h("p", { class: "muted", text: "Kicks, bans, timeouts and warns recorded by the bot, newest first. You can remove a single warn here (it is audited). To clear all of a member\u2019s warns, use /unwarn in Discord." })),
       h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
       h("div", { class: "card rv" }, h("div", { class: "owner-bar" }, user, kind, go), list, moreBtn), warnsBox]);
     load(true);

@@ -14708,6 +14708,22 @@ class Database:
             total = await conn.fetchval("SELECT COUNT(*) FROM user_warns WHERE chat_id = $1 AND user_id = $2", int(guild_id), int(user_id))
         return [dict(r) for r in rows], int(total or 0)
 
+    async def dash_warn_remove(self, guild_id: int, user_id: int, warn_id: int):
+        """Delete ONE warn, only if it belongs to this member in this server (a warn id from another server or member
+        matches nothing). Returns {reason, remaining} or None when there was nothing to delete. Discord's /unwarn keeps
+        clearing all of a member's warns; this is the finer web action."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "DELETE FROM user_warns WHERE id = $1 AND chat_id = $2 AND user_id = $3 RETURNING reason",
+                    int(warn_id), int(guild_id), int(user_id))
+                if row is None:
+                    return None
+                left = await conn.fetchval("SELECT COUNT(*) FROM user_warns WHERE chat_id = $1 AND user_id = $2",
+                                           int(guild_id), int(user_id))
+        return {"reason": row["reason"], "remaining": int(left or 0)}
+
     async def dash_mod_kinds(self, guild_id: int) -> list:
         pool = await get_pool()
         async with pool.acquire() as conn:
