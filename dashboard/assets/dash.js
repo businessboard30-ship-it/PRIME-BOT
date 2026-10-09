@@ -1286,6 +1286,7 @@
     var send = h("button", { class: "btn sm", type: "button", text: "Send" });
     var fresh = h("button", { class: "btn sm ghost", type: "button", text: "New chat" });
     var saveChat = h("button", { class: "btn sm ghost", type: "button", text: "Save chat" });
+    S.chatInsert = function (text) { input.value = (input.value ? input.value + "\n\n" : "") + text; input.focus(); };
     function line(role, text) {
       log.appendChild(h("div", { style: "margin:8px 0;white-space:pre-wrap;word-break:break-word" }, h("b", { text: role === "user" ? "You: " : "AI: " }), h("span", { text: text })));
       log.scrollTop = log.scrollHeight;
@@ -1424,6 +1425,107 @@
     return box;
   }
 
+  /* GitHub connect (C4, read-only): browse a repo, attach a file or a diff to the AI chat. Server data only ever goes in via textContent. */
+  function devGithub() {
+    var box = section("GitHub (read-only)");
+    var note = h("p", { class: "muted", role: "status", text: "" });
+    var body = h("div", null);
+    box.appendChild(h("p", { class: "muted", text: "Connect GitHub to browse your repositories and attach a file or a diff to your AI chat. It is read-only: nothing is ever written to GitHub from here. The token is encrypted and never shown again, and you can disconnect any time." }));
+    box.appendChild(body); box.appendChild(note);
+    function stepUp() {
+      note.textContent = "Confirm it's you: opening Discord\u2026";
+      api("dev_stepup", null, {}).then(function (r) { location.href = r.url; })
+        .catch(function (e) { note.textContent = (e && e.message) || "Couldn't start the sign-in."; });
+    }
+    function guard(p) {
+      return p.catch(function (e) {
+        if (e && e.payload && e.payload.code === "stepup_required") {
+          note.textContent = "";
+          note.appendChild(document.createTextNode("Confirm it's you first. "));
+          note.appendChild(h("button", { class: "btn sm ghost", type: "button", text: "Sign in with Discord again", onclick: stepUp }));
+          return null;
+        }
+        note.textContent = (e && e.message) || "That didn't work. Try again."; return null;
+      });
+    }
+    function attach(label, text) {
+      var room = 3500 - label.length - 16;
+      var clipped = text.length > room;
+      var msg = label + "\n```\n" + text.slice(0, room) + "\n```" + (clipped ? "\n(first " + room + " characters)" : "");
+      if (S.chatInsert) { S.chatInsert(msg); note.textContent = clipped ? "Attached the first " + room + " characters to your chat message." : "Attached to your chat message."; }
+    }
+    function viewer(label, text, extra) {
+      var pre = h("pre", { style: "max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:8px 0", text: text });
+      var go = h("button", { class: "btn sm", type: "button", text: "Attach to chat", onclick: function () { attach(label, text); } });
+      return h("div", null, extra || null, pre, go);
+    }
+    function drawBrowser(wrap) {
+      var crumb = h("p", { class: "muted", text: "" }), list = h("div", null), view = h("div", null), cur = { repo: "", path: "" };
+      function open(repo, path) {
+        cur.repo = repo; cur.path = path; view.textContent = ""; list.textContent = "";
+        crumb.textContent = repo + (path ? "/" + path : "");
+        api("dev_github_browse", { repo: repo, path: path }).then(function (r) {
+          if (r.type === "file") {
+            if (r.text === null) { view.appendChild(h("p", { class: "muted", text: r.note || "This file can't be shown." })); return; }
+            view.appendChild(viewer("File " + repo + "/" + r.path + ":", r.text, r.truncated ? h("p", { class: "muted", text: "Showing the first part of a long file." }) : null));
+            return;
+          }
+          if (path) list.appendChild(h("button", { class: "btn sm ghost", type: "button", text: "\u2190 Up", onclick: function () { open(repo, path.split("/").slice(0, -1).join("/")); } }));
+          (r.entries || []).forEach(function (en) {
+            list.appendChild(h("div", null, h("button", { class: "btn sm ghost", type: "button", text: (en.type === "dir" ? "\uD83D\uDCC1 " : "") + en.name, onclick: function () { open(repo, en.path); } })));
+          });
+          if (!(r.entries || []).length) list.appendChild(h("p", { class: "muted", text: "This folder is empty." }));
+        }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't open that."; });
+      }
+      var repos = h("div", null);
+      api("dev_github_repos").then(function (r) {
+        if (!(r.repos || []).length) repos.appendChild(h("p", { class: "muted", text: "No repositories found." }));
+        (r.repos || []).forEach(function (rp) {
+          repos.appendChild(h("div", { style: "margin:4px 0" }, h("button", { class: "btn sm ghost", type: "button", text: rp.full_name + (rp.private ? " (private)" : ""), onclick: function () { open(rp.full_name, ""); } }),
+            rp.description ? h("span", { class: "muted", text: "  " + rp.description }) : null));
+        });
+      }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't load your repositories."; });
+      // diff loader
+      var repoIn = h("input", { type: "text", maxlength: 201, placeholder: "owner/repo", "aria-label": "Repository", style: "max-width:200px" });
+      var kind = h("select", { "aria-label": "Diff type" }, h("option", { value: "commit", text: "Commit" }), h("option", { value: "pull", text: "Pull request" }), h("option", { value: "compare", text: "Compare two refs" }));
+      var a = h("input", { type: "text", maxlength: 100, placeholder: "hash / number / base", "aria-label": "First value", style: "max-width:170px" });
+      var b = h("input", { type: "text", maxlength: 100, placeholder: "head (compare only)", "aria-label": "Second value", style: "max-width:170px" });
+      var dview = h("div", null);
+      var load = h("button", { class: "btn sm", type: "button", text: "Load diff", onclick: function () {
+        dview.textContent = "";
+        api("dev_github_diff", { repo: repoIn.value.trim(), kind: kind.value, a: a.value.trim(), b: b.value.trim() }).then(function (r) {
+          dview.appendChild(viewer("Diff " + repoIn.value.trim() + " (" + kind.value + " " + a.value.trim() + (kind.value === "compare" ? "..." + b.value.trim() : "") + "):", r.diff || "(empty diff)", r.truncated ? h("p", { class: "muted", text: "Showing the first part of a long diff." }) : null));
+        }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't load that diff."; });
+      } });
+      add(wrap, [h("h3", { text: "Your repositories" }), repos, crumb, list, view, h("h3", { text: "Attach a diff" }),
+        h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, repoIn, kind, a, b, load), dview]);
+    }
+    function draw(st) {
+      body.textContent = "";
+      if (!st.configured) { body.appendChild(h("p", { class: "muted", text: "GitHub connect isn't set up yet." })); return; }
+      if (!st.connected) {
+        body.appendChild(h("button", { class: "btn sm", type: "button", text: "Connect GitHub", onclick: function () {
+          guard(api("dev_github_connect", null, {})).then(function (r) { if (r && r.url) location.href = r.url; });
+        } }));
+        return;
+      }
+      var off = h("button", { class: "btn sm ghost", type: "button", text: "Disconnect", onclick: function () {
+        if (!window.confirm("Disconnect GitHub? The saved token is deleted.")) return;
+        guard(api("dev_github_disconnect", null, {})).then(function (x) { if (x) { note.textContent = "GitHub disconnected."; draw(x); } });
+      } });
+      body.appendChild(h("div", { class: "row", style: "gap:8px;align-items:center" }, h("b", { text: "Connected as " + st.login }), off));
+      var wrap = h("div", null); body.appendChild(wrap); drawBrowser(wrap);
+    }
+    function loadStatus() { return api("dev_github").then(draw).catch(function (e) { fail(box, e); }); }
+    if (S.ghError) { S.ghError = false; note.textContent = "The GitHub connection was cancelled."; }
+    if (S.ghPending) {
+      var pend = S.ghPending; S.ghPending = null; note.textContent = "Finishing the GitHub connection\u2026";
+      api("dev_github_finish", null, pend).then(function (st) { note.textContent = "GitHub connected."; draw(st); })
+        .catch(function (e) { note.textContent = (e && e.message) || "Couldn't finish the GitHub connection."; loadStatus(); });
+    } else loadStatus();
+    return box;
+  }
+
   function renderDev() {
     var main = renderMemberShell("dev");
     var body = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
@@ -1438,6 +1540,7 @@
         body.appendChild(devChat());
         body.appendChild(devExports());
         body.appendChild(devKeys());
+        body.appendChild(devGithub());
         return;
       }
       var lock = section("Locked");
@@ -1495,7 +1598,9 @@
   /* ---------- boot ---------- */
   function boot() {
     var frag = new URLSearchParams(location.hash.replace(/^#/, "")), err = null;
-    if (frag.get("dev") === "stepup_ok") { history.replaceState(null, "", location.pathname + "#/dev"); }
+    if (frag.get("gh_code") && frag.get("gh_state")) { S.ghPending = { code: frag.get("gh_code"), state: frag.get("gh_state") }; history.replaceState(null, "", location.pathname + "#/dev"); }
+    else if (frag.get("gh_error")) { S.ghError = true; history.replaceState(null, "", location.pathname + "#/dev"); }
+    else if (frag.get("dev") === "stepup_ok") { history.replaceState(null, "", location.pathname + "#/dev"); }
     else if (frag.get("owner") === "stepup_ok") { S.stepupDone = true; history.replaceState(null, "", location.pathname + "#/owner/security"); }
     else if (frag.get("session")) { localStorage.setItem(KEY, frag.get("session")); history.replaceState(null, "", location.pathname + "#/"); }
     else if (frag.get("error")) { err = frag.get("error"); history.replaceState(null, "", location.pathname); }
