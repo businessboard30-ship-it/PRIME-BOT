@@ -126,6 +126,46 @@ async def member_rank(uid, q, db):
     return out
 
 
+CLAN_MAX_SERVERS = 10     # clan lookups run per server; keep the fan-out small
+CHIEF_SEATS = 5          # seats = ranks #1-5, same as the bot (recompute_clan_chiefs)
+
+
+async def member_clans(uid, q, db):
+    """READ-ONLY. The viewer's own clan per server (main bot only, same servers as member_servers), whether they
+    hold a chief seat, the clan's member count and the 5 seats. Seat holders appear like the web leaderboard:
+    by name only if signed in and not opted out, otherwise "Hidden player". No user id is ever returned and
+    nothing here can change a clan (assignment is automatic and seat-bound)."""
+    import config
+    from modules.clan_cards import get_clan_label
+    n = int(uid)
+    min_level = int(config.CHIEF_MIN_LEVEL)    # the bot's own threshold, never a copy
+    servers = [server_view(r) for r in await db.member_servers(uid)][:CLAN_MAX_SERVERS]
+    out = []
+    for sv in servers:
+        gid = int(sv["guild_id"])
+        card = await db.get_clan_card_if_assigned(gid, n)
+        seat = await db.get_chief_seat_for_user(gid, n)
+        seats = await db.get_clan_seats(gid)
+        holders = [x["user_id"] for x in seats if x.get("user_id") is not None]
+        profiles = await db.board_profiles(holders) if holders else {}
+        seat_rows = []
+        for x in seats[:CHIEF_SEATS]:
+            hid = x.get("user_id")
+            filled = hid is not None
+            p = profiles.get(str(hid)) if filled else None
+            seat_rows.append({"seat": int(x.get("seat_rank") or 0), "clan": str(x.get("clan_slug") or "")[:40],
+                              "filled": filled, "holder": (p["name"] if p else "Hidden player") if filled else None,
+                              "you": bool(filled and int(hid) == n)})
+        out.append({
+            "guild_id": sv["guild_id"], "name": sv["name"], "level": sv["level"], "rank": sv["rank"], "players": sv["players"],
+            "clan": {"name": get_clan_label(card), "members": int(await db.get_clan_member_count(gid, card) or 0)} if card else None,
+            "chief": {"seat": int(seat.get("seat_rank") or 0), "clan": str(seat.get("clan_slug") or "")[:40]} if seat else None,
+            "seats": seat_rows,
+            "needs": {"rank": CHIEF_SEATS, "level": min_level,
+                      "rank_ok": 0 < sv["rank"] <= CHIEF_SEATS, "level_ok": sv["level"] >= min_level}})
+    return {"servers": out}
+
+
 async def member_purchases(uid, q, db):
     return {"purchases": [purchase_view(r) for r in await db.member_purchases(uid)]}
 
@@ -395,7 +435,7 @@ async def member_data_delete(uid, body, db):
     return {"deleted": True, "removed": counts, "kept": ["payments and plans", "weekly usage counters", "XP, coins and moderation records in servers"]}
 
 
-ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_rank": member_rank, "member_leaderboard": member_leaderboard, "member_plans": member_plans,
+ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_rank": member_rank, "member_clans": member_clans, "member_leaderboard": member_leaderboard, "member_plans": member_plans,
           "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card, "member_usage": member_usage}
 WRITES = {"member_pref_set": member_pref_set, "member_board_pref": member_board_pref, "checkout_user": checkout_user,
           "member_card_preview": member_card_preview, "member_card_save": member_card_save,
