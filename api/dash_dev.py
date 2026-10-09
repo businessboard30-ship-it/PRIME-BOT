@@ -9,7 +9,7 @@ Nothing here writes entitlements: only the payment webhook does. No route takes 
 import json
 import logging
 
-from modules import ai_usage, dev_chat, dev_export, dev_keys
+from modules import ai_usage, dev_chat, dev_export, dev_github, dev_keys
 from modules import entitlements as ent
 from modules import user_subs
 from api.dash_member import pay_view
@@ -21,7 +21,7 @@ FEATURES = (
     {"key": "chat", "label": "AI chat", "ready": True},
     {"key": "export", "label": "Export to your DMs", "ready": True},
     {"key": "keys", "label": "Bring your own AI key (Claude, Groq, OpenAI)", "ready": True},
-    {"key": "github", "label": "Connect GitHub (read-only)", "ready": False},
+    {"key": "github", "label": "Connect GitHub (read-only)", "ready": True},
 )
 
 
@@ -158,7 +158,7 @@ async def dev_key_save(uid, body, db):
     key, err = dev_keys.clean_key((body or {}).get("key"))
     if err:
         return {"_status": 422, "message": err}
-    existing = {c["provider"] for c in await db.dev_connection_list(uid)}
+    existing = {c["provider"] for c in await db.dev_connection_list(uid) if c.get("provider") in dev_keys.PROVIDERS}
     if provider not in existing and len(existing) >= dev_keys.MAX_CONNECTIONS:
         return {"_status": 422, "message": "You've reached the limit of saved keys."}
     ok, verr = await dev_keys.validate(provider, key)
@@ -180,6 +180,129 @@ async def dev_key_remove(uid, body, db):
     await db.dev_connection_delete(uid, provider)
     rows = await db.dev_connection_list(uid)
     return {"connections": [dev_keys.public_view(r) for r in rows if r.get("provider") in dev_keys.PROVIDERS]}
+
+
+# ---------- GitHub connect (C4, read-only). The token is encrypted in dev_connections (provider "github"), never returned ----------
+async def _gh_secret(uid, db):
+    """(token, login) for the SESSION user, or (None, None). Server-side only: the token never goes into a response."""
+    enc = await db.dev_connection_secret(uid, dev_github.PROVIDER)
+    if not enc:
+        return None, None
+    try:
+        return dev_github.unpack_secret(_decrypt(enc))
+    except Exception:
+        return None, None
+
+
+async def _gh_status(uid, db) -> dict:
+    token, login = await _gh_secret(uid, db)
+    row = next((r for r in await db.dev_connection_list(uid) if r.get("provider") == dev_github.PROVIDER), None)
+    return {"configured": dev_github.configured(), "connected": bool(token), "login": login if token else None,
+            "connected_at": dev_keys._iso(row.get("created_at")) if (row and token) else None,
+            "access": "Read-only. Nothing is ever written to GitHub from here."}
+
+
+async def dev_github_status(uid, q, db):
+    gate = await require_dev(uid, db)
+    return gate or await _gh_status(uid, db)
+
+
+async def dev_github_connect(uid, body, db):
+    """Start the GitHub OAuth round trip. Step-up is enforced by the router. State + PKCE; the state is bound to this user."""
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    if not dev_github.configured():
+        return {"_status": 503, "message": "GitHub connect isn't set up yet."}
+    state, verifier = dev_github.new_state(), dev_github.new_verifier()
+    await db.create_login_oauth_state(state, return_to=dev_github.pack_return(uid, verifier))
+    return {"url": dev_github.authorize_url(state, verifier)}
+
+
+async def dev_github_finish(uid, body, db):
+    """The browser returns here with the code and state GitHub sent back. The state must have been issued to THIS session's
+    user, so a link someone else started can't connect the wrong account. Exchanges the code with the PKCE verifier."""
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    if not dev_github.configured():
+        return {"_status": 503, "message": "GitHub connect isn't set up yet."}
+    code, state = dev_github.clean_code((body or {}).get("code")), dev_github.clean_state((body or {}).get("state"))
+    if not code or not state:
+        return {"_status": 422, "message": "That GitHub link isn't valid. Start again."}
+    popped = await db.pop_login_oauth_state(state)
+    parsed = dev_github.unpack_return((popped or {}).get("return_to"))
+    if not parsed or parsed[0] != str(uid):
+        return {"_status": 422, "message": "That GitHub link expired or isn't yours. Start again."}
+    token, err = await dev_github.exchange_code(code, parsed[1])
+    if err:
+        return {"_status": 502, "message": err}
+    try:
+        login = await dev_github.whoami(token)
+    except RuntimeError as e:
+        return {"_status": 502, "message": str(e)}
+    from utils.crypto import secret_manager
+    await db.dev_connection_upsert(uid, dev_github.PROVIDER, secret_manager.encrypt(dev_github.pack_secret(token, login)), dev_github.last4(token))
+    return await _gh_status(uid, db)
+
+
+async def dev_github_disconnect(uid, body, db):
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    token, _ = await _gh_secret(uid, db)
+    await db.dev_connection_delete(uid, dev_github.PROVIDER)
+    if token:
+        await dev_github.revoke(token)            # best effort; the local copy is already gone
+    return await _gh_status(uid, db)
+
+
+async def _gh_read(uid, db, fn):
+    """Callers have already passed require_dev (every handler starts with it)."""
+    token, _ = await _gh_secret(uid, db)
+    if not token:
+        return {"_status": 422, "code": "github_not_connected", "message": "Connect GitHub first."}
+    try:
+        return await fn(token)
+    except RuntimeError as e:
+        return {"_status": 502, "message": str(e)}
+
+
+async def dev_github_repos(uid, q, db):
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+
+    async def go(token):
+        return {"repos": await dev_github.list_repos(token)}
+    return await _gh_read(uid, db, go)
+
+
+async def dev_github_browse(uid, q, db):
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    repo, path, ref = dev_github.clean_repo(q("repo")), dev_github.clean_path(q("path")), dev_github.clean_ref(q("ref"))
+    if not repo or path is False or ref is False:
+        return {"_status": 422, "message": "That repository, path or branch isn't valid."}
+
+    async def go(token):
+        return await dev_github.browse(token, repo, path, ref)
+    return await _gh_read(uid, db, go)
+
+
+async def dev_github_diff(uid, q, db):
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    repo = dev_github.clean_repo(q("repo"))
+    suffix, err = dev_github.clean_diff_spec(q("kind"), q("a"), q("b"))
+    if not repo or err:
+        return {"_status": 422, "message": err or "That repository isn't valid."}
+
+    async def go(token):
+        return await dev_github.get_diff(token, repo, suffix)
+    return await _gh_read(uid, db, go)
 
 
 # ---------- Export (C2). Gated by ent.export_allowed(rows), NOT require_dev: it keeps working 7 days after the plan ends ----------
@@ -334,8 +457,12 @@ async def dev_export_delete(uid, body, db):
 
 
 ROUTES = {"dev_status": dev_status, "dev_overview": dev_overview, "dev_usage": dev_usage, "dev_keys": dev_keys_list,
-          "dev_export_list": dev_export_list, "dev_export_download": dev_export_download}
+          "dev_export_list": dev_export_list, "dev_export_download": dev_export_download,
+          "dev_github": dev_github_status, "dev_github_repos": dev_github_repos, "dev_github_browse": dev_github_browse,
+          "dev_github_diff": dev_github_diff}
 WRITES = {"dev_chat": dev_chat_send, "dev_key_save": dev_key_save, "dev_key_remove": dev_key_remove,
-          "dev_export_create": dev_export_create, "dev_export_delete": dev_export_delete}
+          "dev_export_create": dev_export_create, "dev_export_delete": dev_export_delete,
+          "dev_github_connect": dev_github_connect, "dev_github_finish": dev_github_finish,
+          "dev_github_disconnect": dev_github_disconnect}
 # Writes that also need a fresh Discord sign-in (step-up). The router checks this set; handlers never see the session.
-FRESH_WRITES = frozenset({"dev_key_save", "dev_key_remove"})
+FRESH_WRITES = frozenset({"dev_key_save", "dev_key_remove", "dev_github_connect", "dev_github_disconnect"})

@@ -74,6 +74,10 @@ Routes (all on /api/dash):
   GET  ?action=dev_export_list / dev_export_download&id -> active Developer plan OR within 7 days after it ends (ent.export_allowed, not require_dev): receipts / the decrypted file for the session user's own export only
   POST {action: dev_export_create, kind: note|text|json, name?, content} -> same gate: encrypts, uploads ciphertext to the private storage channel (opaque name), stores a receipt, DMs the plain file best-effort; 429 daily_limit; 503 when the owner's `dev_export` switch is on
   POST {action: dev_export_delete, id} -> same gate: deletes the storage message and the receipt
+  GET  ?action=dev_github -> Developer plan only: {configured, connected, login, connected_at, access}; the token is NEVER returned
+  GET  ?action=dev_github_repos|dev_github_browse&repo&path&ref|dev_github_diff&repo&kind=commit|compare|pull&a&b -> Developer plan + connected GitHub: READ-ONLY, size-capped (api/dash_dev.py, modules/dev_github.py)
+  POST {action: dev_github_connect} / {action: dev_github_disconnect} -> Developer plan + fresh Discord sign-in; connect returns the GitHub authorize URL (state + PKCE, no write scope), disconnect deletes the token and asks GitHub to revoke it
+  POST {action: dev_github_finish, code, state} -> Developer plan: the browser hands back what GitHub sent; the state must have been issued to this session's user; the token is encrypted and never echoed
   POST {action: dev_stepup} -> Developer plan only: {url}: Discord re-sign-in that makes this session fresh for DASH_STEPUP_MINUTES (returns to #/dev)
   POST {action: dev_chat, model?: default|anthropic|groq|openai, messages:[{role,content}]} -> Developer plan only: one bot-AI reply; spends 1 of 50 weekly chats (refunded if the model fails); 429 {code: weekly_limit}; 503 when the owner's `ai` switch is on. Nothing is stored.
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
@@ -951,7 +955,18 @@ def _back(fragment: str):
     raise _Reply(302, location=f"{config.DASH_PAGES_URL}/#{fragment}")
 
 
+def _github_callback(query: dict):
+    """GitHub sends the browser back to the same URL as Discord. Nothing is exchanged here: the browser carries the
+    code and state to the signed-in dashboard, which calls dev_github_finish with its own session (so a link started by
+    someone else can't connect your account). The state is NOT consumed here."""
+    if query.get("error") or not query.get("code", [None])[0]:
+        _back("gh_error=1")
+    _back(urlencode({"gh_code": query["code"][0], "gh_state": query["state"][0]}))
+
+
 async def _oauth_callback(query: dict):
+    if (query.get("state", [""])[0] or "").startswith("gh."):
+        _github_callback(query)
     if query.get("error"):
         _back("error=" + urlencode({"": "Sign-in was cancelled."})[1:])
     state, code = query.get("state", [None])[0], query.get("code", [None])[0]
@@ -1160,6 +1175,7 @@ async def _route(method: str, query: dict, headers, body: dict):
                                                       "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60),
                                                       "dev_key_save": (6, 300), "dev_key_remove": (10, 300),
                                                       "dev_export_create": (6, 300), "dev_export_delete": (10, 300),
+                                                      "dev_github_connect": (5, 300), "dev_github_finish": (8, 300), "dev_github_disconnect": (10, 300),
                                                       "member_stepup": (5, 300), "member_data_delete": (3, 3600)}.get(action, (30, 60)))
         from api import dash_dev
         if action in dash_dev.FRESH_WRITES:          # gate first (402), then step-up (403); handlers never see the session
