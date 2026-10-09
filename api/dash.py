@@ -62,6 +62,7 @@ Routes (all on /api/dash):
   POST ?action=member_card_save {design} -> saves for the SESSION user; 402 + plans_path without an effective card_plan
   POST ?action=member_card_asset {kind: background|logo, data: base64} -> card plan only; validated, re-encoded, AI-moderated (approved/pending/rejected)
   POST ?action=member_card_asset_delete {kind} -> removes the member's own upload
+  POST ?action=member_chat {messages} -> card plan only (402 otherwise): one free website AI chat; 10 a week (source card_plan), refunded on failure
   GET  ?action=member_usage -> weekly AI chat meters for the plans the member has (read-only)
   POST ?action=member_stepup -> {url}: Discord re-sign-in that marks THIS session fresh (any member)
   POST ?action=member_data_delete {confirm:"DELETE MY DATA"} -> step-up required; deletes the dashboard's own data for the session user
@@ -1172,7 +1173,7 @@ async def _route(method: str, query: dict, headers, body: dict):
     if method == "POST" and action in _member_writes():
         uid = _require_member(sess)
         _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
-                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60),
+                                                      "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60), "member_chat": (8, 60),
                                                       "dev_key_save": (6, 300), "dev_key_remove": (10, 300),
                                                       "dev_export_create": (6, 300), "dev_export_delete": (10, 300),
                                                       "dev_github_connect": (5, 300), "dev_github_finish": (8, 300), "dev_github_disconnect": (10, 300),

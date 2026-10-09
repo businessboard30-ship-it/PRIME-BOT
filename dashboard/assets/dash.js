@@ -1018,6 +1018,41 @@
     });
     return h("p", null, h("b", { text: label + " " }), sel);
   }
+  /* Card plan: 10 free website AI chats a week. The conversation lives only in this page (never stored); the server
+     enforces the plan and the weekly allowance. */
+  function cardChat(usage, meter) {
+    var history = [], busy = false;
+    var box = section("Free AI chat (card plan)");
+    var log = h("div", { "aria-live": "polite", style: "max-height:360px;overflow:auto;margin:8px 0" });
+    var input = h("textarea", { rows: 3, maxlength: 4000, "aria-label": "Message", placeholder: "Ask for card ideas, or anything else\u2026", style: "width:100%" });
+    var send = h("button", { class: "btn sm", type: "button", text: "Send" });
+    var fresh = h("button", { class: "btn sm ghost", type: "button", text: "New chat" });
+    function line(role, text) {
+      log.appendChild(h("div", { style: "margin:8px 0;white-space:pre-wrap;word-break:break-word" }, h("b", { text: role === "user" ? "You: " : "AI: " }), h("span", { text: text })));
+      log.scrollTop = log.scrollHeight;
+    }
+    function show(u) { meter.textContent = "Free website AI chats this week: " + u.used + " / " + u.limit + " \u00b7 resets " + new Date(u.resets_at).toLocaleString(); }
+    if (usage) show(usage);
+    function go() {
+      var text = input.value.trim();
+      if (!text || busy) return;
+      busy = true; send.disabled = true; input.value = "";
+      history.push({ role: "user", content: text }); line("user", text);
+      api("member_chat", null, { messages: history }).then(function (r) {
+        history.push({ role: "assistant", content: r.reply }); line("assistant", r.reply); show(r);
+      }).catch(function (e) {
+        history.pop(); input.value = text; meter.textContent = (e && e.message) || "That didn't work. Try again.";
+      }).then(function () { busy = false; send.disabled = false; input.focus(); });
+    }
+    send.addEventListener("click", go);
+    input.addEventListener("keydown", function (ev) { if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") go(); });
+    fresh.addEventListener("click", function () { history = []; log.textContent = ""; });
+    box.appendChild(h("p", { class: "muted", text: "10 free chats a week with the bot's AI, on this website only. Chats aren't saved on our servers; closing this page clears the conversation. Never paste passwords or API keys." }));
+    box.appendChild(log); box.appendChild(input);
+    box.appendChild(h("div", { class: "row" }, send, " ", fresh));
+    return box;
+  }
+
   /* ---------- custom level-up card editor (card plan). Preview is open to all; the server gates Save (402). ---------- */
   function renderCardEditor(box) {
     api("member_card").then(function (j) {
@@ -1105,6 +1140,7 @@
       box.appendChild(h("p", { class: "muted", text: "Paste the prompt into any AI image tool, then upload the result above. Uploads are checked automatically; anything rejected is never shown." }));
       box.appendChild(h("p", null, save)); box.appendChild(pay); box.appendChild(msg);
       if (j.ai) { meter.textContent = "Free website AI chats this week: " + j.ai.used + " / " + j.ai.limit + " \u00b7 resets " + new Date(j.ai.resets_at).toLocaleString(); box.appendChild(meter); }
+      if (j.access) { box.appendChild(cardChat(j.ai, meter)); }
       preview();
     }).catch(function (e) { fail(box, e); });
   }

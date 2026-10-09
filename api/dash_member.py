@@ -234,6 +234,45 @@ async def member_card_save(uid, body, db):
     return {"design": design}
 
 
+CARD_SOURCE = "card_plan"          # counter source in user_ai_usage: 10 website-only chats per week; Discord never spends it
+
+
+def _card_usage_view(st: dict) -> dict:
+    from modules import ai_usage
+    limit = ai_usage.LIMITS[CARD_SOURCE]
+    return {"used": st["used"], "limit": limit, "remaining": max(limit - st["used"], 0), "resets_at": st["resets_at"]}
+
+
+async def member_chat(uid, body, db):
+    """POST {messages: [{role, content}]}: the card plan's free website chats (10 a week, bot-provided AI).
+    Order matters: plan gate (402), kill switch, validate, spend one chat atomically, ask, refund on failure.
+    The conversation stays in the browser; only the weekly counter is stored."""
+    from modules import ai_usage, dev_chat
+    if not ent.has_access(await db.entitlements_list(uid), ("card_plan",)):
+        return {"_status": 402, "code": "subscription_required", "message": "The free website chats come with the card plan.",
+                "extra": {"plans_path": "#/me/plans", "pay": await pay_view(db)}}
+    from modules import admin_controls
+    if "ai" in await admin_controls.current_switches():
+        return {"_status": 503, "message": "AI chat is switched off right now."}
+    messages, err = dev_chat.clean_messages((body or {}).get("messages"))
+    if err:
+        return {"_status": 422, "message": err}
+    ws = ai_usage.week_start()
+    ok, st = await ai_usage.consume(db, uid, CARD_SOURCE)
+    if not ok:
+        reset = ai_usage.resets_at().strftime("%a %d %b, %H:%M UTC")
+        return {"_status": 429, "code": "weekly_limit",
+                "message": f"You've used all {ai_usage.LIMITS[CARD_SOURCE]} free chats this week. They reset {reset}."}
+    try:
+        text = await dev_chat.ask(messages, system=dev_chat.MEMBER_SYSTEM_PROMPT)
+    except Exception as e:
+        await db.ai_usage_refund(uid, ws, CARD_SOURCE)
+        if not isinstance(e, RuntimeError):
+            logger.exception("member chat failed")
+        return {"_status": 502, "message": str(e) if isinstance(e, RuntimeError) else "The AI service is busy. Try again in a moment."}
+    return {"reply": text, **_card_usage_view(st)}
+
+
 DELETE_PHRASE = "DELETE MY DATA"
 
 
@@ -284,4 +323,5 @@ ROUTES = {"member_status": member_status, "member_servers": member_servers, "mem
 WRITES = {"member_pref_set": member_pref_set, "checkout_user": checkout_user,
           "member_card_preview": member_card_preview, "member_card_save": member_card_save,
           "member_card_asset": member_card_asset, "member_card_asset_delete": member_card_asset_delete,
+          "member_chat": member_chat,
           "member_stepup": member_stepup, "member_data_delete": member_data_delete}
