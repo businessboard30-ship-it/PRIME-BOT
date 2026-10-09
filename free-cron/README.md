@@ -21,7 +21,13 @@ A standalone, public cron service on Cloudflare Workers + D1. It is **separate f
 3. **Repo secrets:** `FREECRON_GITHUB_CLIENT_SECRET`, `FREECRON_TURNSTILE_SECRET`, `FREECRON_SESSION_SECRET` (any long random string), `FREECRON_ADMIN_KEY` (long random string). `CLOUDFLARE_API_TOKEN` needs **D1:Edit** as well as Workers Scripts:Edit; `CLOUDFLARE_ACCOUNT_ID` is shared with `cron-worker`.
 4. Merge: `.github/workflows/deploy-free-cron.yml` runs the tests, applies `migrations/`, deploys and syncs secrets. The D1 database `free-cron` already exists (id in `wrangler.toml`).
 
-## Granting Premium (v1 has no checkout)
+## Premium (automatic, Gumroad)
+Buyers get a **Gumroad license key**, paste it on the page while signed in, and Premium switches on. Nothing for the owner to do.
+- Memberships (`GUMROAD_RECURRING = "1"`): the key is re-verified with Gumroad about once a day. While it is paid, Premium rolls forward; if it is cancelled, refunded, disputed or its payment fails, Premium lapses on its own within 3 days. A Gumroad outage never ends anyone's Premium.
+- One-time purchases (`GUMROAD_RECURRING = "0"`): each key gives `PREMIUM_DAYS` of Premium once.
+- A key belongs to the first account that redeems it. Redeeming needs the Turnstile check.
+- Setup: in Gumroad enable **license keys** on the product. Put the product id in `GUMROAD_PRODUCT_ID` and the product link in `GUMROAD_BUY_URL` (both in `wrangler.toml`).
+- Backup: the owner can still grant by hand:
 ```
 curl -X POST https://<host>/api/admin/premium -H "Authorization: Bearer $ADMIN_KEY" -H "X-FreeCron: 1" -H "Content-Type: application/json" -d '{"login":"their-github-name","days":30}'
 ```

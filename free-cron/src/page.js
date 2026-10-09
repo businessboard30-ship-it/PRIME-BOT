@@ -34,6 +34,17 @@ button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button:disab
 
 <section id="app" class="hidden">
   <div class="card"><div class="row"><span id="who" class="grow"></span><button id="logout">Sign out</button></div></div>
+  <div class="card" id="prem">
+    <h2>Premium: unlimited crons, every 5 minutes</h2>
+    <p id="premState" class="mut"></p>
+    <div id="buyBox">
+      <p><a id="buy" class="hidden" href="#" target="_blank" rel="noopener noreferrer">Get Premium on Gumroad</a></p>
+      <p class="mut">After you buy, Gumroad gives you a license key. Paste it here and Premium switches on by itself.</p>
+      <div class="row"><input id="lkey" class="grow" maxlength="80" placeholder="Gumroad license key" aria-label="License key" autocomplete="off"></div>
+      <div class="row"><div id="tsRedeem"></div></div>
+      <p><button id="redeem" class="pri" disabled>Activate Premium</button></p>
+    </div>
+  </div>
   <div class="card">
     <h2>New cron</h2>
     <div class="row"><input id="name" class="grow" maxlength="60" placeholder="Name (e.g. Keep my app awake)" aria-label="Name"></div>
@@ -55,17 +66,22 @@ button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button:disab
 <script nonce="${nonce}">
 (function(){
 var SITE="${esc(siteKey)}",H={"Content-Type":"application/json","X-FreeCron":"1"};
-var $=function(i){return document.getElementById(i)},tok={login:"",job:""},wid={},mounted={};
+var $=function(i){return document.getElementById(i)},tok={login:"",job:"",redeem:""},wid={},mounted={};
 function say(t,bad){var m=$("msg");m.textContent=t||"";m.className=bad?"bad":"mut"}
 function api(p,o){o=o||{};o.headers=H;return fetch(p,o).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok){var e=new Error(j.error||"Something went wrong.");e.status=r.status;throw e}return j})})}
 function mount(id,key){var tries=0;(function go(){if(window.turnstile){wid[key]=window.turnstile.render("#"+id,{sitekey:SITE,callback:function(t){tok[key]=t;sync()},"expired-callback":function(){tok[key]="";sync()}})}else if(tries++<100){setTimeout(go,100)}})()}
 function resetTs(key){tok[key]="";if(window.turnstile&&wid[key]!==undefined)window.turnstile.reset(wid[key]);sync()}
-function sync(){$("login").disabled=!tok.login;$("add").disabled=!tok.job}
+function sync(){$("login").disabled=!tok.login;$("add").disabled=!tok.job;$("redeem").disabled=!tok.redeem}
 var NAMES={5:"5 minutes",15:"15 minutes",30:"30 minutes",60:"hour",360:"6 hours",720:"12 hours",1440:"24 hours"};
 function every(m){return NAMES[m]?("every "+NAMES[m]):("every "+m+" min")}
 function when(ms){return ms?new Date(ms).toLocaleString():"never"}
 function render(me){
   $("out").classList.add("hidden");$("app").classList.remove("hidden");if(!mounted.job){mounted.job=1;mount("tsJob","job")}
+  var ps=$("premState");
+  if(me.premium){ps.textContent="Premium is active"+(me.premium_until-Date.now()>432000000?(" until "+when(me.premium_until)):"")+".";$("buyBox").classList.add("hidden")}
+  else{ps.textContent="Free plan: "+me.limit+" crons, every "+me.min_minutes+" minutes or slower.";$("buyBox").classList.remove("hidden");
+    var a=$("buy");if(me.buy_url){a.href=me.buy_url;a.classList.remove("hidden")}else a.classList.add("hidden");
+    if(!mounted.redeem){mounted.redeem=1;mount("tsRedeem","redeem")}}
   $("who").textContent="Signed in as "+me.login+" · "+(me.premium?"Premium (unlimited)":("Free: "+me.used+" of "+me.limit+" crons"));
   var sel=$("every");sel.textContent="";
   me.intervals.forEach(function(m){var o=document.createElement("option");o.value=m;o.textContent=every(m);o.disabled=m<me.min_minutes;sel.appendChild(o);if(m===me.min_minutes&&!sel.value)sel.value=m});
@@ -90,6 +106,7 @@ function fail(e){say(e.message,true)}
 function load(){return api("/api/me").then(function(me){say("");render(me)}).catch(function(e){
   if(e.status===401){$("app").classList.add("hidden");$("out").classList.remove("hidden");if(!mounted.login){mounted.login=1;mount("tsLogin","login")}}else fail(e)})}
 $("login").onclick=function(){$("login").disabled=true;api("/api/login",{method:"POST",body:JSON.stringify({token:tok.login})}).then(function(r){location.href=r.url}).catch(function(e){fail(e);resetTs("login")})};
+$("redeem").onclick=function(){$("redeem").disabled=true;api("/api/redeem",{method:"POST",body:JSON.stringify({key:$("lkey").value,token:tok.redeem})}).then(function(r){$("lkey").value="";say(r.already?"That key was already used on your account.":"Premium is on. Thank you!");return load()}).catch(fail).then(function(){resetTs("redeem")})};
 $("logout").onclick=function(){api("/api/logout",{method:"POST"}).then(function(){location.reload()})};
 $("method").onchange=function(){$("body").classList.toggle("hidden",$("method").value!=="POST")};
 $("add").onclick=function(){

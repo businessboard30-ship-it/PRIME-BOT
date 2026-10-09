@@ -123,3 +123,30 @@ export function sameOriginOk(request, url) {
   const o = request.headers.get("Origin");
   return !o || o === url.origin;
 }
+
+// ---- Gumroad Premium (license keys) ----
+export const GRACE_DAYS = 3;                 // a membership stays Premium this long after its last good daily check
+export const RECHECK_MS = 86400000;          // re-verify each membership key about once a day
+export const RECHECK_BATCH = 5;              // keys re-verified per 5-minute tick (keeps subrequests low)
+
+export function validKey(k) { return typeof k === "string" && /^[A-Za-z0-9-]{8,80}$/.test(k.trim()); }
+export function daysFor(env) { const n = Number(env?.PREMIUM_DAYS); return Number.isInteger(n) && n >= 1 && n <= 3650 ? n : 30; }
+export function isRecurring(env) { return String(env?.GUMROAD_RECURRING ?? "1") !== "0"; }
+export function safeBuyUrl(u) {
+  try { const x = new URL(String(u || "")); return x.protocol === "https:" && !x.username && !x.password ? x.toString() : null; } catch { return null; }
+}
+export async function sha256Hex(s) {
+  const d = await crypto.subtle.digest("SHA-256", enc.encode(String(s)));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Judge Gumroad's /licenses/verify answer. Returns {ok:true} or {ok:false, error}. Only a definite "no" from Gumroad is a "no". */
+export function judgeLicense(resp, productId) {
+  const bad = (error) => ({ ok: false, error });
+  if (!resp || resp.success !== true) return bad("That license key isn't valid for this product.");
+  const p = resp.purchase && typeof resp.purchase === "object" ? resp.purchase : {};
+  if (productId && p.product_id && p.product_id !== productId) return bad("That license key isn't valid for this product.");
+  if (p.refunded || p.chargebacked || (p.disputed && !p.dispute_won)) return bad("That purchase was refunded or disputed.");
+  if (p.subscription_ended_at || p.subscription_cancelled_at || p.subscription_failed_at) return bad("That subscription is no longer active.");
+  return { ok: true };
+}

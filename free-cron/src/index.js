@@ -12,6 +12,29 @@ const cookie = (name, value, { path = "/", maxAge = 0 } = {}) => `${name}=${valu
 
 function selfHosts(env, url) { return [url?.hostname, ...String(env.SELF_HOSTS || "").split(",")].filter(Boolean); }
 
+let licenseTableReady = false;
+async function ensureLicenseTable(env) {            // belt and braces: works even if the migration step lacked D1:Edit
+  if (licenseTableReady) return;
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS licenses (key_hash TEXT PRIMARY KEY, license_key TEXT NOT NULL, account_id INTEGER NOT NULL, recurring INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 1, checked_at INTEGER NOT NULL, created_at INTEGER NOT NULL)").run();
+  licenseTableReady = true;
+}
+
+/** Ask Gumroad about one license key. Never increments the use counter. Returns {resp} or {net:true}. */
+async function gumroadVerify(env, key, doFetch = fetch) {
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), L.TIMEOUT_MS);
+    const r = await doFetch("https://api.gumroad.com/v2/licenses/verify", {
+      method: "POST", redirect: "manual", signal: ctl.signal, headers: { "User-Agent": UA, Accept: "application/json" },
+      body: new URLSearchParams({ product_id: env.GUMROAD_PRODUCT_ID, license_key: key, increment_uses_count: "false" }),
+    });
+    clearTimeout(timer);
+    if (r.status >= 500 || r.status === 429) return { net: true };
+    const resp = await r.json().catch(() => null);
+    return resp ? { resp } : { net: true };
+  } catch { return { net: true }; }
+}
+
 async function turnstileOk(env, token, request) {
   if (!env.TURNSTILE_SECRET) return false;                       // fail closed
   if (typeof token !== "string" || !token || token.length > 2048) return false;
@@ -44,7 +67,7 @@ async function me(env, account) {
   const rows = (await env.DB.prepare("SELECT * FROM jobs WHERE account_id = ?1 ORDER BY id").bind(account.id).all()).results || [];
   const lim = L.limitFor(account, now);
   return {
-    login: account.login, premium: L.isPremium(account, now), premium_until: L.isPremium(account, now) ? account.premium_until : null,
+    buy_url: L.safeBuyUrl(env.GUMROAD_BUY_URL), login: account.login, premium: L.isPremium(account, now), premium_until: L.isPremium(account, now) ? account.premium_until : null,
     limit: lim === Infinity ? null : lim, used: rows.length, min_minutes: L.minMinutesFor(account, now), intervals: L.INTERVALS,
     jobs: rows.map((j, i) => jobView(j, account, now, i)),
   };
@@ -81,8 +104,34 @@ async function handleApi(request, env, url) {
 
   if (path === "/api/me" && method === "GET") return json(await me(env, account));
   if (path === "/api/me" && method === "DELETE") {                       // delete my account and every cron
-    await env.DB.batch([env.DB.prepare("DELETE FROM jobs WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM accounts WHERE id = ?1").bind(account.id)]);
+    await ensureLicenseTable(env);
+    await env.DB.batch([env.DB.prepare("DELETE FROM jobs WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM licenses WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM accounts WHERE id = ?1").bind(account.id)]);
     return json({ deleted: true }, 200, { "Set-Cookie": cookie("fc_session", "", {}) });
+  }
+
+  if (path === "/api/redeem" && method === "POST") {                      // paste a Gumroad license key -> Premium, automatically
+    const body = await request.json().catch(() => ({}));
+    if (!env.GUMROAD_PRODUCT_ID) return err(503, "Premium isn't set up yet.");
+    if (!(await turnstileOk(env, body.token, request))) return err(400, "Please complete the captcha and try again.");
+    if (!L.validKey(body.key)) return err(422, "That doesn't look like a license key.");
+    const key = body.key.trim(), now = Date.now();
+    const g = await gumroadVerify(env, key);
+    if (g.net) return err(502, "Couldn't reach Gumroad. Please try again in a minute.");
+    const verdict = L.judgeLicense(g.resp, env.GUMROAD_PRODUCT_ID);
+    if (!verdict.ok) return err(422, verdict.error);
+    await ensureLicenseTable(env);
+    const hash = await L.sha256Hex(key), recurring = L.isRecurring(env) ? 1 : 0;
+    const ins = await env.DB.prepare("INSERT INTO licenses (key_hash, license_key, account_id, recurring, checked_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5) ON CONFLICT(key_hash) DO NOTHING")
+      .bind(hash, key, account.id, recurring, now).run();
+    const row = await env.DB.prepare("SELECT account_id, recurring, active FROM licenses WHERE key_hash = ?1").bind(hash).first();
+    if (!row || row.account_id !== account.id) return err(409, "That license key is already used by another account.");
+    if (!row.active) return err(422, "That license key is no longer active.");
+    let until = 0;
+    if (row.recurring) until = now + L.GRACE_DAYS * 86400000;                // renewed by the daily re-check
+    else if (ins.meta.changes) until = now + L.daysFor(env) * 86400000;      // one-time purchase: fixed length, granted once
+    else return json({ already: true });
+    if (until) await env.DB.prepare("UPDATE accounts SET premium_until = MAX(premium_until, ?2) WHERE id = ?1").bind(account.id, until).run();
+    return json({ premium: true });
   }
 
   if (path === "/api/jobs" && method === "POST") {
@@ -194,6 +243,30 @@ export async function runDue(env, now = Date.now(), doFetch = fetch) {
   return out;
 }
 
+/** Daily re-check of membership keys: still paying -> Premium rolls forward; cancelled / refunded / failed -> it simply lapses. */
+export async function recheckLicenses(env, now = Date.now(), doFetch = fetch) {
+  if (String(env.DISABLED || "") === "1" || !env.GUMROAD_PRODUCT_ID) return { skipped: true };
+  await ensureLicenseTable(env);
+  const rows = (await env.DB.prepare("SELECT * FROM licenses WHERE active = 1 AND recurring = 1 AND checked_at < ?1 ORDER BY checked_at LIMIT ?2").bind(now - L.RECHECK_MS, L.RECHECK_BATCH).all()).results || [];
+  const out = { checked: 0, renewed: 0, ended: 0, retry: 0 };
+  for (const r of rows) {
+    const g = await gumroadVerify(env, r.license_key, doFetch);
+    out.checked++;
+    if (g.net) { out.retry++; await env.DB.prepare("UPDATE licenses SET checked_at = ?2 WHERE key_hash = ?1").bind(r.key_hash, now - L.RECHECK_MS + 3600000).run(); continue; }   // try again in about an hour
+    if (L.judgeLicense(g.resp, env.GUMROAD_PRODUCT_ID).ok) {
+      out.renewed++;
+      await env.DB.batch([
+        env.DB.prepare("UPDATE licenses SET checked_at = ?2 WHERE key_hash = ?1").bind(r.key_hash, now),
+        env.DB.prepare("UPDATE accounts SET premium_until = MAX(premium_until, ?2) WHERE id = ?1").bind(r.account_id, now + L.GRACE_DAYS * 86400000),
+      ]);
+    } else {
+      out.ended++;
+      await env.DB.prepare("UPDATE licenses SET active = 0, checked_at = ?2 WHERE key_hash = ?1").bind(r.key_hash, now).run();
+    }
+  }
+  return out;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -208,5 +281,5 @@ export default {
     if (url.pathname.startsWith("/auth/")) return handleAuth(request, env, url);
     return err(404, "Not found.");
   },
-  async scheduled(event, env, ctx) { ctx.waitUntil(runDue(env)); },
+  async scheduled(event, env, ctx) { ctx.waitUntil(runDue(env)); ctx.waitUntil(recheckLicenses(env).catch(() => null)); },
 };
