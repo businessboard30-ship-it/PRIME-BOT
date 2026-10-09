@@ -287,11 +287,41 @@ def _bearer(headers) -> str:
     return h[7:].strip() if h.lower().startswith("bearer ") else ""
 
 
+VISIT_THROTTLE_S = 600          # one visit write per person per 10 minutes, per process
+VISIT_PRUNE_S = 3600
+_visit_seen: dict = {}
+_visit_pruned = [None]          # monotonic time of the last prune; None = due
+
+
+async def _note_visit(uid) -> None:
+    """Record 'this person used the dashboard today' for the owner Visitors page. Never raises and never
+    slows a request more than one tiny upsert every few minutes."""
+    try:
+        key = str(int(uid))
+    except (TypeError, ValueError):
+        return
+    now = time.monotonic()
+    last = _visit_seen.get(key)
+    if last is not None and now - last < VISIT_THROTTLE_S:
+        return
+    if len(_visit_seen) > 5000:
+        _visit_seen.clear()
+    _visit_seen[key] = now
+    try:
+        await db.dash_visit_touch(key)
+        if _visit_pruned[0] is None or now - _visit_pruned[0] > VISIT_PRUNE_S:
+            _visit_pruned[0] = now
+            await db.dash_visit_prune()
+    except Exception:
+        logger.debug("dashboard: couldn't record a visit", exc_info=True)
+
+
 async def _session(headers) -> dict:
     sid = _bearer(headers)
     payload = await db.get_login_session(sid, ttl_minutes=config.DASH_SESSION_MINUTES) if sid else None
     if not payload or payload.get("kind") != "dash":
         _fail(401, "Your session expired. Sign in again.")
+    await _note_visit((payload.get("user") or {}).get("id"))
     return {**payload, "_sid": sid}
 
 
