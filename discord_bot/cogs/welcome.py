@@ -70,12 +70,8 @@ def _clone_id_of(interaction: discord.Interaction):
 
 
 def _apply_template(template: str, member: discord.Member) -> str:
-    return (
-        template
-        .replace("{member}", member.mention)
-        .replace("{guild}", member.guild.name)
-        .replace("{count}", str(member.guild.member_count))
-    )
+    from modules import welcome_vars
+    return welcome_vars.fill_for_member(template, member)
 
 
 def _suggested_template(guild: discord.Guild) -> str:
@@ -1376,7 +1372,7 @@ class WelcomeCog(GuildOnlyCog):
         await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
         await interaction.followup.send("✅ Welcome cards disabled.", ephemeral=True)
 
-    @group.command(name="message", description="Set the welcome text. Placeholders: {member} {guild} {count}")
+    @group.command(name="message", description="Welcome text: {member} {name} {guild} {count} {count_ordinal} {account_age} {date} {rules}")
     async def message(self, interaction: discord.Interaction, template: str):
         await interaction.response.defer(ephemeral=True)
         if not _require_perm(interaction, "manage_guild"):
