@@ -174,18 +174,25 @@ async def _format_stats_text(rank_row, name: str) -> str:
     )
 
 
-def _dashboard_link_button(clone_id, mode: str):
-    """Link button to the member dashboard (global mode -> the global
-    leaderboard page, local -> My rank). The dashboard shows main-bot data
-    only, so clones get no button; also none when no dashboard URL is set."""
+def _dashboard_link_button(clone_id, mode: str, guild_id=None):
+    """Link button to the web dashboard.
+
+    Main bot: the member pages (global mode -> the global leaderboard page, local -> My rank).
+    Clone bots: the member pages show main-bot data only, so a clone's button opens that clone's server
+    dashboard instead (#/c/<clone_id>/g/<guild_id>, same link /dashboard gives). No button only when no
+    dashboard URL is configured."""
     import config as _cfg
-    if clone_id is not None or not _cfg.DASH_PAGES_URL:
+    if not _cfg.DASH_PAGES_URL:
         return None
-    page = "/me/leaderboard" if mode == "global" else "/me/rank"
-    return discord.ui.Button(
-        label="Dashboard", emoji="📈", style=discord.ButtonStyle.link,
-        url=f"{_cfg.DASH_PAGES_URL}/#{page}",
-    )
+    if clone_id is not None:
+        if not guild_id:
+            return None
+        from utils.dash_links import dashboard_url
+        url = dashboard_url(guild_id, clone_id)
+    else:
+        page = "/me/leaderboard" if mode == "global" else "/me/rank"
+        url = f"{_cfg.DASH_PAGES_URL}/#{page}"
+    return discord.ui.Button(label="Dashboard", emoji="📈", style=discord.ButtonStyle.link, url=url)
 
 
 async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str = "local",
@@ -427,7 +434,7 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
         boost_row = discord.ui.ActionRow()
         boost_row.add_item(LeaderboardXPOptionsButton(guild.id, clone_id))
         boost_row.add_item(LeaderboardClansButton(guild.id, clone_id))
-        dash_btn = _dashboard_link_button(clone_id, mode)
+        dash_btn = _dashboard_link_button(clone_id, mode, guild.id)
         if dash_btn is not None:
             boost_row.add_item(dash_btn)
         container.add_item(boost_row)
