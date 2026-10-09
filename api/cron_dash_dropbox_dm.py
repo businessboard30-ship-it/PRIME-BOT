@@ -71,6 +71,31 @@ async def run_pending_dropbox_dms() -> dict:
     return totals
 
 
+async def run_message_notices() -> dict:
+    """Opt-in only (off by default): one generic Discord DM per person per hour when they have unread dashboard messages.
+    The DM never contains a name or any message text. Closed DMs switch the notice off for that person."""
+    totals = {"sent": 0, "failed": 0}
+    if not DISCORD_BOT_TOKEN:
+        return {**totals, "error": "no_bot_token"}
+    from modules import admin_controls, member_msg
+    if member_msg.SWITCH in await admin_controls.current_switches():
+        return {**totals, "skipped": "messaging_off"}
+    deadline = asyncio.get_event_loop().time() + 10
+    async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
+        for uid in await db.msg_notify_claim(BATCH_SIZE):
+            if asyncio.get_event_loop().time() >= deadline:
+                break
+            error = await _dm_user(session, DISCORD_BOT_TOKEN, int(uid), member_msg.NOTICE_TEXT)
+            if error is None:
+                totals["sent"] += 1
+            else:
+                totals["failed"] += 1
+                if not is_retryable(error):
+                    await db.msg_dm_disable(uid)
+            await asyncio.sleep(DM_DELAY_SECONDS)
+    return totals
+
+
 class handler(BaseHTTPRequestHandler):
 
     def _authorized(self) -> bool:
@@ -96,7 +121,12 @@ class handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return self._send(401, {"status": "error", "message": "Unauthorized"})
         try:
-            self._send(200, {"status": "ok", **asyncio.run(run_pending_dropbox_dms())})
+            out = asyncio.run(run_pending_dropbox_dms())
+            try:
+                out["msg_notice"] = asyncio.run(run_message_notices())
+            except Exception as e:
+                logger.error("[cron_dash_dropbox_dm] message notices failed: %s", type(e).__name__)
+            self._send(200, {"status": "ok", **out})
         except Exception as e:
             logger.error("[cron_dash_dropbox_dm] error: %s", e)
             self._send(500, {"status": "error", "message": str(e)})

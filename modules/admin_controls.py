@@ -37,12 +37,18 @@ FEATURES: Dict[str, Tuple[str, Set[str]]] = {
     "economy": ("Economy & heists", {"economy", "shop", "ecoconfig", "heist", "inventory", "loadout"}),
     "bump": ("Bump & discovery", {"bump", "bumpsetup", "discover"}),
     "leveling": ("Leveling & cards", {"rank", "leaderboard", "clan", "card", "levelrole"}),
+    # Website-only (no slash commands): turns off new friend requests, accepting, sending and the notice DMs.
+    # Reading, blocking, reporting, unfriending and deleting stay available so nobody is trapped.
+    "messaging": ("Member messaging (website)", set()),
     # Also enforced inside clone_admin.register_clone_token, so the "Build Bot"
     # button wizard is stopped too (it isn't a slash command).
     "clone_registration": ("Clone registration", {"registerclone"}),
     # Website-only (no slash command): stops Developer-mode exports to the storage channel.
     "dev_export": ("Developer export", set()),
 }
+
+# Switches that control website features only (no slash command to turn off). Every OTHER feature must name commands.
+WEB_ONLY_FEATURES = frozenset({"messaging"})
 
 # Opt-in switches: engaged means ON (the opposite of FEATURES above, where engaged means turned off).
 # Default is not engaged, so the feature stays owner-only until turned on from the owner panel.
@@ -98,6 +104,15 @@ async def current_switches() -> Set[str]:
     CACHE_TTL seconds). Fails open: an empty set when nothing is known."""
     await _refresh()
     return set(_snapshot["switches"])
+
+
+async def user_blocked(user_id) -> bool:
+    """True when the owner has blacklisted this user. Fails open (False) when nothing is known, like the other readers."""
+    try:
+        await _refresh()
+        return int(user_id) in _snapshot["users"]
+    except Exception:
+        return False
 
 
 def build_bot_open_cached() -> bool:

@@ -179,3 +179,12 @@ def test_policy_pages_describe_dashboard_data_and_personal_plans(monkeypatch):
     legal = importlib.import_module("api.legal_pages")
     assert "Web dashboard" in legal.PRIVACY_HTML and "Privacy &amp; data" in legal.PRIVACY_HTML
     assert "Personal plans" in legal.PRICING_HTML and "Developer mode" in legal.PRICING_HTML
+
+
+def test_delete_covers_messaging_without_undoing_bans_blocks_or_reports():
+    src = Path("database.py").read_text()
+    seg = src[src.index("async def member_data_delete"):src.index("async def card_asset_blocked")]
+    assert "DELETE FROM dash_member_messages" in seg and "DELETE FROM dash_friends" in seg
+    assert "msg_banned = FALSE" in seg                                   # a banned user keeps the ban
+    assert "status <> 'blocked' OR blocked_by = $1" in seg               # blocks others placed against them stay
+    assert "dash_member_reports" not in seg                              # safety records stay

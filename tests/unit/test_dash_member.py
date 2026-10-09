@@ -157,6 +157,6 @@ def test_schema_has_both_tables_and_entitlement_writer_is_not_a_route():
     db_src = Path(importlib.import_module("database").__file__).read_text()
     assert "CREATE TABLE IF NOT EXISTS user_entitlements" in db_src
     assert "CREATE TABLE IF NOT EXISTS dash_web_users" in db_src
-    assert 'SCHEMA_VERSION = "68"' in db_src
+    assert 'SCHEMA_VERSION = "69"' in db_src
     assert "entitlement_upsert" not in Path(dash.__file__).read_text()
     assert "entitlement_upsert" not in (Path(dash.__file__).parent / "dash_member.py").read_text()

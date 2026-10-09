@@ -38,6 +38,13 @@ Routes (all on /api/dash):
   GET  ?action=analytics&guild_id[&days=7|30|90] -> joins/leaves per day, active members, top XP members and inviters; read-only, no schema change (30 reads/min)
   GET  ?action=giveaways&guild_id=&status=&before= -> giveaways for this server (prize, status, entrant count, winners); read-only
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
+  GET  ?action=friends_list -> friends, incoming/outgoing requests, blocked, my servers, unread, settings (Part D; session user only)
+  GET  ?action=friends_search&guild_id&query -> people in ONE of my servers who use the web and allow requests (max 10)
+  GET  ?action=messages_thread&other_id -> last 50 messages with an accepted friend (+ can_send / paused)
+  POST ?action=friend_request {other_id} -> same reply whether or not it could be delivered (no web-account leak)
+  POST ?action=friend_respond {other_id, accept} | friend_remove | friend_block | friend_unblock {other_id}
+  POST ?action=message_send {other_id, body} -> friends only; text, Scam Shield, limits, shared-server check (409 paused)
+  POST ?action=message_read | message_thread_delete {other_id} | message_report {other_id, also_block?} | msg_prefs_set {allow_requests?, dm_notify?}
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
   POST {action: dropbox_read, id?}      -> mark one (or all) read
   POST {action: dropbox_send, ...}      -> OWNER ONLY (config.DISCORD_OWNER_BROADCAST_IDS)
@@ -353,13 +360,13 @@ MEMBER_FRESH_WRITES = frozenset({"member_data_delete"})
 
 
 def _member_routes() -> dict:
-    from api import dash_dev, dash_member
-    return {**dash_member.ROUTES, **dash_dev.ROUTES}
+    from api import dash_dev, dash_member, dash_msg
+    return {**dash_member.ROUTES, **dash_dev.ROUTES, **dash_msg.ROUTES}
 
 
 def _member_writes() -> dict:
-    from api import dash_dev, dash_member
-    return {**dash_member.WRITES, **dash_dev.WRITES}
+    from api import dash_dev, dash_member, dash_msg
+    return {**dash_member.WRITES, **dash_dev.WRITES, **dash_msg.WRITES}
 
 
 def _owner_routes() -> dict:
@@ -1158,13 +1165,15 @@ async def _route(method: str, query: dict, headers, body: dict):
         except Exception:
             logger.exception("dashboard: dropbox unread count failed")
             unread = 0
+        from api import dash_msg
         raise _Reply(200, {"ok": True, "user": sess["user"], "servers": servers,
                            "is_owner": _is_owner(sess), "unread": unread, "member": True,
+                           "msg_unread": await dash_msg.unread_total(uid, db),
                            "owner_sections": sorted(_owner_sections(sess))})
 
     if method == "GET" and action in _member_routes():
         uid = _require_member(sess)
-        _owner_rate(sess, "member:" + action, 60, 60)
+        _owner_rate(sess, "member:" + action, *{"friends_search": (15, 60), "messages_thread": (40, 60)}.get(action, (60, 60)))
         out = await _member_routes()[action](uid, q, db)
         if out.get("_status"):
             _fail(out["_status"], out.get("message") or "Something went wrong.", out.get("code"))
@@ -1177,6 +1186,8 @@ async def _route(method: str, query: dict, headers, body: dict):
                                                       "dev_key_save": (6, 300), "dev_key_remove": (10, 300),
                                                       "dev_export_create": (6, 300), "dev_export_delete": (10, 300),
                                                       "dev_github_connect": (5, 300), "dev_github_finish": (8, 300), "dev_github_disconnect": (10, 300),
+                                                      "friend_request": (10, 300), "message_send": (15, 60), "message_report": (6, 300),
+                                                      "friend_block": (10, 300),
                                                       "member_stepup": (5, 300), "member_data_delete": (3, 3600)}.get(action, (30, 60)))
         from api import dash_dev
         if action in dash_dev.FRESH_WRITES:          # gate first (402), then step-up (403); handlers never see the session

@@ -19,7 +19,7 @@ CLONE_ADMIN_SECTIONS = frozenset({
     "payments", "servers", "bump", "system",
     "controls", "blacklist", "premium", "audit",
     "access", "logs", "config", "database",
-    "watchlist", "reports", "status", "honeypot",
+    "watchlist", "reports", "msgreports", "status", "honeypot",
     "money", "scamshield", "referral", "ads",
     "health", "inspect",
 })

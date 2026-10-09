@@ -153,6 +153,21 @@ feature keeps working until you disconnect it.</li>
 <p>We don't sell your data. We don't read or store messages outside of
 what a feature you're actively using needs in order to work.</p>
 
+<h2>Website dashboard</h2>
+<ul>
+<li>AI chats you have on the website are not stored by us. Only a weekly
+count of how many you used is kept. Closing the page clears the conversation.</li>
+<li>If you add your own AI provider key, it is encrypted, never shown again,
+and used only to answer your own chats. It is deleted 30 days after your
+Developer plan ends, or whenever you remove it.</li>
+<li>Member messages (friends from your servers) are text only. Both people
+can delete a conversation or unfriend at any time, and messages are deleted
+automatically after 30 days. If you report a person, the last messages of
+that conversation (up to 20) are copied to the owner's review queue and are
+deleted 90 days after the report is resolved. Friend requests can be switched
+off, and an optional Discord DM notice is off unless you turn it on.</li>
+</ul>
+
 <h2>Third parties</h2>
 <p>Depending on which features you use, data may be sent to: the AI
 provider powering chat/image features, the payment processor handling paid
@@ -169,7 +184,7 @@ deletion of your data, contact us using the details below.</p>
 <p>If you sign in to the web dashboard with Discord, we store a record that you
 signed in, your level-up card design and uploads, any AI provider keys you add
 (encrypted, never shown again), and receipts for exports you save (the files are
-encrypted). AI chats on the dashboard are not stored. You can delete all of this
+encrypted), and, if you use member messaging, your friends list and messages (deleted after 30 days, or when you delete your data). AI chats on the dashboard are not stored. You can delete all of this
 yourself under Privacy &amp; data in the dashboard. Payment records, your plans,
 weekly chat counters and in-server records (XP, coins, moderation) are kept.</p>
 
