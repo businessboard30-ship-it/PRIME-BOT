@@ -89,6 +89,7 @@ Routes (all on /api/dash):
   POST {action: dev_stepup} -> Developer plan only: {url}: Discord re-sign-in that makes this session fresh for DASH_STEPUP_MINUTES (returns to #/dev)
   POST {action: dev_chat, model?: default|anthropic|groq|openai, messages:[{role,content}]} -> Developer plan only: one bot-AI reply; spends 1 of 50 weekly chats (refunded if the model fails); 429 {code: weekly_limit}; 503 when the owner's `ai` switch is on. Nothing is stored.
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
+  GET  ?action=member_rank -> ANY signed-in user: their OWN global rank/XP/level and best/worst server rank; no other user is named
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
   POST {action: member_pref_set, kind: language|currency|character|voice|level_ping, value[, guild_id]} -> own preference only (allowlisted)
   POST {action: owner_helper_set|owner_helper_remove|owner_clone_register|owner_clone_relink|owner_clone_stop|owner_db_cleanup_stale, ...} -> OWNER (Phase 5): step-up + typed confirm on all but helper_set

@@ -49,6 +49,28 @@ async def member_servers(uid, q, db):
     return {"servers": [server_view(r) for r in await db.member_servers(uid)]}
 
 
+async def member_rank(uid, q, db):
+    """The viewer's OWN position only (no other user is named). Global rank is the same query the bot's /rank uses."""
+    from modules.leveling import xp_progress
+    n = int(uid)
+    g = await db.get_global_xp_rank(n)
+    servers = [server_view(r) for r in await db.member_servers(uid)]
+    out = {"global": None, "servers": [], "best": None, "worst": None}
+    if g and int(g.get("total_xp") or 0) > 0:
+        xp = int(g["total_xp"])
+        pr = xp_progress(xp)
+        out["global"] = {"rank": int(g.get("rank") or 0), "players": int(g.get("total_players") or 0), "total_xp": xp,
+                         "level": pr["level"], "xp_in_level": pr["current_xp_in_level"], "xp_for_next": pr["xp_needed_for_next_level"]}
+    ranked = [{"guild_id": s_["guild_id"], "name": s_["name"], "rank": s_["rank"], "players": s_["players"], "level": s_["level"]}
+              for s_ in servers if s_["rank"] > 0]
+    out["servers"] = ranked[:10]
+    if ranked:
+        # best = smallest rank number; worst = largest (ties broken by the bigger server)
+        out["best"] = min(ranked, key=lambda r: (r["rank"], -r["players"]))
+        out["worst"] = max(ranked, key=lambda r: (r["rank"], r["players"]))
+    return out
+
+
 async def member_purchases(uid, q, db):
     return {"purchases": [purchase_view(r) for r in await db.member_purchases(uid)]}
 
@@ -318,7 +340,7 @@ async def member_data_delete(uid, body, db):
     return {"deleted": True, "removed": counts, "kept": ["payments and plans", "weekly usage counters", "XP, coins and moderation records in servers"]}
 
 
-ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_plans": member_plans,
+ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_rank": member_rank, "member_plans": member_plans,
           "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card, "member_usage": member_usage}
 WRITES = {"member_pref_set": member_pref_set, "checkout_user": checkout_user,
           "member_card_preview": member_card_preview, "member_card_save": member_card_save,
