@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "70"
+SCHEMA_VERSION = "71"
+# "70" -> "71" creates dev_jobs (Developer-mode scheduled jobs: reminder / note / AI prompt on allowlisted presets, claimed by the cron worker). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "69" -> "70" adds display_name, avatar_url and show_on_board to dash_web_users (web leaderboard: signed-in members appear by name unless they opt out). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "68" -> "69" creates dash_friends, dash_member_messages, dash_member_reports and dash_member_prefs (Part D member messaging: friend requests, text-only messages kept 30 days, report snapshots, per-member settings). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "67" -> "68" creates user_renewal_reminders (one row per user + plan + period end, so a renewal/ending reminder DM is sent at most once per period). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -4266,6 +4267,27 @@ class Database:
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS dev_exports_user_idx ON dev_exports (user_id, created_at DESC)")
+
+        # Developer mode scheduled jobs. schedule is an allowlisted preset string (never a free cron); payload is plain text + a model NAME, never a key.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dev_jobs (
+                id BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                name TEXT NOT NULL,
+                schedule TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                next_run_at TIMESTAMPTZ NOT NULL,
+                last_run_at TIMESTAMPTZ,
+                last_status TEXT,
+                fail_count INTEGER NOT NULL DEFAULT 0,
+                paused_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS dev_jobs_due_idx ON dev_jobs (next_run_at) WHERE enabled")
+        await conn.execute("CREATE INDEX IF NOT EXISTS dev_jobs_user_idx ON dev_jobs (user_id)")
 
         # Developer mode: a member's own AI provider key. key_encrypted is secret_manager ciphertext; never returned or logged.
         await conn.execute("""
@@ -15157,6 +15179,106 @@ class Database:
             res = await conn.execute("DELETE FROM dev_connections WHERE user_id = $1 AND provider = $2", str(user_id), str(provider))
         return res.endswith(" 1")
 
+    # ---- Developer mode scheduled jobs. user_id always comes from the SESSION (or from the claimed row in the cron). ----
+    async def dev_job_list(self, user_id: str) -> list:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM dev_jobs WHERE user_id = $1 ORDER BY id", str(user_id))
+        return [dict(r) for r in rows]
+
+    async def dev_job_count(self, user_id: str) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return int(await conn.fetchval("SELECT COUNT(*) FROM dev_jobs WHERE user_id = $1", str(user_id)))
+
+    async def dev_job_add(self, user_id: str, kind: str, name: str, schedule: str, payload: str, next_run_at, max_jobs: int):
+        """Insert unless the person already holds `max_jobs`. The cap is enforced in the same statement, so two requests can't both pass it."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                """INSERT INTO dev_jobs (user_id, kind, name, schedule, payload, next_run_at)
+                   SELECT $1, $2, $3, $4, $5, $6 WHERE (SELECT COUNT(*) FROM dev_jobs WHERE user_id = $1) < $7
+                   RETURNING id""", str(user_id), kind, name, schedule, payload, next_run_at, int(max_jobs))
+
+    async def dev_job_update(self, user_id: str, job_id: int, name: str, schedule: str, payload: str, next_run_at) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                """UPDATE dev_jobs SET name = $3, schedule = $4, payload = $5, next_run_at = $6
+                   WHERE id = $2 AND user_id = $1""", str(user_id), int(job_id), name, schedule, payload, next_run_at)
+        return res.endswith(" 1")
+
+    async def dev_job_set_enabled(self, user_id: str, job_id: int, enabled: bool, next_run_at=None) -> bool:
+        """Pause / resume. Resuming clears the pause and the failure streak and sets the next slot."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if enabled:
+                res = await conn.execute(
+                    """UPDATE dev_jobs SET enabled = TRUE, paused_at = NULL, fail_count = 0, last_status = NULL, next_run_at = $3
+                       WHERE id = $2 AND user_id = $1""", str(user_id), int(job_id), next_run_at)
+            else:
+                res = await conn.execute("UPDATE dev_jobs SET enabled = FALSE, last_status = 'paused' WHERE id = $2 AND user_id = $1",
+                                         str(user_id), int(job_id))
+        return res.endswith(" 1")
+
+    async def dev_job_delete(self, user_id: str, job_id: int) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM dev_jobs WHERE id = $2 AND user_id = $1", str(user_id), int(job_id))
+        return res.endswith(" 1")
+
+    async def dev_job_claim(self, limit: int, lease_minutes: int = 60) -> list:
+        """Atomically take due jobs. FOR UPDATE SKIP LOCKED means overlapping ticks never get the same row; the row's next_run_at
+        moves forward by the lease in the same statement, so a second tick can't see it as due either. `slot` is the slot that was due."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """WITH due AS (
+                       SELECT id, next_run_at AS slot FROM dev_jobs
+                       WHERE enabled AND next_run_at <= NOW()
+                       ORDER BY next_run_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+                   UPDATE dev_jobs j SET next_run_at = NOW() + ($2 * INTERVAL '1 minute'), last_run_at = NOW()
+                   FROM due WHERE j.id = due.id
+                   RETURNING j.*, due.slot AS slot""", int(limit), int(lease_minutes))
+        return [dict(r) for r in rows]
+
+    async def dev_job_advance(self, job_id: int, next_run_at) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE dev_jobs SET next_run_at = $2 WHERE id = $1", int(job_id), next_run_at)
+
+    async def dev_job_finish(self, job_id: int, status: str, ok: bool, max_fails: int = 5, count_failure: bool = True) -> None:
+        """Record the outcome. Success resets the streak; a failure adds to it and the job is switched off at `max_fails` in a row."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if ok:
+                await conn.execute("UPDATE dev_jobs SET last_status = $2, fail_count = 0 WHERE id = $1", int(job_id), status[:60])
+            elif count_failure:
+                await conn.execute(
+                    """UPDATE dev_jobs SET last_status = $2, fail_count = fail_count + 1,
+                           enabled = CASE WHEN fail_count + 1 >= $3 THEN FALSE ELSE enabled END
+                       WHERE id = $1""", int(job_id), status[:60], int(max_fails))
+            else:
+                await conn.execute("UPDATE dev_jobs SET last_status = $2 WHERE id = $1", int(job_id), status[:60])
+
+    async def dev_job_stop(self, job_id: int, status: str, plan_lapsed: bool = False) -> None:
+        """Switch a job off without deleting it (allowance used up, or the Developer plan is no longer effective)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE dev_jobs SET enabled = FALSE, last_status = $2, paused_at = CASE WHEN $3 THEN NOW() ELSE paused_at END WHERE id = $1",
+                int(job_id), status[:60], bool(plan_lapsed))
+
+    async def dev_jobs_purge_paused(self, days: int = 30) -> int:
+        """Delete jobs that a lapsed plan paused more than `days` ago."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM dev_jobs WHERE paused_at IS NOT NULL AND paused_at < NOW() - ($1 * INTERVAL '1 day')", int(days))
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
+
     async def dev_connections_purge_lapsed(self, grace_days: int = 30) -> int:
         """Delete keys of people whose Developer plan ended more than `grace_days` ago (or who never had one)."""
         pool = await get_pool()
@@ -15477,6 +15599,7 @@ class Database:
                                  ("card_uploads", "DELETE FROM user_card_assets WHERE user_id = $1"),
                                  ("ai_keys", "DELETE FROM dev_connections WHERE user_id = $1"),
                                  ("export_receipts", "DELETE FROM dev_exports WHERE user_id = $1"),
+                                 ("scheduled_jobs", "DELETE FROM dev_jobs WHERE user_id = $1"),
                                  ("reminders", "DELETE FROM user_renewal_reminders WHERE user_id = $1"),
                                  ("read_marks", "DELETE FROM dash_dropbox_reads WHERE user_id = $1"),
                                  # Part D. A messaging ban and blocks placed AGAINST this person stay (deleting data must not undo them);

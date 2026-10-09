@@ -4,7 +4,7 @@
 // BACKEND_URL is a plain var in wrangler.toml (same as redirector/config.json backend_url).
 
 const GROUPS = {
-  frequent: ["cron_discord_announcements", "cron_discord_owner_broadcast", "cron_dash_dropbox_dm"],
+  frequent: ["cron_discord_announcements", "cron_discord_owner_broadcast", "cron_dash_dropbox_dm", "cron_dev_scheduled"],
   hourly: ["cron_ad_placement"],
   daily: ["cron_expire_monetization", "cron_renew_yandex_search", "cron_cleanup_pending_payments"],
 };

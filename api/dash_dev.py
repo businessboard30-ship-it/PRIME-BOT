@@ -9,7 +9,7 @@ Nothing here writes entitlements: only the payment webhook does. No route takes 
 import json
 import logging
 
-from modules import ai_usage, dev_chat, dev_export, dev_github, dev_keys
+from modules import ai_usage, dev_chat, dev_export, dev_github, dev_jobs, dev_keys
 from modules import entitlements as ent
 from modules import user_subs
 from api.dash_member import pay_view
@@ -22,6 +22,7 @@ FEATURES = (
     {"key": "export", "label": "Export to your DMs", "ready": True},
     {"key": "keys", "label": "Bring your own AI key (Claude, Groq, OpenAI)", "ready": True},
     {"key": "github", "label": "Connect GitHub (read-only)", "ready": True},
+    {"key": "jobs", "label": "Scheduled jobs (reminders, notes, AI prompts)", "ready": True},
 )
 
 
@@ -456,11 +457,87 @@ async def dev_export_delete(uid, body, db):
     return {"deleted": True}
 
 
+# ---------- Scheduled jobs (D). Every handler is gated by require_dev; the user id is the session's. ----------
+async def _job_audit(uid, action, job_id, detail=None):
+    from modules import admin_controls
+    await admin_controls.record_audit(int(uid), "dev_job_" + action, None, f"job={job_id} {detail or ''}".strip())
+
+
+async def dev_jobs_list(uid, q, db):
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    from modules import admin_controls
+    return {"jobs": [dev_jobs.public_view(r) for r in await db.dev_job_list(uid)], "max_jobs": dev_jobs.MAX_JOBS,
+            "kinds": dict(dev_jobs.KINDS), "days": list(dev_jobs.DAYS), "switched_off": "dev_jobs" in await admin_controls.current_switches(),
+            "weekly_bot_chats": WEEKLY_BOT_CHATS}
+
+
+async def dev_job_save(uid, body, db):
+    """POST {kind, name, schedule: {preset, minute?, hour?, day?}, text | prompt[, model][, id]}. With id it edits that job (kind can't change)."""
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    spec, err = dev_jobs.clean_job(body)
+    if err:
+        return {"_status": 422, "message": err}
+    from datetime import datetime, timezone
+    nxt = dev_jobs.next_run(spec["schedule"], datetime.now(timezone.utc))
+    payload = dev_jobs.payload_text(spec["payload"])
+    job_id = (body or {}).get("id")
+    if job_id is not None:
+        if isinstance(job_id, bool) or not isinstance(job_id, int):
+            return {"_status": 422, "message": "That job doesn't exist."}
+        mine = {r["id"]: r for r in await db.dev_job_list(uid)}
+        if job_id not in mine or mine[job_id]["kind"] != spec["kind"]:
+            return {"_status": 404, "message": "That job doesn't exist."}
+        if not await db.dev_job_update(uid, job_id, spec["name"], spec["schedule"], payload, nxt):
+            return {"_status": 404, "message": "That job doesn't exist."}
+        await _job_audit(uid, "edit", job_id, spec["kind"])
+        return {"id": job_id}
+    new_id = await db.dev_job_add(uid, spec["kind"], spec["name"], spec["schedule"], payload, nxt, dev_jobs.MAX_JOBS)
+    if new_id is None:
+        return {"_status": 422, "code": "job_limit", "message": f"You can have {dev_jobs.MAX_JOBS} scheduled jobs. Delete one first."}
+    await _job_audit(uid, "create", new_id, spec["kind"])
+    return {"id": int(new_id)}
+
+
+async def dev_job_toggle(uid, body, db):
+    """POST {id, enabled: bool}. Resume restarts the schedule from now and clears the failure streak."""
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    job_id, enabled = (body or {}).get("id"), (body or {}).get("enabled")
+    if isinstance(job_id, bool) or not isinstance(job_id, int) or not isinstance(enabled, bool):
+        return {"_status": 422, "message": "That isn't valid."}
+    mine = {r["id"]: r for r in await db.dev_job_list(uid)}
+    if job_id not in mine:
+        return {"_status": 404, "message": "That job doesn't exist."}
+    from datetime import datetime, timezone
+    nxt = dev_jobs.next_run(mine[job_id]["schedule"], datetime.now(timezone.utc))
+    if enabled and nxt is None:
+        return {"_status": 422, "message": "That job's schedule isn't valid. Delete it and make a new one."}
+    await db.dev_job_set_enabled(uid, job_id, enabled, nxt)
+    await _job_audit(uid, "resume" if enabled else "pause", job_id)
+    return {"enabled": enabled}
+
+
+async def dev_job_delete(uid, body, db):
+    gate = await require_dev(uid, db)
+    if gate:
+        return gate
+    job_id = (body or {}).get("id")
+    if isinstance(job_id, bool) or not isinstance(job_id, int) or not await db.dev_job_delete(uid, job_id):
+        return {"_status": 404, "message": "That job doesn't exist."}
+    await _job_audit(uid, "delete", job_id)
+    return {"deleted": True}
+
+
 ROUTES = {"dev_status": dev_status, "dev_overview": dev_overview, "dev_usage": dev_usage, "dev_keys": dev_keys_list,
-          "dev_export_list": dev_export_list, "dev_export_download": dev_export_download,
+          "dev_export_list": dev_export_list, "dev_jobs": dev_jobs_list, "dev_export_download": dev_export_download,
           "dev_github": dev_github_status, "dev_github_repos": dev_github_repos, "dev_github_browse": dev_github_browse,
           "dev_github_diff": dev_github_diff}
-WRITES = {"dev_chat": dev_chat_send, "dev_key_save": dev_key_save, "dev_key_remove": dev_key_remove,
+WRITES = {"dev_chat": dev_chat_send, "dev_job_save": dev_job_save, "dev_job_toggle": dev_job_toggle, "dev_job_delete": dev_job_delete, "dev_key_save": dev_key_save, "dev_key_remove": dev_key_remove,
           "dev_export_create": dev_export_create, "dev_export_delete": dev_export_delete,
           "dev_github_connect": dev_github_connect, "dev_github_finish": dev_github_finish,
           "dev_github_disconnect": dev_github_disconnect}

@@ -45,6 +45,8 @@ FEATURES: Dict[str, Tuple[str, Set[str]]] = {
     "clone_registration": ("Clone registration", {"registerclone"}),
     # Website-only (no slash command): stops Developer-mode exports to the storage channel.
     "dev_export": ("Developer export", set()),
+    # Website-only (no slash command): stops every Developer-mode scheduled job from running (creating/editing stays possible).
+    "dev_jobs": ("Developer scheduled jobs", set()),
 }
 
 # Switches that control website features only (no slash command to turn off). Every OTHER feature must name commands.
@@ -57,7 +59,7 @@ OPT_IN: Dict[str, str] = {
 }
 
 # Switch keys that guard website features only (no slash command to turn off).
-WEBSITE_ONLY = frozenset({"dev_export"})
+WEBSITE_ONLY = frozenset({"dev_export", "dev_jobs"})
 
 _ROOT_TO_FEATURE: Dict[str, str] = {root: key for key, (_, roots) in FEATURES.items() for root in roots}
 

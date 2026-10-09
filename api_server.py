@@ -148,6 +148,7 @@ ROUTES = {
     "/api/cron_discord_announcements": "api.cron_discord_announcements",
     "/api/cron_discord_owner_broadcast": "api.cron_discord_owner_broadcast",
     "/api/cron_dash_dropbox_dm": "api.cron_dash_dropbox_dm",
+    "/api/cron_dev_scheduled": "api.cron_dev_scheduled",
     "/api/cron_expire_monetization": "api.cron_expire_monetization",
     "/api/cron_renew_yandex_search": "api.cron_renew_yandex_search",
     "/api/cron_cleanup_pending_payments": "api.cron_cleanup_pending_payments",
