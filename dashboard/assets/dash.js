@@ -923,10 +923,6 @@
         h("div", { class: "card stat rv" }, h("b", { text: r.premium ? "Active" : "Free" }), h("span", { text: "Premium" })),
         h("div", { class: "card stat rv" }, h("b", { text: until || "–" }), h("span", { text: r.premium ? "Current period ends" : "No active plan" })),
         h("div", { class: "card stat rv" }, h("b", { text: r.card_pack || r.premium ? "Unlocked" : "Locked" }), h("span", { text: "Welcome card themes" }))));
-      if (r.clone) {
-        body.appendChild(h("div", { class: "notice rv" }, "This custom bot's Premium is managed by the bot's owner, so there is no checkout here. Ask them (or use the bot's own /premium command in Discord) to change plans."));
-        return;
-      }
       var grid = h("div", { class: "plans" });
       r.plans.forEach(function (p, i) {
         var locked = p.owned || p.included, btns = [];
@@ -948,7 +944,7 @@
           h("div", { class: "price" }, h("b", { text: money(p.price_usd) }), h("span", { text: " " + p.period })), btn));
       });
       body.appendChild(grid);
-      body.appendChild(h("div", { class: "notice rv" }, "Checkout opens in this tab on Paystack or Gumroad and is bound to this server. Premium turns on once the payment is confirmed; if it hasn't appeared after a few minutes, ",
+      body.appendChild(h("div", { class: "notice rv" }, (r.clone ? "This is Premium for this custom bot only. " : "") + "Checkout opens in this tab on Paystack or Gumroad and is bound to this server. Premium turns on once the payment is confirmed; if it hasn't appeared after a few minutes, ",
         h("a", { href: CFG.SUPPORT_URL, target: "_blank", rel: "noopener", text: "contact support" }), ". First-time buyers get 50% off Yearly: run /premium in Discord to claim it."));
     }).catch(function (e) { if (e.message !== "401") { body.textContent = ""; body.appendChild(h("p", { text: e.message })); } });
   }
