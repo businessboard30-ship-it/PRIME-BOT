@@ -855,3 +855,9 @@ def test_report_snapshots_are_purged_90_days_after_resolution_and_the_privacy_pa
     from api import legal_pages
     page = legal_pages.PRIVACY_HTML
     assert "30 days" in page and "90 days" in page and "not stored by us" in page and "up to 20" in page
+
+
+def test_every_messaging_route_is_documented_in_the_router_docstring():
+    doc = dash.__doc__ or Path(dash.__file__).read_text().split('"""', 2)[1]
+    for action in list(dash_msg.ROUTES) + list(dash_msg.WRITES):
+        assert f"{action}" in doc, action

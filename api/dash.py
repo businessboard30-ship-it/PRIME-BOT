@@ -37,6 +37,13 @@ Routes (all on /api/dash):
   GET  ?action=analytics&guild_id[&days=7|30|90] -> joins/leaves per day, active members, top XP members and inviters; read-only, no schema change (30 reads/min)
   GET  ?action=giveaways&guild_id=&status=&before= -> giveaways for this server (prize, status, entrant count, winners); read-only
   GET  ?action=welcome_preview&guild_id&theme&shape&use_template&bg&accent -> rendered welcome card (data URL)
+  GET  ?action=friends_list -> friends, incoming/outgoing requests, blocked, my servers, unread, settings (Part D; session user only)
+  GET  ?action=friends_search&guild_id&query -> people in ONE of my servers who use the web and allow requests (max 10)
+  GET  ?action=messages_thread&other_id -> last 50 messages with an accepted friend (+ can_send / paused)
+  POST ?action=friend_request {other_id} -> same reply whether or not it could be delivered (no web-account leak)
+  POST ?action=friend_respond {other_id, accept} | friend_remove | friend_block | friend_unblock {other_id}
+  POST ?action=message_send {other_id, body} -> friends only; text, Scam Shield, limits, shared-server check (409 paused)
+  POST ?action=message_read | message_thread_delete {other_id} | message_report {other_id, also_block?} | msg_prefs_set {allow_requests?, dm_notify?}
   GET  ?action=dropbox                  -> drop box messages + unread count (any signed-in admin)
   POST {action: dropbox_read, id?}      -> mark one (or all) read
   POST {action: dropbox_send, ...}      -> OWNER ONLY (config.DISCORD_OWNER_BROADCAST_IDS)
