@@ -182,9 +182,14 @@ deletion of your data, contact us using the details below.</p>
 
 <h2>Web dashboard</h2>
 <p>If you sign in to the web dashboard with Discord, we store a record that you
-signed in, your level-up card design and uploads, any AI provider keys you add
-(encrypted, never shown again), and receipts for exports you save (the files are
-encrypted), and, if you use member messaging, your friends list and messages (deleted after 30 days, or when you delete your data). AI chats on the dashboard are not stored. You can delete all of this
+signed in, with your Discord display name and avatar (used to show you on the global
+leaderboard unless you switch that off on the Leaderboard page; everyone else sees
+"Hidden player" and no user ID is shown), your level-up card design and uploads, any AI
+provider keys you add (encrypted, never shown again), your scheduled jobs, renewal
+reminders, and receipts for exports you save (the files are encrypted). If you connect
+GitHub (read-only) we keep an encrypted access token until you disconnect, which deletes
+it. If you use member messaging, we store your friends list and messages (deleted after
+30 days, or when you delete your data). AI chats on the dashboard are not stored. You can delete all of this
 yourself under Privacy &amp; data in the dashboard. Payment records, your plans,
 weekly chat counters and in-server records (XP, coins, moderation) are kept.</p>
 
