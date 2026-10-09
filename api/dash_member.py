@@ -234,8 +234,54 @@ async def member_card_save(uid, body, db):
     return {"design": design}
 
 
+DELETE_PHRASE = "DELETE MY DATA"
+
+
+async def member_usage(uid, q, db):
+    """Usage meters for the plans this person actually has. Counters are the server's; nothing here can spend them."""
+    from modules import ai_usage
+    rows = await db.entitlements_list(uid)
+    meters = []
+    for source, products, label in (("card_plan", ("card_plan",), "Card plan AI chats this week"),
+                                    ("dev", ent.DEV_PRODUCTS, "Developer AI chats this week")):
+        if ent.has_access(rows, products):
+            st = await ai_usage.status(db, uid, source)
+            meters.append({"id": source, "label": label, "used": st["used"], "limit": st["limit"], "resets_at": st["resets_at"]})
+    return {"meters": meters}
+
+
+async def member_stepup(uid, body, db):
+    """Handled in the router (it needs the session); present so the action name is registered and rate limited."""
+    return {"_status": 400, "message": "Not available."}
+
+
+async def member_data_delete(uid, body, db):
+    """POST {confirm: "DELETE MY DATA"}. The router has already required a fresh Discord sign-in. Deletes what the
+    dashboard stores about the SESSION user (never an id from the body). Payments, plans, usage counters and in-server
+    records are kept; the response says so. Stored export files are removed from the storage channel first; if any
+    can't be removed nothing is deleted, so the person can simply retry."""
+    if ((body or {}).get("confirm") or "") != DELETE_PHRASE:
+        return {"_status": 422, "message": f"Type {DELETE_PHRASE} to confirm."}
+    from api import dash, dash_dev
+    channel = dash_dev._storage_channel()
+    receipts = await db.dev_export_list(uid, 1000)
+    if receipts and not channel:
+        return {"_status": 502, "message": "Couldn't remove your saved exports right now. Try again later."}
+    for r in receipts:
+        try:
+            status = await dash._bot_request("DELETE", f"/channels/{channel}/messages/{r['message_id']}")
+        except Exception:
+            status = None
+        if status not in (200, 204, 404):
+            return {"_status": 502, "message": "Couldn't remove your saved exports right now. Nothing was deleted; try again in a moment."}
+    counts = await db.member_data_delete(uid)
+    logger.info("member data delete: user=%s removed=%s", uid, {k: v for k, v in counts.items() if v})
+    return {"deleted": True, "removed": counts, "kept": ["payments and plans", "weekly usage counters", "XP, coins and moderation records in servers"]}
+
+
 ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_plans": member_plans,
-          "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card}
+          "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card, "member_usage": member_usage}
 WRITES = {"member_pref_set": member_pref_set, "checkout_user": checkout_user,
           "member_card_preview": member_card_preview, "member_card_save": member_card_save,
-          "member_card_asset": member_card_asset, "member_card_asset_delete": member_card_asset_delete}
+          "member_card_asset": member_card_asset, "member_card_asset_delete": member_card_asset_delete,
+          "member_stepup": member_stepup, "member_data_delete": member_data_delete}

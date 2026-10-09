@@ -1155,7 +1155,7 @@
 
   /* ---------- member shell (same sidebar + cards layout as the server dashboard) ---------- */
   var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"],
-    ["card", "trophy", "Level-up card"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"]];
+    ["card", "trophy", "Level-up card"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"], ["privacy", "lock", "Privacy & data"]];
   function renderMemberShell(cur) {
     document.body.classList.remove("menu"); S.mod = null;
     app.textContent = ""; renderHeader();
@@ -1183,13 +1183,24 @@
     add(main, [pageHead("Overview", "Welcome, " + S.user.username), stats]);
     var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."],
       ["card", "trophy", "Level-up card", "Design the card shown when you level up."], ["prefs", "sliders", "Preferences", "Language, currency, AI character and pings."],
-      ["purchases", "scroll", "Purchases", "Every payment on your account."]];
+      ["purchases", "scroll", "Purchases", "Every payment on your account."], ["privacy", "lock", "Privacy & data", "Pricing, what we store, and deleting your data."]];
     go.forEach(function (g, i) {
       quick.appendChild(h("div", { class: "card q rv", style: "--i:" + i }, icon(g[1]), h("div", { class: "grow" }, h("a", { href: "#/me/" + g[0], text: g[2] }), h("small", { text: g[3] })),
         h("a", { class: "btn sm ghost", href: "#/me/" + g[0], text: "Open" })));
     });
     quick.appendChild(h("div", { class: "card q rv" }, icon("code"), h("div", { class: "grow" }, h("a", { href: "#/dev", text: "Developer mode" }), h("small", { text: "AI chat and tools for builders." })),
       h("a", { class: "btn sm ghost", href: "#/dev", text: "Open" })));
+    var meters = h("div", null);
+    main.appendChild(meters);
+    api("member_usage").then(function (j) {
+      (j.meters || []).forEach(function (m) {
+        var pct = m.limit ? Math.min(100, Math.round(100 * m.used / m.limit)) : 0;
+        meters.appendChild(h("div", { class: "card rv", style: "margin-bottom:12px" }, h("h3", { text: m.label }),
+          h("div", { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": m.limit, "aria-valuenow": m.used, "aria-label": m.label, style: "height:8px;border-radius:4px;background:var(--tint)" },
+            h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
+          h("p", { class: "muted", text: m.used + " of " + m.limit + " used \u00b7 resets " + new Date(m.resets_at).toLocaleString() })));
+      });
+    }).catch(function () { /* meters are optional; the rest of the page still works */ });
     main.appendChild(h("h2", { text: "Your account" })); main.appendChild(quick);
     Promise.all([api("member_servers"), api("member_status")]).then(function (res) {
       var list = res[0].servers || [], items = (res[1].entitlements || []).filter(function (e) { return e.state === "active" || e.state === "cancelled" || e.state === "past_due"; });
@@ -1268,8 +1279,48 @@
     renderCardEditor(cardSec);
   }
 
+  function mePrivacy(main) {
+    var plans = section("Pricing"), data = section("Your data"), danger = section("Delete my data");
+    var note = h("p", { class: "muted", role: "status", text: "" });
+    add(main, [pageHead("Privacy & data", "Privacy & data"), plans, data, danger]);
+    plans.appendChild(h("p", { class: "muted", text: "Prices are in USD. Plans renew automatically and you can cancel any time; access runs to the end of the period you paid for." }));
+    api("member_plans").then(function (j) {
+      (j.plans || []).forEach(function (p) {
+        plans.appendChild(h("p", null, h("b", { text: p.label }), " \u00b7 $" + p.price_usd + " per " + (p.period_days >= 360 ? "year" : "month")));
+      });
+      plans.appendChild(h("a", { class: "btn sm ghost", href: "#/me/plans", text: "Plans & billing" }));
+    }).catch(function (e) { fail(plans, e); });
+    [["What we store", "Your level-up card design and uploads, your saved AI provider keys (encrypted, never shown again), receipts for saved exports (the files themselves are encrypted), and a record that you signed in to this dashboard."],
+     ["What we keep either way", "Payment records and your plans (needed for billing and refunds), weekly chat counters (so limits can't be reset), and your XP, coins and moderation records inside servers."],
+     ["What we don't store", "Your AI chats. They live only in this page and disappear when you close it."]
+    ].forEach(function (r) { data.appendChild(h("p", null, h("b", { text: r[0] + ". " }), r[1])); });
+    danger.appendChild(h("p", { class: "muted", text: "This removes your card design and uploads, saved AI keys, export receipts and files, and signs you out everywhere. It can't be undone. Payments and in-server records are kept." }));
+    var box = h("input", { type: "text", autocomplete: "off", spellcheck: "false", "aria-label": "Type DELETE MY DATA to confirm", placeholder: "DELETE MY DATA", style: "max-width:260px" });
+    var go = h("button", { class: "btn sm", type: "button", text: "Delete my data" });
+    function stepUp() {
+      note.textContent = "Confirm it's you: opening Discord\u2026";
+      api("member_stepup", null, {}).then(function (r) { location.href = r.url; })
+        .catch(function (e) { note.textContent = (e && e.message) || "Couldn't start the sign-in."; });
+    }
+    go.addEventListener("click", function () {
+      if (box.value !== "DELETE MY DATA") { note.textContent = "Type DELETE MY DATA to confirm."; return; }
+      go.disabled = true; note.textContent = "Deleting\u2026";
+      api("member_data_delete", null, { confirm: box.value }).then(function () {
+        localStorage.removeItem(KEY); note.textContent = "Your data was deleted. Signing you out\u2026";
+        setTimeout(function () { location.href = location.pathname; }, 1500);
+      }).catch(function (e) {
+        go.disabled = false;
+        if (e && e.payload && e.payload.code === "stepup_required") {
+          note.textContent = ""; note.appendChild(document.createTextNode("Confirm it's you first. "));
+          note.appendChild(h("button", { class: "btn sm ghost", type: "button", text: "Sign in with Discord again", onclick: stepUp }));
+        } else { note.textContent = (e && e.message) || "That didn't work. Try again."; }
+      });
+    });
+    danger.appendChild(h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, box, go)); danger.appendChild(note);
+  }
+
   function renderMe(sec) {
-    var pages = { "": meOverview, plans: mePlans, servers: meServers, prefs: mePrefs, purchases: mePurchases, card: meCard };
+    var pages = { "": meOverview, plans: mePlans, servers: meServers, prefs: mePrefs, purchases: mePurchases, card: meCard, privacy: mePrivacy };
     sec = sec || "";
     if (!pages[sec]) { location.hash = "#/me"; return; }
     pages[sec](renderMemberShell(sec));
@@ -1495,7 +1546,8 @@
   /* ---------- boot ---------- */
   function boot() {
     var frag = new URLSearchParams(location.hash.replace(/^#/, "")), err = null;
-    if (frag.get("dev") === "stepup_ok") { history.replaceState(null, "", location.pathname + "#/dev"); }
+    if (frag.get("me") === "stepup_ok") { history.replaceState(null, "", location.pathname + "#/me/privacy"); }
+    else if (frag.get("dev") === "stepup_ok") { history.replaceState(null, "", location.pathname + "#/dev"); }
     else if (frag.get("owner") === "stepup_ok") { S.stepupDone = true; history.replaceState(null, "", location.pathname + "#/owner/security"); }
     else if (frag.get("session")) { localStorage.setItem(KEY, frag.get("session")); history.replaceState(null, "", location.pathname + "#/"); }
     else if (frag.get("error")) { err = frag.get("error"); history.replaceState(null, "", location.pathname); }

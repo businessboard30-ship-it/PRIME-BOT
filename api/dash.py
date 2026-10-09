@@ -61,6 +61,9 @@ Routes (all on /api/dash):
   POST ?action=member_card_save {design} -> saves for the SESSION user; 402 + plans_path without an effective card_plan
   POST ?action=member_card_asset {kind: background|logo, data: base64} -> card plan only; validated, re-encoded, AI-moderated (approved/pending/rejected)
   POST ?action=member_card_asset_delete {kind} -> removes the member's own upload
+  GET  ?action=member_usage -> weekly AI chat meters for the plans the member has (read-only)
+  POST ?action=member_stepup -> {url}: Discord re-sign-in that marks THIS session fresh (any member)
+  POST ?action=member_data_delete {confirm:"DELETE MY DATA"} -> step-up required; deletes the dashboard's own data for the session user
   POST ?action=checkout_user {product} -> any signed-in user: the gateway (Paystack or Gumroad) checkout URL for the SESSION user, no /pay hop (webhook grants, never this call)
   GET  ?action=dev_status -> ANY signed-in user (#/dev): {unlocked, expires_at, export_available, plans, features}; drives the locked screen only
   GET  ?action=dev_overview (and every later dev_* route) -> 402 {code: subscription_required} without an active Developer entitlement (api/dash_dev.py, require_dev)
@@ -338,6 +341,9 @@ def _merged(attr: str) -> dict:
             raise RuntimeError(f"duplicate owner {attr} action(s): {sorted(dup)}")
         out.update(part)
     return out
+
+
+MEMBER_FRESH_WRITES = frozenset({"member_data_delete"})
 
 
 def _member_routes() -> dict:
@@ -916,8 +922,9 @@ async def _oauth_callback(query: dict):
     state, code = query.get("state", [None])[0], query.get("code", [None])[0]
     popped = await db.pop_login_oauth_state(state) if state else None
     rt = (popped or {}).get("return_to") or ""
-    stepup_dev = rt.startswith("dash_stepup_dev:")
-    stepup_sid = (rt[len("dash_stepup_dev:"):] if stepup_dev else rt[len("dash_stepup:"):]) if (stepup_dev or rt.startswith("dash_stepup:")) else None
+    stepup_dev = rt.startswith("dash_stepup_dev:") or rt.startswith("dash_stepup_me:")
+    stepup_me = rt.startswith("dash_stepup_me:")
+    stepup_sid = (rt[rt.index(":") + 1:] if stepup_dev else rt[len("dash_stepup:"):]) if (stepup_dev or rt.startswith("dash_stepup:")) else None
     if not popped or not (rt == "dash" or stepup_sid) or not code:
         _back("error=" + urlencode({"": "That sign-in link expired. Try again."})[1:])
     try:
@@ -948,7 +955,7 @@ async def _oauth_callback(query: dict):
             _back("error=" + urlencode({"": "That confirmation didn't match your session."})[1:])
         await db.update_login_session_payload(
             stepup_sid, {"fresh_until": int(time.time()) + config.DASH_STEPUP_MINUTES * 60})
-        _back("dev=stepup_ok" if stepup_dev else "owner=stepup_ok")
+        _back("me=stepup_ok" if stepup_me else ("dev=stepup_ok" if stepup_dev else "owner=stepup_ok"))
     avatar = (f"https://cdn.discordapp.com/avatars/{uid}/{me['avatar']}.png?size=64" if me.get("avatar")
               else f"https://cdn.discordapp.com/embed/avatars/{(int(uid) >> 22) % 6}.png")
     sid = await db.create_login_session({
@@ -1117,12 +1124,20 @@ async def _route(method: str, query: dict, headers, body: dict):
         _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
                                                       "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60),
                                                       "dev_key_save": (6, 300), "dev_key_remove": (10, 300),
-                                                      "dev_export_create": (6, 300), "dev_export_delete": (10, 300)}.get(action, (30, 60)))
+                                                      "dev_export_create": (6, 300), "dev_export_delete": (10, 300),
+                                                      "member_stepup": (5, 300), "member_data_delete": (3, 3600)}.get(action, (30, 60)))
         from api import dash_dev
         if action in dash_dev.FRESH_WRITES:          # gate first (402), then step-up (403); handlers never see the session
             gate = await dash_dev.require_dev(uid, db)
             if gate:
                 raise _Reply(gate["_status"], {"ok": False, "message": gate["message"], "code": gate["code"]})
+            _require_fresh(sess)
+        if action == "member_stepup":                # any signed-in member; same OAuth round trip as the Developer one
+            _check_oauth_configured()
+            state = _secrets.token_urlsafe(24)
+            await db.create_login_oauth_state(state, return_to="dash_stepup_me:" + sess["_sid"])
+            raise _Reply(200, {"ok": True, "url": _authorize_url(state, "consent"), "minutes": config.DASH_STEPUP_MINUTES})
+        if action in MEMBER_FRESH_WRITES:            # step-up first; the confirm phrase is checked by the handler
             _require_fresh(sess)
         out = await _member_writes()[action](uid, body, db)
         if out.get("_status"):

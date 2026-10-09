@@ -165,6 +165,14 @@ while you continue using the bot in a server. You can disconnect a linked
 account at any time with its corresponding command. To request full
 deletion of your data, contact us using the details below.</p>
 
+<h2>Web dashboard</h2>
+<p>If you sign in to the web dashboard with Discord, we store a record that you
+signed in, your level-up card design and uploads, any AI provider keys you add
+(encrypted, never shown again), and receipts for exports you save (the files are
+encrypted). AI chats on the dashboard are not stored. You can delete all of this
+yourself under Privacy &amp; data in the dashboard. Payment records, your plans,
+weekly chat counters and in-server records (XP, coins, moderation) are kept.</p>
+
 <h2>Children's privacy</h2>
 <p>The bot is not directed at children under 13, consistent with Discord's
 own minimum age requirement.</p>
@@ -178,6 +186,8 @@ change means you accept the updated policy.</p>
 {CONTACT_EMAIL}, or use the bot's /feedback command.</p>
 """
 
+
+from modules.user_subs import PLANS as _USER_PLANS
 
 PRICING_HTML = f"""
 <h1>Pricing</h1>
@@ -195,6 +205,13 @@ higher AI chat limit and future features).</li>
 <li>Global checkout (Gumroad) renews automatically and can be cancelled any
 time. Ghana checkout (Paystack) covers 30 days per payment and does not
 auto-renew.</li>
+</ul>
+
+<h2>Personal plans (web dashboard)</h2>
+<ul>
+<li>Card plan: ${_USER_PLANS['card_plan']['price_usd']:g}/month, custom level-up card.</li>
+<li>Developer mode: ${_USER_PLANS['dev_monthly']['price_usd']:g}/month or ${_USER_PLANS['dev_yearly']['price_usd']:g}/year.</li>
+<li>Renew automatically; cancel any time and keep access to the end of the period.</li>
 </ul>
 
 <h2>One-time unlocks</h2>
