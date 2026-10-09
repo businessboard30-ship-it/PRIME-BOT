@@ -185,6 +185,9 @@ LEGACY_REMINDER_EMBED_TITLES = {
 }
 
 
+SLOW_CONFIG_FETCH_SECONDS = 1.0
+
+
 class AutomodCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -665,18 +668,15 @@ class AutomodCog(GuildOnlyCog):
         if isinstance(member, discord.Member) and member.guild_permissions.manage_messages:
             return  # never automod moderators/admins
 
+        # Per-message INFO lines flooded the production logs (two lines for every message in every server), so the
+        # normal path is silent. Only a slow config fetch is worth a line.
         received_at = time.monotonic()
-        logger.info(
-            "[automod] on_message received msg %s in guild %s at %s",
-            message.id, message.guild.id, datetime.now(timezone.utc).isoformat(),
-        )
-
         clone_id = getattr(self.bot, "clone_id", None)
         config = await db.get_automod_config(message.guild.id, clone_id=clone_id)
-        logger.info(
-            "[automod] config fetched for msg %s after %.2fs",
-            message.id, time.monotonic() - received_at,
-        )
+        fetch_s = time.monotonic() - received_at
+        if fetch_s >= SLOW_CONFIG_FETCH_SECONDS:
+            logger.warning("[automod] slow config fetch for msg %s in guild %s: %.2fs",
+                           message.id, message.guild.id, fetch_s)
 
         if config.get("anti_invite_enabled") and INVITE_RE.search(message.content or ""):
             await self._enforce(message, config, "Posted a Discord invite link")
