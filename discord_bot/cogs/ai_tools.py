@@ -142,6 +142,16 @@ def dashboard_button(bot, path: str = "/me/rank", label: str = "Open dashboard")
     )
 
 
+def strip_dashboard_marker(text):
+    """Remove DASHBOARD_BUTTON_MARKER (left by modules.ai_features when the AI mentioned the dashboard or wrote its link).
+    Returns (text, had_marker). The text never contains a dashboard URL: the real, masked button is attached instead."""
+    from modules.ai_features import DASHBOARD_BUTTON_MARKER
+    if not text or DASHBOARD_BUTTON_MARKER not in text:
+        return text, False
+    cleaned = str(text).replace(DASHBOARD_BUTTON_MARKER, "").rstrip()
+    return (cleaned or "Here you go, tap the button below."), True
+
+
 async def send_with_fallbacks(send, view, dash_btn, file=None):
     """Send an AI reply so an optional extra can never make it vanish. `send(**kw)` is the real send. Tries everything
     first, then without the dashboard button, then also without the voice file; raises the last error only when even the
@@ -866,7 +876,8 @@ class AIToolsCog(commands.Cog):
         is_voice = getattr(text, "voice", False)
         text = extract_support_marker(text, view)
         dash_btn = None
-        dash_path = self._dashboard_path(message)
+        text, wrote_dash = strip_dashboard_marker(text)
+        dash_path = self._dashboard_path(message) or ("/me" if wrote_dash else None)
         if dash_path:
             dash_btn = dashboard_button(self.bot, dash_path)
             if dash_btn is not None:
@@ -1116,7 +1127,8 @@ class AIToolsCog(commands.Cog):
                 view = view or discord.ui.View()
                 text = extract_support_marker(text, view)
             dash_btn = None
-            dash_path = self._dashboard_path(content)
+            text, wrote_dash = strip_dashboard_marker(text)
+            dash_path = self._dashboard_path(content) or ("/me" if wrote_dash else None)
             if dash_path:
                 dash_btn = dashboard_button(self.bot, dash_path)
                 if dash_btn is not None:

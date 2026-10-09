@@ -168,3 +168,72 @@ def test_plain_reply_with_no_view_sends_once_without_a_view_argument():
         seen.append(kw)
         return "ok"
     assert run(ai_tools.send_with_fallbacks(send, None, None, None)) == "ok" and seen == [{}]
+
+
+# ---- no raw dashboard link ever reaches the chat: it becomes the masked button ----
+@pytest.fixture()
+def dash_url(monkeypatch):
+    monkeypatch.setattr(config, "DASH_PAGES_URL", "https://dash.example")
+
+
+@pytest.mark.parametrize("text", [
+    "Open https://dash.example/#/me/rank to see more",
+    "Open https://prime-bot-dash.pages.dev/#/me/rank to see more",
+    "See [your dashboard](https://dash.example/#/me) for more",
+    "See [your dashboard](<https://dash.example/#/me>) for more",
+    "Go to dash.example/#/me now",
+    "(it is at https://dash.example) ok",
+    "HTTPS://DASH.EXAMPLE/#/ME",
+])
+def test_raw_dashboard_links_are_replaced_and_the_button_marker_added(dash_url, text):
+    out = af.scrub_raw_dashboard_url(text)
+    assert "dash.example" not in out.lower() and "pages.dev" not in out.lower() and "](" not in out
+    assert af.DASHBOARD_BUTTON_MARKER in out and out.count(af.DASHBOARD_BUTTON_MARKER) == 1
+    cleaned, had = ai_tools.strip_dashboard_marker(out)
+    assert had and af.DASHBOARD_BUTTON_MARKER not in cleaned and "dash.example" not in cleaned
+
+
+def test_the_dashboard_token_becomes_wording_plus_marker(dash_url):
+    out = af.render_dashboard_link("Your numbers are above. Tap [[DASHBOARD]] for more.")
+    assert "[[" not in out and af.DASHBOARD_BUTTON_MARKER in out and "the button below" in out
+    assert af.render_dashboard_link("[[ dashboard ]]").count(af.DASHBOARD_BUTTON_MARKER) == 1
+
+
+def test_other_links_and_plain_text_are_untouched(dash_url):
+    for t in ("Check https://example.com/docs please", "I like dashboards", "", None):
+        assert af.scrub_raw_dashboard_url(t) == t and af.render_dashboard_link(t) == t
+
+
+def test_scrubbing_twice_adds_the_marker_once(dash_url):
+    once = af.scrub_raw_dashboard_url("Go https://dash.example/#/me")
+    assert af.scrub_raw_dashboard_url(once) == once
+
+
+def test_without_a_valid_dashboard_url_the_link_is_still_removed_but_no_button_is_promised(monkeypatch):
+    monkeypatch.setattr(config, "DASH_PAGES_URL", "")
+    out = af.scrub_raw_dashboard_url("Open https://prime-bot-dash.pages.dev/#/me")
+    assert "pages.dev" not in out and af.DASHBOARD_BUTTON_MARKER not in out
+
+
+def test_marker_only_reply_still_has_text_and_marker_is_not_left_behind():
+    text, had = ai_tools.strip_dashboard_marker(af.DASHBOARD_BUTTON_MARKER)
+    assert had and text == "Here you go, tap the button below."
+    assert ai_tools.strip_dashboard_marker("hello") == ("hello", False)
+    assert ai_tools.strip_dashboard_marker(None) == (None, False)
+
+
+def test_a_reply_that_mentions_the_dashboard_gets_the_button_on_the_account_page(cog, dash_url):
+    out = af.scrub_raw_dashboard_url("Look here: https://dash.example/#/me/servers")
+    text, had = ai_tools.strip_dashboard_marker(out)
+    path = cog._dashboard_path("how are my servers doing") or ("/me" if had else None)
+    assert had and path == "/me" and ai_tools.dashboard_button(cog.bot, path).url == "https://dash.example/#/me"
+
+
+def test_the_model_is_told_to_use_the_token_and_never_write_the_url():
+    assert af.DASHBOARD_TOKEN in af.BOT_RULES and "Never write the dashboard's URL" in af.BOT_RULES
+
+
+def test_both_ai_send_paths_strip_the_marker_before_sending():
+    import inspect
+    src = inspect.getsource(ai_tools.AIToolsCog)
+    assert src.count("strip_dashboard_marker(") >= 2
