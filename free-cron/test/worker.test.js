@@ -2,13 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import worker, { runDue } from "../src/index.js";
+import worker, { runDue, recheckLicenses } from "../src/index.js";
 import * as L from "../src/logic.js";
 
 // A tiny D1 stand-in over node:sqlite (same SQL dialect, RETURNING included).
 function makeDb() {
   const sql = new DatabaseSync(":memory:");
-  sql.exec(readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"));
+  for (const f of ["0001_init.sql", "0002_licenses.sql"]) sql.exec(readFileSync(new URL("../migrations/" + f, import.meta.url), "utf8"));
   const stmt = (q, args = []) => ({
     bind: (...a) => stmt(q, a),
     run: async () => { const r = sql.prepare(q).run(...args); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; },
@@ -20,8 +20,12 @@ function makeDb() {
 const SECRET = "test-session-secret-123456";
 const env = (extra = {}) => ({ DB: makeDb(), SESSION_SECRET: SECRET, TURNSTILE_SECRET: "ts", TURNSTILE_SITE_KEY: "site", ADMIN_KEY: "adminkey", GITHUB_CLIENT_ID: "cid", GITHUB_CLIENT_SECRET: "csec", ...extra });
 let nextOk = true;
+const gumCalls = [];
+let gumReply = () => new Response(JSON.stringify({ success: false }), { status: 404 });
+const gum = (purchase = {}) => () => new Response(JSON.stringify({ success: true, purchase: { product_id: "prod1", ...purchase } }));
 globalThis.fetch = async (u, init) => {
   const url = String(u);
+  if (url.includes("gumroad.com/v2/licenses/verify")) { gumCalls.push(String(init.body)); return gumReply(String(init.body)); }
   if (url.includes("siteverify")) return new Response(JSON.stringify({ success: nextOk }));
   return new Response("x", { status: 200 });
 };
@@ -200,4 +204,82 @@ test("scheduler: batch cap, kill switch, and corrupt/unsafe rows are never fetch
   ranUrls.length = 0;
   const out = await runDue(e2, NOW, okFetch());
   assert.equal(out.failed, 1); assert.equal(ranUrls.length, 0);
+});
+
+const G = { GUMROAD_PRODUCT_ID: "prod1", GUMROAD_BUY_URL: "https://x.gumroad.com/l/prem" };
+const KEY = "ABCD1234-EFGH5678-IJKL9012-MNOP3456";
+const redeem = (e, t, key = KEY) => call(e, "/api/redeem", { method: "POST", body: { key, token: "cf" }, token: t });
+
+test("redeem: a valid Gumroad membership key turns Premium on, once, for one account", async () => {
+  const e = env(G), t = await addAccount(e), t2 = await addAccount(e, 2, "bob");
+  gumReply = gum();
+  const r = await redeem(e, t);
+  assert.equal(r.status, 200);
+  assert.ok(gumCalls.at(-1).includes("increment_uses_count=false") && gumCalls.at(-1).includes("product_id=prod1"));
+  const me = await (await call(e, "/api/me", { token: t })).json();
+  assert.equal(me.premium, true); assert.equal(me.buy_url, "https://x.gumroad.com/l/prem");
+  assert.equal((await redeem(e, t2)).status, 409);                       // already bound to alice
+  assert.equal((await redeem(e, t)).status, 200);                        // alice can paste it again harmlessly
+  assert.equal((await call(e, "/api/me", { token: t2 })).status, 200);
+  assert.equal((await (await call(e, "/api/me", { token: t2 })).json()).premium, false);
+});
+
+test("redeem: bad, refunded, cancelled or wrong-product keys are refused; the captcha and setup are required", async () => {
+  const e = env(G), t = await addAccount(e);
+  gumReply = () => new Response(JSON.stringify({ success: false }), { status: 404 });
+  assert.equal((await redeem(e, t)).status, 422);
+  for (const p of [{ refunded: true }, { chargebacked: true }, { disputed: true }, { subscription_cancelled_at: "2026-10-01" }, { subscription_failed_at: "2026-10-01" }, { product_id: "other" }]) {
+    gumReply = gum(p);
+    assert.equal((await redeem(e, t)).status, 422, JSON.stringify(p));
+  }
+  assert.equal((await redeem(e, t, "short")).status, 422);
+  assert.equal((await redeem(e, t, "has spaces and <script>")).status, 422);
+  assert.equal((await call(e, "/api/me", { token: t }).then((r) => r.json())).premium, false);
+  gumReply = gum(); nextOk = false;
+  assert.equal((await redeem(e, t)).status, 400); nextOk = true;
+  { const bare = env(), bt = await addAccount(bare); assert.equal((await redeem(bare, bt)).status, 503); }                    // GUMROAD_PRODUCT_ID not set
+  assert.equal((await call(e, "/api/redeem", { method: "POST", body: { key: KEY, token: "cf" } })).status, 401);   // no session
+  gumReply = () => new Response("oops", { status: 503 });
+  assert.equal((await redeem(e, t)).status, 502);                        // Gumroad down: nothing granted
+  assert.equal((await call(e, "/api/me", { token: t }).then((r) => r.json())).premium, false);
+});
+
+test("one-time purchase: fixed days, granted once", async () => {
+  const e = env({ ...G, GUMROAD_RECURRING: "0", PREMIUM_DAYS: "30" }), t = await addAccount(e);
+  gumReply = gum();
+  assert.equal((await redeem(e, t)).status, 200);
+  const first = e.DB.sql.prepare("SELECT premium_until p FROM accounts WHERE id=1").get().p;
+  assert.ok(Math.abs(first - (Date.now() + 30 * 86400000)) < 60000);
+  assert.deepEqual(await (await redeem(e, t)).json(), { already: true });
+  assert.equal(e.DB.sql.prepare("SELECT premium_until p FROM accounts WHERE id=1").get().p, first);
+  assert.equal((await recheckLicenses(e, Date.now() + 3 * 86400000)).checked, 0);   // one-time keys are never re-checked
+});
+
+test("daily re-check renews a paying member and lets a cancelled one lapse", async () => {
+  const e = env(G), t = await addAccount(e), t2 = await addAccount(e, 2, "bob");
+  gumReply = gum(); await redeem(e, t);
+  gumReply = gum(); await redeem(e, t2, "ZZZZ1111-YYYY2222-XXXX3333-WWWW4444");
+  const now = Date.now();
+  assert.equal((await recheckLicenses(e, now + 3600000)).checked, 0);               // not due yet
+  const day = now + 25 * 3600000;
+  gumReply = (b) => b.includes("ABCD1234") ? gum()() : gum({ subscription_cancelled_at: "2026-10-10" })();
+  const out = await recheckLicenses(e, day);
+  assert.deepEqual(out, { checked: 2, renewed: 1, ended: 1, retry: 0 });
+  const alice = e.DB.sql.prepare("SELECT premium_until p FROM accounts WHERE id=1").get().p;
+  const bob = e.DB.sql.prepare("SELECT premium_until p FROM accounts WHERE id=2").get().p;
+  assert.ok(alice > day + 2 * 86400000);
+  assert.ok(bob < now + 3 * 86400000 + 60000 && alice > bob);                         // bob is no longer extended, so he lapses on his own within the grace window
+  assert.equal(e.DB.sql.prepare("SELECT active a FROM licenses WHERE account_id=2").get().a, 0);
+  gumReply = () => new Response("down", { status: 500 });                           // Gumroad outage must not end anyone
+  const later = day + 25 * 3600000;
+  const o2 = await recheckLicenses(e, later);
+  assert.equal(o2.retry, 1); assert.equal(o2.ended, 0);
+  assert.equal(e.DB.sql.prepare("SELECT active a FROM licenses WHERE account_id=1").get().a, 1);
+});
+
+test("deleting the account removes its license rows", async () => {
+  const e = env(G), t = await addAccount(e);
+  gumReply = gum(); await redeem(e, t);
+  assert.equal((await call(e, "/api/me", { method: "DELETE", token: t })).status, 200);
+  assert.equal(e.DB.sql.prepare("SELECT COUNT(*) c FROM licenses").get().c, 0);
 });

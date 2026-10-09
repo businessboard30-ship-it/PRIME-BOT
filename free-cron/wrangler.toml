@@ -9,9 +9,15 @@ preview_urls = false
 [vars]
 # Public values only. Secrets (GITHUB_CLIENT_SECRET, TURNSTILE_SECRET, SESSION_SECRET, ADMIN_KEY) are synced by the deploy workflow.
 GITHUB_CLIENT_ID = ""
-TURNSTILE_SITE_KEY = ""
+TURNSTILE_SITE_KEY = "0x4AAAAAAFQlkDyvM2mVVPVl"
 # Extra hostnames crons may never call (comma separated). This service's own host is always blocked.
 SELF_HOSTS = ""
+# Gumroad Premium. PRODUCT_ID: Gumroad product page > the id shown in the product's "Content" / license section (or the API). BUY_URL: your Gumroad product link.
+GUMROAD_PRODUCT_ID = ""
+GUMROAD_BUY_URL = ""
+# "1" = membership (re-checked daily, ends when it stops being paid). "0" = one-time purchase: PREMIUM_DAYS of Premium per key.
+GUMROAD_RECURRING = "1"
+PREMIUM_DAYS = "30"
 
 [[d1_databases]]
 binding = "DB"
