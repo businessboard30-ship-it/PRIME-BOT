@@ -130,7 +130,7 @@ TOKEN_URL = "https://discord.com/api/oauth2/token"
 MAX_BODY = 64 * 1024
 MAX_UPLOAD_BODY = 3 * 1024 * 1024      # only member_card_asset, and only with an Authorization header
 CLONE_ID = None            # main bot. Per-request clone context lives in _BOT below.
-MAX_CLONE_SCAN = 60
+MAX_CLONE_SCAN = 200       # clones scanned for OTHER people; the signed-in user's own clones are always scanned first and never capped
 
 # (clone_id, bot_token) for the current request; (None, None) means the main bot.
 _BOT = contextvars.ContextVar("dash_bot", default=(None, None))
@@ -1099,14 +1099,23 @@ async def _clone_guild_ids(row) -> set:
     _BOT.set((cid, token))
     try:
         return await _bot_guild_ids()
-    except Exception:
+    except Exception as e:
+        # Never hide a broken clone silently: it would just vanish from the server list.
+        logger.warning("dashboard: couldn't list servers for clone #%s (%s)", cid, type(e).__name__)
         return set()
 
 
-async def _clone_presence(user_guild_ids: set) -> dict:
+def _scan_order(listed: list, uid) -> list:
+    """The signed-in user's own clones first (all of them), then the rest up to MAX_CLONE_SCAN."""
+    mine = [c for c in listed if uid is not None and str(c.get("owner_id")) == str(uid)]
+    rest = [c for c in listed if not (uid is not None and str(c.get("owner_id")) == str(uid))]
+    return mine + rest[:MAX_CLONE_SCAN]
+
+
+async def _clone_presence(user_guild_ids: set, uid=None) -> dict:
     """{guild_id: [{clone_id, name}]} for active clones present in the user's servers."""
     try:
-        listed = (await db.list_active_discord_clones())[:MAX_CLONE_SCAN]
+        listed = _scan_order(await db.list_active_discord_clones(), uid)
     except Exception:
         logger.exception("dashboard: clone list failed")
         return {}
@@ -1161,7 +1170,7 @@ async def _route(method: str, query: dict, headers, body: dict):
             present = await _bot_guild_ids()
         except DiscordError:
             _fail(502, "Couldn't reach Discord. Try again in a moment.")
-        clones = await _clone_presence({g["id"] for g in sess.get("guilds", [])})
+        clones = await _clone_presence({g["id"] for g in sess.get("guilds", [])}, sess["user"]["id"])
         servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present, "clones": clones.get(g["id"], [])}
                    for g in sess.get("guilds", [])]
         servers.sort(key=lambda g: (not (g["bot_present"] or g["clones"]), g["name"].lower()))

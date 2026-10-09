@@ -717,7 +717,7 @@ def test_me_reports_unread_member_messages(msg, monkeypatch):
     async def present():
         return set()
 
-    async def clones(ids):
+    async def clones(ids, uid=None):
         return {}
     monkeypatch.setattr(dash, "_bot_guild_ids", present)
     monkeypatch.setattr(dash, "_clone_presence", clones)

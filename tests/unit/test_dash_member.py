@@ -119,7 +119,7 @@ def test_me_reports_member_true(mem, monkeypatch):
         return set()
     monkeypatch.setattr(dash, "_bot_guild_ids", present)
 
-    async def clones(ids):
+    async def clones(ids, uid=None):
         return {}
     monkeypatch.setattr(dash, "_clone_presence", clones)
 
