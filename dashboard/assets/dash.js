@@ -1195,7 +1195,7 @@
   }
 
   /* ---------- member shell (same sidebar + cards layout as the server dashboard) ---------- */
-  var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"], ["rank", "trophy", "My rank"], ["leaderboard", "trophy", "Leaderboard"],
+  var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"], ["rank", "trophy", "My rank"], ["clan", "flag", "My clan"], ["leaderboard", "trophy", "Leaderboard"],
     ["card", "trophy", "Level-up card"], ["messages", "mail", "Messages"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"], ["privacy", "lock", "Privacy & data"]];
   function renderMemberShell(cur) {
     document.body.classList.remove("menu"); S.mod = null;
@@ -1223,7 +1223,7 @@
     var stats = h("div", { class: "stats" }), quick = h("div", { class: "quick" });
     function stat(v, l) { return h("div", { class: "card stat rv" }, h("b", { text: String(v) }), h("span", { text: l })); }
     add(main, [pageHead("Overview", "Welcome, " + S.user.username), stats]);
-    var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."], ["rank", "trophy", "My rank", "Your global rank and best server rank."], ["leaderboard", "trophy", "Leaderboard", "See the top players across every server."],
+    var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."], ["rank", "trophy", "My rank", "Your global rank and best server rank."], ["clan", "flag", "My clan", "Your clan and chief seat in each server."], ["leaderboard", "trophy", "Leaderboard", "See the top players across every server."],
       ["card", "trophy", "Level-up card", "Design the card shown when you level up."], ["prefs", "sliders", "Preferences", "Language, currency, AI character and pings."],
       ["messages", "mail", "Messages", "Message friends from your servers."], ["purchases", "scroll", "Purchases", "Every payment on your account."], ["privacy", "lock", "Privacy & data", "Pricing, what we store, and deleting your data."]];
     go.forEach(function (g, i) {
@@ -1340,6 +1340,31 @@
         h("p", { class: "muted", text: "Best: #" + j.best.rank + " of " + j.best.players + " in " + j.best.name }),
         h("p", { class: "muted", text: "Lowest: #" + j.worst.rank + " of " + j.worst.players + " in " + j.worst.name }),
         h("a", { class: "btn sm ghost", href: "#/me/servers", text: "All my servers" })));
+    }).catch(function (e) { box.textContent = ""; fail(box, e); });
+  }
+
+  function meClan(main) {
+    var box = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
+    add(main, [pageHead("My clan", "Your clan in each server"), box]);
+    api("member_clans").then(function (j) {
+      box.textContent = "";
+      var list = j.servers || [];
+      if (!list.length) { box.appendChild(h("div", { class: "card empty" }, h("p", { class: "muted", text: "You have no XP yet. Chat in a server with the bot and your clan will appear here." }))); return; }
+      box.appendChild(h("p", { class: "muted", text: "Everyone is locked into one clan in each server, and it never changes. A chief seat goes to the top 5 players by XP who are at least level 3. Each seat keeps its own clan name, so a seat belongs to the seat, not to the person. This page is read-only." }));
+      list.forEach(function (s) {
+        var card = h("div", { class: "card rv" }, h("h3", { text: s.name }),
+          h("p", { class: "muted", text: "Level " + s.level + " \u00b7 rank #" + s.rank + " of " + s.players }));
+        card.appendChild(h("p", { text: s.clan ? "Your clan: " + s.clan.name + " (" + s.clan.members.toLocaleString() + " members)" : "You are not locked into a clan here yet. It happens automatically as you chat." }));
+        if (s.chief) card.appendChild(h("p", { text: "You hold chief seat #" + s.chief.seat + " (" + s.chief.clan + ")." }));
+        else card.appendChild(h("p", { class: "muted", text: "No chief seat yet. You need rank #" + s.needs.rank + " or better" + (s.needs.rank_ok ? " (you have it)" : "") + " and level " + s.needs.level + "+" + (s.needs.level_ok ? " (you have it)" : "") + "." }));
+        if (s.seats.length) {
+          card.appendChild(h("h4", { text: "Chief seats" }));
+          s.seats.forEach(function (x) {
+            card.appendChild(h("p", { class: "muted", text: "#" + x.seat + " " + x.clan + " \u00b7 " + (x.filled ? (x.you ? "You" : x.holder) : "Empty") }));
+          });
+        }
+        box.appendChild(card);
+      });
     }).catch(function (e) { box.textContent = ""; fail(box, e); });
   }
 
@@ -1554,7 +1579,7 @@
   }
 
   function renderMe(sec) {
-    var pages = { "": meOverview, plans: mePlans, servers: meServers, rank: meRank, leaderboard: meBoard, prefs: mePrefs, purchases: mePurchases, card: meCard, messages: meMessages, privacy: mePrivacy };
+    var pages = { "": meOverview, plans: mePlans, servers: meServers, rank: meRank, clan: meClan, leaderboard: meBoard, prefs: mePrefs, purchases: mePurchases, card: meCard, messages: meMessages, privacy: mePrivacy };
     sec = sec || "";
     if (!pages[sec]) { location.hash = "#/me"; return; }
     pages[sec](renderMemberShell(sec));
