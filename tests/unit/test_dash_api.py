@@ -185,12 +185,7 @@ def test_clone_still_requires_manage_server(env, monkeypatch):
     assert call("GET", {"action": "guild", "guild_id": str(GUILD), "clone_id": "7"})[0] == 403
 
 
-def test_clone_billing_is_disabled(env, monkeypatch):
-    _clone_env(env, monkeypatch)
-    st, p, _ = call("GET", {"action": "billing", "guild_id": str(GUILD), "clone_id": "7"})
-    assert st == 200 and p["plans"] == [] and p["clone"] is True
-    st, p, _ = call("POST", body={"action": "checkout", "guild_id": str(GUILD), "clone_id": 7, "plan": "premium"})
-    assert st == 409
+# Clone billing is covered by tests/unit/test_dash_clone_checkout.py (clones sell Premium through the dashboard now).
 
 
 def test_me_lists_clones_present_in_server(env, monkeypatch):

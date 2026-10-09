@@ -525,35 +525,49 @@ def _price_usd(plan_id: str):
 
 
 async def _pay_options() -> list:
-    """Payment buttons for the bot's payment mode (split: Paystack + Gumroad, auto: Paystack, gumroad: Gumroad)."""
+    """Payment buttons for THIS bot's payment mode (split: Paystack + Gumroad, auto: Paystack, gumroad: Gumroad).
+    A clone follows the main bot's mode unless its own saved choice says otherwise (db.get_payment_mode)."""
     from modules import user_subs
     try:
-        mode = await db.get_payment_mode(None)
+        mode = await db.get_payment_mode(_cid())
     except Exception:
         logger.warning("payment mode lookup failed, defaulting to split", exc_info=True)
         mode = "split"
     return user_subs.pay_options(mode)
 
 
+def _is_lifetime(expires) -> bool:
+    """Same rule as the Discord /premium picker: far enough in the future means Lifetime."""
+    import datetime as _dt
+    try:
+        return bool(expires and expires > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=config.PREMIUM_LIFETIME_THRESHOLD_DAYS))
+    except Exception:
+        return False
+
+
 async def _billing(gid: int) -> dict:
-    if _cid() is not None:
-        active = bool(await db.is_guild_premium_active(gid, _cid()))
-        return {"premium": active, "expires_at": None, "card_pack": False, "plans": [], "clone": True, "pay": []}
+    clone = _cid() is not None
     welcome = S.BY_ID["welcome"]
-    cfg = await _get_cfg(welcome, gid)
+    cfg = {} if clone else await _get_cfg(welcome, gid)
     row = await db.get_guild_premium(gid, _cid())
     active = bool(await db.is_guild_premium_active(gid, _cid()))
     expires = row.get("expires_at") if row else None
+    lifetime = active and _is_lifetime(expires)
     plans = []
     for p in PLANS:
+        if clone and p["kind"] != "premium":
+            continue                    # clones sell Premium only (their Discord /premium offers the same three)
         price = _price_usd(p["id"])
         if price is None:
+            continue
+        if clone:
+            plans.append({**p, "price_usd": price, "owned": lifetime, "included": False})
             continue
         owned = (p["kind"] == "card_pack" and bool(cfg.get("card_pack_unlocked")))
         plans.append({**p, "price_usd": price, "owned": owned,
                       "included": p["kind"] == "card_pack" and active and not owned})
     return {"premium": active, "expires_at": expires.isoformat() if hasattr(expires, "isoformat") else None,
-            "card_pack": bool(cfg.get("card_pack_unlocked")), "plans": plans, "pay": await _pay_options()}
+            "card_pack": bool(cfg.get("card_pack_unlocked")), "plans": plans, "clone": clone, "pay": await _pay_options()}
 
 
 async def _checkout(sess: dict, gid: int, plan_id, provider=None) -> dict:
@@ -564,10 +578,8 @@ async def _checkout(sess: dict, gid: int, plan_id, provider=None) -> dict:
     _last_checkout[uid] = now
     if len(_last_checkout) > 5000:
         _last_checkout.clear()
-    if _cid() is not None:
-        _fail(409, "Premium for this bot is managed by its owner, not through the main checkout.")
     plan = PLAN_BY_ID.get(str(plan_id or ""))
-    if not plan:
+    if not plan or (_cid() is not None and plan["kind"] != "premium"):
         _fail(422, "Unknown plan.")
     bill = await _billing(gid)
     entry = next((p for p in bill["plans"] if p["id"] == plan["id"]), None)
