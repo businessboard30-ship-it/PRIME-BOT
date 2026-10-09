@@ -71,7 +71,7 @@ def test_no_xp_user_is_not_ranked_yet(cog, monkeypatch):
 def test_clone_has_no_global_numbers_and_dm_falls_back(cog):
     cog.bot.clone_id = 4
     t = run(cog._xp_facts("my level", 10, FakeGuild()))
-    assert "GLOBAL" not in t and "dashboard" not in t and cog.calls["global"] == []
+    assert "GLOBAL" not in t and "global leaderboard" not in t and "dashboard" in t and cog.calls["global"] == []
     assert "ask this in a server" in run(cog._xp_facts("my level", 10, None))
 
 
@@ -88,10 +88,11 @@ def test_button_is_link_to_rank_page(cog, monkeypatch):
     assert b.url == "https://dash.example/#/me/rank"
 
 
-def test_button_hidden_on_clone_or_without_url(cog, monkeypatch):
+def test_button_shown_on_clone_and_hidden_without_url(cog, monkeypatch):
     monkeypatch.setattr(config, "DASH_PAGES_URL", "https://dash.example")
     cog.bot.clone_id = 9
-    assert ai_tools.dashboard_button(cog.bot) is None
+    b = ai_tools.dashboard_button(cog.bot)
+    assert b is not None and b.url == "https://dash.example/#/me/rank"
     cog.bot.clone_id = None
     monkeypatch.setattr(config, "DASH_PAGES_URL", "")
     assert ai_tools.dashboard_button(cog.bot) is None

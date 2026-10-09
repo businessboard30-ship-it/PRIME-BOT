@@ -125,10 +125,11 @@ def _support_button() -> Optional[discord.ui.Button]:
 
 def dashboard_button(bot, path: str = "/me/rank", label: str = "Open dashboard") -> Optional[discord.ui.Button]:
     """Link-style button to the member dashboard (needs a Discord sign-in
-    there). Hidden on clone bots (the member pages show main-bot data only)
-    and when no dashboard URL is configured."""
+    there). Shown on the main bot AND on clones: the account pages list the
+    asker's levels/ranks from clone bots too. Hidden only when no dashboard
+    URL is configured."""
     import config
-    if getattr(bot, "clone_id", None) is not None or not config.DASH_PAGES_URL:
+    if not config.DASH_PAGES_URL:
         return None
     return discord.ui.Button(
         label=label, style=discord.ButtonStyle.link, emoji="📈",
@@ -341,7 +342,8 @@ class AIToolsCog(commands.Cog):
         return (
             "FACTS from the leveling data — quote these numbers exactly, share only these people's "
             "stats, and tell them /rank shows the full card"
-            + ("" if clone_id is not None else " and their dashboard has more analysis (per-server ranks, global leaderboard)")
+            + (" and their dashboard shows their ranks across servers" if clone_id is not None
+               else " and their dashboard has more analysis (per-server ranks, global leaderboard)")
             + ":\n" + "\n".join(lines)
         )
 
