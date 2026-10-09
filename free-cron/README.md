@@ -1,0 +1,31 @@
+# free-cron
+
+A standalone, public cron service on Cloudflare Workers + D1. It is **separate from the bot and from `cron-worker/`**.
+
+- Sign in with **GitHub** (public id + username only, no scope). Cloudflare **Turnstile** guards sign-in and every create.
+- **5 free crons** per account, minimum interval 15 minutes. **Premium: unlimited**, minimum 5 minutes.
+- A cron calls a public `https://` URL (GET, or POST with a body up to 1 KB) every 5 / 15 / 30 min, 1 / 6 / 12 / 24 h. No free-form cron strings.
+- One Cloudflare trigger (`*/5 * * * *`) runs everyone's due crons (40 per tick, oldest first).
+
+## Safety rules (all tested)
+- https only, standard port, domain names only. IP literals (any notation), `localhost`, `.local/.internal/...`, credentials in the URL and this service's own host are refused at create **and re-checked on every run**.
+- Redirects are never followed; each call has a 10 s timeout; responses are **never read or stored** (only the status code and time).
+- 20 creates per account per 24 h, counted atomically. A cron switches itself off after 5 failures in a row.
+- Session cookie is HMAC-signed, HttpOnly, Secure, SameSite=Lax; state-changing calls need the `X-FreeCron` header and a matching Origin. Strict CSP with a per-response nonce.
+- The GitHub token is used once to read the id and login, then dropped. "Delete my account" removes everything.
+- Kill switch: set the `DISABLED=1` variable and nothing runs.
+
+## One-time setup (owner)
+1. **GitHub OAuth app** (github.com/settings/developers > New OAuth App): callback URL `https://<your-free-cron-host>/auth/callback`. Put the Client ID in `wrangler.toml` `GITHUB_CLIENT_ID`.
+2. **Turnstile widget** (Cloudflare dashboard > Turnstile > Add site) for the same host. Put the site key in `wrangler.toml` `TURNSTILE_SITE_KEY`.
+3. **Repo secrets:** `FREECRON_GITHUB_CLIENT_SECRET`, `FREECRON_TURNSTILE_SECRET`, `FREECRON_SESSION_SECRET` (any long random string), `FREECRON_ADMIN_KEY` (long random string). `CLOUDFLARE_API_TOKEN` needs **D1:Edit** as well as Workers Scripts:Edit; `CLOUDFLARE_ACCOUNT_ID` is shared with `cron-worker`.
+4. Merge: `.github/workflows/deploy-free-cron.yml` runs the tests, applies `migrations/`, deploys and syncs secrets. The D1 database `free-cron` already exists (id in `wrangler.toml`).
+
+## Granting Premium (v1 has no checkout)
+```
+curl -X POST https://<host>/api/admin/premium -H "Authorization: Bearer $ADMIN_KEY" -H "X-FreeCron: 1" -H "Content-Type: application/json" -d '{"login":"their-github-name","days":30}'
+```
+`days: 0` revokes. When Premium lapses the account is free again: only its 5 oldest crons keep running and intervals under 15 minutes are stretched to 15.
+
+## Develop
+`cd free-cron && npm test` (Node 22+, uses the built-in SQLite as a stand-in for D1).

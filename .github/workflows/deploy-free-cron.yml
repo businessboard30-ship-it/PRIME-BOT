@@ -1,0 +1,45 @@
+name: Deploy free-cron to Cloudflare
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "free-cron/**"
+      - ".github/workflows/deploy-free-cron.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: free-cron
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tests
+        run: npm test
+      # The API token needs: Workers Scripts:Edit, D1:Edit. Secrets below are repo secrets (names prefixed FREECRON_).
+      - name: Apply database migrations
+        run: npx --yes wrangler@4 d1 migrations apply free-cron --remote
+      - name: Deploy worker
+        run: npx --yes wrangler@4 deploy
+      - name: Sync secrets
+        run: |
+          for pair in GITHUB_CLIENT_SECRET:FREECRON_GITHUB_CLIENT_SECRET TURNSTILE_SECRET:FREECRON_TURNSTILE_SECRET SESSION_SECRET:FREECRON_SESSION_SECRET ADMIN_KEY:FREECRON_ADMIN_KEY; do
+            name="${pair%%:*}"; src="${pair##*:}"; val="${!src}"
+            if [ -n "$val" ]; then printf '%s' "$val" | npx --yes wrangler@4 secret put "$name"; else echo "skip $name (repo secret $src not set)"; fi
+          done
+        env:
+          FREECRON_GITHUB_CLIENT_SECRET: ${{ secrets.FREECRON_GITHUB_CLIENT_SECRET }}
+          FREECRON_TURNSTILE_SECRET: ${{ secrets.FREECRON_TURNSTILE_SECRET }}
+          FREECRON_SESSION_SECRET: ${{ secrets.FREECRON_SESSION_SECRET }}
+          FREECRON_ADMIN_KEY: ${{ secrets.FREECRON_ADMIN_KEY }}
