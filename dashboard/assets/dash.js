@@ -1195,7 +1195,7 @@
   }
 
   /* ---------- member shell (same sidebar + cards layout as the server dashboard) ---------- */
-  var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"], ["rank", "trophy", "My rank"],
+  var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"], ["rank", "trophy", "My rank"], ["leaderboard", "trophy", "Leaderboard"],
     ["card", "trophy", "Level-up card"], ["messages", "mail", "Messages"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"], ["privacy", "lock", "Privacy & data"]];
   function renderMemberShell(cur) {
     document.body.classList.remove("menu"); S.mod = null;
@@ -1223,7 +1223,7 @@
     var stats = h("div", { class: "stats" }), quick = h("div", { class: "quick" });
     function stat(v, l) { return h("div", { class: "card stat rv" }, h("b", { text: String(v) }), h("span", { text: l })); }
     add(main, [pageHead("Overview", "Welcome, " + S.user.username), stats]);
-    var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."], ["rank", "trophy", "My rank", "Your global rank and best server rank."],
+    var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."], ["rank", "trophy", "My rank", "Your global rank and best server rank."], ["leaderboard", "trophy", "Leaderboard", "See the top players across every server."],
       ["card", "trophy", "Level-up card", "Design the card shown when you level up."], ["prefs", "sliders", "Preferences", "Language, currency, AI character and pings."],
       ["messages", "mail", "Messages", "Message friends from your servers."], ["purchases", "scroll", "Purchases", "Every payment on your account."], ["privacy", "lock", "Privacy & data", "Pricing, what we store, and deleting your data."]];
     go.forEach(function (g, i) {
@@ -1289,6 +1289,38 @@
           h("label", null, ping, " Ping me when I level up")));
       });
     }).catch(function (e) { box.textContent = ""; fail(box, e); });
+  }
+
+  function meBoard(main) {
+    var box = h("div", null, h("p", { class: "muted", text: "Loading\u2026" })), page = 0;
+    add(main, [pageHead("Leaderboard", "Global leaderboard"), box]);
+    function load() {
+      api("member_leaderboard", { page: page }).then(function (j) {
+        box.textContent = "";
+        var show = h("input", { type: "checkbox", "aria-label": "Show my name on the web leaderboard" }); show.checked = !!j.show_me;
+        show.addEventListener("change", function () {
+          api("member_board_pref", null, { show: show.checked }).then(function () { toast("Saved"); load(); })
+            .catch(function (e) { show.checked = !show.checked; toast(e.message, "err"); });
+        });
+        box.appendChild(h("label", { class: "muted" }, show, " Show my name here (otherwise I appear as \u201cHidden player\u201d)"));
+        if (j.me) box.appendChild(h("div", { class: "card rv" }, h("b", { text: "You: #" + j.me.rank.toLocaleString() + " of " + j.me.players.toLocaleString() }),
+          h("p", { class: "muted", text: j.me.xp.toLocaleString() + " XP \u00b7 Level " + j.me.level })));
+        if (!j.entries.length) { box.appendChild(h("div", { class: "card empty" }, h("p", { class: "muted", text: "Nobody has earned XP yet." }))); return; }
+        var list = h("div", { class: "card rv" }); box.appendChild(list);
+        j.entries.forEach(function (e) {
+          list.appendChild(h("div", { class: "row", style: "gap:10px;align-items:center;padding:6px 0" + (e.you ? ";font-weight:600" : "") },
+            h("span", { text: "#" + e.rank, style: "min-width:44px" }),
+            e.avatar ? h("img", { src: e.avatar, alt: "", referrerpolicy: "no-referrer", width: 28, height: 28, style: "border-radius:50%" }) : h("span", { style: "width:28px;height:28px;border-radius:50%;background:var(--tint);display:inline-block" }),
+            h("span", { class: "grow", text: e.name + (e.you ? " (you)" : ""), style: e.hidden ? "opacity:.7" : "" }),
+            h("span", { class: "muted", text: "Lv " + e.level + " \u00b7 " + e.xp.toLocaleString() + " XP" })));
+        });
+        var prev = h("button", { class: "btn sm ghost", text: "Previous", type: "button" }), next = h("button", { class: "btn sm ghost", text: "Next", type: "button" });
+        prev.disabled = page <= 0; next.disabled = page >= j.pages - 1;
+        prev.addEventListener("click", function () { page--; load(); }); next.addEventListener("click", function () { page++; load(); });
+        box.appendChild(h("div", { class: "row", style: "gap:8px;align-items:center" }, prev, h("span", { class: "muted", text: "Page " + (page + 1) + " of " + j.pages }), next));
+      }).catch(function (e) { box.textContent = ""; fail(box, e); });
+    }
+    load();
   }
 
   function meRank(main) {
@@ -1522,7 +1554,7 @@
   }
 
   function renderMe(sec) {
-    var pages = { "": meOverview, plans: mePlans, servers: meServers, rank: meRank, prefs: mePrefs, purchases: mePurchases, card: meCard, messages: meMessages, privacy: mePrivacy };
+    var pages = { "": meOverview, plans: mePlans, servers: meServers, rank: meRank, leaderboard: meBoard, prefs: mePrefs, purchases: mePurchases, card: meCard, messages: meMessages, privacy: mePrivacy };
     sec = sec || "";
     if (!pages[sec]) { location.hash = "#/me"; return; }
     pages[sec](renderMemberShell(sec));

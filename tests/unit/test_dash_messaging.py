@@ -843,7 +843,8 @@ def test_schema_has_the_four_tables_and_indexes():
     for t in ("dash_friends", "dash_member_messages", "dash_member_reports", "dash_member_prefs"):
         assert f"CREATE TABLE IF NOT EXISTS {t}" in src
     assert "CHECK (user_a <> user_b)" in src and "CHECK (status IN ('pending', 'accepted', 'blocked'))" in src
-    assert 'SCHEMA_VERSION = "69"' in src
+    import re as _re
+    assert int(_re.search(r'SCHEMA_VERSION = "(\d+)"', src).group(1)) >= 69      # the messaging tables shipped in 69
 
 
 def test_report_snapshots_are_purged_90_days_after_resolution_and_the_privacy_page_says_so():

@@ -49,6 +49,61 @@ async def member_servers(uid, q, db):
     return {"servers": [server_view(r) for r in await db.member_servers(uid)]}
 
 
+BOARD_PAGE = 10          # same page size as the bot's /leaderboard
+BOARD_MAX_PAGES = 50     # hard cap: the query aggregates the whole XP table, so deep paging is not offered
+BOARD_TTL = 30
+
+
+def _board_clear():
+    from api import dash
+    for k in [k for k in dash._cache if isinstance(k[1], tuple) and k[1][:1] == ("lb",)]:
+        dash._cache.pop(k, None)
+
+
+async def member_leaderboard(uid, q, db):
+    """Global XP leaderboard. Parity with the bot: same query, same page size, rank = offset + position, level = compute_level(total).
+    The cached page keeps ids server-side only; the response never contains a user id."""
+    from api import dash
+    from modules.leveling import compute_level, xp_progress
+    try:
+        page = int(q("page") or "0")
+    except (TypeError, ValueError):
+        return {"_status": 400, "message": "That page isn't valid."}
+    if not 0 <= page < BOARD_MAX_PAGES:
+        return {"_status": 400, "message": "That page isn't available."}
+    key = ("lb", page)
+    hit = dash._cached(key, BOARD_TTL)
+    if hit is None:
+        rows, total = await db.get_global_xp_leaderboard_page(limit=BOARD_PAGE, offset=page * BOARD_PAGE)
+        profiles = await db.board_profiles([r["user_id"] for r in rows])
+        entries = []
+        for i, r in enumerate(rows):
+            p = profiles.get(str(r["user_id"]))
+            xp = int(r["total_xp"] or 0)
+            entries.append({"_uid": str(r["user_id"]), "rank": page * BOARD_PAGE + i + 1, "xp": xp, "level": compute_level(xp),
+                            "name": p["name"] if p else "Hidden player", "avatar": p["avatar"] if p else None, "hidden": p is None})
+        hit = {"entries": entries, "total": int(total or 0)}
+        dash._store(key, BOARD_TTL, hit)
+    out = [{**{k: v for k, v in e.items() if k != "_uid"}, "you": e["_uid"] == str(uid)} for e in hit["entries"]]
+    me = await db.get_global_xp_rank(int(uid))
+    mine = None
+    if me and int(me.get("total_xp") or 0) > 0:
+        xp = int(me["total_xp"])
+        mine = {"rank": int(me.get("rank") or 0), "xp": xp, "level": xp_progress(xp)["level"], "players": int(me.get("total_players") or 0)}
+    total = hit["total"]
+    return {"entries": out, "page": page, "page_size": BOARD_PAGE, "total": total,
+            "pages": min(BOARD_MAX_PAGES, max(1, -(-total // BOARD_PAGE))), "me": mine, "show_me": await db.board_visible_get(uid)}
+
+
+async def member_board_pref(uid, body, db):
+    show = body.get("show")
+    if not isinstance(show, bool):
+        return {"_status": 400, "message": "That setting isn't valid."}
+    await db.board_visible_set(uid, show)
+    _board_clear()
+    from modules import admin_controls
+    await admin_controls.record_audit(int(uid), "member_board_pref", None, f"show={show}")
+    return {"show": show}
 async def member_rank(uid, q, db):
     """The viewer's OWN position only (no other user is named). Global rank is the same query the bot's /rank uses."""
     from modules.leveling import xp_progress
@@ -340,9 +395,9 @@ async def member_data_delete(uid, body, db):
     return {"deleted": True, "removed": counts, "kept": ["payments and plans", "weekly usage counters", "XP, coins and moderation records in servers"]}
 
 
-ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_rank": member_rank, "member_plans": member_plans,
+ROUTES = {"member_status": member_status, "member_servers": member_servers, "member_rank": member_rank, "member_leaderboard": member_leaderboard, "member_plans": member_plans,
           "member_prefs": member_prefs, "member_purchases": member_purchases, "member_card": member_card, "member_usage": member_usage}
-WRITES = {"member_pref_set": member_pref_set, "checkout_user": checkout_user,
+WRITES = {"member_pref_set": member_pref_set, "member_board_pref": member_board_pref, "checkout_user": checkout_user,
           "member_card_preview": member_card_preview, "member_card_save": member_card_save,
           "member_card_asset": member_card_asset, "member_card_asset_delete": member_card_asset_delete,
           "member_chat": member_chat,

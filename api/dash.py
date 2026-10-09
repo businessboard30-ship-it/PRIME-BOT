@@ -89,6 +89,8 @@ Routes (all on /api/dash):
   POST {action: dev_stepup} -> Developer plan only: {url}: Discord re-sign-in that makes this session fresh for DASH_STEPUP_MINUTES (returns to #/dev)
   POST {action: dev_chat, model?: default|anthropic|groq|openai, messages:[{role,content}]} -> Developer plan only: one bot-AI reply; spends 1 of 50 weekly chats (refunded if the model fails); 429 {code: weekly_limit}; 503 when the owner's `ai` switch is on. Nothing is stored.
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
+  GET  ?action=member_leaderboard&page -> ANY signed-in user: global XP leaderboard, 10 per page (max 50 pages). Names only for signed-in members who have not opted out, everyone else "Hidden player"; no user id is ever returned; the viewer's own row is pinned
+  POST {action: member_board_pref, show: bool} -> own web-leaderboard visibility
   GET  ?action=member_rank -> ANY signed-in user: their OWN global rank/XP/level and best/worst server rank; no other user is named
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
   POST {action: member_pref_set, kind: language|currency|character|voice|level_ping, value[, guild_id]} -> own preference only (allowlisted)
@@ -1024,7 +1026,7 @@ async def _oauth_callback(query: dict):
         "guilds": S.guild_list_manageable(guilds),
     })
     try:                                    # registry for member messaging; never blocks a sign-in
-        await db.dash_web_user_touch(uid)
+        await db.dash_web_user_touch(uid, me.get("global_name") or me.get("username"), avatar)
     except Exception:
         logger.exception("dashboard: web-user registry write failed")
     _back("session=" + sid)

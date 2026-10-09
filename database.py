@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "69"
+SCHEMA_VERSION = "70"
+# "69" -> "70" adds display_name, avatar_url and show_on_board to dash_web_users (web leaderboard: signed-in members appear by name unless they opt out). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "68" -> "69" creates dash_friends, dash_member_messages, dash_member_reports and dash_member_prefs (Part D member messaging: friend requests, text-only messages kept 30 days, report snapshots, per-member settings). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "67" -> "68" creates user_renewal_reminders (one row per user + plan + period end, so a renewal/ending reminder DM is sent at most once per period). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "66" -> "67" creates dev_exports (minimal receipt for a Developer-mode export: opaque id, owner, storage message id, display name, size, time; the file itself lives ENCRYPTED in the private storage channel). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -4364,6 +4365,10 @@ class Database:
                 last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        for _ddl in ("ALTER TABLE dash_web_users ADD COLUMN IF NOT EXISTS display_name TEXT",
+                     "ALTER TABLE dash_web_users ADD COLUMN IF NOT EXISTS avatar_url TEXT",
+                     "ALTER TABLE dash_web_users ADD COLUMN IF NOT EXISTS show_on_board BOOLEAN NOT NULL DEFAULT TRUE"):
+            await conn.execute(_ddl)
 
         # Referral-boost click log — just a visit counter (no auth, no
         # cookies/sessions to correlate: see the note on invite_code/
@@ -14873,13 +14878,43 @@ class Database:
 
     # ── Member dashboard: web-user registry + per-user entitlements ──
 
-    async def dash_web_user_touch(self, user_id: str) -> None:
-        """Record a successful web sign-in (first_seen is kept, last_seen moves)."""
+    async def dash_web_user_touch(self, user_id: str, display_name: Optional[str] = None,
+                                  avatar_url: Optional[str] = None) -> None:
+        """Record a successful web sign-in (first_seen is kept, last_seen moves). The display name and
+        Discord CDN avatar are refreshed each sign-in; they only ever show on the web leaderboard."""
+        name = (str(display_name).strip()[:80] or None) if display_name else None
+        av = avatar_url if isinstance(avatar_url, str) and avatar_url.startswith("https://cdn.discordapp.com/") else None
         pool = await get_pool()
         async with pool.acquire() as conn:
             await conn.execute(
-                """INSERT INTO dash_web_users (user_id) VALUES ($1)
-                   ON CONFLICT (user_id) DO UPDATE SET last_seen = NOW()""", str(user_id))
+                """INSERT INTO dash_web_users (user_id, display_name, avatar_url) VALUES ($1, $2, $3)
+                   ON CONFLICT (user_id) DO UPDATE SET last_seen = NOW(),
+                       display_name = COALESCE($2, dash_web_users.display_name),
+                       avatar_url = COALESCE($3, dash_web_users.avatar_url)""", str(user_id), name, av)
+
+    async def board_profiles(self, user_ids: list) -> dict:
+        """{user_id: {name, avatar}} for the signed-in members in `user_ids` who have NOT opted out. Everyone else is absent."""
+        ids = [str(i) for i in user_ids]
+        if not ids:
+            return {}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT user_id, display_name, avatar_url FROM dash_web_users
+                   WHERE user_id = ANY($1::text[]) AND show_on_board = TRUE AND display_name IS NOT NULL""", ids)
+        return {r["user_id"]: {"name": r["display_name"], "avatar": r["avatar_url"]} for r in rows}
+
+    async def board_visible_get(self, user_id: str) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            v = await conn.fetchval("SELECT show_on_board FROM dash_web_users WHERE user_id = $1", str(user_id))
+        return True if v is None else bool(v)
+
+    async def board_visible_set(self, user_id: str, visible: bool) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""INSERT INTO dash_web_users (user_id, show_on_board) VALUES ($1, $2)
+                                  ON CONFLICT (user_id) DO UPDATE SET show_on_board = $2""", str(user_id), bool(visible))
 
     async def dash_web_user_exists(self, user_id: str) -> bool:
         pool = await get_pool()
