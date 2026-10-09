@@ -1691,6 +1691,60 @@
   }
 
   /* GitHub connect (C4, read-only): browse a repo, attach a file or a diff to the AI chat. Server data only ever goes in via textContent. */
+  /* Scheduled jobs: presets only (UTC); the server enforces the cap, the interval and the plan. */
+  function devJobs() {
+    var box = section("Scheduled jobs"), list = h("div", null), note = h("p", { class: "muted", role: "status", text: "" }), editing = null;
+    box.appendChild(h("p", { class: "muted", text: "Run a reminder, a saved note or an AI prompt on a schedule (UTC, at most 5 jobs, never closer than an hour). Results arrive by DM and in Exports. AI prompts use your weekly 50 chats unless you pick your own key." }));
+    box.appendChild(list);
+    var kind = h("select", { "aria-label": "Kind" }), name = h("input", { type: "text", maxlength: 60, placeholder: "Job name", "aria-label": "Job name" });
+    var preset = h("select", { "aria-label": "How often" }, [["hourly", "Every hour"], ["daily", "Every day"], ["weekly", "Every week"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var day = h("select", { "aria-label": "Day" }), hour = h("input", { type: "number", min: 0, max: 23, value: 9, "aria-label": "Hour (UTC)", style: "width:64px" });
+    var minute = h("input", { type: "number", min: 0, max: 59, value: 0, "aria-label": "Minute", style: "width:64px" });
+    var text = h("textarea", { rows: 3, maxlength: 4000, placeholder: "Text or prompt", "aria-label": "Text or prompt", style: "width:100%;max-width:520px" });
+    var model = h("select", { "aria-label": "Model" }, [h("option", { value: "default", text: "Bot AI (default)" }), h("option", { value: "anthropic", text: "Claude (my key)" }),
+      h("option", { value: "groq", text: "Groq (my key)" }), h("option", { value: "openai", text: "OpenAI (my key)" })]);
+    var save = h("button", { class: "btn sm", type: "button", text: "Add job" }), cancel = h("button", { class: "btn sm ghost", type: "button", text: "Cancel edit" });
+    cancel.hidden = true;
+    var form = h("div", { class: "row", style: "margin-top:8px;gap:8px;flex-wrap:wrap" }, kind, name, preset, day, hour, minute, model, text, save, cancel);
+    box.appendChild(form); box.appendChild(note);
+    function fit() { day.hidden = preset.value !== "weekly"; hour.hidden = preset.value === "hourly"; model.hidden = kind.value !== "ai_prompt"; }
+    preset.addEventListener("change", fit); kind.addEventListener("change", fit);
+    function reset() { editing = null; name.value = ""; text.value = ""; kind.disabled = false; save.textContent = "Add job"; cancel.hidden = true; }
+    cancel.addEventListener("click", reset);
+    function draw(j) {
+      list.textContent = "";
+      if (j.switched_off) list.appendChild(h("p", { class: "muted", text: "Scheduled jobs are switched off by the bot owner right now." }));
+      if (!j.jobs.length) list.appendChild(h("p", { class: "muted", text: "No jobs yet." }));
+      j.jobs.forEach(function (x) {
+        var tog = h("button", { class: "btn sm ghost", type: "button", text: x.enabled ? "Pause" : "Resume" }), ed = h("button", { class: "btn sm ghost", type: "button", text: "Edit" });
+        var del = h("button", { class: "btn sm ghost", type: "button", text: "Delete" });
+        tog.addEventListener("click", function () { api("dev_job_toggle", null, { id: x.id, enabled: !x.enabled }).then(load).catch(function (e) { note.textContent = e.message; }); });
+        del.addEventListener("click", function () { api("dev_job_delete", null, { id: x.id }).then(function () { reset(); load(); }).catch(function (e) { note.textContent = e.message; }); });
+        ed.addEventListener("click", function () {
+          editing = x; var sc = x.schedule.split("@");
+          kind.value = x.kind; kind.disabled = true; name.value = x.name; text.value = x.text; model.value = x.model || "default";
+          preset.value = sc[0]; if (sc[0] === "hourly") minute.value = sc[1]; else { var t = sc[sc.length - 1].split(":"); hour.value = t[0]; minute.value = t[1]; if (sc[0] === "weekly") day.value = sc[1]; }
+          save.textContent = "Save changes"; cancel.hidden = false; fit();
+        });
+        list.appendChild(h("div", { class: "row", style: "margin:6px 0;gap:8px;align-items:center;flex-wrap:wrap" },
+          h("b", { text: x.name }), h("span", { class: "muted", text: j.kinds[x.kind] + " \u00b7 " + x.schedule.replace("@", " ") + " UTC"
+            + (x.paused ? " \u00b7 paused (plan ended)" : (x.enabled ? "" : " \u00b7 off")) + (x.last_status ? " \u00b7 last: " + x.last_status : "") }), tog, ed, del));
+      });
+    }
+    function load() { return api("dev_jobs").then(function (j) { draw(j); }).catch(function (e) { fail(list, e); }); }
+    api("dev_jobs").then(function (j) {
+      Object.keys(j.kinds).forEach(function (k) { kind.appendChild(h("option", { value: k, text: j.kinds[k] })); });
+      j.days.forEach(function (d, i) { day.appendChild(h("option", { value: i, text: d.charAt(0).toUpperCase() + d.slice(1) })); });
+      fit(); draw(j);
+    }).catch(function (e) { fail(list, e); });
+    save.addEventListener("click", function () {
+      var body = { kind: kind.value, name: name.value, schedule: { preset: preset.value, minute: +minute.value, hour: +hour.value, day: +day.value } };
+      if (kind.value === "ai_prompt") { body.prompt = text.value; body.model = model.value; } else body.text = text.value;
+      if (editing) body.id = editing.id;
+      api("dev_job_save", null, body).then(function () { note.textContent = "Saved."; reset(); load(); }).catch(function (e) { note.textContent = (e && e.message) || "Couldn't save that."; });
+    });
+    return box;
+  }
   function devGithub() {
     var box = section("GitHub (read-only)");
     var note = h("p", { class: "muted", role: "status", text: "" });
@@ -1806,6 +1860,7 @@
         body.appendChild(devExports());
         body.appendChild(devKeys());
         body.appendChild(devGithub());
+        body.appendChild(devJobs());
         return;
       }
       var lock = section("Locked");

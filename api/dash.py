@@ -89,6 +89,8 @@ Routes (all on /api/dash):
   POST {action: dev_stepup} -> Developer plan only: {url}: Discord re-sign-in that makes this session fresh for DASH_STEPUP_MINUTES (returns to #/dev)
   POST {action: dev_chat, model?: default|anthropic|groq|openai, messages:[{role,content}]} -> Developer plan only: one bot-AI reply; spends 1 of 50 weekly chats (refunded if the model fails); 429 {code: weekly_limit}; 503 when the owner's `ai` switch is on. Nothing is stored.
   GET  ?action=member_status -> ANY signed-in user (#/me): their own entitlements only (api/dash_member.py); no route takes a user id
+  GET  ?action=dev_jobs -> Developer plan only: the session user's scheduled jobs (no ids of anyone else), limits, and whether the owner's `dev_jobs` switch is on
+  POST {action: dev_job_save, kind: reminder|note|ai_prompt, name, schedule:{preset: hourly|daily|weekly, minute?, hour?, day?}, text|prompt, model?, id?} / {action: dev_job_toggle, id, enabled} / {action: dev_job_delete, id} -> Developer plan only: max 5 jobs, presets only (UTC, >= 1 hour apart), audited; run by the cron worker (api/cron_dev_scheduled.py)
   GET  ?action=member_leaderboard&page -> ANY signed-in user: global XP leaderboard, 10 per page (max 50 pages). Names only for signed-in members who have not opted out, everyone else "Hidden player"; no user id is ever returned; the viewer's own row is pinned
   POST {action: member_board_pref, show: bool} -> own web-leaderboard visibility
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
@@ -1186,7 +1188,7 @@ async def _route(method: str, query: dict, headers, body: dict):
         _owner_rate(sess, "member:" + action, *{"checkout_user": (10, 300), "member_card_save": (10, 60), "member_card_preview": (20, 60),
                                                       "member_card_asset": (6, 300), "member_card_asset_delete": (10, 300), "dev_chat": (8, 60), "member_chat": (8, 60),
                                                       "dev_key_save": (6, 300), "dev_key_remove": (10, 300),
-                                                      "dev_export_create": (6, 300), "dev_export_delete": (10, 300),
+                                                      "dev_job_save": (20, 300), "dev_job_toggle": (30, 300), "dev_job_delete": (20, 300), "dev_export_create": (6, 300), "dev_export_delete": (10, 300),
                                                       "dev_github_connect": (5, 300), "dev_github_finish": (8, 300), "dev_github_disconnect": (10, 300),
                                                       "friend_request": (10, 300), "message_send": (15, 60), "message_report": (6, 300),
                                                       "friend_block": (10, 300),

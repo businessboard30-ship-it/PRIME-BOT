@@ -161,7 +161,7 @@ def test_delete_handler_is_not_a_dev_route_and_wipes_only_dashboard_tables():
     seg = "\n".join(l for l in seg.splitlines() if "DELETE FROM" in l)       # the statements only, not the docstring
     for kept in ("user_entitlements", "user_billing_events", "user_ai_usage", "payments", "warns", "user_levels", "economy"):
         assert kept not in seg, kept
-    for gone in ("user_level_cards", "dev_connections", "dev_exports", "user_card_assets", "dash_web_users"):
+    for gone in ("user_level_cards", "dev_connections", "dev_exports", "dev_jobs", "user_card_assets", "dash_web_users"):
         assert gone in seg
 
 

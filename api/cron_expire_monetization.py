@@ -59,6 +59,11 @@ class handler(BaseHTTPRequestHandler):
                 logger.info(f"[v0] cron dev_connections purged={purged}")
             except Exception as e:
                 logger.error(f"[v0] cron dev_connections purge failed: {type(e).__name__}")
+            try:                          # scheduled jobs paused by a lapsed plan are deleted after the same 30 days
+                from modules import dev_jobs
+                logger.info(f"[v0] cron dev_jobs purged={asyncio.run(db.dev_jobs_purge_paused(dev_jobs.PAUSED_KEEP_DAYS))}")
+            except Exception as e:
+                logger.error(f"[v0] cron dev_jobs purge failed: {type(e).__name__}")
             try:                          # member messages are kept 30 days (privacy page promises it)
                 from modules import member_msg
                 gone = asyncio.run(db.msg_purge_old(member_msg.RETENTION_DAYS))
