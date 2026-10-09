@@ -1195,7 +1195,7 @@
   }
 
   /* ---------- member shell (same sidebar + cards layout as the server dashboard) ---------- */
-  var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"], ["leaderboard", "trophy", "Leaderboard"],
+  var ME_NAV = [["", "home", "Overview"], ["plans", "star", "Plans & billing"], ["servers", "server", "My servers"], ["rank", "trophy", "My rank"], ["leaderboard", "trophy", "Leaderboard"],
     ["card", "trophy", "Level-up card"], ["messages", "mail", "Messages"], ["prefs", "sliders", "Preferences"], ["purchases", "scroll", "Purchases"], ["privacy", "lock", "Privacy & data"]];
   function renderMemberShell(cur) {
     document.body.classList.remove("menu"); S.mod = null;
@@ -1223,7 +1223,7 @@
     var stats = h("div", { class: "stats" }), quick = h("div", { class: "quick" });
     function stat(v, l) { return h("div", { class: "card stat rv" }, h("b", { text: String(v) }), h("span", { text: l })); }
     add(main, [pageHead("Overview", "Welcome, " + S.user.username), stats]);
-    var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."], ["leaderboard", "trophy", "Leaderboard", "See the top players across every server."],
+    var go = [["plans", "star", "Plans & billing", "Subscribe, renew and see what is active."], ["servers", "server", "My servers", "Your level, rank and coins in each server."], ["rank", "trophy", "My rank", "Your global rank and best server rank."], ["leaderboard", "trophy", "Leaderboard", "See the top players across every server."],
       ["card", "trophy", "Level-up card", "Design the card shown when you level up."], ["prefs", "sliders", "Preferences", "Language, currency, AI character and pings."],
       ["messages", "mail", "Messages", "Message friends from your servers."], ["purchases", "scroll", "Purchases", "Every payment on your account."], ["privacy", "lock", "Privacy & data", "Pricing, what we store, and deleting your data."]];
     go.forEach(function (g, i) {
@@ -1321,6 +1321,26 @@
       }).catch(function (e) { box.textContent = ""; fail(box, e); });
     }
     load();
+  }
+
+  function meRank(main) {
+    var box = h("div", null, h("p", { class: "muted", text: "Loading\u2026" }));
+    add(main, [pageHead("My rank", "Where you stand"), box]);
+    api("member_rank").then(function (j) {
+      box.textContent = "";
+      if (!j.global) { box.appendChild(h("div", { class: "card empty" }, h("p", { class: "muted", text: "You have no XP yet. Chat in a server with the bot and your rank will appear here." }))); return; }
+      var g = j.global, pct = g.xp_for_next ? Math.min(100, Math.round(100 * g.xp_in_level / g.xp_for_next)) : 0;
+      box.appendChild(h("div", { class: "card rv" }, h("h3", { text: "Global rank" }),
+        h("p", { text: "#" + g.rank.toLocaleString() + " of " + g.players.toLocaleString() + " players" }),
+        h("p", { class: "muted", text: g.total_xp.toLocaleString() + " XP \u00b7 Level " + g.level }),
+        h("div", { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct, "aria-label": "Progress to next level", style: "height:8px;border-radius:4px;background:var(--tint)" },
+          h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
+        h("p", { class: "muted", text: g.xp_in_level.toLocaleString() + " / " + g.xp_for_next.toLocaleString() + " XP to level " + (g.level + 1) })));
+      if (j.best) box.appendChild(h("div", { class: "card rv" }, h("h3", { text: "Server ranks" }),
+        h("p", { class: "muted", text: "Best: #" + j.best.rank + " of " + j.best.players + " in " + j.best.name }),
+        h("p", { class: "muted", text: "Lowest: #" + j.worst.rank + " of " + j.worst.players + " in " + j.worst.name }),
+        h("a", { class: "btn sm ghost", href: "#/me/servers", text: "All my servers" })));
+    }).catch(function (e) { box.textContent = ""; fail(box, e); });
   }
 
   function mePrefs(main) {
@@ -1534,7 +1554,7 @@
   }
 
   function renderMe(sec) {
-    var pages = { "": meOverview, plans: mePlans, servers: meServers, leaderboard: meBoard, prefs: mePrefs, purchases: mePurchases, card: meCard, messages: meMessages, privacy: mePrivacy };
+    var pages = { "": meOverview, plans: mePlans, servers: meServers, rank: meRank, leaderboard: meBoard, prefs: mePrefs, purchases: mePurchases, card: meCard, messages: meMessages, privacy: mePrivacy };
     sec = sec || "";
     if (!pages[sec]) { location.hash = "#/me"; return; }
     pages[sec](renderMemberShell(sec));

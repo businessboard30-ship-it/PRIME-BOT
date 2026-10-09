@@ -93,6 +93,7 @@ Routes (all on /api/dash):
   POST {action: dev_job_save, kind: reminder|note|ai_prompt, name, schedule:{preset: hourly|daily|weekly, minute?, hour?, day?}, text|prompt, model?, id?} / {action: dev_job_toggle, id, enabled} / {action: dev_job_delete, id} -> Developer plan only: max 5 jobs, presets only (UTC, >= 1 hour apart), audited; run by the cron worker (api/cron_dev_scheduled.py)
   GET  ?action=member_leaderboard&page -> ANY signed-in user: global XP leaderboard, 10 per page (max 50 pages). Names only for signed-in members who have not opted out, everyone else "Hidden player"; no user id is ever returned; the viewer's own row is pinned
   POST {action: member_board_pref, show: bool} -> own web-leaderboard visibility
+  GET  ?action=member_rank -> ANY signed-in user: their OWN global rank/XP/level and best/worst server rank; no other user is named
   GET  ?action=member_servers|member_prefs|member_purchases -> ANY signed-in user: own servers (level/XP/rank/coins), preferences, payments (no gateway refs)
   POST {action: member_pref_set, kind: language|currency|character|voice|level_ping, value[, guild_id]} -> own preference only (allowlisted)
   POST {action: owner_helper_set|owner_helper_remove|owner_clone_register|owner_clone_relink|owner_clone_stop|owner_db_cleanup_stale, ...} -> OWNER (Phase 5): step-up + typed confirm on all but helper_set
