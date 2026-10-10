@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 _download_slots = asyncio.Semaphore(3)
 NOTICE_SECONDS = 15                         # how long the in-channel "scam caught" notice stays
+FALLBACK_SECONDS = 60                       # how long the flag stays when there is no usable mod-log channel (long enough for a mod to read it)
 EVIDENCE_MAX_FILES = 4                      # attachments kept per caught message
 EVIDENCE_MAX_BYTES = 8 * 1024 * 1024        # same cap as welcome backgrounds / ad images
 
@@ -341,8 +342,9 @@ class ScamShieldCog(commands.Cog):
         snippet = discord.utils.escape_mentions((message.content or "")[:300]) or "(image / embed only)"
         await ss.log_hit(message.guild.id, message.channel.id, message.author.id, kind, matched, rule_id,
                          snippet, deleted, clone_id)
-        await self._flag(message, kind, matched, deleted, snippet, clone_id)
-        await self._notice(message, deleted)
+        fallback = await self._flag(message, kind, matched, deleted, snippet, clone_id)
+        if fallback is not message.channel:           # the fallback flag already warns the channel it landed in
+            await self._notice(message, deleted)
 
     async def _notice(self, message: discord.Message, deleted: bool) -> None:
         """Short public heads-up in the channel where the scam was posted, so members aren't left wondering.
@@ -362,22 +364,70 @@ class ScamShieldCog(commands.Cog):
         except Exception:
             logger.debug("[scam-shield] couldn't post the in-channel notice", exc_info=True)
 
-    async def _flag(self, message, kind, matched, deleted, snippet, clone_id) -> None:
+    @staticmethod
+    def _can_post(ch, guild) -> bool:
+        """True when the bot can see the channel, send messages and use embeds there."""
+        try:
+            me = guild.me
+            if ch is None or me is None:
+                return False
+            p = ch.permissions_for(me)
+            return bool(p.view_channel and p.send_messages and p.embed_links)
+        except Exception:
+            return False
+
+    def _fallback_channel(self, message):
+        """Where to post the flag when the server has no (usable) mod-log channel: the channel the scam was in, then the
+        server's system channel, then the first text channel the bot can write in. None when it can't write anywhere."""
+        g = message.guild
+        seen = set()
+        for ch in [message.channel, getattr(g, "system_channel", None),
+                   *sorted(getattr(g, "text_channels", []) or [], key=lambda c: c.position)]:
+            if ch is None or getattr(ch, "id", None) in seen or not isinstance(ch, (discord.TextChannel, discord.Thread)):
+                continue
+            seen.add(ch.id)
+            if self._can_post(ch, g):
+                return ch
+        return None
+
+    async def _flag(self, message, kind, matched, deleted, snippet, clone_id):
+        """Tell the staff about the catch. Mod-log channel first (full details, permanent). If the server has none, or it
+        was deleted, or the bot can't write there, post a short self-deleting flag in another channel instead.
+        Returns the fallback channel it posted into, else None (mod-log used, or nowhere to post)."""
         try:
             cfg = await db.get_automod_config(message.guild.id, clone_id=clone_id)
             ch_id = cfg.get("log_channel_id")
             ch = message.guild.get_channel(int(ch_id)) if ch_id else None
-            if ch is None:
-                return
-            embed = discord.Embed(title="🛡️ Scam Shield caught a scam message",
-                                  description=snippet[:1000], color=discord.Color.red())
-            embed.add_field(name="User", value=f"{message.author} (`{message.author.id}`)")
-            embed.add_field(name="Channel", value=message.channel.mention)
-            embed.add_field(name="Matched", value=f"{kind}: {discord.utils.escape_markdown(matched)}"[:200])
-            embed.add_field(name="Message", value="🗑️ deleted" if deleted else "⚠️ couldn't delete (missing permission)")
-            await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            if ch is not None and self._can_post(ch, message.guild):
+                embed = discord.Embed(title="🛡️ Scam Shield caught a scam message",
+                                      description=snippet[:1000], color=discord.Color.red())
+                embed.add_field(name="User", value=f"{message.author} (`{message.author.id}`)")
+                embed.add_field(name="Channel", value=message.channel.mention)
+                embed.add_field(name="Matched", value=f"{kind}: {discord.utils.escape_markdown(matched)}"[:200])
+                embed.add_field(name="Message", value="🗑️ deleted" if deleted else "⚠️ couldn't delete (missing permission)")
+                await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                return None
+            target = self._fallback_channel(message)
+            if target is None:
+                return None
+            # This lands in a public channel, so it never repeats the scam text or the rule that matched.
+            who = discord.utils.escape_markdown(str(message.author))[:40]
+            where = message.channel.mention if target is not message.channel else "this channel"
+            embed = discord.Embed(
+                title="🛡️ Scam Shield caught a scam message",
+                description=(f"A scam message from **{who}** (`{message.author.id}`) was caught in {where}"
+                             f"{' and removed' if deleted else ', but I could not remove it (I need Manage Messages)'}.\n"
+                             f"Type: `{discord.utils.escape_markdown(str(kind))[:30]}`. "
+                             "Don't click links or scan codes from it, and never share your login or send crypto to claim a prize.\n\n"
+                             "This server has no mod-log channel I can post in, so I'm flagging it here. "
+                             "Set one with `/modlog` to keep a permanent record.\n"
+                             f"-# This message will be deleted in a short time ({FALLBACK_SECONDS} seconds)."),
+                color=discord.Color.red())
+            await target.send(embed=embed, delete_after=FALLBACK_SECONDS, allowed_mentions=discord.AllowedMentions.none())
+            return target
         except Exception:
             logger.debug("[scam-shield] couldn't post the flag", exc_info=True)
+            return None
 
 
 async def setup(bot: commands.Bot):

@@ -873,3 +873,90 @@ def test_notice_failure_never_breaks_the_catch(cog, monkeypatch):
     m.channel = SimpleNamespace(id=7, mention="#c", send=AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "no")))
     assert run(cog._inspect(m)) is True
     m.delete.assert_awaited_once()
+
+
+# ── flagging: mod-log first, self-deleting fallback when there is none ──
+def _chan(cid, can=True, send=None):
+    perms = SimpleNamespace(view_channel=can, send_messages=can, embed_links=can)
+    ch = MagicMock(spec=discord.TextChannel)
+    ch.id, ch.position, ch.mention = cid, cid, f"<#{cid}>"
+    ch.permissions_for = lambda me: perms
+    ch.send = send or AsyncMock()
+    return ch
+
+
+def _flag_setup(cog, monkeypatch, *, log_id=None, channels=(), system=None, scam_chan=None):
+    from discord_bot.cogs import scam_shield as cog_mod
+    monkeypatch.undo() if False else None
+    cog._flag = cog_mod.ScamShieldCog._flag.__get__(cog)              # the fixture mocks _flag; use the real one
+    monkeypatch.setattr(cog_mod.db, "get_automod_config", AsyncMock(return_value={"log_channel_id": log_id}), raising=False)
+    guild = MagicMock()
+    guild.id, guild.me, guild.system_channel, guild.text_channels = 555, object(), system, list(channels)
+    guild.get_channel = lambda cid: next((c for c in channels if c.id == cid), None)
+    m = _msg("free $3500 at fatowin.com use GIFT")
+    m.guild = guild
+    m.author = MagicMock(); m.author.id = 42; m.author.__str__ = lambda s: "scammer"
+    m.channel = scam_chan or _chan(7)
+    return m, cog_mod
+
+
+def test_flag_goes_to_the_modlog_channel_with_details_and_does_not_self_delete(cog, monkeypatch):
+    modlog = _chan(100)
+    m, cm = _flag_setup(cog, monkeypatch, log_id=100, channels=[modlog])
+    assert run(cog._flag(m, "domain", "fatowin.com", True, "snippet", None)) is None
+    kw = modlog.send.await_args.kwargs
+    assert "delete_after" not in kw and kw["embed"].description == "snippet"
+    m.channel.send.assert_not_awaited()
+
+
+@pytest.mark.parametrize("log_id", [None, 100])          # not configured, or configured but the channel no longer exists
+def test_flag_without_a_modlog_posts_in_the_scam_channel_and_self_deletes(cog, monkeypatch, log_id):
+    m, cm = _flag_setup(cog, monkeypatch, log_id=log_id)
+    assert run(cog._flag(m, "domain", "fatowin.com", True, "free $3500 at fatowin.com", None)) is m.channel
+    kw = m.channel.send.await_args.kwargs
+    assert kw["delete_after"] == cm.FALLBACK_SECONDS
+    d = kw["embed"].description
+    assert "will be deleted in a short time" in d and "/modlog" in d and "removed" in d
+    assert "fatowin" not in d and "free $3500" not in d              # public channel: never repeats the scam
+    assert kw["allowed_mentions"].users is False or kw["allowed_mentions"].users == []
+
+
+def test_flag_falls_back_when_the_modlog_channel_is_unwritable(cog, monkeypatch):
+    modlog = _chan(100, can=False)
+    m, cm = _flag_setup(cog, monkeypatch, log_id=100, channels=[modlog])
+    assert run(cog._flag(m, "word", "x", False, "s", None)) is m.channel
+    modlog.send.assert_not_awaited()
+    assert "could not remove" in m.channel.send.await_args.kwargs["embed"].description
+
+
+def test_flag_tries_other_channels_when_the_scam_channel_is_unwritable(cog, monkeypatch):
+    blocked, system, other = _chan(7, can=False), _chan(50, can=False), _chan(60)
+    m, cm = _flag_setup(cog, monkeypatch, channels=[other], system=system, scam_chan=blocked)
+    assert run(cog._flag(m, "word", "x", True, "s", None)) is other
+    other.send.assert_awaited_once()
+    assert "<#7>" in other.send.await_args.kwargs["embed"].description      # names where it happened
+
+
+def test_flag_with_nowhere_to_post_is_silent(cog, monkeypatch):
+    m, cm = _flag_setup(cog, monkeypatch, channels=[_chan(60, can=False)], scam_chan=_chan(7, can=False))
+    assert run(cog._flag(m, "word", "x", True, "s", None)) is None
+
+
+def test_flag_send_failure_never_raises(cog, monkeypatch):
+    boom = _chan(7, send=AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "no")))
+    m, cm = _flag_setup(cog, monkeypatch, scam_chan=boom)
+    assert run(cog._flag(m, "word", "x", True, "s", None)) is None
+
+
+def test_fallback_in_the_scam_channel_replaces_the_separate_notice(cog, monkeypatch):
+    """One message in the channel, not two."""
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=None))
+    m = _msg("free $3500 at fatowin.com use GIFT")
+    m.channel = SimpleNamespace(id=7, mention="#c", send=AsyncMock())
+    cog._flag = AsyncMock(return_value=m.channel)
+    run(cog._inspect(m))
+    m.channel.send.assert_not_awaited()
+    cog._flag = AsyncMock(return_value=None)                           # mod-log used: public notice still posts
+    m2 = _msg("free $3500 at fatowin.com use GIFT"); m2.author.id = 43; m2.channel = SimpleNamespace(id=7, mention="#c", send=AsyncMock())
+    run(cog._inspect(m2))
+    m2.channel.send.assert_awaited_once()
