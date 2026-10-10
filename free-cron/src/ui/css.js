@@ -217,4 +217,17 @@ const TILES = `
 @media (max-width:700px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
 `;
 
-export const CSS = BASE + SHELL + TILES;
+const HIST = `
+/* run history */
+.hist{margin:.2rem 0 .4rem;padding:.7rem .8rem;border:1px solid var(--hair);background:rgba(2,6,12,.55)}
+.hist-scroll{max-height:260px;overflow:auto}
+.hrow{display:grid;grid-template-columns:10px minmax(0,1fr) 5.5rem 5rem 3.4rem;gap:.7rem;align-items:center;padding:.35rem 0;border-top:1px solid var(--hair);font-family:var(--mono);font-size:.76rem;letter-spacing:.04em}
+.hrow:first-child{border-top:0}
+.hdot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.hrow.bad .hdot{background:var(--bad);box-shadow:0 0 6px var(--bad)}
+.hrow .hs,.hrow .hm{text-align:right;color:var(--muted)}.hrow .hk{text-align:right;font-weight:700}
+.hrow.ok .hk{color:var(--ok)}.hrow.bad .hk{color:var(--bad)}
+@media (max-width:560px){.hrow{grid-template-columns:10px minmax(0,1fr) 3.6rem 3rem}.hrow .hm{display:none}}
+`;
+
+export const CSS = BASE + SHELL + TILES + HIST;

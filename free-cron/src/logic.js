@@ -73,6 +73,14 @@ export function classify(status) {      // redirects are never followed; a 2xx/3
   return Number.isInteger(status) && status >= 200 && status < 400;
 }
 
+// ---- run history ----
+export const KEEP_DAYS_FREE = 7, KEEP_DAYS_PREMIUM = 30;   // how long run rows are kept
+export const PRUNE_BATCH = 500;                             // rows removed per prune (bounded so it can't blow the time budget)
+export function runsLimit(raw) {                            // ?limit= for the history API: default 50, 1 to 100
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, 100) : 50;
+}
+
 // Dashboard tiles. enabled = switched on and inside the plan limit; ok/failed = based on each cron's last run (never-run crons count as neither).
 export function tally(jobs) {
   const t = { enabled: 0, disabled: 0, ok: 0, failed: 0 };

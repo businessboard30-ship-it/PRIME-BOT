@@ -94,3 +94,9 @@ test("tally: enabled, disabled, ok and failed for the dashboard tiles", () => {
   ];
   assert.deepEqual(L.tally(jobs), { enabled: 5, disabled: 2, ok: 2, failed: 2 });
 });
+
+test("runsLimit: default 50, minimum 1, maximum 100", () => {
+  assert.equal(L.runsLimit(null), 50); assert.equal(L.runsLimit(undefined), 50); assert.equal(L.runsLimit("abc"), 50);
+  assert.equal(L.runsLimit("0"), 50); assert.equal(L.runsLimit("-5"), 50);
+  assert.equal(L.runsLimit("1"), 1); assert.equal(L.runsLimit("100"), 100); assert.equal(L.runsLimit("101"), 100); assert.equal(L.runsLimit("99999"), 100);
+});
