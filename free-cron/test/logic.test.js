@@ -80,3 +80,17 @@ test("csrf check", () => {
   assert.ok(!L.sameOriginOk(req({ "X-FreeCron": "1", Origin: "https://evil.dev" }), url));
   assert.ok(!L.sameOriginOk(req({}), url));
 });
+
+test("tally: enabled, disabled, ok and failed for the dashboard tiles", () => {
+  assert.deepEqual(L.tally([]), { enabled: 0, disabled: 0, ok: 0, failed: 0 });
+  const jobs = [
+    { enabled: true, over_limit: false, last_run_at: 1, last_status: 200 },   // ok
+    { enabled: true, over_limit: false, last_run_at: 1, last_status: 301 },   // 3xx counts as ok
+    { enabled: true, over_limit: false, last_run_at: 1, last_status: 500 },   // failed
+    { enabled: true, over_limit: false, last_run_at: 1, last_status: 0 },     // timeout = failed
+    { enabled: false, over_limit: false, last_run_at: 0, last_status: null }, // paused, never ran
+    { enabled: true, over_limit: true, last_run_at: 0, last_status: null },   // over the free limit = disabled
+    { enabled: true, over_limit: false, last_run_at: 0, last_status: null },  // new, never ran: neither ok nor failed
+  ];
+  assert.deepEqual(L.tally(jobs), { enabled: 5, disabled: 2, ok: 2, failed: 2 });
+});

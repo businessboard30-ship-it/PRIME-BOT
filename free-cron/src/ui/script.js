@@ -83,6 +83,9 @@ function render(m){
   $("navCount").textContent=String(m.used);
   meter($("sideMeter"),m.used,m.premium?null:m.limit);
   meter($("dMeter"),m.used,m.premium?null:m.limit);
+  var st=m.stats||{enabled:0,disabled:0,ok:0,failed:0};
+  $("tEnabled").textContent=String(st.enabled);$("tDisabled").textContent=String(st.disabled);$("tOk").textContent=String(st.ok);
+  $("tFailed").textContent=String(st.failed);
   $("dWho").textContent=m.login;
   $("dUsed").textContent=String(m.used);$("dOf").textContent=unlimited?"crons // unlimited":("of "+m.limit+" crons");
   $("dPlan").textContent=m.premium?"Premium is on: unlimited crons, as often as every "+m.min_minutes+" minutes.":("Free plan: as often as every "+m.min_minutes+" minutes. Premium removes the limit.");

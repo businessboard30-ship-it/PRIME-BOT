@@ -202,4 +202,19 @@ body.menu-open .menu-btn span:nth-child(3){transform:translateY(-7px) rotate(-45
 @media (prefers-reduced-motion:reduce){.view{animation:none}.dot.live,.meter.max i.on,.ph .trace{animation:none}}
 `;
 
-export const CSS = BASE + SHELL;
+const TILES = `
+/* dashboard count tiles */
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1rem;margin:0 0 1.3rem}
+.tile{position:relative;display:flex;flex-direction:column;gap:.35rem;padding:1.1rem 1.1rem 1rem;text-decoration:none;color:var(--text);background:rgba(4,10,18,.62);border:1px solid var(--faint);overflow:hidden;transition:box-shadow .3s,transform .3s,border-color .3s}
+.tile::before{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--line);box-shadow:0 0 10px var(--glow);opacity:.7}
+.tile:hover{box-shadow:0 0 26px var(--glow-soft);transform:translateY(-2px);border-color:var(--line);color:#fff}
+.tile-n{font-family:var(--mono);font-size:clamp(1.8rem,5vw,2.6rem);font-weight:700;line-height:1;text-shadow:0 0 18px var(--glow)}
+.tile-l{font-family:var(--mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+.tile.ok .tile-n{color:var(--ok);text-shadow:0 0 18px rgba(125,255,176,.45)}
+.tile.ok::before{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+.tile.bad::before{background:var(--bad);box-shadow:0 0 10px var(--bad)}
+.tile.bad .tile-n{color:var(--bad);text-shadow:0 0 18px rgba(255,143,143,.5)}
+@media (max-width:700px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
+`;
+
+export const CSS = BASE + SHELL + TILES;

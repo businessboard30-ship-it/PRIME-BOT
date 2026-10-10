@@ -71,6 +71,27 @@ test("the script only routes to views that exist", async () => {
   for (const n of list) assert.ok(html.includes(`id="v-${n}"`));
 });
 
+test("/api/me returns the dashboard tile counts", async () => {
+  const e = env(), t = await addAccount(e);
+  assert.deepEqual((await (await call(e, "/api/me", { token: t })).json()).stats, { enabled: 0, disabled: 0, ok: 0, failed: 0 });
+  nextOk = true;
+  for (let i = 0; i < 4; i++) assert.equal((await call(e, "/api/jobs", { method: "POST", body: job({ name: "J" + i }), token: t })).status, 200);
+  const ids = e.DB.sql.prepare("SELECT id FROM jobs ORDER BY id").all().map((r) => r.id);
+  const set = e.DB.sql.prepare("UPDATE jobs SET last_run_at = ?1, last_status = ?2, enabled = ?3 WHERE id = ?4");
+  set.run(Date.now(), 200, 1, ids[0]); set.run(Date.now(), 503, 1, ids[1]); set.run(Date.now(), 200, 0, ids[2]);
+  const me = await (await call(e, "/api/me", { token: t })).json();
+  assert.deepEqual(me.stats, { enabled: 3, disabled: 1, ok: 2, failed: 1 });
+  assert.equal(me.jobs.length, 4);
+  const other = await addAccount(e, 2, "bob");
+  assert.deepEqual((await (await call(e, "/api/me", { token: other })).json()).stats, { enabled: 0, disabled: 0, ok: 0, failed: 0 });
+});
+
+test("dashboard has the four tiles and a create button", async () => {
+  const html = await (await call(env(), "/")).text();
+  for (const id of ["tEnabled", "tDisabled", "tOk", "tFailed"]) assert.ok(html.includes(`id="${id}"`));
+  assert.ok(html.includes('class="btn primary" href="#/crons">Create cronjob'));
+});
+
 test("API needs a session; state changes need our header", async () => {
   const e = env();
   assert.equal((await call(e, "/api/me")).status, 401);
