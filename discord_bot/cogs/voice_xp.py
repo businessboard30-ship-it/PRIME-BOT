@@ -197,13 +197,14 @@ class VoiceXPCog(GuildOnlyCog):
                     if announce_ch is None and member.voice and member.voice.channel:
                         announce_ch = member.voice.channel
 
+                pinged: set = set()      # one notification per member for the whole level-up
                 if leveling_cog and card_style != "off" and announce_ch:
                     # Was a plain text message only — voice XP never actually
                     # rendered the tier/level card (or the clan card below),
                     # so voice-only members never saw either. Route through
                     # the same renderer text XP uses instead of duplicating it.
                     await leveling_cog._send_level_up_card(
-                        announce_ch, member, new_level, new_total, card_style,
+                        announce_ch, member, new_level, new_total, card_style, pinged=pinged,
                     )
 
                 # Clan chiefs — re-derived here regardless of card_style,
@@ -219,12 +220,13 @@ class VoiceXPCog(GuildOnlyCog):
                     chief_changes = await db.recompute_clan_chiefs(guild_id, clone_id=clone_id)
                     if chief_changes and announce_ch:
                         for change in chief_changes:
-                            await leveling_cog._announce_chief_change(announce_ch, guild, change, clone_id=clone_id)
+                            await leveling_cog._announce_chief_change(announce_ch, guild, change, clone_id=clone_id,
+                                                                      pinged=pinged)
                     is_chief_now = any(c["new_user_id"] == user_id for c in chief_changes) or (
                         await db.get_chief_seat_for_user(guild_id, user_id, clone_id=clone_id) is not None
                     )
                     if card_style != "off" and (is_chief_now or new_level % 3 == 0) and announce_ch:
-                        await leveling_cog._send_clan_message(announce_ch, member, clone_id=clone_id)
+                        await leveling_cog._send_clan_message(announce_ch, member, clone_id=clone_id, pinged=pinged)
 
                     # Godhood gauntlet — same gap as clan chiefs above, also
                     # only ever wired into the text path before this fix.
