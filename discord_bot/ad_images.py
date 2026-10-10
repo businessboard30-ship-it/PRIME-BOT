@@ -22,17 +22,8 @@ AD_IMAGE_MAX_BYTES = 8 * 1024 * 1024  # 8 MB
 
 
 async def _host_channel(bot) -> discord.TextChannel | None:
-    channel_id_str = await db.get_global_setting("image_host_channel_id")
-    channel_id = int(channel_id_str) if channel_id_str and channel_id_str.isdigit() else bot_config.IMAGE_HOST_CHANNEL_ID
-    if not channel_id:
-        return None
-    channel = bot.get_channel(channel_id)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(channel_id)
-        except discord.HTTPException:
-            return None
-    return channel if isinstance(channel, discord.TextChannel) else None
+    from modules import image_host
+    return await image_host.resolve_channel(bot)
 
 
 async def upload_ad_image(bot, attachment: discord.Attachment, user: discord.abc.User, ad_id=None):

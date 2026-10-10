@@ -188,8 +188,8 @@ class SystemView(PanelView):
         super().__init__(cog, owner_id, section)
 
     def body(self):
-        lines = ["Analytics, submissions, revenue, pending checkouts, AI/env health checks, uploads hosting and data export.",
-                 "-# Each button runs the same command as its `/admin ...` slash command."]
+        lines = ["Analytics, submissions, revenue, pending checkouts, AI/env health checks, uploads hosting (with a test) and data export.",
+                 "-# Each button runs the same command as its `/admin ...` slash command (Test image hosting is a diagnostic with no slash command)."]
         if self._confirm == "hosting":
             lines.append("⚠️ **Press Confirm to use THIS channel for hosting uploaded welcome backgrounds.** "
                          "Open the panel in the private channel you want, then confirm.")
@@ -212,6 +212,7 @@ class SystemView(PanelView):
             _btn("Pending checkouts", P, self._pending, "⏳"),
             _btn("Env check", S, self._envcheck, "🩺"),
             _btn("AI debug", S, self._aidebug, "🤖"),
+            _btn("Test image hosting", S, self._imagetest, "🧪"),
             _btn("Confirm hosting channel" if hosting_on else "Set hosting channel",
                  G if hosting_on else S, self._hosting, "✅" if hosting_on else "🖼️", disabled=not hosting_ok),
             _btn("Confirm export" if export_on else "Export users",
@@ -246,6 +247,25 @@ class SystemView(PanelView):
         audit(i, action, **audit_kw)
         await call_cmd(owner_cog, name, i)   # defers/replies itself
         await self.soft_refresh(i)           # reset the Confirm button
+
+    async def _imagetest(self, i: discord.Interaction):
+        """Posts a test image to the hosting channel, reads it back and draws a welcome card on it, then says exactly
+        what is wrong (if anything). The one button here with no slash twin: it is a diagnostic, not an admin command."""
+        from modules import image_host
+        audit(i, "system.imagehosttest")
+        await i.response.defer(ephemeral=True, thinking=True)
+        try:
+            checks, card = await image_host.diagnose(i.client)
+            text = image_host.format_report(checks, image_host.bot_label(i.client))
+        except Exception:
+            logger.exception("image hosting test crashed")
+            await i.followup.send("❌ The image hosting test itself crashed. Check the bot logs.", ephemeral=True)
+            return
+        files = []
+        if card:
+            import io
+            files.append(discord.File(io.BytesIO(card), filename="test-welcome-card.png"))
+        await i.followup.send(text, files=files, ephemeral=True)
 
     async def _hosting(self, i: discord.Interaction):
         await self._two_step(i, "hosting", self.cog.welcome, "Welcome module", "hostingchannel",

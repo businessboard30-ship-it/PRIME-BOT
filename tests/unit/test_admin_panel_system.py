@@ -284,5 +284,49 @@ def test_system_quick_wins_report_missing_module(vp):
 
 def test_system_view_still_within_discord_limits_with_new_buttons(vp):
     v = vp.SystemView(cog(), OWNER)
-    assert len(buttons(v)) == 9
+    assert len(buttons(v)) == 10
     assert v.to_components()
+
+
+# ── Test image hosting ───────────────────────────────────────────────────
+
+def test_system_view_has_the_image_hosting_test_button(vp):
+    v = vp.SystemView(cog(), OWNER)
+    assert "Test image hosting" in buttons(v) and buttons(v)["Test image hosting"].disabled is False
+
+
+def test_image_hosting_test_runs_for_this_bot_and_shows_the_report_and_card(vp, monkeypatch):
+    from modules import image_host as ih
+    seen = {}
+
+    async def diagnose(bot, **kw):
+        seen["bot"] = bot
+        return [ih.Check("Channel id", True, "`1`"), ih.Check("Upload", False, "Discord refused the upload (Forbidden)", "allow Attach Files")], b"PNG"
+    monkeypatch.setattr(ih, "diagnose", diagnose)
+    v = vp.SystemView(cog(), OWNER)
+    i = I()
+    run(buttons(v)["Test image hosting"].callback(i))
+    i.response.defer.assert_awaited_once()
+    assert seen["bot"] is i.client
+    text = i.followup.send.await_args.args[0]
+    assert text.startswith("❌") and "Fix: allow Attach Files" in text
+    kw = i.followup.send.await_args.kwargs
+    assert kw["ephemeral"] is True and [f.filename for f in kw["files"]] == ["test-welcome-card.png"]
+
+
+def test_image_hosting_test_says_so_when_it_crashes(vp, monkeypatch):
+    from modules import image_host as ih
+
+    async def boom(bot, **kw):
+        raise RuntimeError("x")
+    monkeypatch.setattr(ih, "diagnose", boom)
+    i = I()
+    run(buttons(vp.SystemView(cog(), OWNER))["Test image hosting"].callback(i))
+    assert "crashed" in i.followup.send.await_args.args[0] and i.followup.send.await_args.kwargs["ephemeral"] is True
+
+
+def test_only_the_panel_owner_can_press_it(vp):
+    v = vp.SystemView(cog(), OWNER)
+    i = I(user=OTHER)
+    i.response.send_message = AsyncMock()
+    assert run(v.interaction_check(i)) is False
