@@ -1519,74 +1519,16 @@ class WelcomeCog(GuildOnlyCog):
         from discord_bot.views_card_pack import start_ultra_pack_payment
         await start_ultra_pack_payment(interaction)
 
-    @group.command(name="custombg", description="[Customize Card] Set the welcome card's background to your own png/jpeg")
-    @app_commands.describe(
-        url="Direct link to a .png or .jpg image (not a page URL) — leave blank to clear it",
-        image=f"Upload a .png or .jpg instead of a URL (max {CUSTOM_BG_MAX_BYTES // (1024 * 1024)}MB)",
-    )
-    async def custombg(self, interaction: discord.Interaction, url: str = "", image: discord.Attachment = None):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+    @group.command(name="custombg", description="Open the Customize Card wizard: live preview, styles, and upload your own image")
+    async def custombg(self, interaction: discord.Interaction):
+        # Same editor as the Customize Card button in /welcome setup. Its Upload image button takes a file or a link, and
+        # it starts the free trial / explains how to unlock when the server hasn't got Customize Card yet.
         if not _require_perm(interaction, "manage_guild"):
             await _deny(interaction, "Manage Server")
             return
-
-        config = await db.get_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction))
-        if not config.get("ultra_pack_unlocked"):
-            await interaction.followup.send(
-                "Custom backgrounds are part of Customize Card — this server hasn't bought it yet. "
-                "Open **Customize Card** in `/welcome setup` to start your free 5-day trial, "
-                "or run `/welcome buyultra` to unlock it for good.",
-                ephemeral=True,
-            )
-            return
-
-        url = url.strip()
-        if image is not None and url:
-            await interaction.followup.send("⚠️ Use either `url` or `image`, not both.", ephemeral=True)
-            return
-
-        if not url and image is None:
-            await db.set_welcome_config(
-                interaction.guild_id, clone_id=_clone_id_of(interaction),
-                custom_background_url=None, custom_bg_channel_id=None, custom_bg_message_id=None,
-            )
-            await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
-            await interaction.followup.send(
-                f"✅ Custom background cleared — back to the **{config.get('card_theme', 'wolf')}** theme.",
-                ephemeral=True,
-            )
-            return
-
-        if image is not None:
-            host_channel_id, host_message_id, cdn_url, reason = await _upload_custom_bg(
-                self.bot, image, interaction.guild
-            )
-            if reason:
-                await interaction.followup.send(f"⚠️ Couldn't use that image — {reason}.", ephemeral=True)
-                return
-            # Selecting a custom background implies the template card, same
-            # reasoning set_welcome_config already applies for colors/theme.
-            await db.set_welcome_config(
-                interaction.guild_id, clone_id=_clone_id_of(interaction),
-                custom_background_url=cdn_url,
-                custom_bg_channel_id=host_channel_id, custom_bg_message_id=host_message_id,
-            )
-            await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
-            await interaction.followup.send("✅ Welcome card background set to your uploaded image.", ephemeral=True)
-            return
-
-        async with aiohttp.ClientSession() as session:
-            image_bytes, reason = await _fetch_custom_bg_bytes(session, url)
-        if image_bytes is None:
-            await interaction.followup.send(f"⚠️ Couldn't use that image — {reason}.", ephemeral=True)
-            return
-
-        await db.set_welcome_config(
-            interaction.guild_id, clone_id=_clone_id_of(interaction),
-            custom_background_url=url, custom_bg_channel_id=None, custom_bg_message_id=None,
-        )
-        await refresh_posted_wizard(self.bot, interaction.guild_id, _clone_id_of(interaction))
-        await interaction.followup.send(f"✅ Welcome card background set to your image: {url}", ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        from discord_bot.cogs._views_card_customize import open_customize_wizard
+        await open_customize_wizard(interaction, interaction.guild_id, _clone_id_of(interaction))
 
     # Mounted as /admin hostingchannel (see cog_load).
     async def hostingchannel(self, interaction: discord.Interaction):
