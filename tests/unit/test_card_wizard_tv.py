@@ -121,7 +121,7 @@ def redraw(monkeypatch):
     monkeypatch.setattr(cc, "_render_tv", render)
     monkeypatch.setattr(cc, "_REDRAW_DELAY", 0.05)
     monkeypatch.setattr(cc, "_refresh_public_wizard", lambda *a, **k: None)
-    cc._GEN.clear(); cc._LOCKS.clear(); cc._TAB_STATE.clear()
+    cc._GEN.clear(); cc._LOCKS.clear(); cc._TAB_STATE.clear(); cc._TV_STATE.clear(); cc._TV_NOTES.clear()
     return state
 
 
@@ -132,7 +132,10 @@ def test_quick_taps_collapse_into_one_redraw(redraw):
         return it
     it = asyncio.run(go())
     assert redraw["renders"] == 1 and len(it.edits) == 1
-    assert it.edits[0]["attachments"][0].filename == "card.png"
+    name = it.edits[0]["attachments"][0].filename
+    assert name.startswith("card") and name.endswith(".png")
+    gallery = [c for c in it.edits[0]["view"].walk_children() if isinstance(c, discord.ui.MediaGallery)]
+    assert gallery[0].items[0].media.url == f"attachment://{name}"            # the view points at the file sent in the same edit
     assert isinstance(it.edits[0]["view"], discord.ui.LayoutView)
 
 
@@ -278,4 +281,110 @@ def test_opening_the_wizard_starts_the_trial_once_and_shows_the_tv(monkeypatch):
     asyncio.run(cc.open_customize_wizard(it, 1, None))
     assert state["started"] == [1]
     assert "free 5-day trial" in sent[0][0][0].lower() and sent[0][1]["ephemeral"] is True       # trial note first
-    assert isinstance(sent[1][1]["view"], discord.ui.LayoutView) and sent[1][1]["file"].filename == "card.png"
+    assert isinstance(sent[1][1]["view"], discord.ui.LayoutView) and sent[1][1]["file"].filename.startswith("card") and sent[1][1]["file"].filename.endswith(".png")
+
+
+# ---------- the picture must not vanish ----------
+
+def _gallery(view):
+    return [c for c in view.walk_children() if isinstance(c, discord.ui.MediaGallery)]
+
+
+def test_every_redraw_uses_a_new_file_name_and_the_view_points_at_it(redraw):
+    it = FakeInteraction()
+    for _ in range(3):
+        asyncio.run(cc._rerender(it, 1, None, 5))
+    names = [e["attachments"][0].filename for e in it.edits]
+    assert len(set(names)) == 3                                         # never two uploads called card.png
+    for e, n in zip(it.edits, names):
+        assert _gallery(e["view"])[0].items[0].media.url == f"attachment://{n}"
+    assert cc._TV_STATE[(1, None, 42)] == names[-1]
+
+
+def test_a_failed_redraw_keeps_the_picture_that_is_already_there(redraw):
+    asyncio.run(cc._rerender(FakeInteraction(), 1, None, 5))              # a good draw first
+    shown = cc._TV_STATE[(1, None, 42)]
+    redraw["fail"] = True
+    it = FakeInteraction()
+    asyncio.run(cc._rerender(it, 1, None, 5))
+    e = it.edits[0]
+    assert "attachments" not in e                                       # Discord keeps the old file
+    assert _gallery(e["view"])[0].items[0].media.url == f"attachment://{shown}"
+    assert cc._TV_STATE[(1, None, 42)] == shown and "Couldn't refresh" in (cc._TV_NOTES[(1, None, 42)] or "")
+
+
+def test_open_remembers_the_picture_name_so_a_tab_switch_keeps_it(monkeypatch):
+    sent = []
+
+    async def get(gid, clone_id=None):
+        return {"ultra_pack_unlocked": True}
+
+    async def render(*a, **k):
+        return b"PNG", "Sample backdrop"
+
+    class FU:
+        async def send(self, *a, **kw):
+            sent.append(kw)
+    monkeypatch.setattr(cc.db, "get_welcome_config", get)
+    monkeypatch.setattr(cc, "_render_tv", render)
+    cc._TV_STATE.clear()
+    it = SimpleNamespace(user=SimpleNamespace(id=9), guild=SimpleNamespace(), client=SimpleNamespace(get_guild=lambda g: None), followup=FU())
+    asyncio.run(cc.open_customize_wizard(it, 1, None))
+    name = sent[0]["file"].filename
+    assert cc._TV_STATE[(1, None, 9)] == name and _gallery(sent[0]["view"])[0].items[0].media.url == f"attachment://{name}"
+
+
+def test_tab_switch_uses_remembered_state_not_the_message_attachments(monkeypatch):
+    async def ok(*a, **k):
+        return True
+
+    async def get(gid, clone_id=None):
+        return {"ultra_pack_unlocked": True}
+    monkeypatch.setattr(cc, "_check_access", ok)
+    monkeypatch.setattr(cc.db, "get_welcome_config", get)
+    cc._TV_STATE.clear()
+    cc._TV_STATE[(1, None, 42)] = "card-abc123.png"
+    edits = []
+
+    class Resp:
+        async def defer(self, *a, **k):
+            pass
+    it = SimpleNamespace(user=SimpleNamespace(id=42), response=Resp(), message=SimpleNamespace(attachments=[]))
+
+    async def edit(**kw):
+        edits.append(kw)
+    it.edit_original_response = edit
+    asyncio.run(cc.CardTabButton("layout", 1, None, 5).callback(it))
+    assert _gallery(edits[0]["view"])[0].items[0].media.url == "attachment://card-abc123.png"
+    assert "attachments" not in edits[0]
+
+
+def test_tab_switch_falls_back_to_the_message_after_a_restart(monkeypatch):
+    async def ok(*a, **k):
+        return True
+
+    async def get(gid, clone_id=None):
+        return {"ultra_pack_unlocked": True}
+    monkeypatch.setattr(cc, "_check_access", ok)
+    monkeypatch.setattr(cc.db, "get_welcome_config", get)
+    cc._TV_STATE.clear()
+    edits = []
+
+    class Resp:
+        async def defer(self, *a, **k):
+            pass
+    it = SimpleNamespace(user=SimpleNamespace(id=42), response=Resp(),
+                         message=SimpleNamespace(attachments=[SimpleNamespace(filename="card-zzz999.png")]))
+
+    async def edit(**kw):
+        edits.append(kw)
+    it.edit_original_response = edit
+    asyncio.run(cc.CardTabButton("text", 1, None, 5).callback(it))
+    assert _gallery(edits[0]["view"])[0].items[0].media.url == "attachment://card-zzz999.png"
+
+
+def test_the_background_button_is_called_upload_image():
+    assert cc.CardBackgroundButton.LABEL.endswith("Upload image") and "Set background" not in cc.CardBackgroundButton.LABEL
+    labels = [getattr(getattr(c, "item", c), "label", "") for c in build("bg").walk_children()]
+    assert any(l and l.endswith("Upload image") for l in labels)
+    assert cc.CardBackgroundButton.FIELD == "setbg"                       # id unchanged so open wizard messages keep working
