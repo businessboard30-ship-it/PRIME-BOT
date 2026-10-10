@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "72"
+SCHEMA_VERSION = "73"
+# "72" -> "73" adds auto_bump_enabled, auto_bump_by and auto_bump_checked_at (+ partial index) to bump_listings for Premium Auto Bump (4 bumps a day). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "71" -> "72" creates dash_visits (one row per web-dashboard user per UTC day, written at most every ~10 minutes per person; kept 90 days; only the owner area reads it). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "70" -> "71" creates dev_jobs (Developer-mode scheduled jobs: reminder / note / AI prompt on allowlisted presets, claimed by the cron worker). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "69" -> "70" adds display_name, avatar_url and show_on_board to dash_web_users (web leaderboard: signed-in members appear by name unless they opt out). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5128,8 +5129,17 @@ class Database:
             # clears the way for exactly one new reminder next cooldown —
             # see bump_get_listings_needing_reminder.
             "ALTER TABLE bump_listings ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ",
+            # Auto Bump (Premium): switched on from the Auto Bump button next to Bump. auto_bump_by is the
+            # staff member who turned it on; auto_bump_checked_at is stamped on every attempt so a listing
+            # that cannot bump (no channel, missing permissions) is retried slowly, not every tick.
+            "ALTER TABLE bump_listings ADD COLUMN IF NOT EXISTS auto_bump_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE bump_listings ADD COLUMN IF NOT EXISTS auto_bump_by BIGINT",
+            "ALTER TABLE bump_listings ADD COLUMN IF NOT EXISTS auto_bump_checked_at TIMESTAMPTZ",
         ):
             await conn.execute(_col_sql)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS bump_listings_auto_idx ON bump_listings (auto_bump_enabled) WHERE auto_bump_enabled"
+        )
 
         # Owner-approved sponsored ads (ad_submissions) placed once into
         # each clone's bump channel — see get_all_bump_channels /
@@ -17942,6 +17952,46 @@ class Database:
                 clone_id, cooldown_seconds, limit,
             )
             return [dict(r) for r in rows]
+
+    # --- Auto Bump (Premium) -------------------------------------------------------------------------
+    async def bump_set_auto(self, listing_id: int, enabled: bool, by: Optional[int] = None) -> Optional[Dict]:
+        """Turn Auto Bump on/off for one listing. Turning it on clears the retry stamp so the first
+        attempt is not held back by an old failure."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE bump_listings SET auto_bump_enabled = $2, "
+                "auto_bump_by = CASE WHEN $2 THEN $3 ELSE auto_bump_by END, auto_bump_checked_at = NULL "
+                "WHERE id = $1 RETURNING id, guild_id, clone_id, auto_bump_enabled",
+                listing_id, bool(enabled), by)
+            return dict(row) if row else None
+
+    async def bump_get_auto_due(self, clone_id: Optional[int], interval_seconds: int, retry_seconds: int,
+                                limit: int = 5) -> List[Dict]:
+        """Auto Bump listings that are due: the last bump (manual or automatic) is at least `interval_seconds`
+        old, and the last attempt at least `retry_seconds` ago. Spacing from the LAST bump of any kind is what
+        keeps this to 4 a day at most and stops it doubling up with a person who just bumped."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, guild_id, clone_id, name, listing_type, last_bump_at
+                FROM bump_listings
+                WHERE auto_bump_enabled
+                  AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                  AND status = 'approved'
+                  AND (last_bump_at IS NULL OR last_bump_at <= NOW() - ($2 * INTERVAL '1 second'))
+                  AND (auto_bump_checked_at IS NULL OR auto_bump_checked_at <= NOW() - ($3 * INTERVAL '1 second'))
+                ORDER BY last_bump_at NULLS FIRST
+                LIMIT $4
+                """,
+                clone_id, interval_seconds, retry_seconds, limit)
+            return [dict(r) for r in rows]
+
+    async def bump_mark_auto_checked(self, listing_id: int) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE bump_listings SET auto_bump_checked_at = NOW() WHERE id = $1", listing_id)
 
     async def bump_mark_reminder_sent(self, listing_id: int) -> None:
         pool = await get_pool()
