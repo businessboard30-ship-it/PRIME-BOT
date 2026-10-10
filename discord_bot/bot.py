@@ -302,12 +302,13 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.verification")
         await self.load_extension("discord_bot.cogs.giveaways")
         await self.load_extension("discord_bot.cogs.referral_giveaway_post")
-        await self.load_extension("discord_bot.cogs.scam_shield")
         await self.load_extension("discord_bot.cogs.schedule")
         # admin MUST load before welcome/bump/feedback/clone_admin/lookup: they
         # mount their owner commands under the /admin group in cog_load
         # (see cogs/_admin_mount.py) to save global slash-command slots.
         await self.load_extension("discord_bot.cogs.admin")
+        # After admin: Scam Shield mounts /admin scamchannel, which needs AdminCog to exist already.
+        await self.load_extension("discord_bot.cogs.scam_shield")
         await self.load_extension("discord_bot.cogs.welcome")
         await self.load_extension("discord_bot.cogs.welcome_extras")
         await self.load_extension("discord_bot.cogs.join_gate")
