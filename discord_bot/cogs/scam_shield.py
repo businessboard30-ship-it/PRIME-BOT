@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from datetime import timedelta
 from typing import List, Optional, Tuple
 
 import discord
@@ -57,9 +58,11 @@ class ScamShieldCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._reload.start()
+        self._backfill.start()
 
     def cog_unload(self):
         self._reload.cancel()
+        self._backfill.cancel()
 
     async def cog_load(self):
         await ss.load(force=True)
@@ -72,6 +75,72 @@ class ScamShieldCog(commands.Cog):
     async def _before(self):
         await self.bot.wait_until_ready()
 
+    # ── one-time look back at recent history ─────────────────────────────
+    @tasks.loop(count=1)
+    async def _backfill(self):
+        try:
+            await self._sweep_history()
+        except Exception:
+            logger.exception("[scam-shield] history sweep failed; it will try again on the next start")
+
+    @_backfill.before_loop
+    async def _before_backfill(self):
+        await self.bot.wait_until_ready()
+
+    async def _sweep_history(self) -> None:
+        """Runs once per bot after the dwinble rules exist: looks through the last few days of every readable
+        channel and removes copies of the scam that were posted before the bot knew about it. Goes through the
+        same _inspect as live messages (trusted staff skipped, server settings respected, evidence archived,
+        hit logged). The 'done' marker is written only when the sweep reaches the end, so a restart halfway
+        through just starts it again."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        if await ss.backfill_done(clone_id):
+            return
+        await ss.load(force=True)                 # makes sure the new rules are in memory (and seeded)
+        if not ss.is_enabled() or not await ss.seed_done(ss.SEED_DWINBLE_KEY):
+            return                                # switched off, or new rules not stored yet: try next start
+        cutoff = discord.utils.utcnow() - timedelta(days=ss.BACKFILL_DAYS)
+        scanned = caught = channels = guilds = 0
+        for guild in list(self.bot.guilds):
+            if self.bot.is_closed():
+                return                            # shutting down: no marker, so it resumes next start
+            gs = await ss.guild_settings(guild.id, clone_id)
+            me = guild.me
+            if not gs["enabled"] or me is None:
+                continue
+            guilds += 1
+            for ch in guild.text_channels:
+                perms = ch.permissions_for(me)
+                if not (perms.view_channel and perms.read_message_history):
+                    continue
+                channels += 1
+                try:
+                    async for msg in ch.history(limit=ss.BACKFILL_PER_CHANNEL, after=cutoff):
+                        scanned += 1
+                        if await self._inspect(msg):
+                            caught += 1
+                except discord.HTTPException as e:
+                    logger.debug("[scam-shield] sweep couldn't read #%s in %s (%s)", ch.id, guild.id, e)
+                await asyncio.sleep(ss.BACKFILL_CHANNEL_PAUSE)
+        await ss.mark_backfill_done(clone_id)
+        logger.info("[scam-shield] history sweep done: %s messages in %s channels across %s servers, %s caught",
+                    scanned, channels, guilds, caught)
+        await self._sweep_summary(scanned, caught, channels, guilds)
+
+    async def _sweep_summary(self, scanned: int, caught: int, channels: int, guilds: int) -> None:
+        """Best effort: tell the owner what the sweep found, in the image-hosting channel if one is set."""
+        try:
+            from discord_bot.ad_images import _host_channel
+            host = await _host_channel(self.bot)
+            if host is None:
+                return
+            await host.send(
+                f"\U0001F6E1\ufe0f **Scam Shield history sweep finished** | looked at {scanned} recent messages in "
+                f"{channels} channels across {guilds} servers | **{caught} scam message(s) removed**",
+                allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            logger.debug("[scam-shield] couldn't post the sweep summary", exc_info=True)
+
     # ── listeners ────────────────────────────────────────────────────────
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -82,38 +151,40 @@ class ScamShieldCog(commands.Cog):
         if before.content != after.content:           # scammers sometimes edit the bait in afterwards
             await self._inspect(after)
 
-    async def _inspect(self, message: discord.Message) -> None:
+    async def _inspect(self, message: discord.Message) -> bool:
         if message.guild is None or message.type not in (discord.MessageType.default, discord.MessageType.reply):
-            return
+            return False
         if self.bot.user and message.author.id == self.bot.user.id:
-            return
+            return False
         if ss.stale():
             await ss.load()
         if not ss.is_enabled():
-            return
+            return False
         try:
             if _is_trusted(message):
-                return
+                return False
             text = _text_of(message)
             hit = ss.match_text(text)
             if hit is None and ss.has_image_rules():
                 hit = await self._match_images(message)
             if hit is None:
-                return
+                return False
             # Only now (a real match) look at this server's own settings: it can switch the shield
             # off for itself or allow specific domains. Cached, so this is not a per-message query.
             gs = await ss.guild_settings(message.guild.id, getattr(self.bot, "clone_id", None))
             if not gs["enabled"]:
-                return
+                return False
             if gs["allowed_domains"] and hit[0] == "domain":
                 hit = ss.match_text(text, gs["allowed_domains"])
                 if hit is None and ss.has_image_rules():
                     hit = await self._match_images(message)
                 if hit is None:
-                    return
+                    return False
             await self._act(message, *hit)
+            return True
         except Exception:
             logger.exception("[scam-shield] failed while checking a message")
+            return False
 
     async def _match_images(self, message: discord.Message):
         for att in message.attachments[:4]:

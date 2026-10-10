@@ -66,6 +66,31 @@ SEED_RULES = (
     ("image", "800021140c6d19f3"),   # popup next to a phone showing +5600 USDT
 )
 
+# Second batch: the "Drake" variant of the same scam (dwinble.com, promo code DRAKE, fake $3,200 withdrawal).
+# Each batch has its own marker, so servers that already ran the first one still get this one exactly once.
+SEED_DWINBLE_KEY = "seed_dwinble_2026_10"
+SEED_DWINBLE_NOTE = "dwinble fake Drake giveaway"
+SEED_DWINBLE_RULES = (
+    ("domain", "dwinble.com"),
+    ("word", "dwinble"),
+    ("image", "69b0e0c88fe4a755"),   # "Withdrawal accepted $3,200" popup over the casino lobby
+    ("image", "991a129192831114"),   # popup + "@Drake Thank you!" next to a phone showing +3,200 USDT
+    ("image", "00133a4438380e3f"),   # promo-code page with DRAKE typed in
+    ("image", "64647d3e3bb53b33"),   # fake Drake post on X pushing dwinble.com
+)
+
+SEED_BATCHES = (
+    (SEED_KEY, SEED_NOTE, SEED_RULES),
+    (SEED_DWINBLE_KEY, SEED_DWINBLE_NOTE, SEED_DWINBLE_RULES),
+)
+
+# One-time look back through recent history after the dwinble rules are seeded, to remove copies that were
+# posted before the bot knew about them. Marker is per bot (main or clone) and written only when it finishes.
+BACKFILL_KEY = "backfill_" + SEED_DWINBLE_KEY
+BACKFILL_DAYS = 14               # the scam wave is recent; older history is not touched
+BACKFILL_PER_CHANNEL = 300       # newest messages looked at per channel
+BACKFILL_CHANNEL_PAUSE = 1.0     # seconds between channels, so the sweep never competes with live traffic
+
 
 async def _pool():
     from database import get_pool  # lazy: keeps this module importable in tests
@@ -188,18 +213,19 @@ async def load(force: bool = False) -> None:
 
 
 async def _seed_defaults(conn) -> None:
-    """Insert SEED_RULES once (marked in scam_shield_settings), so removing one in /admin sticks."""
-    try:
-        if await conn.fetchval("SELECT 1 FROM scam_shield_settings WHERE key = $1", SEED_KEY):
-            return
-        for kind, pattern in SEED_RULES:
+    """Insert each seed batch once (marked in scam_shield_settings), so removing a rule in /admin sticks."""
+    for key, note, rules in SEED_BATCHES:
+        try:
+            if await conn.fetchval("SELECT 1 FROM scam_shield_settings WHERE key = $1", key):
+                continue
+            for kind, pattern in rules:
+                await conn.execute(
+                    "INSERT INTO scam_shield_rules (kind, pattern, note) VALUES ($1, $2, $3) "
+                    "ON CONFLICT (kind, pattern) DO NOTHING", kind, pattern, note)
             await conn.execute(
-                "INSERT INTO scam_shield_rules (kind, pattern, note) VALUES ($1, $2, $3) "
-                "ON CONFLICT (kind, pattern) DO NOTHING", kind, pattern, SEED_NOTE)
-        await conn.execute(
-            "INSERT INTO scam_shield_settings (key, value) VALUES ($1, 'done') ON CONFLICT (key) DO NOTHING", SEED_KEY)
-    except Exception:
-        logger.exception("[scam-shield] couldn't seed the default rules; will retry on the next reload")
+                "INSERT INTO scam_shield_settings (key, value) VALUES ($1, 'done') ON CONFLICT (key) DO NOTHING", key)
+        except Exception:
+            logger.exception("[scam-shield] couldn't seed the default rules (%s); will retry on the next reload", key)
 
 
 # ── matching ─────────────────────────────────────────────────────────────
@@ -347,6 +373,49 @@ async def hit_total() -> int:
     pool = await _pool()
     async with pool.acquire() as conn:
         return int(await conn.fetchval("SELECT COUNT(*) FROM scam_shield_hits") or 0)
+
+
+# ── one-time history sweep marker ─────────────────────────────────────────
+
+def backfill_marker(clone_id: Optional[int] = None) -> str:
+    """Settings key for 'this bot already did the sweep'. One per bot, so clones each sweep their own servers."""
+    return f"{BACKFILL_KEY}:{clone_id if clone_id is not None else 'main'}"
+
+
+async def backfill_done(clone_id: Optional[int] = None) -> bool:
+    """True if the sweep already finished. If the database can't be read we say True: better to skip a sweep
+    than to repeat one on every restart."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT 1 FROM scam_shield_settings WHERE key = $1", backfill_marker(clone_id)))
+    except Exception:
+        logger.exception("[scam-shield] couldn't read the sweep marker; skipping the sweep this start")
+        return True
+
+
+async def seed_done(key: str) -> bool:
+    """True once a seed batch has been inserted (its marker exists). The sweep waits for this so it never
+    spends its one run on a rule set that is missing the new rules."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval("SELECT 1 FROM scam_shield_settings WHERE key = $1", key))
+    except Exception:
+        logger.exception("[scam-shield] couldn't check the seed marker")
+        return False
+
+
+async def mark_backfill_done(clone_id: Optional[int] = None) -> None:
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO scam_shield_settings (key, value) VALUES ($1, 'done') ON CONFLICT (key) DO NOTHING",
+                backfill_marker(clone_id))
+    except Exception:
+        logger.exception("[scam-shield] couldn't save the sweep marker (it may run again on the next start)")
 
 
 # ── per-server settings (server panel phase 9) ───────────────────────────
