@@ -72,6 +72,58 @@ async function publicStatus(env, slug, now = Date.now()) {
   return L.buildPublicStatus(page, mons.results || [], use.results || [], premium, now);
 }
 
+const alertsReady = new WeakSet();
+async function ensureAlertTables(env) {            // same as migrations/0005_alerts.sql; works even if the migration step lacked D1:Edit
+  if (alertsReady.has(env.DB)) return;
+  const cols = ((await env.DB.prepare("PRAGMA table_info(jobs)").all()).results || []).map((c) => c.name);
+  const alter = [];
+  if (!cols.includes("alerting")) alter.push(env.DB.prepare("ALTER TABLE jobs ADD COLUMN alerting INTEGER NOT NULL DEFAULT 0"));   // ALTER has no IF NOT EXISTS, hence the check above
+  if (!cols.includes("last_alert_at")) alter.push(env.DB.prepare("ALTER TABLE jobs ADD COLUMN last_alert_at INTEGER"));
+  try { if (alter.length) await env.DB.batch(alter); } catch { /* a parallel run added them first */ }
+  await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS account_settings (account_id INTEGER PRIMARY KEY, discord_webhook TEXT, alerts_enabled INTEGER NOT NULL DEFAULT 1, alert_window_start INTEGER NOT NULL DEFAULT 0, alert_count INTEGER NOT NULL DEFAULT 0, last_test_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS alert_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL, job_id INTEGER NOT NULL, kind TEXT NOT NULL, job_name TEXT NOT NULL, detail TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS alert_outbox_acct_idx ON alert_outbox (account_id)"),
+  ]);
+  alertsReady.add(env.DB);
+}
+
+/** POST one message to a Discord webhook. Returns the HTTP status, or 0 on a network error or timeout. Redirects are not followed. */
+async function postDiscord(url, text, doFetch = fetch) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), L.ALERT_TIMEOUT_MS);
+  try {
+    const r = await doFetch(url, { method: "POST", redirect: "manual", signal: ctl.signal, headers: { "Content-Type": "application/json", "User-Agent": UA },
+      body: JSON.stringify({ content: text, allowed_mentions: { parse: [] } }) });
+    try { await r.body?.cancel(); } catch { /* nothing to read */ }
+    return r.status;
+  } catch { return 0; } finally { clearTimeout(timer); }
+}
+
+/** Send a few queued alerts. Runs after runDue() in its own step, so a failing webhook can never break a tick. */
+export async function sendAlerts(env, now = Date.now(), doFetch = fetch) {
+  if (String(env.DISABLED || "") === "1") return { skipped: "disabled" };
+  await ensureAlertTables(env);
+  const rows = ((await env.DB.prepare(
+    `SELECT o.id, o.kind, o.job_name, o.detail, o.attempts, s.discord_webhook FROM alert_outbox o
+     JOIN account_settings s ON s.account_id = o.account_id
+     WHERE s.alerts_enabled = 1 AND s.discord_webhook IS NOT NULL ORDER BY o.id LIMIT ?1`).bind(L.ALERT_SEND_BATCH).all()).results) || [];
+  if (!rows.length) return { sent: 0 };
+  const stmts = []; let sent = 0;
+  await Promise.all(rows.map(async (r) => {
+    const st = await postDiscord(r.discord_webhook, L.alertText(r.kind, r.job_name, r.detail), doFetch);
+    if (st >= 200 && st < 300) { sent++; stmts.push(env.DB.prepare("DELETE FROM alert_outbox WHERE id = ?1").bind(r.id)); }
+    else if (st === 401 || st === 403 || st === 404 || r.attempts + 1 >= L.ALERT_MAX_TRIES) stmts.push(env.DB.prepare("DELETE FROM alert_outbox WHERE id = ?1").bind(r.id));   // webhook gone, or tried enough
+    else stmts.push(env.DB.prepare("UPDATE alert_outbox SET attempts = attempts + 1 WHERE id = ?1").bind(r.id));
+  }));
+  await env.DB.batch(stmts);
+  return { sent };
+}
+export async function pruneOutbox(env, now = Date.now()) {
+  await ensureAlertTables(env);
+  const r = await env.DB.prepare("DELETE FROM alert_outbox WHERE created_at < ?1").bind(now - L.ALERT_KEEP_MS).run();
+  return { pruned: r.meta.changes };
+}
+
 /** Remove old run rows: 7 days for free accounts, 30 for Premium. Bounded, so one call is cheap. */
 export async function pruneRuns(env, now = Date.now()) {
   await ensureRunsTable(env);
@@ -136,6 +188,38 @@ async function me(env, account) {
     limit: lim === Infinity ? null : lim, used: rows.length, min_minutes: L.minMinutesFor(account, now), intervals: L.INTERVALS,
     jobs, stats: L.tally(jobs),
   };
+}
+
+async function handleAlerts(request, env, url, account) {
+  const path = url.pathname, method = request.method, now = Date.now();
+  await ensureAlertTables(env);
+  const view = async () => {
+    const r = await env.DB.prepare("SELECT discord_webhook, alerts_enabled FROM account_settings WHERE account_id = ?1").bind(account.id).first();
+    return { webhook: L.maskWebhook(r?.discord_webhook), enabled: r ? !!r.alerts_enabled : true, after: L.ALERT_AFTER, disable_after: L.MAX_FAILS };
+  };
+  if (path === "/api/alerts" && method === "GET") return json(await view());
+  if (path === "/api/alerts" && method === "PUT") {
+    const b = await request.json().catch(() => ({}));
+    if (b.webhook === undefined && b.enabled === undefined) return err(422, "Send a webhook or enabled.");
+    if (b.enabled !== undefined && typeof b.enabled !== "boolean") return err(422, "enabled must be true or false.");
+    let hook;                                                            // undefined = keep, null = remove, string = set
+    if (b.webhook === null || b.webhook === "") hook = null;
+    else if (b.webhook !== undefined) { hook = L.validDiscordWebhook(b.webhook); if (!hook) return err(422, "That isn't a Discord webhook address (https://discord.com/api/webhooks/...)."); }
+    await env.DB.prepare("INSERT INTO account_settings (account_id, updated_at) VALUES (?1, ?2) ON CONFLICT(account_id) DO NOTHING").bind(account.id, now).run();
+    await env.DB.prepare("UPDATE account_settings SET discord_webhook = CASE WHEN ?2 THEN ?3 ELSE discord_webhook END, alerts_enabled = COALESCE(?4, alerts_enabled), updated_at = ?5 WHERE account_id = ?1")
+      .bind(account.id, hook === undefined ? 0 : 1, hook ?? null, b.enabled === undefined ? null : b.enabled ? 1 : 0, now).run();
+    if (hook === null) await env.DB.prepare("DELETE FROM alert_outbox WHERE account_id = ?1").bind(account.id).run();
+    return json(await view());
+  }
+  if (path === "/api/alerts/test" && method === "POST") {                 // one real message, at most once a minute per account
+    const row = await env.DB.prepare("SELECT discord_webhook FROM account_settings WHERE account_id = ?1").bind(account.id).first();
+    if (!row?.discord_webhook) return err(422, "Save a Discord webhook first.");
+    const slot = await env.DB.prepare("UPDATE account_settings SET last_test_at = ?2 WHERE account_id = ?1 AND last_test_at < ?3").bind(account.id, now, now - 60000).run();
+    if (!slot.meta.changes) return err(429, "Please wait a minute before sending another test.");
+    const st = await postDiscord(row.discord_webhook, L.alertText("test"));
+    return st >= 200 && st < 300 ? json({ sent: true }) : err(502, "Discord didn't accept the message. Check the webhook address.");
+  }
+  return err(404, "Not found.");
 }
 
 async function pagesView(env, account) {
@@ -262,8 +346,8 @@ async function handleApi(request, env, url) {
 
   if (path === "/api/me" && method === "GET") return json(await me(env, account));
   if (path === "/api/me" && method === "DELETE") {                       // delete my account and every cron
-    await ensureLicenseTable(env); await ensureRunsTable(env); await ensureStatusTables(env);
-    await env.DB.batch([env.DB.prepare("DELETE FROM runs WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM jobs WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM licenses WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM status_page_jobs WHERE page_id IN (SELECT id FROM status_pages WHERE account_id = ?1)").bind(account.id), env.DB.prepare("DELETE FROM status_pages WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM accounts WHERE id = ?1").bind(account.id)]);
+    await ensureLicenseTable(env); await ensureRunsTable(env); await ensureStatusTables(env); await ensureAlertTables(env);
+    await env.DB.batch([env.DB.prepare("DELETE FROM runs WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM jobs WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM licenses WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM status_page_jobs WHERE page_id IN (SELECT id FROM status_pages WHERE account_id = ?1)").bind(account.id), env.DB.prepare("DELETE FROM status_pages WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM account_settings WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM alert_outbox WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM accounts WHERE id = ?1").bind(account.id)]);
     return json({ deleted: true }, 200, { "Set-Cookie": cookie("fc_session", "", {}) });
   }
 
@@ -323,6 +407,7 @@ async function handleApi(request, env, url) {
   }
 
   if (path.startsWith("/api/status-pages")) return handleStatusPages(request, env, url, account);
+  if (path.startsWith("/api/alerts")) return handleAlerts(request, env, url, account);
 
   const hm = path.match(/^\/api\/jobs\/(\d{1,12})\/runs$/);
   if (hm && method === "GET") {                                            // run history of one of MY crons, newest first
@@ -342,15 +427,16 @@ async function handleApi(request, env, url) {
       const r = await env.DB.prepare("DELETE FROM jobs WHERE id = ?1 AND account_id = ?2").bind(id, account.id).run();
       if (!r.meta.changes) return err(404, "That cron doesn't exist.");
       await env.DB.prepare("DELETE FROM runs WHERE job_id = ?1 AND account_id = ?2").bind(id, account.id).run();   // its history goes with it
-      await ensureStatusTables(env); await env.DB.prepare("DELETE FROM status_page_jobs WHERE job_id = ?1").bind(id).run();   // and it leaves any status page
+      await ensureAlertTables(env); await ensureStatusTables(env); await env.DB.batch([env.DB.prepare("DELETE FROM status_page_jobs WHERE job_id = ?1").bind(id), env.DB.prepare("DELETE FROM alert_outbox WHERE job_id = ?1").bind(id)]);   // and it leaves any status page
       return json({ deleted: true });
     }
     if (method === "PATCH") {
+      await ensureAlertTables(env);
       const b = await request.json().catch(() => ({}));
       if (typeof b.enabled !== "boolean") return err(422, "enabled must be true or false.");
       const now = Date.now();
       const r = b.enabled
-        ? await env.DB.prepare("UPDATE jobs SET enabled = 1, fail_count = 0, next_run_at = ?3 WHERE id = ?1 AND account_id = ?2").bind(id, account.id, now + 60000).run()
+        ? await env.DB.prepare("UPDATE jobs SET enabled = 1, fail_count = 0, alerting = 0, next_run_at = ?3 WHERE id = ?1 AND account_id = ?2").bind(id, account.id, now + 60000).run()
         : await env.DB.prepare("UPDATE jobs SET enabled = 0 WHERE id = ?1 AND account_id = ?2").bind(id, account.id).run();
       return r.meta.changes ? json({ enabled: b.enabled }) : err(404, "That cron doesn't exist.");
     }
@@ -387,7 +473,7 @@ async function handleAuth(request, env, url) {
 
 export async function runDue(env, now = Date.now(), doFetch = fetch) {
   if (String(env.DISABLED || "") === "1") return { skipped: "disabled" };
-  await ensureRunsTable(env);
+  await ensureRunsTable(env); await ensureAlertTables(env);
   const blocked = selfHosts(env, null);
   const claimed = ((await env.DB.prepare(
     `UPDATE jobs SET next_run_at = ?1 + 3600000, last_run_at = ?1
@@ -399,7 +485,7 @@ export async function runDue(env, now = Date.now(), doFetch = fetch) {
      RETURNING *`).bind(now, L.FREE_LIMIT, L.BATCH).all()).results) || [];
   const out = { ran: 0, ok: 0, failed: 0 };
   await Promise.all(claimed.map(async (job) => {
-    const acct = await env.DB.prepare("SELECT * FROM accounts WHERE id = ?1").bind(job.account_id).first();
+    const acct = await env.DB.prepare("SELECT a.*, (s.discord_webhook IS NOT NULL AND s.alerts_enabled = 1) AS can_alert FROM accounts a LEFT JOIN account_settings s ON s.account_id = a.id WHERE a.id = ?1").bind(job.account_id).first();
     // advance BEFORE running, so a slow or crashed run can't be picked up again by the next tick
     await env.DB.prepare("UPDATE jobs SET next_run_at = ?2 WHERE id = ?1").bind(job.id, L.nextRunAt(now, job.every_minutes, acct)).run();
     let status = 0, ms = 0;
@@ -418,14 +504,27 @@ export async function runDue(env, now = Date.now(), doFetch = fetch) {
     ms = Date.now() - started;
     const ok = L.classify(status);
     out.ran++; ok ? out.ok++ : out.failed++;
-    await env.DB.batch([                                       // one D1 call: the job's new state and its run row together
+    const failCount = ok ? 0 : job.fail_count + 1;
+    const al = L.alertDecision({ prevAlerting: !!job.alerting, ok, failCount, canAlert: !!acct?.can_alert });
+    const stmts = [                                            // one D1 call: the job's new state, its run row and any alert together
       env.DB.prepare(
         `UPDATE jobs SET last_status = ?2, last_ms = ?3,
            fail_count = CASE WHEN ?4 THEN 0 ELSE fail_count + 1 END,
-           enabled = CASE WHEN ?4 THEN enabled WHEN fail_count + 1 >= ?5 THEN 0 ELSE enabled END
-         WHERE id = ?1`).bind(job.id, status, ms, ok ? 1 : 0, L.MAX_FAILS),
+           enabled = CASE WHEN ?4 THEN enabled WHEN fail_count + 1 >= ?5 THEN 0 ELSE enabled END,
+           alerting = ?6, last_alert_at = CASE WHEN ?7 THEN ?8 ELSE last_alert_at END
+         WHERE id = ?1`).bind(job.id, status, ms, ok ? 1 : 0, L.MAX_FAILS, al.alerting, al.kind ? 1 : 0, now),
       env.DB.prepare("INSERT INTO runs (job_id, account_id, ran_at, status, ms, ok) VALUES (?1, ?2, ?3, ?4, ?5, ?6)").bind(job.id, job.account_id, started, status, ms, ok ? 1 : 0),
-    ]);
+    ];
+    if (al.kind) {                                             // queue it (at most ALERTS_PER_DAY per account per 24 h), then count it; the order matters
+      stmts.push(
+        env.DB.prepare(`INSERT INTO alert_outbox (account_id, job_id, kind, job_name, detail, created_at)
+                        SELECT ?1, ?2, ?3, ?4, ?5, ?6 FROM account_settings WHERE account_id = ?1 AND (alert_window_start < ?7 OR alert_count < ?8)`)
+          .bind(job.account_id, job.id, al.kind, job.name, L.failDetail(status), now, now - 86400000, L.ALERTS_PER_DAY),
+        env.DB.prepare(`UPDATE account_settings SET alert_count = CASE WHEN alert_window_start < ?2 THEN 1 ELSE alert_count + 1 END,
+                          alert_window_start = CASE WHEN alert_window_start < ?2 THEN ?3 ELSE alert_window_start END
+                        WHERE account_id = ?1 AND (alert_window_start < ?2 OR alert_count < ?4)`).bind(job.account_id, now - 86400000, now, L.ALERTS_PER_DAY));
+    }
+    await env.DB.batch(stmts);
   }));
   return out;
 }
@@ -484,7 +583,8 @@ export default {
     return err(404, "Not found.");
   },
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runDue(env)); ctx.waitUntil(recheckLicenses(env).catch(() => null));
-    if (Math.floor(Date.now() / 300000) % 12 === 0) ctx.waitUntil(pruneRuns(env).catch(() => null));   // about once an hour, saves subrequests
+    ctx.waitUntil((async () => { try { await runDue(env); } finally { await sendAlerts(env).catch(() => null); } })());   // alerts go out right after the crons ran
+    ctx.waitUntil(recheckLicenses(env).catch(() => null));
+    if (Math.floor(Date.now() / 300000) % 12 === 0) { ctx.waitUntil(pruneRuns(env).catch(() => null)); ctx.waitUntil(pruneOutbox(env).catch(() => null)); }   // about once an hour, saves subrequests
   },
 };

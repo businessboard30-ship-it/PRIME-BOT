@@ -51,6 +51,7 @@ function route(fromNav){
   ensureMounts();
   if(current==="stats")loadStats();
   if(current==="status")loadPages();
+  if(current==="settings")loadAlerts();
   if(fromNav){
     var head=document.querySelector("#v-"+current+" .vhead");
     if(head){var h2=head.querySelector("h2");if(h2)h2.focus({preventScroll:true});if(head.getBoundingClientRect().top<64)head.scrollIntoView({block:"start"})}
@@ -210,6 +211,21 @@ function loadRuns(id,box){
   }).catch(function(e){box.textContent="";var b=document.createElement("p");b.className="bad fine";b.textContent=e.message;box.appendChild(b)});
 }
 function fail(e){say(e.message,true)}
+/* ---------- failure alerts: the saved webhook is only ever shown masked ---------- */
+var alertsOn=true,alertsHook=null;
+function drawAlerts(r){
+  alertsOn=r.enabled;alertsHook=r.webhook;
+  $("alState").textContent=r.webhook?("Webhook saved: "+r.webhook+(r.enabled?". Alerts are on.":". Alerts are paused.")):"No webhook saved yet.";
+  $("alTest").disabled=!r.webhook;$("alRemove").disabled=!r.webhook;$("alToggle").disabled=!r.webhook;
+  $("alToggle").textContent=r.enabled?"Pause alerts":"Resume alerts";
+}
+function loadAlerts(){return api("/api/alerts").then(drawAlerts).catch(fail)}
+$("alSave").onclick=function(){var v=$("alHook").value.trim();if(!v){say("Paste your Discord webhook address first.",true);return}
+  api("/api/alerts",{method:"PUT",body:JSON.stringify({webhook:v})}).then(function(r){$("alHook").value="";say("Webhook saved.");drawAlerts(r)}).catch(fail)};
+$("alTest").onclick=function(){$("alTest").disabled=true;api("/api/alerts/test",{method:"POST",body:"{}"}).then(function(){say("Test alert sent. Check your Discord channel.")}).catch(fail).then(function(){$("alTest").disabled=!alertsHook})};
+$("alToggle").onclick=function(){api("/api/alerts",{method:"PUT",body:JSON.stringify({enabled:!alertsOn})}).then(drawAlerts).catch(fail)};
+$("alRemove").onclick=function(){if(confirm("Remove the saved webhook?"))api("/api/alerts",{method:"PUT",body:JSON.stringify({webhook:null})}).then(function(r){say("Webhook removed.");drawAlerts(r)}).catch(fail)};
+
 /* ---------- status pages: create, rename, switch on/off, choose which crons appear (labels only, never URLs) ---------- */
 function mk(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
 function loadPages(){return api("/api/status-pages").then(function(r){say("");drawPages(r)}).catch(fail)}
