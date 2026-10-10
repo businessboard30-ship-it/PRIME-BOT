@@ -16,8 +16,13 @@ designed — one ephemeral message (only the admin who tapped sees it):
   - text color   white, gold, cyan, pink, green, red
   - heading      replace the "Welcome to {server}!" line
   - member #     show/hide the "MEMBER #N" line
-  - preview      renders the real card (a sample backdrop is used until a
+  - the TV       the real card is drawn at the top of the wizard and redraws by
+                 itself after every change (a sample backdrop is used until a
                  background is set); reset puts the layout back to default
+
+The controls are split into three tabs under the TV (Background / Layout / Text) so only
+2-3 controls show at a time. There is NO preview rate limit here (the old Preview button
+is kept only so wizards posted before this change keep working).
 
 Try-before-buy: the editor opens for EVERY server. Servers that haven't
 bought Customize Card edit an in-memory DRAFT (never written to the DB, never
@@ -88,8 +93,6 @@ async def _check_access(interaction: discord.Interaction, invoker_id, guild_id: 
 _DRAFT_TTL = 30 * 60
 _DRAFT_MAX = 100
 _DRAFTS: dict = {}          # (guild_id, clone_id, user_id) -> draft dict
-_LAST_PREVIEW: dict = {}    # user_id -> monotonic time of last render
-_PREVIEW_COOLDOWN = 8.0
 
 
 def _draft_key(guild_id: int, clone_id, user_id):
@@ -174,56 +177,102 @@ _SIDE_LABELS = {"left": "Avatar on the left (classic)", "right": "Avatar on the 
 _COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red"}
 
 
-def _status_lines(config: dict, opts: dict, unlocked: bool = True) -> list:
-    has_bg = bool(config.get("custom_background_url"))
-    shape = config.get("avatar_shape", "circle")
-    heading = opts["heading"] or "Welcome to {server}! (default)"
-    head = ["### 🖼️ Customize your welcome card"]
+# -- the TV: live preview drawn inside the wizard message ---------------------
+
+_TABS = ("bg", "layout", "text")
+_TAB_LABELS = {"bg": "\U0001F5BC\uFE0F Background", "layout": "\U0001F4D0 Layout", "text": "\U0001F524 Text"}
+_TAB_TTL = 30 * 60
+_STATE_MAX = 1000
+_TAB_STATE: dict = {}        # (guild, clone, user) -> (tab, monotonic ts)
+_TV_NOTES: dict = {}         # same key -> caption note from the last render
+_GEN: dict = {}              # same key -> latest redraw request number (batches quick taps)
+_LOCKS: dict = {}            # same key -> asyncio.Lock (one render at a time per editor)
+_REDRAW_DELAY = 0.35         # taps inside this window collapse into ONE redraw
+_TV_WIDTH = 960              # the TV is a downscaled copy; the real card is untouched
+_AVATAR_CACHE: dict = {}     # (user_id, avatar key) -> bytes
+_BG_CACHE: dict = {}         # custom background url -> (monotonic ts, bytes)
+_BG_TTL = 600
+_BG_MAX = 16
+_BG_TASKS: set = set()
+
+
+def _trim(d: dict, limit: int) -> None:
+    if len(d) > limit:
+        for k in list(d)[: len(d) - limit // 2]:
+            d.pop(k, None)
+
+
+def _get_tab(key) -> str:
+    st = _TAB_STATE.get(key)
+    if st is None or time.monotonic() - st[1] > _TAB_TTL or st[0] not in _TABS:
+        return "bg"
+    return st[0]
+
+
+def _set_tab(key, tab: str) -> None:
+    _TAB_STATE[key] = (tab if tab in _TABS else "bg", time.monotonic())
+    _trim(_TAB_STATE, _STATE_MAX)
+
+
+def _caption(unlocked: bool, note, tv_ok: bool) -> str:
+    lines = ["### \U0001F3A8 Customize your welcome card"]
     if not unlocked:
-        head.append(
-            f"🔒 **Preview mode** — play with everything and tap Preview. To **save** it (and use your "
-            f"own background on every join) unlock Customize Card: one-time **${bot_config.ULTRA_PACK_FEE_USD:g}**, whole server."
+        lines.append(
+            f"\U0001F513 **Preview mode** \u2014 play with everything. To **save** it (and use your own "
+            f"background on every join) unlock Customize Card: one-time **${bot_config.ULTRA_PACK_FEE_USD:g}**, whole server."
         )
-    return head + [
-        ("✅ **Background:** your image" if has_bg
-         else "▫️ **Background:** none yet — tap **Set background** (the preview uses a sample backdrop)"),
-        f"📐 **Banner:** {opts['banner']} · darkness {opts['dim']}",
-        f"🧑 **Avatar:** {opts['avatar_side']} side · {vw.AVATAR_SHAPE_LABELS.get(shape, shape).split(' — ')[0].lower()} frame",
-        f"🎨 **Text color:** {opts['text_color']}",
-        f"✍️ **Heading:** {heading}",
-        f"🔢 **Member number:** {'shown' if opts['show_number'] else 'hidden'}",
-        "-# Tap **Preview** to see the real card. Changes apply to the next welcome.",
-    ]
+    if tv_ok:
+        lines.append(f"-# {note or 'Preview'} \u2014 the card above redraws after every change. Changes apply to the next welcome.")
+    else:
+        lines.append("-# Couldn't draw the preview just now \u2014 change anything to try again.")
+    return "\n".join(lines)
 
 
-def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict) -> discord.ui.LayoutView:
+def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab: str = "bg",
+                         has_tv: bool = False, note=None) -> discord.ui.LayoutView:
     unlocked = bool(config.get("ultra_pack_unlocked"))
     config = _effective_config(config, guild_id, clone_id, invoker_id)
+    tab = tab if tab in _TABS else "bg"
 
     opts = parse_ultra_options(config.get("ultra_card_json"))
     has_bg = bool(config.get("custom_background_url"))
 
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
-    container.add_item(discord.ui.TextDisplay("\n".join(_status_lines(config, opts, unlocked))))
+    container.add_item(discord.ui.TextDisplay(_caption(unlocked, note, has_tv)))
+    if has_tv:
+        container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://card.png")))
     container.add_item(discord.ui.Separator())
 
-    for select_cls in (CardBannerSelect, CardDimSelect, CardSideSelect, CardShapeSelect, CardColorSelect):
+    tabs = discord.ui.ActionRow()
+    for t in _TABS:
+        tabs.add_item(CardTabButton(t, guild_id, clone_id, invoker_id, active=(t == tab)))
+    container.add_item(tabs)
+
+    def _select_row(select_cls):
         row = discord.ui.ActionRow()
         row.add_item(select_cls(guild_id, clone_id, invoker_id, config))
         container.add_item(row)
 
-    container.add_item(discord.ui.Separator())
-    bg_row = discord.ui.ActionRow()
-    bg_row.add_item(CardBackgroundButton(guild_id, clone_id, invoker_id))
-    if has_bg:
-        bg_row.add_item(CardClearBackgroundButton(guild_id, clone_id, invoker_id))
-    bg_row.add_item(CardHeadingButton(guild_id, clone_id, invoker_id))
-    bg_row.add_item(CardNumberToggleButton(guild_id, clone_id, invoker_id, opts["show_number"]))
-    container.add_item(bg_row)
+    if tab == "bg":
+        bg_row = discord.ui.ActionRow()
+        bg_row.add_item(CardBackgroundButton(guild_id, clone_id, invoker_id))
+        if has_bg:
+            bg_row.add_item(CardClearBackgroundButton(guild_id, clone_id, invoker_id))
+        container.add_item(bg_row)
+        _select_row(CardDimSelect)
+    elif tab == "layout":
+        for select_cls in (CardBannerSelect, CardSideSelect, CardShapeSelect):
+            _select_row(select_cls)
+    else:
+        _select_row(CardColorSelect)
+        text_row = discord.ui.ActionRow()
+        text_row.add_item(CardHeadingButton(guild_id, clone_id, invoker_id))
+        text_row.add_item(CardNumberToggleButton(guild_id, clone_id, invoker_id, opts["show_number"]))
+        container.add_item(text_row)
 
+    container.add_item(discord.ui.Separator())
     act_row = discord.ui.ActionRow()
-    act_row.add_item(CardPreviewButton(guild_id, clone_id, invoker_id))
     act_row.add_item(CardResetButton(guild_id, clone_id, invoker_id))
     if unlocked:
         act_row.add_item(CardDoneButton(guild_id, clone_id, invoker_id))
@@ -235,13 +284,81 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict) -> d
     return view
 
 
+def _tv_finish(card_bytes: bytes, watermark: bool) -> bytes:
+    """Downscaled PNG copy for the TV (the card the bot posts on joins is never touched)."""
+    img = Image.open(io.BytesIO(card_bytes)).convert("RGB")
+    if img.width > _TV_WIDTH:
+        img.thumbnail((_TV_WIDTH, _TV_WIDTH * 4))
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    data = out.getvalue()
+    return _watermark(data) if watermark else data
+
+
+async def _avatar_bytes(session: aiohttp.ClientSession, user) -> bytes:
+    asset = user.display_avatar
+    key = (user.id, getattr(asset, "key", None))
+    hit = _AVATAR_CACHE.get(key)
+    if hit is not None:
+        return hit
+    async with session.get(str(asset.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        data = await resp.read()
+    _AVATAR_CACHE[key] = data
+    _trim(_AVATAR_CACHE, 200)
+    return data
+
+
+async def _render_tv(client, guild, guild_id: int, clone_id, user):
+    """Draw the real card for the editor. Returns (png_bytes, caption_note). Raises on failure.
+    No rate limit: unpaid servers get the same watermarked draft preview, as often as they like."""
+    from discord_bot.cogs.welcome import _custom_bg_bytes_for_render
+    if guild is None:
+        raise RuntimeError("the server isn't available to this bot")
+    real_cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    unlocked = bool(real_cfg.get("ultra_pack_unlocked"))
+    cfg = _effective_config(real_cfg, guild_id, clone_id, user.id)
+    async with aiohttp.ClientSession() as session:
+        avatar = await _avatar_bytes(session, user)
+        if unlocked:
+            url = str(cfg.get("custom_background_url") or "")
+            hit = _BG_CACHE.get(url)
+            if hit is not None and time.monotonic() - hit[0] < _BG_TTL:
+                bg_bytes = hit[1]
+            else:
+                bg_bytes = await _custom_bg_bytes_for_render(session, cfg, client)
+                if bg_bytes is not None and url:
+                    _BG_CACHE[url] = (time.monotonic(), bg_bytes)
+                    _trim(_BG_CACHE, _BG_MAX)
+        else:
+            d = _get_draft(guild_id, clone_id, user.id)
+            bg_bytes = d["bg"] if d else None
+    using_sample = bg_bytes is None
+    if using_sample:
+        bg_bytes = _sample_backdrop()
+    card_bytes, _fmt = await asyncio.to_thread(
+        render_welcome_card,
+        avatar, user.display_name, f"Member #{guild.member_count}",
+        avatar_shape=cfg.get("avatar_shape", "circle"),
+        guild_name=guild.name, use_template=True,
+        custom_background_bytes=bg_bytes,
+        ultra_options=cfg.get("ultra_card_json"),
+    )
+    png = await asyncio.to_thread(_tv_finish, card_bytes, not unlocked)
+    note = "Sample backdrop \u2014 set a background to use your own image" if using_sample else "Your background"
+    return png, note
+
+
+def _tv_file(png: bytes) -> discord.File:
+    return discord.File(fp=io.BytesIO(png), filename="card.png")
+
+
 async def open_customize_wizard(interaction: discord.Interaction, guild_id: int, clone_id) -> None:
     """Called by the setup wizard's Customize Card button. The caller has
-    already deferred (ephemeral) — this just posts the wizard as a followup."""
+    already deferred (ephemeral) \u2014 this just posts the wizard as a followup."""
     config = await db.get_welcome_config(guild_id, clone_id=clone_id)
     if config.get("ultra_pack_unlocked"):
         # Bought after designing in preview mode: carry the draft's layout
-        # over (the draft background is never stored — set it again).
+        # over (the draft background is never stored \u2014 set it again).
         d = _DRAFTS.pop(_draft_key(guild_id, clone_id, interaction.user.id), None)
         if d is not None:
             await db.set_welcome_config(
@@ -249,19 +366,66 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
                 ultra_card_json=json.dumps(d["opts"]), avatar_shape=d["shape"],
             )
             config = await db.get_welcome_config(guild_id, clone_id=clone_id)
-    view = build_customize_view(guild_id, clone_id, interaction.user.id, config)
-    await interaction.followup.send(view=view, ephemeral=True)
+    key = _draft_key(guild_id, clone_id, interaction.user.id)
+    _set_tab(key, "bg")
+    tv = None
+    try:
+        tv = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(guild_id),
+                              guild_id, clone_id, interaction.user)
+    except Exception as e:
+        logger.warning(f"[cardwz] first preview failed for guild {guild_id}: {e}")
+    _TV_NOTES[key] = tv[1] if tv else None
+    _trim(_TV_NOTES, _STATE_MAX)
+    view = build_customize_view(guild_id, clone_id, interaction.user.id, config, tab="bg",
+                                has_tv=tv is not None, note=_TV_NOTES[key])
+    if tv:
+        await interaction.followup.send(view=view, file=_tv_file(tv[0]), ephemeral=True)
+    else:
+        await interaction.followup.send(view=view, ephemeral=True)
+
+
+def _refresh_public_wizard(client, guild_id: int, clone_id) -> None:
+    """Keep the public /welcome setup message's status fresh WITHOUT making the TV wait for it."""
+    async def _run():
+        try:
+            await vw.refresh_posted_wizard(client, guild_id, clone_id)
+        except Exception as e:  # best-effort
+            logger.debug(f"[cardwz] main wizard refresh skipped: {e}")
+    task = asyncio.create_task(_run())
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
 
 
 async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, invoker_id):
-    """Interaction must already be deferred. Also pushes the new state onto
-    the public /welcome setup wizard so its status doesn't go stale."""
-    config = await db.get_welcome_config(guild_id, clone_id=clone_id)
-    await interaction.edit_original_response(view=build_customize_view(guild_id, clone_id, invoker_id, config))
-    try:
-        await vw.refresh_posted_wizard(interaction.client, guild_id, clone_id)
-    except Exception as e:  # best-effort
-        logger.debug(f"[cardwz] main wizard refresh skipped: {e}")
+    """Interaction must already be deferred. Redraws the TV and the controls. Quick taps are batched:
+    only the newest request inside _REDRAW_DELAY draws, and one render runs at a time per editor."""
+    key = _draft_key(guild_id, clone_id, interaction.user.id)
+    gen = _GEN[key] = _GEN.get(key, 0) + 1
+    _trim(_GEN, _STATE_MAX)
+    await asyncio.sleep(_REDRAW_DELAY)
+    if _GEN.get(key) != gen:
+        return                                  # a newer tap will draw the latest state
+    lock = _LOCKS.setdefault(key, asyncio.Lock())
+    _trim(_LOCKS, _STATE_MAX)
+    async with lock:
+        if _GEN.get(key) != gen:
+            return
+        config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+        tv = None
+        try:
+            tv = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(guild_id),
+                                  guild_id, clone_id, interaction.user)
+        except Exception as e:
+            logger.warning(f"[cardwz] preview failed for guild {guild_id}: {e}")
+        _TV_NOTES[key] = tv[1] if tv else None
+        _trim(_TV_NOTES, _STATE_MAX)
+        view = build_customize_view(guild_id, clone_id, invoker_id, config, tab=_get_tab(key),
+                                    has_tv=tv is not None, note=_TV_NOTES[key])
+        if tv:
+            await interaction.edit_original_response(view=view, attachments=[_tv_file(tv[0])])
+        else:
+            await interaction.edit_original_response(view=view, attachments=[])
+    _refresh_public_wizard(interaction.client, guild_id, clone_id)
 
 
 async def _require_unlocked(interaction: discord.Interaction, guild_id: int, clone_id) -> bool:
@@ -600,54 +764,22 @@ def _sample_backdrop() -> bytes:
 
 
 class CardPreviewButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("preview")):
-    FIELD, LABEL, STYLE = "preview", "👁️ Preview", discord.ButtonStyle.primary
+    """Kept so wizards posted BEFORE the TV existed keep working. The new wizard has no Preview button.
+    No cooldown."""
+    FIELD, LABEL, STYLE = "preview", "\U0001F441\uFE0F Preview", discord.ButtonStyle.primary
 
     async def callback(self, interaction: discord.Interaction):
         if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer(ephemeral=True)
-        now = time.monotonic()
-        wait = _PREVIEW_COOLDOWN - (now - _LAST_PREVIEW.get(interaction.user.id, 0.0))
-        if wait > 0:
-            await interaction.followup.send(f"⏳ Give it {int(wait) + 1}s before the next preview.", ephemeral=True)
-            return
-        _LAST_PREVIEW[interaction.user.id] = now
-        if len(_LAST_PREVIEW) > 2000:
-            for k in [k for k, t in _LAST_PREVIEW.items() if now - t > 60]:
-                _LAST_PREVIEW.pop(k, None)
         try:
-            from discord_bot.cogs.welcome import _custom_bg_bytes_for_render
             real_cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
             unlocked = bool(real_cfg.get("ultra_pack_unlocked"))
-            cfg = _effective_config(real_cfg, self.guild_id, self.clone_id, interaction.user.id)
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    str(interaction.user.display_avatar.replace(size=256).url),
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    avatar_bytes = await resp.read()
-                if unlocked:
-                    bg_bytes = await _custom_bg_bytes_for_render(session, cfg, interaction.client)
-                else:
-                    d = _get_draft(self.guild_id, self.clone_id, interaction.user.id)
-                    bg_bytes = d["bg"] if d else None
-            using_sample = bg_bytes is None
-            if using_sample:
-                bg_bytes = _sample_backdrop()
-            card_bytes, _fmt = await asyncio.to_thread(
-                render_welcome_card,
-                avatar_bytes, interaction.user.display_name, f"Member #{(interaction.guild or interaction.client.get_guild(self.guild_id)).member_count}",
-                avatar_shape=cfg.get("avatar_shape", "circle"),
-                guild_name=(interaction.guild or interaction.client.get_guild(self.guild_id)).name, use_template=True,
-                custom_background_bytes=bg_bytes,
-                ultra_options=cfg.get("ultra_card_json"),
-            )
-            if not unlocked:
-                card_bytes = await asyncio.to_thread(_watermark, card_bytes)
-            note = "sample backdrop — set a background to use your own image" if using_sample else "your background"
+            png, note = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(self.guild_id),
+                                         self.guild_id, self.clone_id, interaction.user)
             await interaction.followup.send(
-                content=f"**Preview** ({note}) — only visible to you" + ("" if unlocked else " · unlock to save & remove the watermark"),
-                file=discord.File(fp=io.BytesIO(card_bytes), filename="preview.png"),
+                content=f"**Preview** ({note.lower()}) \u2014 only visible to you" + ("" if unlocked else " \u2014 unlock to save & remove the watermark"),
+                file=discord.File(fp=io.BytesIO(png), filename="preview.png"),
                 ephemeral=True,
             )
         except Exception as e:
@@ -670,8 +802,42 @@ class CardDoneButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_
         await interaction.edit_original_response(view=done)
 
 
+class CardTabButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cardwz_tab(bg|layout|text):(\d+):(-|\d+):(-|\d+)$"):
+    """Switches which group of controls shows under the TV. Does not redraw the card."""
+
+    def __init__(self, tab: str, guild_id: int, clone_id, invoker_id, active: bool = False):
+        self.tab = tab
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        super().__init__(discord.ui.Button(
+            label=_TAB_LABELS[tab],
+            style=discord.ButtonStyle.primary if active else discord.ButtonStyle.secondary,
+            custom_id=_encode("tab" + tab, guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(match.group(1), int(match.group(2)),
+                   None if match.group(3) == "-" else int(match.group(3)),
+                   None if match.group(4) == "-" else int(match.group(4)))
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        key = _draft_key(self.guild_id, self.clone_id, interaction.user.id)
+        _set_tab(key, self.tab)
+        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        msg = interaction.message
+        has_tv = bool(msg and any(a.filename == "card.png" for a in msg.attachments))
+        await interaction.edit_original_response(view=build_customize_view(
+            self.guild_id, self.clone_id, self.invoker_id, config, tab=self.tab, has_tv=has_tv, note=_TV_NOTES.get(key)))
+
+
 DYNAMIC_ITEMS = (
     CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect,
     CardBackgroundButton, CardClearBackgroundButton, CardUnlockButton,
     CardHeadingButton, CardNumberToggleButton, CardResetButton, CardPreviewButton, CardDoneButton,
+    CardTabButton,
 )
