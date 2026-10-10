@@ -356,6 +356,7 @@ class AnimeBotDiscord(commands.Bot):
         # config on every startup, which is incompatible with bump being live.
         await self.load_extension("discord_bot.cogs.report_notifications")
         await self.load_extension("discord_bot.cogs.topgg_stats")
+        await self.load_extension("discord_bot.cogs.dthings_stats")
         # Loaded on clones too now, not just the main bot: a clone can host
         # its own "Build Bot" wizard / /registerclone for sub-clones. Each
         # sub-clone still gets its own independent bot token supplied by
