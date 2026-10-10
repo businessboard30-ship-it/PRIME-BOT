@@ -604,6 +604,20 @@ class WelcomeThemeSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+# Short description of each cover (shown under its name in the picker and in the locked message).
+# Discord caps a select option's description at 100 characters.
+LOOK_NAMES = {"wolf": "Wolf", "reaper": "Metallic Reaper", "shadow": "Shadow Monarch",
+              "sorcerer": "Emerald Sorcerer", "spider": "Spider Realm", "spider_pro": "Spider Realm Pro"}
+LOOK_BLURBS = {
+    "wolf": "Black-and-white wolf with silver streaks",
+    "reaper": "Hooded reaper with a scythe, red accents",
+    "shadow": "Shadow Monarch wrapped in purple flames",
+    "sorcerer": "Emerald sorcerer in armour, gold frame",
+    "spider": "Chrome spider on a glowing blue web",
+    "spider_pro": "Spider Realm, roomier layout, big avatar ring",
+}
+
+
 class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("look")):
     """Step to pick the designed card look (wolf/reaper/shadow/sorcerer —
     modules.welcome_card.PREMIUM_THEMES), distinct from WelcomeThemeSelect
@@ -641,12 +655,13 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
             is_premium = value in PREMIUM_THEMES and not unlocked
             trial_available = is_premium and not trial_used
             locked = is_premium and not trial_available
+            blurb = LOOK_BLURBS.get(value, "")
             if trial_available:
-                desc = "Free 3-day trial available"
+                desc = f"{blurb} · free 3-day trial"
             elif locked:
-                desc = "Locked — preview only, /welcome buypack to use"
+                desc = f"{blurb} · Premium or one-time pack"
             else:
-                desc = None
+                desc = blurb or None
             options.append(discord.SelectOption(
                 label=f"🔒 {label}" if locked else label,
                 value=value,
@@ -682,8 +697,9 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
                 await db.start_welcome_card_trial(self.guild_id, interaction.user.id, clone_id=self.clone_id)
                 await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, card_theme=chosen, use_template=True)
                 await interaction.followup.send(
-                    f"✅ This look is now active — free for **3 days** as a one-time trial. "
-                    f"Run `/welcome buypack` before then to keep it (and every premium look) for good.",
+                    f"✅ **{LOOK_NAMES.get(chosen, chosen)}** is now active — free for **3 days** as a one-time trial. "
+                    f"To keep it (and every premium look) for good, pick Premium or the one-time pack below.",
+                    view=_LockedPackBuyView(self.guild_id, self.clone_id),
                     ephemeral=True,
                 )
                 await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
@@ -718,38 +734,51 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=io.BytesIO(card_bytes), filename=f"locked_preview.{ext}")
             await interaction.followup.send(
-                content=(
-                    "🔒 **Locked preview** — this server hasn't bought the premium card pack yet. "
-                    "Tap **Buy Pack** below to unlock this look for real."
-                ),
+                content=_locked_text(theme),
                 file=file,
-                view=_LockedPackBuyView(self.guild_id),
+                view=_LockedPackBuyView(self.guild_id, self.clone_id),
                 ephemeral=True,
             )
         except Exception:
             await interaction.followup.send(
-                "🔒 That look is part of the premium pack — tap **Buy Pack** below to unlock it "
-                "(couldn't render a live preview right now).",
-                view=_LockedPackBuyView(self.guild_id),
+                _locked_text(theme) + "\n(Couldn't render a live preview right now.)",
+                view=_LockedPackBuyView(self.guild_id, self.clone_id),
                 ephemeral=True,
             )
 
 
+def _locked_text(theme: str) -> str:
+    return (
+        f"🔒 **{LOOK_NAMES.get(theme, theme)}** — {LOOK_BLURBS.get(theme, 'a premium cover')}.\n"
+        "This server hasn't unlocked it yet. Two ways to get it:\n"
+        "💎 **Premium** — every cover plus the other Premium features, for the whole server.\n"
+        "💳 **One-time pack** — pay once to unlock every welcome cover. Nothing else is included."
+    )
+
+
 class _LockedPackBuyView(discord.ui.View):
-    """One-off (non-persistent) view attached to the locked-preview
-    followup so buying the pack doesn't require leaving the wizard to
-    type /welcome buypack — mirrors WelcomeUltraPackButton's callback
-    below, just as a plain View since this message is an ephemeral,
-    single-use preview rather than a DynamicItem on the wizard itself
-    (nothing here needs to survive a bot restart)."""
+    """One-off (non-persistent) view on the locked-preview / trial followup: Premium or the one-time card
+    pack without leaving the wizard. The server id is carried in explicitly because the wizard may be a
+    DM copy (interaction.guild_id is None there). Prices come from config so an owner price change shows up."""
 
-    def __init__(self, guild_id: int = None):
+    def __init__(self, guild_id: int = None, clone_id=None):
         super().__init__(timeout=300)
-        # The wizard may be a DM copy (interaction.guild_id is None there), so
-        # the server it belongs to is carried in explicitly.
+        import config
         self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.premium.label = f"💎 Premium — ${config.PREMIUM_FEE_USD:g}/month"
+        self.buy.label = f"💳 One-time pack — ${config.WELCOME_CARD_PACK_FEE_USD:g}"
 
-    @discord.ui.button(label="💳 Buy Pack", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="💎 Premium", style=discord.ButtonStyle.primary)
+    async def premium(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        if self.guild_id is None:
+            await interaction.followup.send("Run `/premium` inside your server to go Premium.", ephemeral=True)
+            return
+        from discord_bot.cogs._views_premium import send_premium_pitch
+        await send_premium_pitch(interaction, self.guild_id, self.clone_id)
+
+    @discord.ui.button(label="💳 One-time pack", style=discord.ButtonStyle.success)
     async def buy(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         from discord_bot.views_card_pack import start_card_pack_payment
