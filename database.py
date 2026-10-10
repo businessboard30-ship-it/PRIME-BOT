@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "74"
+SCHEMA_VERSION = "75"
+# "74" -> "75" adds idx_scam_shield_hits_user (scam_shield_hits by user_id + time) so the join-time "was this account caught in another server?" lookup (modules/scam_reputation.py) stays fast as the catch log grows. CREATE INDEX IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if this changes without a bump.
 # "73" -> "74" adds ultra_trial_started_at, ultra_trial_admin_id and ultra_trial_notified to discord_welcome_config for the one-time 5-day Customize Card trial. ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "72" -> "73" adds auto_bump_enabled, auto_bump_by and auto_bump_checked_at (+ partial index) to bump_listings for Premium Auto Bump (4 bumps a day). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 ULTRA_TRIAL_DAYS = 5  # free Customize Card trial length per server
@@ -5555,6 +5556,8 @@ class Database:
         scam_shield_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "029_scam_shield.sql"
         if scam_shield_migration.exists():
             await conn.execute(scam_shield_migration.read_text())
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scam_shield_hits_user ON scam_shield_hits (user_id, created_at DESC)")
 
         # Bump channel recreate consent (asked_at / declined on bump_guild_config). Additive/idempotent.
         bump_recreate_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "030_bump_channel_recreate_consent.sql"
