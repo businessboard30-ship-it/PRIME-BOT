@@ -398,7 +398,7 @@ PREMIUM_REMINDER_DAYS = 3
 # Longer Premium plans (one-time payments, per server, same perks as monthly).
 # Yearly = 12 months for the price of 9 (25% off $4/mo). Lifetime is stored as a
 # far-future expiry (100 years), so no schema change and reminders never fire.
-PREMIUM_YEARLY_FEE_USD = 36
+PREMIUM_YEARLY_FEE_USD = 16
 PREMIUM_YEARLY_DAYS = 365
 PREMIUM_LIFETIME_FEE_USD = 99.99
 PREMIUM_LIFETIME_DAYS = 36500
@@ -412,7 +412,7 @@ PREMIUM_LIFETIME_THRESHOLD_DAYS = 365 * 50  # expiry further out than this == li
 # but scoped to one buyer instead of the whole guild. See the design
 # rationale in that cog's module docstring for why this price sits between
 # ULTRA_PACK_FEE_USD and WELCOME_CARD_PACK_FEE_USD.
-CUSTOM_ROLE_FEE_USD = 3.99
+CUSTOM_ROLE_FEE_USD = 2.99
 
 # Per-user paid XP boost (discord_bot/cogs/leveling.py's "⚡ Boost XP"
 # button — see leveling-boost-build-prompt.md §2): 2x XP for 7 days, flat
