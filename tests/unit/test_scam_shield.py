@@ -786,3 +786,25 @@ def test_scam_vision_prefers_its_own_key(monkeypatch):
     assert sv.api_key() == "shared"
     monkeypatch.setenv("SCAM_VISION_API_KEY", "scam-only")
     assert sv.api_key() == "scam-only"
+
+
+def test_status_text_and_self_test(vision, monkeypatch):
+    sv._s.last_ok, sv._s.last_at = None, 0.0
+    assert "no scan yet" in sv.status_text()
+    sv._note(False, "key rejected (401)")
+    assert "ERROR" in sv.status_text() and "key rejected" in sv.status_text()
+
+    async def fake_ok(jpeg):
+        sv._note(True, "ok")
+        return True
+    monkeypatch.setattr(sv, "_ask", fake_ok)
+    sv._s.blocked_until = 10 ** 13
+    ok, msg = run(sv.self_test())
+    assert ok and "SCAM" in msg and sv._s.blocked_until == 0.0
+
+    async def fake_bad(jpeg):
+        sv._note(False, "key rejected (401)")
+        return None
+    monkeypatch.setattr(sv, "_ask", fake_bad)
+    ok, msg = run(sv.self_test())
+    assert not ok and "key rejected" in msg

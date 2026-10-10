@@ -70,9 +70,27 @@ class _State:
     day_count: int = 0
     blocked_until: float = 0.0                                  # circuit breaker after 429 / 5xx / network errors
     user_calls: Dict[Tuple[int, int], Deque[float]] = {}
+    last_ok: Optional[bool] = None                              # result of the most recent Gemini call
+    last_detail: str = ""
+    last_at: float = 0.0                                        # wall-clock time (time.time())
 
 
 _s = _State()
+
+
+def _note(ok: bool, detail: str) -> None:
+    _s.last_ok, _s.last_detail, _s.last_at = ok, detail[:200], time.time()
+
+
+def status_text() -> str:
+    """One line for the owner panel: is the AI scan actually working right now?"""
+    if not api_key():
+        return "no API key set"
+    if _s.last_ok is None:
+        return "no scan yet since the last restart (press Test AI scan)"
+    ago = int(time.time() - _s.last_at)
+    when = f"{ago // 3600}h ago" if ago >= 3600 else f"{ago // 60}m ago" if ago >= 60 else "just now"
+    return f"✅ working (last call {when})" if _s.last_ok else f"❌ ERROR {when}: {_s.last_detail}"
 
 
 def _int_env(name: str, default: int) -> int:
@@ -224,22 +242,31 @@ async def _ask(jpeg: bytes) -> Optional[bool]:
     except Exception as e:
         logger.warning("[scam-vision] request failed (%s)", type(e).__name__)
         _s.blocked_until = time.monotonic() + 30
+        _note(False, f"can't reach Gemini ({type(e).__name__})")
         return None
     if resp.status_code == 429 or resp.status_code >= 500:
         logger.warning("[scam-vision] Gemini answered %s; pausing AI scan for 60s", resp.status_code)
         _s.blocked_until = time.monotonic() + 60
+        _note(False, "rate limit hit (429), free quota used up" if resp.status_code == 429
+              else f"Gemini server error {resp.status_code}")
         return None
     if resp.status_code in (400, 401, 403, 404):
         logger.error("[scam-vision] Gemini rejected the request (%s): check GEMINI_API_KEY / SCAM_VISION_MODEL. %s",
                      resp.status_code, resp.text[:200])
         _s.blocked_until = time.monotonic() + 600
+        why = {400: "bad request / key not valid", 401: "key rejected", 403: "key not allowed (check Google AI Studio)",
+               404: f"model '{m}' not found (check SCAM_VISION_MODEL)"}[resp.status_code]
+        _note(False, f"{why} ({resp.status_code})")
         return None
     try:
         data = resp.json()
         parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
-        return parse_verdict("".join(p.get("text", "") for p in parts))
+        verdict = parse_verdict("".join(p.get("text", "") for p in parts))
+        _note(True, "ok")
+        return verdict
     except Exception:
         logger.debug("[scam-vision] couldn't read Gemini's answer", exc_info=True)
+        _note(False, "Gemini answered but the reply couldn't be read")
         return None
 
 
@@ -267,3 +294,29 @@ async def is_scam_image(data: bytes, guild_id: int, user_id: int) -> Optional[Tu
         _learn(data)
         return "vision", "AI scan: scam image", None
     return None
+
+
+async def self_test() -> Tuple[bool, str]:
+    """Owner-panel health check: sends a small test picture to Gemini right now (ignores the budgets).
+    Returns (working, message). Clears the error pause when it succeeds."""
+    if not api_key():
+        return False, "No API key set (SCAM_VISION_API_KEY or GEMINI_API_KEY)."
+    try:
+        from PIL import Image, ImageDraw
+        im = Image.new("RGB", (600, 320), (18, 24, 38))
+        d = ImageDraw.Draw(im)
+        d.text((40, 60), "WITHDRAWAL ACCEPTED", fill=(40, 220, 120))
+        d.text((40, 120), "Your withdrawal of $3,200.00 has been accepted", fill=(255, 255, 255))
+        d.text((40, 180), "Promo code: DRAKE   FREE SPINS   USDT", fill=(255, 220, 60))
+        out = io.BytesIO()
+        im.save(out, "JPEG", quality=85)
+    except Exception:
+        return False, "Couldn't build the test picture (Pillow problem)."
+    before = _s.last_at
+    verdict = await _ask(out.getvalue())
+    if _s.last_at == before or not _s.last_ok:
+        return False, _s.last_detail or "No answer from Gemini."
+    _s.blocked_until = 0.0
+    if verdict is None:
+        return True, "Gemini answered but not with SAFE/SCAM (it will be treated as not a scam)."
+    return True, f"Gemini answered **{'SCAM' if verdict else 'SAFE'}** for the test picture."

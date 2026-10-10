@@ -201,7 +201,8 @@ class ScamShieldView(PanelView):
             return "🤖 **AI image scan:** unavailable (set GEMINI_API_KEY). Only the known-image rules run."
         if not ss.vision_enabled():
             return "🤖 **AI image scan:** 🔴 OFF. Only the known-image rules run."
-        return f"🤖 **AI image scan:** 🟢 ON ({sv.model()}). Catches new scam pictures the rules don't know yet."
+        return (f"🤖 **AI image scan:** 🟢 ON ({sv.model()}). Catches new scam pictures the rules don't know yet.\n"
+                f"Status: {sv.status_text()}")
 
     def _evidence_line(self) -> str:
         cid = ss.evidence_channel_id()
@@ -219,6 +220,7 @@ class ScamShieldView(PanelView):
             _btn("Remove rule", S, self._remove, "🗑️", disabled=not self.rules),
             _btn("AI scan OFF" if ss.vision_enabled() else "AI scan ON", S, self._toggle_vision, "🤖",
                  disabled=not sv.api_key()),
+            _btn("Test AI scan", S, self._test_vision, "🧪", disabled=not sv.api_key()),
             _btn("Evidence: this channel", S, self._evidence_here, "📁"),
             _btn("Evidence: reset", S, self._evidence_reset, "↩️", disabled=not ss.evidence_channel_id()),
             _btn("Refresh", S, self._refresh, "🔄"),
@@ -249,6 +251,13 @@ class ScamShieldView(PanelView):
             self.notice = "🤖 AI image scan is ON." if on else "🤖 AI image scan is OFF."
         await self.load()
         await i.response.edit_message(view=self)
+
+    async def _test_vision(self, i):
+        await i.response.defer()
+        ok, msg = await sv.self_test()
+        self.notice = (f"🧪 ✅ AI scan works. {msg}" if ok else f"🧪 ❌ AI scan problem: {msg}")
+        await self.load()
+        await i.edit_original_response(view=self)
 
     async def _evidence_here(self, i):
         ch = i.channel
