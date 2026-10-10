@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 _download_slots = asyncio.Semaphore(3)
+NOTICE_SECONDS = 15                         # how long the in-channel "scam caught" notice stays
 EVIDENCE_MAX_FILES = 4                      # attachments kept per caught message
 EVIDENCE_MAX_BYTES = 8 * 1024 * 1024        # same cap as welcome backgrounds / ad images
 
@@ -341,6 +342,25 @@ class ScamShieldCog(commands.Cog):
         await ss.log_hit(message.guild.id, message.channel.id, message.author.id, kind, matched, rule_id,
                          snippet, deleted, clone_id)
         await self._flag(message, kind, matched, deleted, snippet, clone_id)
+        await self._notice(message, deleted)
+
+    async def _notice(self, message: discord.Message, deleted: bool) -> None:
+        """Short public heads-up in the channel where the scam was posted, so members aren't left wondering.
+        It names nobody with a ping, repeats nothing from the scam, and removes itself after NOTICE_SECONDS.
+        Best effort: a missing permission just means no notice."""
+        try:
+            who = discord.utils.escape_markdown(str(message.author))[:40]
+            embed = discord.Embed(
+                title="🛡️ Scam Shield",
+                description=(f"A scam message from **{who}** was caught here"
+                             f"{' and removed' if deleted else ''}. Don't click links or scan codes from it, "
+                             "and never share your login or send crypto to claim a prize.\n"
+                             f"-# This notice will be deleted in a short time ({NOTICE_SECONDS} seconds)."),
+                color=discord.Color.red())
+            await message.channel.send(embed=embed, delete_after=NOTICE_SECONDS,
+                                       allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            logger.debug("[scam-shield] couldn't post the in-channel notice", exc_info=True)
 
     async def _flag(self, message, kind, matched, deleted, snippet, clone_id) -> None:
         try:
