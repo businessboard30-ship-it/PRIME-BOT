@@ -219,7 +219,7 @@ class ScamShieldView(PanelView):
             _btn("Add image", P, self._add_image, "🖼️"),
             _btn("Remove rule", S, self._remove, "🗑️", disabled=not self.rules),
             _btn("AI scan OFF" if ss.vision_enabled() else "AI scan ON", S, self._toggle_vision, "🤖",
-                 disabled=not sv.api_key()),
+                 disabled=not sv.has_key()),
             _btn("Test AI scan", S, self._test_vision, "🧪", disabled=not sv.api_key()),
             _btn("Evidence: this channel", S, self._evidence_here, "📁"),
             _btn("Evidence: reset", S, self._evidence_reset, "↩️", disabled=not ss.evidence_channel_id()),

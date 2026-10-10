@@ -261,8 +261,12 @@ class ScamShieldView(ServerPanelView):
             f"Used today: **{used}/{cap}**. Resets daily at 00:00 UTC. When the limit is used up, only the "
             "known-scam rules keep working until it resets.",
         ]
+        bcap = int(ai.get("backup_cap", 0))
+        if bcap:
+            lines.append(f"-# Backup AI: if the main AI is busy or down, up to **{bcap}** more checks a day "
+                         f"(used {int(ai.get('backup_used', 0))}/{bcap}).")
         if not ai.get("premium"):
-            lines.append("-# ⭐ Premium servers get a much bigger daily AI limit.")
+            lines.append("-# ⭐ Premium servers get a bigger daily AI limit (4x) and more backup checks.")
         return lines
 
     def controls(self):

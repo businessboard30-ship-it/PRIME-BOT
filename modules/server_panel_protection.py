@@ -67,12 +67,15 @@ async def scam_state(guild_id: int, clone_id: Optional[int]) -> Dict[str, Any]:
         logger.debug("[server-panel] scam shield read failed", exc_info=True)
         cfg = {"enabled": True, "allowed_domains": []}
     caught = await ss.guild_hit_count(guild_id, clone_id)
-    ai = {"on": False, "used": 0, "cap": 0, "premium": False}
+    ai = {"on": False, "used": 0, "cap": 0, "premium": False, "backup_cap": 0, "backup_used": 0}
     try:
         from modules import scam_vision as sv
         cap, premium = await sv.guild_cap(guild_id, clone_id)
         ai = {"on": sv.available(), "used": min(sv.guild_used_today(guild_id, clone_id), cap),
-              "cap": cap, "premium": premium}
+              "cap": cap, "premium": premium, "backup_cap": 0, "backup_used": 0}
+        if sv.openai_key():                                  # the OpenAI backup has its own small daily cap
+            bcap, _ = await sv.openai_cap(guild_id, clone_id)
+            ai["backup_cap"], ai["backup_used"] = bcap, min(sv.openai_used_today(guild_id, clone_id), bcap)
     except Exception:
         logger.debug("[server-panel] AI scan state read failed", exc_info=True)
     return {"cfg": cfg, "caught": caught, "global_on": ss.is_enabled(), "ai": ai}

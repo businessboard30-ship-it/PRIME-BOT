@@ -649,6 +649,11 @@ def vision(monkeypatch):
     sv._s.blocked_until = 0.0; sv._s.day_key = ""; sv._s.day_count = 0
     monkeypatch.setattr(sv.time, "monotonic", lambda: 10 ** 12)
     sv._s.guild_used.clear(); sv._s.premium.clear()
+    for name in ("OPENAI_API_KEY", "SCAM_VISION_OPENAI_KEY", "SCAM_VISION_API_KEY", "SCAM_VISION_OPENAI_FREE_DAILY",
+                 "SCAM_VISION_OPENAI_PREMIUM_DAILY", "SCAM_VISION_OPENAI_RPM", "SCAM_VISION_OPENAI_DAILY"):
+        monkeypatch.delenv(name, raising=False)
+    sv._s.o_blocked_until = 0.0; sv._s.o_calls.clear(); sv._s.o_day_key = ""; sv._s.o_day_count = 0
+    sv._s.o_guild_used.clear(); sv._s.o_last_ok = None; sv._s.o_last_at = 0.0; sv._s.last_ok = None; sv._s.last_at = 0.0
     monkeypatch.setattr(sv, "_is_premium", AsyncMock(return_value=False))
     yield
 
@@ -819,15 +824,15 @@ def test_free_server_cap_then_premium_cap(vision, monkeypatch):
     monkeypatch.setenv("SCAM_VISION_PER_USER", "999")
     monkeypatch.setenv("SCAM_VISION_RPM", "999")
     monkeypatch.setenv("SCAM_VISION_DAILY", "999")
-    assert run(sv.guild_cap(1)) == (10, False)
-    for n in range(15):
+    assert run(sv.guild_cap(1)) == (5, False)
+    for n in range(9):
         run(sv.is_scam_image(n.to_bytes(2, "big") * 10000, 1, 100 + n))
-    assert ask.await_count == 10 and sv.guild_used_today(1) == 10   # free server stops at 10
+    assert ask.await_count == 5 and sv.guild_used_today(1) == 5     # free server stops at 5
     monkeypatch.setattr(sv, "_is_premium", AsyncMock(return_value=True))
-    assert run(sv.guild_cap(1)) == (60, True)
+    assert run(sv.guild_cap(1)) == (20, True)
     run(sv.is_scam_image(b"\xff\xee" * 10000, 1, 500))
-    assert ask.await_count == 11                                    # upgrading lifts the limit right away
-    assert run(sv.guild_cap(2)) == (60, True) and sv.guild_used_today(2) == 0
+    assert ask.await_count == 6                                    # upgrading lifts the limit right away
+    assert run(sv.guild_cap(2)) == (20, True) and sv.guild_used_today(2) == 0
 
 
 def test_cached_and_known_copies_do_not_use_the_server_cap(vision, monkeypatch):
@@ -1014,3 +1019,245 @@ async def test_vision_404_pauses_scan_and_reports_the_model(monkeypatch):
     sv._s.blocked_until = 0.0
     assert await sv._ask(b"x") is None and sv._s.blocked_until > 0
     sv._s.blocked_until = 0.0
+
+
+
+# ── OpenAI backup scan ──────────────────────────────────────────────────
+
+def _failing_gemini(monkeypatch, calls=None):
+    async def ask(jpeg):
+        if calls is not None:
+            calls.append("gemini")
+        sv._note(False, "rate limit hit (429), free quota used up")
+        sv._s.last_at += 1                                     # a real failed call always moves the clock
+        return None
+    monkeypatch.setattr(sv, "_ask", ask)
+
+
+def _blob(n):
+    return n.to_bytes(2, "big") * 10000
+
+
+def test_caps_are_5_20_and_backup_caps_1_3(vision):
+    assert (sv.FREE_GUILD_DAILY, sv.PREMIUM_GUILD_DAILY) == (5, 20)
+    assert (sv.OPENAI_FREE_DAILY, sv.OPENAI_PREMIUM_DAILY) == (1, 3)
+    assert run(sv.guild_cap(1)) == (5, False) and run(sv.openai_cap(1)) == (1, False)
+    sv._is_premium.return_value = True
+    assert run(sv.guild_cap(1)) == (20, True) and run(sv.openai_cap(1)) == (3, True)
+
+
+def test_backup_env_vars_change_the_caps(vision, monkeypatch):
+    monkeypatch.setenv("SCAM_VISION_OPENAI_FREE_DAILY", "2")
+    monkeypatch.setenv("SCAM_VISION_OPENAI_PREMIUM_DAILY", "7")
+    assert run(sv.openai_cap(1))[0] == 2
+    sv._is_premium.return_value = True
+    assert run(sv.openai_cap(1))[0] == 7
+
+
+def test_backup_key_choice_and_availability(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False); monkeypatch.delenv("SCAM_VISION_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False); monkeypatch.delenv("SCAM_VISION_OPENAI_KEY", raising=False)
+    assert not sv.has_key() and not sv.available()
+    monkeypatch.setenv("OPENAI_API_KEY", "oa")
+    assert sv.openai_key() == "oa" and sv.has_key() and sv.available()
+    monkeypatch.setenv("SCAM_VISION_OPENAI_KEY", "oa-scam")
+    assert sv.openai_key() == "oa-scam"
+
+
+def test_backup_used_when_gemini_fails_and_free_server_gets_only_one(vision, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "oa")
+    calls = []
+    _failing_gemini(monkeypatch, calls)
+    async def oai(jpeg):
+        calls.append("openai"); return True
+    monkeypatch.setattr(sv, "_ask_openai", oai)
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    monkeypatch.setenv("SCAM_VISION_PER_USER", "999")
+    hit = run(sv.is_scam_image(_blob(1), 1, 10))
+    assert hit and hit[0] == "vision"                          # OpenAI caught it
+    assert calls == ["gemini", "openai"] and sv.openai_used_today(1) == 1 and sv.guild_used_today(1) == 1
+    assert run(sv.is_scam_image(_blob(2), 1, 11)) is None       # free server: only 1 backup check per day
+    assert calls == ["gemini", "openai", "gemini"]
+    assert run(sv.is_scam_image(_blob(3), 2, 12))               # another server still has its own backup check
+    assert sv.openai_used_today(2) == 1
+
+
+def test_premium_server_gets_three_backup_checks(vision, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "oa")
+    sv._is_premium.return_value = True
+    _failing_gemini(monkeypatch)
+    oai = AsyncMock(return_value=False)
+    monkeypatch.setattr(sv, "_ask_openai", oai)
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    monkeypatch.setenv("SCAM_VISION_PER_USER", "999"); monkeypatch.setenv("SCAM_VISION_OPENAI_RPM", "999")
+    for n in range(6):
+        run(sv.is_scam_image(_blob(n), 1, 20 + n))
+    assert oai.await_count == 3 and sv.openai_used_today(1) == 3
+
+
+def test_backup_runs_when_gemini_is_paused_without_calling_it(vision, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "oa")
+    sv._s.blocked_until = 10 ** 13                              # Gemini's circuit breaker is open
+    gem = AsyncMock(return_value=False)
+    monkeypatch.setattr(sv, "_ask", gem)
+    monkeypatch.setattr(sv, "_ask_openai", AsyncMock(return_value=True))
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    assert run(sv.is_scam_image(_blob(5), 1, 30))
+    gem.assert_not_awaited()
+    assert sv.guild_used_today(1) == 0 and sv.openai_used_today(1) == 1   # only the backup cap was spent
+
+
+def test_backup_only_setup_works_without_a_gemini_key(vision, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "oa")
+    gem = AsyncMock(return_value=False)
+    monkeypatch.setattr(sv, "_ask", gem)
+    monkeypatch.setattr(sv, "_ask_openai", AsyncMock(return_value=True))
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    assert sv.available() and run(sv.is_scam_image(_blob(6), 1, 31))
+    gem.assert_not_awaited()
+
+
+def test_no_backup_when_gemini_answered_or_no_openai_key(vision, monkeypatch):
+    oai = AsyncMock(return_value=True)
+    monkeypatch.setattr(sv, "_ask_openai", oai)
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    monkeypatch.setenv("SCAM_VISION_PER_USER", "999")
+    monkeypatch.setenv("OPENAI_API_KEY", "oa")
+    async def safe(jpeg):
+        sv._note(True, "ok"); sv._s.last_at += 1; return False
+    monkeypatch.setattr(sv, "_ask", safe)
+    assert run(sv.is_scam_image(_blob(7), 1, 40)) is None
+    oai.assert_not_awaited()                                    # Gemini answered SAFE: no backup call
+    monkeypatch.delenv("OPENAI_API_KEY")
+    _failing_gemini(monkeypatch)
+    assert run(sv.is_scam_image(_blob(8), 1, 41)) is None
+    oai.assert_not_awaited()                                    # no OpenAI key: nothing to fall back to
+
+
+def test_backup_respects_the_per_user_limit_when_gemini_is_paused(vision, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "oa"); monkeypatch.setenv("SCAM_VISION_PER_USER", "1")
+    monkeypatch.setenv("SCAM_VISION_OPENAI_FREE_DAILY", "99"); monkeypatch.setenv("SCAM_VISION_OPENAI_RPM", "99")
+    sv._s.blocked_until = 10 ** 13
+    oai = AsyncMock(return_value=False)
+    monkeypatch.setattr(sv, "_ask_openai", oai)
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    for n in range(4):
+        run(sv.is_scam_image(_blob(50 + n), 1, 77))
+    assert oai.await_count == 1
+
+
+class _Resp:
+    def __init__(self, code, payload=None, text=""):
+        self.status_code, self._p, self.text = code, payload or {}, text
+    def json(self):
+        return self._p
+
+
+def _fake_httpx(monkeypatch, resp, seen):
+    class Client:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None, headers=None):
+            seen.update(url=url, body=json, headers=headers)
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
+    monkeypatch.setattr(sv.httpx, "AsyncClient", Client)
+
+
+def test_openai_request_shape_and_verdicts(vision, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    seen = {}
+    _fake_httpx(monkeypatch, _Resp(200, {"choices": [{"message": {"content": "SCAM"}}]}), seen)
+    assert run(sv._ask_openai(b"jpg")) is True
+    assert seen["url"] == sv.OPENAI_URL and seen["headers"]["Authorization"] == "Bearer sk-secret"
+    body = seen["body"]
+    assert body["model"] == "gpt-4o-mini" and body["temperature"] == 0
+    parts = body["messages"][0]["content"]
+    assert parts[0]["text"] == sv.PROMPT and parts[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert sv._s.o_last_ok is True
+    _fake_httpx(monkeypatch, _Resp(200, {"choices": [{"message": {"content": "SAFE"}}]}), seen)
+    assert run(sv._ask_openai(b"jpg")) is False
+    _fake_httpx(monkeypatch, _Resp(200, {"choices": [{"message": {"content": "maybe"}}]}), seen)
+    assert run(sv._ask_openai(b"jpg")) is None
+    _fake_httpx(monkeypatch, _Resp(200, {"unexpected": 1}), seen)
+    assert run(sv._ask_openai(b"jpg")) is None
+    monkeypatch.setenv("SCAM_VISION_OPENAI_MODEL", "some-reasoning-model")
+    _fake_httpx(monkeypatch, _Resp(200, {"choices": [{"message": {"content": "SAFE"}}]}), seen)
+    run(sv._ask_openai(b"jpg"))
+    assert "temperature" not in seen["body"] and seen["body"]["model"] == "some-reasoning-model"
+
+
+@pytest.mark.parametrize("code,pause", [(429, 60), (503, 60), (401, 600), (404, 600)])
+def test_openai_errors_pause_the_backup_and_never_leak_the_key(vision, monkeypatch, caplog, code, pause):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    _fake_httpx(monkeypatch, _Resp(code, text="boom"), {})
+    with caplog.at_level("WARNING"):
+        assert run(sv._ask_openai(b"jpg")) is None
+    assert sv._s.o_blocked_until == pytest.approx(10 ** 12 + pause) and sv._s.o_last_ok is False
+    assert "sk-secret" not in caplog.text and "sk-secret" not in sv._s.o_last_detail
+
+
+def test_openai_network_error_fails_open(vision, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    _fake_httpx(monkeypatch, RuntimeError("down"), {})
+    assert run(sv._ask_openai(b"jpg")) is None
+    assert sv._s.o_blocked_until == pytest.approx(10 ** 12 + 30) and "RuntimeError" in sv._s.o_last_detail
+
+
+def test_backup_has_its_own_pause_and_global_limits(vision, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk"); monkeypatch.setenv("SCAM_VISION_OPENAI_RPM", "2")
+    monkeypatch.setenv("SCAM_VISION_OPENAI_FREE_DAILY", "99"); monkeypatch.setenv("SCAM_VISION_PER_USER", "999")
+    sv._s.blocked_until = 10 ** 13
+    oai = AsyncMock(return_value=False)
+    monkeypatch.setattr(sv, "_ask_openai", oai)
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    for n in range(5):
+        run(sv.is_scam_image(_blob(60 + n), n + 1, 90))
+    assert oai.await_count == 2                                 # per-minute limit
+    sv._s.o_calls.clear(); sv._s.o_blocked_until = 10 ** 13
+    run(sv.is_scam_image(_blob(70), 9, 91))
+    assert oai.await_count == 2                                 # its own pause is respected
+
+
+def test_status_text_and_self_test_with_the_backup(vision, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "oa")
+    assert "OpenAI backup: ready" in sv.status_text()
+    sv._note_openai(False, "key rejected (401)")
+    assert "OpenAI backup: ❌" in sv.status_text() and "key rejected" in sv.status_text()
+    monkeypatch.delenv("GEMINI_API_KEY")
+    assert sv.status_text().startswith("no Gemini key")
+    monkeypatch.delenv("OPENAI_API_KEY")
+    assert sv.status_text() == "no API key set"
+
+    async def g(jpeg):
+        sv._note(True, "ok"); sv._s.last_at += 1; return True
+    async def o_bad(jpeg):
+        sv._note_openai(False, "key rejected (401)"); sv._s.o_last_at += 1; return None
+    monkeypatch.setenv("GEMINI_API_KEY", "k"); monkeypatch.setenv("OPENAI_API_KEY", "oa")
+    monkeypatch.setattr(sv, "_ask", g); monkeypatch.setattr(sv, "_ask_openai", o_bad)
+    ok, msg = run(sv.self_test())
+    assert ok and "Gemini answered **SCAM**" in msg and "OpenAI backup problem: key rejected" in msg
+    monkeypatch.delenv("GEMINI_API_KEY")
+    ok, msg = run(sv.self_test())
+    assert not ok and "OpenAI backup problem" in msg                 # backup-only setup and it is broken
+    monkeypatch.delenv("OPENAI_API_KEY")
+    ok, msg = run(sv.self_test())
+    assert not ok and "OPENAI_API_KEY" in msg
+
+
+def test_server_panel_shows_main_and_backup_limits_and_premium_perk_is_listed():
+    from discord_bot.cogs._views_server_panel_p5 import ScamShieldView
+    v = ScamShieldView.__new__(ScamShieldView)
+    v.data = {"ai": {"on": True, "used": 2, "cap": 5, "premium": False, "backup_cap": 1, "backup_used": 0}}
+    text = "\n".join(v._ai_lines())
+    assert "up to **5** AI checks per day" in text and "Backup AI" in text and "**1** more checks" in text and "Premium" in text
+    v.data = {"ai": {"on": True, "used": 0, "cap": 20, "premium": True}}
+    assert "up to **20**" in "\n".join(v._ai_lines()) and "Backup AI" not in "\n".join(v._ai_lines())
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    perks = (root / "discord_bot/cogs/_views_premium.py").read_text(encoding="utf-8").split("_PERKS = (")[1].split("def _yearly")[0]
+    assert "Scam Shield AI" in perks and "20 AI image scam checks" in perks
+    assert "Scam Shield AI" in (root / "website/premium/index.html").read_text(encoding="utf-8")

@@ -14,6 +14,8 @@ Cost / safety rules (the free Gemini tier has tight limits):
     (perceptual hash) without another API call.
   * A per-minute and a per-day budget plus a short per-user limit. Over budget = skipped, never queued.
   * Fails open: any error, timeout, missing key or odd answer means "not a scam". It never deletes on doubt.
+  * Backup: when Gemini can't answer (no key, error, rate limit, timeout or its pause after one), the same picture
+    can go to OpenAI instead (OPENAI_API_KEY), with its own much smaller daily cap per server.
 """
 
 from __future__ import annotations
@@ -42,8 +44,12 @@ MIN_SIDE = 300                          # px, same idea
 MAX_DOWNLOAD_BYTES = 8_000_000
 REQUEST_TIMEOUT = 12.0
 LEARNED_DISTANCE = 6                    # Hamming distance for "same picture as one Gemini already flagged"
-FREE_GUILD_DAILY = 10                   # AI checks per server per day (UTC) on a free server
-PREMIUM_GUILD_DAILY = 60                # same, for a Premium server
+FREE_GUILD_DAILY = 5                    # Gemini checks per server per day (UTC) on a free server
+PREMIUM_GUILD_DAILY = 20                # same, for a Premium server
+OPENAI_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_DEFAULT_MODEL = "gpt-4o-mini"    # cheap and reads images; SCAM_VISION_OPENAI_MODEL overrides it
+OPENAI_FREE_DAILY = 1                   # backup (OpenAI) checks per server per day on a free server
+OPENAI_PREMIUM_DAILY = 3                # same, for a Premium server
 CACHE_MAX = 3000
 LEARNED_MAX = 300
 
@@ -78,6 +84,15 @@ class _State:
     last_ok: Optional[bool] = None                              # result of the most recent Gemini call
     last_detail: str = ""
     last_at: float = 0.0                                        # wall-clock time (time.time())
+    # OpenAI backup
+    o_blocked_until: float = 0.0                                # its own pause after 429 / 5xx / network errors
+    o_calls: Deque[float] = deque()                             # monotonic times of recent backup calls
+    o_day_key: str = ""
+    o_day_count: int = 0                                        # backup calls today, all servers
+    o_guild_used: Dict[Tuple[int, Optional[int]], Tuple[str, int]] = {}
+    o_last_ok: Optional[bool] = None
+    o_last_detail: str = ""
+    o_last_at: float = 0.0
 
 
 _s = _State()
@@ -110,6 +125,30 @@ async def guild_cap(guild_id: int, clone_id: Optional[int] = None) -> Tuple[int,
     return cap, premium
 
 
+async def openai_cap(guild_id: int, clone_id: Optional[int] = None) -> Tuple[int, bool]:
+    """(daily backup-check cap for this server, is it Premium). Env vars SCAM_VISION_OPENAI_FREE_DAILY and
+    SCAM_VISION_OPENAI_PREMIUM_DAILY change the numbers without a code change."""
+    premium = await _is_premium(guild_id, clone_id)
+    cap = _int_env("SCAM_VISION_OPENAI_PREMIUM_DAILY", OPENAI_PREMIUM_DAILY) if premium \
+        else _int_env("SCAM_VISION_OPENAI_FREE_DAILY", OPENAI_FREE_DAILY)
+    return cap, premium
+
+
+def openai_used_today(guild_id: int, clone_id: Optional[int] = None) -> int:
+    day, n = _s.o_guild_used.get((guild_id, clone_id), ("", 0))
+    return n if day == _today() else 0
+
+
+def _spend_openai(guild_id: int, clone_id: Optional[int]) -> None:
+    if len(_s.o_guild_used) > 5000:
+        _s.o_guild_used.clear()
+    day = _today()
+    if _s.o_day_key != day:
+        _s.o_day_key, _s.o_day_count = day, 0
+    _s.o_day_count += 1
+    _s.o_guild_used[(guild_id, clone_id)] = (day, openai_used_today(guild_id, clone_id) + 1)
+
+
 def guild_used_today(guild_id: int, clone_id: Optional[int] = None) -> int:
     day, n = _s.guild_used.get((guild_id, clone_id), ("", 0))
     return n if day == _today() else 0
@@ -125,15 +164,32 @@ def _note(ok: bool, detail: str) -> None:
     _s.last_ok, _s.last_detail, _s.last_at = ok, detail[:200], time.time()
 
 
+def _note_openai(ok: bool, detail: str) -> None:
+    _s.o_last_ok, _s.o_last_detail, _s.o_last_at = ok, detail[:200], time.time()
+
+
+def _ago(t: float) -> str:
+    ago = int(time.time() - t)
+    return f"{ago // 3600}h ago" if ago >= 3600 else f"{ago // 60}m ago" if ago >= 60 else "just now"
+
+
 def status_text() -> str:
     """One line for the owner panel: is the AI scan actually working right now?"""
-    if not api_key():
+    if not api_key() and not openai_key():
         return "no API key set"
-    if _s.last_ok is None:
-        return "no scan yet since the last restart (press Test AI scan)"
-    ago = int(time.time() - _s.last_at)
-    when = f"{ago // 3600}h ago" if ago >= 3600 else f"{ago // 60}m ago" if ago >= 60 else "just now"
-    return f"✅ working (last call {when})" if _s.last_ok else f"❌ ERROR {when}: {_s.last_detail}"
+    if not api_key():
+        main = "no Gemini key"
+    elif _s.last_ok is None:
+        main = "no scan yet since the last restart (press Test AI scan)"
+    else:
+        when = _ago(_s.last_at)
+        main = f"✅ working (last call {when})" if _s.last_ok else f"❌ ERROR {when}: {_s.last_detail}"
+    if not openai_key():
+        return main
+    if _s.o_last_ok is None:
+        return f"{main} · OpenAI backup: ready, not used yet"
+    when = _ago(_s.o_last_at)
+    return f"{main} · OpenAI backup: " + (f"✅ worked {when}" if _s.o_last_ok else f"❌ ERROR {when}: {_s.o_last_detail}")
 
 
 def _int_env(name: str, default: int) -> int:
@@ -149,13 +205,26 @@ def api_key() -> str:
     return (os.getenv("SCAM_VISION_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")).strip()
 
 
+def openai_key() -> str:
+    """The backup scan's key: SCAM_VISION_OPENAI_KEY if set, else the bot's normal OPENAI_API_KEY."""
+    return (os.getenv("SCAM_VISION_OPENAI_KEY", "") or os.getenv("OPENAI_API_KEY", "")).strip()
+
+
+def has_key() -> bool:
+    return bool(api_key() or openai_key())
+
+
+def openai_model() -> str:
+    return os.getenv("SCAM_VISION_OPENAI_MODEL", "").strip() or OPENAI_DEFAULT_MODEL
+
+
 def model() -> str:
     return os.getenv("SCAM_VISION_MODEL", "").strip() or DEFAULT_MODEL
 
 
 def available() -> bool:
     """True when a key is configured and the owner hasn't switched the AI scan off."""
-    return bool(api_key()) and ss.vision_enabled()
+    return has_key() and ss.vision_enabled()
 
 
 def worth_checking(size: int, width: Optional[int] = None, height: Optional[int] = None) -> bool:
@@ -170,6 +239,36 @@ def worth_checking(size: int, width: Optional[int] = None, height: Optional[int]
 
 def _today() -> str:
     return time.strftime("%Y-%m-%d", time.gmtime())
+
+
+def _user_ok(guild_id: int, user_id: int) -> bool:
+    """Short per-user limit (default 4 checks per 10 minutes). Counts the check when it says yes."""
+    now = time.monotonic()
+    key = (guild_id, user_id)
+    if len(_s.user_calls) > 2000:
+        _s.user_calls.clear()
+    q = _s.user_calls.setdefault(key, deque())
+    while q and now - q[0] > 600:
+        q.popleft()
+    if len(q) >= _int_env("SCAM_VISION_PER_USER", 4):
+        return False
+    q.append(now)
+    return True
+
+
+def _openai_budget_ok() -> bool:
+    """Global limits for the OpenAI backup: its own pause, a per-minute and a per-day budget."""
+    now = time.monotonic()
+    if now < _s.o_blocked_until:
+        return False
+    while _s.o_calls and now - _s.o_calls[0] > 60:
+        _s.o_calls.popleft()
+    if len(_s.o_calls) >= _int_env("SCAM_VISION_OPENAI_RPM", 6):
+        return False
+    day = _today()
+    if _s.o_day_key != day:
+        _s.o_day_key, _s.o_day_count = day, 0
+    return _s.o_day_count < _int_env("SCAM_VISION_OPENAI_DAILY", 100)
 
 
 def _budget_ok(guild_id: int, user_id: int) -> bool:
@@ -187,16 +286,7 @@ def _budget_ok(guild_id: int, user_id: int) -> bool:
         _s.day_key, _s.day_count = day, 0
     if _s.day_count >= daily:
         return False
-    key = (guild_id, user_id)
-    if len(_s.user_calls) > 2000:
-        _s.user_calls.clear()
-    q = _s.user_calls.setdefault(key, deque())
-    while q and now - q[0] > 600:
-        q.popleft()
-    if len(q) >= _int_env("SCAM_VISION_PER_USER", 4):      # per user per 10 minutes
-        return False
-    q.append(now)
-    return True
+    return _user_ok(guild_id, user_id)
 
 
 def _spend() -> None:
@@ -322,6 +412,70 @@ async def _ask(jpeg: bytes) -> Optional[bool]:
         return None
 
 
+async def _ask_openai(jpeg: bytes) -> Optional[bool]:
+    """Same question, asked to OpenAI. Same rules: any problem means None (not a scam), it never deletes on doubt."""
+    m = openai_model()
+    body = {
+        "model": m,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": PROMPT},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(),
+                                                "detail": "low"}},
+        ]}],
+        "max_completion_tokens": 256,                      # room for models that think before answering
+    }
+    if m.startswith("gpt-4"):
+        body["temperature"] = 0                            # reasoning models only accept the default
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.post(OPENAI_URL, json=body, headers={"Authorization": "Bearer " + openai_key()})
+    except Exception as e:
+        logger.warning("[scam-vision] OpenAI backup request failed (%s)", type(e).__name__)
+        _s.o_blocked_until = time.monotonic() + 30
+        _note_openai(False, f"can't reach OpenAI ({type(e).__name__})")
+        return None
+    if resp.status_code == 429 or resp.status_code >= 500:
+        logger.warning("[scam-vision] OpenAI answered %s; pausing the backup scan for 60s", resp.status_code)
+        _s.o_blocked_until = time.monotonic() + 60
+        _note_openai(False, "rate limit or quota (429)" if resp.status_code == 429 else f"OpenAI server error {resp.status_code}")
+        return None
+    if resp.status_code in (400, 401, 403, 404):
+        logger.error("[scam-vision] OpenAI rejected the backup request (%s): check OPENAI_API_KEY / SCAM_VISION_OPENAI_MODEL. %s",
+                     resp.status_code, resp.text[:200])
+        _s.o_blocked_until = time.monotonic() + 600
+        why = {400: "bad request", 401: "key rejected", 403: "key not allowed",
+               404: f"model '{m}' not found (check SCAM_VISION_OPENAI_MODEL)"}[resp.status_code]
+        _note_openai(False, f"{why} ({resp.status_code})")
+        return None
+    try:
+        data = resp.json()
+        text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        verdict = parse_verdict(text if isinstance(text, str) else "")
+        _note_openai(True, "ok")
+        return verdict
+    except Exception:
+        logger.debug("[scam-vision] couldn't read OpenAI's answer", exc_info=True)
+        _note_openai(False, "OpenAI answered but the reply couldn't be read")
+        return None
+
+
+async def _ask_backup(jpeg: bytes, guild_id: int, user_id: int, clone_id: Optional[int],
+                      user_checked: bool) -> Optional[bool]:
+    """Try the OpenAI backup for one picture. None when it isn't available, is over budget, or can't answer."""
+    if not openai_key():
+        return None
+    cap, _ = await openai_cap(guild_id, clone_id)
+    if openai_used_today(guild_id, clone_id) >= cap:
+        return None                                          # this server used up today's backup checks
+    if not _openai_budget_ok():
+        return None
+    if not user_checked and not _user_ok(guild_id, user_id):
+        return None
+    _s.o_calls.append(time.monotonic())
+    _spend_openai(guild_id, clone_id)
+    return await _ask_openai(jpeg)
+
+
 async def is_scam_image(data: bytes, guild_id: int, user_id: int,
                         clone_id: Optional[int] = None) -> Optional[Tuple[str, str, Optional[int]]]:
     """Returns ('vision', reason, None) when the image is a scam, else None. Same shape as ss.match_image.
@@ -335,17 +489,35 @@ async def is_scam_image(data: bytes, guild_id: int, user_id: int,
     if known_copy(data):
         _remember(key, True)
         return "vision", "AI scan: copy of a scam image already flagged", None
-    cap, _ = await guild_cap(guild_id, clone_id)
-    if guild_used_today(guild_id, clone_id) >= cap:
-        return None                                              # this server used up today's AI checks
-    if not _budget_ok(guild_id, user_id):
-        return None
-    jpeg = prepare(data)
-    if jpeg is None:
-        return None
-    _spend()
-    _spend_guild(guild_id, clone_id)
-    verdict = await _ask(jpeg)
+    jpeg = None
+    verdict: Optional[bool] = None
+    user_checked = False
+    gemini_tried_and_failed = False
+    gemini_usable = bool(api_key()) and time.monotonic() >= _s.blocked_until
+    if gemini_usable:
+        cap, _ = await guild_cap(guild_id, clone_id)
+        if guild_used_today(guild_id, clone_id) >= cap:
+            return None                                          # this server used up today's AI checks
+        if not _budget_ok(guild_id, user_id):
+            return None
+        user_checked = True
+        jpeg = prepare(data)
+        if jpeg is None:
+            return None
+        _spend()
+        _spend_guild(guild_id, clone_id)
+        before = _s.last_at
+        verdict = await _ask(jpeg)
+        gemini_tried_and_failed = verdict is None and _s.last_at != before and _s.last_ok is False
+    # Gemini has no key, is paused, or just failed: try the OpenAI backup (own, smaller cap per server)
+    if not gemini_usable or gemini_tried_and_failed:
+        if not openai_key():
+            return None
+        if jpeg is None:
+            jpeg = prepare(data)
+            if jpeg is None:
+                return None
+        verdict = await _ask_backup(jpeg, guild_id, user_id, clone_id, user_checked)
     if verdict is None:
         return None                                              # unknown: not cached, never deletes
     _remember(key, verdict)
@@ -356,10 +528,10 @@ async def is_scam_image(data: bytes, guild_id: int, user_id: int,
 
 
 async def self_test() -> Tuple[bool, str]:
-    """Owner-panel health check: sends a small test picture to Gemini right now (ignores the budgets).
-    Returns (working, message). Clears the error pause when it succeeds."""
-    if not api_key():
-        return False, "No API key set (SCAM_VISION_API_KEY or GEMINI_API_KEY)."
+    """Owner-panel health check: sends a small test picture to Gemini (and to the OpenAI backup if its key is set)
+    right now, ignoring the budgets. Returns (working, message). Clears the error pauses when a call succeeds."""
+    if not has_key():
+        return False, "No API key set (SCAM_VISION_API_KEY, GEMINI_API_KEY or OPENAI_API_KEY)."
     try:
         from PIL import Image, ImageDraw
         im = Image.new("RGB", (600, 320), (18, 24, 38))
@@ -371,11 +543,31 @@ async def self_test() -> Tuple[bool, str]:
         im.save(out, "JPEG", quality=85)
     except Exception:
         return False, "Couldn't build the test picture (Pillow problem)."
-    before = _s.last_at
-    verdict = await _ask(out.getvalue())
-    if _s.last_at == before or not _s.last_ok:
-        return False, _s.last_detail or "No answer from Gemini."
-    _s.blocked_until = 0.0
-    if verdict is None:
-        return True, "Gemini answered but not with SAFE/SCAM (it will be treated as not a scam)."
-    return True, f"Gemini answered **{'SCAM' if verdict else 'SAFE'}** for the test picture."
+    jpeg = out.getvalue()
+
+    def answer(v: Optional[bool]) -> str:
+        return "answered but not with SAFE/SCAM (treated as not a scam)" if v is None else f"answered **{'SCAM' if v else 'SAFE'}**"
+
+    parts: List[str] = []
+    gemini_ok = False
+    if api_key():
+        before = _s.last_at
+        verdict = await _ask(jpeg)
+        if _s.last_at == before or not _s.last_ok:
+            parts.append("Gemini problem: " + (_s.last_detail or "no answer"))
+        else:
+            gemini_ok = True
+            _s.blocked_until = 0.0
+            parts.append("Gemini " + answer(verdict) + " for the test picture.")
+    openai_ok = False
+    if openai_key():
+        before = _s.o_last_at
+        verdict = await _ask_openai(jpeg)
+        if _s.o_last_at == before or not _s.o_last_ok:
+            parts.append("OpenAI backup problem: " + (_s.o_last_detail or "no answer"))
+        else:
+            openai_ok = True
+            _s.o_blocked_until = 0.0
+            parts.append("OpenAI backup " + answer(verdict) + ".")
+    ok = gemini_ok or (not api_key() and openai_ok)         # with a Gemini key, Gemini is the one that has to work
+    return ok, " ".join(parts)
