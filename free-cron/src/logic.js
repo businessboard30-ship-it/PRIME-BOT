@@ -195,3 +195,44 @@ export function judgeLicense(resp, productId) {
   if (p.subscription_ended_at || p.subscription_cancelled_at || p.subscription_failed_at) return bad("That subscription is no longer active.");
   return { ok: true };
 }
+
+// ---- public status pages ----
+export const STATUS_PAGES_FREE = 1, STATUS_PAGES_PREMIUM = 10;          // pages per account
+export const STATUS_MONITORS_FREE = 5, STATUS_MONITORS_PREMIUM = 50;    // crons per page
+export const statusPagesLimit = (account, now) => (isPremium(account, now) ? STATUS_PAGES_PREMIUM : STATUS_PAGES_FREE);
+export const statusMonitorsLimit = (account, now) => (isPremium(account, now) ? STATUS_MONITORS_PREMIUM : STATUS_MONITORS_FREE);
+export const RESERVED_SLUGS = new Set(["api", "auth", "admin", "s", "status", "privacy", "terms", "login", "logout", "signin", "signup", "www", "app", "dashboard", "settings",
+  "help", "support", "about", "static", "assets", "public", "report", "abuse", "root", "me", "stats", "cron", "crons", "free-cron", "freecron", "health", "robots", "sitemap", "favicon"]);
+export function validSlug(s) {
+  return typeof s === "string" && /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/.test(s) && !s.includes("--") && !RESERVED_SLUGS.has(s);
+}
+export function randomSlug() {                                   // 20 hex chars: unguessable, and never a reserved word
+  return Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+/** Titles and labels are shown publicly, so keep them plain: no control characters, no link-looking text. Returns {value} or {error}. */
+export function cleanText(raw, what) {
+  if (typeof raw !== "string") return { error: `${what} is required.` };
+  const v = raw.replace(/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim();
+  if (!v) return { error: `${what} is required.` };
+  if (v.length > MAX_NAME) return { error: `${what} must be at most ${MAX_NAME} characters.` };
+  if (/:\/\/|www\./i.test(v)) return { error: `${what} can't contain a link.` };
+  return { value: v };
+}
+const pct = (ok, n) => (n ? Math.round((ok / n) * 1000) / 10 : null);
+/** Uptime windows we may show. Free accounts keep only 7 days of runs, so a 30-day number would be fake: it is left out. */
+export function statusWindows(premium) { return premium ? ["24h", "7d", "30d"] : ["24h", "7d"]; }
+/** Shape the public answer. Only the label, state, uptime and last-checked time ever leave the server. */
+export function buildPublicStatus(page, monitors, usage, premium, now) {
+  const wins = statusWindows(premium), by = new Map(usage.map((u) => [Number(u.job_id), u]));
+  const out = monitors.map((m) => {
+    const u = by.get(Number(m.job_id)) || {}, uptime = {};
+    for (const w of wins) uptime[w] = pct(Number(u["ok_" + w]) || 0, Number(u["n_" + w]) || 0);
+    let state = "unknown";
+    if (!m.enabled) state = "paused";
+    else if (m.last_run_at) state = classify(m.last_status) ? "up" : "down";
+    return { label: m.label, state, uptime, last_checked_at: m.last_run_at || null };
+  });
+  const live = out.filter((m) => m.state === "up" || m.state === "down");
+  const overall = !live.length ? "unknown" : live.every((m) => m.state === "up") ? "up" : live.every((m) => m.state === "down") ? "down" : "degraded";
+  return { title: page.title, overall, windows: wins, retention_days: premium ? KEEP_DAYS_PREMIUM : KEEP_DAYS_FREE, updated_at: now, monitors: out };
+}

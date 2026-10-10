@@ -254,4 +254,10 @@ const STATS = `
 .up.low .up-pct{color:var(--bad)}.up.low .meter i.on{background:var(--bad);border-color:var(--bad);box-shadow:0 0 8px var(--bad)}
 `;
 
-export const CSS = BASE + SHELL + TILES + HIST + STATS;
+const PAGES = `
+.pmons{margin:.4rem 0 .6rem}.pmon{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;padding:.45rem 0;border-top:1px dashed var(--hair)}
+.pmon .pl{flex:1 1 180px;min-width:0;overflow-wrap:anywhere}.padd select{max-width:100%}.padd input{flex:1 1 160px}
+.purl a{color:var(--text);overflow-wrap:anywhere}
+`;
+
+export const CSS = BASE + SHELL + TILES + HIST + STATS + PAGES;
