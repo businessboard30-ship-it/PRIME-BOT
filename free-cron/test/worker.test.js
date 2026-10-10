@@ -409,3 +409,53 @@ test("page: each cron has a History panel wired to the runs API, built without i
   assert.ok(html.includes('"/api/jobs/"+id+"/runs?limit=50"') && html.includes('"History"') && html.includes("loadRuns"));
   assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
 });
+
+// ---------- statistics ----------
+test("stats API: login needed, range checked, 30d is Premium only", async () => {
+  const e = env(), t = await addAccount(e), pt = await addAccount(e, 2, "bob", Date.now() + DAY);
+  assert.equal((await call(e, "/api/stats")).status, 401);
+  assert.equal((await call(e, "/api/stats?range=1y", { token: t })).status, 422);
+  assert.equal((await call(e, "/api/stats?range=__proto__", { token: t })).status, 422);
+  assert.equal((await call(e, "/api/stats?range=30d", { token: t })).status, 403);
+  assert.equal((await call(e, "/api/stats?range=30d", { token: pt })).status, 200);
+  for (const r of ["", "?range=24h", "?range=7d"]) assert.equal((await call(e, "/api/stats" + r, { token: t })).status, 200);
+});
+
+test("stats API: a brand-new account gets a full empty shape", async () => {
+  const e = env(), t = await addAccount(e);
+  const j = await (await call(e, "/api/stats?range=7d", { token: t })).json();
+  assert.equal(j.range, "7d"); assert.equal(j.series.length, 7); assert.deepEqual(j.jobs, []);
+  assert.deepEqual(j.totals, { runs: 0, ok: 0, failed: 0, success_rate: null, avg_ms: null });
+});
+
+test("stats API: totals, hourly and daily series and per-cron uptime come from SQL, for my account only", async () => {
+  const e = env(), t = await addAccount(e), t2 = await addAccount(e, 2, "bob"); seed(e, 1, 2); seed(e, 2, 1);
+  const T = Date.now(), HOUR = 3600000, h0 = Math.floor(T / HOUR) * HOUR;
+  const run = (job, acct, at, status, ms) => e.DB.sql.prepare("INSERT INTO runs (job_id,account_id,ran_at,status,ms,ok) VALUES (?,?,?,?,?,?)").run(job, acct, at, status, ms, status >= 200 && status < 400 ? 1 : 0);
+  run(1, 1, h0 + 1000, 200, 100); run(1, 1, h0 + 2000, 200, 300); run(1, 1, h0 + 3000, 500, 9000);   // this hour: avg of the 2 ok runs = 200
+  run(2, 1, h0 - 2 * HOUR + 5, 200, 50); run(2, 1, h0 - 2 * HOUR + 9, 0, 10000);                      // two hours ago
+  run(1, 1, h0 - 30 * HOUR, 200, 70);                                                                  // outside 24h, inside 7d
+  run(3, 2, h0 + 1000, 200, 1);                                                                        // bob's run must never show up
+  const h = await (await call(e, "/api/stats?range=24h", { token: t })).json();
+  assert.deepEqual(h.totals, { runs: 5, ok: 3, failed: 2, success_rate: 60, avg_ms: 150 });          // avg over the ok runs only: (100 + 300 + 50) / 3
+  assert.equal(h.series.length, 24); assert.equal(h.bucket_ms, HOUR);
+  assert.deepEqual(h.series[23], { t: h0, runs: 3, ok: 2, failed: 1, avg_ms: 200 });
+  assert.deepEqual(h.series[21], { t: h0 - 2 * HOUR, runs: 2, ok: 1, failed: 1, avg_ms: 50 });
+  assert.deepEqual(h.series[22], { t: h0 - HOUR, runs: 0, ok: 0, failed: 0, avg_ms: null });
+  assert.deepEqual(h.jobs.map((x) => [x.id, x.runs, x.ok, x.success_rate, x.avg_ms]), [[1, 3, 2, 66.7, 200], [2, 2, 1, 50, 50]]);
+  const d = await (await call(e, "/api/stats?range=7d", { token: t })).json();                         // the 30-hour-old run joins in
+  assert.equal(d.totals.runs, 6); assert.equal(d.series.length, 7); assert.equal(d.bucket_ms, 86400000);
+  assert.equal(d.series.reduce((n, p) => n + p.runs, 0), 6);
+  const b = await (await call(e, "/api/stats?range=24h", { token: t2 })).json();
+  assert.deepEqual(b.totals, { runs: 1, ok: 1, failed: 0, success_rate: 100, avg_ms: 1 });
+  assert.deepEqual(b.jobs.map((x) => x.id), [3]);
+});
+
+test("page: statistics view has range buttons, totals, charts and an empty state, drawn without a chart library", async () => {
+  const html = await (await call(env(), "/")).text();
+  for (const id of ["sRuns", "sRate", "sAvg", "sFailed", "cLine", "cBars", "sJobs", "sEmpty"]) assert.ok(html.includes(`id="${id}"`), id);
+  for (const r of ["24h", "7d", "30d"]) assert.ok(html.includes(`data-range="${r}"`));
+  assert.ok(html.includes("createElementNS") && html.includes('"/api/stats?range="'));
+  assert.ok(!/<script[^>]+src="(?!https:\/\/challenges\.cloudflare\.com)/.test(html));   // no other external script
+  assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
+});

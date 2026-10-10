@@ -179,6 +179,20 @@ async function handleApi(request, env, url) {
     return json({ id: ins.meta.last_row_id });
   }
 
+  if (path === "/api/stats" && method === "GET") {                         // totals, a time series and per-cron uptime, all aggregated in SQL
+    const now = Date.now(), range = url.searchParams.get("range") || "24h", w = L.statsWindow(range, now);
+    if (!w) return err(422, "range must be 24h, 7d or 30d.");
+    if (range === "30d" && !L.isPremium(account, now)) return err(403, "30 days of statistics is a Premium feature.");
+    await ensureRunsTable(env);
+    const q = (sql, ...args) => env.DB.prepare(sql).bind(...args).all();
+    const [t, s, j] = await Promise.all([
+      env.DB.prepare("SELECT COUNT(*) AS runs, SUM(ok) AS ok, AVG(CASE WHEN ok = 1 THEN ms END) AS avg_ms FROM runs WHERE account_id = ?1 AND ran_at >= ?2").bind(account.id, w.from).first(),
+      q("SELECT CAST(ran_at / CAST(?3 AS INTEGER) AS INTEGER) * CAST(?3 AS INTEGER) AS b, COUNT(*) AS runs, SUM(ok) AS ok, AVG(CASE WHEN ok = 1 THEN ms END) AS avg_ms FROM runs WHERE account_id = ?1 AND ran_at >= ?2 GROUP BY b", account.id, w.from, w.size),
+      q("SELECT j.id, j.name, COUNT(r.id) AS runs, SUM(r.ok) AS ok, AVG(CASE WHEN r.ok = 1 THEN r.ms END) AS avg_ms FROM jobs j LEFT JOIN runs r ON r.job_id = j.id AND r.ran_at >= ?2 WHERE j.account_id = ?1 GROUP BY j.id ORDER BY j.id", account.id, w.from),
+    ]);
+    return json(L.buildStats(range, now, t, s.results || [], j.results || []));
+  }
+
   const hm = path.match(/^\/api\/jobs\/(\d{1,12})\/runs$/);
   if (hm && method === "GET") {                                            // run history of one of MY crons, newest first
     const id = Number(hm[1]);

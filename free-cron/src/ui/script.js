@@ -48,6 +48,7 @@ function route(fromNav){
   document.title="Free Cron // "+TITLES[current];
   setMenu(false);
   ensureMounts();
+  if(current==="stats")loadStats();
   if(fromNav){
     var head=document.querySelector("#v-"+current+" .vhead");
     if(head){var h2=head.querySelector("h2");if(h2)h2.focus({preventScroll:true});if(head.getBoundingClientRect().top<64)head.scrollIntoView({block:"start"})}
@@ -67,6 +68,77 @@ function meter(el,used,limit){
   if(limit!==null&&used>0&&on<1)on=1;
   for(var i=0;i<20;i++){var c=document.createElement("i");if(i<on){c.className="on";c.style.setProperty("--n",String(i))}el.appendChild(c)}
 }
+
+/* ---------- statistics: inline SVG charts, no library ---------- */
+var range="24h",statsSeq=0;
+function svg(name,attrs,text){var e=document.createElementNS(NS,name);for(var k in attrs)e.setAttribute(k,attrs[k]);if(text!==undefined)e.textContent=text;return e}
+function fmtT(t,size){var d=new Date(t);return size<86400000?(("0"+d.getHours()).slice(-2)+":00"):d.toLocaleDateString(undefined,{month:"short",day:"numeric"})}
+function niceMax(v){if(v<=0)return 100;var p=Math.pow(10,Math.floor(Math.log(v)/Math.LN10)),m=v/p;return(m<=1?1:m<=2?2:m<=5?5:10)*p}
+var CW=640,CH=220,CL=52,CR=14,CT=14,CB=30,PW=CW-CL-CR,PH=CH-CT-CB;
+function frame(label,top,unit){
+  var s=svg("svg",{viewBox:"0 0 "+CW+" "+CH,role:"img","aria-label":label});
+  for(var i=0;i<=4;i++){var y=CT+PH-PH*i/4;s.appendChild(svg("path",{"class":i?"cg":"ca",d:"M"+CL+" "+y+"H"+(CW-CR)}));s.appendChild(svg("text",{"class":"ct",x:CL-8,y:y+4,"text-anchor":"end"},String(Math.round(top*i/4))+unit))}
+  return s;
+}
+function xLabels(s,r,xAt){
+  var n=r.series.length,idx=n>2?[0,Math.floor((n-1)/2),n-1]:[0,n-1];
+  idx.forEach(function(i,k){s.appendChild(svg("text",{"class":"ct",x:xAt(i),y:CH-8,"text-anchor":k===0?"start":(k===idx.length-1?"end":"middle")},fmtT(r.series[i].t,r.bucket_ms)))});
+}
+function drawLine(r){
+  var box=$("cLine");box.textContent="";
+  var n=r.series.length,max=0,have=0;
+  r.series.forEach(function(p){if(p.avg_ms!==null){have++;if(p.avg_ms>max)max=p.avg_ms}});
+  var top=niceMax(max),s=frame("Average response time of successful runs, "+r.range,top," ms");
+  var xAt=function(i){return CL+(n>1?PW*i/(n-1):PW/2)},yAt=function(v){return CT+PH-PH*v/top};
+  if(!have){s.appendChild(svg("text",{"class":"cn",x:CL+PW/2,y:CT+PH/2},"No successful runs in this range"))}
+  else{
+    var d="",prev=false;
+    r.series.forEach(function(p,i){if(p.avg_ms===null){prev=false;return}d+=(prev?"L":"M")+xAt(i).toFixed(1)+" "+yAt(p.avg_ms).toFixed(1)+" ";prev=true});
+    s.appendChild(svg("path",{"class":"cl",d:d}));
+    r.series.forEach(function(p,i){if(p.avg_ms===null)return;var c=svg("circle",{"class":"cd",cx:xAt(i).toFixed(1),cy:yAt(p.avg_ms).toFixed(1),r:3.2});c.appendChild(svg("title",{},fmtT(p.t,r.bucket_ms)+": "+p.avg_ms+" ms average, "+p.runs+(p.runs===1?" run":" runs")));s.appendChild(c)});
+  }
+  xLabels(s,r,xAt);box.appendChild(s);
+  $("cLineNote").textContent="Average of successful runs per "+(r.bucket_ms<86400000?"hour":"day")+". Timeouts and errors are left out so they don't hide the real speed.";
+}
+function drawBars(r){
+  var box=$("cBars");box.textContent="";
+  var n=r.series.length,max=0;r.series.forEach(function(p){if(p.runs>max)max=p.runs});
+  var top=max<4?4:niceMax(max),s=frame("Successful and failed runs per "+(r.bucket_ms<86400000?"hour":"day")+", "+r.range,top,"");
+  var slot=PW/n,bw=Math.max(3,slot*.64),xAt=function(i){return CL+slot*(i+.5)};
+  r.series.forEach(function(p,i){
+    if(!p.runs)return;
+    var hOk=PH*p.ok/top,hBad=PH*p.failed/top,x=(xAt(i)-bw/2).toFixed(1),base=CT+PH;
+    var g=svg("g",{});g.appendChild(svg("title",{},fmtT(p.t,r.bucket_ms)+": "+p.ok+" ok, "+p.failed+" failed"));
+    if(p.ok)g.appendChild(svg("rect",{"class":"b-ok",x:x,y:(base-hOk).toFixed(1),width:bw.toFixed(1),height:hOk.toFixed(1)}));
+    if(p.failed)g.appendChild(svg("rect",{"class":"b-bad",x:x,y:(base-hOk-hBad).toFixed(1),width:bw.toFixed(1),height:hBad.toFixed(1)}));
+    s.appendChild(g)});
+  xLabels(s,r,xAt);box.appendChild(s);
+}
+function drawJobs(r){
+  var box=$("sJobs");box.textContent="";
+  if(!r.jobs.length){var p=document.createElement("p");p.className="mut";p.textContent="No crons yet.";box.appendChild(p);return}
+  r.jobs.forEach(function(j){
+    var d=document.createElement("div");d.className="up"+(j.success_rate===null?"":(j.success_rate>=99?" good":(j.success_rate<90?" low":"")));
+    var n=document.createElement("span");n.className="un";n.textContent=j.name;
+    var pc=document.createElement("span");pc.className="up-pct";pc.textContent=j.success_rate===null?"no runs":(j.success_rate+"%");
+    var sub=document.createElement("span");sub.className="up-sub";sub.textContent=j.runs?(j.ok+" of "+j.runs+" runs ok"+(j.avg_ms!==null?(" // avg "+j.avg_ms+" ms"):"")):"Has not run in this range";
+    var m=document.createElement("div");m.className="meter";m.setAttribute("aria-hidden","true");meter(m,j.ok,j.runs);
+    d.append(n,pc,sub,m);box.appendChild(d)});
+}
+function drawStats(r){
+  var t=r.totals;
+  $("sRuns").textContent=String(t.runs);$("sRate").textContent=t.success_rate===null?"-":(t.success_rate+"%");
+  $("sAvg").textContent=t.avg_ms===null?"-":(t.avg_ms+" ms");$("sFailed").textContent=String(t.failed);
+  var empty=t.runs===0;$("sEmpty").classList.toggle("hidden",!empty);$("sBody").classList.toggle("hidden",empty);
+  if(!empty){drawLine(r);drawBars(r);drawJobs(r)}
+}
+function loadStats(){
+  var my=++statsSeq;
+  $$(".seg-btn").forEach(function(b){var r=b.dataset.range;b.setAttribute("aria-pressed",r===range?"true":"false");if(r==="30d"){b.disabled=!(me&&me.premium);b.title=b.disabled?"30 days is a Premium feature":""}});
+  if(range==="30d"&&!(me&&me.premium))range="24h";
+  api("/api/stats?range="+range).then(function(r){if(my===statsSeq){say("");drawStats(r)}}).catch(function(e){if(my===statsSeq)say(e.message,true)});
+}
+$$(".seg-btn").forEach(function(b){b.addEventListener("click",function(){if(b.disabled)return;range=b.dataset.range;loadStats()})});
 
 function render(m){
   me=m;
