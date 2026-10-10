@@ -454,6 +454,16 @@ TOPGG_HIDE_COMMANDS = {
     n.strip().lower() for n in os.getenv("TOPGG_HIDE_COMMANDS", "admin").split(",") if n.strip()
 }
 
+# DiscordThings (dsc.sh) listing sync (discord_bot/cogs/dthings_stats.py).
+# DTHINGS_API_KEY is the API token from the dsc.sh dashboard — set it as an
+# environment variable (Railway), never commit it. Unset = cog does nothing.
+DTHINGS_API_KEY = os.getenv("DTHINGS_API_KEY", "")
+DTHINGS_BOT_ID = os.getenv("DTHINGS_BOT_ID", "1539561247299604610")  # public application ID
+DTHINGS_POST_INTERVAL_MINUTES = max(30.0, float(os.getenv("DTHINGS_POST_INTERVAL_MINUTES", "30")))
+DTHINGS_HIDE_COMMANDS = {
+    n.strip().lower() for n in os.getenv("DTHINGS_HIDE_COMMANDS", "admin").split(",") if n.strip()
+}
+
 # XP boost bundles: N single boosts for a discounted price. Same multiplier as
 # a single boost (XP_BOOST_MULTIPLIER) — a bundle only adds TIME (boosts x
 # XP_BOOST_DURATION_DAYS), and stacks onto any boost time the member already
