@@ -273,3 +273,7 @@ export function alertText(kind, name, detail) {
   if (kind === "test") return "FREE CRON: test alert. Your Discord webhook works.";
   return `FREE CRON: "${n}" is failing (${detail}). ${ALERT_AFTER} failed runs in a row.`;
 }
+
+// ---- run now ----
+export const MANUAL_PER_HOUR = 30;       // manual runs per account per hour
+export const MANUAL_COOLDOWN_MS = 10000; // a cron can't be run by hand again within this time of its last run

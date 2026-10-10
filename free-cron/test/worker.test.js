@@ -8,7 +8,7 @@ import * as L from "../src/logic.js";
 // A tiny D1 stand-in over node:sqlite (same SQL dialect, RETURNING included).
 function makeDb() {
   const sql = new DatabaseSync(":memory:");
-  for (const f of ["0001_init.sql", "0002_licenses.sql", "0003_runs.sql", "0004_status_pages.sql", "0005_alerts.sql"]) sql.exec(readFileSync(new URL("../migrations/" + f, import.meta.url), "utf8"));
+  for (const f of ["0001_init.sql", "0002_licenses.sql", "0003_runs.sql", "0004_status_pages.sql", "0005_alerts.sql", "0006_manual_runs.sql"]) sql.exec(readFileSync(new URL("../migrations/" + f, import.meta.url), "utf8"));
   const stmt = (q, args = []) => ({
     bind: (...a) => stmt(q, a),
     run: async () => { const r = sql.prepare(q).run(...args); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; },
@@ -773,5 +773,108 @@ test("page: settings has the Discord alerts card and the module list shows alert
   for (const id of ["alHook", "alSave", "alTest", "alToggle", "alRemove", "alState"]) assert.ok(html.includes(`id="${id}"`), id);
   assert.ok(html.includes('"/api/alerts"') && html.includes('"/api/alerts/test"'));
   assert.ok(!/Failure alerts<span class="why">[^<]*<\/span><\/span><em class="chip soon"/.test(html));
+  assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
+});
+
+// ---- Step 5: edit a cron, run now ----
+const editBody = (o = {}) => ({ name: "Renamed", url: "https://example.org/new", method: "GET", every_minutes: 30, ...o });
+const patchJob = (e, id, tok, body) => call(e, `/api/jobs/${id}`, { method: "PATCH", token: tok, body });
+const jobRow = (e, id) => e.DB.sql.prepare("SELECT * FROM jobs WHERE id = ?").get(id);
+
+test("edit: owner only, changes every field, and the list now carries the body", async () => {
+  const e = env(), a = await addAccount(e, 1, "alice"), b = await addAccount(e, 2, "bob"), id = addJob(e, 1, "Old", "https://example.com/old");
+  assert.equal((await patchJob(e, id, b, editBody())).status, 404);
+  assert.equal((await patchJob(e, id, a, editBody({ method: "POST", body: '{"a":1}' }))).status, 200);
+  const j = jobRow(e, id);
+  assert.deepEqual([j.name, j.url, j.method, j.body, j.every_minutes], ["Renamed", "https://example.org/new", "POST", '{"a":1}', 30]);
+  const me = await (await call(e, "/api/me", { token: a })).json();
+  assert.equal(me.jobs[0].body, '{"a":1}');
+});
+
+test("edit: same rules as create (public https only, listed intervals, plan floor, name required, body size)", async () => {
+  const e = env(), a = await addAccount(e), id = addJob(e, 1, "x", "https://example.com/x");
+  for (const bad of [{ url: "http://example.com" }, { url: "https://localhost/x" }, { url: "https://fc.example.dev/x" }, { url: "https://192.168.0.1/x" }, { every_minutes: 7 }, { every_minutes: 5 }, { name: "  " }, { method: "PUT" }, { method: "POST", body: "x".repeat(2000) }])
+    assert.equal((await patchJob(e, id, a, editBody(bad))).status, 422, JSON.stringify(bad).slice(0, 50));
+  assert.equal(jobRow(e, id).url, "https://example.com/x");
+});
+
+test("edit: a new URL resets the failure count and alert state, other edits keep them, the schedule moves only if the interval changed", async () => {
+  const e = env(), a = await addAccount(e), id = addJob(e, 1, "x", "https://example.com/x");
+  e.DB.sql.prepare("UPDATE jobs SET fail_count = 4, alerting = 1, enabled = 1, every_minutes = 15, next_run_at = 777 WHERE id = ?").run(id);
+  await patchJob(e, id, a, editBody({ url: "https://example.com/x", every_minutes: 15, name: "Just a rename" }));
+  let j = jobRow(e, id); assert.deepEqual([j.fail_count, j.alerting, j.next_run_at], [4, 1, 777]);
+  await patchJob(e, id, a, editBody({ url: "https://example.com/fixed", every_minutes: 15 }));
+  j = jobRow(e, id); assert.deepEqual([j.fail_count, j.alerting, j.next_run_at], [0, 0, 777]);
+  await patchJob(e, id, a, editBody({ url: "https://example.com/fixed", every_minutes: 60 }));
+  assert.ok(jobRow(e, id).next_run_at > 777);
+});
+
+test("edit: pause/resume still works with only {enabled}", async () => {
+  const e = env(), a = await addAccount(e), id = addJob(e, 1, "x");
+  assert.equal((await patchJob(e, id, a, { enabled: false })).status, 200); assert.equal(jobRow(e, id).enabled, 0);
+  assert.equal((await patchJob(e, id, a, {})).status, 422);
+});
+
+const withFetch = async (fn, reply = () => new Response("secret body", { status: 200 })) => {
+  const real = globalThis.fetch, calls = [];
+  globalThis.fetch = async (u, init) => { if (String(u).includes("example.com")) { calls.push([String(u), init]); return reply(); } return real(u, init); };
+  try { await fn(calls); } finally { globalThis.fetch = real; }
+};
+
+test("run now: calls the URL once, records status and time, leaves schedule, failure count and alert state alone, stores no body", async () => {
+  const e = env(), a = await addAccount(e), id = addJob(e, 1, "x", "https://example.com/hook");
+  e.DB.sql.prepare("UPDATE jobs SET fail_count = 3, alerting = 1, next_run_at = 12345, last_run_at = 0 WHERE id = ?").run(id);
+  await withFetch(async (calls) => {
+    const r = await call(e, `/api/jobs/${id}/run`, { method: "POST", token: a, body: {} }), j = await r.json();
+    assert.equal(r.status, 200); assert.equal(j.status, 200); assert.equal(j.ok, true); assert.equal(typeof j.ms, "number");
+    assert.equal(calls.length, 1); assert.equal(calls[0][1].redirect, "manual");
+  });
+  const row = jobRow(e, id); assert.deepEqual([row.fail_count, row.alerting, row.next_run_at, row.last_status], [3, 1, 12345, 200]);
+  const run = e.DB.sql.prepare("SELECT * FROM runs WHERE job_id = ?").all(id); assert.equal(run.length, 1); assert.equal(run[0].ok, 1);
+  assert.ok(!JSON.stringify(e.DB.sql.prepare("SELECT * FROM jobs").all()).includes("secret body"));
+});
+
+test("run now: a failing site is reported as a failed run, not an error", async () => {
+  const e = env(), a = await addAccount(e), id = addJob(e, 1, "x", "https://example.com/hook");
+  await withFetch(async () => {
+    const j = await (await call(e, `/api/jobs/${id}/run`, { method: "POST", token: a, body: {} })).json();
+    assert.deepEqual([j.status, j.ok], [500, false]);
+  }, () => new Response("no", { status: 500 }));
+});
+
+test("run now: owner only, login needed, paused crons allowed, over-the-free-limit crons refused", async () => {
+  const e = env(), a = await addAccount(e, 1, "alice"), b = await addAccount(e, 2, "bob");
+  const ids = [1, 2, 3, 4, 5, 6].map((i) => addJob(e, 1, "j" + i, "https://example.com/" + i));
+  assert.equal((await call(e, `/api/jobs/${ids[0]}/run`, { method: "POST", body: {} })).status, 401);
+  assert.equal((await call(e, `/api/jobs/${ids[0]}/run`, { method: "POST", token: b, body: {} })).status, 404);
+  e.DB.sql.prepare("UPDATE jobs SET enabled = 0 WHERE id = ?").run(ids[0]);
+  await withFetch(async () => { assert.equal((await call(e, `/api/jobs/${ids[0]}/run`, { method: "POST", token: a, body: {} })).status, 200); });
+  assert.equal((await call(e, `/api/jobs/${ids[5]}/run`, { method: "POST", token: a, body: {} })).status, 422);
+});
+
+test("run now: a cron can't be hammered (cooldown) and an account is capped per hour", async () => {
+  const e = env(), a = await addAccount(e, 1, "alice", Date.now() + 1e9), id = addJob(e, 1, "x", "https://example.com/hook");
+  await withFetch(async (calls) => {
+    assert.equal((await call(e, `/api/jobs/${id}/run`, { method: "POST", token: a, body: {} })).status, 200);
+    assert.equal((await call(e, `/api/jobs/${id}/run`, { method: "POST", token: a, body: {} })).status, 429);   // cooldown
+    for (let i = 1; i < 30; i++) { e.DB.sql.prepare("UPDATE jobs SET last_run_at = 0 WHERE id = ?").run(id); assert.equal((await call(e, `/api/jobs/${id}/run`, { method: "POST", token: a, body: {} })).status, 200, "run " + i); }
+    e.DB.sql.prepare("UPDATE jobs SET last_run_at = 0 WHERE id = ?").run(id);
+    assert.equal((await call(e, `/api/jobs/${id}/run`, { method: "POST", token: a, body: {} })).status, 429);   // hourly cap
+    assert.equal(calls.length, 30);
+  });
+});
+
+test("run now: a blocked address is not called (re-validated every time)", async () => {
+  const e = env(), a = await addAccount(e), id = addJob(e, 1, "x", "https://fc.example.dev/loop");
+  e.DB.sql.prepare("UPDATE jobs SET url = 'https://localhost/x' WHERE id = ?").run(id);
+  await withFetch(async (calls) => {
+    const j = await (await call(e, `/api/jobs/${id}/run`, { method: "POST", token: a, body: {} })).json();
+    assert.equal(j.status, 0); assert.equal(calls.length, 0);
+  });
+});
+
+test("page: every cron has Edit and Run now wired to the API, built without innerHTML", async () => {
+  const html = await (await call(env(), "/")).text();
+  assert.ok(html.includes('"Run now"') && html.includes('"Edit"') && html.includes("buildEdit") && html.includes('"/run"'));
   assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
 });

@@ -173,7 +173,7 @@ async function sessionOf(request, env) {
 }
 
 const jobView = (j, account, now, index) => ({
-  id: j.id, name: j.name, url: j.url, method: j.method, every_minutes: j.every_minutes, enabled: !!j.enabled,
+  id: j.id, name: j.name, url: j.url, method: j.method, body: j.body || "", every_minutes: j.every_minutes, enabled: !!j.enabled,
   next_run_at: j.next_run_at, last_run_at: j.last_run_at, last_status: j.last_status, last_ms: j.last_ms, fail_count: j.fail_count,
   over_limit: !L.isPremium(account, now) && index >= L.FREE_LIMIT,
 });
@@ -419,6 +419,32 @@ async function handleApi(request, env, url) {
     return json({ runs: rows.map((r) => ({ ran_at: r.ran_at, status: r.status, ms: r.ms, ok: !!r.ok })) });
   }
 
+  const rm = path.match(/^\/api\/jobs\/(\d{1,12})\/run$/);
+  if (rm && method === "POST") {                                          // run one of MY crons right now; same call as the schedule, nothing stored but status, time, duration
+    if (String(env.DISABLED || "") === "1") return err(503, "The service is paused right now.");
+    const id = Number(rm[1]), now = Date.now();
+    const job = await env.DB.prepare("SELECT * FROM jobs WHERE id = ?1 AND account_id = ?2").bind(id, account.id).first();
+    if (!job) return err(404, "That cron doesn't exist.");
+    if (!L.isPremium(account, now)) {
+      const pos = await env.DB.prepare("SELECT COUNT(*) AS n FROM jobs WHERE account_id = ?1 AND id <= ?2").bind(account.id, id).first();
+      if (pos.n > L.FREE_LIMIT) return err(422, "This cron is over the free limit and paused.");
+    }
+    if (job.last_run_at && now - job.last_run_at < L.MANUAL_COOLDOWN_MS) return err(429, "This cron just ran. Wait a few seconds.");
+    await ensureManualColumns(env); await ensureRunsTable(env);
+    const budget = await env.DB.prepare(
+      `UPDATE accounts SET manual_count = CASE WHEN manual_window_start < ?2 THEN 1 ELSE manual_count + 1 END,
+                           manual_window_start = CASE WHEN manual_window_start < ?2 THEN ?3 ELSE manual_window_start END
+       WHERE id = ?1 AND (manual_window_start < ?2 OR manual_count < ?4)`).bind(account.id, now - 3600000, now, L.MANUAL_PER_HOUR).run();
+    if (!budget.meta.changes) return err(429, `You can run crons by hand ${L.MANUAL_PER_HOUR} times an hour. Try again later.`);
+    const { status, ms, started } = await callJob(job, selfHosts(env, null));
+    const ok = L.classify(status);
+    await env.DB.batch([                                                  // schedule, failure count and alert state are left alone
+      env.DB.prepare("UPDATE jobs SET last_run_at = ?2, last_status = ?3, last_ms = ?4 WHERE id = ?1").bind(id, started, status, ms),
+      env.DB.prepare("INSERT INTO runs (job_id, account_id, ran_at, status, ms, ok) VALUES (?1, ?2, ?3, ?4, ?5, ?6)").bind(id, account.id, started, status, ms, ok ? 1 : 0),
+    ]);
+    return json({ status, ms, ok });
+  }
+
   const m = path.match(/^\/api\/jobs\/(\d{1,12})$/);
   if (m) {
     const id = Number(m[1]);
@@ -433,8 +459,19 @@ async function handleApi(request, env, url) {
     if (method === "PATCH") {
       await ensureAlertTables(env);
       const b = await request.json().catch(() => ({}));
-      if (typeof b.enabled !== "boolean") return err(422, "enabled must be true or false.");
       const now = Date.now();
+      if (typeof b.enabled !== "boolean" && (b.name !== undefined || b.url !== undefined)) {        // edit the cron itself
+        const v = L.validateJob(b, account, now, selfHosts(env, url));
+        if (v.error) return err(422, v.error);
+        const sp = v.spec;
+        const r = await env.DB.prepare(
+          `UPDATE jobs SET name = ?3, method = ?5, body = ?6,
+             fail_count = CASE WHEN url != ?4 THEN 0 ELSE fail_count END, alerting = CASE WHEN url != ?4 THEN 0 ELSE alerting END,
+             next_run_at = CASE WHEN every_minutes != ?7 THEN ?8 ELSE next_run_at END, every_minutes = ?7, url = ?4
+           WHERE id = ?1 AND account_id = ?2`).bind(id, account.id, sp.name, sp.url, sp.method, sp.body, sp.every_minutes, L.nextRunAt(now, sp.every_minutes, account)).run();
+        return r.meta.changes ? json({ updated: true }) : err(404, "That cron doesn't exist.");
+      }
+      if (typeof b.enabled !== "boolean") return err(422, "enabled must be true or false.");
       const r = b.enabled
         ? await env.DB.prepare("UPDATE jobs SET enabled = 1, fail_count = 0, alerting = 0, next_run_at = ?3 WHERE id = ?1 AND account_id = ?2").bind(id, account.id, now + 60000).run()
         : await env.DB.prepare("UPDATE jobs SET enabled = 0 WHERE id = ?1 AND account_id = ?2").bind(id, account.id).run();
@@ -471,6 +508,35 @@ async function handleAuth(request, env, url) {
   } catch { return back("?error=github"); }
 }
 
+/** Make one cron's HTTP call. The address is re-validated every time; redirects are not followed; the response body is never read or stored. */
+async function callJob(job, blocked, doFetch = fetch) {
+  const started = Date.now();
+  let status = 0;
+  try {
+    if (!L.validateUrl(job.url, blocked).url) throw new Error("blocked");
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), L.TIMEOUT_MS);
+    const init = { method: job.method, redirect: "manual", signal: ctl.signal, headers: { "User-Agent": UA, "X-FreeCron-Job": String(job.id) } };
+    if (job.method === "POST" && job.body) { init.body = job.body; init.headers["Content-Type"] = "application/json"; }
+    const r = await doFetch(job.url, init);
+    clearTimeout(timer);
+    status = r.status;
+    try { await r.body?.cancel(); } catch { /* never read or stored */ }
+  } catch { status = 0; }
+  return { status, ms: Date.now() - started, started };
+}
+
+const manualReady = new WeakSet();
+async function ensureManualColumns(env) {          // same as migrations/0006_manual_runs.sql; ALTER has no IF NOT EXISTS, so check first
+  if (manualReady.has(env.DB)) return;
+  const cols = ((await env.DB.prepare("PRAGMA table_info(accounts)").all()).results || []).map((c) => c.name);
+  const alter = [];
+  if (!cols.includes("manual_window_start")) alter.push(env.DB.prepare("ALTER TABLE accounts ADD COLUMN manual_window_start INTEGER NOT NULL DEFAULT 0"));
+  if (!cols.includes("manual_count")) alter.push(env.DB.prepare("ALTER TABLE accounts ADD COLUMN manual_count INTEGER NOT NULL DEFAULT 0"));
+  try { if (alter.length) await env.DB.batch(alter); } catch { /* a parallel run added them first */ }
+  manualReady.add(env.DB);
+}
+
 export async function runDue(env, now = Date.now(), doFetch = fetch) {
   if (String(env.DISABLED || "") === "1") return { skipped: "disabled" };
   await ensureRunsTable(env); await ensureAlertTables(env);
@@ -488,20 +554,7 @@ export async function runDue(env, now = Date.now(), doFetch = fetch) {
     const acct = await env.DB.prepare("SELECT a.*, (s.discord_webhook IS NOT NULL AND s.alerts_enabled = 1) AS can_alert FROM accounts a LEFT JOIN account_settings s ON s.account_id = a.id WHERE a.id = ?1").bind(job.account_id).first();
     // advance BEFORE running, so a slow or crashed run can't be picked up again by the next tick
     await env.DB.prepare("UPDATE jobs SET next_run_at = ?2 WHERE id = ?1").bind(job.id, L.nextRunAt(now, job.every_minutes, acct)).run();
-    let status = 0, ms = 0;
-    const started = Date.now();
-    try {
-      if (!L.validateUrl(job.url, blocked).url) throw new Error("blocked");      // re-checked on every run
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), L.TIMEOUT_MS);
-      const init = { method: job.method, redirect: "manual", signal: ctl.signal, headers: { "User-Agent": UA, "X-FreeCron-Job": String(job.id) } };
-      if (job.method === "POST" && job.body) { init.body = job.body; init.headers["Content-Type"] = "application/json"; }
-      const r = await doFetch(job.url, init);
-      clearTimeout(timer);
-      status = r.status;
-      try { await r.body?.cancel(); } catch { /* the response body is never read or stored */ }
-    } catch { status = 0; }
-    ms = Date.now() - started;
+    const { status, ms, started } = await callJob(job, blocked, doFetch);
     const ok = L.classify(status);
     out.ran++; ok ? out.ok++ : out.failed++;
     const failCount = ok ? 0 : job.fail_count + 1;
