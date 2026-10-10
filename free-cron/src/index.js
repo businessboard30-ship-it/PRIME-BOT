@@ -19,6 +19,29 @@ async function ensureLicenseTable(env) {            // belt and braces: works ev
   licenseTableReady = true;
 }
 
+const runsReady = new WeakSet();
+async function ensureRunsTable(env) {               // same statements as migrations/0003_runs.sql; works even if the migration step lacked D1:Edit
+  if (runsReady.has(env.DB)) return;
+  await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL, account_id INTEGER NOT NULL, ran_at INTEGER NOT NULL, status INTEGER NOT NULL, ms INTEGER NOT NULL, ok INTEGER NOT NULL)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS runs_job_idx ON runs (job_id, ran_at)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS runs_acct_idx ON runs (account_id, ran_at)"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS runs_time_idx ON runs (ran_at)"),
+  ]);
+  runsReady.add(env.DB);
+}
+
+/** Remove old run rows: 7 days for free accounts, 30 for Premium. Bounded, so one call is cheap. */
+export async function pruneRuns(env, now = Date.now()) {
+  await ensureRunsTable(env);
+  const r = await env.DB.prepare(
+    `DELETE FROM runs WHERE id IN (
+       SELECT r.id FROM runs r LEFT JOIN accounts a ON a.id = r.account_id
+       WHERE r.ran_at < ?2 AND (r.ran_at < ?3 OR a.id IS NULL OR a.premium_until <= ?1)
+       LIMIT ?4)`).bind(now, now - L.KEEP_DAYS_FREE * 86400000, now - L.KEEP_DAYS_PREMIUM * 86400000, L.PRUNE_BATCH).run();
+  return { pruned: r.meta.changes };
+}
+
 /** Ask Gumroad about one license key. Never increments the use counter. Returns {resp} or {net:true}. */
 async function gumroadVerify(env, key, doFetch = fetch) {
   try {
@@ -105,8 +128,8 @@ async function handleApi(request, env, url) {
 
   if (path === "/api/me" && method === "GET") return json(await me(env, account));
   if (path === "/api/me" && method === "DELETE") {                       // delete my account and every cron
-    await ensureLicenseTable(env);
-    await env.DB.batch([env.DB.prepare("DELETE FROM jobs WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM licenses WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM accounts WHERE id = ?1").bind(account.id)]);
+    await ensureLicenseTable(env); await ensureRunsTable(env);
+    await env.DB.batch([env.DB.prepare("DELETE FROM runs WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM jobs WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM licenses WHERE account_id = ?1").bind(account.id), env.DB.prepare("DELETE FROM accounts WHERE id = ?1").bind(account.id)]);
     return json({ deleted: true }, 200, { "Set-Cookie": cookie("fc_session", "", {}) });
   }
 
@@ -156,12 +179,25 @@ async function handleApi(request, env, url) {
     return json({ id: ins.meta.last_row_id });
   }
 
+  const hm = path.match(/^\/api\/jobs\/(\d{1,12})\/runs$/);
+  if (hm && method === "GET") {                                            // run history of one of MY crons, newest first
+    const id = Number(hm[1]);
+    if (!(await env.DB.prepare("SELECT id FROM jobs WHERE id = ?1 AND account_id = ?2").bind(id, account.id).first())) return err(404, "That cron doesn't exist.");
+    await ensureRunsTable(env);
+    const rows = (await env.DB.prepare("SELECT ran_at, status, ms, ok FROM runs WHERE job_id = ?1 AND account_id = ?2 ORDER BY ran_at DESC, id DESC LIMIT ?3")
+      .bind(id, account.id, L.runsLimit(url.searchParams.get("limit"))).all()).results || [];
+    return json({ runs: rows.map((r) => ({ ran_at: r.ran_at, status: r.status, ms: r.ms, ok: !!r.ok })) });
+  }
+
   const m = path.match(/^\/api\/jobs\/(\d{1,12})$/);
   if (m) {
     const id = Number(m[1]);
     if (method === "DELETE") {
+      await ensureRunsTable(env);
       const r = await env.DB.prepare("DELETE FROM jobs WHERE id = ?1 AND account_id = ?2").bind(id, account.id).run();
-      return r.meta.changes ? json({ deleted: true }) : err(404, "That cron doesn't exist.");
+      if (!r.meta.changes) return err(404, "That cron doesn't exist.");
+      await env.DB.prepare("DELETE FROM runs WHERE job_id = ?1 AND account_id = ?2").bind(id, account.id).run();   // its history goes with it
+      return json({ deleted: true });
     }
     if (method === "PATCH") {
       const b = await request.json().catch(() => ({}));
@@ -205,6 +241,7 @@ async function handleAuth(request, env, url) {
 
 export async function runDue(env, now = Date.now(), doFetch = fetch) {
   if (String(env.DISABLED || "") === "1") return { skipped: "disabled" };
+  await ensureRunsTable(env);
   const blocked = selfHosts(env, null);
   const claimed = ((await env.DB.prepare(
     `UPDATE jobs SET next_run_at = ?1 + 3600000, last_run_at = ?1
@@ -235,11 +272,14 @@ export async function runDue(env, now = Date.now(), doFetch = fetch) {
     ms = Date.now() - started;
     const ok = L.classify(status);
     out.ran++; ok ? out.ok++ : out.failed++;
-    await env.DB.prepare(
-      `UPDATE jobs SET last_status = ?2, last_ms = ?3,
-         fail_count = CASE WHEN ?4 THEN 0 ELSE fail_count + 1 END,
-         enabled = CASE WHEN ?4 THEN enabled WHEN fail_count + 1 >= ?5 THEN 0 ELSE enabled END
-       WHERE id = ?1`).bind(job.id, status, ms, ok ? 1 : 0, L.MAX_FAILS).run();
+    await env.DB.batch([                                       // one D1 call: the job's new state and its run row together
+      env.DB.prepare(
+        `UPDATE jobs SET last_status = ?2, last_ms = ?3,
+           fail_count = CASE WHEN ?4 THEN 0 ELSE fail_count + 1 END,
+           enabled = CASE WHEN ?4 THEN enabled WHEN fail_count + 1 >= ?5 THEN 0 ELSE enabled END
+         WHERE id = ?1`).bind(job.id, status, ms, ok ? 1 : 0, L.MAX_FAILS),
+      env.DB.prepare("INSERT INTO runs (job_id, account_id, ran_at, status, ms, ok) VALUES (?1, ?2, ?3, ?4, ?5, ?6)").bind(job.id, job.account_id, started, status, ms, ok ? 1 : 0),
+    ]);
   }));
   return out;
 }
@@ -282,5 +322,8 @@ export default {
     if (url.pathname.startsWith("/auth/")) return handleAuth(request, env, url);
     return err(404, "Not found.");
   },
-  async scheduled(event, env, ctx) { ctx.waitUntil(runDue(env)); ctx.waitUntil(recheckLicenses(env).catch(() => null)); },
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runDue(env)); ctx.waitUntil(recheckLicenses(env).catch(() => null));
+    if (Math.floor(Date.now() / 300000) % 12 === 0) ctx.waitUntil(pruneRuns(env).catch(() => null));   // about once an hour, saves subrequests
+  },
 };

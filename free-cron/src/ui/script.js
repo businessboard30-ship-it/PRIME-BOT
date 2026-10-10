@@ -110,8 +110,30 @@ function render(m){
     t.onclick=function(){api("/api/jobs/"+j.id,{method:"PATCH",body:JSON.stringify({enabled:!j.enabled})}).then(load).catch(fail)};
     var x=document.createElement("button");x.className="btn sm ghost";x.textContent="Delete";
     x.onclick=function(){api("/api/jobs/"+j.id,{method:"DELETE"}).then(load).catch(fail)};
-    row.append(t,x);d.append(n,u,s,row);box.appendChild(d)});
+    var hb=document.createElement("button");hb.className="btn sm ghost";hb.textContent="History";hb.setAttribute("aria-expanded","false");
+    var hist=document.createElement("div");hist.className="hist hidden";
+    hb.onclick=function(){var open=hist.classList.contains("hidden");hist.classList.toggle("hidden",!open);hb.setAttribute("aria-expanded",open?"true":"false");if(open)loadRuns(j.id,hist)};
+    row.append(t,hb,x);d.append(n,u,s,row,hist);box.appendChild(d)});
   if(!booted){booted=true;route(false)}else ensureMounts();
+}
+/* run history of one cron: time, status, duration, ok or fail (the server keeps no response bodies) */
+function loadRuns(id,box){
+  box.textContent="";var p0=document.createElement("p");p0.className="mut fine";p0.textContent="Loading...";box.appendChild(p0);
+  api("/api/jobs/"+id+"/runs?limit=50").then(function(r){
+    box.textContent="";
+    if(!r.runs.length){var e=document.createElement("p");e.className="mut fine";e.textContent="No runs yet. The first one happens at the next schedule tick.";box.appendChild(e);return}
+    var wrap=document.createElement("div");wrap.className="hist-scroll";
+    r.runs.forEach(function(x){
+      var row=document.createElement("div");row.className="hrow "+(x.ok?"ok":"bad");
+      var d=document.createElement("span");d.className="hdot";
+      var t=document.createElement("span");t.className="ht";t.textContent=when(x.ran_at);
+      var s=document.createElement("span");s.className="hs";s.textContent=x.status?String(x.status):"no answer";
+      var m=document.createElement("span");m.className="hm";m.textContent=x.ms+" ms";
+      var k=document.createElement("span");k.className="hk";k.textContent=x.ok?"OK":"FAIL";
+      row.append(d,t,s,m,k);wrap.appendChild(row)});
+    var note=document.createElement("p");note.className="mut fine";note.textContent="Last "+r.runs.length+(r.runs.length===1?" run":" runs")+". Free keeps 7 days, Premium 30.";
+    box.append(wrap,note)
+  }).catch(function(e){box.textContent="";var b=document.createElement("p");b.className="bad fine";b.textContent=e.message;box.appendChild(b)});
 }
 function fail(e){say(e.message,true)}
 function load(){return api("/api/me").then(function(m){say("");render(m)}).catch(function(e){

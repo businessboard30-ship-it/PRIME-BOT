@@ -2,13 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import worker, { runDue, recheckLicenses } from "../src/index.js";
+import worker, { runDue, recheckLicenses, pruneRuns } from "../src/index.js";
 import * as L from "../src/logic.js";
 
 // A tiny D1 stand-in over node:sqlite (same SQL dialect, RETURNING included).
 function makeDb() {
   const sql = new DatabaseSync(":memory:");
-  for (const f of ["0001_init.sql", "0002_licenses.sql"]) sql.exec(readFileSync(new URL("../migrations/" + f, import.meta.url), "utf8"));
+  for (const f of ["0001_init.sql", "0002_licenses.sql", "0003_runs.sql"]) sql.exec(readFileSync(new URL("../migrations/" + f, import.meta.url), "utf8"));
   const stmt = (q, args = []) => ({
     bind: (...a) => stmt(q, a),
     run: async () => { const r = sql.prepare(q).run(...args); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; },
@@ -328,4 +328,84 @@ test("deleting the account removes its license rows", async () => {
   gumReply = gum(); await redeem(e, t);
   assert.equal((await call(e, "/api/me", { method: "DELETE", token: t })).status, 200);
   assert.equal(e.DB.sql.prepare("SELECT COUNT(*) c FROM licenses").get().c, 0);
+});
+
+// ---------- run history ----------
+const DAY = 86400000;
+const addRun = (e, jobId, accountId, ranAt, status = 200) => e.DB.sql.prepare("INSERT INTO runs (job_id,account_id,ran_at,status,ms,ok) VALUES (?,?,?,?,?,?)").run(jobId, accountId, ranAt, status, 50, status >= 200 && status < 400 ? 1 : 0);
+const runsOf = (e) => e.DB.sql.prepare("SELECT * FROM runs ORDER BY id").all();
+
+test("history: every run writes one row with status, time and duration, and never a body", async () => {
+  const e = env(); await addAccount(e); seed(e, 1, 3);
+  e.DB.sql.prepare("UPDATE jobs SET url = 'https://example.com/hang' WHERE id = 3").run();
+  const f = async (u) => { if (String(u).endsWith("/hang")) throw new Error("timeout"); return new Response("secret-body", { status: String(u).endsWith("/1") ? 503 : 200 }); };
+  const out = await runDue(e, NOW, f);
+  assert.deepEqual(out, { ran: 3, ok: 1, failed: 2 });
+  const rows = runsOf(e);
+  assert.equal(rows.length, 3);
+  const byJob = Object.fromEntries(rows.map((r) => [r.job_id, r]));
+  assert.deepEqual([byJob[1].status, byJob[1].ok], [200, 1]);
+  assert.deepEqual([byJob[2].status, byJob[2].ok], [503, 0]);
+  assert.deepEqual([byJob[3].status, byJob[3].ok], [0, 0]);               // timeout or network error = 0
+  assert.ok(rows.every((r) => r.account_id === 1 && r.ran_at > 0 && r.ms >= 0));
+  assert.ok(JSON.stringify(rows).indexOf("secret-body") < 0);
+  assert.deepEqual(Object.keys(rows[0]).sort(), ["account_id", "id", "job_id", "ms", "ok", "ran_at", "status"]);
+});
+
+test("history API: owner only, newest first, limit defaults to 50 and is capped at 100", async () => {
+  const e = env(), t = await addAccount(e), t2 = await addAccount(e, 2, "bob"); seed(e, 1, 1); seed(e, 2, 1);
+  for (let i = 0; i < 120; i++) addRun(e, 1, 1, NOW + i * 1000, i % 2 ? 500 : 200);
+  assert.equal((await call(e, "/api/jobs/1/runs")).status, 401);
+  assert.equal((await call(e, "/api/jobs/1/runs", { token: t2 })).status, 404);      // someone else's cron
+  assert.equal((await call(e, "/api/jobs/999/runs", { token: t })).status, 404);
+  const get = async (q = "") => (await (await call(e, "/api/jobs/1/runs" + q, { token: t })).json()).runs;
+  const def = await get();
+  assert.equal(def.length, 50);
+  assert.equal(def[0].ran_at, NOW + 119 * 1000); assert.ok(def[0].ran_at > def[1].ran_at);
+  assert.deepEqual(def[0], { ran_at: NOW + 119000, status: 500, ms: 50, ok: false });
+  assert.equal((await get("?limit=500")).length, 100);
+  assert.equal((await get("?limit=3")).length, 3);
+  assert.equal((await get("?limit=abc")).length, 50);
+  assert.equal((await get("?limit=0")).length, 50);
+  assert.equal((await (await call(e, "/api/jobs/2/runs", { token: t2 })).json()).runs.length, 0);
+});
+
+test("history: deleting a cron deletes its runs; deleting an account deletes all of its runs", async () => {
+  const e = env(), t = await addAccount(e), t2 = await addAccount(e, 2, "bob"); seed(e, 1, 2); seed(e, 2, 1);
+  addRun(e, 1, 1, NOW); addRun(e, 1, 1, NOW + 1); addRun(e, 2, 1, NOW); addRun(e, 3, 2, NOW);
+  assert.equal((await call(e, "/api/jobs/1", { method: "DELETE", token: t2 })).status, 404);   // not bob's
+  assert.equal(runsOf(e).length, 4);
+  assert.equal((await call(e, "/api/jobs/1", { method: "DELETE", token: t })).status, 200);
+  assert.deepEqual(runsOf(e).map((r) => r.job_id), [2, 3]);
+  assert.equal((await call(e, "/api/me", { method: "DELETE", token: t })).status, 200);
+  assert.deepEqual(runsOf(e).map((r) => [r.job_id, r.account_id]), [[3, 2]]);
+});
+
+test("history: retention is 7 days for free and 30 days for Premium, and each prune is bounded", async () => {
+  const e = env(), T = Date.now(); await addAccount(e); await addAccount(e, 2, "bob", T + DAY); seed(e, 1, 1); seed(e, 2, 1);
+  addRun(e, 1, 1, T - 8 * DAY); addRun(e, 1, 1, T - 6 * DAY);              // free: old one goes, recent stays
+  addRun(e, 2, 2, T - 29 * DAY); addRun(e, 2, 2, T - 31 * DAY);            // premium: 29 days stays, 31 goes
+  addRun(e, 9, 99, T - 1 * DAY); addRun(e, 9, 99, T - 8 * DAY);            // orphan (no account): follows the free rule
+  assert.deepEqual(await pruneRuns(e, T), { pruned: 3 });
+  assert.deepEqual(runsOf(e).map((r) => [r.account_id, Math.round((T - r.ran_at) / DAY)]).sort(), [[1, 6], [2, 29], [99, 1]]);
+  const e2 = env(); await addAccount(e2); seed(e2, 1, 1);
+  for (let i = 0; i < L.PRUNE_BATCH + 100; i++) addRun(e2, 1, 1, T - 20 * DAY);
+  assert.equal((await pruneRuns(e2, T)).pruned, L.PRUNE_BATCH);
+  assert.equal((await pruneRuns(e2, T)).pruned, 100);
+  assert.equal(runsOf(e2).length, 0);
+});
+
+test("history: the runs table is created lazily when the migration did not run", async () => {
+  const e = env(); await addAccount(e); seed(e, 1, 1);
+  e.DB.sql.exec("DROP TABLE runs");
+  assert.deepEqual(await runDue(e, NOW, okFetch(200)), { ran: 1, ok: 1, failed: 0 });
+  assert.equal(runsOf(e).length, 1);
+  const e2 = env(); const t = await addAccount(e2); seed(e2, 1, 1); e2.DB.sql.exec("DROP TABLE runs");
+  assert.deepEqual((await (await call(e2, "/api/jobs/1/runs", { token: t })).json()).runs, []);
+});
+
+test("page: each cron has a History panel wired to the runs API, built without innerHTML", async () => {
+  const html = await (await call(env(), "/")).text();
+  assert.ok(html.includes('"/api/jobs/"+id+"/runs?limit=50"') && html.includes('"History"') && html.includes("loadRuns"));
+  assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
 });
