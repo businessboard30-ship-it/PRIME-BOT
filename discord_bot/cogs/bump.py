@@ -78,6 +78,13 @@ MAX_REMINDERS_PER_TICK = 3
 # Boot-time sweep that flags server listings with no invite link (see
 # _flag_missing_links). Capped so a big backlog trickles out over a few minutes.
 MAX_LINK_FLAGS_PER_BOOT = 100
+# Auto Bump (Premium: monthly, yearly and lifetime all unlock it). 4 bumps a day = one every 6 hours,
+# measured from the listing's LAST bump of any kind, so it never doubles up with a manual bump.
+AUTO_BUMP_PER_DAY = 4
+AUTO_BUMP_INTERVAL_SECONDS = 24 * 60 * 60 // AUTO_BUMP_PER_DAY
+AUTO_BUMP_TICK_SECONDS = 5 * 60
+AUTO_BUMP_RETRY_SECONDS = 30 * 60      # a listing that could not bump waits this long before the next attempt
+MAX_AUTO_BUMPS_PER_TICK = 5            # backlog after downtime trickles out instead of bursting
 
 TAG_KEYWORDS = {
     "gaming": ["game", "gaming", "valorant", "minecraft", "fortnite", "esports"],
@@ -476,6 +483,97 @@ class DynamicBumpPromptButton(
                 await interaction.response.send_message("Something went wrong — check the bot logs.", ephemeral=True)
             else:
                 await interaction.followup.send("Something went wrong — check the bot logs.", ephemeral=True)
+        except discord.HTTPException:
+            pass
+
+
+def _prompt_view(listing_id: int, auto_on: bool = False) -> discord.ui.View:
+    """The row under the standalone bump message: 🔁 Bump, 🤖 Auto Bump (next to it), then the Top.gg vote link."""
+    view = discord.ui.View(timeout=None)
+    view.add_item(DynamicBumpPromptButton(listing_id))
+    view.add_item(DynamicBumpAutoButton(listing_id, auto_on))
+    vote_btn = _vote_view()
+    if vote_btn is not None:
+        for item in vote_btn.children:
+            view.add_item(item)
+    return view
+
+
+AUTO_BUMP_UPSELL = (
+    "🔒 **Auto Bump is a Premium feature.** It bumps your server for you {n} times a day. "
+    "Monthly, yearly and lifetime Premium all include it. Use `/premium` to get it."
+)
+
+
+class DynamicBumpAutoButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"bump:auto:(?P<listing_id>\d+)",
+):
+    """🤖 Auto Bump, sitting next to the 🔁 Bump button. Pressing it switches Auto Bump on or off for this
+    listing. Only people with Manage Server can press it, and switching it ON needs active Premium (monthly,
+    yearly or lifetime). Switching it OFF is always allowed, so nobody is ever stuck with it on. The label
+    shows the current state and is refreshed on the message after each press and on every new bump prompt."""
+
+    def __init__(self, listing_id: int, enabled: bool = False):
+        self.listing_id = listing_id
+        super().__init__(
+            discord.ui.Button(
+                label="Auto Bump: ON" if enabled else "Auto Bump", emoji="🤖",
+                style=discord.ButtonStyle.primary if enabled else discord.ButtonStyle.secondary,
+                custom_id=f"bump:auto:{listing_id}")
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Item, match: "re.Match[str]", /):
+        return cls(int(match["listing_id"]))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        listing = await db.bump_get_listing(0, None, listing_id=self.listing_id)
+        if not listing:
+            await interaction.followup.send("This listing no longer exists.", ephemeral=True)
+            return
+        if interaction.guild_id != listing["guild_id"]:
+            await interaction.followup.send("This button belongs to a different server.", ephemeral=True)
+            return
+        if not getattr(interaction.permissions, "manage_guild", False):
+            await interaction.followup.send("You need the **Manage Server** permission to change Auto Bump.", ephemeral=True)
+            return
+        clone_id = listing.get("clone_id")
+        if listing.get("auto_bump_enabled"):
+            await db.bump_set_auto(listing["id"], False, interaction.user.id)
+            now_on = False
+            note = "⏹️ **Auto Bump is off.** You can still bump by hand any time."
+        else:
+            try:
+                from modules import admin_controls
+                if "bump" in await admin_controls.current_switches():
+                    await interaction.followup.send("Bump is paused right now. Try again later.", ephemeral=True)
+                    return
+            except Exception:
+                logger.warning("[bump] kill-switch check failed for auto bump", exc_info=True)
+            if not await db.is_guild_premium_active(listing["guild_id"], clone_id):
+                await interaction.followup.send(AUTO_BUMP_UPSELL.format(n=AUTO_BUMP_PER_DAY), ephemeral=True)
+                return
+            config = await db.bump_get_guild_config(listing["guild_id"], clone_id)
+            if not config or not config.get("bump_channel_id") or not config.get("receives_bumps", True):
+                await interaction.followup.send("Finish `/bumpsetup` first so I know where to post.", ephemeral=True)
+                return
+            await db.bump_set_auto(listing["id"], True, interaction.user.id)
+            now_on = True
+            hours = AUTO_BUMP_INTERVAL_SECONDS // 3600
+            note = (f"🤖 **Auto Bump is on.** I'll bump this listing up to {AUTO_BUMP_PER_DAY} times a day "
+                    f"(about every {hours} hours after its last bump). Press the button again to stop it.")
+        try:
+            await interaction.message.edit(view=_prompt_view(listing["id"], now_on))
+        except discord.HTTPException:
+            pass
+        await interaction.followup.send(note, ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        logger.exception("Unhandled error in DynamicBumpAutoButton (listing %s): %s", self.listing_id, error)
+        try:
+            await interaction.followup.send("Something went wrong. Try again in a moment.", ephemeral=True)
         except discord.HTTPException:
             pass
 
@@ -1012,11 +1110,12 @@ class BumpCog(commands.Cog):
         # again on a cog reload; discord.py just overwrites the same keys.
         bot.add_dynamic_items(
             DynamicRateOpenButton, DynamicRateStarButton, DynamicAddMineButton,
-            DynamicBumpAgainButton, DynamicBumpPromptButton, DynamicBumpApproveButton, DynamicBumpRejectButton,
-            DynamicBumpRecreateButton,
+            DynamicBumpAgainButton, DynamicBumpPromptButton, DynamicBumpAutoButton, DynamicBumpApproveButton,
+            DynamicBumpRejectButton, DynamicBumpRecreateButton,
             *BUMP_LINK_DYNAMIC_ITEMS,
         )
         self.bump_worker.start()
+        self.auto_bump_worker.start()
         self._restore_task = None
         self._link_task = None
         self._general_task = None
@@ -1052,6 +1151,7 @@ class BumpCog(commands.Cog):
         if self._general_task is not None:
             self._general_task.cancel()
         self.bump_worker.cancel()
+        self.auto_bump_worker.cancel()
         if ENABLE_BUMP_REMINDERS:
             self.bump_reminder_worker.cancel()
 
@@ -1596,7 +1696,8 @@ class BumpCog(commands.Cog):
             logger.exception("[bump] couldn't post public bump card")
             return None
 
-    async def _post_bump_prompt(self, guild_id: int, config: dict, listing: dict, bumped_by, cooldown_seconds: int):
+    async def _post_bump_prompt(self, guild_id: int, config: dict, listing: dict, bumped_by, cooldown_seconds: int,
+                                 auto: bool = False):
         """Posts the standalone 🔁 Bump message in the bumping server's own
         bump channel — after EVERY successful bump, whichever path triggered
         it (/bump now, the setup flow, or the button itself). Any earlier
@@ -1627,14 +1728,11 @@ class BumpCog(commands.Cog):
                     pass
             next_ts = int(time.time()) + cooldown_seconds
             name = listing.get("name") or channel.guild.name
-            view = discord.ui.View(timeout=None)
-            view.add_item(DynamicBumpPromptButton(listing["id"]))
             vote_btn = _vote_view()
-            if vote_btn is not None:
-                for item in vote_btn.children:
-                    view.add_item(item)
+            view = _prompt_view(listing["id"], bool(listing.get("auto_bump_enabled")))
+            who = "auto-bumped 🤖" if auto else f"bumped by {bumped_by.mention}"
             await channel.send(
-                f"✅ **{name}** was bumped by {bumped_by.mention}!\n"
+                f"✅ **{name}** was {who}!\n"
                 f"Anyone can bump it again <t:{next_ts}:R>"
                 + (" — or 🗳️ **vote for us on Top.gg** and bump again right away." if vote_btn is not None
                    else " — tap the button below once the timer's up."),
@@ -1643,6 +1741,49 @@ class BumpCog(commands.Cog):
             )
         except Exception:
             logger.exception("[bump] couldn't post bump prompt for listing %s", listing.get("id"))
+
+    async def _send_bump(self, config: dict, listing: dict, clone_id, owner_guild_id: int) -> dict:
+        """The part of a bump that needs no interaction: pick targets, record the bump, queue the sends and
+        post the ad card in the server's own bump channel. Shared by the buttons/commands (_do_bump) and the
+        Auto Bump worker, so both behave identically. The caller has already checked the cooldown."""
+        from config import BUMP_SHARED_NETWORK
+        candidates = await db.bump_find_targets(
+            exclude_guild_id=owner_guild_id, clone_id=clone_id,
+            language=config.get("language", "any"), include_nsfw=bool(config.get("nsfw_opt_in")),
+            shared=BUMP_SHARED_NETWORK,
+        )
+        if BUMP_SHARED_NETWORK:
+            # Shared network: each target is queued under the clone that is
+            # actually in that server, and THAT bot's worker delivers it
+            # (and drops it if it has since left) — so this bot doesn't need
+            # to be in the target guild.
+            targets = candidates
+        else:
+            # Only bump into servers the bot is CURRENTLY in — a config row can
+            # go stale if the bot was kicked and on_guild_remove hasn't caught
+            # it yet (or for rows written before that listener existed), and we
+            # never want to post into a server the bot no longer belongs to.
+            targets = [t for t in candidates if self.bot.get_guild(t["guild_id"]) is not None]
+
+        streak = await db.bump_record(listing["id"], STREAK_WINDOW_SECONDS)
+        queued = await db.bump_enqueue(listing["id"], clone_id, targets, DRIP_SECONDS) if targets else 0
+
+        # Re-fetch: bump_record just incremented total_bumps/streak in the
+        # DB, and the listing dict we're holding predates that write.
+        refreshed = await db.bump_get_listing(owner_guild_id, clone_id, listing["listing_type"], listing["id"]) or listing
+        server_icon_url = None
+        if refreshed["listing_type"] == "bot":
+            online, members = None, None
+            bot_info = await _live_bot_info(self.bot, refreshed.get("invite_url") or "")
+        else:
+            online, members, server_icon_url = await _live_counts(self.bot, refreshed)
+            bot_info = None
+
+        card_embed = _bump_embed(refreshed, streak, online, members, bot_info, server_icon_url)
+        card_view = _bump_post_view(refreshed["id"], refreshed.get("invite_url"), refreshed.get("support_url"))
+        posted_in = await self._post_bump_card(config, card_embed, card_view)
+        return {"queued": queued, "refreshed": refreshed, "card_embed": card_embed, "card_view": card_view,
+                "posted_in": posted_in, "streak": streak}
 
     async def _do_bump(self, interaction: discord.Interaction, config: dict, listing: dict, clone_id,
                         owner_guild_id: int | None = None):
@@ -1693,41 +1834,9 @@ class BumpCog(commands.Cog):
                 )
                 return
 
-            from config import BUMP_SHARED_NETWORK
-            candidates = await db.bump_find_targets(
-                exclude_guild_id=owner_guild_id, clone_id=clone_id,
-                language=config.get("language", "any"), include_nsfw=bool(config.get("nsfw_opt_in")),
-                shared=BUMP_SHARED_NETWORK,
-            )
-            if BUMP_SHARED_NETWORK:
-                # Shared network: each target is queued under the clone that is
-                # actually in that server, and THAT bot's worker delivers it
-                # (and drops it if it has since left) — so this bot doesn't need
-                # to be in the target guild.
-                targets = candidates
-            else:
-                # Only bump into servers the bot is CURRENTLY in — a config row can
-                # go stale if the bot was kicked and on_guild_remove hasn't caught
-                # it yet (or for rows written before that listener existed), and we
-                # never want to post into a server the bot no longer belongs to.
-                targets = [t for t in candidates if self.bot.get_guild(t["guild_id"]) is not None]
-
-            streak = await db.bump_record(listing["id"], STREAK_WINDOW_SECONDS)
-            queued = await db.bump_enqueue(listing["id"], clone_id, targets, DRIP_SECONDS) if targets else 0
-
-            # Re-fetch: bump_record just incremented total_bumps/streak in the
-            # DB, and the listing dict we're holding predates that write.
-            refreshed = await db.bump_get_listing(owner_guild_id, clone_id, listing["listing_type"], listing["id"]) or listing
-            server_icon_url = None
-            if refreshed["listing_type"] == "bot":
-                online, members = None, None
-                bot_info = await _live_bot_info(interaction.client, refreshed.get("invite_url") or "")
-            else:
-                online, members, server_icon_url = await _live_counts(interaction.client, refreshed)
-                bot_info = None
-
-            card_embed = _bump_embed(refreshed, streak, online, members, bot_info, server_icon_url)
-            card_view = _bump_post_view(refreshed["id"], refreshed.get("invite_url"), refreshed.get("support_url"))
+            sent = await self._send_bump(config, listing, clone_id, owner_guild_id)
+            queued, refreshed = sent["queued"], sent["refreshed"]
+            card_embed, card_view, posted_in = sent["card_embed"], sent["card_view"], sent["posted_in"]
             summary = (
                 f"✅ Added to the queue — will reach **{queued}** server{'s' if queued != 1 else ''} "
                 f"over the next ~{(queued * DRIP_SECONDS) // 60 or 1} min."
@@ -1737,7 +1846,7 @@ class BumpCog(commands.Cog):
             # it. Every caller defers ephemerally, and the first followup after
             # an ephemeral defer is always ephemeral — so the public card can't
             # come from interaction.followup; only the short confirmation does.
-            posted_in = await self._post_bump_card(config, card_embed, card_view)
+            # (the public card was already posted by _send_bump)
             if posted_in:
                 await interaction.followup.send(f"{summary}\n📣 Posted in <#{posted_in}>.", ephemeral=True)
             else:
@@ -1755,6 +1864,75 @@ class BumpCog(commands.Cog):
                 await interaction.followup.send("Something went wrong sending that bump — check the bot logs.", ephemeral=True)
             except discord.HTTPException:
                 pass
+
+    async def _auto_bump_notice(self, config: dict, text: str) -> None:
+        """One short line in the server's bump channel. Best effort: never raises."""
+        try:
+            channel = self.bot.get_channel(int(config["bump_channel_id"]))
+            if channel is not None and channel.permissions_for(channel.guild.me).send_messages:
+                await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            logger.warning("[bump] auto bump notice failed", exc_info=True)
+
+    async def _auto_bump_one(self, stub: dict) -> str:
+        """One automatic bump for a due listing. Returns what happened: bumped, premium_ended, skipped or gone.
+        Every check is re-done here (premium, channel, link, cooldown) because the row may be hours old."""
+        clone_id = stub.get("clone_id")
+        guild = self.bot.get_guild(stub["guild_id"])
+        if guild is None:
+            return "gone"
+        listing = await db.bump_get_listing(0, None, listing_id=stub["id"])
+        if not listing or not listing.get("auto_bump_enabled") or listing.get("status", "approved") != "approved":
+            return "skipped"
+        config = await db.bump_get_guild_config(listing["guild_id"], clone_id)
+        if not config or not config.get("bump_channel_id") or not config.get("receives_bumps", True):
+            return "skipped"
+        # Premium (monthly, yearly or lifetime) is re-checked on EVERY run: when it ends, Auto Bump switches
+        # itself off and says so once, instead of quietly bumping for free.
+        if not await db.is_guild_premium_active(listing["guild_id"], clone_id):
+            await db.bump_set_auto(listing["id"], False)
+            await self._auto_bump_notice(
+                config, "⏹️ **Auto Bump turned off** because this server's Premium has ended. "
+                        "Renew Premium and press **Auto Bump** to turn it back on. You can still bump by hand.")
+            return "premium_ended"
+        if listing.get("listing_type", "server") == "server" and not has_link(listing):
+            url = await find_existing_invite(guild)
+            if not url:
+                return "skipped"                    # same rule as a manual bump: no Join link, no bump
+            await set_listing_invite(listing["id"], url)
+            listing = {**listing, "invite_url": url}
+        cooldown_seconds = await self._cooldown_seconds()
+        can_bump, _remaining = await db.bump_check_cooldown(listing["id"], cooldown_seconds)
+        if not can_bump:
+            return "skipped"
+        sent = await self._send_bump(config, listing, clone_id, listing["guild_id"])
+        await self._post_bump_prompt(listing["guild_id"], config, sent["refreshed"], self.bot.user,
+                                     cooldown_seconds, auto=True)
+        return "bumped"
+
+    @tasks.loop(seconds=AUTO_BUMP_TICK_SECONDS)
+    async def auto_bump_worker(self):
+        clone_id = _clone_id_of(self.bot)
+        try:
+            from modules import admin_controls
+            if "bump" in await admin_controls.current_switches():
+                return                                  # owner kill switch: bump is paused everywhere
+            due = await db.bump_get_auto_due(clone_id, AUTO_BUMP_INTERVAL_SECONDS, AUTO_BUMP_RETRY_SECONDS,
+                                             MAX_AUTO_BUMPS_PER_TICK)
+        except Exception:
+            logger.exception("[bump] failed to fetch Auto Bump listings")
+            return
+        for stub in due:
+            try:
+                await db.bump_mark_auto_checked(stub["id"])     # stamp first: a crash can never cause a rapid retry loop
+                result = await self._auto_bump_one(stub)
+                logger.info("[bump] auto bump listing=%s guild=%s -> %s", stub["id"], stub["guild_id"], result)
+            except Exception:
+                logger.exception("[bump] auto bump failed for listing %s", stub.get("id"))
+
+    @auto_bump_worker.before_loop
+    async def _before_auto_bump_worker(self):
+        await self.bot.wait_until_ready()
 
     async def _recover_target_channel(self, row: dict, clone_id):
         """Returns a postable bump channel for this queue row's target guild,
