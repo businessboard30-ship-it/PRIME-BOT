@@ -148,7 +148,7 @@ BANNED_COG_MODULE_MARKERS = (
 # wrong check for something gated to a single global owner.
 BANNED_OWNER_ONLY_COMMANDS = frozenset({
     "ownerbroadcast", "broadcaststatus", "ownermonetize", "paymentmode",
-    "set-storage-channel", "hostingchannel",
+    "set-storage-channel", "hostingchannel", "scamchannel",
     "approvepayment", "rejectpayment", "pendingpayments", "assignpayment",
 })
 

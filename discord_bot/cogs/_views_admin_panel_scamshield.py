@@ -20,6 +20,7 @@ import discord
 from discord_bot.cogs._views_admin_panel import PANEL_TIMEOUT, PanelView, _btn, allowed_sections, audit
 from discord_bot.cogs._views_admin_panel_controls import TEXT_BUDGET, _denied, _fit
 from modules import scam_shield as ss
+from modules import scam_vision as sv
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,8 @@ class ScamShieldView(PanelView):
             f"Rules: {n['word']} word(s), {n['domain']} domain(s), {n['image']} known scam image(s). "
             f"Caught so far: **{self.hit_total}**.",
             "-# Staff (Manage Messages / Manage Server / Admin) are never checked. Rules refresh by themselves.",
+            self._vision_line(),
+            self._evidence_line(),
         ]
         if self.notice:
             lines.insert(0, self.notice)
@@ -193,6 +196,20 @@ class ScamShieldView(PanelView):
         lines.append("**Latest catches**\n```\n" + ("\n".join(hit_lines) or "none yet") + "\n```")
         return lines
 
+    def _vision_line(self) -> str:
+        if not sv.api_key():
+            return "🤖 **AI image scan:** unavailable (set GEMINI_API_KEY). Only the known-image rules run."
+        if not ss.vision_enabled():
+            return "🤖 **AI image scan:** 🔴 OFF. Only the known-image rules run."
+        return (f"🤖 **AI image scan:** 🟢 ON ({sv.model()}). Catches new scam pictures the rules don't know yet.\n"
+                f"Status: {sv.status_text()}")
+
+    def _evidence_line(self) -> str:
+        cid = ss.evidence_channel_id()
+        if cid:
+            return f"📁 **Evidence channel:** <#{cid}> (caught scam text + images are copied here)."
+        return "📁 **Evidence channel:** not set, using the image-hosting channel if there is one."
+
     def controls(self):
         S, P, D = discord.ButtonStyle.secondary, discord.ButtonStyle.primary, discord.ButtonStyle.danger
         return [
@@ -201,6 +218,11 @@ class ScamShieldView(PanelView):
             _btn("Add word / domain", P, self._add, "➕"),
             _btn("Add image", P, self._add_image, "🖼️"),
             _btn("Remove rule", S, self._remove, "🗑️", disabled=not self.rules),
+            _btn("AI scan OFF" if ss.vision_enabled() else "AI scan ON", S, self._toggle_vision, "🤖",
+                 disabled=not sv.api_key()),
+            _btn("Test AI scan", S, self._test_vision, "🧪", disabled=not sv.api_key()),
+            _btn("Evidence: this channel", S, self._evidence_here, "📁"),
+            _btn("Evidence: reset", S, self._evidence_reset, "↩️", disabled=not ss.evidence_channel_id()),
             _btn("Refresh", S, self._refresh, "🔄"),
             _btn("Back", S, self._back, "⬅️"),
         ]
@@ -214,6 +236,59 @@ class ScamShieldView(PanelView):
         else:
             audit(i, "scamshield.toggle", enabled=not self.enabled)
             self.notice = "▶️ Scam Shield is ON." if not self.enabled else "⏸️ Scam Shield is OFF."
+        await self.load()
+        await i.response.edit_message(view=self)
+
+    async def _toggle_vision(self, i):
+        on = not ss.vision_enabled()
+        try:
+            await ss.set_vision(on)
+        except Exception:
+            logger.exception("[admin-panel] couldn't switch the AI image scan")
+            self.notice = NOTHING_CHANGED
+        else:
+            audit(i, "scamshield.vision", enabled=on)
+            self.notice = "🤖 AI image scan is ON." if on else "🤖 AI image scan is OFF."
+        await self.load()
+        await i.response.edit_message(view=self)
+
+    async def _test_vision(self, i):
+        await i.response.defer()
+        ok, msg = await sv.self_test()
+        self.notice = (f"🧪 ✅ AI scan works. {msg}" if ok else f"🧪 ❌ AI scan problem: {msg}")
+        await self.load()
+        await i.edit_original_response(view=self)
+
+    async def _evidence_here(self, i):
+        ch = i.channel
+        me = i.guild.me if i.guild else None
+        if not isinstance(ch, discord.TextChannel) or me is None:
+            self.notice = "⚠️ Open this panel in a server text channel to use it as the evidence channel."
+        else:
+            p = ch.permissions_for(me)
+            if not (p.send_messages and p.attach_files and p.read_message_history):
+                self.notice = "⚠️ I need Send Messages, Attach Files and Read Message History in this channel."
+            else:
+                try:
+                    await ss.set_evidence_channel(ch.id)
+                except Exception:
+                    logger.exception("[admin-panel] couldn't save the evidence channel")
+                    self.notice = NOTHING_CHANGED
+                else:
+                    audit(i, "scamshield.evidence", channel=ch.id)
+                    self.notice = f"✅ Caught scams will be copied to {ch.mention} from now on."
+        await self.load()
+        await i.response.edit_message(view=self)
+
+    async def _evidence_reset(self, i):
+        try:
+            await ss.set_evidence_channel(None)
+        except Exception:
+            logger.exception("[admin-panel] couldn't clear the evidence channel")
+            self.notice = NOTHING_CHANGED
+        else:
+            audit(i, "scamshield.evidence", channel=None)
+            self.notice = "↩️ Evidence channel cleared. Using the image-hosting channel again."
         await self.load()
         await i.response.edit_message(view=self)
 

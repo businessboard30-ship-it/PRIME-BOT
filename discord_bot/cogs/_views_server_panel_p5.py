@@ -238,6 +238,7 @@ class ScamShieldView(ServerPanelView):
         ]
         if not self.data.get("global_on", True):
             lines.append("-# ⏸️ The bot owner has switched Scam Shield off for every server for now.")
+        lines += self._ai_lines()
         if allowed:
             lines.append("**Allowed domains** (never treated as scams here)")
             lines += [f"• `{d}`" for d in allowed[:15]]
@@ -245,6 +246,23 @@ class ScamShieldView(ServerPanelView):
                 lines.append(f"-# …and {len(allowed) - 15} more")
         else:
             lines.append("No allowed domains. Add one if a legitimate link keeps getting deleted.")
+        return lines
+
+    def _ai_lines(self) -> List[str]:
+        ai = self.data.get("ai") or {}
+        if not ai.get("on"):
+            return ["🤖 **AI image check:** not available right now. Known scam pictures are still caught."]
+        cap, used = int(ai.get("cap", 0)), int(ai.get("used", 0))
+        tier = "⭐ Premium server" if ai.get("premium") else "Free server"
+        lines = [
+            "🤖 **AI image check:** new scam pictures that aren't in the known list (fake casino withdrawals, "
+            "fake giveaways, phishing screens) are read by AI and deleted if they are scams. "
+            f"{tier}: up to **{cap}** AI checks per day.",
+            f"Used today: **{used}/{cap}**. Resets daily at 00:00 UTC. When the limit is used up, only the "
+            "known-scam rules keep working until it resets.",
+        ]
+        if not ai.get("premium"):
+            lines.append("-# ⭐ Premium servers get a much bigger daily AI limit.")
         return lines
 
     def controls(self):

@@ -11,7 +11,9 @@ Flow per message:
   1. skip our own / DMs / system messages and trusted staff (Manage Messages, Manage Server, Admin);
   2. match the text (content + embed text + attachment file names);
   3. only if no text match AND image rules exist: hash small image attachments and compare;
-  4. on a match: save a copy (text + attachments) to the image-hosting channel if one is set, delete it, record\n     the hit, and post a flag in the server's log channel if it has one.
+  3b. still nothing: ask Gemini (modules/scam_vision.py) about image attachments. Needs GEMINI_API_KEY; skipped
+      when over its budget; any error means "not a scam";
+  4. on a match: save a copy (text + attachments) to the Scam Shield evidence channel (/admin scamchannel; falls back to\n     the image-hosting channel) if one is set, delete it, record\n     the hit, and post a flag in the server's log channel if it has one.
 Webhook messages are checked too (raid bots love them); there is no "trusted" shortcut for them.
 """
 
@@ -27,7 +29,9 @@ import discord
 from discord.ext import commands, tasks
 
 from database import db
+from discord_bot.cogs._admin_mount import mount_admin_command
 from modules import scam_shield as ss
+from modules import scam_vision as sv
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +69,35 @@ class ScamShieldCog(commands.Cog):
         self._backfill.cancel()
 
     async def cog_load(self):
+        mount_admin_command(
+            self.bot, self.scamchannel, name="scamchannel",
+            description="[Bot owner] Use THIS channel to keep copies of caught scam images (Scam Shield)",
+        )
         await ss.load(force=True)
+
+    # Mounted as /admin scamchannel (see cog_load). Same rules as /admin hostingchannel, but only for Scam Shield.
+    async def scamchannel(self, interaction: discord.Interaction):
+        from config import DISCORD_OWNER_BROADCAST_IDS
+        if interaction.user.id not in DISCORD_OWNER_BROADCAST_IDS:
+            await interaction.response.send_message("This command is restricted to bot owners.", ephemeral=True)
+            return
+        if interaction.guild is None or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("Run this in a server text channel.", ephemeral=True)
+            return
+        perms = interaction.channel.permissions_for(interaction.guild.me)
+        if not (perms.send_messages and perms.attach_files and perms.read_message_history):
+            await interaction.response.send_message(
+                "I need Send Messages, Attach Files, and Read Message History in this channel.", ephemeral=True)
+            return
+        try:
+            await ss.set_evidence_channel(interaction.channel.id)
+        except Exception:
+            logger.exception("[scam-shield] couldn't save the evidence channel")
+            await interaction.response.send_message("Couldn't save that (database problem). Nothing changed.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"✅ Caught scam messages (text + images) will now be saved in #{interaction.channel.name}. "
+            "Keep it private. The image-hosting channel is no longer used for this.", ephemeral=True)
 
     @tasks.loop(minutes=5)
     async def _reload(self):
@@ -128,10 +160,9 @@ class ScamShieldCog(commands.Cog):
         await self._sweep_summary(scanned, caught, channels, guilds)
 
     async def _sweep_summary(self, scanned: int, caught: int, channels: int, guilds: int) -> None:
-        """Best effort: tell the owner what the sweep found, in the image-hosting channel if one is set."""
+        """Best effort: tell the owner what the sweep found, in the evidence channel if one is set."""
         try:
-            from discord_bot.ad_images import _host_channel
-            host = await _host_channel(self.bot)
+            host = await self._evidence_channel()
             if host is None:
                 return
             await host.send(
@@ -165,8 +196,8 @@ class ScamShieldCog(commands.Cog):
                 return False
             text = _text_of(message)
             hit = ss.match_text(text)
-            if hit is None and ss.has_image_rules():
-                hit = await self._match_images(message)
+            if hit is None:
+                hit = await self._match_pictures(message)
             if hit is None:
                 return False
             # Only now (a real match) look at this server's own settings: it can switch the shield
@@ -176,8 +207,8 @@ class ScamShieldCog(commands.Cog):
                 return False
             if gs["allowed_domains"] and hit[0] == "domain":
                 hit = ss.match_text(text, gs["allowed_domains"])
-                if hit is None and ss.has_image_rules():
-                    hit = await self._match_images(message)
+                if hit is None:
+                    hit = await self._match_pictures(message)
                 if hit is None:
                     return False
             await self._act(message, *hit)
@@ -186,7 +217,19 @@ class ScamShieldCog(commands.Cog):
             logger.exception("[scam-shield] failed while checking a message")
             return False
 
-    async def _match_images(self, message: discord.Message):
+    async def _match_pictures(self, message: discord.Message):
+        """Hash rules first (free), then Gemini (budgeted). Each attachment is downloaded at most once."""
+        if not message.attachments:
+            return None
+        cache: dict = {}
+        hit = None
+        if ss.has_image_rules():
+            hit = await self._match_images(message, cache)
+        if hit is None and sv.available():
+            hit = await self._match_vision(message, cache)
+        return hit
+
+    async def _match_images(self, message: discord.Message, cache: Optional[dict] = None):
         for att in message.attachments[:4]:
             is_img = (att.content_type or "").startswith("image/") or att.filename.lower().endswith(_IMG_EXT)
             if not is_img or att.size > ss.IMAGE_MAX_BYTES:
@@ -196,19 +239,61 @@ class ScamShieldCog(commands.Cog):
                     data = await asyncio.wait_for(att.read(), timeout=6)
             except Exception:
                 continue
+            if cache is not None:
+                cache[att.id] = data
             hit = await asyncio.get_running_loop().run_in_executor(None, ss.match_image, data)
             if hit:
                 return hit
         return None
 
+    async def _match_vision(self, message: discord.Message, cache: dict):
+        """Ask Gemini about up to 3 image attachments. Animated GIFs and tiny images are skipped."""
+        for att in message.attachments[:3]:
+            ctype = (att.content_type or "").split(";")[0].lower()
+            name = att.filename.lower()
+            is_img = ctype.startswith("image/") or name.endswith(_IMG_EXT)
+            if not is_img or ctype == "image/gif" or name.endswith(".gif"):
+                continue
+            w = att.width if isinstance(att.width, int) else None
+            h = att.height if isinstance(att.height, int) else None
+            if not sv.worth_checking(att.size, w, h):
+                continue
+            data = cache.get(att.id)
+            if data is None:
+                try:
+                    async with _download_slots:
+                        data = await asyncio.wait_for(att.read(), timeout=8)
+                except Exception:
+                    continue
+                cache[att.id] = data
+            hit = await sv.is_scam_image(data, message.guild.id, message.author.id,
+                                         getattr(self.bot, "clone_id", None))
+            if hit:
+                return hit
+        return None
+
+    async def _evidence_channel(self) -> Optional[discord.TextChannel]:
+        """Scam Shield's own evidence channel (/admin scamchannel); falls back to the image-hosting channel."""
+        cid = ss.evidence_channel_id()
+        if cid:
+            ch = self.bot.get_channel(cid)
+            if ch is None:
+                try:
+                    ch = await self.bot.fetch_channel(cid)
+                except discord.HTTPException:
+                    ch = None
+            if isinstance(ch, discord.TextChannel):
+                return ch
+        from discord_bot.ad_images import _host_channel
+        return await _host_channel(self.bot)
+
     # ── what we do when something matches ────────────────────────────────
     async def _evidence(self, message: discord.Message) -> Tuple[Optional[discord.TextChannel], List[Tuple[str, bytes]]]:
-        """The image-hosting channel (same one /welcome custombg uses, set with /admin hostingchannel) plus the
+        """The evidence channel (/admin scamchannel, else the image-hosting channel from /admin hostingchannel) plus the
         message's attachments as bytes. Must run BEFORE the delete: Discord CDN links die with the message.
         (None, []) when no hosting channel is set or the bot can't reach it: nothing is downloaded then."""
         try:
-            from discord_bot.ad_images import _host_channel
-            host = await _host_channel(self.bot)
+            host = await self._evidence_channel()
         except Exception:
             return None, []
         if host is None:
