@@ -588,9 +588,10 @@ class WelcomeView(ServerPanelView):
         from discord_bot.cogs import _views_welcome as vw
         await interaction.response.defer(ephemeral=True)
         cfg = await db.get_welcome_config(interaction.guild_id, clone_id=self.clone_id)
-        view = vw.build_wizard_view(interaction.guild_id, self.clone_id, interaction.user.id, cfg,
-                                    goodbye=await vw.fetch_goodbye(interaction.guild_id, self.clone_id))
-        await interaction.followup.send(view=view, ephemeral=True)
+        view, tv_kwargs = await vw.open_wizard_message(
+            interaction, interaction.guild_id, self.clone_id, interaction.user.id, cfg,
+            goodbye=await vw.fetch_goodbye(interaction.guild_id, self.clone_id))
+        await interaction.followup.send(view=view, ephemeral=True, **tv_kwargs)
 
     async def _open_card_customizer(self, interaction: discord.Interaction):
         """Card customizer: banner, background, colors, shapes, heading text, preview."""

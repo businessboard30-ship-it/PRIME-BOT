@@ -1234,12 +1234,13 @@ class _WelcomeCardOptionsButton(discord.ui.DynamicItem[discord.ui.Button], templ
         return cls(int(match.group(1)), None if clone_part == "-" else int(clone_part))
 
     async def callback(self, interaction: discord.Interaction):
-        from discord_bot.cogs._views_welcome import build_wizard_view, fetch_goodbye
+        from discord_bot.cogs._views_welcome import fetch_goodbye, open_wizard_message
         await interaction.response.defer(ephemeral=interaction.guild is not None)
         config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
-        view = build_wizard_view(self.guild_id, self.clone_id, interaction.user.id, config,
-                                 goodbye=await fetch_goodbye(self.guild_id, self.clone_id))
-        await interaction.followup.send(view=view, ephemeral=interaction.guild is not None)
+        view, tv_kwargs = await open_wizard_message(
+            interaction, self.guild_id, self.clone_id, interaction.user.id, config,
+            goodbye=await fetch_goodbye(self.guild_id, self.clone_id))
+        await interaction.followup.send(view=view, ephemeral=interaction.guild is not None, **tv_kwargs)
 
 
 class _WelcomePreviewRefreshButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_wsub_prev:(\d+):(-|\d+)$"):
