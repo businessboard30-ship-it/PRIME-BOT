@@ -11,7 +11,7 @@ Flow per message:
   1. skip our own / DMs / system messages and trusted staff (Manage Messages, Manage Server, Admin);
   2. match the text (content + embed text + attachment file names);
   3. only if no text match AND image rules exist: hash small image attachments and compare;
-  3b. still nothing: ask Gemini (modules/scam_vision.py) about image attachments. Needs GEMINI_API_KEY; skipped
+  3b. still nothing: ask Gemini (modules/scam_vision.py) about image attachments. Needs GEMINI_API_KEY (or OPENAI_API_KEY as the backup); skipped
       when over its budget; any error means "not a scam";
   4. on a match: save a copy (text + attachments) to the Scam Shield evidence channel (/admin scamchannel; falls back to\n     the image-hosting channel) if one is set, delete it, record\n     the hit, and post a flag in the server's log channel if it has one.
 Webhook messages are checked too (raid bots love them); there is no "trusted" shortcut for them.

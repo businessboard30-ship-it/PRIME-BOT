@@ -38,6 +38,7 @@ _PERKS = (
     "🖼️ **Bot Branding** — your own bot name, avatar & banner\n"
     "🎮 **Roblox Alerts** — auto game update posts\n"
     "🛡️ **Anti-raid Pro** — join-profile filter, raid reports & quarantine-and-review\n"
+    "🔍 **Scam Shield AI** — 20 AI image scam checks a day (free: 5), plus backup checks\n"
     "📝 **Application Forms** — 10 live forms, 5 questions, 10 colours & auto-role on accept\n"
     "🆕 **Every future feature** — free, automatically"
 )
