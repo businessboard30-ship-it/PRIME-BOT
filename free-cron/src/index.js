@@ -66,10 +66,11 @@ async function me(env, account) {
   const now = Date.now();
   const rows = (await env.DB.prepare("SELECT * FROM jobs WHERE account_id = ?1 ORDER BY id").bind(account.id).all()).results || [];
   const lim = L.limitFor(account, now);
+  const jobs = rows.map((j, i) => jobView(j, account, now, i));
   return {
     buy_url: L.safeBuyUrl(env.GUMROAD_BUY_URL), login: account.login, premium: L.isPremium(account, now), premium_until: L.isPremium(account, now) ? account.premium_until : null,
     limit: lim === Infinity ? null : lim, used: rows.length, min_minutes: L.minMinutesFor(account, now), intervals: L.INTERVALS,
-    jobs: rows.map((j, i) => jobView(j, account, now, i)),
+    jobs, stats: L.tally(jobs),
   };
 }
 

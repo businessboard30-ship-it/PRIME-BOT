@@ -73,6 +73,16 @@ export function classify(status) {      // redirects are never followed; a 2xx/3
   return Number.isInteger(status) && status >= 200 && status < 400;
 }
 
+// Dashboard tiles. enabled = switched on and inside the plan limit; ok/failed = based on each cron's last run (never-run crons count as neither).
+export function tally(jobs) {
+  const t = { enabled: 0, disabled: 0, ok: 0, failed: 0 };
+  for (const j of jobs) {
+    if (j.enabled && !j.over_limit) t.enabled++; else t.disabled++;
+    if (j.last_run_at) { if (classify(j.last_status)) t.ok++; else t.failed++; }
+  }
+  return t;
+}
+
 // ---- signed session cookie (HMAC-SHA256, base64url) ----
 const enc = new TextEncoder();
 const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

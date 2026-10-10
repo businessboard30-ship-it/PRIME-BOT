@@ -61,6 +61,12 @@ export const MARKUP = `<canvas id="bgfx" aria-hidden="true"></canvas>
 
 <section class="view hidden" id="v-dashboard" data-view="dashboard">
   <header class="vhead"><p class="eyebrow">Control room</p><h2 tabindex="-1">Dashboard</h2><p class="muted">Your scheduler at a glance.</p></header>
+  <div class="tiles" aria-label="Cronjob summary">
+    <a class="tile reveal" href="#/crons"><span class="tile-n" id="tEnabled">0</span><span class="tile-l">Enabled</span></a>
+    <a class="tile reveal" href="#/crons"><span class="tile-n" id="tDisabled">0</span><span class="tile-l">Disabled</span></a>
+    <a class="tile reveal ok" href="#/crons"><span class="tile-n" id="tOk">0</span><span class="tile-l">Successful</span></a>
+    <a class="tile reveal bad" href="#/crons"><span class="tile-n" id="tFailed">0</span><span class="tile-l">Failed</span></a>
+  </div>
   <div class="card reveal">
     <p class="bigline"><small>// Welcome back</small><span id="dWho"></span></p>
     <p class="muted" id="dLine"></p>
