@@ -24,7 +24,7 @@ def test_free_cron_is_separate_from_the_bot_worker():
 def test_free_cron_never_stores_responses_or_follows_redirects():
     src = (ROOT / "src" / "index.js").read_text()
     assert 'redirect: "manual"' in src and "r.text()" not in src and "r.json()" not in src.split("export async function runDue")[1]
-    page = (ROOT / "src" / "page.js").read_text()
+    page = "".join(f.read_text() for f in [ROOT / "src" / "page.js", *sorted((ROOT / "src" / "ui").glob("*.js"))])
     assert ".innerHTML" not in page and "outerHTML" not in page and "insertAdjacentHTML" not in page and "document.write" not in page
 
 

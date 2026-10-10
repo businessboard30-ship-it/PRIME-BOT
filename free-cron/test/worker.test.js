@@ -46,6 +46,31 @@ test("page is served with a strict CSP and no inline handlers", async () => {
   assert.ok(html.includes("challenges.cloudflare.com") && !html.includes("innerHTML") && !/ on\w+=/.test(html) && !/style=/.test(html));
 });
 
+test("page has the five app views, each linked from the sidebar, and a mobile menu", async () => {
+  const html = await (await call(env(), "/")).text();
+  for (const n of ["dashboard", "crons", "status", "stats", "settings"]) {
+    assert.ok(html.includes(`href="#/${n}"`) && html.includes(`data-nav="${n}"`), `nav link for ${n}`);
+    assert.ok(html.includes(`id="v-${n}"`) && html.includes(`data-view="${n}"`), `view for ${n}`);
+  }
+  assert.ok(html.includes('id="menuBtn"') && html.includes('aria-controls="side"') && html.includes('id="side"'));
+  assert.equal((html.match(/data-view="/g) || []).length, 5);
+});
+
+test("every script and style tag in the page carries the request nonce", async () => {
+  const r = await call(env(), "/"), csp = r.headers.get("Content-Security-Policy"), html = await r.text();
+  const nonce = /'nonce-([^']+)'/.exec(csp)[1];
+  const tags = html.match(/<(script|style)\b[^>]*>/g) || [];
+  assert.ok(tags.length >= 4);
+  for (const t of tags) assert.ok(t.includes(`nonce="${nonce}"`), `missing nonce: ${t}`);
+});
+
+test("the script only routes to views that exist", async () => {
+  const html = await (await call(env(), "/")).text();
+  const list = /var VIEWS=\[([^\]]*)\]/.exec(html)[1].replace(/"/g, "").split(",");
+  assert.deepEqual(list, ["dashboard", "crons", "status", "stats", "settings"]);
+  for (const n of list) assert.ok(html.includes(`id="v-${n}"`));
+});
+
 test("API needs a session; state changes need our header", async () => {
   const e = env();
   assert.equal((await call(e, "/api/me")).status, 401);
