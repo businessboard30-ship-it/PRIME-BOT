@@ -271,8 +271,10 @@ ULTRA_PACK_FEE_USD = 1.99
 # set at runtime via the owner-only /admin hostingchannel command (persisted in
 # the bot_global_settings DB table), which takes priority over this env
 # var — this is just a bootstrap default so the feature works before that
-# command has ever been run. Leave blank/0 to require /admin hostingchannel.
-IMAGE_HOST_CHANNEL_ID = int(os.getenv("IMAGE_HOST_CHANNEL_ID", "0") or "0")
+# command has ever been run. Set to 0 to require /admin hostingchannel.
+# Default = the shared hosting channel in the support server; the main bot and EVERY clone use the same one.
+# A bot that can't reach the owner's /admin hostingchannel setting falls back to this (modules/image_host.py).
+IMAGE_HOST_CHANNEL_ID = int(os.getenv("IMAGE_HOST_CHANNEL_ID", "1541141079913660446") or "0")
 
 # Comma-separated Discord user IDs that bypass the /registerclone payment gate
 # entirely, same as ADMIN_ID does for the Telegram flow's owner bypass. The

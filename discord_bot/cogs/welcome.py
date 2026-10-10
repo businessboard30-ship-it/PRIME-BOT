@@ -162,21 +162,11 @@ async def _fetch_custom_bg_bytes(
 
 
 async def _get_image_host_channel(bot: commands.Bot) -> discord.TextChannel | None:
-    """Resolves the channel /welcome custombg's `image` upload re-posts
-    to, so that channel doubles as free image hosting. DB setting (set via
-    the owner-only /admin hostingchannel command) takes priority over the
-    IMAGE_HOST_CHANNEL_ID env var, which is just a bootstrap default."""
-    channel_id_str = await db.get_global_setting("image_host_channel_id")
-    channel_id = int(channel_id_str) if channel_id_str and channel_id_str.isdigit() else bot_config.IMAGE_HOST_CHANNEL_ID
-    if not channel_id:
-        return None
-    channel = bot.get_channel(channel_id)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(channel_id)
-        except discord.HTTPException:
-            return None
-    return channel if isinstance(channel, discord.TextChannel) else None
+    """Resolves the channel /welcome custombg's `image` upload re-posts to, so that channel doubles as free image
+    hosting. The owner's /admin hostingchannel setting is tried first, then the shared default channel
+    (IMAGE_HOST_CHANNEL_ID); the first one THIS bot (main or clone) can reach wins. See modules/image_host.py."""
+    from modules import image_host
+    return await image_host.resolve_channel(bot)
 
 
 async def _upload_custom_bg(
@@ -197,9 +187,13 @@ async def _upload_custom_bg(
 
     host_channel = await _get_image_host_channel(bot)
     if host_channel is None:
+        from modules import image_host
+        asyncio.create_task(image_host.notify_owners(
+            bot, "upload", f"An admin in server `{guild.id}` tried to upload a custom welcome background, but this bot cannot "
+                           "reach the image hosting channel. Run **Test image hosting** in the owner panel (System)."))
         return None, None, None, (
-            "image uploads aren't set up yet — the bot owner needs to run `/admin hostingchannel` "
-            "in a channel first (or you can paste a direct image URL instead)"
+            "image uploads aren't working right now — the bot owner has been told. "
+            "You can paste a direct image URL instead"
         )
 
     try:
@@ -215,6 +209,14 @@ async def _upload_custom_bg(
 
     cdn_url = posted.attachments[0].url if posted.attachments else None
     return host_channel.id, posted.id, cdn_url, None
+
+
+async def _host_bytes(bot: commands.Bot, data: bytes, guild: discord.Guild | None, guild_id: int):
+    """Re-host already-downloaded image bytes (a pasted link) in the hosting channel so the saved background can never
+    expire or vanish with the link. Returns (channel_id, message_id, cdn_url) or None when hosting isn't available."""
+    from modules import image_host
+    name = getattr(guild, "name", "?")
+    return await image_host.post_to_host(bot, data, f"Custom welcome background — guild `{guild_id}` ({name})")
 
 
 async def _refresh_custom_bg_url(bot: commands.Bot, config_row: dict) -> str | None:
@@ -288,10 +290,17 @@ async def _custom_bg_bytes_for_render(
             logger.info(f"[v0] custom-bg render for guild {guild_id}: using stored custom_background_url")
     if not url:
         logger.info(f"[v0] custom-bg render for guild {guild_id}: no usable URL at all — rendering stock background")
+        if bot is not None and (config_row.get("custom_bg_message_id") or config_row.get("custom_background_url")):
+            from modules import image_host
+            asyncio.create_task(image_host.report_render_problem(
+                bot, guild_id, "the saved background could not be found again (its hosting message or channel is gone or unreachable)"))
         return None
     data, reason = await _fetch_custom_bg_bytes(session, url)
     if data is None:
         logger.warning(f"[v0] custom-bg render for guild {guild_id}: fetch of '{url}' failed ({reason}) — rendering stock background")
+        if bot is not None:
+            from modules import image_host
+            asyncio.create_task(image_host.report_render_problem(bot, guild_id, f"the saved image could not be loaded ({reason})"))
     else:
         logger.info(f"[v0] custom-bg render for guild {guild_id}: fetched {len(data)} bytes OK")
     return data
@@ -581,6 +590,13 @@ class WelcomeCog(GuildOnlyCog):
             f"That's Customize Card (${bot_config.ULTRA_PACK_FEE_USD:g} one-time, whole server) — "
             "run `/welcome buyultra` anytime.",
         )
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Once per process: a quiet check that this bot (main or clone) can use the image hosting channel (owners are told
+        only if not), then every 12 hours the mover that keeps every server's saved background in that channel."""
+        from modules import image_host
+        asyncio.create_task(image_host.background_jobs(self.bot))
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -1549,9 +1565,12 @@ class WelcomeCog(GuildOnlyCog):
         await interaction.response.send_message(
             f"✅ Uploaded custom backgrounds (`/welcome custombg`'s `image` option) will now be stored in "
             f"#{interaction.channel.name}. Keep this channel private and don't delete old messages in it — "
-            f"each guild's background lives in one message here.",
+            f"each guild's background lives in one message here. Servers' saved backgrounds are being moved there now "
+            f"(each bot moves its own; clones do it on their next 12-hourly run).",
             ephemeral=True,
         )
+        from modules import image_host
+        asyncio.create_task(image_host.auto_move(self.bot))
 
     @group.command(name="theme", description="Pick which welcome-card look this server uses")
     @app_commands.choices(look=[
