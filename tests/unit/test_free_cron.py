@@ -24,7 +24,7 @@ def test_free_cron_is_separate_from_the_bot_worker():
 def test_free_cron_never_stores_responses_or_follows_redirects():
     src = (ROOT / "src" / "index.js").read_text()
     assert 'redirect: "manual"' in src and "r.text()" not in src and "r.json()" not in src.split("export async function runDue")[1]
-    page = (ROOT / "src" / "page.js").read_text()
+    page = "".join(f.read_text() for f in [ROOT / "src" / "page.js", *sorted((ROOT / "src" / "ui").glob("*.js"))])
     assert ".innerHTML" not in page and "outerHTML" not in page and "insertAdjacentHTML" not in page and "document.write" not in page
 
 
@@ -32,3 +32,10 @@ def test_deploy_workflow_runs_tests_migrations_and_never_prints_secrets():
     wf = (ROOT.parent / ".github" / "workflows" / "deploy-free-cron.yml").read_text()
     assert "npm test" in wf and "d1 migrations apply free-cron --remote" in wf and "free-cron/**" in wf
     assert "echo $" not in wf and "echo \"$val\"" not in wf
+
+
+def test_free_cron_ui_has_no_bot_branding():
+    import re
+    files = [ROOT / "src" / "page.js", ROOT / "src" / "legal.js", *sorted((ROOT / "src" / "ui").glob("*.js"))]
+    for f in files:
+        assert not re.search(r"prime[ -]?bot|prime-bot-site|discord\.gg", f.read_text(), re.I), f.name

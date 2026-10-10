@@ -2,13 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import worker, { runDue, recheckLicenses } from "../src/index.js";
+import worker, { runDue, recheckLicenses, pruneRuns } from "../src/index.js";
 import * as L from "../src/logic.js";
 
 // A tiny D1 stand-in over node:sqlite (same SQL dialect, RETURNING included).
 function makeDb() {
   const sql = new DatabaseSync(":memory:");
-  for (const f of ["0001_init.sql", "0002_licenses.sql"]) sql.exec(readFileSync(new URL("../migrations/" + f, import.meta.url), "utf8"));
+  for (const f of ["0001_init.sql", "0002_licenses.sql", "0003_runs.sql", "0004_status_pages.sql"]) sql.exec(readFileSync(new URL("../migrations/" + f, import.meta.url), "utf8"));
   const stmt = (q, args = []) => ({
     bind: (...a) => stmt(q, a),
     run: async () => { const r = sql.prepare(q).run(...args); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; },
@@ -44,6 +44,52 @@ test("page is served with a strict CSP and no inline handlers", async () => {
   const csp = r.headers.get("Content-Security-Policy"), html = await r.text();
   assert.ok(csp.includes("default-src 'none'") && csp.includes("frame-ancestors 'none'") && !csp.includes("unsafe-inline"));
   assert.ok(html.includes("challenges.cloudflare.com") && !html.includes("innerHTML") && !/ on\w+=/.test(html) && !/style=/.test(html));
+});
+
+test("page has the five app views, each linked from the sidebar, and a mobile menu", async () => {
+  const html = await (await call(env(), "/")).text();
+  for (const n of ["dashboard", "crons", "status", "stats", "settings"]) {
+    assert.ok(html.includes(`href="#/${n}"`) && html.includes(`data-nav="${n}"`), `nav link for ${n}`);
+    assert.ok(html.includes(`id="v-${n}"`) && html.includes(`data-view="${n}"`), `view for ${n}`);
+  }
+  assert.ok(html.includes('id="menuBtn"') && html.includes('aria-controls="side"') && html.includes('id="side"'));
+  assert.equal((html.match(/data-view="/g) || []).length, 5);
+});
+
+test("every script and style tag in the page carries the request nonce", async () => {
+  const r = await call(env(), "/"), csp = r.headers.get("Content-Security-Policy"), html = await r.text();
+  const nonce = /'nonce-([^']+)'/.exec(csp)[1];
+  const tags = html.match(/<(script|style)\b[^>]*>/g) || [];
+  assert.ok(tags.length >= 4);
+  for (const t of tags) assert.ok(t.includes(`nonce="${nonce}"`), `missing nonce: ${t}`);
+});
+
+test("the script only routes to views that exist", async () => {
+  const html = await (await call(env(), "/")).text();
+  const list = /var VIEWS=\[([^\]]*)\]/.exec(html)[1].replace(/"/g, "").split(",");
+  assert.deepEqual(list, ["dashboard", "crons", "status", "stats", "settings"]);
+  for (const n of list) assert.ok(html.includes(`id="v-${n}"`));
+});
+
+test("/api/me returns the dashboard tile counts", async () => {
+  const e = env(), t = await addAccount(e);
+  assert.deepEqual((await (await call(e, "/api/me", { token: t })).json()).stats, { enabled: 0, disabled: 0, ok: 0, failed: 0 });
+  nextOk = true;
+  for (let i = 0; i < 4; i++) assert.equal((await call(e, "/api/jobs", { method: "POST", body: job({ name: "J" + i }), token: t })).status, 200);
+  const ids = e.DB.sql.prepare("SELECT id FROM jobs ORDER BY id").all().map((r) => r.id);
+  const set = e.DB.sql.prepare("UPDATE jobs SET last_run_at = ?1, last_status = ?2, enabled = ?3 WHERE id = ?4");
+  set.run(Date.now(), 200, 1, ids[0]); set.run(Date.now(), 503, 1, ids[1]); set.run(Date.now(), 200, 0, ids[2]);
+  const me = await (await call(e, "/api/me", { token: t })).json();
+  assert.deepEqual(me.stats, { enabled: 3, disabled: 1, ok: 2, failed: 1 });
+  assert.equal(me.jobs.length, 4);
+  const other = await addAccount(e, 2, "bob");
+  assert.deepEqual((await (await call(e, "/api/me", { token: other })).json()).stats, { enabled: 0, disabled: 0, ok: 0, failed: 0 });
+});
+
+test("dashboard has the four tiles and a create button", async () => {
+  const html = await (await call(env(), "/")).text();
+  for (const id of ["tEnabled", "tDisabled", "tOk", "tFailed"]) assert.ok(html.includes(`id="${id}"`));
+  assert.ok(html.includes('class="btn primary" href="#/crons">Create cronjob'));
 });
 
 test("API needs a session; state changes need our header", async () => {
@@ -282,4 +328,319 @@ test("deleting the account removes its license rows", async () => {
   gumReply = gum(); await redeem(e, t);
   assert.equal((await call(e, "/api/me", { method: "DELETE", token: t })).status, 200);
   assert.equal(e.DB.sql.prepare("SELECT COUNT(*) c FROM licenses").get().c, 0);
+});
+
+// ---------- run history ----------
+const DAY = 86400000;
+const addRun = (e, jobId, accountId, ranAt, status = 200) => e.DB.sql.prepare("INSERT INTO runs (job_id,account_id,ran_at,status,ms,ok) VALUES (?,?,?,?,?,?)").run(jobId, accountId, ranAt, status, 50, status >= 200 && status < 400 ? 1 : 0);
+const runsOf = (e) => e.DB.sql.prepare("SELECT * FROM runs ORDER BY id").all();
+
+test("history: every run writes one row with status, time and duration, and never a body", async () => {
+  const e = env(); await addAccount(e); seed(e, 1, 3);
+  e.DB.sql.prepare("UPDATE jobs SET url = 'https://example.com/hang' WHERE id = 3").run();
+  const f = async (u) => { if (String(u).endsWith("/hang")) throw new Error("timeout"); return new Response("secret-body", { status: String(u).endsWith("/1") ? 503 : 200 }); };
+  const out = await runDue(e, NOW, f);
+  assert.deepEqual(out, { ran: 3, ok: 1, failed: 2 });
+  const rows = runsOf(e);
+  assert.equal(rows.length, 3);
+  const byJob = Object.fromEntries(rows.map((r) => [r.job_id, r]));
+  assert.deepEqual([byJob[1].status, byJob[1].ok], [200, 1]);
+  assert.deepEqual([byJob[2].status, byJob[2].ok], [503, 0]);
+  assert.deepEqual([byJob[3].status, byJob[3].ok], [0, 0]);               // timeout or network error = 0
+  assert.ok(rows.every((r) => r.account_id === 1 && r.ran_at > 0 && r.ms >= 0));
+  assert.ok(JSON.stringify(rows).indexOf("secret-body") < 0);
+  assert.deepEqual(Object.keys(rows[0]).sort(), ["account_id", "id", "job_id", "ms", "ok", "ran_at", "status"]);
+});
+
+test("history API: owner only, newest first, limit defaults to 50 and is capped at 100", async () => {
+  const e = env(), t = await addAccount(e), t2 = await addAccount(e, 2, "bob"); seed(e, 1, 1); seed(e, 2, 1);
+  for (let i = 0; i < 120; i++) addRun(e, 1, 1, NOW + i * 1000, i % 2 ? 500 : 200);
+  assert.equal((await call(e, "/api/jobs/1/runs")).status, 401);
+  assert.equal((await call(e, "/api/jobs/1/runs", { token: t2 })).status, 404);      // someone else's cron
+  assert.equal((await call(e, "/api/jobs/999/runs", { token: t })).status, 404);
+  const get = async (q = "") => (await (await call(e, "/api/jobs/1/runs" + q, { token: t })).json()).runs;
+  const def = await get();
+  assert.equal(def.length, 50);
+  assert.equal(def[0].ran_at, NOW + 119 * 1000); assert.ok(def[0].ran_at > def[1].ran_at);
+  assert.deepEqual(def[0], { ran_at: NOW + 119000, status: 500, ms: 50, ok: false });
+  assert.equal((await get("?limit=500")).length, 100);
+  assert.equal((await get("?limit=3")).length, 3);
+  assert.equal((await get("?limit=abc")).length, 50);
+  assert.equal((await get("?limit=0")).length, 50);
+  assert.equal((await (await call(e, "/api/jobs/2/runs", { token: t2 })).json()).runs.length, 0);
+});
+
+test("history: deleting a cron deletes its runs; deleting an account deletes all of its runs", async () => {
+  const e = env(), t = await addAccount(e), t2 = await addAccount(e, 2, "bob"); seed(e, 1, 2); seed(e, 2, 1);
+  addRun(e, 1, 1, NOW); addRun(e, 1, 1, NOW + 1); addRun(e, 2, 1, NOW); addRun(e, 3, 2, NOW);
+  assert.equal((await call(e, "/api/jobs/1", { method: "DELETE", token: t2 })).status, 404);   // not bob's
+  assert.equal(runsOf(e).length, 4);
+  assert.equal((await call(e, "/api/jobs/1", { method: "DELETE", token: t })).status, 200);
+  assert.deepEqual(runsOf(e).map((r) => r.job_id), [2, 3]);
+  assert.equal((await call(e, "/api/me", { method: "DELETE", token: t })).status, 200);
+  assert.deepEqual(runsOf(e).map((r) => [r.job_id, r.account_id]), [[3, 2]]);
+});
+
+test("history: retention is 7 days for free and 30 days for Premium, and each prune is bounded", async () => {
+  const e = env(), T = Date.now(); await addAccount(e); await addAccount(e, 2, "bob", T + DAY); seed(e, 1, 1); seed(e, 2, 1);
+  addRun(e, 1, 1, T - 8 * DAY); addRun(e, 1, 1, T - 6 * DAY);              // free: old one goes, recent stays
+  addRun(e, 2, 2, T - 29 * DAY); addRun(e, 2, 2, T - 31 * DAY);            // premium: 29 days stays, 31 goes
+  addRun(e, 9, 99, T - 1 * DAY); addRun(e, 9, 99, T - 8 * DAY);            // orphan (no account): follows the free rule
+  assert.deepEqual(await pruneRuns(e, T), { pruned: 3 });
+  assert.deepEqual(runsOf(e).map((r) => [r.account_id, Math.round((T - r.ran_at) / DAY)]).sort(), [[1, 6], [2, 29], [99, 1]]);
+  const e2 = env(); await addAccount(e2); seed(e2, 1, 1);
+  for (let i = 0; i < L.PRUNE_BATCH + 100; i++) addRun(e2, 1, 1, T - 20 * DAY);
+  assert.equal((await pruneRuns(e2, T)).pruned, L.PRUNE_BATCH);
+  assert.equal((await pruneRuns(e2, T)).pruned, 100);
+  assert.equal(runsOf(e2).length, 0);
+});
+
+test("history: the runs table is created lazily when the migration did not run", async () => {
+  const e = env(); await addAccount(e); seed(e, 1, 1);
+  e.DB.sql.exec("DROP TABLE runs");
+  assert.deepEqual(await runDue(e, NOW, okFetch(200)), { ran: 1, ok: 1, failed: 0 });
+  assert.equal(runsOf(e).length, 1);
+  const e2 = env(); const t = await addAccount(e2); seed(e2, 1, 1); e2.DB.sql.exec("DROP TABLE runs");
+  assert.deepEqual((await (await call(e2, "/api/jobs/1/runs", { token: t })).json()).runs, []);
+});
+
+test("page: each cron has a History panel wired to the runs API, built without innerHTML", async () => {
+  const html = await (await call(env(), "/")).text();
+  assert.ok(html.includes('"/api/jobs/"+id+"/runs?limit=50"') && html.includes('"History"') && html.includes("loadRuns"));
+  assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
+});
+
+// ---------- statistics ----------
+test("stats API: login needed, range checked, 30d is Premium only", async () => {
+  const e = env(), t = await addAccount(e), pt = await addAccount(e, 2, "bob", Date.now() + DAY);
+  assert.equal((await call(e, "/api/stats")).status, 401);
+  assert.equal((await call(e, "/api/stats?range=1y", { token: t })).status, 422);
+  assert.equal((await call(e, "/api/stats?range=__proto__", { token: t })).status, 422);
+  assert.equal((await call(e, "/api/stats?range=30d", { token: t })).status, 403);
+  assert.equal((await call(e, "/api/stats?range=30d", { token: pt })).status, 200);
+  for (const r of ["", "?range=24h", "?range=7d"]) assert.equal((await call(e, "/api/stats" + r, { token: t })).status, 200);
+});
+
+test("stats API: a brand-new account gets a full empty shape", async () => {
+  const e = env(), t = await addAccount(e);
+  const j = await (await call(e, "/api/stats?range=7d", { token: t })).json();
+  assert.equal(j.range, "7d"); assert.equal(j.series.length, 7); assert.deepEqual(j.jobs, []);
+  assert.deepEqual(j.totals, { runs: 0, ok: 0, failed: 0, success_rate: null, avg_ms: null });
+});
+
+test("stats API: totals, hourly and daily series and per-cron uptime come from SQL, for my account only", async () => {
+  const e = env(), t = await addAccount(e), t2 = await addAccount(e, 2, "bob"); seed(e, 1, 2); seed(e, 2, 1);
+  const T = Date.now(), HOUR = 3600000, h0 = Math.floor(T / HOUR) * HOUR;
+  const run = (job, acct, at, status, ms) => e.DB.sql.prepare("INSERT INTO runs (job_id,account_id,ran_at,status,ms,ok) VALUES (?,?,?,?,?,?)").run(job, acct, at, status, ms, status >= 200 && status < 400 ? 1 : 0);
+  run(1, 1, h0 + 1000, 200, 100); run(1, 1, h0 + 2000, 200, 300); run(1, 1, h0 + 3000, 500, 9000);   // this hour: avg of the 2 ok runs = 200
+  run(2, 1, h0 - 2 * HOUR + 5, 200, 50); run(2, 1, h0 - 2 * HOUR + 9, 0, 10000);                      // two hours ago
+  run(1, 1, h0 - 30 * HOUR, 200, 70);                                                                  // outside 24h, inside 7d
+  run(3, 2, h0 + 1000, 200, 1);                                                                        // bob's run must never show up
+  const h = await (await call(e, "/api/stats?range=24h", { token: t })).json();
+  assert.deepEqual(h.totals, { runs: 5, ok: 3, failed: 2, success_rate: 60, avg_ms: 150 });          // avg over the ok runs only: (100 + 300 + 50) / 3
+  assert.equal(h.series.length, 24); assert.equal(h.bucket_ms, HOUR);
+  assert.deepEqual(h.series[23], { t: h0, runs: 3, ok: 2, failed: 1, avg_ms: 200 });
+  assert.deepEqual(h.series[21], { t: h0 - 2 * HOUR, runs: 2, ok: 1, failed: 1, avg_ms: 50 });
+  assert.deepEqual(h.series[22], { t: h0 - HOUR, runs: 0, ok: 0, failed: 0, avg_ms: null });
+  assert.deepEqual(h.jobs.map((x) => [x.id, x.runs, x.ok, x.success_rate, x.avg_ms]), [[1, 3, 2, 66.7, 200], [2, 2, 1, 50, 50]]);
+  const d = await (await call(e, "/api/stats?range=7d", { token: t })).json();                         // the 30-hour-old run joins in
+  assert.equal(d.totals.runs, 6); assert.equal(d.series.length, 7); assert.equal(d.bucket_ms, 86400000);
+  assert.equal(d.series.reduce((n, p) => n + p.runs, 0), 6);
+  const b = await (await call(e, "/api/stats?range=24h", { token: t2 })).json();
+  assert.deepEqual(b.totals, { runs: 1, ok: 1, failed: 0, success_rate: 100, avg_ms: 1 });
+  assert.deepEqual(b.jobs.map((x) => x.id), [3]);
+});
+
+test("page: statistics view has range buttons, totals, charts and an empty state, drawn without a chart library", async () => {
+  const html = await (await call(env(), "/")).text();
+  for (const id of ["sRuns", "sRate", "sAvg", "sFailed", "cLine", "cBars", "sJobs", "sEmpty"]) assert.ok(html.includes(`id="${id}"`), id);
+  for (const r of ["24h", "7d", "30d"]) assert.ok(html.includes(`data-range="${r}"`));
+  assert.ok(html.includes("createElementNS") && html.includes('"/api/stats?range="'));
+  assert.ok(!/<script[^>]+src="(?!https:\/\/challenges\.cloudflare\.com)/.test(html));   // no other external script
+  assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
+});
+
+test("main page has no bot branding or links to the bot site or its Discord", async () => {
+  const html = await (await call(env(), "/")).text();
+  assert.ok(!/prime\s*bot|prime-bot|discord\.gg|pages\.dev/i.test(html));
+  assert.ok(html.includes('href="/privacy"') && html.includes('href="/terms"'));
+});
+
+for (const p of ["privacy", "terms"]) {
+  test(`/${p} returns 200 with a strict CSP, a nonce on the style tag and no bot branding`, async () => {
+    const r = await call(env(), "/" + p), csp = r.headers.get("Content-Security-Policy"), html = await r.text();
+    assert.equal(r.status, 200);
+    assert.ok(csp.includes("default-src 'none'") && !csp.includes("script-src") && csp.includes("frame-ancestors 'none'"));
+    const nonce = /'nonce-([^']+)'/.exec(csp)[1];
+    for (const t of html.match(/<style[^>]*>/g)) assert.ok(t.includes(`nonce="${nonce}"`));
+    assert.ok(!/<script/i.test(html) && !/\sstyle=|\son[a-z]+=/i.test(html));
+    assert.ok(!/prime\s*bot|prime-bot|discord\.gg|pages\.dev/i.test(html));
+  });
+}
+
+test("legal pages show a contact only when CONTACT_URL is a safe https or mailto link", async () => {
+  assert.ok(!(await (await call(env(), "/terms")).text()).includes("Contact"));
+  assert.ok(!(await (await call(env({ CONTACT_URL: "javascript:alert(1)" }), "/terms")).text()).includes("Contact"));
+  const t = await (await call(env({ CONTACT_URL: "mailto:help@example.com" }), "/terms")).text();
+  assert.ok(t.includes("Contact") && t.includes("help@example.com"));
+});
+
+test("legal pages only answer GET", async () => {
+  assert.equal((await call(env(), "/privacy", { method: "POST", body: {} })).status, 404);
+});
+
+// ---- Step 3: public status pages ----
+const addJob = (e, account_id, name, url = "https://secret.example.com/hook?key=SUPERSECRET", extra = {}) => {
+  const r = e.DB.sql.prepare("INSERT INTO jobs (account_id, name, url, method, body, every_minutes, next_run_at, created_at) VALUES (?,?,?,?,?,?,?,0)").run(account_id, name, url, "GET", "", 15, 0);
+  const id = Number(r.lastInsertRowid);
+  if (extra.last_run_at) e.DB.sql.prepare("UPDATE jobs SET last_run_at = ?, last_status = ?, last_ms = 50 WHERE id = ?").run(extra.last_run_at, extra.last_status ?? 200, id);
+  return id;
+};
+const addRunOk = (e, job_id, account_id, ran_at, ok) => e.DB.sql.prepare("INSERT INTO runs (job_id, account_id, ran_at, status, ms, ok) VALUES (?,?,?,?,?,?)").run(job_id, account_id, ran_at, ok ? 200 : 500, 40, ok ? 1 : 0);
+const mkPage = async (e, tok, body = {}) => (await call(e, "/api/status-pages", { method: "POST", token: tok, body: { title: "My services", token: "cf", ...body } })).json();
+
+test("status pages: sign-in is required to manage them, public routes need none", async () => {
+  const e = env();
+  assert.equal((await call(e, "/api/status-pages")).status, 401);
+  assert.equal((await call(e, "/api/public/status/nothing-here")).status, 404);
+  assert.equal((await call(e, "/s/nothing-here")).status, 404);
+});
+
+test("status pages: create with a random slug, rename, toggle, delete", async () => {
+  const e = env(), tok = await addAccount(e);
+  const c = await mkPage(e, tok);
+  assert.match(c.slug, /^[a-f0-9]{20}$/);
+  assert.equal((await call(e, `/api/status-pages/${c.id}`, { method: "PATCH", token: tok, body: { title: "Renamed", enabled: false } })).status, 200);
+  const list = await (await call(e, "/api/status-pages", { token: tok })).json();
+  assert.equal(list.pages[0].title, "Renamed"); assert.equal(list.pages[0].enabled, false); assert.equal(list.max_pages, 1);
+  assert.equal((await call(e, `/api/status-pages/${c.id}`, { method: "DELETE", token: tok })).status, 200);
+  assert.equal((await (await call(e, "/api/status-pages", { token: tok })).json()).pages.length, 0);
+});
+
+test("status pages: custom slug rules, reserved words and collisions", async () => {
+  const e = env(), a = await addAccount(e, 1, "alice", Date.now() + 1e9), b = await addAccount(e, 2, "bob", Date.now() + 1e9);
+  for (const bad of ["api", "s", "status", "privacy", "AB", "a--b", "-abc", "abc-", "has space", "x".repeat(41)]) {
+    const r = await call(e, "/api/status-pages", { method: "POST", token: a, body: { title: "T", slug: bad, token: "cf" } });
+    assert.equal(r.status, 422, bad);
+  }
+  assert.equal((await call(e, "/api/status-pages", { method: "POST", token: a, body: { title: "T", slug: "My-App", token: "cf" } })).status, 200);   // lowercased
+  assert.equal((await call(e, "/api/status-pages", { method: "POST", token: b, body: { title: "T", slug: "my-app", token: "cf" } })).status, 409);
+});
+
+test("status pages: titles and labels reject links and empty text", async () => {
+  const e = env(), tok = await addAccount(e, 1, "alice", Date.now() + 1e9);
+  for (const t of ["", "   ", "visit https://evil.example", "go to www.evil.example"]) assert.equal((await call(e, "/api/status-pages", { method: "POST", token: tok, body: { title: t, token: "cf" } })).status, 422, t);
+  assert.equal((await call(e, "/api/status-pages", { method: "POST", token: tok, body: { title: "x".repeat(61), token: "cf" } })).status, 422);
+});
+
+test("status pages: Turnstile is required to create", async () => {
+  const e = env(), tok = await addAccount(e); nextOk = false;
+  try { assert.equal((await call(e, "/api/status-pages", { method: "POST", token: tok, body: { title: "T", token: "bad" } })).status, 400); } finally { nextOk = true; }
+});
+
+test("status pages: free plan has 1 page and 5 monitors, Premium more", async () => {
+  const e = env(), tok = await addAccount(e);
+  const c = await mkPage(e, tok);
+  assert.equal((await call(e, "/api/status-pages", { method: "POST", token: tok, body: { title: "Two", token: "cf" } })).status, 422);
+  const ids = [1, 2, 3, 4, 5].map((i) => addJob(e, 1, "job" + i));
+  for (const [i, id] of ids.entries()) assert.equal((await call(e, `/api/status-pages/${c.id}/monitors`, { method: "POST", token: tok, body: { job_id: id, label: "L" + i } })).status, 200);
+  const sixth = addJob(e, 1, "job6");
+  assert.equal((await call(e, `/api/status-pages/${c.id}/monitors`, { method: "POST", token: tok, body: { job_id: sixth, label: "L6" } })).status, 422);
+  assert.equal((await call(e, `/api/status-pages/${c.id}/monitors`, { method: "POST", token: tok, body: { job_id: ids[0], label: "Renamed" } })).status, 200);   // relabel still works at the limit
+  const e2 = env(), p = await addAccount(e2, 1, "prem", Date.now() + 1e9);
+  await mkPage(e2, p); assert.equal((await call(e2, "/api/status-pages", { method: "POST", token: p, body: { title: "Two", token: "cf" } })).status, 200);
+});
+
+test("status pages: only my own crons and my own pages (account isolation)", async () => {
+  const e = env(), a = await addAccount(e, 1, "alice"), b = await addAccount(e, 2, "bob");
+  const pa = await mkPage(e, a), jobB = addJob(e, 2, "bobs job");
+  assert.equal((await call(e, `/api/status-pages/${pa.id}/monitors`, { method: "POST", token: a, body: { job_id: jobB, label: "steal" } })).status, 404);
+  const jobA = addJob(e, 1, "mine");
+  await call(e, `/api/status-pages/${pa.id}/monitors`, { method: "POST", token: a, body: { job_id: jobA, label: "Mine" } });
+  assert.equal((await call(e, `/api/status-pages/${pa.id}`, { method: "PATCH", token: b, body: { title: "hijack" } })).status, 404);
+  assert.equal((await call(e, `/api/status-pages/${pa.id}`, { method: "DELETE", token: b })).status, 404);
+  assert.equal((await call(e, `/api/status-pages/${pa.id}/monitors/${jobA}`, { method: "DELETE", token: b })).status, 404);
+  assert.equal((await (await call(e, "/api/status-pages", { token: b })).json()).pages.length, 0);
+});
+
+test("public status: shows label, state and uptime but never the URL, method, name or status text", async () => {
+  const e = env(), tok = await addAccount(e), now = Date.now();
+  const up = addJob(e, 1, "internal-name-ONE", undefined, { last_run_at: now - 60000, last_status: 200 }), down = addJob(e, 1, "internal-name-TWO", undefined, { last_run_at: now - 60000, last_status: 500 });
+  for (let i = 0; i < 4; i++) { addRunOk(e, up, 1, now - i * 3600000, true); addRunOk(e, down, 1, now - i * 3600000, i === 0); }
+  const c = await mkPage(e, tok, { slug: "my-status" });
+  await call(e, `/api/status-pages/${c.id}/monitors`, { method: "POST", token: tok, body: { job_id: up, label: "Website" } });
+  await call(e, `/api/status-pages/${c.id}/monitors`, { method: "POST", token: tok, body: { job_id: down, label: "API <b>x</b>" } });
+  const jr = await call(e, "/api/public/status/my-status"), j = await jr.json(), raw = JSON.stringify(j);
+  assert.equal(jr.status, 200);
+  assert.equal(jr.headers.get("X-Robots-Tag"), "noindex, nofollow"); assert.equal(jr.headers.get("Cache-Control"), "public, max-age=60");
+  assert.equal(j.monitors[0].state, "up"); assert.equal(j.monitors[0].uptime["24h"], 100);
+  assert.equal(j.monitors[1].state, "down"); assert.equal(j.monitors[1].uptime["24h"], 25);
+  assert.equal(j.overall, "degraded");
+  const hr = await call(e, "/s/my-status"), html = await hr.text();
+  assert.equal(hr.status, 200);
+  for (const text of [raw, html]) for (const secret of ["secret.example.com", "SUPERSECRET", "internal-name", "https://secret", "GET"]) assert.ok(!text.includes(secret), secret);
+  assert.ok(html.includes("API &lt;b&gt;x&lt;/b&gt;") && !html.includes("<b>x</b>"));
+  assert.equal(hr.headers.get("X-Robots-Tag"), "noindex, nofollow");
+  const csp = hr.headers.get("Content-Security-Policy"), nonce = /'nonce-([^']+)'/.exec(csp)[1];
+  assert.ok(csp.includes("default-src 'none'") && !csp.includes("script-src") && csp.includes("frame-ancestors 'none'"));
+  assert.ok(!/<script/i.test(html) && !/\sstyle=|\son[a-z]+=/i.test(html));
+  for (const t of html.match(/<style[^>]*>/g)) assert.ok(t.includes(`nonce="${nonce}"`));
+});
+
+test("public status: free pages never show a 30-day number, Premium pages do", async () => {
+  for (const [premium, expect30] of [[0, false], [Date.now() + 1e9, true]]) {
+    const e = env(), tok = await addAccount(e, 1, "alice", premium), id = addJob(e, 1, "j", undefined, { last_run_at: Date.now(), last_status: 200 });
+    addRunOk(e, id, 1, Date.now() - 1000, true);
+    const c = await mkPage(e, tok, { slug: "pg-test" });
+    await call(e, `/api/status-pages/${c.id}/monitors`, { method: "POST", token: tok, body: { job_id: id, label: "A" } });
+    const j = await (await call(e, "/api/public/status/pg-test")).json(), html = await (await call(e, "/s/pg-test")).text();
+    assert.equal("30d" in j.monitors[0].uptime, expect30); assert.equal(j.windows.includes("30d"), expect30);
+    assert.equal(html.includes("30d uptime"), expect30); assert.equal(html.includes("keeps 7 days"), !expect30);
+  }
+});
+
+test("public status: paused and never-run crons are not reported as up or down", async () => {
+  const e = env(), tok = await addAccount(e), fresh = addJob(e, 1, "fresh"), paused = addJob(e, 1, "paused", undefined, { last_run_at: 1, last_status: 200 });
+  e.DB.sql.prepare("UPDATE jobs SET enabled = 0 WHERE id = ?").run(paused);
+  const c = await mkPage(e, tok, { slug: "states" });
+  for (const [id, l] of [[fresh, "Fresh"], [paused, "Paused"]]) await call(e, `/api/status-pages/${c.id}/monitors`, { method: "POST", token: tok, body: { job_id: id, label: l } });
+  const j = await (await call(e, "/api/public/status/states")).json();
+  assert.deepEqual(j.monitors.map((m) => m.state), ["unknown", "paused"]); assert.equal(j.overall, "unknown");
+});
+
+test("public status: a disabled, blocked or deleted page returns 404 and the owner cannot undo a block", async () => {
+  const e = env(), tok = await addAccount(e), c = await mkPage(e, tok, { slug: "gone-soon" });
+  assert.equal((await call(e, "/s/gone-soon")).status, 200);
+  await call(e, `/api/status-pages/${c.id}`, { method: "PATCH", token: tok, body: { enabled: false } });
+  assert.equal((await call(e, "/s/gone-soon")).status, 404); assert.equal((await call(e, "/api/public/status/gone-soon")).status, 404);
+  await call(e, `/api/status-pages/${c.id}`, { method: "PATCH", token: tok, body: { enabled: true } });
+  assert.equal((await call(e, "/s/gone-soon")).status, 200);
+  const adm = (blocked, key = "adminkey") => call(e, "/api/admin/status-page", { method: "POST", body: { slug: "gone-soon", blocked }, headers: { Authorization: "Bearer " + key } });
+  assert.equal((await adm(true, "wrong")).status, 401);
+  assert.equal((await adm(true)).status, 200);
+  assert.equal((await call(e, "/s/gone-soon")).status, 404);
+  assert.equal((await call(e, `/api/status-pages/${c.id}`, { method: "PATCH", token: tok, body: { enabled: true } })).status, 403);
+  assert.equal((await call(e, "/s/gone-soon")).status, 404);
+  await adm(false);
+  assert.equal((await call(e, "/s/gone-soon")).status, 200);   // unblocked by the service owner: the owner's own enabled flag (true) applies again
+});
+
+test("status pages: deleting a cron removes it from pages, deleting the account removes pages", async () => {
+  const e = env(), tok = await addAccount(e), id = addJob(e, 1, "j"), c = await mkPage(e, tok, { slug: "cascade" });
+  await call(e, `/api/status-pages/${c.id}/monitors`, { method: "POST", token: tok, body: { job_id: id, label: "A" } });
+  await call(e, `/api/jobs/${id}`, { method: "DELETE", token: tok });
+  assert.equal(e.DB.sql.prepare("SELECT COUNT(*) AS n FROM status_page_jobs").get().n, 0);
+  await call(e, "/api/me", { method: "DELETE", token: tok });
+  assert.equal(e.DB.sql.prepare("SELECT COUNT(*) AS n FROM status_pages").get().n, 0);
+  assert.equal((await call(e, "/s/cascade")).status, 404);
+});
+
+test("page: status view has the create form and page list, built without innerHTML, and no longer says coming soon", async () => {
+  const html = await (await call(env(), "/")).text();
+  for (const id of ["spTitle", "spSlug", "tsPage", "spAdd", "pages"]) assert.ok(html.includes(`id="${id}"`), id);
+  assert.ok(html.includes('"/api/status-pages"') && html.includes("loadPages") && html.includes("Add to page"));
+  const view = html.slice(html.indexOf('id="v-status"'), html.indexOf('id="v-stats"'));
+  assert.ok(!view.includes("Coming soon"));
+  assert.ok(!/Status pages<\/span><em class="chip soon"/.test(html));
+  assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
 });

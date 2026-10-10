@@ -80,3 +80,47 @@ test("csrf check", () => {
   assert.ok(!L.sameOriginOk(req({ "X-FreeCron": "1", Origin: "https://evil.dev" }), url));
   assert.ok(!L.sameOriginOk(req({}), url));
 });
+
+test("tally: enabled, disabled, ok and failed for the dashboard tiles", () => {
+  assert.deepEqual(L.tally([]), { enabled: 0, disabled: 0, ok: 0, failed: 0 });
+  const jobs = [
+    { enabled: true, over_limit: false, last_run_at: 1, last_status: 200 },   // ok
+    { enabled: true, over_limit: false, last_run_at: 1, last_status: 301 },   // 3xx counts as ok
+    { enabled: true, over_limit: false, last_run_at: 1, last_status: 500 },   // failed
+    { enabled: true, over_limit: false, last_run_at: 1, last_status: 0 },     // timeout = failed
+    { enabled: false, over_limit: false, last_run_at: 0, last_status: null }, // paused, never ran
+    { enabled: true, over_limit: true, last_run_at: 0, last_status: null },   // over the free limit = disabled
+    { enabled: true, over_limit: false, last_run_at: 0, last_status: null },  // new, never ran: neither ok nor failed
+  ];
+  assert.deepEqual(L.tally(jobs), { enabled: 5, disabled: 2, ok: 2, failed: 2 });
+});
+
+test("runsLimit: default 50, minimum 1, maximum 100", () => {
+  assert.equal(L.runsLimit(null), 50); assert.equal(L.runsLimit(undefined), 50); assert.equal(L.runsLimit("abc"), 50);
+  assert.equal(L.runsLimit("0"), 50); assert.equal(L.runsLimit("-5"), 50);
+  assert.equal(L.runsLimit("1"), 1); assert.equal(L.runsLimit("100"), 100); assert.equal(L.runsLimit("101"), 100); assert.equal(L.runsLimit("99999"), 100);
+});
+
+test("statsWindow: aligned buckets, hourly for 24h and daily for 7d and 30d, unknown ranges refused", () => {
+  const now = Date.UTC(2026, 9, 10, 15, 42, 7);
+  const h = L.statsWindow("24h", now);
+  assert.equal(h.size, 3600000); assert.equal(h.buckets, 24);
+  assert.equal(h.from, Date.UTC(2026, 9, 9, 16)); assert.equal(h.to, Date.UTC(2026, 9, 10, 16));
+  const d = L.statsWindow("7d", now);
+  assert.equal(d.size, 86400000); assert.equal(d.from, Date.UTC(2026, 9, 4)); assert.equal(d.to, Date.UTC(2026, 9, 11));
+  assert.equal(L.statsWindow("30d", now).buckets, 30);
+  for (const bad of ["", "1y", "toString", "__proto__", null, undefined]) assert.equal(L.statsWindow(bad, now), null);
+});
+
+test("buildStats: fills empty buckets, rounds rates, and is all zeros and nulls with no runs", () => {
+  const now = Date.UTC(2026, 9, 10, 15, 0, 0), w = L.statsWindow("24h", now);
+  const empty = L.buildStats("24h", now, { runs: 0, ok: null, avg_ms: null }, [], []);
+  assert.equal(empty.series.length, 24);
+  assert.deepEqual(empty.totals, { runs: 0, ok: 0, failed: 0, success_rate: null, avg_ms: null });
+  assert.ok(empty.series.every((p) => p.runs === 0 && p.avg_ms === null));
+  const s = L.buildStats("24h", now, { runs: 3, ok: 2, avg_ms: 100.4 }, [{ b: w.from + 3600000, runs: 3, ok: 2, avg_ms: 100.4 }], [{ id: 1, name: "a", runs: 3, ok: 2, avg_ms: 100.4 }, { id: 2, name: "b", runs: 0, ok: null, avg_ms: null }]);
+  assert.deepEqual(s.totals, { runs: 3, ok: 2, failed: 1, success_rate: 66.7, avg_ms: 100 });
+  assert.deepEqual(s.series[1], { t: w.from + 3600000, runs: 3, ok: 2, failed: 1, avg_ms: 100 });
+  assert.equal(s.series[0].runs, 0);
+  assert.deepEqual(s.jobs.map((j) => j.success_rate), [66.7, null]);
+});

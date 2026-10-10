@@ -73,6 +73,51 @@ export function classify(status) {      // redirects are never followed; a 2xx/3
   return Number.isInteger(status) && status >= 200 && status < 400;
 }
 
+// ---- run history ----
+export const KEEP_DAYS_FREE = 7, KEEP_DAYS_PREMIUM = 30;   // how long run rows are kept
+export const PRUNE_BATCH = 500;                             // rows removed per prune (bounded so it can't blow the time budget)
+export function runsLimit(raw) {                            // ?limit= for the history API: default 50, 1 to 100
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, 100) : 50;
+}
+
+// ---- statistics ----
+export const RANGES = { "24h": { buckets: 24, size: 3600000 }, "7d": { buckets: 7, size: 86400000 }, "30d": { buckets: 30, size: 86400000 } };   // hourly for 24h, daily otherwise
+export function statsWindow(range, now) {                   // buckets are aligned to the UTC hour or day; the last one holds "now"
+  const r = Object.hasOwn(RANGES, range) ? RANGES[range] : null;
+  if (!r) return null;
+  const last = Math.floor(now / r.size) * r.size;
+  return { size: r.size, buckets: r.buckets, from: last - (r.buckets - 1) * r.size, to: last + r.size };
+}
+const rate = (ok, runs) => (runs ? Math.round((ok / runs) * 1000) / 10 : null);   // percent with one decimal
+const avg = (v) => (v == null ? null : Math.round(v));
+/** Shape the three SQL aggregates into the API answer. avg_ms is over successful runs only, so timeouts don't spike the chart. */
+export function buildStats(range, now, totals, seriesRows, jobRows) {
+  const w = statsWindow(range, now), by = new Map(seriesRows.map((r) => [Number(r.b), r]));
+  const runs = Number(totals?.runs) || 0, ok = Number(totals?.ok) || 0;
+  const series = [];
+  for (let i = 0; i < w.buckets; i++) {
+    const t = w.from + i * w.size, r = by.get(t), n = Number(r?.runs) || 0, g = Number(r?.ok) || 0;
+    series.push({ t, runs: n, ok: g, failed: n - g, avg_ms: avg(r?.avg_ms) });
+  }
+  return {
+    range, bucket_ms: w.size, from: w.from, to: w.to,
+    totals: { runs, ok, failed: runs - ok, success_rate: rate(ok, runs), avg_ms: avg(totals?.avg_ms) },
+    series,
+    jobs: jobRows.map((j) => ({ id: j.id, name: j.name, runs: Number(j.runs) || 0, ok: Number(j.ok) || 0, success_rate: rate(Number(j.ok) || 0, Number(j.runs) || 0), avg_ms: avg(j.avg_ms) })),
+  };
+}
+
+// Dashboard tiles. enabled = switched on and inside the plan limit; ok/failed = based on each cron's last run (never-run crons count as neither).
+export function tally(jobs) {
+  const t = { enabled: 0, disabled: 0, ok: 0, failed: 0 };
+  for (const j of jobs) {
+    if (j.enabled && !j.over_limit) t.enabled++; else t.disabled++;
+    if (j.last_run_at) { if (classify(j.last_status)) t.ok++; else t.failed++; }
+  }
+  return t;
+}
+
 // ---- signed session cookie (HMAC-SHA256, base64url) ----
 const enc = new TextEncoder();
 const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -149,4 +194,45 @@ export function judgeLicense(resp, productId) {
   if (p.refunded || p.chargebacked || (p.disputed && !p.dispute_won)) return bad("That purchase was refunded or disputed.");
   if (p.subscription_ended_at || p.subscription_cancelled_at || p.subscription_failed_at) return bad("That subscription is no longer active.");
   return { ok: true };
+}
+
+// ---- public status pages ----
+export const STATUS_PAGES_FREE = 1, STATUS_PAGES_PREMIUM = 10;          // pages per account
+export const STATUS_MONITORS_FREE = 5, STATUS_MONITORS_PREMIUM = 50;    // crons per page
+export const statusPagesLimit = (account, now) => (isPremium(account, now) ? STATUS_PAGES_PREMIUM : STATUS_PAGES_FREE);
+export const statusMonitorsLimit = (account, now) => (isPremium(account, now) ? STATUS_MONITORS_PREMIUM : STATUS_MONITORS_FREE);
+export const RESERVED_SLUGS = new Set(["api", "auth", "admin", "s", "status", "privacy", "terms", "login", "logout", "signin", "signup", "www", "app", "dashboard", "settings",
+  "help", "support", "about", "static", "assets", "public", "report", "abuse", "root", "me", "stats", "cron", "crons", "free-cron", "freecron", "health", "robots", "sitemap", "favicon"]);
+export function validSlug(s) {
+  return typeof s === "string" && /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/.test(s) && !s.includes("--") && !RESERVED_SLUGS.has(s);
+}
+export function randomSlug() {                                   // 20 hex chars: unguessable, and never a reserved word
+  return Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+/** Titles and labels are shown publicly, so keep them plain: no control characters, no link-looking text. Returns {value} or {error}. */
+export function cleanText(raw, what) {
+  if (typeof raw !== "string") return { error: `${what} is required.` };
+  const v = raw.replace(/[\u0000-\u001f\u007f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim();
+  if (!v) return { error: `${what} is required.` };
+  if (v.length > MAX_NAME) return { error: `${what} must be at most ${MAX_NAME} characters.` };
+  if (/:\/\/|www\./i.test(v)) return { error: `${what} can't contain a link.` };
+  return { value: v };
+}
+const pct = (ok, n) => (n ? Math.round((ok / n) * 1000) / 10 : null);
+/** Uptime windows we may show. Free accounts keep only 7 days of runs, so a 30-day number would be fake: it is left out. */
+export function statusWindows(premium) { return premium ? ["24h", "7d", "30d"] : ["24h", "7d"]; }
+/** Shape the public answer. Only the label, state, uptime and last-checked time ever leave the server. */
+export function buildPublicStatus(page, monitors, usage, premium, now) {
+  const wins = statusWindows(premium), by = new Map(usage.map((u) => [Number(u.job_id), u]));
+  const out = monitors.map((m) => {
+    const u = by.get(Number(m.job_id)) || {}, uptime = {};
+    for (const w of wins) uptime[w] = pct(Number(u["ok_" + w]) || 0, Number(u["n_" + w]) || 0);
+    let state = "unknown";
+    if (!m.enabled) state = "paused";
+    else if (m.last_run_at) state = classify(m.last_status) ? "up" : "down";
+    return { label: m.label, state, uptime, last_checked_at: m.last_run_at || null };
+  });
+  const live = out.filter((m) => m.state === "up" || m.state === "down");
+  const overall = !live.length ? "unknown" : live.every((m) => m.state === "up") ? "up" : live.every((m) => m.state === "down") ? "down" : "degraded";
+  return { title: page.title, overall, windows: wins, retention_days: premium ? KEEP_DAYS_PREMIUM : KEEP_DAYS_FREE, updated_at: now, monitors: out };
 }

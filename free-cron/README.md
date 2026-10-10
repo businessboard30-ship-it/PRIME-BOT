@@ -1,6 +1,6 @@
 # free-cron
 
-A standalone, public cron service on Cloudflare Workers + D1. It is **separate from the bot and from `cron-worker/`**.
+A standalone, public cron service on Cloudflare Workers + D1. It has its own Worker and database.
 
 - Sign in with **GitHub** (public id + username only, no scope). Cloudflare **Turnstile** guards sign-in and every create.
 - **5 free crons** per account, minimum interval 15 minutes. **Premium: unlimited**, minimum 5 minutes.
@@ -35,3 +35,12 @@ curl -X POST https://<host>/api/admin/premium -H "Authorization: Bearer $ADMIN_K
 
 ## Develop
 `cd free-cron && npm test` (Node 22+, uses the built-in SQLite as a stand-in for D1).
+
+## Status pages
+
+A signed-in user can publish up to 1 page (Premium 10) listing up to 5 crons (Premium 50) under labels they choose.
+Public routes need no login: `GET /s/:slug` (HTML, no script) and `GET /api/public/status/:slug` (JSON). Both show only the label, up or down,
+uptime for 24 h and 7 d (30 d for Premium only, because free accounts keep 7 days of runs) and the last-checked time. Never a URL, method, body or status text.
+Slugs are random by default. Pages are `noindex`, cached for 60 s, and 404 when switched off or blocked.
+Block a page fast (abuse): `POST /api/admin/status-page` with `Authorization: Bearer <ADMIN_KEY>` and `{"slug":"...","blocked":true}`.
+Set `CONTACT_URL` (https or mailto) in `wrangler.toml` to show a contact on the legal pages and a "Report this page" link on status pages.
