@@ -171,7 +171,7 @@ async def _save_option(guild_id: int, clone_id, user_id=None, **changes) -> None
 _BANNER_LABELS = {"bottom": "Bottom banner (classic)", "top": "Top banner", "none": "No banner (text over image)"}
 _DIM_LABELS = {"light": "Light — see more of your image", "medium": "Medium (default)", "heavy": "Heavy — best text contrast"}
 _SIDE_LABELS = {"left": "Avatar on the left (classic)", "right": "Avatar on the right"}
-_COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red"}
+_COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red", "avatar": "Match my avatar (each member differs)"}
 
 
 def _status_lines(config: dict, opts: dict, unlocked: bool = True) -> list:
@@ -199,6 +199,7 @@ def _status_lines(config: dict, opts: dict, unlocked: bool = True) -> list:
         f"📐 **Banner:** {opts['banner']} · darkness {opts['dim']}",
         f"🧑 **Avatar:** {opts['avatar_side']} side · {vw.AVATAR_SHAPE_LABELS.get(shape, shape).split(' — ')[0].lower()} frame",
         f"🎨 **Text color:** {opts['text_color']}",
+        "✨ **Extras:** " + (", ".join(_STYLE_EXTRAS[k][0].lower() for k in _STYLE_EXTRAS if opts.get(k)) or "none"),
         f"✍️ **Heading:** {heading}",
         f"🔢 **Member number:** {'shown' if opts['show_number'] else 'hidden'}",
         "-# Tap **Preview** to see the real card. Changes apply to the next welcome.",
@@ -217,7 +218,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict) -> d
     container.add_item(discord.ui.TextDisplay("\n".join(_status_lines(config, opts, unlocked))))
     container.add_item(discord.ui.Separator())
 
-    for select_cls in (CardBannerSelect, CardDimSelect, CardSideSelect, CardShapeSelect, CardColorSelect):
+    for select_cls in (CardBannerSelect, CardDimSelect, CardSideSelect, CardShapeSelect, CardColorSelect, CardStyleSelect):
         row = discord.ui.ActionRow()
         row.add_item(select_cls(guild_id, clone_id, invoker_id, config))
         container.add_item(row)
@@ -352,6 +353,47 @@ class CardSideSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Selec
 
 class CardColorSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("color")):
     FIELD, ID, PLACEHOLDER, CHOICES = "text_color", "color", "Text color", _COLOR_LABELS
+
+
+_STYLE_EXTRAS = {
+    "ring": ("Avatar ring", "Colored frame around the avatar"),
+    "soft_edge": ("Soft banner edge", "Banner fades into your image"),
+    "shadow": ("Text shadow", "Soft shadow so text pops on busy images"),
+    "big_name": ("Large username", "Bigger name, smaller heading emphasis"),
+}
+
+
+class CardStyleSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("style")):
+    """Optional extras (multi-select, all off by default). Selecting nothing
+    turns them all off."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        opts = parse_ultra_options(config.get("ultra_card_json"))
+        super().__init__(discord.ui.Select(
+            placeholder="Style extras (optional)", min_values=0, max_values=len(_STYLE_EXTRAS),
+            options=[
+                discord.SelectOption(label=lbl, description=desc, value=key, default=bool(opts.get(key)))
+                for key, (lbl, desc) in _STYLE_EXTRAS.items()
+            ],
+            custom_id=_encode("style", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        g, c, i = _decode(match)
+        return cls(g, c, i, {})
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        chosen = set(self.item.values)
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id,
+                           **{k: (k in chosen) for k in _STYLE_EXTRAS})
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
 class CardShapeSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("shape")):
@@ -694,7 +736,7 @@ class CardDoneButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_
 
 
 DYNAMIC_ITEMS = (
-    CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect,
+    CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect, CardStyleSelect,
     CardBackgroundButton, CardClearBackgroundButton, CardUnlockButton,
     CardHeadingButton, CardNumberToggleButton, CardResetButton, CardPreviewButton, CardDoneButton,
 )

@@ -38,7 +38,7 @@ import os
 import re
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont, ImageSequence
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageSequence
 
 logger = logging.getLogger(__name__)
 
@@ -469,7 +469,15 @@ ULTRA_DEFAULTS = {
     "text_color": "white",     # key of ULTRA_TEXT_COLORS
     "heading": "",             # custom line; blank = "Welcome to {guild}!"
     "show_number": True,       # the "MEMBER #N" line
+    # Optional style extras — all OFF by default so an untouched card keeps
+    # the classic look; the wizard's "Style extras" menu turns them on.
+    "ring": False,             # colored frame around the avatar
+    "soft_edge": False,        # banner fades into the image instead of a hard edge
+    "shadow": False,           # soft shadow under the text
+    "big_name": False,         # larger username
 }
+ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name")
+ULTRA_AVATAR_COLOR = "avatar"  # text_color value: use the avatar's dominant color
 ULTRA_BANNERS = ("bottom", "top", "none")
 ULTRA_DIM_ALPHA = {"light": 100, "medium": 165, "heavy": 225}
 ULTRA_AVATAR_SIDES = ("left", "right")
@@ -502,13 +510,41 @@ def parse_ultra_options(raw) -> dict:
         opts["dim"] = raw["dim"]
     if raw.get("avatar_side") in ULTRA_AVATAR_SIDES:
         opts["avatar_side"] = raw["avatar_side"]
-    if raw.get("text_color") in ULTRA_TEXT_COLORS:
+    if raw.get("text_color") in ULTRA_TEXT_COLORS or raw.get("text_color") == ULTRA_AVATAR_COLOR:
         opts["text_color"] = raw["text_color"]
+    for k in ULTRA_BOOL_KEYS:
+        if isinstance(raw.get(k), bool):
+            opts[k] = raw[k]
     if isinstance(raw.get("heading"), str):
         opts["heading"] = raw["heading"].strip()[:ULTRA_HEADING_MAX]
     if isinstance(raw.get("show_number"), bool):
         opts["show_number"] = raw["show_number"]
     return opts
+
+
+def _avatar_dominant_color(avatar: Image.Image) -> tuple:
+    """A readable accent taken from the avatar: average of its mid-bright,
+    reasonably saturated pixels, lifted so it stays legible on a dark banner.
+    Falls back to white if the avatar is flat/gray."""
+    try:
+        small = avatar.convert("RGB").resize((32, 32))
+        picks = []
+        for r, g, b in small.getdata():
+            mx, mn = max(r, g, b), min(r, g, b)
+            if mx > 60 and (mx - mn) > 40:
+                picks.append((r, g, b))
+        if not picks:
+            return (255, 255, 255)
+        r = sum(c[0] for c in picks) // len(picks)
+        g = sum(c[1] for c in picks) // len(picks)
+        b = sum(c[2] for c in picks) // len(picks)
+        lum = 0.299 * r + 0.587 * g + 0.114 * b
+        if lum < 170:
+            lift = (170 - lum) / max(1.0, 255 - lum)
+            r, g, b = (int(c + (255 - c) * lift) for c in (r, g, b))
+        return (r, g, b)
+    except Exception:
+        return (255, 255, 255)
 
 
 def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
@@ -570,9 +606,17 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         # Real alpha blend (drawing an RGBA rectangle straight onto an RGBA
         # image overwrites pixels, which came out fully opaque black).
         banner = Image.new("RGBA", bg.size, (0, 0, 0, 0))
-        ImageDraw.Draw(banner).rectangle(
-            (0, band_top, TEMPLATE_WIDTH, band_bottom), fill=(0, 0, 0, ULTRA_DIM_ALPHA[opts["dim"]])
-        )
+        banner_alpha = ULTRA_DIM_ALPHA[opts["dim"]]
+        bd = ImageDraw.Draw(banner)
+        if opts["soft_edge"]:
+            # Fade the banner's inner edge over ~90px instead of a hard line.
+            fade = 90
+            for i in range(fade):
+                a = int(banner_alpha * (i + 1) / fade)
+                y = (band_top - fade + i) if opts["banner"] != "top" else (band_bottom + fade - 1 - i)
+                if 0 <= y < TEMPLATE_HEIGHT:
+                    bd.line((0, y, TEMPLATE_WIDTH, y), fill=(0, 0, 0, a))
+        bd.rectangle((0, band_top, TEMPLATE_WIDTH, band_bottom), fill=(0, 0, 0, banner_alpha))
         bg = Image.alpha_composite(bg, banner)
     draw = ImageDraw.Draw(bg)
 
@@ -600,27 +644,52 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         avatar_x = 60
         text_x = avatar_x + avatar_dim + 40
         text_box_width = TEMPLATE_WIDTH - text_x - 60
-    bg.paste(avatar, (avatar_x, avatar_y), mask)
+    if opts["text_color"] == ULTRA_AVATAR_COLOR:
+        color = _avatar_dominant_color(avatar)
+    else:
+        color = ULTRA_TEXT_COLORS[opts["text_color"]]
 
-    color = ULTRA_TEXT_COLORS[opts["text_color"]]
-    if opts["show_number"]:
-        draw.text((text_x, band_top + 24), _extract_member_number(subtitle),
-                   font=_load_font(26), fill=(190, 190, 190), stroke_width=stroke, stroke_fill=(0, 0, 0))
-    username_size, username_text = _fit_text_fallback(
-        draw, username, text_box_width, max_font_size=52, min_font_size=22
-    )
-    _draw_text_fb(draw, (text_x, band_top + 62), username_text, username_size, color,
-                   stroke_width=stroke, stroke_fill=(0, 0, 0))
+    if opts["ring"]:
+        ring_w = 8
+        big = avatar_dim + ring_w * 2
+        ring_mask = Image.new("L", (big, big), 0)
+        shape_fn(ImageDraw.Draw(ring_mask), (0, 0, big, big), 255)
+        bg.paste(Image.new("RGBA", (big, big), color + (255,)),
+                 (avatar_x - ring_w, avatar_y - ring_w), ring_mask)
+    bg.paste(avatar, (avatar_x, avatar_y), mask)
 
     heading = opts["heading"]
     if heading:
         heading = heading.replace("{guild}", guild_name or "").replace("{member}", username)
     elif guild_name:
         heading = f"Welcome to {guild_name}!"
+
+    name_max = 72 if opts["big_name"] else 52
+    username_size, username_text = _fit_text_fallback(
+        draw, username, text_box_width, max_font_size=name_max, min_font_size=22
+    )
     if heading:
         guild_size, guild_text = _fit_text_fallback(draw, heading, text_box_width, max_font_size=28, min_font_size=14)
-        _draw_text_fb(draw, (text_x, band_bottom - 50), guild_text, guild_size, color,
-                       stroke_width=stroke, stroke_fill=(0, 0, 0))
+
+    def _draw_texts(d, col, scol, off=(0, 0), st=0):
+        ox, oy = off
+        if opts["show_number"]:
+            d.text((text_x + ox, band_top + 24 + oy), _extract_member_number(subtitle),
+                   font=_load_font(26), fill=col if scol else (190, 190, 190),
+                   stroke_width=st, stroke_fill=(0, 0, 0))
+        _draw_text_fb(d, (text_x + ox, band_top + 62 + oy), username_text, username_size,
+                      col, stroke_width=st, stroke_fill=(0, 0, 0))
+        if heading:
+            _draw_text_fb(d, (text_x + ox, band_bottom - 50 + oy), guild_text, guild_size,
+                          col, stroke_width=st, stroke_fill=(0, 0, 0))
+
+    if opts["shadow"]:
+        layer = Image.new("RGBA", bg.size, (0, 0, 0, 0))
+        _draw_texts(ImageDraw.Draw(layer), (0, 0, 0, 235), True, off=(3, 4))
+        layer = layer.filter(ImageFilter.GaussianBlur(4))
+        bg = Image.alpha_composite(bg, layer)
+        draw = ImageDraw.Draw(bg)
+    _draw_texts(draw, color, False, st=stroke)
 
     return bg
 
