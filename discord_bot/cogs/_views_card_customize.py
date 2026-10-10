@@ -46,6 +46,7 @@ _views_welcome imports THIS module only lazily inside a callback.
 
 import asyncio
 import io
+import secrets
 import json
 import logging
 import re
@@ -229,6 +230,7 @@ _TAB_LABELS = {"bg": "\U0001F5BC\uFE0F Background", "layout": "\U0001F4D0 Layout
 _TAB_TTL = 30 * 60
 _STATE_MAX = 1000
 _TAB_STATE: dict = {}        # (guild, clone, user) -> (tab, monotonic ts)
+_TV_STATE: dict = {}         # same key -> filename of the picture now on the editor message (None = no picture)
 _TV_NOTES: dict = {}         # same key -> caption note from the last render
 _GEN: dict = {}              # same key -> latest redraw request number (batches quick taps)
 _LOCKS: dict = {}            # same key -> asyncio.Lock (one render at a time per editor)
@@ -283,7 +285,7 @@ def _caption(unlocked: bool, note, tv_ok: bool, config=None) -> str:
 
 
 def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab: str = "bg",
-                         has_tv: bool = False, note=None) -> discord.ui.LayoutView:
+                         has_tv: bool = False, note=None, tv_name: str = "card.png") -> discord.ui.LayoutView:
     unlocked = bool(config.get("ultra_pack_unlocked"))
     raw_config = config
     config = _effective_config(config, guild_id, clone_id, invoker_id)
@@ -296,7 +298,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
     container.add_item(discord.ui.TextDisplay(_caption(unlocked, note, has_tv, raw_config)))
     if has_tv:
-        container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://card.png")))
+        container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{tv_name}")))
     container.add_item(discord.ui.Separator())
 
     preset_row = discord.ui.ActionRow()
@@ -407,12 +409,18 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user):
         ultra_options=cfg.get("ultra_card_json"),
     )
     png = await asyncio.to_thread(_tv_finish, card_bytes, not unlocked)
-    note = "Sample backdrop \u2014 set a background to use your own image" if using_sample else "Your background"
+    note = "Sample backdrop \u2014 tap Upload image to use your own" if using_sample else "Your background"
     return png, note
 
 
-def _tv_file(png: bytes) -> discord.File:
-    return discord.File(fp=io.BytesIO(png), filename="card.png")
+def _new_tv_name() -> str:
+    """A fresh file name for every picture. Re-uploading a second file called card.png while the first is still on the
+    message makes the picture blink out; a unique name per render can't be confused with the one being replaced."""
+    return f"card-{secrets.token_hex(3)}.png"
+
+
+def _tv_file(png: bytes, name: str = "card.png") -> discord.File:
+    return discord.File(fp=io.BytesIO(png), filename=name)
 
 
 async def open_customize_wizard(interaction: discord.Interaction, guild_id: int, clone_id) -> None:
@@ -442,11 +450,14 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
         tv = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(guild_id),
                               guild_id, clone_id, interaction.user)
     except Exception as e:
-        logger.warning(f"[cardwz] first preview failed for guild {guild_id}: {e}")
+        logger.warning(f"[cardwz] first preview failed for guild {guild_id}: {type(e).__name__}: {e}", exc_info=True)
+    tv_name = _new_tv_name() if tv else None
+    _TV_STATE[key] = tv_name
+    _trim(_TV_STATE, _STATE_MAX)
     _TV_NOTES[key] = tv[1] if tv else None
     _trim(_TV_NOTES, _STATE_MAX)
     view = build_customize_view(guild_id, clone_id, interaction.user.id, config, tab="bg",
-                                has_tv=tv is not None, note=_TV_NOTES[key])
+                                has_tv=tv is not None, note=_TV_NOTES[key], tv_name=tv_name or "card.png")
     if trial_started:
         await interaction.followup.send(
             f"\U0001F381 **You have a free 5-day trial of Customize Card!** Design it and it goes live on every "
@@ -454,7 +465,7 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
             ephemeral=True,
         )
     if tv:
-        await interaction.followup.send(view=view, file=_tv_file(tv[0]), ephemeral=True)
+        await interaction.followup.send(view=view, file=_tv_file(tv[0], tv_name), ephemeral=True)
     else:
         await interaction.followup.send(view=view, ephemeral=True)
 
@@ -491,15 +502,26 @@ async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, i
             tv = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(guild_id),
                                   guild_id, clone_id, interaction.user)
         except Exception as e:
-            logger.warning(f"[cardwz] preview failed for guild {guild_id}: {e}")
-        _TV_NOTES[key] = tv[1] if tv else None
-        _trim(_TV_NOTES, _STATE_MAX)
-        view = build_customize_view(guild_id, clone_id, invoker_id, config, tab=_get_tab(key),
-                                    has_tv=tv is not None, note=_TV_NOTES[key])
+            logger.warning(f"[cardwz] preview failed for guild {guild_id}: {type(e).__name__}: {e}", exc_info=True)
+        tab = _get_tab(key)
         if tv:
-            await interaction.edit_original_response(view=view, attachments=[_tv_file(tv[0])])
+            name = _new_tv_name()
+            _TV_NOTES[key] = tv[1]
+            view = build_customize_view(guild_id, clone_id, invoker_id, config, tab=tab, has_tv=True, note=tv[1], tv_name=name)
+            await interaction.edit_original_response(view=view, attachments=[_tv_file(tv[0], name)])
+            _TV_STATE[key] = name                   # only after Discord accepted the edit
         else:
-            await interaction.edit_original_response(view=view, attachments=[])
+            keep = _TV_STATE.get(key)               # a failed redraw must not wipe the picture that is already there
+            note = "Couldn't refresh the preview just now. Your change is saved; tap anything to try again." if keep else None
+            _TV_NOTES[key] = note
+            view = build_customize_view(guild_id, clone_id, invoker_id, config, tab=tab, has_tv=bool(keep), note=note,
+                                        tv_name=keep or "card.png")
+            if keep:
+                await interaction.edit_original_response(view=view)              # attachments untouched: the old picture stays
+            else:
+                await interaction.edit_original_response(view=view, attachments=[])
+        _trim(_TV_NOTES, _STATE_MAX)
+        _trim(_TV_STATE, _STATE_MAX)
     _refresh_public_wizard(interaction.client, guild_id, clone_id)
 
 
@@ -749,7 +771,7 @@ class _Btn:
 
 
 class CardBackgroundButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("setbg")):
-    FIELD, LABEL, STYLE = "setbg", "🖼️ Set background", discord.ButtonStyle.success
+    FIELD, LABEL, STYLE = "setbg", "🖼️ Upload image", discord.ButtonStyle.success
 
     async def callback(self, interaction: discord.Interaction):
         if not await _check_access(interaction, self.invoker_id, self.guild_id):
@@ -990,10 +1012,13 @@ class CardTabButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cardw
         key = _draft_key(self.guild_id, self.clone_id, interaction.user.id)
         _set_tab(key, self.tab)
         config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
-        msg = interaction.message
-        has_tv = bool(msg and any(a.filename == "card.png" for a in msg.attachments))
+        name = _TV_STATE.get(key)
+        if name is None and key not in _TV_STATE:        # state lost (bot restarted): fall back to what is on the message
+            msg = interaction.message
+            name = next((a.filename for a in (msg.attachments if msg else []) if a.filename.startswith("card") and a.filename.endswith(".png")), None)
         await interaction.edit_original_response(view=build_customize_view(
-            self.guild_id, self.clone_id, self.invoker_id, config, tab=self.tab, has_tv=has_tv, note=_TV_NOTES.get(key)))
+            self.guild_id, self.clone_id, self.invoker_id, config, tab=self.tab, has_tv=bool(name), note=_TV_NOTES.get(key),
+            tv_name=name or "card.png"))
 
 
 DYNAMIC_ITEMS = (
