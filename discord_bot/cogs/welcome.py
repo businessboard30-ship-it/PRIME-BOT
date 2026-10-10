@@ -499,12 +499,14 @@ class WelcomeCog(GuildOnlyCog):
         self._announce_card_features.start()
         self._announce_spider_pro.start()
         self._expire_card_trials.start()
+        self._expire_ultra_trials.start()
 
     async def cog_unload(self):
         self._nudge_owners.cancel()
         self._announce_card_features.cancel()
         self._announce_spider_pro.cancel()
         self._expire_card_trials.cancel()
+        self._expire_ultra_trials.cancel()
 
     def _is_duplicate_join(self, member: discord.Member) -> bool:
         """Check if this join event was already processed recently (within 3 seconds).
@@ -641,7 +643,7 @@ class WelcomeCog(GuildOnlyCog):
             guild_id = int(custom_id.split(":", 1)[1])
             clone_id = getattr(self.bot, "clone_id", None)
             config = await db.get_welcome_config(guild_id, clone_id=clone_id)
-            if config.get("ultra_pack_unlocked"):
+            if config.get("ultra_pack_unlocked") and not config.get("ultra_trial_active"):
                 await interaction.response.send_message(
                     "This server already owns Customize Card — set your background with `/welcome custombg`.",
                     ephemeral=True,
@@ -1011,6 +1013,60 @@ class WelcomeCog(GuildOnlyCog):
                 logger.error(f"[v0] Card-trial expiry mod-logs fallback failed for guild {guild_id}: {e}")
 
         await refresh_posted_wizard(self.bot, guild_id, clone_id)
+
+    @tasks.loop(hours=6)
+    async def _expire_ultra_trials(self):
+        """Tells the admin who started a Customize Card trial that it ended.
+        The fallback itself needs no work: get_welcome_config stops
+        overlaying ultra_pack_unlocked, so joins render the server's normal
+        configured card again."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        try:
+            due = await db.get_due_ultra_trial_expirations(clone_id)
+        except Exception as e:
+            logger.error(f"[v0] Failed to fetch due ultra-trial expirations: {e}")
+            return
+        for row in due:
+            guild_id = row["guild_id"]
+            try:
+                await db.mark_ultra_trial_notified(guild_id, clone_id)
+            except Exception as e:
+                logger.error(f"[v0] Couldn't mark ultra trial notified for guild {guild_id}: {e}")
+                continue
+            if row.get("ultra_pack_unlocked"):
+                continue  # bought it meanwhile, nothing to announce
+            guild = self.bot.get_guild(guild_id)
+            admin_id = row.get("ultra_trial_admin_id")
+            message = (
+                f"👋 Your free 5-day **Customize Card** trial in **{guild.name if guild else 'your server'}** just ended, "
+                f"so welcomes are back to your server's normal card. Your custom design is saved — "
+                f"run `/welcome buyultra` to unlock it for good (${bot_config.ULTRA_PACK_FEE_USD:g}, one-time)."
+            )
+            sent = False
+            if admin_id:
+                try:
+                    user = self.bot.get_user(admin_id) or await self.bot.fetch_user(admin_id)
+                    await user.send(message)
+                    sent = True
+                except Exception as e:
+                    logger.info(f"[v0] Ultra-trial expiry DM failed for {admin_id} (guild {guild_id}): {e}")
+            if not sent and guild is not None:
+                try:
+                    am = await db.get_automod_config(guild_id, clone_id=clone_id)
+                    ch_id = am.get("log_channel_id")
+                    ch = guild.get_channel(int(ch_id)) if ch_id else None
+                    if ch is not None:
+                        await ch.send(f"{f'<@{admin_id}> ' if admin_id else ''}{message}")
+                except Exception as e:
+                    logger.error(f"[v0] Ultra-trial mod-logs fallback failed for guild {guild_id}: {e}")
+            try:
+                await refresh_posted_wizard(self.bot, guild_id, clone_id)
+            except Exception:
+                pass
+
+    @_expire_ultra_trials.before_loop
+    async def _before_expire_ultra_trials(self):
+        await self.bot.wait_until_ready()
 
     async def _send_card_features_post(self, guild: discord.Guild, config: dict, clone_id: int | None,
                                         sticker_needed: bool, template_needed: bool):
@@ -1478,7 +1534,8 @@ class WelcomeCog(GuildOnlyCog):
         if not config.get("ultra_pack_unlocked"):
             await interaction.followup.send(
                 "Custom backgrounds are part of Customize Card — this server hasn't bought it yet. "
-                "Run `/welcome buyultra` to unlock it for good.",
+                "Open **Customize Card** in `/welcome setup` to start your free 5-day trial, "
+                "or run `/welcome buyultra` to unlock it for good.",
                 ephemeral=True,
             )
             return

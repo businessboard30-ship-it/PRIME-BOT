@@ -157,8 +157,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "73"
+SCHEMA_VERSION = "74"
+# "73" -> "74" adds ultra_trial_started_at, ultra_trial_admin_id and ultra_trial_notified to discord_welcome_config for the one-time 5-day Customize Card trial. ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "72" -> "73" adds auto_bump_enabled, auto_bump_by and auto_bump_checked_at (+ partial index) to bump_listings for Premium Auto Bump (4 bumps a day). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
+ULTRA_TRIAL_DAYS = 5  # free Customize Card trial length per server
 # "71" -> "72" creates dash_visits (one row per web-dashboard user per UTC day, written at most every ~10 minutes per person; kept 90 days; only the owner area reads it). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "70" -> "71" creates dev_jobs (Developer-mode scheduled jobs: reminder / note / AI prompt on allowlisted presets, claimed by the cron worker). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "69" -> "70" adds display_name, avatar_url and show_on_board to dash_web_users (web leaderboard: signed-in members appear by name unless they opt out). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -3378,6 +3380,26 @@ class Database:
         """)
         await conn.execute("""
             ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS card_pack_trial_admin_id BIGINT
+        """)
+
+        # ultra_trial_*: one-time, per-server 5-day free trial of Customize
+        # Card (custom background + layout). Starts the first time an admin
+        # opens the Customize Card wizard on a server that hasn't bought it.
+        #   ultra_trial_started_at: set once, never cleared (it is also the
+        #     "trial already used" flag, so it can't be re-triggered).
+        #   ultra_trial_admin_id: who opened the wizard, for the expiry DM.
+        #   ultra_trial_notified: TRUE once the expiry notice was handled.
+        # While active, get_welcome_config overlays ultra_pack_unlocked=True;
+        # after expiry the overlay stops and welcome rendering falls back to
+        # the server's normal configured card (stored settings are kept).
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS ultra_trial_started_at TIMESTAMPTZ
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS ultra_trial_admin_id BIGINT
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS ultra_trial_notified BOOLEAN NOT NULL DEFAULT FALSE
         """)
 
         # --- bot_global_settings (simple key/value store, bot-wide) --------
@@ -11496,7 +11518,57 @@ class Database:
         if not (cfg.get("card_pack_unlocked") and cfg.get("ultra_pack_unlocked")):
             if await self.is_guild_premium_active(guild_id, clone_id):
                 cfg = dict(cfg, card_pack_unlocked=True, ultra_pack_unlocked=True)
+        # 5-day Customize Card trial overlay (stored flag untouched).
+        if not cfg.get("ultra_pack_unlocked"):
+            started = cfg.get("ultra_trial_started_at")
+            if started is not None:
+                import datetime as _dt
+                ends = started + _dt.timedelta(days=ULTRA_TRIAL_DAYS)
+                if _dt.datetime.now(_dt.timezone.utc) < ends:
+                    cfg = dict(cfg, ultra_pack_unlocked=True, ultra_trial_active=True,
+                               ultra_trial_ends_at=ends)
         return cfg
+
+    async def start_ultra_trial(self, guild_id: int, admin_id: int, clone_id: Optional[int] = None) -> bool:
+        """Starts this server's one-time 5-day Customize Card trial. Returns
+        True only if it was started now (False = already used/owned)."""
+        await self.set_welcome_config(guild_id, clone_id)  # ensure a row exists
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.execute(
+                "UPDATE discord_welcome_config SET ultra_trial_started_at = NOW(), "
+                "ultra_trial_admin_id = $3, ultra_trial_notified = FALSE, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "AND ultra_trial_started_at IS NULL AND ultra_pack_unlocked = FALSE",
+                guild_id, clone_id, admin_id,
+            )
+            return r.endswith(" 1")
+
+    async def get_due_ultra_trial_expirations(self, clone_id: Optional[int], limit: int = 50) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT guild_id, clone_id, ultra_trial_admin_id, ultra_pack_unlocked
+                FROM discord_welcome_config
+                WHERE ultra_trial_started_at IS NOT NULL
+                AND ultra_trial_notified = FALSE
+                AND NOW() - ultra_trial_started_at >= ($3 || ' days')::INTERVAL
+                AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                LIMIT $2
+                """,
+                clone_id, limit, str(ULTRA_TRIAL_DAYS),
+            )
+            return [dict(r) for r in rows]
+
+    async def mark_ultra_trial_notified(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_welcome_config SET ultra_trial_notified = TRUE "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
 
     async def _get_welcome_config_raw(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
@@ -11531,6 +11603,8 @@ class Database:
                 "onboarding_dm_sent": False,
                 "card_pack_trial_started_at": None, "card_pack_trial_used": False,
                 "card_pack_trial_admin_id": None,
+                "ultra_trial_started_at": None, "ultra_trial_admin_id": None,
+                "ultra_trial_notified": False,
             }
 
     async def set_welcome_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
