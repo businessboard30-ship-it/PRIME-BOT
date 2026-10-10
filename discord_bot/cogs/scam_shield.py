@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import time
 from datetime import timedelta
 from typing import List, Optional, Tuple
 
@@ -30,14 +31,28 @@ from discord.ext import commands, tasks
 
 from database import db
 from discord_bot.cogs._admin_mount import mount_admin_command
+from modules import scam_reputation as rep
 from modules import scam_shield as ss
 from modules import scam_vision as sv
 
 logger = logging.getLogger(__name__)
 
+def _support_invite() -> str:
+    """Read lazily: importing it at module load would make this cog depend on config having the name."""
+    try:
+        import config
+        return getattr(config, "DISCORD_SUPPORT_SERVER_INVITE", "") or "our support server (see /help)"
+    except Exception:
+        return "our support server (see /help)"
+
+
+_warned: dict = {}                            # (guild_id, user_id) -> monotonic time until which we stay quiet
+
 _IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 _download_slots = asyncio.Semaphore(3)
 NOTICE_SECONDS = 15                         # how long the in-channel "scam caught" notice stays
+JOIN_FALLBACK_SECONDS = 300                 # a "flagged member joined" heads-up with no mod-log channel stays this long
+JOIN_WARN_TTL = 6 * 3600                    # stay quiet about the same member in the same server this long (rejoin spam)
 FALLBACK_SECONDS = 60                       # how long the flag stays when there is no usable mod-log channel (long enough for a mod to read it)
 EVIDENCE_MAX_FILES = 4                      # attachments kept per caught message
 EVIDENCE_MAX_BYTES = 8 * 1024 * 1024        # same cap as welcome backgrounds / ad images
@@ -183,6 +198,62 @@ class ScamShieldCog(commands.Cog):
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if before.content != after.content:           # scammers sometimes edit the bait in afterwards
             await self._inspect(after)
+
+    # ── a member caught in another server joins this one ─────────────────
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        try:
+            await self._warn_staff_about_join(member)
+        except Exception:
+            logger.debug("[scam-shield] join check failed", exc_info=True)
+
+    async def _warn_staff_about_join(self, member: discord.Member) -> bool:
+        """Scam Shield's catch log is shared by the main bot and every clone, so a member caught in one server is known
+        in all of them. When they join another server, tell that server's staff (mod-log, else a self-deleting message
+        in another channel). Informational only: nothing is done to the member, and no other server is named."""
+        guild = member.guild
+        if member.bot or guild is None or not ss.is_enabled():
+            return False
+        clone_id = getattr(self.bot, "clone_id", None)
+        if not (await ss.guild_settings(guild.id, clone_id))["enabled"]:
+            return False                                   # this server switched Scam Shield off: respect it
+        key, now = (guild.id, member.id), time.monotonic()
+        if _warned.get(key, 0) > now:
+            return False
+        found = await rep.lookup(member.id, guild.id)
+        if found is None:
+            return False
+        if len(_warned) > 5000:
+            _warned.clear()
+        _warned[key] = now + JOIN_WARN_TTL
+        who = discord.utils.escape_markdown(str(member))[:40]
+        since = f" Most recent: {discord.utils.format_dt(found['last_at'], 'R')}." if found["last_at"] else ""
+        body = (f"**{who}** (`{member.id}`) just joined. Scam Shield caught scam messages from this account in "
+                f"**{found['servers']}** other server{'s' if found['servers'] != 1 else ''} "
+                f"({found['catches']} catch{'es' if found['catches'] != 1 else ''}).{since}\n"
+                "The account may be run by a scammer or may have been hacked, so keep an eye on it. "
+                "Nothing has been done to the member.")
+        embed = discord.Embed(title="⚠️ Scam Shield: member flagged in other servers", description=body, color=discord.Color.orange())
+        if found["kinds"]:
+            embed.add_field(name="What was caught", value=", ".join(found["kinds"])[:300], inline=False)
+        embed.add_field(name="Evidence",
+                        value=("We keep a record of every catch and have evidence supporting this flag. "
+                               f"To validate it, contact support: {_support_invite()}"), inline=False)
+        mods = dict(allowed_mentions=discord.AllowedMentions.none())
+        cfg = await db.get_automod_config(guild.id, clone_id=clone_id)
+        ch_id = cfg.get("log_channel_id")
+        ch = guild.get_channel(int(ch_id)) if ch_id else None
+        if ch is not None and self._can_post(ch, guild):
+            await ch.send(embed=embed, **mods)
+            return True
+        target = self._fallback_channel(guild)
+        if target is None:
+            return False
+        embed.description += ("\n\nThis server has no mod-log channel I can post in, so I'm flagging it here. "
+                              "Set one with `/modlog` to keep a permanent record.\n"
+                              f"-# This message will be deleted in a short time ({JOIN_FALLBACK_SECONDS // 60} minutes).")
+        await target.send(embed=embed, delete_after=JOIN_FALLBACK_SECONDS, **mods)
+        return True
 
     async def _inspect(self, message: discord.Message) -> bool:
         if message.guild is None or message.type not in (discord.MessageType.default, discord.MessageType.reply):
@@ -376,12 +447,12 @@ class ScamShieldCog(commands.Cog):
         except Exception:
             return False
 
-    def _fallback_channel(self, message):
+    def _fallback_channel(self, guild, preferred=None):
         """Where to post the flag when the server has no (usable) mod-log channel: the channel the scam was in, then the
         server's system channel, then the first text channel the bot can write in. None when it can't write anywhere."""
-        g = message.guild
+        g = guild
         seen = set()
-        for ch in [message.channel, getattr(g, "system_channel", None),
+        for ch in [preferred, getattr(g, "system_channel", None),
                    *sorted(getattr(g, "text_channels", []) or [], key=lambda c: c.position)]:
             if ch is None or getattr(ch, "id", None) in seen or not isinstance(ch, (discord.TextChannel, discord.Thread)):
                 continue
@@ -407,7 +478,7 @@ class ScamShieldCog(commands.Cog):
                 embed.add_field(name="Message", value="🗑️ deleted" if deleted else "⚠️ couldn't delete (missing permission)")
                 await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                 return None
-            target = self._fallback_channel(message)
+            target = self._fallback_channel(message.guild, message.channel)
             if target is None:
                 return None
             # This lands in a public channel, so it never repeats the scam text or the rule that matched.
