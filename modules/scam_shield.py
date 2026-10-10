@@ -160,6 +160,8 @@ class _Cache:
     words: List[Tuple[int, str]] = []       # (rule id, normalised word)
     domains: List[Tuple[int, str]] = []
     images: List[Tuple[int, int]] = []      # (rule id, dhash)
+    vision = True                           # AI image scan (modules/scam_vision.py); owner can switch it off
+    evidence_channel_id = 0                 # where caught scams are copied; 0 = fall back to the hosting channel
 
 
 _c = _Cache()
@@ -178,6 +180,14 @@ def has_image_rules() -> bool:
     return bool(_c.images)
 
 
+def vision_enabled() -> bool:
+    return _c.vision
+
+
+def evidence_channel_id() -> int:
+    return _c.evidence_channel_id
+
+
 def stale() -> bool:
     return time.monotonic() - _c.loaded_at > CACHE_SECONDS
 
@@ -192,6 +202,7 @@ async def load(force: bool = False) -> None:
             await _seed_defaults(conn)
             rules = await conn.fetch("SELECT id, kind, pattern FROM scam_shield_rules")
             setting = await conn.fetchrow("SELECT value FROM scam_shield_settings WHERE key = 'enabled'")
+            extras = await _load_extras(conn)
     except Exception:
         logger.exception("[scam-shield] couldn't reload rules; keeping the ones in memory")
         _c.loaded_at = time.monotonic() - CACHE_SECONDS + 30     # retry in ~30s, don't hammer the DB
@@ -209,7 +220,21 @@ async def load(force: bool = False) -> None:
                 logger.warning("[scam-shield] bad image hash in rule %s", r["id"])
     _c.words, _c.domains, _c.images = words, domains, images
     _c.enabled = (setting is None) or (setting["value"] != "off")
+    _c.vision = extras.get("vision") != "off"
+    ev = extras.get("evidence_channel_id") or ""
+    _c.evidence_channel_id = int(ev) if ev.isdigit() else 0
     _c.loaded_at = time.monotonic()
+
+
+async def _load_extras(conn) -> Dict[str, str]:
+    """AI-scan switch + evidence channel. Its own try/except: a problem here never blocks the rule reload."""
+    try:
+        rows = await conn.fetch(
+            "SELECT key, value FROM scam_shield_settings WHERE key IN ('vision', 'evidence_channel_id')")
+        return {r["key"]: r["value"] for r in rows}
+    except Exception:
+        logger.debug("[scam-shield] couldn't read the extra settings", exc_info=True)
+        return {}
 
 
 async def _seed_defaults(conn) -> None:
@@ -343,6 +368,28 @@ async def set_enabled(on: bool) -> None:
         await conn.execute(
             "INSERT INTO scam_shield_settings (key, value) VALUES ('enabled', $1) "
             "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", "on" if on else "off")
+    invalidate()
+
+
+async def set_vision(on: bool) -> None:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO scam_shield_settings (key, value) VALUES ('vision', $1) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", "on" if on else "off")
+    invalidate()
+
+
+async def set_evidence_channel(channel_id: Optional[int]) -> None:
+    """Where caught scams (text + attachments) are copied. None clears it (back to the hosting channel)."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        if channel_id:
+            await conn.execute(
+                "INSERT INTO scam_shield_settings (key, value) VALUES ('evidence_channel_id', $1) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", str(int(channel_id)))
+        else:
+            await conn.execute("DELETE FROM scam_shield_settings WHERE key = 'evidence_channel_id'")
     invalidate()
 
 

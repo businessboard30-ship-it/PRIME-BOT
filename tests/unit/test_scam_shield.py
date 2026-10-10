@@ -633,3 +633,148 @@ def test_sweep_summary_is_posted_to_the_hosting_channel(cog, monkeypatch):
     run(cog._sweep_history())
     summary = [c.args[0] for c in host.send.await_args_list if c.args]
     assert any("history sweep finished" in t and "1 scam message" in t for t in summary)
+
+
+# ── AI image scan (Gemini) + separate evidence channel ───────────────────
+
+from modules import scam_vision as sv  # noqa: E402
+
+
+@pytest.fixture()
+def vision(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    ss._c.vision = True
+    ss._c.evidence_channel_id = 0
+    sv._s.cache.clear(); sv._s.learned.clear(); sv._s.calls.clear(); sv._s.user_calls.clear()
+    sv._s.blocked_until = 0.0; sv._s.day_key = ""; sv._s.day_count = 0
+    monkeypatch.setattr(sv.time, "monotonic", lambda: 10 ** 12)
+    yield
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("SCAM", True), ("scam.", True), ("SAFE", False), ("Safe", False),
+    ("**SCAM**", True), ("", None), ("maybe", None), ("This is not a scam, it is safe", None),
+])
+def test_parse_verdict(text, expected):
+    assert sv.parse_verdict(text) is expected
+
+
+def test_vision_is_off_without_a_key(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert not sv.available()
+
+
+def test_vision_flags_scam_and_caches_the_answer(vision, monkeypatch):
+    ask = AsyncMock(return_value=True)
+    monkeypatch.setattr(sv, "_ask", ask)
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    hit = run(sv.is_scam_image(b"A" * 20000, 1, 2))
+    assert hit and hit[0] == "vision"
+    assert run(sv.is_scam_image(b"A" * 20000, 1, 3))            # same bytes: from cache
+    ask.assert_awaited_once()
+
+
+def test_vision_safe_and_unknown_never_flag(vision, monkeypatch):
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    monkeypatch.setattr(sv, "_ask", AsyncMock(return_value=False))
+    assert run(sv.is_scam_image(b"B" * 20000, 1, 2)) is None
+    monkeypatch.setattr(sv, "_ask", AsyncMock(return_value=None))
+    assert run(sv.is_scam_image(b"C" * 20000, 1, 2)) is None
+    assert hash(b"C" * 20000) is not None and len(sv._s.cache) == 1   # unknown answers are not cached
+
+
+def test_vision_budgets_are_respected(vision, monkeypatch):
+    ask = AsyncMock(return_value=False)
+    monkeypatch.setattr(sv, "_ask", ask)
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    monkeypatch.setenv("SCAM_VISION_PER_USER", "2")
+    for n in range(5):
+        run(sv.is_scam_image(bytes([n]) * 20000, 1, 77))
+    assert ask.await_count == 2                                  # same user: only 2 checks per 10 min
+    monkeypatch.setenv("SCAM_VISION_PER_USER", "99")
+    monkeypatch.setenv("SCAM_VISION_RPM", "3")
+    run(sv.is_scam_image(b"x" * 20000, 1, 78))
+    run(sv.is_scam_image(b"y" * 20000, 1, 79))
+    run(sv.is_scam_image(b"z" * 20000, 1, 80))
+    assert ask.await_count == 3                                  # per-minute cap hit
+
+
+def test_vision_circuit_breaker_blocks_calls(vision, monkeypatch):
+    ask = AsyncMock(return_value=True)
+    monkeypatch.setattr(sv, "_ask", ask)
+    sv._s.blocked_until = 10 ** 12 + 60
+    assert run(sv.is_scam_image(b"D" * 20000, 1, 2)) is None
+    ask.assert_not_awaited()
+
+
+def test_worth_checking_skips_tiny_and_huge():
+    assert not sv.worth_checking(2000)
+    assert not sv.worth_checking(sv.MAX_DOWNLOAD_BYTES + 1)
+    assert not sv.worth_checking(50000, 100, 100)
+    assert sv.worth_checking(50000, 800, 600)
+    assert sv.worth_checking(50000)
+
+
+def _big_att(name="pic.jpg"):
+    a = _att(name, data=b"IMG" * 10000, size=30000)
+    a.content_type, a.width, a.height = "image/jpeg", 900, 700
+    return a
+
+
+def test_cog_deletes_an_image_gemini_calls_a_scam(cog, vision, monkeypatch):
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=None))
+    monkeypatch.setattr(sv, "is_scam_image", AsyncMock(return_value=("vision", "AI scan: scam image", None)))
+    m = _msg("look at this", attachments=[_big_att()])
+    assert run(cog._inspect(m)) is True
+    m.delete.assert_awaited_once()
+    assert cog.log.await_args.args[3] == "vision"
+
+
+def test_cog_leaves_safe_images_alone_and_skips_gifs(cog, vision, monkeypatch):
+    check = AsyncMock(return_value=None)
+    monkeypatch.setattr(sv, "is_scam_image", check)
+    m = _msg("meme", attachments=[_big_att()])
+    assert run(cog._inspect(m)) is False
+    m.delete.assert_not_awaited()
+    check.assert_awaited_once()
+    gif = _big_att("x.gif"); gif.content_type = "image/gif"
+    check.reset_mock()
+    run(cog._inspect(_msg("lol", attachments=[gif])))
+    check.assert_not_awaited()
+
+
+def test_staff_images_are_never_sent_to_gemini(cog, vision, monkeypatch):
+    check = AsyncMock(return_value=("vision", "x", None))
+    monkeypatch.setattr(sv, "is_scam_image", check)
+    m = _msg("hi", staff=True, attachments=[_big_att()])
+    assert run(cog._inspect(m)) is False
+    check.assert_not_awaited()
+
+
+def test_each_attachment_is_downloaded_once_for_hash_and_vision(cog, vision, monkeypatch):
+    ss._c.images = [(9, 0)]
+    monkeypatch.setattr(sv, "is_scam_image", AsyncMock(return_value=None))
+    att = _big_att(); att.size = 30000
+    run(cog._inspect(_msg("pic", attachments=[att])))
+    assert att.read.await_count == 1
+
+
+def test_scam_evidence_goes_to_the_scam_channel_not_the_hosting_channel(cog, monkeypatch):
+    from discord_bot.cogs import scam_shield as cog_mod
+    ss._c.evidence_channel_id = 321
+    scam_ch = MagicMock(spec=discord.TextChannel); scam_ch.send = AsyncMock()
+    cog.bot.get_channel = lambda cid: scam_ch if cid == 321 else None
+    host = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", host)
+    run(cog._inspect(_msg("free $3500 at fatowin.com use GIFT", attachments=[_att()])))
+    scam_ch.send.assert_awaited_once()
+    host.assert_not_awaited()
+    ss._c.evidence_channel_id = 0
+
+
+def test_evidence_falls_back_to_hosting_channel_when_scam_channel_unset(cog, monkeypatch):
+    ss._c.evidence_channel_id = 0
+    hostch = MagicMock(); hostch.send = AsyncMock()
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=hostch))
+    run(cog._inspect(_msg("free $3500 at fatowin.com use GIFT", attachments=[_att()])))
+    hostch.send.assert_awaited_once()
