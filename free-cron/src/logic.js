@@ -81,6 +81,33 @@ export function runsLimit(raw) {                            // ?limit= for the h
   return Number.isFinite(n) && n >= 1 ? Math.min(n, 100) : 50;
 }
 
+// ---- statistics ----
+export const RANGES = { "24h": { buckets: 24, size: 3600000 }, "7d": { buckets: 7, size: 86400000 }, "30d": { buckets: 30, size: 86400000 } };   // hourly for 24h, daily otherwise
+export function statsWindow(range, now) {                   // buckets are aligned to the UTC hour or day; the last one holds "now"
+  const r = Object.hasOwn(RANGES, range) ? RANGES[range] : null;
+  if (!r) return null;
+  const last = Math.floor(now / r.size) * r.size;
+  return { size: r.size, buckets: r.buckets, from: last - (r.buckets - 1) * r.size, to: last + r.size };
+}
+const rate = (ok, runs) => (runs ? Math.round((ok / runs) * 1000) / 10 : null);   // percent with one decimal
+const avg = (v) => (v == null ? null : Math.round(v));
+/** Shape the three SQL aggregates into the API answer. avg_ms is over successful runs only, so timeouts don't spike the chart. */
+export function buildStats(range, now, totals, seriesRows, jobRows) {
+  const w = statsWindow(range, now), by = new Map(seriesRows.map((r) => [Number(r.b), r]));
+  const runs = Number(totals?.runs) || 0, ok = Number(totals?.ok) || 0;
+  const series = [];
+  for (let i = 0; i < w.buckets; i++) {
+    const t = w.from + i * w.size, r = by.get(t), n = Number(r?.runs) || 0, g = Number(r?.ok) || 0;
+    series.push({ t, runs: n, ok: g, failed: n - g, avg_ms: avg(r?.avg_ms) });
+  }
+  return {
+    range, bucket_ms: w.size, from: w.from, to: w.to,
+    totals: { runs, ok, failed: runs - ok, success_rate: rate(ok, runs), avg_ms: avg(totals?.avg_ms) },
+    series,
+    jobs: jobRows.map((j) => ({ id: j.id, name: j.name, runs: Number(j.runs) || 0, ok: Number(j.ok) || 0, success_rate: rate(Number(j.ok) || 0, Number(j.runs) || 0), avg_ms: avg(j.avg_ms) })),
+  };
+}
+
 // Dashboard tiles. enabled = switched on and inside the plan limit; ok/failed = based on each cron's last run (never-run crons count as neither).
 export function tally(jobs) {
   const t = { enabled: 0, disabled: 0, ok: 0, failed: 0 };

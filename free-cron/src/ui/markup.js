@@ -124,11 +124,27 @@ export const MARKUP = `<canvas id="bgfx" aria-hidden="true"></canvas>
 
 <section class="view hidden" id="v-stats" data-view="stats">
   <header class="vhead"><p class="eyebrow">Telemetry</p><h2 tabindex="-1">Statistics</h2><p class="muted">Success rate and response times for your crons.</p></header>
-  <div class="card reveal">
+  <div class="card reveal"><div class="row seg" role="group" aria-label="Time range">
+    <button class="btn sm seg-btn" type="button" data-range="24h" aria-pressed="true">24 hours</button>
+    <button class="btn sm seg-btn" type="button" data-range="7d" aria-pressed="false">7 days</button>
+    <button class="btn sm seg-btn" type="button" data-range="30d" aria-pressed="false">30 days <em class="chip">Premium</em></button>
+  </div></div>
+  <div class="tiles" aria-label="Totals for the range">
+    <div class="tile reveal"><span class="tile-n" id="sRuns">0</span><span class="tile-l">Runs</span></div>
+    <div class="tile reveal ok"><span class="tile-n" id="sRate">-</span><span class="tile-l">Success rate</span></div>
+    <div class="tile reveal"><span class="tile-n" id="sAvg">-</span><span class="tile-l">Avg response</span></div>
+    <div class="tile reveal bad"><span class="tile-n" id="sFailed">0</span><span class="tile-l">Failed</span></div>
+  </div>
+  <div class="card hidden" id="sEmpty">
     <div class="ph">
       <svg viewBox="0 0 600 230" preserveAspectRatio="none" aria-hidden="true"><path class="grid" d="M0 50H600M0 100H600M0 150H600M0 200H600"/><polyline class="trace" points="0,170 70,140 140,155 210,95 280,120 350,60 420,85 490,40 600,70"/></svg>
-      <div class="ph-msg">No data yet<small>Charts appear once run history is switched on. Only status, time and duration will be kept.</small></div>
+      <div class="ph-msg">No runs in this range yet<small>Charts appear after your crons have run. Only status, time and duration are kept, never responses.</small></div>
     </div>
+  </div>
+  <div id="sBody" class="hidden">
+    <div class="card reveal"><p class="eyebrow">Latency</p><h2>Response time</h2><div class="chart" id="cLine"></div><p class="muted fine" id="cLineNote"></p></div>
+    <div class="card reveal"><p class="eyebrow">Reliability</p><h2>Successes and failures</h2><div class="chart" id="cBars"></div><p class="muted fine">Green = answered 2xx or 3xx. Red = error, timeout or no answer.</p></div>
+    <div class="card reveal"><p class="eyebrow">Per cron</p><h2>Uptime</h2><div id="sJobs"></div></div>
   </div>
 </section>
 

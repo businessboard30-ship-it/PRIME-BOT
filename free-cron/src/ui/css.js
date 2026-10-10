@@ -230,4 +230,28 @@ const HIST = `
 @media (max-width:560px){.hrow{grid-template-columns:10px minmax(0,1fr) 3.6rem 3rem}.hrow .hm{display:none}}
 `;
 
-export const CSS = BASE + SHELL + TILES + HIST;
+const STATS = `
+/* statistics */
+.seg-btn[aria-pressed="true"]{background:#eaf6ff;color:#02060a;border-color:#fff;box-shadow:0 0 18px rgba(190,230,255,.6)}
+.seg-btn .chip{margin-left:.4rem;font-size:.55rem}
+.seg-btn[aria-pressed="true"] .chip{color:#02060a;border-color:#02060a}
+.chart svg{display:block;width:100%;height:auto;overflow:visible}
+.chart .cg{fill:none;stroke:var(--hair);stroke-dasharray:4 6}
+.chart .ca{fill:none;stroke:var(--faint)}
+.chart .ct{fill:var(--muted);font-family:var(--mono);font-size:11px;letter-spacing:.04em}
+.chart .cl{fill:none;stroke:var(--line);stroke-width:2.2;stroke-linejoin:round;stroke-linecap:round;filter:drop-shadow(0 0 5px var(--glow))}
+.chart .cf{fill:rgba(150,210,255,.1);stroke:none}
+.chart .cd{fill:#fff;stroke:var(--bg);stroke-width:1.5}
+.chart .b-ok{fill:var(--ok);opacity:.85}.chart .b-bad{fill:var(--bad)}
+.chart .cn{fill:var(--muted);font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-anchor:middle;text-transform:uppercase}
+.up{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.2rem .9rem;padding:.85rem 0;border-top:1px solid var(--hair)}
+.up:first-child{border-top:0;padding-top:0}
+.up .un{font-family:var(--mono);font-weight:600;letter-spacing:.04em;word-break:break-word}
+.up .up-pct{font-family:var(--mono);font-weight:700;text-align:right}
+.up .up-sub{grid-column:1/-1;font-size:.84rem;color:var(--muted);margin-bottom:.3rem}
+.up .meter{grid-column:1/-1;height:10px}
+.up.good .up-pct{color:var(--ok)}.up.good .meter i.on{background:var(--ok);border-color:var(--ok);box-shadow:0 0 8px var(--ok)}
+.up.low .up-pct{color:var(--bad)}.up.low .meter i.on{background:var(--bad);border-color:var(--bad);box-shadow:0 0 8px var(--bad)}
+`;
+
+export const CSS = BASE + SHELL + TILES + HIST + STATS;
