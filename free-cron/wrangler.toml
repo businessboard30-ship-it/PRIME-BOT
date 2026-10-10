@@ -8,7 +8,7 @@ preview_urls = false
 
 [vars]
 # Public values only. Secrets (GITHUB_CLIENT_SECRET, TURNSTILE_SECRET, SESSION_SECRET, ADMIN_KEY) are synced by the deploy workflow.
-GITHUB_CLIENT_ID = ""
+GITHUB_CLIENT_ID = "Ov23lisyptX6wJieiAAG"
 TURNSTILE_SITE_KEY = "0x4AAAAAAFQlkDyvM2mVVPVl"
 # Extra hostnames crons may never call (comma separated). This service's own host is always blocked.
 SELF_HOSTS = ""
