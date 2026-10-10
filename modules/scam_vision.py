@@ -34,7 +34,8 @@ from modules import scam_shield as ss
 logger = logging.getLogger(__name__)
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-DEFAULT_MODEL = "gemini-2.5-flash"      # gemini-1.5-flash has been shut down by Google
+DEFAULT_MODEL = "gemini-3.8-flash"      # Google retired 1.5-flash, and now answers 404 for 2.5-flash on keys that are not already using it
+                                        # (the 404 text names models/gemini-3.8-flash as the replacement). SCAM_VISION_MODEL overrides this.
 MAX_SIDE = 1024                         # px, longest side sent to Gemini
 MIN_BYTES = 15_000                      # tiny images (emoji, icons, stickers) are never scam screenshots
 MIN_SIDE = 300                          # px, same idea
@@ -259,11 +260,20 @@ def parse_verdict(text: str) -> Optional[bool]:
     return None
 
 
+def generation_config(m: str) -> dict:
+    """Request settings for the one-word SCAM/SAFE answer.
+    2.5 models let us switch thinking off, so 16 output tokens is plenty. Newer models (3.x) think whether we like it
+    or not, and those reasoning tokens count against maxOutputTokens, so a tiny cap can leave no room for the answer
+    and every image would come back "unknown". We send no thinking field for them (the field's name changed between
+    generations and a wrong one is a 400) and just leave room for it."""
+    if "2.5" in m:
+        return {"temperature": 0, "maxOutputTokens": 16, "thinkingConfig": {"thinkingBudget": 0}}
+    return {"temperature": 0, "maxOutputTokens": 512}
+
+
 async def _ask(jpeg: bytes) -> Optional[bool]:
     m = model()
-    cfg: dict = {"temperature": 0, "maxOutputTokens": 16}
-    if "2.5" in m:
-        cfg["thinkingConfig"] = {"thinkingBudget": 0}          # one-word answer: no reasoning tokens
+    cfg = generation_config(m)
     body = {
         "contents": [{"role": "user", "parts": [
             {"text": PROMPT},
