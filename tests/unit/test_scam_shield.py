@@ -845,3 +845,9 @@ def test_caps_can_be_changed_by_env(vision, monkeypatch):
     assert run(sv.guild_cap(1)) == (3, False)
     monkeypatch.setattr(sv, "_is_premium", AsyncMock(return_value=True))
     assert run(sv.guild_cap(1)) == (100, True)
+
+
+def test_scam_shield_loads_after_admin_cog():
+    """It mounts /admin scamchannel in cog_load, so AdminCog must already be loaded (this crashed startup once)."""
+    src = (ROOT / "discord_bot" / "bot.py").read_text()
+    assert src.index('"discord_bot.cogs.admin")') < src.index('"discord_bot.cogs.scam_shield")')
