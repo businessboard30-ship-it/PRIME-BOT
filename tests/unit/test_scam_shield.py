@@ -778,3 +778,11 @@ def test_evidence_falls_back_to_hosting_channel_when_scam_channel_unset(cog, mon
     monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=hostch))
     run(cog._inspect(_msg("free $3500 at fatowin.com use GIFT", attachments=[_att()])))
     hostch.send.assert_awaited_once()
+
+
+def test_scam_vision_prefers_its_own_key(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "shared")
+    monkeypatch.delenv("SCAM_VISION_API_KEY", raising=False)
+    assert sv.api_key() == "shared"
+    monkeypatch.setenv("SCAM_VISION_API_KEY", "scam-only")
+    assert sv.api_key() == "scam-only"

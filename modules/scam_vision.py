@@ -83,7 +83,9 @@ def _int_env(name: str, default: int) -> int:
 
 
 def api_key() -> str:
-    return os.getenv("GEMINI_API_KEY", "")
+    """Scam Shield's own key (SCAM_VISION_API_KEY) so its quota is separate from the AI features;
+    falls back to GEMINI_API_KEY when no separate key is set."""
+    return (os.getenv("SCAM_VISION_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")).strip()
 
 
 def model() -> str:
