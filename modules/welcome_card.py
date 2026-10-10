@@ -475,8 +475,23 @@ ULTRA_DEFAULTS = {
     "soft_edge": False,        # banner fades into the image instead of a hard edge
     "shadow": False,           # soft shadow under the text
     "big_name": False,         # larger username
+    "glass": False,            # banner blurs the image behind it (frosted glass)
+    "auto_contrast": False,    # bright image behind text -> extra outline + darker tint
+    # Layout / font / crop (wizard selects). Defaults = classic look.
+    "layout": "banner",        # banner | centered
+    "font": "classic",         # key of ULTRA_FONTS
+    "focus": "center",         # crop anchor: center | top | bottom | left | right
 }
-ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name")
+ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast")
+ULTRA_LAYOUTS = ("banner", "centered")
+ULTRA_FOCUS = ("center", "top", "bottom", "left", "right")
+# Bundled OFL fonts (assets/fonts). "classic" = the card's normal font.
+ULTRA_FONTS = {
+    "classic": None,
+    "clean": "Poppins-Bold.ttf",
+    "tall": "BebasNeue-Regular.ttf",
+    "script": "Pacifico-Regular.ttf",
+}
 ULTRA_AVATAR_COLOR = "avatar"  # text_color value: use the avatar's dominant color
 ULTRA_BANNERS = ("bottom", "top", "none")
 ULTRA_DIM_ALPHA = {"light": 100, "medium": 165, "heavy": 225}
@@ -515,6 +530,12 @@ def parse_ultra_options(raw) -> dict:
     for k in ULTRA_BOOL_KEYS:
         if isinstance(raw.get(k), bool):
             opts[k] = raw[k]
+    if raw.get("layout") in ULTRA_LAYOUTS:
+        opts["layout"] = raw["layout"]
+    if raw.get("font") in ULTRA_FONTS:
+        opts["font"] = raw["font"]
+    if raw.get("focus") in ULTRA_FOCUS:
+        opts["focus"] = raw["focus"]
     if isinstance(raw.get("heading"), str):
         opts["heading"] = raw["heading"].strip()[:ULTRA_HEADING_MAX]
     if isinstance(raw.get("show_number"), bool):
@@ -547,6 +568,48 @@ def _avatar_dominant_color(avatar: Image.Image) -> tuple:
         return (255, 255, 255)
 
 
+_STYLE_FONT_CACHE: dict = {}
+
+
+def _style_font(key: str, size: int):
+    """Bundled style font at `size`, or None for 'classic'/missing files."""
+    fname = ULTRA_FONTS.get(key)
+    if not fname:
+        return None
+    ck = (key, size)
+    if ck not in _STYLE_FONT_CACHE:
+        try:
+            _STYLE_FONT_CACHE[ck] = ImageFont.truetype(
+                os.path.join(_MODULE_DIR, "..", "assets", "fonts", fname), size)
+        except Exception:
+            _STYLE_FONT_CACHE[ck] = None
+    return _STYLE_FONT_CACHE[ck]
+
+
+def _styled_ok(text: str) -> bool:
+    """Style fonts only cover Latin; any other script keeps the fallback chain."""
+    return all(ord(c) < 0x250 for c in text)
+
+
+def _fit_styled(draw, text: str, max_w: int, max_size: int, min_size: int, font_key: str):
+    """(size, text) for the style font, or None when it can't be used."""
+    if font_key == "classic" or not text or not _styled_ok(text) or _style_font(font_key, min_size) is None:
+        return None
+    for size in range(max_size, min_size - 1, -2):
+        if draw.textlength(text, font=_style_font(font_key, size)) <= max_w:
+            return size, text
+    return min_size, text
+
+
+def _region_brightness(img: Image.Image, box: tuple) -> float:
+    try:
+        crop = img.crop(box).convert("L").resize((24, 24))
+        px = list(crop.getdata())
+        return sum(px) / len(px)
+    except Exception:
+        return 0.0
+
+
 def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
                           background_bytes: bytes,
                           guild_name: Optional[str] = None,
@@ -568,6 +631,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     hide the member number.
     """
     opts = parse_ultra_options(ultra_options)
+    centered = opts["layout"] == "centered"
+    banner_pos = "bottom" if (centered and opts["banner"] == "top") else opts["banner"]
     try:
         bg = Image.open(io.BytesIO(background_bytes)).convert("RGBA")
     except Exception as e:
@@ -583,26 +648,29 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     # aspect-ratio upload never letterboxes or stretches oddly.
     target_ratio = TEMPLATE_WIDTH / TEMPLATE_HEIGHT
     src_ratio = src_w / src_h
+    focus = opts["focus"]
     if src_ratio > target_ratio:
         new_w = int(src_h * target_ratio)
-        left = (src_w - new_w) // 2
+        left = 0 if focus == "left" else (src_w - new_w if focus == "right" else (src_w - new_w) // 2)
         bg = bg.crop((left, 0, left + new_w, src_h))
     elif src_ratio < target_ratio:
         new_h = int(src_w / target_ratio)
-        top = (src_h - new_h) // 2
+        top = 0 if focus == "top" else (src_h - new_h if focus == "bottom" else (src_h - new_h) // 2)
         bg = bg.crop((0, top, src_w, top + new_h))
     bg = bg.resize((TEMPLATE_WIDTH, TEMPLATE_HEIGHT))
 
     # Slight overall darkening so white text stays legible on bright uploads.
     bg = Image.alpha_composite(bg, Image.new("RGBA", bg.size, (0, 0, 0, 40)))
 
-    if opts["banner"] == "top":
+    if centered:
+        band_top, band_bottom = int(TEMPLATE_HEIGHT * 0.42), TEMPLATE_HEIGHT
+    elif banner_pos == "top":
         band_top, band_bottom = 0, int(TEMPLATE_HEIGHT * 0.28)
     else:  # "bottom", and "none" (no banner drawn, but same text placement)
         band_top, band_bottom = int(TEMPLATE_HEIGHT * 0.72), TEMPLATE_HEIGHT
     band_h = band_bottom - band_top
 
-    if opts["banner"] != "none":
+    if banner_pos != "none":
         # Real alpha blend (drawing an RGBA rectangle straight onto an RGBA
         # image overwrites pixels, which came out fully opaque black).
         banner = Image.new("RGBA", bg.size, (0, 0, 0, 0))
@@ -613,16 +681,29 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
             fade = 90
             for i in range(fade):
                 a = int(banner_alpha * (i + 1) / fade)
-                y = (band_top - fade + i) if opts["banner"] != "top" else (band_bottom + fade - 1 - i)
+                y = (band_top - fade + i) if banner_pos != "top" else (band_bottom + fade - 1 - i)
                 if 0 <= y < TEMPLATE_HEIGHT:
                     bd.line((0, y, TEMPLATE_WIDTH, y), fill=(0, 0, 0, a))
+        if opts["glass"]:
+            # Frosted glass: blur what is behind the band, lighter tint.
+            region = bg.crop((0, band_top, TEMPLATE_WIDTH, band_bottom)).filter(ImageFilter.GaussianBlur(22))
+            bg.paste(region, (0, band_top))
+            banner_alpha = int(banner_alpha * 0.55)
         bd.rectangle((0, band_top, TEMPLATE_WIDTH, band_bottom), fill=(0, 0, 0, banner_alpha))
         bg = Image.alpha_composite(bg, banner)
     draw = ImageDraw.Draw(bg)
 
     # Without a solid banner (or with a light one) add a thin dark outline
     # so text stays readable on busy images.
-    stroke = 2 if (opts["banner"] == "none" or opts["dim"] == "light") else 0
+    stroke = 2 if (banner_pos == "none" or opts["dim"] == "light") else 0
+    if opts["auto_contrast"] and _region_brightness(bg, (0, band_top, TEMPLATE_WIDTH, band_bottom)) > 130:
+        # Text sits on a bright area: outline it and darken that strip a bit.
+        stroke = max(stroke, 3)
+        bg = Image.alpha_composite(bg, Image.new("RGBA", bg.size, (0, 0, 0, 0)))
+        shade = Image.new("RGBA", bg.size, (0, 0, 0, 0))
+        ImageDraw.Draw(shade).rectangle((0, band_top, TEMPLATE_WIDTH, band_bottom), fill=(0, 0, 0, 70))
+        bg = Image.alpha_composite(bg, shade)
+        draw = ImageDraw.Draw(bg)
 
     try:
         avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
@@ -630,20 +711,26 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         logger.warning(f"[v0] Couldn't decode avatar image, using a blank frame instead: {e}")
         avatar = Image.new("RGBA", (200, 200), (88, 101, 242, 255))
 
-    avatar_dim = band_h - 40
+    avatar_dim = int(TEMPLATE_HEIGHT * 0.29) if centered else band_h - 40
     avatar = avatar.resize((avatar_dim, avatar_dim))
     mask = Image.new("L", (avatar_dim, avatar_dim), 0)
     shape_fn = AVATAR_SHAPES.get(avatar_shape, _mask_circle)
     shape_fn(ImageDraw.Draw(mask), (0, 0, avatar_dim, avatar_dim), 255)
-    avatar_y = band_top + 20
-    if opts["avatar_side"] == "right":
-        avatar_x = TEMPLATE_WIDTH - 60 - avatar_dim
+    if centered:
+        avatar_x = (TEMPLATE_WIDTH - avatar_dim) // 2
+        avatar_y = band_top - avatar_dim // 2
         text_x = 60
-        text_box_width = avatar_x - 40 - text_x
+        text_box_width = TEMPLATE_WIDTH - 120
     else:
-        avatar_x = 60
-        text_x = avatar_x + avatar_dim + 40
-        text_box_width = TEMPLATE_WIDTH - text_x - 60
+        avatar_y = band_top + 20
+        if opts["avatar_side"] == "right":
+            avatar_x = TEMPLATE_WIDTH - 60 - avatar_dim
+            text_x = 60
+            text_box_width = avatar_x - 40 - text_x
+        else:
+            avatar_x = 60
+            text_x = avatar_x + avatar_dim + 40
+            text_box_width = TEMPLATE_WIDTH - text_x - 60
     if opts["text_color"] == ULTRA_AVATAR_COLOR:
         color = _avatar_dominant_color(avatar)
     else:
@@ -664,24 +751,64 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     elif guild_name:
         heading = f"Welcome to {guild_name}!"
 
-    name_max = 72 if opts["big_name"] else 52
-    username_size, username_text = _fit_text_fallback(
-        draw, username, text_box_width, max_font_size=name_max, min_font_size=22
-    )
+    font_key = opts["font"]
+    name_max = (84 if centered else 72) if opts["big_name"] else (64 if centered else 52)
+    if font_key == "tall":   # Bebas Neue runs small for its size
+        name_max = int(name_max * 1.25)
+    name_fit = _fit_styled(draw, username, text_box_width, name_max, 22, font_key)
+    if name_fit is None:
+        name_fit = _fit_text_fallback(draw, username, text_box_width, max_font_size=name_max, min_font_size=22)
+        name_styled = False
+    else:
+        name_styled = True
+    username_size, username_text = name_fit
+    heading_styled = False
     if heading:
-        guild_size, guild_text = _fit_text_fallback(draw, heading, text_box_width, max_font_size=28, min_font_size=14)
+        head_fit = _fit_styled(draw, heading, text_box_width, 34 if centered else 28, 14, font_key)
+        if head_fit is None:
+            head_fit = _fit_text_fallback(draw, heading, text_box_width, max_font_size=34 if centered else 28, min_font_size=14)
+        else:
+            heading_styled = True
+        guild_size, guild_text = head_fit
+
+    number_text = _extract_member_number(subtitle) if opts["show_number"] else ""
+    if centered:
+        name_y = avatar_y + avatar_dim + 34
+        head_y = name_y + int(username_size * 1.4) + 14
+        num_y = (head_y + int(guild_size * 1.5) + 18) if heading else (name_y + int(username_size * 1.4) + 18)
+    else:
+        name_y, head_y, num_y = band_top + 62, band_bottom - 50, band_top + 24
+
+    from modules.level_card import _textlength_fallback as _tlf
+
+    def _x_for(d, text, size, styled):
+        """Left x of a line: text_x in banner layout, centered otherwise."""
+        if not centered:
+            return text_x
+        if styled:
+            w = d.textlength(text, font=_style_font(font_key, size))
+        else:
+            w = _tlf(d, text, size)
+        return int((TEMPLATE_WIDTH - w) / 2)
+
+    def _put(d, x, y, text, size, styled, col, st):
+        if styled:
+            d.text((x, y), text, font=_style_font(font_key, size), fill=col,
+                   stroke_width=st, stroke_fill=(0, 0, 0))
+        else:
+            _draw_text_fb(d, (x, y), text, size, col, stroke_width=st, stroke_fill=(0, 0, 0))
 
     def _draw_texts(d, col, scol, off=(0, 0), st=0):
         ox, oy = off
-        if opts["show_number"]:
-            d.text((text_x + ox, band_top + 24 + oy), _extract_member_number(subtitle),
-                   font=_load_font(26), fill=col if scol else (190, 190, 190),
-                   stroke_width=st, stroke_fill=(0, 0, 0))
-        _draw_text_fb(d, (text_x + ox, band_top + 62 + oy), username_text, username_size,
-                      col, stroke_width=st, stroke_fill=(0, 0, 0))
+        if number_text:
+            nx = _x_for(d, number_text, 26, False)
+            d.text((nx + ox, num_y + oy), number_text, font=_load_font(26),
+                   fill=col if scol else (190, 190, 190), stroke_width=st, stroke_fill=(0, 0, 0))
+        _put(d, _x_for(d, username_text, username_size, name_styled) + ox, name_y + oy,
+             username_text, username_size, name_styled, col, st)
         if heading:
-            _draw_text_fb(d, (text_x + ox, band_bottom - 50 + oy), guild_text, guild_size,
-                          col, stroke_width=st, stroke_fill=(0, 0, 0))
+            _put(d, _x_for(d, guild_text, guild_size, heading_styled) + ox, head_y + oy,
+                 guild_text, guild_size, heading_styled, col, st)
 
     if opts["shadow"]:
         layer = Image.new("RGBA", bg.size, (0, 0, 0, 0))
