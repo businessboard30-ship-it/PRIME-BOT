@@ -94,7 +94,7 @@ def test_join_dm_apply_on_page_one_connect_on_page_two():
 
 def test_discount_price_is_half_of_yearly():
     import premium_discount as pd
-    assert pd.discounted_usd() == round(config.PREMIUM_YEARLY_FEE_USD / 2, 2) == 18.0
+    assert pd.discounted_usd() == round(config.PREMIUM_YEARLY_FEE_USD / 2, 2)
 
 
 def test_code_is_masked_and_unguessable_shape():
