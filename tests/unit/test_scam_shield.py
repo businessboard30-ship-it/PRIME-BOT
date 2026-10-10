@@ -960,3 +960,57 @@ def test_fallback_in_the_scam_channel_replaces_the_separate_notice(cog, monkeypa
     m2 = _msg("free $3500 at fatowin.com use GIFT"); m2.author.id = 43; m2.channel = SimpleNamespace(id=7, mention="#c", send=AsyncMock())
     run(cog._inspect(m2))
     m2.channel.send.assert_awaited_once()
+
+
+# ── Gemini model: default must not be the retired one, and the request must fit the model's thinking behaviour ──
+def test_vision_default_model_is_not_the_retired_one(monkeypatch):
+    from modules import scam_vision as sv
+    monkeypatch.delenv("SCAM_VISION_MODEL", raising=False)
+    assert sv.model() == sv.DEFAULT_MODEL and "2.5" not in sv.DEFAULT_MODEL and "1.5" not in sv.DEFAULT_MODEL
+    monkeypatch.setenv("SCAM_VISION_MODEL", "gemini-custom")
+    assert sv.model() == "gemini-custom"
+
+
+def test_vision_generation_config_per_model():
+    from modules import scam_vision as sv
+    old = sv.generation_config("gemini-2.5-flash")
+    assert old["thinkingConfig"] == {"thinkingBudget": 0} and old["maxOutputTokens"] == 16
+    new = sv.generation_config("gemini-3.8-flash")
+    assert "thinkingConfig" not in new and new["maxOutputTokens"] >= 256 and new["temperature"] == 0
+
+
+@pytest.mark.asyncio
+async def test_vision_ask_sends_the_chosen_model_and_reads_the_verdict(monkeypatch):
+    import httpx
+    from modules import scam_vision as sv
+    monkeypatch.setenv("SCAM_VISION_API_KEY", "k"); monkeypatch.delenv("SCAM_VISION_MODEL", raising=False)
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None, headers=None):
+            seen["url"], seen["cfg"] = url, json["generationConfig"]
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "SCAM"}]}}]})
+    monkeypatch.setattr(sv.httpx, "AsyncClient", FakeClient)
+    sv._s.blocked_until = 0.0
+    assert await sv._ask(b"x") is True
+    assert "gemini-3.8-flash:generateContent" in seen["url"] and seen["cfg"]["maxOutputTokens"] >= 256
+
+
+@pytest.mark.asyncio
+async def test_vision_404_pauses_scan_and_reports_the_model(monkeypatch):
+    import httpx
+    from modules import scam_vision as sv
+    monkeypatch.setenv("SCAM_VISION_API_KEY", "k"); monkeypatch.setenv("SCAM_VISION_MODEL", "gemini-2.5-flash")
+
+    class Gone:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None, headers=None): return httpx.Response(404, text="no longer available")
+    monkeypatch.setattr(sv.httpx, "AsyncClient", Gone)
+    sv._s.blocked_until = 0.0
+    assert await sv._ask(b"x") is None and sv._s.blocked_until > 0
+    sv._s.blocked_until = 0.0
