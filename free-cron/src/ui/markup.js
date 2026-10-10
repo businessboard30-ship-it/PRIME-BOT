@@ -86,7 +86,7 @@ export const MARKUP = `<canvas id="bgfx" aria-hidden="true"></canvas>
         <li><span class="dot live"></span><span>Cronjobs<span class="why">Schedule GET and POST calls to any public https URL.</span></span><em class="chip on">Online</em></li>
         <li><span class="dot live"></span><span>Statistics<span class="why">Run history and response-time charts.</span></span><em class="chip on">Online</em></li>
         <li><span class="dot live"></span><span>Status pages<span class="why">Share the uptime of chosen crons on a public page.</span></span><em class="chip on">Online</em></li>
-        <li><span class="dot idle"></span><span>Failure alerts<span class="why">Get told on Discord when a cron goes down.</span></span><em class="chip soon">Soon</em></li>
+        <li><span class="dot live"></span><span>Failure alerts<span class="why">Get told on Discord when a cron goes down.</span></span><em class="chip on">Online</em></li>
       </ul>
     </div>
   </div>
@@ -163,6 +163,19 @@ export const MARKUP = `<canvas id="bgfx" aria-hidden="true"></canvas>
       <div class="row"><input id="lkey" class="grow" maxlength="80" placeholder="Gumroad license key" aria-label="License key" autocomplete="off"></div>
       <div class="row"><div id="tsRedeem" class="tsbox"></div></div>
       <p><button id="redeem" class="btn" disabled>Activate Premium</button></p>
+    </div>
+  </div>
+  <div class="card reveal" id="alertsCard">
+    <p class="eyebrow">Alerts</p>
+    <h2>Failure alerts on Discord</h2>
+    <p class="muted fine">Get a message when a cron fails twice in a row, when it is switched off after 5 failures, and when it is back up. Messages never contain your URLs. In Discord: channel settings, Integrations, Webhooks, New Webhook, Copy Webhook URL.</p>
+    <p id="alState" class="muted"></p>
+    <div class="row"><input id="alHook" class="grow" maxlength="200" placeholder="https://discord.com/api/webhooks/..." aria-label="Discord webhook address" autocomplete="off"></div>
+    <div class="row">
+      <button id="alSave" class="btn sm">Save webhook</button>
+      <button id="alTest" class="btn sm ghost">Send test alert</button>
+      <button id="alToggle" class="btn sm ghost">Pause alerts</button>
+      <button id="alRemove" class="btn sm ghost">Remove</button>
     </div>
   </div>
   <div class="card danger reveal">

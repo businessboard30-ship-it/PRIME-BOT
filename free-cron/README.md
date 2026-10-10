@@ -44,3 +44,9 @@ uptime for 24 h and 7 d (30 d for Premium only, because free accounts keep 7 day
 Slugs are random by default. Pages are `noindex`, cached for 60 s, and 404 when switched off or blocked.
 Block a page fast (abuse): `POST /api/admin/status-page` with `Authorization: Bearer <ADMIN_KEY>` and `{"slug":"...","blocked":true}`.
 Set `CONTACT_URL` (https or mailto) in `wrangler.toml` to show a contact on the legal pages and a "Report this page" link on status pages.
+
+## Failure alerts
+
+Settings, Failure alerts: save a Discord webhook (`https://discord.com/api/webhooks/<id>/<token>`, also `discordapp.com`; anything else is rejected, so it cannot be used to reach other hosts).
+The webhook is a credential: the API only returns it masked, and it is never logged. Alerts are sent on state changes only: after 2 failures in a row (down), when a cron is switched off after 5 (disabled), and when it recovers.
+Messages never contain the URL. Max 20 alerts per account per day. Alerts are queued in `alert_outbox` and sent (3 per tick, 5 s timeout, 3 tries) after `runDue()` finishes, so a broken webhook cannot affect the crons.

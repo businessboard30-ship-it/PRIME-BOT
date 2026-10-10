@@ -236,3 +236,40 @@ export function buildPublicStatus(page, monitors, usage, premium, now) {
   const overall = !live.length ? "unknown" : live.every((m) => m.state === "up") ? "up" : live.every((m) => m.state === "down") ? "down" : "degraded";
   return { title: page.title, overall, windows: wins, retention_days: premium ? KEEP_DAYS_PREMIUM : KEEP_DAYS_FREE, updated_at: now, monitors: out };
 }
+
+// ---- failure alerts (Discord webhook) ----
+export const ALERT_AFTER = 2;            // consecutive failures before the first "down" alert
+export const ALERTS_PER_DAY = 20;        // per account
+export const ALERT_SEND_BATCH = 3;       // sent per tick: 40 cron calls + 5 license checks + 3 alerts stays under the 50 subrequests of the free plan
+export const ALERT_TIMEOUT_MS = 5000;
+export const ALERT_MAX_TRIES = 3;
+export const ALERT_KEEP_MS = 86400000;
+const HOOK = /^https:\/\/(?:discord|discordapp)\.com\/api\/webhooks\/(\d{15,25})\/([A-Za-z0-9_-]{30,100})$/;
+/** Only real Discord webhook addresses are accepted, so the alert sender can't be pointed at any other host (no SSRF). Returns the trimmed URL or null. */
+export function validDiscordWebhook(raw) {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  return HOOK.test(v) ? v : null;
+}
+/** The stored webhook is never shown in full: id and the last 4 characters of the token only. */
+export function maskWebhook(url) {
+  const m = HOOK.exec(url || "");
+  return m ? `https://discord.com/api/webhooks/${m[1]}/***${m[2].slice(-4)}` : null;
+}
+/** What to do after one run. prevAlerting = a "down" alert is already out. Returns {kind, alerting}; kind is null when nothing should be sent. */
+export function alertDecision({ prevAlerting, ok, failCount, canAlert }) {
+  if (!canAlert) return { kind: null, alerting: 0 };
+  if (ok) return prevAlerting ? { kind: "recovered", alerting: 0 } : { kind: null, alerting: 0 };
+  if (failCount >= MAX_FAILS) return { kind: "disabled", alerting: 1 };
+  if (failCount >= ALERT_AFTER && !prevAlerting) return { kind: "down", alerting: 1 };
+  return { kind: null, alerting: prevAlerting ? 1 : 0 };
+}
+export const failDetail = (status) => (status ? `HTTP ${status}` : "no answer");
+/** Alert text. Never contains the URL (it can hold secrets). Names are cut and cleaned. */
+export function alertText(kind, name, detail) {
+  const n = String(name || "cron").replace(/[\u0000-\u001f\u007f`*_~|>@]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) || "cron";
+  if (kind === "recovered") return `FREE CRON: "${n}" is back up.`;
+  if (kind === "disabled") return `FREE CRON: "${n}" failed ${MAX_FAILS} times in a row (${detail}) and was switched off. Turn it back on in the app once it is fixed.`;
+  if (kind === "test") return "FREE CRON: test alert. Your Discord webhook works.";
+  return `FREE CRON: "${n}" is failing (${detail}). ${ALERT_AFTER} failed runs in a row.`;
+}

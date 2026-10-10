@@ -2,13 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import worker, { runDue, recheckLicenses, pruneRuns } from "../src/index.js";
+import worker, { runDue, recheckLicenses, pruneRuns, sendAlerts, pruneOutbox } from "../src/index.js";
 import * as L from "../src/logic.js";
 
 // A tiny D1 stand-in over node:sqlite (same SQL dialect, RETURNING included).
 function makeDb() {
   const sql = new DatabaseSync(":memory:");
-  for (const f of ["0001_init.sql", "0002_licenses.sql", "0003_runs.sql", "0004_status_pages.sql"]) sql.exec(readFileSync(new URL("../migrations/" + f, import.meta.url), "utf8"));
+  for (const f of ["0001_init.sql", "0002_licenses.sql", "0003_runs.sql", "0004_status_pages.sql", "0005_alerts.sql"]) sql.exec(readFileSync(new URL("../migrations/" + f, import.meta.url), "utf8"));
   const stmt = (q, args = []) => ({
     bind: (...a) => stmt(q, a),
     run: async () => { const r = sql.prepare(q).run(...args); return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } }; },
@@ -642,5 +642,136 @@ test("page: status view has the create form and page list, built without innerHT
   const view = html.slice(html.indexOf('id="v-status"'), html.indexOf('id="v-stats"'));
   assert.ok(!view.includes("Coming soon"));
   assert.ok(!/Status pages<\/span><em class="chip soon"/.test(html));
+  assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
+});
+
+// ---- Step 4: failure alerts (Discord webhook) ----
+const HOOK = "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEF0123456789-_";
+const putAlerts = (e, tok, body) => call(e, "/api/alerts", { method: "PUT", token: tok, body });
+const failF = async () => new Response("no", { status: 500 });
+const goodF = async () => new Response("ok", { status: 200 });
+const dueJob = (e, acct = 1, name = "My cron") => {
+  const id = addJob(e, acct, name, "https://example.com/p");
+  e.DB.sql.prepare("UPDATE jobs SET next_run_at = 0 WHERE id = ?").run(id); return id;
+};
+const tick = async (e, id, f, now) => { e.DB.sql.prepare("UPDATE jobs SET next_run_at = 0 WHERE id = ?").run(id); return runDue(e, now, f); };
+const outbox = (e) => e.DB.sql.prepare("SELECT kind, job_name, detail FROM alert_outbox ORDER BY id").all();
+
+test("alerts API: login needed, only real Discord webhook addresses are accepted, the saved one is masked", async () => {
+  const e = env(), tok = await addAccount(e);
+  assert.equal((await call(e, "/api/alerts")).status, 401);
+  for (const bad of ["https://evil.example/api/webhooks/123456789012345678/" + "a".repeat(40), "http://discord.com/api/webhooks/123456789012345678/" + "a".repeat(40),
+    "https://discord.com.evil.example/api/webhooks/123456789012345678/" + "a".repeat(40), "https://discord.com/api/webhooks/abc/" + "a".repeat(40), "https://169.254.169.254/", 5])
+    assert.equal((await putAlerts(e, tok, { webhook: bad })).status, 422, String(bad));
+  const r = await putAlerts(e, tok, { webhook: HOOK }), j = await r.json();
+  assert.equal(r.status, 200); assert.equal(j.enabled, true);
+  assert.ok(j.webhook.endsWith("***6789") === false && j.webhook.endsWith("***89-_") === true);
+  const raw = JSON.stringify(await (await call(e, "/api/alerts", { token: tok })).json());
+  assert.ok(!raw.includes("abcdefghijklmnop") && raw.includes("123456789012345678"));
+  assert.equal((await putAlerts(e, tok, { webhook: "" })).status, 200);
+  assert.equal((await (await call(e, "/api/alerts", { token: tok })).json()).webhook, null);
+  assert.ok(L.validDiscordWebhook(HOOK.replace("discord.com", "discordapp.com")));
+});
+
+test("alerts: test message is sent to the webhook, rate limited to one a minute, needs a saved webhook", async () => {
+  const e = env(), tok = await addAccount(e), seen = [], real = globalThis.fetch;
+  assert.equal((await call(e, "/api/alerts/test", { method: "POST", token: tok, body: {} })).status, 422);
+  await putAlerts(e, tok, { webhook: HOOK });
+  globalThis.fetch = async (u, init) => { if (String(u).includes("discord.com")) { seen.push([String(u), JSON.parse(init.body), init.redirect]); return new Response(null, { status: 204 }); } return real(u, init); };
+  try {
+    assert.equal((await call(e, "/api/alerts/test", { method: "POST", token: tok, body: {} })).status, 200);
+    assert.equal((await call(e, "/api/alerts/test", { method: "POST", token: tok, body: {} })).status, 429);
+  } finally { globalThis.fetch = real; }
+  assert.equal(seen.length, 1); assert.equal(seen[0][0], HOOK); assert.equal(seen[0][2], "manual"); assert.deepEqual(seen[0][1].allowed_mentions, { parse: [] });
+});
+
+test("alerts: no alert without a webhook", async () => {
+  const e = env(); await addAccount(e); const id = dueJob(e);
+  for (let i = 0; i < 3; i++) await tick(e, id, failF, 1000 + i);
+  assert.equal(outbox(e).length, 0);
+});
+
+test("alerts: one 'down' alert after 2 failures, nothing more while it keeps failing, one 'recovered' when it is back", async () => {
+  const e = env(), tok = await addAccount(e); await putAlerts(e, tok, { webhook: HOOK }); const id = dueJob(e, 1, "Web *app*");
+  await tick(e, id, failF, 1000); assert.equal(outbox(e).length, 0);                 // first failure: no alert yet
+  await tick(e, id, failF, 2000); assert.deepEqual(outbox(e).map((o) => o.kind), ["down"]);
+  await tick(e, id, failF, 3000); assert.equal(outbox(e).length, 1);                 // deduped
+  await tick(e, id, goodF, 4000); assert.deepEqual(outbox(e).map((o) => o.kind), ["down", "recovered"]);
+  await tick(e, id, goodF, 5000); assert.equal(outbox(e).length, 2);                   // healthy again: quiet
+  assert.equal(e.DB.sql.prepare("SELECT alerting FROM jobs WHERE id = ?").get(id).alerting, 0);
+  assert.equal(outbox(e)[0].detail, "HTTP 500");
+});
+
+test("alerts: after 5 failures the cron is switched off and a 'disabled' alert is queued", async () => {
+  const e = env(), tok = await addAccount(e); await putAlerts(e, tok, { webhook: HOOK }); const id = dueJob(e);
+  for (let i = 0; i < 5; i++) await tick(e, id, failF, 1000 * (i + 1));
+  assert.deepEqual(outbox(e).map((o) => o.kind), ["down", "disabled"]);
+  assert.equal(e.DB.sql.prepare("SELECT enabled FROM jobs WHERE id = ?").get(id).enabled, 0);
+  await call(e, `/api/jobs/${id}`, { method: "PATCH", token: tok, body: { enabled: true } });   // turning it back on resets the alert state
+  assert.equal(e.DB.sql.prepare("SELECT alerting FROM jobs WHERE id = ?").get(id).alerting, 0);
+});
+
+test("alerts: switched off by the user means nothing is queued", async () => {
+  const e = env(), tok = await addAccount(e); await putAlerts(e, tok, { webhook: HOOK, enabled: false }); const id = dueJob(e);
+  for (let i = 0; i < 3; i++) await tick(e, id, failF, 1000 * (i + 1));
+  assert.equal(outbox(e).length, 0);
+});
+
+test("alerts: at most 20 per account per day", async () => {
+  const e = env(), tok = await addAccount(e, 1, "alice", Date.now() + 1e9); await putAlerts(e, tok, { webhook: HOOK });
+  for (let i = 0; i < 25; i++) {
+    const id = dueJob(e, 1, "c" + i);
+    await tick(e, id, failF, 1000 + i); await tick(e, id, failF, 2000 + i);
+  }
+  assert.equal(outbox(e).length, 20);
+});
+
+test("alerts: the outbox is sent in small batches, with no URL in the text, and cleaned up", async () => {
+  const e = env(), tok = await addAccount(e); await putAlerts(e, tok, { webhook: HOOK });
+  for (let i = 0; i < 5; i++) e.DB.sql.prepare("INSERT INTO alert_outbox (account_id, job_id, kind, job_name, detail, created_at) VALUES (1, ?, 'down', ?, 'HTTP 500', 1)").run(i, "job" + i);
+  const sent = [], f = async (u, init) => { sent.push(JSON.parse(init.body).content); return new Response(null, { status: 204 }); };
+  assert.equal((await sendAlerts(e, 5000, f)).sent, L.ALERT_SEND_BATCH);
+  assert.equal(outbox(e).length, 5 - L.ALERT_SEND_BATCH);
+  assert.ok(sent.every((t) => t.startsWith("FREE CRON:") && !t.includes("http")));
+  await sendAlerts(e, 5000, f); assert.equal(outbox(e).length, 0);
+});
+
+test("alerts: a failing webhook is retried, then dropped, and never throws", async () => {
+  const e = env(), tok = await addAccount(e); await putAlerts(e, tok, { webhook: HOOK });
+  e.DB.sql.prepare("INSERT INTO alert_outbox (account_id, job_id, kind, job_name, detail, created_at) VALUES (1, 1, 'down', 'j', 'HTTP 500', 1)").run();
+  const boom = async () => { throw new Error("network"); };
+  await sendAlerts(e, 1, boom); await sendAlerts(e, 1, boom); assert.equal(outbox(e).length, 1);
+  await sendAlerts(e, 1, boom); assert.equal(outbox(e).length, 0);
+  e.DB.sql.prepare("INSERT INTO alert_outbox (account_id, job_id, kind, job_name, detail, created_at) VALUES (1, 1, 'down', 'j', 'x', 1)").run();
+  await sendAlerts(e, 1, async () => new Response("gone", { status: 404 })); assert.equal(outbox(e).length, 0);   // webhook deleted on Discord's side
+});
+
+test("alerts: a webhook that breaks cannot break runDue (alerts are sent in a separate step)", async () => {
+  const e = env(), tok = await addAccount(e); await putAlerts(e, tok, { webhook: HOOK }); const id = dueJob(e);
+  const r = await runDue(e, 1000, failF);
+  assert.equal(r.ran, 1); assert.equal(r.failed, 1);
+});
+
+test("alerts: text never contains the URL, mentions or markdown from the cron name; old outbox rows are pruned", async () => {
+  const t = L.alertText("down", "@everyone `x` **hi**\nhttps://x", "HTTP 500");
+  assert.ok(!t.includes("@") && !t.includes("`") && !t.includes("*") && !t.includes("\n"));
+  const e = env(); await addAccount(e);
+  e.DB.sql.prepare("INSERT INTO alert_outbox (account_id, job_id, kind, job_name, detail, created_at) VALUES (1, 1, 'down', 'j', 'x', 1)").run();
+  await pruneOutbox(e, Date.now()); assert.equal(outbox(e).length, 0);
+});
+
+test("alerts: deleting a cron or the account removes their settings and queued alerts", async () => {
+  const e = env(), tok = await addAccount(e); await putAlerts(e, tok, { webhook: HOOK }); const id = dueJob(e);
+  e.DB.sql.prepare("INSERT INTO alert_outbox (account_id, job_id, kind, job_name, detail, created_at) VALUES (1, ?, 'down', 'j', 'x', 1)").run(id);
+  await call(e, `/api/jobs/${id}`, { method: "DELETE", token: tok }); assert.equal(outbox(e).length, 0);
+  await call(e, "/api/me", { method: "DELETE", token: tok });
+  assert.equal(e.DB.sql.prepare("SELECT COUNT(*) AS n FROM account_settings").get().n, 0);
+});
+
+test("page: settings has the Discord alerts card and the module list shows alerts online", async () => {
+  const html = await (await call(env(), "/")).text();
+  for (const id of ["alHook", "alSave", "alTest", "alToggle", "alRemove", "alState"]) assert.ok(html.includes(`id="${id}"`), id);
+  assert.ok(html.includes('"/api/alerts"') && html.includes('"/api/alerts/test"'));
+  assert.ok(!/Failure alerts<span class="why">[^<]*<\/span><\/span><em class="chip soon"/.test(html));
   assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
 });
