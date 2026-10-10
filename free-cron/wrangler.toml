@@ -13,8 +13,8 @@ TURNSTILE_SITE_KEY = "0x4AAAAAAFQlkDyvM2mVVPVl"
 # Extra hostnames crons may never call (comma separated). This service's own host is always blocked.
 SELF_HOSTS = ""
 # Gumroad Premium. PRODUCT_ID: Gumroad product page > the id shown in the product's "Content" / license section (or the API). BUY_URL: your Gumroad product link.
-GUMROAD_PRODUCT_ID = ""
-GUMROAD_BUY_URL = ""
+GUMROAD_PRODUCT_ID = "mhVln9YYiodlDVKw6cv9CQ=="
+GUMROAD_BUY_URL = "https://boardmaster87.gumroad.com/l/xuqnej"
 # "1" = membership (re-checked daily, ends when it stops being paid). "0" = one-time purchase: PREMIUM_DAYS of Premium per key.
 GUMROAD_RECURRING = "1"
 PREMIUM_DAYS = "30"
