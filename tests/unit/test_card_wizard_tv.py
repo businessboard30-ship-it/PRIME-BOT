@@ -31,7 +31,7 @@ def test_each_tab_shows_only_its_own_controls():
     common = {"tabbg", "tablayout", "tabtext", "reset", "unlock", "preset"}
     assert kinds(build("bg")) == common | {"setbg", "dim", "focus"}
     assert kinds(build("layout")) == common | {"layout", "banner", "side", "shape"}
-    assert kinds(build("text")) == common | {"color", "font", "style", "heading", "number"}
+    assert kinds(build("text")) == common | {"color", "font", "bracket", "style", "heading", "number"}
 
 
 def test_unlocked_server_gets_done_not_unlock_and_clear_only_with_a_background():
@@ -59,7 +59,7 @@ def test_the_active_tab_is_highlighted_and_the_wizard_stays_short():
         assert tabs["cardwz_tab" + t] == discord.ButtonStyle.primary
         assert sum(1 for s in tabs.values() if s == discord.ButtonStyle.primary) == 1
         assert sum(isinstance(getattr(c, 'item', c), discord.ui.Select) for c in v.walk_children()) <= 5
-        assert len(list(v.walk_children())) < 25
+        assert len(list(v.walk_children())) < 26   # Text tab gained the bracket select (Discord hard cap is 40)
         assert sum(isinstance(c, discord.ui.Select) for c in v.walk_children()) <= 5
 
 

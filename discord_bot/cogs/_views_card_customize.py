@@ -178,7 +178,13 @@ _BANNER_LABELS = {"bottom": "Bottom banner (classic)", "top": "Top banner", "non
 _DIM_LABELS = {"light": "Light — see more of your image", "medium": "Medium (default)", "heavy": "Heavy — best text contrast"}
 _SIDE_LABELS = {"left": "Avatar on the left (classic)", "right": "Avatar on the right"}
 _LAYOUT_LABELS = {"banner": "Banner layout (classic)", "centered": "Centered — big avatar in the middle"}
-_FONT_LABELS = {"classic": "Classic font (default)", "clean": "Clean — Poppins", "tall": "Tall — Bebas Neue", "script": "Handwritten — Pacifico"}
+_FONT_LABELS = {"classic": "Classic font (default)", "clean": "Clean — Poppins", "tall": "Tall — Bebas Neue", "script": "Handwritten — Pacifico",
+                "tech": "Tech — Orbitron", "elegant": "Elegant — Cinzel", "pixel": "Pixel — Press Start 2P",
+                "gothic": "Gothic — Pirata One", "comic": "Comic — Bangers", "horror": "Horror — Creepster",
+                "round": "Rounded — Righteous"}
+_BRACKET_LABELS = {"none": "No brackets (default)", "square": "[ Name ] square", "round": "( Name ) round",
+                   "curly": "{ Name } curly", "angle": "< Name > angle", "guillemet": "\u00ab Name \u00bb guillemets",
+                   "slashes": "// Name // slashes", "stars": "* Name * stars"}
 _FOCUS_LABELS = {"center": "Crop: center (default)", "top": "Crop: keep the top", "bottom": "Crop: keep the bottom",
                  "left": "Crop: keep the left", "right": "Crop: keep the right"}
 _COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red", "avatar": "Match my avatar (each member differs)"}
@@ -327,7 +333,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect, CardShapeSelect):
             _select_row(select_cls)
     else:
-        for select_cls in (CardColorSelect, CardFontSelect, CardStyleSelect):
+        for select_cls in (CardColorSelect, CardFontSelect, CardBracketSelect, CardStyleSelect):
             _select_row(select_cls)
         text_row = discord.ui.ActionRow()
         text_row.add_item(CardHeadingButton(guild_id, clone_id, invoker_id))
@@ -594,6 +600,10 @@ class CardLayoutSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Sel
 
 class CardFontSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("font")):
     FIELD, ID, PLACEHOLDER, CHOICES = "font", "font", "Font", _FONT_LABELS
+
+
+class CardBracketSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("bracket")):
+    FIELD, ID, PLACEHOLDER, CHOICES = "bracket", "bracket", "Brackets around the username", _BRACKET_LABELS
 
 
 class CardFocusSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("focus")):
@@ -1023,7 +1033,7 @@ class CardTabButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cardw
 
 DYNAMIC_ITEMS = (
     CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect, CardStyleSelect,
-    CardLayoutSelect, CardFontSelect, CardFocusSelect,
+    CardLayoutSelect, CardFontSelect, CardBracketSelect, CardFocusSelect,
     CardBackgroundButton, CardClearBackgroundButton, CardUnlockButton,
     CardHeadingButton, CardNumberToggleButton, CardResetButton, CardPreviewButton, CardDoneButton,
     CardTabButton, CardPresetSelect,
