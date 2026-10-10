@@ -144,6 +144,7 @@ server admin configured; AI chat/image features send your prompt to the
 underlying AI provider to generate a response).</li>
 <li>Payment references (not full card details — payments are handled by a
 third-party payment processor) when you use a paid feature.</li>
+<li>Messages that Scam Shield removes as known scams: a copy (text and attachments, with the server and user IDs) is saved to a private channel run by the operator, so the scam rules can be improved.</li>
 <li>Optional linked-account tokens (media server, cloud folder, your own
 bot token) only if you choose to connect one, stored so the relevant
 feature keeps working until you disconnect it.</li>

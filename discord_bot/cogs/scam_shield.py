@@ -11,15 +11,16 @@ Flow per message:
   1. skip our own / DMs / system messages and trusted staff (Manage Messages, Manage Server, Admin);
   2. match the text (content + embed text + attachment file names);
   3. only if no text match AND image rules exist: hash small image attachments and compare;
-  4. on a match: delete it, record the hit, and post a flag in the server's log channel if it has one.
+  4. on a match: save a copy (text + attachments) to the image-hosting channel if one is set, delete it, record\n     the hit, and post a flag in the server's log channel if it has one.
 Webhook messages are checked too (raid bots love them); there is no "trusted" shortcut for them.
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import discord
 from discord.ext import commands, tasks
@@ -31,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 _IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 _download_slots = asyncio.Semaphore(3)
+EVIDENCE_MAX_FILES = 4                      # attachments kept per caught message
+EVIDENCE_MAX_BYTES = 8 * 1024 * 1024        # same cap as welcome backgrounds / ad images
 
 
 def _is_trusted(message: discord.Message) -> bool:
@@ -128,13 +131,53 @@ class ScamShieldCog(commands.Cog):
         return None
 
     # ── what we do when something matches ────────────────────────────────
+    async def _evidence(self, message: discord.Message) -> Tuple[Optional[discord.TextChannel], List[Tuple[str, bytes]]]:
+        """The image-hosting channel (same one /welcome custombg uses, set with /admin hostingchannel) plus the
+        message's attachments as bytes. Must run BEFORE the delete: Discord CDN links die with the message.
+        (None, []) when no hosting channel is set or the bot can't reach it: nothing is downloaded then."""
+        try:
+            from discord_bot.ad_images import _host_channel
+            host = await _host_channel(self.bot)
+        except Exception:
+            return None, []
+        if host is None:
+            return None, []
+        got: List[Tuple[str, bytes]] = []
+        for att in message.attachments[:EVIDENCE_MAX_FILES]:
+            if att.size > EVIDENCE_MAX_BYTES:
+                continue
+            try:
+                async with _download_slots:
+                    data = await asyncio.wait_for(att.read(), timeout=6)
+                got.append((att.filename, data))
+            except Exception:
+                continue
+        return host, got
+
+    async def _archive(self, host, files, message, kind, matched, rule_id, deleted) -> None:
+        """Drop the caught scam into the hosting channel (text + the files) so you keep a copy of everything
+        Scam Shield removed, e.g. to add new rules from. Best effort: never blocks or breaks the delete."""
+        try:
+            body = (message.content or "")[:1200] or "(image / embed only)"
+            head = (f"\U0001F6E1\ufe0f **Scam Shield catch** | {kind}: `{discord.utils.escape_markdown(str(matched))[:80]}`"
+                    f"{f' (rule {rule_id})' if rule_id else ''} | server `{message.guild.id}` | user `{message.author.id}` "
+                    f"| {'deleted' if deleted else 'NOT deleted'}\n>>> {discord.utils.escape_mentions(body)}")
+            await host.send(content=head[:1990],
+                            files=[discord.File(io.BytesIO(d), filename=f"scam_{i}_{n}"[:100]) for i, (n, d) in enumerate(files)],
+                            allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            logger.debug("[scam-shield] couldn't archive the catch", exc_info=True)
+
     async def _act(self, message: discord.Message, kind: str, matched: str, rule_id: Optional[int]) -> None:
+        host, files = await self._evidence(message)
         deleted = False
         try:
             await message.delete()
             deleted = True
         except discord.HTTPException as e:
             logger.warning("[scam-shield] couldn't delete in guild %s (%s)", message.guild.id, e)
+        if host is not None:
+            await self._archive(host, files, message, kind, matched, rule_id, deleted)
         if ss.throttled(message.guild.id, message.author.id):
             return                                    # already flagged this user a moment ago
         clone_id = getattr(self.bot, "clone_id", None)
