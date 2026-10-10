@@ -6,7 +6,7 @@ export function appScript(site) {
   return `(function(){
 "use strict";
 var SITE="${site}",H={"Content-Type":"application/json","X-FreeCron":"1"};
-var $=function(i){return document.getElementById(i)},tok={login:"",job:"",redeem:"",},wid={},mounted={};
+var $=function(i){return document.getElementById(i)},tok={login:"",job:"",redeem:"",page:""},wid={},mounted={};
 var $$=function(s){return Array.prototype.slice.call(document.querySelectorAll(s))};
 var reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
 var lowPower=reduce||innerWidth<700||(navigator.hardwareConcurrency&&navigator.hardwareConcurrency<=4)||(navigator.connection&&navigator.connection.saveData);
@@ -21,7 +21,7 @@ function say(t,bad){var m=$("msg");m.textContent=t||"";m.className=bad?"bad":"mu
 function api(p,o){o=o||{};o.headers=H;return fetch(p,o).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok){var e=new Error(j.error||"Something went wrong.");e.status=r.status;throw e}return j})})}
 function mount(id,key){var tries=0;(function go(){if(window.turnstile){wid[key]=window.turnstile.render("#"+id,{sitekey:SITE,theme:"dark",callback:function(t){tok[key]=t;sync()},"expired-callback":function(){tok[key]=""; sync()}})}else if(tries++<100){setTimeout(go,100)}})()}
 function resetTs(key){tok[key]="";if(window.turnstile&&wid[key]!==undefined)window.turnstile.reset(wid[key]);sync()}
-function sync(){$("login").disabled=!tok.login;$("add").disabled=!tok.job;$("redeem").disabled=!tok.redeem}
+function sync(){$("login").disabled=!tok.login;$("add").disabled=!tok.job;$("redeem").disabled=!tok.redeem;$("spAdd").disabled=!tok.page}
 var NAMES={5:"5 minutes",15:"15 minutes",30:"30 minutes",60:"hour",360:"6 hours",720:"12 hours",1440:"24 hours"};
 function every(m){return NAMES[m]?("every "+NAMES[m]):("every "+m+" min")}
 function when(ms){return ms?new Date(ms).toLocaleString():"never"}
@@ -39,6 +39,7 @@ function viewFromHash(){
 function ensureMounts(){
   if(!me)return;
   if(current==="crons"&&!mounted.job){mounted.job=1;mount("tsJob","job")}
+  if(current==="status"&&!mounted.page){mounted.page=1;mount("tsPage","page")}
   if(current==="settings"&&!me.premium&&!mounted.redeem){mounted.redeem=1;mount("tsRedeem","redeem")}
 }
 function route(fromNav){
@@ -49,6 +50,7 @@ function route(fromNav){
   setMenu(false);
   ensureMounts();
   if(current==="stats")loadStats();
+  if(current==="status")loadPages();
   if(fromNav){
     var head=document.querySelector("#v-"+current+" .vhead");
     if(head){var h2=head.querySelector("h2");if(h2)h2.focus({preventScroll:true});if(head.getBoundingClientRect().top<64)head.scrollIntoView({block:"start"})}
@@ -208,6 +210,53 @@ function loadRuns(id,box){
   }).catch(function(e){box.textContent="";var b=document.createElement("p");b.className="bad fine";b.textContent=e.message;box.appendChild(b)});
 }
 function fail(e){say(e.message,true)}
+/* ---------- status pages: create, rename, switch on/off, choose which crons appear (labels only, never URLs) ---------- */
+function mk(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
+function loadPages(){return api("/api/status-pages").then(function(r){say("");drawPages(r)}).catch(fail)}
+function drawPages(r){
+  var box=$("pages");box.textContent="";
+  $("spNote").textContent="Public pages show only the labels you choose, whether each is up or down, and its uptime. Never your URLs. Without a custom address the link is random and hard to guess. Pages are hidden from search engines. Your plan: "+r.max_pages+(r.max_pages===1?" page":" pages")+", "+r.max_monitors+" crons each.";
+  if(!r.pages.length){box.appendChild(mk("p","mut","No status pages yet."));return}
+  r.pages.forEach(function(p){
+    var d=mk("div","job"),n=mk("div","name");
+    n.appendChild(mk("span","dot "+(p.enabled&&!p.blocked?"":"idle")));n.append(p.title);
+    n.append(" ",mk("span","badge",p.blocked?"switched off by the service":(p.enabled?"public":"off")));
+    var u=mk("div","url mut purl"),a=mk("a","",location.origin+p.path);a.href=p.path;a.target="_blank";a.rel="noopener";u.appendChild(a);
+    var row=mk("div","row");
+    var rn=mk("button","btn sm","Rename");
+    rn.onclick=function(){var t=prompt("New title",p.title);if(t!==null)api("/api/status-pages/"+p.id,{method:"PATCH",body:JSON.stringify({title:t})}).then(loadPages).catch(fail)};
+    var tg=mk("button","btn sm",p.enabled?"Switch off":"Switch on");tg.disabled=p.blocked;
+    tg.onclick=function(){api("/api/status-pages/"+p.id,{method:"PATCH",body:JSON.stringify({enabled:!p.enabled})}).then(loadPages).catch(fail)};
+    var x=mk("button","btn sm ghost","Delete");
+    x.onclick=function(){if(confirm("Delete this status page?"))api("/api/status-pages/"+p.id,{method:"DELETE"}).then(loadPages).catch(fail)};
+    row.append(rn,tg,x);
+    var ms=mk("div","pmons");
+    if(!p.monitors.length)ms.appendChild(mk("p","mut fine","No crons on this page yet."));
+    var listed={};
+    p.monitors.forEach(function(m){
+      listed[m.job_id]=1;
+      var mr=mk("div","pmon"),l=mk("span","pl",m.label),rm=mk("button","btn sm ghost","Remove");
+      rm.onclick=function(){api("/api/status-pages/"+p.id+"/monitors/"+m.job_id,{method:"DELETE"}).then(loadPages).catch(fail)};
+      mr.append(l,rm);ms.appendChild(mr)});
+    d.append(n,u,row,ms);
+    var free=(me&&me.jobs?me.jobs:[]).filter(function(j){return!listed[j.id]});
+    if(free.length&&p.monitors.length<r.max_monitors){
+      var ar=mk("div","row padd"),sel=mk("select"),lab=mk("input");
+      sel.setAttribute("aria-label","Cron to show");lab.setAttribute("aria-label","Public label");lab.maxLength=60;lab.placeholder="Public label";
+      free.forEach(function(j){var o=mk("option","",j.name);o.value=String(j.id);sel.appendChild(o)});
+      lab.value=free[0].name;
+      sel.onchange=function(){var j=free.filter(function(q){return String(q.id)===sel.value})[0];if(j)lab.value=j.name};
+      var ab=mk("button","btn sm","Add to page");
+      ab.onclick=function(){api("/api/status-pages/"+p.id+"/monitors",{method:"POST",body:JSON.stringify({job_id:Number(sel.value),label:lab.value})}).then(loadPages).catch(fail)};
+      ar.append(sel,lab,ab);d.appendChild(ar)}
+    else if(!free.length&&p.monitors.length<r.max_monitors)d.appendChild(mk("p","mut fine","All your crons are on this page. Create more crons to add them."));
+    box.appendChild(d)});
+}
+$("spAdd").onclick=function(){
+  $("spAdd").disabled=true;
+  var b={title:$("spTitle").value,token:tok.page},sl=$("spSlug").value.trim();if(sl)b.slug=sl;
+  api("/api/status-pages",{method:"POST",body:JSON.stringify(b)}).then(function(){$("spTitle").value="";$("spSlug").value="";say("Status page created.");return loadPages()}).catch(fail).then(function(){resetTs("page")})};
+
 function load(){return api("/api/me").then(function(m){say("");render(m)}).catch(function(e){
   if(e.status===401){me=null;setMenu(false);document.body.classList.remove("in-app");$("app").classList.add("hidden");$("out").classList.remove("hidden");if(!mounted.login){mounted.login=1;mount("tsLogin","login")}}else fail(e)})}
 $("login").onclick=function(){$("login").disabled=true;api("/api/login",{method:"POST",body:JSON.stringify({token:tok.login})}).then(function(r){location.href=r.url}).catch(function(e){fail(e);resetTs("login")})};

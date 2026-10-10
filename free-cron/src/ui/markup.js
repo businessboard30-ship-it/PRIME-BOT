@@ -45,8 +45,8 @@ export const MARKUP = `<canvas id="bgfx" aria-hidden="true"></canvas>
   <nav class="side-nav" aria-label="Sections">
 <a href="#/dashboard" data-nav="dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><span>Dashboard</span></a>
 <a href="#/crons" data-nav="crons"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span>Cronjobs</span><em class="count" id="navCount">0</em></a>
-<a href="#/status" data-nav="status"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg><span>Status pages</span><em class="chip soon">Soon</em></a>
-<a href="#/stats" data-nav="stats"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11M11 20V4M17 20v-6M2 20h20"/></svg><span>Statistics</span><em class="chip soon">Soon</em></a>
+<a href="#/status" data-nav="status"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg><span>Status pages</span></a>
+<a href="#/stats" data-nav="stats"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11M11 20V4M17 20v-6M2 20h20"/></svg><span>Statistics</span></a>
 <a href="#/settings" data-nav="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h8M18 6h2M4 12h2M12 12h8M4 18h10M20 18h0"/><circle cx="15" cy="6" r="2.2"/><circle cx="9" cy="12" r="2.2"/><circle cx="17" cy="18" r="2.2"/></svg><span>Settings</span></a>
   </nav>
   <div class="side-foot">
@@ -84,8 +84,8 @@ export const MARKUP = `<canvas id="bgfx" aria-hidden="true"></canvas>
       <h2>What is online</h2>
       <ul class="mods">
         <li><span class="dot live"></span><span>Cronjobs<span class="why">Schedule GET and POST calls to any public https URL.</span></span><em class="chip on">Online</em></li>
-        <li><span class="dot idle"></span><span>Statistics<span class="why">Run history and response-time charts.</span></span><em class="chip soon">Soon</em></li>
-        <li><span class="dot idle"></span><span>Status pages<span class="why">Share the uptime of chosen crons on a public page.</span></span><em class="chip soon">Soon</em></li>
+        <li><span class="dot live"></span><span>Statistics<span class="why">Run history and response-time charts.</span></span><em class="chip on">Online</em></li>
+        <li><span class="dot live"></span><span>Status pages<span class="why">Share the uptime of chosen crons on a public page.</span></span><em class="chip on">Online</em></li>
         <li><span class="dot idle"></span><span>Failure alerts<span class="why">Get told on Discord when a cron goes down.</span></span><em class="chip soon">Soon</em></li>
       </ul>
     </div>
@@ -114,11 +114,14 @@ export const MARKUP = `<canvas id="bgfx" aria-hidden="true"></canvas>
 <section class="view hidden" id="v-status" data-view="status">
   <header class="vhead"><p class="eyebrow">Public</p><h2 tabindex="-1">Status pages</h2><p class="muted">Share the uptime of the crons you choose.</p></header>
   <div class="card reveal">
-    <div class="ph">
-      <svg viewBox="0 0 600 230" preserveAspectRatio="none" aria-hidden="true"><path class="grid" d="M0 60H600M0 115H600M0 170H600"/><path d="M40 40h260M40 95h200M40 150h320M40 205h140" opacity=".5"/><path class="trace" d="M470 40h90M470 95h90M470 150h90M470 205h90"/></svg>
-      <div class="ph-msg">Coming soon<small>Pick crons, give the page a name, share the link. Only labels and uptime are shown, never your URLs.</small></div>
-    </div>
+    <p class="eyebrow">New</p><h2>Create a page</h2>
+    <div class="row"><input id="spTitle" class="grow" maxlength="60" placeholder="Page title (e.g. My services)" aria-label="Page title"></div>
+    <div class="row"><input id="spSlug" class="grow" maxlength="40" placeholder="Optional custom address, e.g. my-services" aria-label="Custom address" autocomplete="off"></div>
+    <div class="row"><div id="tsPage" class="tsbox"></div></div>
+    <p><button id="spAdd" class="btn primary" disabled>Create page</button></p>
+    <p class="muted fine" id="spNote">Public pages show only the labels you choose, whether each is up or down, and its uptime. Never your URLs. Without a custom address the link is random and hard to guess. Pages are hidden from search engines.</p>
   </div>
+  <div class="card reveal"><p class="eyebrow">Public</p><h2>Your pages</h2><div id="pages"></div></div>
 </section>
 
 <section class="view hidden" id="v-stats" data-view="stats">
