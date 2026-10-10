@@ -209,6 +209,22 @@ def is_allowed_domain(domain: str, allowed) -> bool:
     return any(domain == a or domain.endswith("." + a) for a in allowed or ())
 
 
+# Discord's own domains (and its attachment CDN) can never be scam bait, so a domain rule that happens to
+# cover them (an owner typing "discord.com" into the add box, a rule on a parent domain, ...) must not
+# delete normal messages. Invite and gift links (discord.gg / discord.gift) are deliberately NOT listed.
+OFFICIAL_DOMAINS = ("discord.com", "discordapp.com", "discordapp.net", "discord.media", "discordstatus.com",
+                    "discord.dev", "discord.new")
+
+
+def is_official_host(host: str, t: str = "") -> bool:
+    """True for a real Discord host. `t` is the normalized message: a host followed by '@'
+    (https://discord.com@evil.xyz/) is the classic look-alike trick, so that is never trusted."""
+    h = (host or "").lower()
+    if not any(h == d or h.endswith("." + d) for d in OFFICIAL_DOMAINS):
+        return False
+    return not re.search(r"(?:https?://|www\.)" + re.escape(h) + r"[^\s/]*@", t or "")
+
+
 def match_text(text: str, allowed=()) -> Optional[Tuple[str, str, Optional[int]]]:
     """Returns (kind, what matched, rule id) or None. Pure and fast. `allowed` is the
     server's own allowed-domain list: those domains never match (words/heuristics still do)."""
@@ -225,7 +241,7 @@ def match_text(text: str, allowed=()) -> Optional[Tuple[str, str, Optional[int]]
         for h in hosts_in(text):
             for rid, d in _c.domains:
                 if h == d or h.endswith("." + d):
-                    if is_allowed_domain(h, allowed):
+                    if is_allowed_domain(h, allowed) or is_official_host(h, t):
                         continue
                     return "domain", d, rid
     if any(b in t for b in _BEAST) and any(b in t for b in _BAIT):
