@@ -41,6 +41,8 @@ MIN_SIDE = 300                          # px, same idea
 MAX_DOWNLOAD_BYTES = 8_000_000
 REQUEST_TIMEOUT = 12.0
 LEARNED_DISTANCE = 6                    # Hamming distance for "same picture as one Gemini already flagged"
+FREE_GUILD_DAILY = 10                   # AI checks per server per day (UTC) on a free server
+PREMIUM_GUILD_DAILY = 60                # same, for a Premium server
 CACHE_MAX = 3000
 LEARNED_MAX = 300
 
@@ -70,12 +72,52 @@ class _State:
     day_count: int = 0
     blocked_until: float = 0.0                                  # circuit breaker after 429 / 5xx / network errors
     user_calls: Dict[Tuple[int, int], Deque[float]] = {}
+    guild_used: Dict[Tuple[int, Optional[int]], Tuple[str, int]] = {}   # (guild, clone) -> (UTC day, checks used)
+    premium: Dict[Tuple[int, Optional[int]], Tuple[float, bool]] = {}   # 60s cache of "is this server Premium"
     last_ok: Optional[bool] = None                              # result of the most recent Gemini call
     last_detail: str = ""
     last_at: float = 0.0                                        # wall-clock time (time.time())
 
 
 _s = _State()
+
+
+async def _is_premium(guild_id: int, clone_id: Optional[int]) -> bool:
+    """Premium lookup, cached for 60s. Any problem means free (the smaller cap), never an error."""
+    key = (guild_id, clone_id)
+    hit = _s.premium.get(key)
+    now = time.monotonic()
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        from database import db
+        value = bool(await db.is_guild_premium_active(guild_id, clone_id))
+    except Exception:
+        return False
+    if len(_s.premium) > 3000:
+        _s.premium.clear()
+    _s.premium[key] = (now + 60, value)
+    return value
+
+
+async def guild_cap(guild_id: int, clone_id: Optional[int] = None) -> Tuple[int, bool]:
+    """(daily AI-check cap for this server, is it Premium). Env vars SCAM_VISION_FREE_DAILY and
+    SCAM_VISION_PREMIUM_DAILY change the numbers without a code change."""
+    premium = await _is_premium(guild_id, clone_id)
+    cap = _int_env("SCAM_VISION_PREMIUM_DAILY", PREMIUM_GUILD_DAILY) if premium \
+        else _int_env("SCAM_VISION_FREE_DAILY", FREE_GUILD_DAILY)
+    return cap, premium
+
+
+def guild_used_today(guild_id: int, clone_id: Optional[int] = None) -> int:
+    day, n = _s.guild_used.get((guild_id, clone_id), ("", 0))
+    return n if day == _today() else 0
+
+
+def _spend_guild(guild_id: int, clone_id: Optional[int]) -> None:
+    if len(_s.guild_used) > 5000:
+        _s.guild_used.clear()
+    _s.guild_used[(guild_id, clone_id)] = (_today(), guild_used_today(guild_id, clone_id) + 1)
 
 
 def _note(ok: bool, detail: str) -> None:
@@ -270,8 +312,11 @@ async def _ask(jpeg: bytes) -> Optional[bool]:
         return None
 
 
-async def is_scam_image(data: bytes, guild_id: int, user_id: int) -> Optional[Tuple[str, str, Optional[int]]]:
-    """Returns ('vision', reason, None) when the image is a scam, else None. Same shape as ss.match_image."""
+async def is_scam_image(data: bytes, guild_id: int, user_id: int,
+                        clone_id: Optional[int] = None) -> Optional[Tuple[str, str, Optional[int]]]:
+    """Returns ('vision', reason, None) when the image is a scam, else None. Same shape as ss.match_image.
+    Cache hits and copies of already-flagged images cost nothing and ignore the server cap; only a real
+    Gemini call counts against the server's daily cap (free: 10, Premium: 60 by default)."""
     if not available():
         return None
     key = hashlib.sha256(data).hexdigest()
@@ -280,12 +325,16 @@ async def is_scam_image(data: bytes, guild_id: int, user_id: int) -> Optional[Tu
     if known_copy(data):
         _remember(key, True)
         return "vision", "AI scan: copy of a scam image already flagged", None
+    cap, _ = await guild_cap(guild_id, clone_id)
+    if guild_used_today(guild_id, clone_id) >= cap:
+        return None                                              # this server used up today's AI checks
     if not _budget_ok(guild_id, user_id):
         return None
     jpeg = prepare(data)
     if jpeg is None:
         return None
     _spend()
+    _spend_guild(guild_id, clone_id)
     verdict = await _ask(jpeg)
     if verdict is None:
         return None                                              # unknown: not cached, never deletes

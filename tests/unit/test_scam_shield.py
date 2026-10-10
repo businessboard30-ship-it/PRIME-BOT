@@ -648,6 +648,8 @@ def vision(monkeypatch):
     sv._s.cache.clear(); sv._s.learned.clear(); sv._s.calls.clear(); sv._s.user_calls.clear()
     sv._s.blocked_until = 0.0; sv._s.day_key = ""; sv._s.day_count = 0
     monkeypatch.setattr(sv.time, "monotonic", lambda: 10 ** 12)
+    sv._s.guild_used.clear(); sv._s.premium.clear()
+    monkeypatch.setattr(sv, "_is_premium", AsyncMock(return_value=False))
     yield
 
 
@@ -808,3 +810,38 @@ def test_status_text_and_self_test(vision, monkeypatch):
     monkeypatch.setattr(sv, "_ask", fake_bad)
     ok, msg = run(sv.self_test())
     assert not ok and "key rejected" in msg
+
+
+def test_free_server_cap_then_premium_cap(vision, monkeypatch):
+    ask = AsyncMock(return_value=False)
+    monkeypatch.setattr(sv, "_ask", ask)
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    monkeypatch.setenv("SCAM_VISION_PER_USER", "999")
+    monkeypatch.setenv("SCAM_VISION_RPM", "999")
+    monkeypatch.setenv("SCAM_VISION_DAILY", "999")
+    assert run(sv.guild_cap(1)) == (10, False)
+    for n in range(15):
+        run(sv.is_scam_image(n.to_bytes(2, "big") * 10000, 1, 100 + n))
+    assert ask.await_count == 10 and sv.guild_used_today(1) == 10   # free server stops at 10
+    monkeypatch.setattr(sv, "_is_premium", AsyncMock(return_value=True))
+    assert run(sv.guild_cap(1)) == (60, True)
+    run(sv.is_scam_image(b"\xff\xee" * 10000, 1, 500))
+    assert ask.await_count == 11                                    # upgrading lifts the limit right away
+    assert run(sv.guild_cap(2)) == (60, True) and sv.guild_used_today(2) == 0
+
+
+def test_cached_and_known_copies_do_not_use_the_server_cap(vision, monkeypatch):
+    monkeypatch.setattr(sv, "_ask", AsyncMock(return_value=True))
+    monkeypatch.setattr(sv, "prepare", lambda d: b"jpeg")
+    run(sv.is_scam_image(b"S" * 20000, 7, 1))
+    assert sv.guild_used_today(7) == 1
+    assert run(sv.is_scam_image(b"S" * 20000, 7, 2))               # cached: free
+    assert sv.guild_used_today(7) == 1
+
+
+def test_caps_can_be_changed_by_env(vision, monkeypatch):
+    monkeypatch.setenv("SCAM_VISION_FREE_DAILY", "3")
+    monkeypatch.setenv("SCAM_VISION_PREMIUM_DAILY", "100")
+    assert run(sv.guild_cap(1)) == (3, False)
+    monkeypatch.setattr(sv, "_is_premium", AsyncMock(return_value=True))
+    assert run(sv.guild_cap(1)) == (100, True)

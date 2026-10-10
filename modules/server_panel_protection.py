@@ -67,7 +67,15 @@ async def scam_state(guild_id: int, clone_id: Optional[int]) -> Dict[str, Any]:
         logger.debug("[server-panel] scam shield read failed", exc_info=True)
         cfg = {"enabled": True, "allowed_domains": []}
     caught = await ss.guild_hit_count(guild_id, clone_id)
-    return {"cfg": cfg, "caught": caught, "global_on": ss.is_enabled()}
+    ai = {"on": False, "used": 0, "cap": 0, "premium": False}
+    try:
+        from modules import scam_vision as sv
+        cap, premium = await sv.guild_cap(guild_id, clone_id)
+        ai = {"on": sv.available(), "used": min(sv.guild_used_today(guild_id, clone_id), cap),
+              "cap": cap, "premium": premium}
+    except Exception:
+        logger.debug("[server-panel] AI scan state read failed", exc_info=True)
+    return {"cfg": cfg, "caught": caught, "global_on": ss.is_enabled(), "ai": ai}
 
 
 def clean_domains(text: str, existing) -> Tuple[list, list, list]:

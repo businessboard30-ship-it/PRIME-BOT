@@ -266,7 +266,8 @@ class ScamShieldCog(commands.Cog):
                 except Exception:
                     continue
                 cache[att.id] = data
-            hit = await sv.is_scam_image(data, message.guild.id, message.author.id)
+            hit = await sv.is_scam_image(data, message.guild.id, message.author.id,
+                                         getattr(self.bot, "clone_id", None))
             if hit:
                 return hit
         return None
