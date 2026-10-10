@@ -28,7 +28,7 @@ def build(tab="bg", tv=False, unlocked=False):
 
 
 def test_each_tab_shows_only_its_own_controls():
-    common = {"tabbg", "tablayout", "tabtext", "reset", "unlock"}
+    common = {"tabbg", "tablayout", "tabtext", "reset", "unlock", "preset"}
     assert kinds(build("bg")) == common | {"setbg", "dim"}
     assert kinds(build("layout")) == common | {"banner", "side", "shape"}
     assert kinds(build("text")) == common | {"color", "heading", "number"}
@@ -58,8 +58,9 @@ def test_the_active_tab_is_highlighted_and_the_wizard_stays_short():
         tabs = {c.custom_id.split(":")[0]: c.item.style for c in v.walk_children() if getattr(c, "custom_id", "").startswith("cardwz_tab")}
         assert tabs["cardwz_tab" + t] == discord.ButtonStyle.primary
         assert sum(1 for s in tabs.values() if s == discord.ButtonStyle.primary) == 1
-        assert sum(isinstance(c, discord.ui.Select) for c in v.walk_children()) <= 3
+        assert sum(isinstance(c, discord.ui.Select) for c in v.walk_children()) <= 4
         assert len(list(v.walk_children())) < 25
+        assert sum(isinstance(c, discord.ui.Select) for c in v.walk_children()) <= 4
 
 
 def test_tab_button_custom_id_round_trips_for_main_and_clone():

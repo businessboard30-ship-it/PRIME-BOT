@@ -20,6 +20,8 @@ designed — one ephemeral message (only the admin who tapped sees it):
                  itself after every change (a sample backdrop is used until a
                  background is set); reset puts the layout back to default
 
+A "Style presets" dropdown above the tabs sets banner / darkness / avatar side / text colour / member # /
+avatar shape in one tap (heading and background are never touched); then fine-tune on the tabs.
 The controls are split into three tabs under the TV (Background / Layout / Text) so only
 2-3 controls show at a time. There is NO preview rate limit here (the old Preview button
 is kept only so wizards posted before this change keep working).
@@ -177,6 +179,45 @@ _SIDE_LABELS = {"left": "Avatar on the left (classic)", "right": "Avatar on the 
 _COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red"}
 
 
+# -- style presets: one tap sets the look, then fine-tune on the tabs -----------
+# Never touches the heading or the background. Every value must be one parse_ultra_options accepts
+# (a test checks this), and `shape` one of the avatar frame shapes.
+
+STYLE_PRESETS = {
+    "classic": {"label": "Classic", "desc": "The default look: bottom banner, avatar left, white text.",
+                "opts": {"banner": "bottom", "dim": "medium", "avatar_side": "left", "text_color": "white", "show_number": True},
+                "shape": "circle"},
+    "minimal": {"label": "Minimal", "desc": "Your image shows through; text sits right on it, no member number.",
+                "opts": {"banner": "none", "dim": "light", "avatar_side": "left", "text_color": "white", "show_number": False},
+                "shape": "circle"},
+    "bold": {"label": "Bold", "desc": "Top banner, heavy shade, gold text, hexagon avatar on the right.",
+             "opts": {"banner": "top", "dim": "heavy", "avatar_side": "right", "text_color": "gold", "show_number": True},
+             "shape": "hexagon"},
+    "neon": {"label": "Neon", "desc": "Dark and sharp: cyan text over a heavy shade, diamond avatar.",
+             "opts": {"banner": "none", "dim": "heavy", "avatar_side": "left", "text_color": "cyan", "show_number": True},
+             "shape": "diamond"},
+    "sunset": {"label": "Sunset", "desc": "Soft pink text, rounded avatar on the right, bottom banner.",
+               "opts": {"banner": "bottom", "dim": "medium", "avatar_side": "right", "text_color": "pink", "show_number": True},
+               "shape": "rounded_square"},
+    "ember": {"label": "Ember", "desc": "Strong red text under a top banner, square avatar.",
+              "opts": {"banner": "top", "dim": "heavy", "avatar_side": "left", "text_color": "red", "show_number": True},
+              "shape": "square"},
+}
+
+
+async def _apply_style(guild_id: int, clone_id, user_id, opts: dict, shape: str) -> None:
+    """Apply a preset in ONE write. Unpaid servers only touch the in-memory draft (same gate as every other edit)."""
+    cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    if not cfg.get("ultra_pack_unlocked"):
+        d = _get_draft(guild_id, clone_id, user_id, create=True)
+        d["opts"].update(opts)
+        d["shape"] = shape
+        return
+    cur = parse_ultra_options(cfg.get("ultra_card_json"))
+    cur.update(opts)
+    await db.set_welcome_config(guild_id, clone_id=clone_id, ultra_card_json=json.dumps(cur), avatar_shape=shape)
+
+
 # -- the TV: live preview drawn inside the wizard message ---------------------
 
 _TABS = ("bg", "layout", "text")
@@ -243,6 +284,10 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
     if has_tv:
         container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://card.png")))
     container.add_item(discord.ui.Separator())
+
+    preset_row = discord.ui.ActionRow()
+    preset_row.add_item(CardPresetSelect(guild_id, clone_id, invoker_id))
+    container.add_item(preset_row)
 
     tabs = discord.ui.ActionRow()
     for t in _TABS:
@@ -802,6 +847,37 @@ class CardDoneButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_
         await interaction.edit_original_response(view=done)
 
 
+class CardPresetSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("preset")):
+    """One tap sets banner, darkness, avatar side, text colour, member # and avatar shape. Heading and
+    background are left alone. Always shows the placeholder (the options are independent, so no preset
+    is 'current')."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        super().__init__(discord.ui.Select(
+            placeholder="\u2728 Style presets \u2014 pick one, then fine-tune",
+            options=[discord.SelectOption(label=p["label"], value=key, description=p["desc"][:100])
+                     for key, p in STYLE_PRESETS.items()],
+            custom_id=_encode("preset", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        g, c, i = _decode(match)
+        return cls(g, c, i)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        preset = STYLE_PRESETS.get(self.item.values[0])
+        if preset is not None:                    # an unknown value is ignored, never trusted
+            await _apply_style(self.guild_id, self.clone_id, interaction.user.id, dict(preset["opts"]), preset["shape"])
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 class CardTabButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cardwz_tab(bg|layout|text):(\d+):(-|\d+):(-|\d+)$"):
     """Switches which group of controls shows under the TV. Does not redraw the card."""
 
@@ -839,5 +915,5 @@ DYNAMIC_ITEMS = (
     CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect,
     CardBackgroundButton, CardClearBackgroundButton, CardUnlockButton,
     CardHeadingButton, CardNumberToggleButton, CardResetButton, CardPreviewButton, CardDoneButton,
-    CardTabButton,
+    CardTabButton, CardPresetSelect,
 )
