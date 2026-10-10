@@ -45,7 +45,7 @@ def test_gumroad_adopts_old_names_and_never_creates_memberships():
     assert "PRIME-BOT Premium - Yearly" in ga.PRODUCTS["premium_yearly"]["legacy"]
     assert {p: s["kind"] for p, s in ga.PRODUCTS.items() if s["kind"] == "membership"} == {
         "card_plan": "membership", "dev_monthly": "membership", "dev_yearly": "membership"}
-    assert ga._cents("dev_yearly") == 3000 and ga._cents("card_plan") == 200 and ga._cents("premium_yearly") == 3600
+    assert ga._cents("dev_yearly") == 3000 and ga._cents("card_plan") == 200 and ga._cents("premium_yearly") == round(config.PREMIUM_YEARLY_FEE_USD * 100)
 
 
 def test_paystack_creates_missing_plans_and_saves_codes(pdb, monkeypatch):
