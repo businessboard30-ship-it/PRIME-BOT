@@ -1,6 +1,6 @@
 # free-cron
 
-A standalone, public cron service on Cloudflare Workers + D1. It is **separate from the bot and from `cron-worker/`**.
+A standalone, public cron service on Cloudflare Workers + D1. It has its own Worker and database.
 
 - Sign in with **GitHub** (public id + username only, no scope). Cloudflare **Turnstile** guards sign-in and every create.
 - **5 free crons** per account, minimum interval 15 minutes. **Premium: unlimited**, minimum 5 minutes.

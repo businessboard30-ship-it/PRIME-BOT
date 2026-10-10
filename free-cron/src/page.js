@@ -1,6 +1,6 @@
 // The single page, assembled from three parts in ./ui: css.js (look), markup.js (structure and the five views), script.js (behaviour).
 // Strict CSP: one nonce for every script and the style block, no inline style attributes, no inline handlers, no innerHTML anywhere.
-// Look and feel match the PRIME BOT website (website/assets/site.css): same tokens, fonts, HUD hero, background network and scroll animations.
+// Look: HUD hero, framed cards, background network and scroll animations.
 import { CSS } from "./ui/css.js";
 import { MARKUP } from "./ui/markup.js";
 import { appScript } from "./ui/script.js";

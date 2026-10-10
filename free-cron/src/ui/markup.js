@@ -3,7 +3,6 @@
 export const MARKUP = `<canvas id="bgfx" aria-hidden="true"></canvas>
 <header class="site-header"><div class="wrap hdr-in">
 <a class="brand" href="/"><svg viewBox="0 0 32 32" aria-hidden="true" fill="none" stroke="#e1f3ff" stroke-width="1.6"><polygon points="16,2 28,9 28,23 16,30 4,23 4,9"/><polygon points="16,8 23,12 23,20 16,24 9,20 9,12" opacity=".6"/><circle cx="16" cy="16" r="2.6" fill="#e1f3ff"/></svg><span>FREE CRON</span></a>
-<nav class="nav" aria-label="Main"><a href="https://prime-bot-site.pages.dev/" rel="noopener">PRIME BOT</a><a class="opt" href="https://prime-bot-site.pages.dev/pricing/" rel="noopener">Pricing</a><a class="opt" href="https://discord.gg/DYfajXrP9B" rel="noopener">Support</a></nav>
 <button class="menu-btn" id="menuBtn" type="button" aria-controls="side" aria-expanded="false" aria-label="Open menu"><span></span><span></span><span></span></button>
 </div></header>
 <div class="scrim" id="scrim" hidden></div>
@@ -175,5 +174,5 @@ export const MARKUP = `<canvas id="bgfx" aria-hidden="true"></canvas>
 </div>
 </div>
 </main>
-<footer class="site-footer"><div class="wrap"><span>FREE CRON // part of PRIME BOT</span><span><a href="https://prime-bot-site.pages.dev/privacy/" rel="noopener">Privacy</a> &nbsp;·&nbsp; <a href="https://prime-bot-site.pages.dev/terms/" rel="noopener">Terms</a></span></div></footer>
+<footer class="site-footer"><div class="wrap"><span>FREE CRON</span><span><a href="/privacy">Privacy</a> &nbsp;·&nbsp; <a href="/terms">Terms</a></span></div></footer>
 `;

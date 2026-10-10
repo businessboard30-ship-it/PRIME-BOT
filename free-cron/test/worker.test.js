@@ -459,3 +459,32 @@ test("page: statistics view has range buttons, totals, charts and an empty state
   assert.ok(!/<script[^>]+src="(?!https:\/\/challenges\.cloudflare\.com)/.test(html));   // no other external script
   assert.ok(!html.includes("innerHTML") && !/style=/.test(html) && !/ on\w+=/.test(html));
 });
+
+test("main page has no bot branding or links to the bot site or its Discord", async () => {
+  const html = await (await call(env(), "/")).text();
+  assert.ok(!/prime\s*bot|prime-bot|discord\.gg|pages\.dev/i.test(html));
+  assert.ok(html.includes('href="/privacy"') && html.includes('href="/terms"'));
+});
+
+for (const p of ["privacy", "terms"]) {
+  test(`/${p} returns 200 with a strict CSP, a nonce on the style tag and no bot branding`, async () => {
+    const r = await call(env(), "/" + p), csp = r.headers.get("Content-Security-Policy"), html = await r.text();
+    assert.equal(r.status, 200);
+    assert.ok(csp.includes("default-src 'none'") && !csp.includes("script-src") && csp.includes("frame-ancestors 'none'"));
+    const nonce = /'nonce-([^']+)'/.exec(csp)[1];
+    for (const t of html.match(/<style[^>]*>/g)) assert.ok(t.includes(`nonce="${nonce}"`));
+    assert.ok(!/<script/i.test(html) && !/\sstyle=|\son[a-z]+=/i.test(html));
+    assert.ok(!/prime\s*bot|prime-bot|discord\.gg|pages\.dev/i.test(html));
+  });
+}
+
+test("legal pages show a contact only when CONTACT_URL is a safe https or mailto link", async () => {
+  assert.ok(!(await (await call(env(), "/terms")).text()).includes("Contact"));
+  assert.ok(!(await (await call(env({ CONTACT_URL: "javascript:alert(1)" }), "/terms")).text()).includes("Contact"));
+  const t = await (await call(env({ CONTACT_URL: "mailto:help@example.com" }), "/terms")).text();
+  assert.ok(t.includes("Contact") && t.includes("help@example.com"));
+});
+
+test("legal pages only answer GET", async () => {
+  assert.equal((await call(env(), "/privacy", { method: "POST", body: {} })).status, 404);
+});
