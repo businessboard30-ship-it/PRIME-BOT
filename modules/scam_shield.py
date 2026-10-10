@@ -160,6 +160,7 @@ class _Cache:
     words: List[Tuple[int, str]] = []       # (rule id, normalised word)
     domains: List[Tuple[int, str]] = []
     images: List[Tuple[int, int]] = []      # (rule id, dhash)
+    strict: Set[Tuple[int, Optional[int]]] = set()   # (guild id, clone id) with Strict mode switched on
 
 
 _c = _Cache()
@@ -192,6 +193,8 @@ async def load(force: bool = False) -> None:
             await _seed_defaults(conn)
             rules = await conn.fetch("SELECT id, kind, pattern FROM scam_shield_rules")
             setting = await conn.fetchrow("SELECT value FROM scam_shield_settings WHERE key = 'enabled'")
+            strict_rows = await conn.fetch(
+                "SELECT key FROM scam_shield_settings WHERE key LIKE $1", STRICT_PREFIX + "%")
     except Exception:
         logger.exception("[scam-shield] couldn't reload rules; keeping the ones in memory")
         _c.loaded_at = time.monotonic() - CACHE_SECONDS + 30     # retry in ~30s, don't hammer the DB
@@ -208,6 +211,7 @@ async def load(force: bool = False) -> None:
             except ValueError:
                 logger.warning("[scam-shield] bad image hash in rule %s", r["id"])
     _c.words, _c.domains, _c.images = words, domains, images
+    _c.strict = {k for k in (_parse_strict_key(r["key"]) for r in strict_rows) if k}
     _c.enabled = (setting is None) or (setting["value"] != "off")
     _c.loaded_at = time.monotonic()
 
@@ -373,6 +377,139 @@ async def hit_total() -> int:
     pool = await _pool()
     async with pool.acquire() as conn:
         return int(await conn.fetchval("SELECT COUNT(*) FROM scam_shield_hits") or 0)
+
+
+# ── strict mode (premium) ─────────────────────────────────────────────────
+# Extra, more aggressive checks a server can switch on for itself. Off by default, never touches the
+# normal rules, and only runs for servers in _c.strict (an in-memory set, so a normal server costs nothing).
+# Premium is checked by the caller on the rare path (a strict check actually matched), never per message.
+
+STRICT_PREFIX = "strict:"
+
+# Brands scammers imitate, with the real domains. A link is only suspicious when the *host* is a look-alike.
+_BRAND_REAL = {
+    "discord": ("discord.com", "discordapp.com", "discordapp.net", "discord.gg", "discord.gift", "discord.media",
+                "discordstatus.com", "discord.dev", "discord.new"),
+    "steam": ("steampowered.com", "steamcommunity.com", "steamstatic.com", "steam.com"),
+    "paypal": ("paypal.com", "paypal.me"),
+    "binance": ("binance.com",),
+    "metamask": ("metamask.io",),
+    "coinbase": ("coinbase.com",),
+    "roblox": ("roblox.com",),
+}
+_REAL_DOMAINS = tuple(d for ds in _BRAND_REAL.values() for d in ds)
+_BAIT_WORDS = r"(?:gift|nitro|free|promo|airdrop|claim|reward|drop|giveaway|bonus)"
+_BRAND_NAMES = "|".join(_BRAND_REAL)
+_HOST_BAIT = re.compile(rf"(?:{_BRAND_NAMES})[-.]?{_BAIT_WORDS}|{_BAIT_WORDS}[-.]?(?:{_BRAND_NAMES})")
+# Phrases that are only treated as scam bait when the same message also carries a link.
+_STRICT_BAIT = ("free nitro", "nitro gift", "discord nitro for free", "claim your reward", "claim your prize",
+                "airdrop", "seed phrase", "recovery phrase", "connect your wallet", "verify your wallet",
+                "steam gift", "free steam")
+
+
+def strict_key(guild_id: int, clone_id: Optional[int] = None) -> str:
+    return f"{STRICT_PREFIX}{clone_id if clone_id is not None else 'main'}:{guild_id}"
+
+
+def _parse_strict_key(key: str) -> Optional[Tuple[int, Optional[int]]]:
+    try:
+        who, gid = key[len(STRICT_PREFIX):].split(":")
+        return int(gid), (None if who == "main" else int(who))
+    except (ValueError, TypeError):
+        return None
+
+
+def strict_on(guild_id: int, clone_id: Optional[int] = None) -> bool:
+    return (guild_id, clone_id) in _c.strict
+
+
+async def set_strict(guild_id: int, clone_id: Optional[int], on: bool) -> None:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        if on:
+            await conn.execute("INSERT INTO scam_shield_settings (key, value) VALUES ($1, 'on') "
+                               "ON CONFLICT (key) DO NOTHING", strict_key(guild_id, clone_id))
+        else:
+            await conn.execute("DELETE FROM scam_shield_settings WHERE key = $1", strict_key(guild_id, clone_id))
+    (_c.strict.add if on else _c.strict.discard)((guild_id, clone_id))
+
+
+def match_strict(text: str, allowed=()) -> Optional[Tuple[str, str, Optional[int]]]:
+    """Strict-mode checks. Only looks at explicit links (http(s):// or www.), never bare words like
+    'index.html'. Returns ('strict', why, None) or None. Real Discord / allowed hosts are never flagged."""
+    if not text:
+        return None
+    t = normalize(text)
+    hosts = {m.group(1).lower().rstrip(".") for m in _URL_HOST.finditer(t)}
+    hosts = {h[4:] if h.startswith("www.") else h for h in hosts}
+    hosts = {h for h in hosts if not is_allowed_domain(h, allowed) and not is_official_host(h, t)}
+    for h in sorted(hosts):
+        if re.search(r"(?:https?://|www\.)" + re.escape(h) + r"[^\s/]*@", t):
+            return "strict", "link hides its real address behind '@'", None     # https://discord.com@evil.xyz
+        if any(h == d or h.endswith("." + d) for d in _REAL_DOMAINS):
+            continue                                              # a genuine brand domain
+        for d in _REAL_DOMAINS:
+            if (d + ".") in h:                                    # discord.com.verify-login.xyz
+                return "strict", f"fake subdomain of {d}", None
+        if _HOST_BAIT.search(h):
+            return "strict", f"look-alike link ({h})", None
+    if hosts:
+        for phrase in _STRICT_BAIT:
+            if phrase in t:
+                return "strict", f"'{phrase}' bait with a link", None
+    return None
+
+
+def check_text(text: str, allowed=(), strict: bool = False) -> Optional[Tuple[str, str, Optional[int]]]:
+    """What Scam Shield would do with this text right now: the normal rules, then strict mode if asked."""
+    return match_text(text, allowed) or (match_strict(text, allowed) if strict else None)
+
+
+# ── reports (premium: deep report; free: recent catches) ──────────────────
+
+async def recent_guild_hits(guild_id: int, clone_id: Optional[int] = None, limit: int = 5) -> List[dict]:
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, channel_id, kind, matched, deleted, created_at FROM scam_shield_hits "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 ORDER BY id DESC LIMIT $3",
+                guild_id, clone_id, limit)
+        return [dict(r) for r in rows]
+    except Exception:
+        logger.debug("[scam-shield] couldn't read recent hits", exc_info=True)
+        return []
+
+
+async def deep_report(guild_id: int, clone_id: Optional[int] = None, days: int = 30) -> dict:
+    """30-day breakdown for one server: totals, what matched, where, who, and a per-day trend.
+    {} if the database can't be read. Logged hits are throttled (one per user per 30s), so the numbers
+    are a floor, not an exact count of every deleted message."""
+    base = ("FROM scam_shield_hits WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+            "AND created_at >= NOW() - ($3 * INTERVAL '1 day')")
+    args = (guild_id, clone_id, days)
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            head = await conn.fetchrow(
+                "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE deleted) AS deleted, "
+                "COUNT(DISTINCT user_id) AS users, MAX(created_at) AS last " + base, *args)
+            kinds = await conn.fetch(f"SELECT kind, COUNT(*) AS n {base} GROUP BY kind ORDER BY n DESC LIMIT 5", *args)
+            matched = await conn.fetch(
+                f"SELECT matched, COUNT(*) AS n {base} GROUP BY matched ORDER BY n DESC LIMIT 5", *args)
+            channels = await conn.fetch(
+                f"SELECT channel_id, COUNT(*) AS n {base} GROUP BY channel_id ORDER BY n DESC LIMIT 3", *args)
+            users = await conn.fetch(f"SELECT user_id, COUNT(*) AS n {base} GROUP BY user_id ORDER BY n DESC LIMIT 3", *args)
+            daily = await conn.fetch(
+                f"SELECT created_at::date AS d, COUNT(*) AS n {base} GROUP BY 1 ORDER BY 1", *args)
+    except Exception:
+        logger.debug("[scam-shield] couldn't build the deep report", exc_info=True)
+        return {}
+    return {"days": days, "total": int(head["total"] or 0), "deleted": int(head["deleted"] or 0),
+            "users": int(head["users"] or 0), "last": head["last"],
+            "kinds": [(r["kind"], r["n"]) for r in kinds], "matched": [(r["matched"], r["n"]) for r in matched],
+            "channels": [(r["channel_id"], r["n"]) for r in channels], "users_top": [(r["user_id"], r["n"]) for r in users],
+            "daily": [(r["d"], r["n"]) for r in daily]}
 
 
 # ── one-time history sweep marker ─────────────────────────────────────────

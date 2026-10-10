@@ -24,10 +24,12 @@ from datetime import timedelta
 from typing import List, Optional, Tuple
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 from database import db
 from modules import scam_shield as ss
+from discord_bot.cogs import _views_scamshield_wizard as wiz
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +170,8 @@ class ScamShieldCog(commands.Cog):
             if hit is None and ss.has_image_rules():
                 hit = await self._match_images(message)
             if hit is None:
+                hit = await self._strict_hit(message, text)       # premium, opt-in per server; rare path
+            if hit is None:
                 return False
             # Only now (a real match) look at this server's own settings: it can switch the shield
             # off for itself or allow specific domains. Cached, so this is not a per-message query.
@@ -185,6 +189,37 @@ class ScamShieldCog(commands.Cog):
         except Exception:
             logger.exception("[scam-shield] failed while checking a message")
             return False
+
+    async def _strict_hit(self, message: discord.Message, text: str):
+        """Strict mode (premium, per server). Costs nothing for servers that never switched it on: the first
+        check is an in-memory set lookup. Premium is only looked up after a strict check actually matched, and
+        if premium lapsed the saved choice is kept but paused."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        if not ss.strict_on(message.guild.id, clone_id):
+            return None
+        hit = ss.match_strict(text)
+        if hit is None:
+            return None
+        gs = await ss.guild_settings(message.guild.id, clone_id)
+        if gs["allowed_domains"]:
+            hit = ss.match_strict(text, gs["allowed_domains"])
+            if hit is None:
+                return None
+        from modules import antiraid_pro as pro
+        if not await pro.is_premium(message.guild.id, clone_id):
+            return None
+        return hit
+
+    # ── /scamshield ──────────────────────────────────────────────────────
+    @app_commands.command(name="scamshield",
+                          description="Scam Shield: status, allowed domains, link checker and premium extras")
+    @app_commands.guild_only()
+    async def scamshield_cmd(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = await wiz._auth(interaction, interaction.guild_id)
+        if guild is None:
+            return
+        await wiz.open_wizard(interaction, guild, getattr(self.bot, "clone_id", None))
 
     async def _match_images(self, message: discord.Message):
         for att in message.attachments[:4]:
