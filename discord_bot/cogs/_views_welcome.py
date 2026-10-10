@@ -33,6 +33,7 @@ import asyncio
 import io
 import logging
 import re
+import secrets
 
 import aiohttp
 import discord
@@ -265,7 +266,7 @@ this process) — see _get_config_for_modal."""
 
 
 def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, greeting: str = None,
-                      goodbye: dict | None = None) -> discord.ui.LayoutView:
+                      goodbye: dict | None = None, tv_name: str | None = None) -> discord.ui.LayoutView:
     """Builds a fresh wizard message from a config dict already fetched
     by the caller. Every dynamic item inside re-fetches its own current
     config on interaction rather than trusting this snapshot, so this
@@ -326,7 +327,13 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, gree
         header_lines = [greeting, "", *header_lines]
     text = discord.ui.TextDisplay("\n".join(header_lines))
 
-    items = [text, discord.ui.Separator(), channel_row, create_channel_row, delivery_row]
+    items = [text]
+    if tv_name:
+        # The TV: the real card, drawn from the SAVED settings, right under the header. It is an attachment on this
+        # same message (see _rerender); callers that have no picture simply leave tv_name as None.
+        items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{tv_name}")))
+        items.append(discord.ui.TextDisplay(_tv_caption(config)))
+    items += [discord.ui.Separator(), channel_row, create_channel_row, delivery_row]
 
     if use_template:
         look_row = discord.ui.ActionRow()
@@ -351,30 +358,176 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, gree
     return view
 
 
+# -- the TV: live preview drawn inside the setup wizard message -----------------
+# Same idea as the Customize Card wizard: the real card is drawn from the saved settings and redrawn after every
+# change. It is an attachment on the wizard message itself. Nothing here may ever stop the wizard from updating:
+# if the picture can't be drawn or attached, the wizard is edited exactly as it was before the TV existed.
+
+_TV_PREFIX = "wtv-"
+_TV_WIDTH = 960               # the TV is a downscaled still copy; the card posted on joins is untouched
+_TV_DELAY = 0.35              # taps inside this window collapse into ONE redraw
+_TV_STATE_MAX = 1000
+_TV_GEN: dict = {}            # wizard message id -> latest redraw request number
+_TV_LOCKS: dict = {}          # wizard message id -> asyncio.Lock (one edit at a time per message)
+_TV_AVATARS: dict = {}        # (user id, avatar key) -> bytes
+
+
+def _tv_trim(d: dict) -> None:
+    if len(d) > _TV_STATE_MAX:
+        for k in list(d)[: len(d) - _TV_STATE_MAX // 2]:
+            d.pop(k, None)
+
+
+def _tv_caption(config: dict) -> str:
+    note = "-# Live preview \u2014 redraws after every change \u00b7 shown with your name and picture"
+    if not config.get("use_template", True) and config.get("card_style", "gif") == "gif":
+        note += " \u00b7 still frame (joins play the animation)"
+    return note
+
+
+def _new_tv_name() -> str:
+    """A fresh file name per picture: re-uploading the same name while the old one is still on the message makes the
+    picture blink out (found the hard way in the Customize Card wizard)."""
+    return f"{_TV_PREFIX}{secrets.token_hex(3)}.png"
+
+
+def _existing_tv_name(message) -> str | None:
+    for a in getattr(message, "attachments", None) or []:
+        if str(getattr(a, "filename", "")).startswith(_TV_PREFIX):
+            return a.filename
+    return None
+
+
+def _tv_png(card_bytes: bytes) -> bytes:
+    from PIL import Image
+    img = Image.open(io.BytesIO(card_bytes))
+    img.seek(0)                                  # an animated card: first frame only
+    img = img.convert("RGB")
+    if img.width > _TV_WIDTH:
+        img.thumbnail((_TV_WIDTH, _TV_WIDTH * 4))
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+async def _render_setup_tv(client, guild, user, config: dict) -> bytes:
+    """The card a join would get with these saved settings (same arguments as the Preview button and the real join),
+    as a still PNG. Raises on any failure; callers decide what to keep."""
+    if guild is None:
+        raise RuntimeError("the server isn't available to this bot")
+    from discord_bot.cogs.welcome import _custom_bg_bytes_for_render
+    asset = user.display_avatar
+    akey = (user.id, getattr(asset, "key", None))
+    async with aiohttp.ClientSession() as session:
+        avatar = _TV_AVATARS.get(akey)
+        if avatar is None:
+            async with session.get(str(asset.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                avatar = await resp.read()
+            _TV_AVATARS[akey] = avatar
+            _tv_trim(_TV_AVATARS)
+        sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
+        custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, client)
+    card_bytes, _fmt = await asyncio.to_thread(
+        render_welcome_card,
+        avatar, user.display_name, f"Member #{guild.member_count}",
+        background_color=config.get("background_color", "#2b2d31"),
+        accent_color=config.get("accent_color", "#5865F2"),
+        sticker_bytes=sticker_bytes, animate=False,
+        guild_name=guild.name, use_template=config.get("use_template", True),
+        avatar_shape=config.get("avatar_shape", "circle"),
+        theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
+        ultra_options=config.get("ultra_card_json"),
+    )
+    return await asyncio.to_thread(_tv_png, card_bytes)
+
+
+async def _wizard_view_and_files(client, guild, guild_id: int, clone_id, invoker_id, user, config: dict, goodbye,
+                                 keep_name: str | None, greeting: str = None):
+    """(view, new_files). new_files is [] when no new picture was drawn; then the view points at keep_name (the
+    picture already on the message, if any) and the message's attachments are left alone."""
+    try:
+        png = await _render_setup_tv(client, guild, user, config)
+        name = _new_tv_name()
+        view = build_wizard_view(guild_id, clone_id, invoker_id, config, goodbye=goodbye, greeting=greeting, tv_name=name)
+        return view, [discord.File(fp=io.BytesIO(png), filename=name)]
+    except Exception as e:
+        logger.warning(f"[welcome-tv] preview failed for guild {guild_id}: {type(e).__name__}: {e}")
+        view = build_wizard_view(guild_id, clone_id, invoker_id, config, goodbye=goodbye, greeting=greeting, tv_name=keep_name)
+        return view, []
+
+
+async def open_wizard_message(interaction: discord.Interaction, guild_id: int, clone_id, invoker_id, config: dict,
+                              goodbye=None):
+    """For the places that open the wizard for a person: (view, send_kwargs) with the TV already drawn. Pass
+    send_kwargs straight into followup.send(view=view, **send_kwargs). A failed picture just means no TV yet."""
+    guild = interaction.guild or interaction.client.get_guild(guild_id)
+    view, files = await _wizard_view_and_files(interaction.client, guild, guild_id, clone_id, invoker_id,
+                                               interaction.user, config, goodbye, None)
+    return view, ({"files": files} if files else {})
+
+
 async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, invoker_id):
-    """Re-fetches config fresh from the DB and edits the wizard message
-    in place — the one thing every dynamic item does after writing its
-    own change. Callers must defer() the interaction before doing their
-    own DB write, so by the time this runs the response is already
-    acknowledged — hence edit_original_response rather than
-    response.edit_message (a second response.* call here would raise
-    InteractionResponded, and skipping the early defer is what caused
-    "The application didn't respond in time" on every wizard click: two
-    DB round-trips — the callback's own write, then this function's read —
-    stacked up before anything ever ack'd the interaction)."""
-    config = await db.get_welcome_config(guild_id, clone_id=clone_id)
-    goodbye = await fetch_goodbye(guild_id, clone_id)
-    view = build_wizard_view(guild_id, clone_id, invoker_id, config, goodbye=goodbye)
-    await interaction.edit_original_response(view=view)
+    """Re-fetches config fresh from the DB, redraws the TV and edits the wizard message in place \u2014 the one thing
+    every dynamic item does after writing its own change. Callers must defer() the interaction before doing their
+    own DB write, so by the time this runs the response is already acknowledged \u2014 hence edit_original_response
+    rather than response.edit_message (a second response.* call here would raise InteractionResponded, and
+    skipping the early defer is what caused "The application didn't respond in time" on every wizard click).
+
+    Quick taps are batched: only the newest request inside _TV_DELAY draws, and one edit runs at a time per message
+    (the older taps return; the newest one reads the latest saved state). A failed redraw keeps the picture that is
+    already on the message and never blocks the update of the controls."""
+    message = getattr(interaction, "message", None)
+    key = getattr(message, "id", None) or (guild_id, clone_id)
+    gen = _TV_GEN[key] = _TV_GEN.get(key, 0) + 1
+    _tv_trim(_TV_GEN)
+    await asyncio.sleep(_TV_DELAY)
+    if _TV_GEN.get(key) != gen:
+        return
+    lock = _TV_LOCKS.setdefault(key, asyncio.Lock())
+    _tv_trim(_TV_LOCKS)
+    async with lock:
+        if _TV_GEN.get(key) != gen:
+            return
+        config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+        goodbye = await fetch_goodbye(guild_id, clone_id)
+        guild = interaction.guild or interaction.client.get_guild(guild_id)
+        keep = _existing_tv_name(message)
+        view, files = await _wizard_view_and_files(interaction.client, guild, guild_id, clone_id, invoker_id,
+                                                   interaction.user, config, goodbye, keep)
+        if not files:
+            keep = await _live_tv_name(interaction)       # the message may have changed since this click arrived
+            view = build_wizard_view(guild_id, clone_id, invoker_id, config, goodbye=goodbye, tv_name=keep)
+        try:
+            if files:
+                await interaction.edit_original_response(view=view, attachments=files)
+            else:
+                await interaction.edit_original_response(view=view)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            if not files:
+                raise
+            # e.g. the bot may not attach files in this channel: update the controls the way it always has
+            logger.warning(f"[welcome-tv] couldn't attach the preview for guild {guild_id}: {type(e).__name__}: {e}")
+            keep = await _live_tv_name(interaction)
+            await interaction.edit_original_response(
+                view=build_wizard_view(guild_id, clone_id, invoker_id, config, goodbye=goodbye, tv_name=keep))
+
+
+async def _live_tv_name(interaction: discord.Interaction) -> str | None:
+    try:
+        return _existing_tv_name(await interaction.original_response())
+    except Exception:
+        return None
 
 
 async def refresh_posted_wizard(bot, guild_id: int, clone_id=None) -> None:
     """Called by the 6 standalone /welcome commands (enable/disable/
     message/colors/sticker/style) after they write a change directly,
-    bypassing the wizard entirely. Without this, a wizard message left
-    open in a channel would keep showing whatever it last rendered until
-    someone happened to click one of its own components — this pushes
-    the DB's current state onto it immediately instead.
+    bypassing the wizard entirely, and by the Customize Card editor after each
+    change. Without this, a wizard message left open in a channel would keep
+    showing whatever it last rendered until someone happened to click one of
+    its own components \u2014 this pushes the DB's current state onto it immediately
+    instead. The TV is redrawn too (as the person who opened the wizard, when
+    the bot can see them); otherwise the picture already there is kept.
 
     Best-effort and silent: no pointer recorded yet, channel deleted,
     message deleted, or the bot no longer having access are all normal,
@@ -394,12 +547,33 @@ async def refresh_posted_wizard(bot, guild_id: int, clone_id=None) -> None:
         return
     invoker_raw = config.get("wizard_invoker_id")
     invoker_id = int(invoker_raw) if invoker_raw is not None else None
-    view = build_wizard_view(guild_id, clone_id, invoker_id, config,
-                             goodbye=await fetch_goodbye(guild_id, clone_id))
-    try:
-        await message.edit(view=view)
-    except (discord.Forbidden, discord.HTTPException):
-        pass
+    goodbye = await fetch_goodbye(guild_id, clone_id)
+    guild = bot.get_guild(guild_id)
+    member = guild.get_member(invoker_id) if (guild is not None and invoker_id is not None) else None
+    lock = _TV_LOCKS.setdefault(message.id, asyncio.Lock())
+    _tv_trim(_TV_LOCKS)
+    async with lock:
+        try:
+            message = await channel.fetch_message(message.id)         # newest attachments, now that we hold the lock
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
+        keep = _existing_tv_name(message)
+        files = []
+        if member is not None:
+            view, files = await _wizard_view_and_files(bot, guild, guild_id, clone_id, invoker_id, member, config, goodbye, keep)
+        else:
+            view = build_wizard_view(guild_id, clone_id, invoker_id, config, goodbye=goodbye, tv_name=keep)
+        try:
+            if files:
+                await message.edit(view=view, attachments=files)
+            else:
+                await message.edit(view=view)
+        except (discord.Forbidden, discord.HTTPException):
+            if files:
+                try:
+                    await message.edit(view=build_wizard_view(guild_id, clone_id, invoker_id, config, goodbye=goodbye, tv_name=keep))
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
 
 
 class WelcomeMessageModal(discord.ui.Modal, title="Welcome message"):

@@ -31,7 +31,7 @@ from database import db
 from modules.welcome_card import render_welcome_card
 from discord_bot.cogs._views_shared import refresh_button
 from discord_bot import perm_check
-from discord_bot.cogs._views_welcome import build_wizard_view, refresh_posted_wizard, fetch_goodbye
+from discord_bot.cogs._views_welcome import build_wizard_view, refresh_posted_wizard, fetch_goodbye, open_wizard_message
 
 logger = logging.getLogger(__name__)
 
@@ -1620,14 +1620,15 @@ class WelcomeCog(GuildOnlyCog):
             await _deny(interaction, "Manage Server")
             return
         config = await db.get_welcome_config(interaction.guild_id, clone_id=_clone_id_of(interaction))
-        view = build_wizard_view(interaction.guild_id, _clone_id_of(interaction), interaction.user.id, config,
-                                 goodbye=await fetch_goodbye(interaction.guild_id, _clone_id_of(interaction)))
+        view, tv_kwargs = await open_wizard_message(
+            interaction, interaction.guild_id, _clone_id_of(interaction), interaction.user.id, config,
+            goodbye=await fetch_goodbye(interaction.guild_id, _clone_id_of(interaction)))
         # Posted publicly in-channel (not ephemeral) so anyone in the
         # server can see the wizard being configured — only the original
         # invoker can actually use its components, enforced by each
         # dynamic item's _check_access call (invoker_id is baked into
         # every component's custom_id).
-        await interaction.followup.send(view=view)
+        await interaction.followup.send(view=view, **tv_kwargs)
         message = await interaction.original_response()
         await db.set_welcome_wizard_pointer(
             interaction.guild_id, message.channel.id, message.id, interaction.user.id,
