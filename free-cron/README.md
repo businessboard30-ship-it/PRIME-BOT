@@ -50,3 +50,8 @@ Set `CONTACT_URL` (https or mailto) in `wrangler.toml` to show a contact on the 
 Settings, Failure alerts: save a Discord webhook (`https://discord.com/api/webhooks/<id>/<token>`, also `discordapp.com`; anything else is rejected, so it cannot be used to reach other hosts).
 The webhook is a credential: the API only returns it masked, and it is never logged. Alerts are sent on state changes only: after 2 failures in a row (down), when a cron is switched off after 5 (disabled), and when it recovers.
 Messages never contain the URL. Max 20 alerts per account per day. Alerts are queued in `alert_outbox` and sent (3 per tick, 5 s timeout, 3 tries) after `runDue()` finishes, so a broken webhook cannot affect the crons.
+
+## Edit and Run now
+
+Each cron has **Edit** (name, URL, method, body, interval; same rules as creating one, a changed URL resets the failure count and alert state) and **Run now** (one call right away, recorded in the run history; it does not change the schedule, the failure count or alerts).
+Run now is limited to one call per cron per 10 seconds and 30 per account per hour, and the address is re-checked every time.

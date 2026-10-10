@@ -188,8 +188,33 @@ function render(m){
     var hb=document.createElement("button");hb.className="btn sm ghost";hb.textContent="History";hb.setAttribute("aria-expanded","false");
     var hist=document.createElement("div");hist.className="hist hidden";
     hb.onclick=function(){var open=hist.classList.contains("hidden");hist.classList.toggle("hidden",!open);hb.setAttribute("aria-expanded",open?"true":"false");if(open)loadRuns(j.id,hist)};
-    row.append(t,hb,x);d.append(n,u,s,row,hist);box.appendChild(d)});
+    var rb=document.createElement("button");rb.className="btn sm";rb.textContent="Run now";
+    rb.onclick=function(){rb.disabled=true;api("/api/jobs/"+j.id+"/run",{method:"POST",body:"{}"}).then(function(r){return load().then(function(){say("Ran "+j.name+": "+(r.status?("HTTP "+r.status):"no answer")+" in "+r.ms+" ms.",!r.ok)})}).catch(function(e){fail(e);rb.disabled=false})};
+    var eb=document.createElement("button");eb.className="btn sm ghost";eb.textContent="Edit";eb.setAttribute("aria-expanded","false");
+    var ed=document.createElement("div");ed.className="hist hidden";
+    eb.onclick=function(){var open=ed.classList.contains("hidden");ed.classList.toggle("hidden",!open);eb.setAttribute("aria-expanded",open?"true":"false");if(open&&!ed.firstChild)buildEdit(j,ed)};
+    row.append(t,rb,eb,hb,x);d.append(n,u,s,row,ed,hist);box.appendChild(d)});
   if(!booted){booted=true;route(false)}else ensureMounts();
+}
+/* edit one cron in place: same fields and rules as creating one */
+function buildEdit(j,box){
+  function field(el){var r=document.createElement("div");r.className="row";r.appendChild(el);return r}
+  var nm=document.createElement("input");nm.className="grow";nm.maxLength=60;nm.value=j.name;nm.setAttribute("aria-label","Name");
+  var ur=document.createElement("input");ur.className="grow";ur.maxLength=2000;ur.value=j.url;ur.setAttribute("aria-label","URL");
+  var me2=document.createElement("select");["GET","POST"].forEach(function(v){var o=document.createElement("option");o.textContent=v;me2.appendChild(o)});me2.value=j.method;me2.setAttribute("aria-label","Method");
+  var ev=document.createElement("select");ev.setAttribute("aria-label","How often");
+  me.intervals.forEach(function(v){var o=document.createElement("option");o.value=String(v);o.textContent=every(v);o.disabled=v<me.min_minutes;ev.appendChild(o)});
+  ev.value=String(j.every_minutes);if(ev.value!==String(j.every_minutes))ev.value=String(me.min_minutes);
+  var bd=document.createElement("textarea");bd.className="grow";bd.maxLength=1024;bd.value=j.body||"";bd.setAttribute("aria-label","Body");bd.classList.toggle("hidden",j.method!=="POST");
+  me2.onchange=function(){bd.classList.toggle("hidden",me2.value!=="POST")};
+  var sv=document.createElement("button");sv.className="btn sm";sv.textContent="Save";
+  var cn=document.createElement("button");cn.className="btn sm ghost";cn.textContent="Cancel";
+  cn.onclick=function(){box.classList.add("hidden");box.textContent=""};
+  sv.onclick=function(){sv.disabled=true;var b={name:nm.value,url:ur.value,method:me2.value,every_minutes:Number(ev.value)};if(b.method==="POST")b.body=bd.value;
+    api("/api/jobs/"+j.id,{method:"PATCH",body:JSON.stringify(b)}).then(function(){say("Saved.");return load()}).catch(function(e){fail(e);sv.disabled=false})};
+  var act=document.createElement("div");act.className="row";act.append(sv,cn);
+  var mr=document.createElement("div");mr.className="row";mr.append(me2,ev);
+  box.append(field(nm),field(ur),mr,field(bd),act);
 }
 /* run history of one cron: time, status, duration, ok or fail (the server keeps no response bodies) */
 function loadRuns(id,box){
