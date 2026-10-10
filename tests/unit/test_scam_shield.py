@@ -383,8 +383,63 @@ def test_seed_inserts_once_and_leaves_removed_rules_removed():
     assert calls == []
     run(ss._seed_defaults(Conn(False)))
     kinds = [c[0] for c in calls if len(c) == 3]
-    assert kinds.count("image") == 4 and ("domain", "fatawin.com", ss.SEED_NOTE) in [c for c in calls if len(c) == 3]
-    assert any(c == (ss.SEED_KEY,) for c in calls)
+    assert kinds.count("image") == 8                         # four per batch, both batches on a fresh database
+    assert ("domain", "fatawin.com", ss.SEED_NOTE) in [c for c in calls if len(c) == 3]
+    assert ("domain", "dwinble.com", ss.SEED_DWINBLE_NOTE) in [c for c in calls if len(c) == 3]
+    assert any(c == (ss.SEED_KEY,) for c in calls) and any(c == (ss.SEED_DWINBLE_KEY,) for c in calls)
+
+
+def test_a_database_that_already_ran_the_first_batch_still_gets_the_dwinble_batch_once():
+    calls = []
+
+    class Conn:
+        async def fetchval(self, q, *a):
+            return 1 if a == (ss.SEED_KEY,) else None        # only the first marker exists
+
+        async def execute(self, q, *a):
+            calls.append(a)
+    run(ss._seed_defaults(Conn()))
+    inserted = [c for c in calls if len(c) == 3]
+    assert {c[2] for c in inserted} == {ss.SEED_DWINBLE_NOTE}          # nothing from the first batch is re-added
+    assert len(inserted) == len(ss.SEED_DWINBLE_RULES)
+    assert any(c == (ss.SEED_DWINBLE_KEY,) for c in calls) and not any(c == (ss.SEED_KEY,) for c in calls)
+
+
+def test_dwinble_image_hashes_are_valid_distinct_and_not_near_flat_images():
+    existing = [0x3734283e39391d31, 0x5ebe31a7a925a525, 0x1f2024a826232323, 0x2cb08ea3e363b070]
+    existing += [int(p, 16) for k, p in ss.SEED_RULES if k == "image"]
+    new = [int(p, 16) for k, p in ss.SEED_DWINBLE_RULES if k == "image"]
+    assert len(new) == 4 and all(len(p) == 16 for k, p in ss.SEED_DWINBLE_RULES if k == "image")
+    for i, h in enumerate(new):
+        assert all(ss.hamming(h, o) > ss.IMAGE_MAX_DISTANCE for o in existing)
+        assert all(ss.hamming(h, o) > ss.IMAGE_MAX_DISTANCE for o in new[:i])
+        assert ss.hamming(h, 0) > 2 * ss.IMAGE_MAX_DISTANCE         # a blank / dark screenshot stays far from a match
+
+
+@pytest.mark.parametrize("text", [
+    "register at dwinble.com and use promo code DRAKE",
+    "https://www.dwinble.com/vi/promo",
+    "http://bonus.dwinble.com",
+    "d w i n b l e . c o m gives $3200",
+    "D.W.I.N.B.L.E",
+])
+def test_dwinble_text_is_caught_by_the_seeded_rules(text):
+    ss._c.words = [(1, "dwinble")]
+    ss._c.domains = [(2, "dwinble.com")]
+    assert ss.match_text(text) is not None
+
+
+def test_dwinble_rules_do_not_touch_ordinary_chat():
+    ss._c.words = [(1, "dwinble")]
+    ss._c.domains = [(2, "dwinble.com")]
+    for text in ["drake dropped a new album", "check https://example.com/dwin", "winnable game, bleh"]:
+        assert ss.match_text(text) is None
+
+
+def test_the_sweep_marker_is_per_bot():
+    assert ss.backfill_marker(None) == ss.BACKFILL_KEY + ":main"
+    assert ss.backfill_marker(12) == ss.BACKFILL_KEY + ":12"
+    assert ss.backfill_marker(12) != ss.backfill_marker(None)
 
 
 def test_seed_image_hashes_are_valid_and_new():
@@ -447,3 +502,134 @@ def test_oversized_attachments_are_skipped(cog, monkeypatch):
     run(cog._inspect(_msg("free $3500 at fatowin.com use GIFT", attachments=[big])))
     big.read.assert_not_awaited()
     assert host.send.await_args.kwargs["files"] == []
+
+
+# ── one-time history sweep ───────────────────────────────────────────────
+
+def _channel(messages, can_read=True):
+    async def gen():
+        for m in messages:
+            yield m
+    seen = {}
+
+    def history(limit=None, after=None):
+        seen["limit"], seen["after"] = limit, after
+        return gen()
+    perms = SimpleNamespace(view_channel=can_read, read_message_history=can_read)
+    ch = SimpleNamespace(id=7, permissions_for=lambda me: perms, history=history, seen=seen)
+    return ch
+
+
+def _sweep_cog(cog, monkeypatch, channels, enabled=True, done=False, seeded=True, clone_id=None):
+    from discord_bot.cogs import scam_shield as cog_mod
+    guild = SimpleNamespace(id=555, me=object(), text_channels=channels)
+    cog.bot.guilds = [guild]
+    cog.bot.is_closed = lambda: False
+    cog.bot.clone_id = clone_id
+    monkeypatch.setattr(ss, "BACKFILL_CHANNEL_PAUSE", 0)
+    monkeypatch.setattr(ss, "backfill_done", AsyncMock(return_value=done))
+    monkeypatch.setattr(ss, "seed_done", AsyncMock(return_value=seeded))
+    monkeypatch.setattr(ss, "mark_backfill_done", AsyncMock())
+    monkeypatch.setattr(ss, "guild_settings", AsyncMock(return_value={"enabled": enabled, "allowed_domains": ()}))
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=None))
+    return guild
+
+
+def test_sweep_removes_old_scam_copies_and_then_marks_itself_done(cog, monkeypatch):
+    bad = _msg("free $3500 at fatowin.com use GIFT")
+    good = _msg("anyone up for a game tonight?")
+    ch = _channel([bad, good])
+    _sweep_cog(cog, monkeypatch, [ch])
+    run(cog._sweep_history())
+    bad.delete.assert_awaited_once()
+    good.delete.assert_not_awaited()
+    ss.mark_backfill_done.assert_awaited_once_with(None)
+    assert ch.seen["limit"] == ss.BACKFILL_PER_CHANNEL and ch.seen["after"] is not None
+
+
+def test_sweep_catches_a_known_scam_image_posted_before_the_rules_existed(cog, monkeypatch):
+    ref = _img(size=(300, 200), seed=7)
+    ss._c.images = [(9, ss.dhash(ref))]
+    att = _att(name="pic.png", data=ref, size=len(ref))
+    bad = _msg("", attachments=[att])
+    _sweep_cog(cog, monkeypatch, [_channel([bad])])
+    run(cog._sweep_history())
+    bad.delete.assert_awaited_once()
+
+
+def test_sweep_runs_only_once(cog, monkeypatch):
+    ch = _channel([_msg("free $3500 at fatowin.com use GIFT")])
+    _sweep_cog(cog, monkeypatch, [ch], done=True)
+    run(cog._sweep_history())
+    assert ch.seen == {}                                       # history was never even requested
+    ss.mark_backfill_done.assert_not_awaited()
+
+
+def test_sweep_waits_until_the_new_rules_are_stored(cog, monkeypatch):
+    ch = _channel([_msg("free $3500 at fatowin.com use GIFT")])
+    _sweep_cog(cog, monkeypatch, [ch], seeded=False)
+    run(cog._sweep_history())
+    assert ch.seen == {}
+    ss.mark_backfill_done.assert_not_awaited()                 # so it tries again on the next start
+
+
+def test_sweep_skips_servers_that_switched_scam_shield_off(cog, monkeypatch):
+    bad = _msg("free $3500 at fatowin.com use GIFT")
+    ch = _channel([bad])
+    _sweep_cog(cog, monkeypatch, [ch], enabled=False)
+    run(cog._sweep_history())
+    assert ch.seen == {}
+    bad.delete.assert_not_awaited()
+    ss.mark_backfill_done.assert_awaited_once()                # nothing to do there still counts as finished
+
+
+def test_sweep_skips_channels_the_bot_cannot_read(cog, monkeypatch):
+    bad = _msg("free $3500 at fatowin.com use GIFT")
+    ch = _channel([bad], can_read=False)
+    _sweep_cog(cog, monkeypatch, [ch])
+    run(cog._sweep_history())
+    assert ch.seen == {}
+    bad.delete.assert_not_awaited()
+
+
+def test_sweep_never_touches_staff_messages(cog, monkeypatch):
+    staff = _msg("free $3500 at fatowin.com use GIFT", staff=True)
+    _sweep_cog(cog, monkeypatch, [_channel([staff])])
+    run(cog._sweep_history())
+    staff.delete.assert_not_awaited()
+
+
+def test_a_channel_that_errors_does_not_stop_the_sweep(cog, monkeypatch):
+    def boom(limit=None, after=None):
+        raise discord.HTTPException(MagicMock(status=403), "forbidden")
+    broken = _channel([])
+    broken.history = boom
+    bad = _msg("free $3500 at fatowin.com use GIFT")
+    _sweep_cog(cog, monkeypatch, [broken, _channel([bad])])
+    run(cog._sweep_history())
+    bad.delete.assert_awaited_once()
+    ss.mark_backfill_done.assert_awaited_once()
+
+
+def test_sweep_stops_without_a_marker_when_the_bot_is_shutting_down(cog, monkeypatch):
+    bad = _msg("free $3500 at fatowin.com use GIFT")
+    _sweep_cog(cog, monkeypatch, [_channel([bad])])
+    cog.bot.is_closed = lambda: True
+    run(cog._sweep_history())
+    bad.delete.assert_not_awaited()
+    ss.mark_backfill_done.assert_not_awaited()
+
+
+def test_each_clone_uses_its_own_marker(cog, monkeypatch):
+    _sweep_cog(cog, monkeypatch, [_channel([])], clone_id=12)
+    run(cog._sweep_history())
+    ss.mark_backfill_done.assert_awaited_once_with(12)
+
+
+def test_sweep_summary_is_posted_to_the_hosting_channel(cog, monkeypatch):
+    host = MagicMock(); host.send = AsyncMock()
+    _sweep_cog(cog, monkeypatch, [_channel([_msg("free $3500 at fatowin.com use GIFT")])])
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=host))
+    run(cog._sweep_history())
+    summary = [c.args[0] for c in host.send.await_args_list if c.args]
+    assert any("history sweep finished" in t and "1 scam message" in t for t in summary)
