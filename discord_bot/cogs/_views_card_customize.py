@@ -179,6 +179,15 @@ def _status_lines(config: dict, opts: dict, unlocked: bool = True) -> list:
     shape = config.get("avatar_shape", "circle")
     heading = opts["heading"] or "Welcome to {server}! (default)"
     head = ["### 🖼️ Customize your welcome card"]
+    if config.get("ultra_trial_active"):
+        ends = config.get("ultra_trial_ends_at")
+        when = f"<t:{int(ends.timestamp())}:R>" if ends else "soon"
+        head.append(
+            f"🎁 **Free 5-day trial active** — "
+            f"everything below is saved and live on every join until it ends {when}. "
+            f"After that your server falls back to its normal welcome card (your settings are kept). "
+            f"Unlock for ${bot_config.ULTRA_PACK_FEE_USD:g} to keep it for good."
+        )
     if not unlocked:
         head.append(
             f"🔒 **Preview mode** — play with everything and tap Preview. To **save** it (and use your "
@@ -227,6 +236,8 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict) -> d
     act_row.add_item(CardResetButton(guild_id, clone_id, invoker_id))
     if unlocked:
         act_row.add_item(CardDoneButton(guild_id, clone_id, invoker_id))
+        if config.get("ultra_trial_active"):
+            act_row.add_item(CardUnlockButton(guild_id, clone_id, invoker_id))
     else:
         act_row.add_item(CardUnlockButton(guild_id, clone_id, invoker_id))
     container.add_item(act_row)
@@ -239,6 +250,12 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
     """Called by the setup wizard's Customize Card button. The caller has
     already deferred (ephemeral) — this just posts the wizard as a followup."""
     config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    trial_started = False
+    if not config.get("ultra_pack_unlocked"):
+        # First open on a server that never had the trial: start 5 free days.
+        trial_started = await db.start_ultra_trial(guild_id, interaction.user.id, clone_id=clone_id)
+        if trial_started:
+            config = await db.get_welcome_config(guild_id, clone_id=clone_id)
     if config.get("ultra_pack_unlocked"):
         # Bought after designing in preview mode: carry the draft's layout
         # over (the draft background is never stored — set it again).
@@ -250,6 +267,12 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
             )
             config = await db.get_welcome_config(guild_id, clone_id=clone_id)
     view = build_customize_view(guild_id, clone_id, interaction.user.id, config)
+    if trial_started:
+        await interaction.followup.send(
+            f"🎁 **You have a free 5-day trial of Customize Card!** Design it and it goes live on every "
+            f"join right away. When the 5 days end, your server goes back to its normal welcome card.",
+            ephemeral=True,
+        )
     await interaction.followup.send(view=view, ephemeral=True)
 
 
@@ -501,7 +524,7 @@ class CardUnlockButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
-        if cfg.get("ultra_pack_unlocked"):
+        if cfg.get("ultra_pack_unlocked") and not cfg.get("ultra_trial_active"):
             await interaction.followup.send("✅ Already unlocked — tap **Customize Card** again to open the editor.", ephemeral=True)
             return
         from discord_bot.views_card_pack import start_ultra_pack_payment
