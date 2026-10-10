@@ -1,4 +1,4 @@
-// Page CSS. BASE = the PRIME BOT website look (tokens, header, buttons, framed cards, hero). SHELL = the app navigation and views.
+// Page CSS. BASE = the site look (tokens, header, buttons, framed cards, hero). SHELL = the app navigation and views.
 // No style attributes anywhere: every rule lives here and is covered by the page nonce.
 const BASE = `:root{--bg:#020407;--bg2:#06101a;--glow:rgba(150,210,255,.75);--glow-soft:rgba(120,190,255,.28);--line:rgba(225,243,255,.92);--faint:rgba(190,225,255,.38);--hair:rgba(190,225,255,.16);--text:#e4f1fb;--muted:rgba(196,222,242,.74);--ok:#7dffb0;--bad:#ff8f8f;
 --mono:"Cascadia Mono","SF Mono",Consolas,"Liberation Mono",Menlo,ui-monospace,monospace;--sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;--wrap:1180px;--hdr:64px}

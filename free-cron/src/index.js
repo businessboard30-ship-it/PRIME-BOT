@@ -1,6 +1,7 @@
 // free-cron: a standalone free cron service. GitHub sign-in, Turnstile on sign-in and create, 5 free crons, Premium unlimited.
 // One Cloudflare cron trigger (every 5 minutes) runs every user's due jobs; D1 holds accounts and jobs. No bot, no Discord.
 import * as L from "./logic.js";
+import { legalPage } from "./legal.js";
 import { pageHtml } from "./page.js";
 
 const UA = "free-cron/1.0 (scheduled HTTP request; report abuse via the service homepage)";
@@ -330,6 +331,13 @@ export default {
       return new Response(pageHtml(nonce, env.TURNSTILE_SITE_KEY || ""), { headers: {
         "Content-Type": "text/html; charset=utf-8", ...SEC,
         "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}' https://challenges.cloudflare.com; style-src 'nonce-${nonce}'; frame-src https://challenges.cloudflare.com; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+      } });
+    }
+    if ((url.pathname === "/privacy" || url.pathname === "/terms") && request.method === "GET") {
+      const nonce = L.randomId(16);
+      return new Response(legalPage(url.pathname.slice(1), nonce, env.CONTACT_URL || ""), { headers: {
+        "Content-Type": "text/html; charset=utf-8", ...SEC, "Cache-Control": "public, max-age=300",
+        "Content-Security-Policy": `default-src 'none'; style-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
       } });
     }
     if (url.pathname.startsWith("/api/")) return handleApi(request, env, url);

@@ -32,3 +32,10 @@ def test_deploy_workflow_runs_tests_migrations_and_never_prints_secrets():
     wf = (ROOT.parent / ".github" / "workflows" / "deploy-free-cron.yml").read_text()
     assert "npm test" in wf and "d1 migrations apply free-cron --remote" in wf and "free-cron/**" in wf
     assert "echo $" not in wf and "echo \"$val\"" not in wf
+
+
+def test_free_cron_ui_has_no_bot_branding():
+    import re
+    files = [ROOT / "src" / "page.js", ROOT / "src" / "legal.js", *sorted((ROOT / "src" / "ui").glob("*.js"))]
+    for f in files:
+        assert not re.search(r"prime[ -]?bot|prime-bot-site|discord\.gg", f.read_text(), re.I), f.name
