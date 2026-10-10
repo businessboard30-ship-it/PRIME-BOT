@@ -481,6 +481,7 @@ ULTRA_DEFAULTS = {
     "layout": "banner",        # banner | centered
     "font": "classic",         # key of ULTRA_FONTS
     "focus": "center",         # crop anchor: center | top | bottom | left | right
+    "bracket": "none",         # key of ULTRA_BRACKETS, wrapped around the username
 }
 ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast")
 ULTRA_LAYOUTS = ("banner", "centered")
@@ -491,6 +492,26 @@ ULTRA_FONTS = {
     "clean": "Poppins-Bold.ttf",
     "tall": "BebasNeue-Regular.ttf",
     "script": "Pacifico-Regular.ttf",
+    "tech": "Orbitron-Variable.ttf",
+    "elegant": "Cinzel-Variable.ttf",
+    "pixel": "PressStart2P-Regular.ttf",
+    "gothic": "PirataOne-Regular.ttf",
+    "comic": "Bangers-Regular.ttf",
+    "horror": "Creepster-Regular.ttf",
+    "round": "Righteous-Regular.ttf",
+}
+# Fonts that run large/small for their point size: multiplier on the username's max size.
+ULTRA_FONT_SCALE = {"tall": 1.25, "pixel": 0.6, "tech": 0.9, "elegant": 0.95, "gothic": 1.2, "comic": 1.1, "horror": 1.1}
+# Optional characters wrapped around the username (Latin-1 only so every card font can draw them).
+ULTRA_BRACKETS = {
+    "none": ("", ""),
+    "square": ("[", "]"),
+    "round": ("(", ")"),
+    "curly": ("{", "}"),
+    "angle": ("<", ">"),
+    "guillemet": ("\u00ab", "\u00bb"),
+    "slashes": ("//", "//"),
+    "stars": ("*", "*"),
 }
 ULTRA_AVATAR_COLOR = "avatar"  # text_color value: use the avatar's dominant color
 ULTRA_BANNERS = ("bottom", "top", "none")
@@ -536,6 +557,8 @@ def parse_ultra_options(raw) -> dict:
         opts["font"] = raw["font"]
     if raw.get("focus") in ULTRA_FOCUS:
         opts["focus"] = raw["focus"]
+    if raw.get("bracket") in ULTRA_BRACKETS:
+        opts["bracket"] = raw["bracket"]
     if isinstance(raw.get("heading"), str):
         opts["heading"] = raw["heading"].strip()[:ULTRA_HEADING_MAX]
     if isinstance(raw.get("show_number"), bool):
@@ -753,8 +776,10 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
 
     font_key = opts["font"]
     name_max = (84 if centered else 72) if opts["big_name"] else (64 if centered else 52)
-    if font_key == "tall":   # Bebas Neue runs small for its size
-        name_max = int(name_max * 1.25)
+    name_max = int(name_max * ULTRA_FONT_SCALE.get(font_key, 1.0))   # some fonts run big/small for their size
+    b_l, b_r = ULTRA_BRACKETS[opts["bracket"]]
+    if b_l:
+        username = f"{b_l}{username}{b_r}"
     name_fit = _fit_styled(draw, username, text_box_width, name_max, 22, font_key)
     if name_fit is None:
         name_fit = _fit_text_fallback(draw, username, text_box_width, max_font_size=name_max, min_font_size=22)
