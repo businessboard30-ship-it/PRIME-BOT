@@ -125,15 +125,57 @@ def _support_button() -> Optional[discord.ui.Button]:
 
 def dashboard_button(bot, path: str = "/me/rank", label: str = "Open dashboard") -> Optional[discord.ui.Button]:
     """Link-style button to the member dashboard (needs a Discord sign-in
-    there). Hidden on clone bots (the member pages show main-bot data only)
-    and when no dashboard URL is configured."""
+    there). Shown on the main bot AND on clones: the account pages list the
+    asker's levels/ranks from clone bots too. Hidden only when no dashboard
+    URL is configured."""
     import config
-    if getattr(bot, "clone_id", None) is not None or not config.DASH_PAGES_URL:
+    base = str(config.DASH_PAGES_URL or "").strip().rstrip("/")
+    if not base:
+        return None
+    if not base.startswith(("https://", "http://")):
+        # Discord rejects a link button whose URL has no scheme, and that rejection fails the WHOLE AI reply.
+        logger.warning("[aichat] DASH_PAGES_URL has no http(s):// scheme; not attaching the dashboard button")
         return None
     return discord.ui.Button(
         label=label, style=discord.ButtonStyle.link, emoji="📈",
-        url=f"{config.DASH_PAGES_URL}/#{path}",
+        url=f"{base}/#{path}",
     )
+
+
+def strip_dashboard_marker(text):
+    """Remove DASHBOARD_BUTTON_MARKER (left by modules.ai_features when the AI mentioned the dashboard or wrote its link).
+    Returns (text, had_marker). The text never contains a dashboard URL: the real, masked button is attached instead."""
+    from modules.ai_features import DASHBOARD_BUTTON_MARKER
+    if not text or DASHBOARD_BUTTON_MARKER not in text:
+        return text, False
+    cleaned = str(text).replace(DASHBOARD_BUTTON_MARKER, "").rstrip()
+    return (cleaned or "Here you go, tap the button below."), True
+
+
+async def send_with_fallbacks(send, view, dash_btn, file=None):
+    """Send an AI reply so an optional extra can never make it vanish. `send(**kw)` is the real send. Tries everything
+    first, then without the dashboard button, then also without the voice file; raises the last error only when even the
+    plain reply is refused. `view` may be None."""
+    tries = [(True, file)]
+    if dash_btn is not None:
+        tries.append((False, file))
+    if file is not None:
+        tries.append((False, None))
+    last = None
+    for keep_btn, f in tries:
+        if not keep_btn and dash_btn is not None and view is not None and dash_btn in view.children:
+            view.remove_item(dash_btn)
+        kw = {}
+        if view is not None:
+            kw["view"] = view
+        if f is not None:
+            kw["file"] = f
+        try:
+            return await send(**kw)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            last = e
+            logger.warning("[aichat] reply send failed (%s); retrying with fewer extras", type(e).__name__)
+    raise last
 
 
 def extract_support_marker(text: str, view: discord.ui.View) -> str:
@@ -341,12 +383,24 @@ class AIToolsCog(commands.Cog):
         return (
             "FACTS from the leveling data — quote these numbers exactly, share only these people's "
             "stats, and tell them /rank shows the full card"
-            + ("" if clone_id is not None else " and their dashboard has more analysis (per-server ranks, global leaderboard)")
+            + (" and their dashboard shows their ranks across servers" if clone_id is not None
+               else " and their dashboard has more analysis (per-server ranks, global leaderboard)")
             + ":\n" + "\n".join(lines)
         )
 
     def _is_xp_question(self, message: str) -> bool:
         return bool(self._XP_WORDS.search(message or ""))
+
+    _DASH_WORDS = re.compile(r"\bdashboard\b", re.IGNORECASE)
+
+    def _dashboard_path(self, message: str):
+        """Where the 'Open dashboard' button should go for this message, or None for no button: the rank page for XP
+        questions, the account home when the person just asks about the dashboard."""
+        if self._is_xp_question(message):
+            return "/me/rank"
+        if self._DASH_WORDS.search(message or ""):
+            return "/me"
+        return None
 
     _CLAN_WORDS = re.compile(r"\bclan(s)?\b", re.IGNORECASE)
 
@@ -821,20 +875,20 @@ class AIToolsCog(commands.Cog):
         view = ai_reply_view(self, user_id)
         is_voice = getattr(text, "voice", False)
         text = extract_support_marker(text, view)
-        if self._is_xp_question(message):
-            dash_btn = dashboard_button(self.bot)
+        dash_btn = None
+        text, wrote_dash = strip_dashboard_marker(text)
+        dash_path = self._dashboard_path(message) or ("/me" if wrote_dash else None)
+        if dash_path:
+            dash_btn = dashboard_button(self.bot, dash_path)
             if dash_btn is not None:
                 view.add_item(dash_btn)
         voice_file = None
         if is_voice:
             voice_file = await self._voice_file(user_id, text, explicit=ai_voice.wants_voice(message))
-        try:
-            sent = await interaction.followup.send(
-                text, view=view, wait=True, suppress_embeds=True, **({"file": voice_file} if voice_file else {}))
-        except (discord.Forbidden, discord.HTTPException):
-            if voice_file is None:
-                raise
-            sent = await interaction.followup.send(text, view=view, wait=True, suppress_embeds=True)
+
+        async def _send(**kw):
+            return await interaction.followup.send(text, wait=True, suppress_embeds=True, **kw)
+        sent = await send_with_fallbacks(_send, view, dash_btn, voice_file)
 
         # Remember this message's id so a reply to it continues the same
         # session without the user having to retype /aichat.
@@ -1072,25 +1126,21 @@ class AIToolsCog(commands.Cog):
             if SUPPORT_BUTTON_MARKER in text:
                 view = view or discord.ui.View()
                 text = extract_support_marker(text, view)
-            if self._is_xp_question(content):
-                dash_btn = dashboard_button(self.bot)
+            dash_btn = None
+            text, wrote_dash = strip_dashboard_marker(text)
+            dash_path = self._dashboard_path(content) or ("/me" if wrote_dash else None)
+            if dash_path:
+                dash_btn = dashboard_button(self.bot, dash_path)
                 if dash_btn is not None:
                     view = view or discord.ui.View()
                     view.add_item(dash_btn)
             none = discord.AllowedMentions.none()
-            extra = {"view": view} if view else {}
-            for attachment in ([voice_file, None] if voice_file else [None]):
-                kw = {**extra, **({"file": attachment} if attachment else {})}
-                try:
-                    if message.guild is None:
-                        await message.channel.send(text, allowed_mentions=none, suppress_embeds=True, **kw)
-                    else:
-                        await message.reply(text, mention_author=False, allowed_mentions=none,
-                                            suppress_embeds=True, **kw)
-                    break
-                except (discord.Forbidden, discord.HTTPException):
-                    if attachment is None:   # even the plain-text retry failed
-                        raise
+
+            async def _send(**kw):
+                if message.guild is None:
+                    return await message.channel.send(text, allowed_mentions=none, suppress_embeds=True, **kw)
+                return await message.reply(text, mention_author=False, allowed_mentions=none, suppress_embeds=True, **kw)
+            await send_with_fallbacks(_send, view if view else None, dash_btn, voice_file)
         except Exception:
             logger.exception("[aichat] reply/DM chat failed")
 

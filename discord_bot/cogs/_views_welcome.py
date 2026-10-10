@@ -80,12 +80,8 @@ def _clone_id_of(interaction: discord.Interaction):
 
 
 def _apply_template(template: str, member: discord.Member) -> str:
-    return (
-        template
-        .replace("{member}", member.mention)
-        .replace("{guild}", member.guild.name)
-        .replace("{count}", str(member.guild.member_count))
-    )
+    from modules import welcome_vars
+    return welcome_vars.fill_for_member(template, member)
 
 
 def _theme_name_for(config: dict) -> str | None:
@@ -1206,7 +1202,7 @@ class GoodbyePanelView(discord.ui.View):
             f"Status: {'on' if extras.get('goodbye_enabled') else 'off'}",
             f"Channel: {'<#%s>' % extras['goodbye_channel_id'] if extras.get('goodbye_channel_id') else '*not set*'}",
             f"Message: `{(extras.get('goodbye_message') or we.DEFAULT_GOODBYE)[:120]}`",
-            "-# Placeholders: {name} {member} {guild} {count}. Bots leaving never post a goodbye.",
+            "-# Placeholders: {name} {member} {guild} {count} {count_ordinal} {date}. Bots leaving never post a goodbye.",
         ])
 
     async def _allowed(self, interaction: discord.Interaction) -> bool:

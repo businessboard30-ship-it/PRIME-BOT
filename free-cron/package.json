@@ -1,0 +1,1 @@
+{ "name": "free-cron", "private": true, "type": "module", "version": "1.0.0", "scripts": { "test": "node --test test/logic.test.js test/worker.test.js" } }

@@ -1,0 +1,31 @@
+name = "free-cron"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Public service: needs a URL. Add a custom domain in the Cloudflare dashboard (Workers > free-cron > Settings > Domains) if you want one.
+workers_dev = true
+preview_urls = false
+
+[vars]
+# Public values only. Secrets (GITHUB_CLIENT_SECRET, TURNSTILE_SECRET, SESSION_SECRET, ADMIN_KEY) are synced by the deploy workflow.
+GITHUB_CLIENT_ID = "Ov23lisyptX6wJieiAAG"
+TURNSTILE_SITE_KEY = "0x4AAAAAAFSxWSgs4HviXBCy"
+# Extra hostnames crons may never call (comma separated). This service's own host is always blocked.
+SELF_HOSTS = ""
+# Gumroad Premium. PRODUCT_ID: Gumroad product page > the id shown in the product's "Content" / license section (or the API). BUY_URL: your Gumroad product link.
+GUMROAD_PRODUCT_ID = "mhVln9YYiodlDVKw6cv9CQ=="
+GUMROAD_BUY_URL = "https://boardmaster87.gumroad.com/l/xuqnej"
+# "1" = membership (re-checked daily, ends when it stops being paid). "0" = one-time purchase: PREMIUM_DAYS of Premium per key.
+GUMROAD_RECURRING = "1"
+PREMIUM_DAYS = "30"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "free-cron"
+database_id = "da31e9fd-65f9-483e-abe2-959e587a2b2c"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[observability]
+enabled = true

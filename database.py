@@ -157,7 +157,11 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "71"
+SCHEMA_VERSION = "74"
+# "73" -> "74" adds ultra_trial_started_at, ultra_trial_admin_id and ultra_trial_notified to discord_welcome_config for the one-time 5-day Customize Card trial. ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
+# "72" -> "73" adds auto_bump_enabled, auto_bump_by and auto_bump_checked_at (+ partial index) to bump_listings for Premium Auto Bump (4 bumps a day). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
+ULTRA_TRIAL_DAYS = 5  # free Customize Card trial length per server
+# "71" -> "72" creates dash_visits (one row per web-dashboard user per UTC day, written at most every ~10 minutes per person; kept 90 days; only the owner area reads it). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "70" -> "71" creates dev_jobs (Developer-mode scheduled jobs: reminder / note / AI prompt on allowlisted presets, claimed by the cron worker). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "69" -> "70" adds display_name, avatar_url and show_on_board to dash_web_users (web leaderboard: signed-in members appear by name unless they opt out). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "68" -> "69" creates dash_friends, dash_member_messages, dash_member_reports and dash_member_prefs (Part D member messaging: friend requests, text-only messages kept 30 days, report snapshots, per-member settings). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -3378,6 +3382,26 @@ class Database:
             ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS card_pack_trial_admin_id BIGINT
         """)
 
+        # ultra_trial_*: one-time, per-server 5-day free trial of Customize
+        # Card (custom background + layout). Starts the first time an admin
+        # opens the Customize Card wizard on a server that hasn't bought it.
+        #   ultra_trial_started_at: set once, never cleared (it is also the
+        #     "trial already used" flag, so it can't be re-triggered).
+        #   ultra_trial_admin_id: who opened the wizard, for the expiry DM.
+        #   ultra_trial_notified: TRUE once the expiry notice was handled.
+        # While active, get_welcome_config overlays ultra_pack_unlocked=True;
+        # after expiry the overlay stops and welcome rendering falls back to
+        # the server's normal configured card (stored settings are kept).
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS ultra_trial_started_at TIMESTAMPTZ
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS ultra_trial_admin_id BIGINT
+        """)
+        await conn.execute("""
+            ALTER TABLE discord_welcome_config ADD COLUMN IF NOT EXISTS ultra_trial_notified BOOLEAN NOT NULL DEFAULT FALSE
+        """)
+
         # --- bot_global_settings (simple key/value store, bot-wide) --------
         # Currently used for "image_host_channel_id": the channel (in the
         # owner's support server) that /welcome custombg re-uploads images
@@ -4392,6 +4416,20 @@ class Database:
                      "ALTER TABLE dash_web_users ADD COLUMN IF NOT EXISTS show_on_board BOOLEAN NOT NULL DEFAULT TRUE"):
             await conn.execute(_ddl)
 
+        # One row per signed-in dashboard user per UTC day (owner "Visitors" page). Touched at most about
+        # every 10 minutes per person; rows older than 90 days are pruned.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS dash_visits (
+                day DATE NOT NULL,
+                user_id TEXT NOT NULL,
+                first_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                touches INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (day, user_id)
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_dash_visits_user ON dash_visits (user_id)")
+
         # Referral-boost click log — just a visit counter (no auth, no
         # cookies/sessions to correlate: see the note on invite_code/
         # last_known_invite_uses below for why conversion doesn't need
@@ -5113,8 +5151,17 @@ class Database:
             # clears the way for exactly one new reminder next cooldown —
             # see bump_get_listings_needing_reminder.
             "ALTER TABLE bump_listings ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ",
+            # Auto Bump (Premium): switched on from the Auto Bump button next to Bump. auto_bump_by is the
+            # staff member who turned it on; auto_bump_checked_at is stamped on every attempt so a listing
+            # that cannot bump (no channel, missing permissions) is retried slowly, not every tick.
+            "ALTER TABLE bump_listings ADD COLUMN IF NOT EXISTS auto_bump_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE bump_listings ADD COLUMN IF NOT EXISTS auto_bump_by BIGINT",
+            "ALTER TABLE bump_listings ADD COLUMN IF NOT EXISTS auto_bump_checked_at TIMESTAMPTZ",
         ):
             await conn.execute(_col_sql)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS bump_listings_auto_idx ON bump_listings (auto_bump_enabled) WHERE auto_bump_enabled"
+        )
 
         # Owner-approved sponsored ads (ad_submissions) placed once into
         # each clone's bump channel — see get_all_bump_channels /
@@ -11471,7 +11518,57 @@ class Database:
         if not (cfg.get("card_pack_unlocked") and cfg.get("ultra_pack_unlocked")):
             if await self.is_guild_premium_active(guild_id, clone_id):
                 cfg = dict(cfg, card_pack_unlocked=True, ultra_pack_unlocked=True)
+        # 5-day Customize Card trial overlay (stored flag untouched).
+        if not cfg.get("ultra_pack_unlocked"):
+            started = cfg.get("ultra_trial_started_at")
+            if started is not None:
+                import datetime as _dt
+                ends = started + _dt.timedelta(days=ULTRA_TRIAL_DAYS)
+                if _dt.datetime.now(_dt.timezone.utc) < ends:
+                    cfg = dict(cfg, ultra_pack_unlocked=True, ultra_trial_active=True,
+                               ultra_trial_ends_at=ends)
         return cfg
+
+    async def start_ultra_trial(self, guild_id: int, admin_id: int, clone_id: Optional[int] = None) -> bool:
+        """Starts this server's one-time 5-day Customize Card trial. Returns
+        True only if it was started now (False = already used/owned)."""
+        await self.set_welcome_config(guild_id, clone_id)  # ensure a row exists
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            r = await conn.execute(
+                "UPDATE discord_welcome_config SET ultra_trial_started_at = NOW(), "
+                "ultra_trial_admin_id = $3, ultra_trial_notified = FALSE, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+                "AND ultra_trial_started_at IS NULL AND ultra_pack_unlocked = FALSE",
+                guild_id, clone_id, admin_id,
+            )
+            return r.endswith(" 1")
+
+    async def get_due_ultra_trial_expirations(self, clone_id: Optional[int], limit: int = 50) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT guild_id, clone_id, ultra_trial_admin_id, ultra_pack_unlocked
+                FROM discord_welcome_config
+                WHERE ultra_trial_started_at IS NOT NULL
+                AND ultra_trial_notified = FALSE
+                AND NOW() - ultra_trial_started_at >= ($3 || ' days')::INTERVAL
+                AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                LIMIT $2
+                """,
+                clone_id, limit, str(ULTRA_TRIAL_DAYS),
+            )
+            return [dict(r) for r in rows]
+
+    async def mark_ultra_trial_notified(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_welcome_config SET ultra_trial_notified = TRUE "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id,
+            )
 
     async def _get_welcome_config_raw(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
@@ -11506,6 +11603,8 @@ class Database:
                 "onboarding_dm_sent": False,
                 "card_pack_trial_started_at": None, "card_pack_trial_used": False,
                 "card_pack_trial_admin_id": None,
+                "ultra_trial_started_at": None, "ultra_trial_admin_id": None,
+                "ultra_trial_notified": False,
             }
 
     async def set_welcome_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
@@ -14914,6 +15013,66 @@ class Database:
                        display_name = COALESCE($2, dash_web_users.display_name),
                        avatar_url = COALESCE($3, dash_web_users.avatar_url)""", str(user_id), name, av)
 
+    DASH_VISIT_KEEP_DAYS = 90
+
+    async def dash_visit_touch(self, user_id: str) -> None:
+        """Mark this person as active on the dashboard today (UTC). Cheap upsert; callers throttle it."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO dash_visits (day, user_id) VALUES ((NOW() AT TIME ZONE 'UTC')::date, $1)
+                   ON CONFLICT (day, user_id) DO UPDATE SET last_at = NOW(), touches = dash_visits.touches + 1""",
+                str(user_id))
+
+    async def dash_visit_prune(self) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "DELETE FROM dash_visits WHERE day < (NOW() AT TIME ZONE 'UTC')::date - $1::int",
+                self.DASH_VISIT_KEEP_DAYS)
+        try:
+            return int(res.split()[-1])
+        except Exception:
+            return 0
+
+    async def dash_visits_report(self, days: int = 14, limit: int = 200) -> dict:
+        """Owner-only. Who was active on the dashboard today (UTC), a per-day unique-visitor series and
+        sign-up / plan counts. Read-only."""
+        days = max(1, min(int(days), 30))
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            today = await conn.fetchval("SELECT (NOW() AT TIME ZONE 'UTC')::date")
+            rows = await conn.fetch(
+                """SELECT v.user_id, v.first_at, v.last_at, v.touches, u.display_name, u.first_seen,
+                          ((u.first_seen AT TIME ZONE 'UTC')::date = v.day) AS new_today,
+                          (SELECT COUNT(*) FROM dash_visits o WHERE o.user_id = v.user_id AND o.day < v.day) AS earlier_days
+                   FROM dash_visits v LEFT JOIN dash_web_users u ON u.user_id = v.user_id
+                   WHERE v.day = $1 ORDER BY v.last_at DESC LIMIT $2""", today, int(limit))
+            ids = [r["user_id"] for r in rows]
+            plans = await conn.fetch(
+                """SELECT user_id, product FROM user_entitlements
+                   WHERE user_id = ANY($1::text[]) AND status = 'active' AND (expires_at IS NULL OR expires_at > NOW())""",
+                ids) if ids else []
+            series = await conn.fetch(
+                "SELECT day, COUNT(*) AS n FROM dash_visits WHERE day > $1::date - $2::int GROUP BY day", today, days)
+            uniq7 = await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM dash_visits WHERE day > $1::date - 7", today)
+            uniq30 = await conn.fetchval("SELECT COUNT(DISTINCT user_id) FROM dash_visits WHERE day > $1::date - 30", today)
+            total = await conn.fetchval("SELECT COUNT(*) FROM dash_web_users")
+            new7 = await conn.fetchval(
+                "SELECT COUNT(*) FROM dash_web_users WHERE (first_seen AT TIME ZONE 'UTC')::date > $1::date - 7", today)
+            new_today = await conn.fetchval(
+                "SELECT COUNT(*) FROM dash_web_users WHERE (first_seen AT TIME ZONE 'UTC')::date = $1::date", today)
+            paying = await conn.fetchval(
+                """SELECT COUNT(DISTINCT user_id) FROM user_entitlements
+                   WHERE status = 'active' AND (expires_at IS NULL OR expires_at > NOW())""")
+        by_user: dict = {}
+        for r in plans:
+            by_user.setdefault(r["user_id"], []).append(r["product"])
+        return {"today": today, "visitors": [dict(r, plans=by_user.get(r["user_id"], [])) for r in rows],
+                "series": {r["day"]: int(r["n"]) for r in series},
+                "unique_7d": int(uniq7 or 0), "unique_30d": int(uniq30 or 0), "total_users": int(total or 0),
+                "new_today": int(new_today or 0), "new_7d": int(new7 or 0), "paying": int(paying or 0)}
+
     async def board_profiles(self, user_ids: list) -> dict:
         """{user_id: {name, avatar}} for the signed-in members in `user_ids` who have NOT opted out. Everyone else is absent."""
         ids = [str(i) for i in user_ids]
@@ -14944,30 +15103,34 @@ class Database:
             return bool(await conn.fetchval("SELECT 1 FROM dash_web_users WHERE user_id = $1", str(user_id)))
 
     # ── member pages (#/me): every query is keyed to the signed-in user's own id ──
-    async def member_servers(self, user_id: str) -> list:
-        """Servers (main bot, still present) where this user has XP: level, XP, rank, coins, ping opt-out."""
+    async def member_servers(self, user_id: str, all_bots: bool = False) -> list:
+        """Servers where this user has XP: level, XP, rank, coins, ping opt-out. Main bot only by default; with
+        all_bots=True also servers served by an ACTIVE clone bot (each row says which: clone_id / bot_username).
+        Rank, players, coins and the server name are always read for the same bot the XP row belongs to."""
         uid = int(user_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT x.guild_id, x.total_xp, x.level, g.guild_name,
+                """SELECT x.guild_id, x.clone_id, cb.bot_username, x.total_xp, x.level, g.guild_name,
                           (SELECT COUNT(*) FROM discord_xp d WHERE d.guild_id = x.guild_id
-                             AND d.clone_id IS NULL AND d.total_xp > x.total_xp) + 1 AS rank,
+                             AND d.clone_id IS NOT DISTINCT FROM x.clone_id AND d.total_xp > x.total_xp) + 1 AS rank,
                           (SELECT COUNT(*) FROM discord_xp d WHERE d.guild_id = x.guild_id
-                             AND d.clone_id IS NULL) AS players,
+                             AND d.clone_id IS NOT DISTINCT FROM x.clone_id) AS players,
                           b.balance, c.currency_symbol, c.currency_name,
                           EXISTS (SELECT 1 FROM leveling_ping_optout o
                                   WHERE o.guild_id = x.guild_id AND o.user_id = x.user_id) AS ping_optout
                    FROM discord_xp x
                    JOIN LATERAL (SELECT guild_name FROM discord_guilds
-                                 WHERE guild_id = x.guild_id AND clone_id IS NULL AND left_at IS NULL
+                                 WHERE guild_id = x.guild_id AND clone_id IS NOT DISTINCT FROM x.clone_id AND left_at IS NULL
                                  ORDER BY joined_at DESC LIMIT 1) g ON TRUE
+                   LEFT JOIN discord_cloned_bots cb ON cb.clone_id = x.clone_id
                    LEFT JOIN discord_economy_balances b
-                          ON b.guild_id = x.guild_id AND b.clone_id IS NULL AND b.user_id = x.user_id
+                          ON b.guild_id = x.guild_id AND b.clone_id IS NOT DISTINCT FROM x.clone_id AND b.user_id = x.user_id
                    LEFT JOIN discord_economy_config c
-                          ON c.guild_id = x.guild_id AND c.clone_id IS NULL
-                   WHERE x.user_id = $1 AND x.clone_id IS NULL AND x.total_xp > 0
-                   ORDER BY x.total_xp DESC LIMIT 50""", uid)
+                          ON c.guild_id = x.guild_id AND c.clone_id IS NOT DISTINCT FROM x.clone_id
+                   WHERE x.user_id = $1 AND x.total_xp > 0
+                     AND (x.clone_id IS NULL OR ($2 AND cb.status = 'active'))
+                   ORDER BY x.total_xp DESC LIMIT 50""", uid, bool(all_bots))
         return [dict(r) for r in rows]
 
     async def member_level_ping_set(self, guild_id: int, user_id: int, optout: bool) -> None:
@@ -14981,12 +15144,14 @@ class Database:
                                    guild_id, user_id)
 
     async def member_purchases(self, user_id: str, limit: int = 50) -> list:
-        """This user's own payment rows only. The gateway reference is never returned."""
+        """This user's own payment rows only. The gateway reference is never returned. bot_username names the clone
+        bot a payment was made for (NULL = the main bot)."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT amount, status, payment_type, provider, created_date
-                   FROM payment_logs WHERE user_id = $1 ORDER BY created_date DESC LIMIT $2""",
+                """SELECT p.amount, p.status, p.payment_type, p.provider, p.created_date, cb.bot_username
+                   FROM payment_logs p LEFT JOIN discord_cloned_bots cb ON cb.clone_id = p.clone_id
+                   WHERE p.user_id = $1 ORDER BY p.created_date DESC LIMIT $2""",
                 int(user_id), int(limit))
         return [dict(r) for r in rows]
 
@@ -15339,15 +15504,22 @@ class Database:
         return {r["user_id"] for r in rows}
 
     async def msg_guild_ids(self, user_id: str, limit: int = 25) -> list:
-        """Main-bot servers where this person has XP (candidates for the shared-server check; Discord confirms)."""
+        """Candidate servers for the shared-server check: where this person has XP on the main bot OR on an ACTIVE clone
+        (same rule as member_servers(all_bots=True)). Each row: guild_id, name, clone_id (None = main bot) and bot_username
+        (None for the main bot). The guild name is read for the same bot the XP row belongs to. Discord confirms, as that bot."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT x.guild_id, (SELECT guild_name FROM discord_guilds g WHERE g.guild_id = x.guild_id
-                          AND g.clone_id IS NULL AND g.left_at IS NULL ORDER BY joined_at DESC LIMIT 1) AS guild_name
-                   FROM discord_xp x WHERE x.user_id = $1 AND x.clone_id IS NULL AND x.total_xp > 0
+                """SELECT x.guild_id, x.clone_id, cb.bot_username,
+                          (SELECT guild_name FROM discord_guilds g WHERE g.guild_id = x.guild_id
+                              AND g.clone_id IS NOT DISTINCT FROM x.clone_id AND g.left_at IS NULL
+                           ORDER BY joined_at DESC LIMIT 1) AS guild_name
+                   FROM discord_xp x LEFT JOIN discord_cloned_bots cb ON cb.clone_id = x.clone_id
+                   WHERE x.user_id = $1 AND x.total_xp > 0 AND (x.clone_id IS NULL OR cb.status = 'active')
                    ORDER BY x.total_xp DESC LIMIT $2""", int(user_id), int(limit))
-        return [{"guild_id": str(r["guild_id"]), "name": r["guild_name"]} for r in rows if r["guild_name"]]
+        return [{"guild_id": str(r["guild_id"]), "name": r["guild_name"],
+                 "clone_id": int(r["clone_id"]) if r["clone_id"] is not None else None,
+                 "bot_username": r["bot_username"]} for r in rows if r["guild_name"]]
 
     async def msg_friend_get(self, a: str, b: str):
         lo, hi = self._pair(a, b)
@@ -15607,6 +15779,7 @@ class Database:
                                  ("messages", "DELETE FROM dash_member_messages WHERE sender_id = $1 OR recipient_id = $1"),
                                  ("friends", "DELETE FROM dash_friends WHERE (user_a = $1 OR user_b = $1) AND (status <> 'blocked' OR blocked_by = $1)"),
                                  ("messaging_prefs", "DELETE FROM dash_member_prefs WHERE user_id = $1 AND msg_banned = FALSE"),
+                                 ("visits", "DELETE FROM dash_visits WHERE user_id = $1"),
                                  ("web_registry", "DELETE FROM dash_web_users WHERE user_id = $1"),
                                  ("sessions", "DELETE FROM discord_login_sessions WHERE payload->>'kind' = 'dash' AND payload->'user'->>'id' = $1")):
                     res = await conn.execute(sql, uid)
@@ -17853,6 +18026,46 @@ class Database:
                 clone_id, cooldown_seconds, limit,
             )
             return [dict(r) for r in rows]
+
+    # --- Auto Bump (Premium) -------------------------------------------------------------------------
+    async def bump_set_auto(self, listing_id: int, enabled: bool, by: Optional[int] = None) -> Optional[Dict]:
+        """Turn Auto Bump on/off for one listing. Turning it on clears the retry stamp so the first
+        attempt is not held back by an old failure."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE bump_listings SET auto_bump_enabled = $2, "
+                "auto_bump_by = CASE WHEN $2 THEN $3 ELSE auto_bump_by END, auto_bump_checked_at = NULL "
+                "WHERE id = $1 RETURNING id, guild_id, clone_id, auto_bump_enabled",
+                listing_id, bool(enabled), by)
+            return dict(row) if row else None
+
+    async def bump_get_auto_due(self, clone_id: Optional[int], interval_seconds: int, retry_seconds: int,
+                                limit: int = 5) -> List[Dict]:
+        """Auto Bump listings that are due: the last bump (manual or automatic) is at least `interval_seconds`
+        old, and the last attempt at least `retry_seconds` ago. Spacing from the LAST bump of any kind is what
+        keeps this to 4 a day at most and stops it doubling up with a person who just bumped."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, guild_id, clone_id, name, listing_type, last_bump_at
+                FROM bump_listings
+                WHERE auto_bump_enabled
+                  AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                  AND status = 'approved'
+                  AND (last_bump_at IS NULL OR last_bump_at <= NOW() - ($2 * INTERVAL '1 second'))
+                  AND (auto_bump_checked_at IS NULL OR auto_bump_checked_at <= NOW() - ($3 * INTERVAL '1 second'))
+                ORDER BY last_bump_at NULLS FIRST
+                LIMIT $4
+                """,
+                clone_id, interval_seconds, retry_seconds, limit)
+            return [dict(r) for r in rows]
+
+    async def bump_mark_auto_checked(self, listing_id: int) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE bump_listings SET auto_bump_checked_at = NOW() WHERE id = $1", listing_id)
 
     async def bump_mark_reminder_sent(self, listing_id: int) -> None:
         pool = await get_pool()

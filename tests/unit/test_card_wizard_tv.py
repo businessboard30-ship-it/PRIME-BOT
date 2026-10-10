@@ -29,9 +29,9 @@ def build(tab="bg", tv=False, unlocked=False):
 
 def test_each_tab_shows_only_its_own_controls():
     common = {"tabbg", "tablayout", "tabtext", "reset", "unlock", "preset"}
-    assert kinds(build("bg")) == common | {"setbg", "dim"}
-    assert kinds(build("layout")) == common | {"banner", "side", "shape"}
-    assert kinds(build("text")) == common | {"color", "heading", "number"}
+    assert kinds(build("bg")) == common | {"setbg", "dim", "focus"}
+    assert kinds(build("layout")) == common | {"layout", "banner", "side", "shape"}
+    assert kinds(build("text")) == common | {"color", "font", "style", "heading", "number"}
 
 
 def test_unlocked_server_gets_done_not_unlock_and_clear_only_with_a_background():
@@ -58,9 +58,9 @@ def test_the_active_tab_is_highlighted_and_the_wizard_stays_short():
         tabs = {c.custom_id.split(":")[0]: c.item.style for c in v.walk_children() if getattr(c, "custom_id", "").startswith("cardwz_tab")}
         assert tabs["cardwz_tab" + t] == discord.ButtonStyle.primary
         assert sum(1 for s in tabs.values() if s == discord.ButtonStyle.primary) == 1
-        assert sum(isinstance(c, discord.ui.Select) for c in v.walk_children()) <= 4
+        assert sum(isinstance(getattr(c, 'item', c), discord.ui.Select) for c in v.walk_children()) <= 5
         assert len(list(v.walk_children())) < 25
-        assert sum(isinstance(c, discord.ui.Select) for c in v.walk_children()) <= 4
+        assert sum(isinstance(c, discord.ui.Select) for c in v.walk_children()) <= 5
 
 
 def test_tab_button_custom_id_round_trips_for_main_and_clone():
@@ -227,3 +227,55 @@ def test_avatar_is_downloaded_once_per_avatar():
     user = SimpleNamespace(id=3, display_avatar=asset)
     assert asyncio.run(cc._avatar_bytes(Session(), user)) == b"AV" and asyncio.run(cc._avatar_bytes(Session(), user)) == b"AV"
     assert len(calls) == 1
+
+
+def _count(n):
+    return 1 + sum(_count(c) for c in (n.get("components") or [])) if isinstance(n, dict) else 0
+
+
+def test_every_tab_fits_discords_component_limit_with_all_the_new_controls():
+    for tab in cc._TABS:
+        for cfg in ({"ultra_pack_unlocked": False}, {"ultra_pack_unlocked": True, "custom_background_url": "https://x/y.png",
+                                                      "ultra_trial_active": True}):
+            v = cc.build_customize_view(1, 7, 5, cfg, tab=tab, has_tv=True, note="x")
+            assert sum(_count(c) for c in v.to_components()) < 40, tab
+
+
+def test_trial_shows_the_banner_and_keeps_unlock_next_to_done():
+    from datetime import datetime, timezone
+    cfg = {"ultra_pack_unlocked": True, "ultra_trial_active": True, "ultra_trial_ends_at": datetime(2030, 1, 1, tzinfo=timezone.utc)}
+    v = cc.build_customize_view(1, None, 5, cfg, tab="bg")
+    text = " ".join(getattr(c, "content", "") for c in v.walk_children())
+    assert "free 5-day trial" in text.lower() and "<t:" in text
+    k = kinds(v)
+    assert "done" in k and "unlock" in k
+    plain = cc.build_customize_view(1, None, 5, {"ultra_pack_unlocked": True}, tab="bg")
+    assert "unlock" not in kinds(plain) and "trial" not in " ".join(getattr(c, "content", "") for c in plain.walk_children()).lower()
+
+
+def test_opening_the_wizard_starts_the_trial_once_and_shows_the_tv(monkeypatch):
+    sent = []
+    state = {"cfg": {"ultra_pack_unlocked": False}, "started": []}
+
+    async def get(gid, clone_id=None):
+        return dict(state["cfg"])
+
+    async def start(gid, uid, clone_id=None):
+        state["started"].append(gid)
+        state["cfg"] = {"ultra_pack_unlocked": True, "ultra_trial_active": True}
+        return True
+
+    async def render(*a, **k):
+        return b"PNG", "Sample backdrop"
+
+    class FU:
+        async def send(self, *a, **kw):
+            sent.append((a, kw))
+    monkeypatch.setattr(cc.db, "get_welcome_config", get)
+    monkeypatch.setattr(cc.db, "start_ultra_trial", start)
+    monkeypatch.setattr(cc, "_render_tv", render)
+    it = SimpleNamespace(user=SimpleNamespace(id=42), guild=SimpleNamespace(), client=SimpleNamespace(get_guild=lambda g: None), followup=FU())
+    asyncio.run(cc.open_customize_wizard(it, 1, None))
+    assert state["started"] == [1]
+    assert "free 5-day trial" in sent[0][0][0].lower() and sent[0][1]["ephemeral"] is True       # trial note first
+    assert isinstance(sent[1][1]["view"], discord.ui.LayoutView) and sent[1][1]["file"].filename == "card.png"

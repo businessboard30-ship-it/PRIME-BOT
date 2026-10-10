@@ -74,7 +74,36 @@ async def growth(q) -> dict:
             "net": sum(r["joined"] - r["left"] for r in series)}
 
 
+async def visitors(q) -> dict:
+    """OWNER ONLY (section 'access', which is never grantable to helpers). Who opened the dashboard today
+    (UTC), a daily unique-visitor series, and sign-up / plan counts. Read-only; ids are shown because only the
+    owner can open this."""
+    import datetime as _dt
+    days = q("days") or "14"
+    if not days.isdigit() or not 1 <= int(days) <= 30:
+        return {"_error": (422, "Bad range.")}
+    days = int(days)
+    from api import dash as _dash          # lazy: dash imports this module; tests fake dash.db
+    r = await _dash.db.dash_visits_report(days)
+    today = r["today"]
+    series = []
+    for i in range(days - 1, -1, -1):
+        d = today - _dt.timedelta(days=i)
+        series.append({"day": d.isoformat(), "visitors": r["series"].get(d, 0)})
+    out_rows = []
+    for v in r["visitors"]:
+        out_rows.append({"user_id": str(v["user_id"]), "name": v.get("display_name"), "first_at": v["first_at"],
+                         "last_at": v["last_at"], "touches": int(v["touches"] or 0), "new_today": bool(v.get("new_today")),
+                         "returning": int(v.get("earlier_days") or 0) > 0, "plans": sorted(set(v.get("plans") or []))})
+    return {"as_of_day": today.isoformat(), "timezone": "UTC", "today_count": len(out_rows), "visitors": out_rows,
+            "yesterday": series[-2]["visitors"] if len(series) > 1 else 0, "series": series,
+            "unique_7d": r["unique_7d"], "unique_30d": r["unique_30d"], "total_users": r["total_users"],
+            "new_today": r["new_today"], "new_7d": r["new_7d"], "paying": r["paying"],
+            "returning_today": sum(1 for v in out_rows if v["returning"])}
+
+
 ROUTES = {
+    "owner_visitors": ("access", visitors),
     "owner_search": ("inspect", search),
     "owner_alerts": ("health", alerts),
     "owner_growth": ("servers", growth),
