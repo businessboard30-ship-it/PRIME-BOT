@@ -22,6 +22,7 @@ import io
 import logging
 import random
 import time
+from typing import Optional
 
 import aiohttp
 import discord
@@ -346,12 +347,14 @@ class LevelingCog(GuildOnlyCog):
         # docstring. Cheap regardless: it's a single top-5 query plus a
         # membership diff, and almost always returns no changes.
         chief_changes = await db.recompute_clan_chiefs(message.guild.id, clone_id=clone_id)
+        pinged: set = set()      # one notification per member for everything this message triggers
         if chief_changes:
             chief_announce_channel = await self._ensure_announce_channel(message.guild, config, clone_id=clone_id)
             if chief_announce_channel is None:
                 chief_announce_channel = message.channel
             for change in chief_changes:
-                await self._announce_chief_change(chief_announce_channel, message.guild, change, clone_id=clone_id)
+                await self._announce_chief_change(chief_announce_channel, message.guild, change, clone_id=clone_id,
+                                                  pinged=pinged)
 
         if new_level > old_level and isinstance(message.author, discord.Member):
             announce_channel = await self._ensure_announce_channel(message.guild, config, clone_id=clone_id)
@@ -360,7 +363,7 @@ class LevelingCog(GuildOnlyCog):
             card_style = config.get("card_style", "card")
             if card_style != "off":
                 await self._send_level_up_card(
-                    announce_channel, message.author, new_level, new_total, card_style,
+                    announce_channel, message.author, new_level, new_total, card_style, pinged=pinged,
                 )
             await self._grant_level_roles(message.author, new_level, clone_id=clone_id)
             # Clan flavor card — every 3 levels gained (3, 6, 9, ...),
@@ -376,7 +379,7 @@ class LevelingCog(GuildOnlyCog):
                 await db.get_chief_seat_for_user(message.guild.id, message.author.id, clone_id=clone_id) is not None
             )
             if is_chief_now or new_level % 3 == 0:
-                await self._send_clan_message(announce_channel, message.author, clone_id=clone_id)
+                await self._send_clan_message(announce_channel, message.author, clone_id=clone_id, pinged=pinged)
 
             # Godhood gauntlet — see modules/godhood_cards.py. Checked
             # HERE (on level-up) same as the chief recompute above: only
@@ -386,20 +389,26 @@ class LevelingCog(GuildOnlyCog):
             # definition of that trial type.
             await self._maybe_advance_godhood(announce_channel, message.author, new_level, clone_id=clone_id)
 
-    async def _mentions_for(self, guild_id: int, *user_ids) -> discord.AllowedMentions:
+    async def _mentions_for(self, guild_id: int, *user_ids, pinged: Optional[set] = None) -> discord.AllowedMentions:
         """AllowedMentions that ping only members who haven't opted out via the
         leaderboard's 🔔 Level-up pings button. The @mention text still shows;
-        it just doesn't notify them. Falls back to normal pings if the lookup fails."""
+        it just doesn't notify them. Falls back to normal pings if the lookup fails.
+
+        `pinged` is a set shared by every message sent for ONE level-up (level card, chief
+        announcement, clan card). A member already pinged by an earlier message in that set is not
+        pinged again, so a chief's level-up notifies them once, not once per message."""
         try:
             muted = await db.get_level_ping_muted(guild_id, list(user_ids))
         except Exception:
             logger.exception("[leveling] ping opt-out lookup failed")
             muted = set()
-        return discord.AllowedMentions(
-            users=[discord.Object(id=u) for u in user_ids if u is not None and u not in muted],
-            roles=False, everyone=False)
+        ping = [u for u in user_ids if u is not None and u not in muted and (pinged is None or u not in pinged)]
+        if pinged is not None:
+            pinged.update(ping)
+        return discord.AllowedMentions(users=[discord.Object(id=u) for u in ping], roles=False, everyone=False)
 
-    async def _announce_chief_change(self, channel, guild: discord.Guild, change: dict, clone_id=None):
+    async def _announce_chief_change(self, channel, guild: discord.Guild, change: dict, clone_id=None,
+                                     pinged: Optional[set] = None):
         """Plain mention, no @everyone — announces both the new chief and
         whoever they just displaced (if that seat was previously held).
         See database.py's recompute_clan_chiefs docstring for why a seat's
@@ -411,7 +420,7 @@ class LevelingCog(GuildOnlyCog):
         new_id = change["new_user_id"]
         old_id = change["old_user_id"]
         try:
-            am = await self._mentions_for(guild.id, new_id, old_id)
+            am = await self._mentions_for(guild.id, new_id, old_id, pinged=pinged)
             if new_id is not None:
                 await channel.send(f"👑 <@{new_id}> is now **Chief of {clan_slug}**!", allowed_mentions=am)
             if old_id is not None and old_id != new_id:
@@ -423,7 +432,7 @@ class LevelingCog(GuildOnlyCog):
             logger.error(f"[v0] Failed to announce chief change ({clan_slug}) in guild {guild.id}: {e}")
 
     async def _send_level_up_card(self, channel, member: discord.Member, new_level: int, new_total_xp: int,
-                                   card_style: str = "card", clone_id=None):
+                                   card_style: str = "card", clone_id=None, pinged: Optional[set] = None):
         """Renders and sends the level-up announcement. card_style == "text"
         skips the PIL render + avatar fetch entirely and just posts a plain
         message (people asked for this — some don't want the image spam,
@@ -435,7 +444,7 @@ class LevelingCog(GuildOnlyCog):
         only on /leaderboard, so level-up cards don't carry it (or the
         discord_xp.boost_pitched bookkeeping/DB write that used to go with
         it — one less write per level-up)."""
-        am = await self._mentions_for(member.guild.id, member.id)
+        am = await self._mentions_for(member.guild.id, member.id, pinged=pinged)
         if card_style == "text":
             try:
                 await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", allowed_mentions=am)
@@ -506,7 +515,7 @@ class LevelingCog(GuildOnlyCog):
             except discord.Forbidden:
                 pass
 
-    async def _send_clan_message(self, channel, member: discord.Member, clone_id=None):
+    async def _send_clan_message(self, channel, member: discord.Member, clone_id=None, pinged: Optional[set] = None):
         """Sends the clan flavor card — every 3 levels for regular members,
         every level-up for chiefs (confirmed). Locked-random clan
         (get_or_assign_clan_card) so a member always gets the same card
@@ -545,7 +554,7 @@ class LevelingCog(GuildOnlyCog):
                 f"{member.mention} Your clan, **{announced_clan}**, is proud of you. "
                 f"Level up more to become a god. ⚡"
             )
-            am = await self._mentions_for(member.guild.id, member.id)
+            am = await self._mentions_for(member.guild.id, member.id, pinged=pinged)
             await channel.send(content=caption, file=file, allowed_mentions=am)
         except discord.Forbidden:
             pass
