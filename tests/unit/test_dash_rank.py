@@ -23,7 +23,7 @@ def rank(mem, monkeypatch):
         log.append(("global", uid))
         return {"total_xp": 670, "rank": 4, "total_players": 20}
 
-    async def member_servers(uid):
+    async def member_servers(uid, all_bots=False):
         log.append(("servers", uid))
         return [dict(s) for s in SERVERS]
     monkeypatch.setattr(fake, "get_global_xp_rank", get_global_xp_rank, raising=False)
@@ -57,7 +57,7 @@ def test_empty_state_when_no_xp(mem, monkeypatch):
     async def none(uid):
         return None
 
-    async def empty(uid):
+    async def empty(uid, all_bots=False):
         return []
     monkeypatch.setattr(fake, "get_global_xp_rank", none, raising=False)
     monkeypatch.setattr(fake, "member_servers", empty, raising=False)

@@ -46,6 +46,27 @@ _BEAST = ("mrbeast", "mr beast", "mr.beast")
 _BAIT = ("casino", "promo code", "bonus code", "withdraw", "withdrawal", "cryptocurrency casino", "free money")
 
 
+# Second built-in heuristic: the "fake giveaway post" wording used by the fatawin variant of the scam
+# (giveaway + promo code + register/withdraw/casino), and its "this post will be deleted" bait.
+_GIVEAWAY = ("giving away", "giveaway")
+_PROMO = ("promo code", "promocode", "promo-code")
+_CLAIM = ("register", "withdraw", "casino")
+_DELETED_BAIT = ("will be deleted an hour", "post will be deleted")
+
+# Starter rules added once per database (see _seed_defaults). They land in scam_shield_rules, so the
+# owner can still list and remove them in /admin; a removed rule stays removed.
+SEED_KEY = "seed_fatawin_2026_10"
+SEED_NOTE = "fatawin fake MrBeast giveaway"
+SEED_RULES = (
+    ("domain", "fatawin.com"),
+    ("word", "fatawin"),
+    ("image", "37717a7c733abb3b"),   # fake MrBeast pinned post, bonuses page
+    ("image", "5c9f69a7a939aea9"),   # fake withdrawal page
+    ("image", "9b3b39242323278b"),   # "Withdrawal Success! $5600" popup
+    ("image", "800021140c6d19f3"),   # popup next to a phone showing +5600 USDT
+)
+
+
 async def _pool():
     from database import get_pool  # lazy: keeps this module importable in tests
     return await get_pool()
@@ -143,6 +164,7 @@ async def load(force: bool = False) -> None:
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
+            await _seed_defaults(conn)
             rules = await conn.fetch("SELECT id, kind, pattern FROM scam_shield_rules")
             setting = await conn.fetchrow("SELECT value FROM scam_shield_settings WHERE key = 'enabled'")
     except Exception:
@@ -163,6 +185,21 @@ async def load(force: bool = False) -> None:
     _c.words, _c.domains, _c.images = words, domains, images
     _c.enabled = (setting is None) or (setting["value"] != "off")
     _c.loaded_at = time.monotonic()
+
+
+async def _seed_defaults(conn) -> None:
+    """Insert SEED_RULES once (marked in scam_shield_settings), so removing one in /admin sticks."""
+    try:
+        if await conn.fetchval("SELECT 1 FROM scam_shield_settings WHERE key = $1", SEED_KEY):
+            return
+        for kind, pattern in SEED_RULES:
+            await conn.execute(
+                "INSERT INTO scam_shield_rules (kind, pattern, note) VALUES ($1, $2, $3) "
+                "ON CONFLICT (kind, pattern) DO NOTHING", kind, pattern, SEED_NOTE)
+        await conn.execute(
+            "INSERT INTO scam_shield_settings (key, value) VALUES ($1, 'done') ON CONFLICT (key) DO NOTHING", SEED_KEY)
+    except Exception:
+        logger.exception("[scam-shield] couldn't seed the default rules; will retry on the next reload")
 
 
 # ── matching ─────────────────────────────────────────────────────────────
@@ -193,6 +230,11 @@ def match_text(text: str, allowed=()) -> Optional[Tuple[str, str, Optional[int]]
                     return "domain", d, rid
     if any(b in t for b in _BEAST) and any(b in t for b in _BAIT):
         return "heuristic", "MrBeast + casino/bonus bait", None
+    has_promo = any(b in t for b in _PROMO)
+    if has_promo and any(b in t for b in _GIVEAWAY) and any(b in t for b in _CLAIM):
+        return "heuristic", "fake giveaway + promo code bait", None
+    if has_promo and any(b in t for b in _DELETED_BAIT):
+        return "heuristic", "promo code + 'post will be deleted' bait", None
     return None
 
 

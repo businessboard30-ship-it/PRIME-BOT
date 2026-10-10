@@ -159,6 +159,7 @@ ROUTES = {
     "/api/apply_boost": "api.apply_boost",
     "/api/gumroad_webhook": "api.gumroad_webhook",
     "/api/topgg_webhook": "api.topgg_webhook",
+    "/api/public_stats": "api.public_stats",
     "/api/verify_captcha": "api.verify_captcha",
     "/api/dash": "api.dash",
     # Discord app-verification requires real, permanently reachable ToS/

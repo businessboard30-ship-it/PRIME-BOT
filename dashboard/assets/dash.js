@@ -151,7 +151,7 @@
     app.textContent = "";
     app.appendChild(h("main", { id: "main", class: "page" },
       h("div", { class: "page-head rv" }, h("p", { class: "eyebrow", text: "Welcome back, " + S.user.username }), h("h1", { text: "Choose a server" }),
-        h("p", { class: "muted", text: "Servers where you have Manage Server. Pick one that has the bot to configure it." })), grid));
+        h("p", { class: "muted", text: "Servers where you have Manage Server. Pick one that has the bot (or one of your custom bots) to configure it." })), grid));
     var done = function (servers) {
       grid.textContent = "";
       if (!servers.length) {
@@ -160,11 +160,16 @@
         return;
       }
       servers.forEach(function (g, i) {
+        // A server is manageable when the main bot OR any custom bot (clone) is in it; the main bot is never required.
+        var hasClone = !!(g.clones && g.clones.length);
+        var live = g.bot_present || hasClone;
+        var target = g.bot_present ? gpath(g.id) : (hasClone ? "#/c/" + g.clones[0].clone_id + "/g/" + g.id : null);
+        var statusText = g.bot_present ? "Bot online" : (hasClone ? (g.clones.length === 1 ? g.clones[0].name : "Custom bots") + " online" : "Bot not added");
         var inner = [h("div", { class: "srv-top" }, avatar(g.icon_url, g.name), h("div", null, h("h3", { text: g.name }),
-          h("span", { class: "tag" }, h("i", { class: "dot " + (g.bot_present ? "on live" : "off") }), g.bot_present ? "Bot online" : "Bot not added"))),
-          h("span", { class: "btn sm " + (g.bot_present ? "primary" : "ghost"), text: g.bot_present ? "Manage" : "Add the bot" })];
-        var el = g.bot_present
-          ? h("a", { class: "card srv rv", style: "--i:" + i, href: gpath(g.id) }, inner)
+          h("span", { class: "tag" }, h("i", { class: "dot " + (live ? "on live" : "off") }), statusText))),
+          h("span", { class: "btn sm " + (live ? "primary" : "ghost"), text: live ? "Manage" : "Add the bot" })];
+        var el = live
+          ? h("a", { class: "card srv rv", style: "--i:" + i, href: target }, inner)
           : h("a", { class: "card srv rv", style: "--i:" + i, href: CFG.INVITE_URL + "&guild_id=" + g.id + "&disable_guild_select=true", target: "_blank", rel: "noopener" }, inner);
         if (g.clones && g.clones.length) {
           var chips = h("div", { class: "clonechips" }, h("small", { class: "muted", text: "Custom bots here:" }));
@@ -1006,11 +1011,11 @@
   var STATE_LABEL = { active: "Active", cancelled: "Ends at period end", past_due: "Payment failed (grace period)", expired: "Expired", none: "None" };
   function section(title) { return h("div", { class: "card rv", style: "margin-bottom:16px" }, h("h3", { text: title })); }
   function fail(box, e) { box.appendChild(h("p", { class: "muted", text: (e && e.message) || "Couldn't load this." })); }
-  function selectRow(label, opts, current, kind) {
+  function selectRow(label, opts, current, kind, extra) {
     var sel = h("select", { "aria-label": label }, opts.map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
     sel.value = current == null ? "" : current;
     sel.addEventListener("change", function () {
-      api("member_pref_set", null, { kind: kind, value: sel.value }).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, "err"); });
+      api("member_pref_set", null, Object.assign({ kind: kind, value: sel.value }, extra || {})).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, "err"); });
     });
     return h("p", null, h("b", { text: label + " " }), sel);
   }
@@ -1277,7 +1282,7 @@
           api("member_pref_set", null, { kind: "level_ping", guild_id: g.guild_id, value: !ping.checked }).then(function () { toast("Saved"); })
             .catch(function (e) { ping.checked = !ping.checked; toast(e.message, "err"); });
         });
-        grid.appendChild(h("div", { class: "card rv" }, h("h3", { text: g.name }),
+        grid.appendChild(h("div", { class: "card rv" }, h("h3", { text: g.name }), g.bot ? h("small", { class: "muted", text: "via " + g.bot }) : null,
           h("p", { class: "muted", text: "Level " + g.level + " \u00b7 Rank #" + g.rank + " of " + g.players + (g.coins == null ? "" : " \u00b7 " + g.coin_symbol + " " + g.coins.toLocaleString() + " " + g.coin_name) }),
           h("div", { role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct, "aria-label": "Progress to next level", style: "height:8px;border-radius:4px;background:var(--tint)" },
             h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
@@ -1333,8 +1338,8 @@
           h("div", { style: "height:8px;border-radius:4px;background:var(--accent,#5865F2);width:" + pct + "%" })),
         h("p", { class: "muted", text: g.xp_in_level.toLocaleString() + " / " + g.xp_for_next.toLocaleString() + " XP to level " + (g.level + 1) })));
       if (j.best) box.appendChild(h("div", { class: "card rv" }, h("h3", { text: "Server ranks" }),
-        h("p", { class: "muted", text: "Best: #" + j.best.rank + " of " + j.best.players + " in " + j.best.name }),
-        h("p", { class: "muted", text: "Lowest: #" + j.worst.rank + " of " + j.worst.players + " in " + j.worst.name }),
+        h("p", { class: "muted", text: "Best: #" + j.best.rank + " of " + j.best.players + " in " + j.best.name + (j.best.bot ? " (" + j.best.bot + ")" : "") }),
+        h("p", { class: "muted", text: "Lowest: #" + j.worst.rank + " of " + j.worst.players + " in " + j.worst.name + (j.worst.bot ? " (" + j.worst.bot + ")" : "") }),
         h("a", { class: "btn sm ghost", href: "#/me/servers", text: "All my servers" })));
     }).catch(function (e) { box.textContent = ""; fail(box, e); });
   }
@@ -1348,7 +1353,7 @@
       if (!list.length) { box.appendChild(h("div", { class: "card empty" }, h("p", { class: "muted", text: "You have no XP yet. Chat in a server with the bot and your clan will appear here." }))); return; }
       box.appendChild(h("p", { class: "muted", text: "Everyone is locked into one clan in each server, and it never changes. A chief seat goes to the top 5 players by XP who are at least level 3. Each seat keeps its own clan name, so a seat belongs to the seat, not to the person. This page is read-only." }));
       list.forEach(function (s) {
-        var card = h("div", { class: "card rv" }, h("h3", { text: s.name }),
+        var card = h("div", { class: "card rv" }, h("h3", { text: s.name + (s.bot ? " \u00b7 " + s.bot : "") }),
           h("p", { class: "muted", text: "Level " + s.level + " \u00b7 rank #" + s.rank + " of " + s.players }));
         card.appendChild(h("p", { text: s.clan ? "Your clan: " + s.clan.name + " (" + s.clan.members.toLocaleString() + " members)" : "You are not locked into a clan here yet. It happens automatically as you chat." }));
         if (s.chief) card.appendChild(h("p", { text: "You hold chief seat #" + s.chief.seat + " (" + s.chief.clan + ")." }));
@@ -1372,7 +1377,10 @@
       prefs.appendChild(selectRow("Currency", [["", "Default"]].concat(j.currencies.map(function (c) { return [c, c]; })), j.currency, "currency"));
       prefs.appendChild(selectRow("AI character", Object.keys(j.characters).map(function (k) { return [k, j.characters[k]]; }), j.character, "character"));
       prefs.appendChild(selectRow("AI voice notes", [["auto", "Automatic"], ["off", "Off"]], j.voice, "voice"));
-      prefs.appendChild(h("p", { class: "muted", text: "Language applies to the main bot. Theme is in the header." }));
+      (j.bot_languages || []).forEach(function (b) {
+        prefs.appendChild(selectRow("Language on " + b.bot, Object.keys(j.languages).map(function (k) { return [k, j.languages[k]]; }), b.language, "language", { clone: b.clone }));
+      });
+      prefs.appendChild(h("p", { class: "muted", text: "Language is saved per bot (the main bot and each custom bot you use). Theme is in the header." }));
     }).catch(function (e) { fail(prefs, e); });
   }
 
@@ -1383,7 +1391,7 @@
       var list = j.purchases || [];
       if (!list.length) { buys.appendChild(h("p", { class: "muted", text: "No purchases yet." })); return; }
       list.forEach(function (p) {
-        buys.appendChild(h("p", null, h("b", { text: p.type.replace(/_/g, " ") }), " \u00b7 " + p.amount.toFixed(2) + " \u00b7 " + p.status + (p.at ? " \u00b7 " + when2(p.at) : "")));
+        buys.appendChild(h("p", null, h("b", { text: p.type.replace(/_/g, " ") }), " \u00b7 " + p.amount.toFixed(2) + " \u00b7 " + p.status + (p.at ? " \u00b7 " + when2(p.at) : "") + (p.bot ? " \u00b7 " + p.bot : "")));
       });
     }).catch(function (e) { fail(buys, e); });
   }
@@ -1453,13 +1461,14 @@
     function findUi() {
       find.textContent = ""; find.appendChild(h("h3", { text: "Find people" }));
       if (!state.servers.length) { find.appendChild(h("p", { class: "muted", text: "Earn some XP in a server where the bot is, then come back to find people there." })); return; }
-      var pick = h("select", { "aria-label": "Server" }, state.servers.map(function (g) { return h("option", { value: g.guild_id, text: g.name }); }));
+      var pick = h("select", { "aria-label": "Server" }, state.servers.map(function (g) { return h("option", { value: g.guild_id + (g.clone ? "@" + g.clone : ""), text: g.clone ? g.name + " \u00b7 " + g.bot : g.name }); }));
       var term = h("input", { type: "text", maxlength: 32, placeholder: "Name starts with\u2026", "aria-label": "Name starts with" });
       var out = h("div", { "aria-live": "polite" });
       function go() {
         var t = term.value.trim(); if (t.length < 2) { toast("Type at least 2 letters.", "bad"); return; }
         out.textContent = "Searching\u2026";
-        api("friends_search", { guild_id: pick.value, query: t }).then(function (r) {
+        var pv = pick.value.split("@"), sp = { guild_id: pv[0], query: t }; if (pv[1]) sp.clone = pv[1];
+        api("friends_search", sp).then(function (r) {
           out.textContent = "";
           if (!r.results.length) { out.appendChild(h("p", { class: "muted", text: "Nobody found. They may not use this website yet, or they may have requests turned off." })); return; }
           r.results.forEach(function (p) {

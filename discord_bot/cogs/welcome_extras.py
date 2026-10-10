@@ -44,16 +44,14 @@ def _clone_of(client):
 
 
 def apply_goodbye(template: str, member: discord.abc.User, guild: discord.Guild) -> str:
-    """{name} = display name, {member} = mention, {guild} = server name, {count} = members."""
-    name = discord.utils.escape_markdown(discord.utils.escape_mentions(
-        getattr(member, "display_name", None) or getattr(member, "name", "Someone")))
-    return (
-        (template or DEFAULT_GOODBYE)
-        .replace("{name}", name)
-        .replace("{member}", getattr(member, "mention", name))
-        .replace("{guild}", guild.name)
-        .replace("{count}", str(guild.member_count))
-    )
+    """Same placeholders as the welcome text (modules/welcome_vars.py); a goodbye has no rules ping, so {rules} is plain text."""
+    from modules import welcome_vars
+    rules = getattr(guild, "rules_channel", None)
+    return welcome_vars.fill(
+        template or DEFAULT_GOODBYE, mention=getattr(member, "mention", None) or getattr(member, "name", "Someone"),
+        name=discord.utils.escape_markdown(discord.utils.escape_mentions(
+            getattr(member, "display_name", None) or getattr(member, "name", "Someone"))), guild_name=guild.name,
+        count=guild.member_count or 0, created_at=getattr(member, "created_at", None), rules_channel_id=getattr(rules, "id", None))
 
 
 def role_issue(guild: discord.Guild, role_id) -> str | None:

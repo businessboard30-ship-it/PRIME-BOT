@@ -186,7 +186,7 @@ async def start_ultra_pack_payment(interaction: discord.Interaction, guild_id: i
     user = interaction.user
 
     config = await db.get_welcome_config(guild_id, clone_id=_clone_id_of(interaction))
-    if config.get("ultra_pack_unlocked"):
+    if config.get("ultra_pack_unlocked") and not config.get("ultra_trial_active"):
         await interaction.followup.send(
             "This server already owns Customize Card — set your background with `/welcome custombg`.",
             ephemeral=True,

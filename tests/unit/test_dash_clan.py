@@ -26,7 +26,7 @@ def clans(mem, monkeypatch):
     fake, _ = mem
     log = []
 
-    async def member_servers(uid):
+    async def member_servers(uid, all_bots=False):
         log.append(("servers", uid))
         return [dict(s) for s in SERVERS]
 
@@ -52,7 +52,7 @@ def clans(mem, monkeypatch):
     return log
 
 
-def test_keyed_to_session_and_main_bot_only(clans):
+def test_keyed_to_session_and_main_bot_rows_use_no_clone(clans):
     st, p, _ = call("GET", {"action": "member_clans", "user_id": "999"})
     assert st == 200 and ("servers", "6") in clans
     assert all(c[3] is None for c in clans if c[0] == "card") and all(c[2] == 6 for c in clans if c[0] == "card")
@@ -80,7 +80,7 @@ def test_seat_holders_follow_leaderboard_privacy_and_no_ids(clans):
 def test_empty_state_when_no_xp(mem, monkeypatch):
     fake, _ = mem
 
-    async def empty(uid):
+    async def empty(uid, all_bots=False):
         return []
     monkeypatch.setattr(fake, "member_servers", empty, raising=False)
     st, p, _ = call("GET", {"action": "member_clans"})
@@ -101,7 +101,7 @@ def test_rate_limited(clans):
 def test_capped_server_fanout(mem, monkeypatch):
     fake, _ = mem
 
-    async def many(uid):
+    async def many(uid, all_bots=False):
         return [{"guild_id": 1000 + i, "total_xp": 10, "level": 1, "guild_name": f"S{i}", "rank": 1, "players": 1} for i in range(40)]
 
     async def none(*a, **k):

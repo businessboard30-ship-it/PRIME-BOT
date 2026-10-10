@@ -174,7 +174,11 @@ async def _save_option(guild_id: int, clone_id, user_id=None, **changes) -> None
 _BANNER_LABELS = {"bottom": "Bottom banner (classic)", "top": "Top banner", "none": "No banner (text over image)"}
 _DIM_LABELS = {"light": "Light — see more of your image", "medium": "Medium (default)", "heavy": "Heavy — best text contrast"}
 _SIDE_LABELS = {"left": "Avatar on the left (classic)", "right": "Avatar on the right"}
-_COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red"}
+_LAYOUT_LABELS = {"banner": "Banner layout (classic)", "centered": "Centered — big avatar in the middle"}
+_FONT_LABELS = {"classic": "Classic font (default)", "clean": "Clean — Poppins", "tall": "Tall — Bebas Neue", "script": "Handwritten — Pacifico"}
+_FOCUS_LABELS = {"center": "Crop: center (default)", "top": "Crop: keep the top", "bottom": "Crop: keep the bottom",
+                 "left": "Crop: keep the left", "right": "Crop: keep the right"}
+_COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red", "avatar": "Match my avatar (each member differs)"}
 
 
 # -- the TV: live preview drawn inside the wizard message ---------------------
@@ -214,8 +218,17 @@ def _set_tab(key, tab: str) -> None:
     _trim(_TAB_STATE, _STATE_MAX)
 
 
-def _caption(unlocked: bool, note, tv_ok: bool) -> str:
+def _caption(unlocked: bool, note, tv_ok: bool, config=None) -> str:
     lines = ["### \U0001F3A8 Customize your welcome card"]
+    config = config or {}
+    if config.get("ultra_trial_active"):
+        ends = config.get("ultra_trial_ends_at")
+        when = f"<t:{int(ends.timestamp())}:R>" if ends else "soon"
+        lines.append(
+            f"\U0001F381 **Free 5-day trial active** \u2014 everything below is saved and live on every join until it ends {when}. "
+            f"After that your server falls back to its normal welcome card (your settings are kept). "
+            f"Unlock for ${bot_config.ULTRA_PACK_FEE_USD:g} to keep it for good."
+        )
     if not unlocked:
         lines.append(
             f"\U0001F513 **Preview mode** \u2014 play with everything. To **save** it (and use your own "
@@ -231,6 +244,7 @@ def _caption(unlocked: bool, note, tv_ok: bool) -> str:
 def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab: str = "bg",
                          has_tv: bool = False, note=None) -> discord.ui.LayoutView:
     unlocked = bool(config.get("ultra_pack_unlocked"))
+    raw_config = config
     config = _effective_config(config, guild_id, clone_id, invoker_id)
     tab = tab if tab in _TABS else "bg"
 
@@ -239,7 +253,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
 
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
-    container.add_item(discord.ui.TextDisplay(_caption(unlocked, note, has_tv)))
+    container.add_item(discord.ui.TextDisplay(_caption(unlocked, note, has_tv, raw_config)))
     if has_tv:
         container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://card.png")))
     container.add_item(discord.ui.Separator())
@@ -260,12 +274,14 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         if has_bg:
             bg_row.add_item(CardClearBackgroundButton(guild_id, clone_id, invoker_id))
         container.add_item(bg_row)
-        _select_row(CardDimSelect)
+        for select_cls in (CardDimSelect, CardFocusSelect):
+            _select_row(select_cls)
     elif tab == "layout":
-        for select_cls in (CardBannerSelect, CardSideSelect, CardShapeSelect):
+        for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect, CardShapeSelect):
             _select_row(select_cls)
     else:
-        _select_row(CardColorSelect)
+        for select_cls in (CardColorSelect, CardFontSelect, CardStyleSelect):
+            _select_row(select_cls)
         text_row = discord.ui.ActionRow()
         text_row.add_item(CardHeadingButton(guild_id, clone_id, invoker_id))
         text_row.add_item(CardNumberToggleButton(guild_id, clone_id, invoker_id, opts["show_number"]))
@@ -276,6 +292,8 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
     act_row.add_item(CardResetButton(guild_id, clone_id, invoker_id))
     if unlocked:
         act_row.add_item(CardDoneButton(guild_id, clone_id, invoker_id))
+        if raw_config.get("ultra_trial_active"):
+            act_row.add_item(CardUnlockButton(guild_id, clone_id, invoker_id))
     else:
         act_row.add_item(CardUnlockButton(guild_id, clone_id, invoker_id))
     container.add_item(act_row)
@@ -356,6 +374,12 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
     """Called by the setup wizard's Customize Card button. The caller has
     already deferred (ephemeral) \u2014 this just posts the wizard as a followup."""
     config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    trial_started = False
+    if not config.get("ultra_pack_unlocked"):
+        # First open on a server that never had the trial: start 5 free days.
+        trial_started = await db.start_ultra_trial(guild_id, interaction.user.id, clone_id=clone_id)
+        if trial_started:
+            config = await db.get_welcome_config(guild_id, clone_id=clone_id)
     if config.get("ultra_pack_unlocked"):
         # Bought after designing in preview mode: carry the draft's layout
         # over (the draft background is never stored \u2014 set it again).
@@ -378,6 +402,12 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
     _trim(_TV_NOTES, _STATE_MAX)
     view = build_customize_view(guild_id, clone_id, interaction.user.id, config, tab="bg",
                                 has_tv=tv is not None, note=_TV_NOTES[key])
+    if trial_started:
+        await interaction.followup.send(
+            f"\U0001F381 **You have a free 5-day trial of Customize Card!** Design it and it goes live on every "
+            f"join right away. When the 5 days end, your server goes back to its normal welcome card.",
+            ephemeral=True,
+        )
     if tv:
         await interaction.followup.send(view=view, file=_tv_file(tv[0]), ephemeral=True)
     else:
@@ -491,8 +521,63 @@ class CardSideSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Selec
     FIELD, ID, PLACEHOLDER, CHOICES = "avatar_side", "side", "Avatar side", _SIDE_LABELS
 
 
+class CardLayoutSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("layout")):
+    FIELD, ID, PLACEHOLDER, CHOICES = "layout", "layout", "Card layout", _LAYOUT_LABELS
+
+
+class CardFontSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("font")):
+    FIELD, ID, PLACEHOLDER, CHOICES = "font", "font", "Font", _FONT_LABELS
+
+
+class CardFocusSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("focus")):
+    FIELD, ID, PLACEHOLDER, CHOICES = "focus", "focus", "Image crop focus", _FOCUS_LABELS
+
+
 class CardColorSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("color")):
     FIELD, ID, PLACEHOLDER, CHOICES = "text_color", "color", "Text color", _COLOR_LABELS
+
+
+_STYLE_EXTRAS = {
+    "ring": ("Avatar ring", "Colored frame around the avatar"),
+    "soft_edge": ("Soft banner edge", "Banner fades into your image"),
+    "shadow": ("Text shadow", "Soft shadow so text pops on busy images"),
+    "big_name": ("Large username", "Bigger name, smaller heading emphasis"),
+    "glass": ("Glass banner", "Frosted, blurred banner instead of solid black"),
+    "auto_contrast": ("Auto contrast", "Adds outline/shading when the image is bright"),
+}
+
+
+class CardStyleSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("style")):
+    """Optional extras (multi-select, all off by default). Selecting nothing
+    turns them all off."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        opts = parse_ultra_options(config.get("ultra_card_json"))
+        super().__init__(discord.ui.Select(
+            placeholder="Style extras (optional)", min_values=0, max_values=len(_STYLE_EXTRAS),
+            options=[
+                discord.SelectOption(label=lbl, description=desc, value=key, default=bool(opts.get(key)))
+                for key, (lbl, desc) in _STYLE_EXTRAS.items()
+            ],
+            custom_id=_encode("style", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        g, c, i = _decode(match)
+        return cls(g, c, i, {})
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        chosen = set(self.item.values)
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id,
+                           **{k: (k in chosen) for k in _STYLE_EXTRAS})
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
 class CardShapeSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("shape")):
@@ -665,7 +750,7 @@ class CardUnlockButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
-        if cfg.get("ultra_pack_unlocked"):
+        if cfg.get("ultra_pack_unlocked") and not cfg.get("ultra_trial_active"):
             await interaction.followup.send("✅ Already unlocked — tap **Customize Card** again to open the editor.", ephemeral=True)
             return
         from discord_bot.views_card_pack import start_ultra_pack_payment
@@ -836,7 +921,8 @@ class CardTabButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cardw
 
 
 DYNAMIC_ITEMS = (
-    CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect,
+    CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect, CardStyleSelect,
+    CardLayoutSelect, CardFontSelect, CardFocusSelect,
     CardBackgroundButton, CardClearBackgroundButton, CardUnlockButton,
     CardHeadingButton, CardNumberToggleButton, CardResetButton, CardPreviewButton, CardDoneButton,
     CardTabButton,

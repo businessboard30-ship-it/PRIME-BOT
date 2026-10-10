@@ -332,3 +332,64 @@ def test_servers_hub_has_the_scam_shield_button_and_rows_still_fit(monkeypatch):
     for row in (c for c in hub.walk_children() if isinstance(c, discord.ui.ActionRow)):
         assert len(row.children) <= 5
     hub.to_components()
+
+
+# ── fatawin variant (2026-10) ────────────────────────────────────────────
+
+FAKE_POST = ("I am pleased to announce the launch of my own cryptocurrency casino! I am giving away $5,600 "
+             "to everyone who registers. Enter the special promo code: BET. This post will be deleted an hour "
+             "after publication so that only the fastest people will find out about the bonus!")
+
+
+def test_fatawin_rules_cover_the_new_spelling():
+    ss._c.words = [(1, "fatawin")]
+    ss._c.domains = [(2, "fatawin.com")]
+    for t in ("go to fatawin.com and enter BET", "Fata Win", "https://www.fatawin.com/profile/bonuses"):
+        assert ss.match_text(t) is not None, t
+
+
+def test_fake_giveaway_post_caught_by_heuristic_even_with_no_rules():
+    ss._c.words, ss._c.domains = [], []
+    assert ss.match_text(FAKE_POST)[0] == "heuristic"
+    assert ss.match_text("giving away $5,600 to everyone who registers, promo code BET")[0] == "heuristic"
+    assert ss.match_text("promo code BET - this post will be deleted an hour after publication")[0] == "heuristic"
+
+
+@pytest.mark.parametrize("text", [
+    "our giveaway ends friday, enter in #giveaways",
+    "use promo code SAVE10 at checkout",
+    "we are giving away a nitro, react to enter",
+    "i will withdraw my application, thanks",
+    "the casino scene in that movie was great",
+])
+def test_ordinary_chat_is_not_flagged_by_the_new_heuristics(text):
+    ss._c.words, ss._c.domains = [], []
+    assert ss.match_text(text) is None
+
+
+def test_seed_inserts_once_and_leaves_removed_rules_removed():
+    calls = []
+
+    class Conn:
+        def __init__(self, marked):
+            self.marked = marked
+
+        async def fetchval(self, q, *a):
+            return 1 if self.marked else None
+
+        async def execute(self, q, *a):
+            calls.append(a)
+    run(ss._seed_defaults(Conn(True)))
+    assert calls == []
+    run(ss._seed_defaults(Conn(False)))
+    kinds = [c[0] for c in calls if len(c) == 3]
+    assert kinds.count("image") == 4 and ("domain", "fatawin.com", ss.SEED_NOTE) in [c for c in calls if len(c) == 3]
+    assert any(c == (ss.SEED_KEY,) for c in calls)
+
+
+def test_seed_image_hashes_are_valid_and_new():
+    old = [0x3734283e39391d31, 0x5ebe31a7a925a525, 0x1f2024a826232323, 0x2cb08ea3e363b070]
+    for kind, pat in ss.SEED_RULES:
+        if kind == "image":
+            h = int(pat, 16)
+            assert len(pat) == 16 and all(ss.hamming(h, o) > ss.IMAGE_MAX_DISTANCE for o in old)

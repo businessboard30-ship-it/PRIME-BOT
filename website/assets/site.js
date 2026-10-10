@@ -15,6 +15,9 @@ $$("[data-invite]").forEach(function(a){var u=a.dataset.invite==="prime"?C.PRIME
 $$("[data-dash]").forEach(function(a){if(C.DASHBOARD_URL){a.href=C.DASHBOARD_URL+"/";a.rel="noopener"}});
 $$("[data-support]").forEach(function(a){if(C.SUPPORT_SERVER_URL){a.href=C.SUPPORT_SERVER_URL;a.rel="noopener"}});
 $$("[data-topgg]").forEach(function(a){if(C.TOPGG_URL){a.href=C.TOPGG_URL;a.rel="noopener"}else{a.hidden=true}});
+$$("[data-topgg-vote]").forEach(function(a){if(C.TOPGG_VOTE_URL){a.href=C.TOPGG_VOTE_URL;a.rel="noopener"}else{a.hidden=true}});
+$$("[data-dthings]").forEach(function(a){if(C.DTHINGS_URL){a.href=C.DTHINGS_URL;a.rel="noopener"}else{a.hidden=true}});
+var vs=$("#vote");if(vs&&!C.TOPGG_VOTE_URL&&!C.DTHINGS_URL&&!C.TOPGG_URL)vs.hidden=true;
 
 /* ---- mobile menu ---- */
 var mb=$(".menu-btn"),nav=$("#nav");
@@ -163,7 +166,13 @@ if(cin){
 }
 
 /* ---- live-ready stats strip: hides itself unless the endpoint answers ---- */
-var st=$("#stats");
+var st=$("#stats"),api=$("[data-api-status]");
+if(api&&C.STATS_API_URL&&window.fetch){
+  fetch(C.STATS_API_URL,{headers:{Accept:"application/json"}}).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(d){
+    api.textContent="Operational";api.className="pill ok";
+    var sv=$("[data-api-servers]");if(sv&&typeof d.servers==="number")sv.textContent=d.servers.toLocaleString("en-US")+" servers";
+  }).catch(function(){api.textContent="Unreachable right now";api.className="pill bad"});
+}
 if(st&&C.STATS_API_URL&&window.fetch){
   var ctl=window.AbortController?new AbortController():null,to=setTimeout(function(){ctl&&ctl.abort()},4000);
   fetch(C.STATS_API_URL,{headers:{Accept:"application/json"},signal:ctl&&ctl.signal}).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(d){

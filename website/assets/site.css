@@ -287,3 +287,9 @@ details.faq .a{padding:0 1.2rem 1.1rem;color:var(--muted)}
 .vid-cta{position:absolute;right:1rem;bottom:.9rem;font-size:.78rem;letter-spacing:.14em;text-transform:uppercase}
 .no-motion .vspin{animation:none}
 @media (prefers-reduced-motion:reduce){.vspin{animation:none}}
+
+.shots{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));margin-top:1.5rem}
+.shots figure{margin:0}.shots img{display:block;width:100%;height:auto;border-radius:12px;border:1px solid rgba(207,233,255,.18)}
+.shots figcaption{margin-top:.5rem;font-size:.9rem;opacity:.75}
+.pill{display:inline-block;padding:.2rem .7rem;border-radius:999px;font-size:.85rem;border:1px solid rgba(207,233,255,.3)}
+.pill.ok{color:#8ff0b0;border-color:#8ff0b0}.pill.bad{color:#ff9b9b;border-color:#ff9b9b}
