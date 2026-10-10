@@ -393,3 +393,57 @@ def test_seed_image_hashes_are_valid_and_new():
         if kind == "image":
             h = int(pat, 16)
             assert len(pat) == 16 and all(ss.hamming(h, o) > ss.IMAGE_MAX_DISTANCE for o in old)
+
+
+# ── caught scams are copied to the image-hosting channel ─────────────────
+
+def _att(name="pic.png", data=b"IMG", size=3):
+    a = MagicMock()
+    a.filename, a.size, a.content_type = name, size, "image/png"
+    a.read = AsyncMock(return_value=data)
+    return a
+
+
+def test_caught_scam_is_archived_to_the_hosting_channel_before_the_delete(cog, monkeypatch):
+    from discord_bot.cogs import scam_shield as cog_mod
+    host = MagicMock(); host.send = AsyncMock()
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=host))
+    order = []
+    att = _att()
+    att.read = AsyncMock(side_effect=lambda: order.append("read") or b"IMG")
+    m = _msg("free $3500 at fatowin.com use GIFT", attachments=[att])
+    m.delete = AsyncMock(side_effect=lambda: order.append("delete"))
+    run(cog._inspect(m))
+    assert order == ["read", "delete"]                      # evidence is read before Discord drops the file
+    host.send.assert_awaited_once()
+    kw = host.send.await_args.kwargs
+    assert "fatowin" in kw["content"] and "555" in kw["content"] and "42" in kw["content"] and "deleted" in kw["content"]
+    assert len(kw["files"]) == 1
+
+
+def test_no_hosting_channel_means_no_download_and_the_delete_still_happens(cog, monkeypatch):
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=None))
+    att = _att()
+    m = _msg("free $3500 at fatowin.com use GIFT", attachments=[att])
+    run(cog._inspect(m))
+    att.read.assert_not_awaited()
+    m.delete.assert_awaited_once()
+
+
+def test_a_failing_archive_never_blocks_the_delete_or_the_log(cog, monkeypatch):
+    host = MagicMock(); host.send = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "boom"))
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=host))
+    m = _msg("free $3500 at fatowin.com use GIFT")
+    run(cog._inspect(m))
+    m.delete.assert_awaited_once()
+    cog.log.assert_awaited_once()
+
+
+def test_oversized_attachments_are_skipped(cog, monkeypatch):
+    from discord_bot.cogs import scam_shield as cog_mod
+    host = MagicMock(); host.send = AsyncMock()
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=host))
+    big = _att(size=cog_mod.EVIDENCE_MAX_BYTES + 1)
+    run(cog._inspect(_msg("free $3500 at fatowin.com use GIFT", attachments=[big])))
+    big.read.assert_not_awaited()
+    assert host.send.await_args.kwargs["files"] == []
