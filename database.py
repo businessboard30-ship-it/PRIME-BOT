@@ -11677,6 +11677,33 @@ class Database:
                 merged.get("ultra_card_json"),
             )
 
+    async def welcome_custom_bg_rows(self, clone_id: Optional[int], limit: int = 1000) -> list:
+        """Servers (of THIS bot: clone_id None = main bot) that own Customize Card and have a saved custom background.
+        Used by modules/image_host.py to move backgrounds into the shared hosting channel. No schema change."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT guild_id, custom_bg_channel_id, custom_bg_message_id, custom_background_url
+                   FROM discord_welcome_config
+                   WHERE clone_id IS NOT DISTINCT FROM $1 AND ultra_pack_unlocked = TRUE
+                     AND (custom_bg_message_id IS NOT NULL OR (custom_background_url IS NOT NULL AND custom_background_url <> ''))
+                   ORDER BY guild_id LIMIT $2""", clone_id, int(limit))
+        return [dict(r) for r in rows]
+
+    async def welcome_custom_bg_move(self, guild_id: int, clone_id: Optional[int], old_message_id, old_url,
+                                     channel_id: int, message_id: int, url: Optional[str]) -> bool:
+        """Point a server at its re-hosted background, ONLY if the row still holds what was read (an admin who uploaded a
+        new background in the meantime is never overwritten). True when the row was changed."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                """UPDATE discord_welcome_config
+                   SET custom_bg_channel_id = $5, custom_bg_message_id = $6, custom_background_url = $7, updated_at = NOW()
+                   WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2
+                     AND custom_bg_message_id IS NOT DISTINCT FROM $3 AND custom_background_url IS NOT DISTINCT FROM $4""",
+                int(guild_id), clone_id, old_message_id, old_url, int(channel_id), int(message_id), url)
+        return res.endswith(" 1")
+
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Marks the premium welcome-card pack as purchased for this guild
         (whole-guild, one-time — see card_pack_unlocked's schema comment

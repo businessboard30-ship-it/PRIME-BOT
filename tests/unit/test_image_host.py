@@ -340,3 +340,263 @@ def test_render_time_failures_alert_the_owner_only_when_a_background_was_saved(e
     alerts.clear()
     assert run(go({"guild_id": 3, "ultra_pack_unlocked": True, "custom_background_url": "https://x/y.png"})) is None
     assert alerts and "HTTP 403" in alerts[0][1]
+
+
+# ---------- moving saved backgrounds into the shared channel ----------
+PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 20
+JPG = b"\xff\xd8\xff" + b"x" * 20
+
+
+class Store:
+    """Stand-in for the welcome-config table (one row per server of this bot) plus the global settings."""
+    def __init__(self, rows):
+        self.rows = {r["guild_id"]: dict(r) for r in rows}
+        self.settings = {}
+        self.moves = []
+
+    async def welcome_custom_bg_rows(self, clone_id, limit=1000):
+        return [dict(r) for r in self.rows.values()]
+
+    async def welcome_custom_bg_move(self, gid, clone_id, old_msg, old_url, ch, msg, url):
+        r = self.rows[gid]
+        if r.get("custom_bg_message_id") != old_msg or r.get("custom_background_url") != old_url:
+            return False                                                                   # an admin changed it meanwhile
+        r.update(custom_bg_channel_id=ch, custom_bg_message_id=msg, custom_background_url=url)
+        self.moves.append(gid)
+        return True
+
+    async def get_global_setting(self, key):
+        return self.settings.get(key)
+
+    async def set_global_setting(self, key, value):
+        self.settings[key] = value
+
+
+@pytest.fixture
+def mover(env, monkeypatch):
+    import database
+    st = Store([])
+    for n in ("welcome_custom_bg_rows", "welcome_custom_bg_move", "get_global_setting", "set_global_setting"):
+        monkeypatch.setattr(database.db, n, getattr(st, n), raising=False)
+    served = {}                                                                            # url -> bytes (what Discord/the web serves)
+
+    async def fetch(url):
+        if url in served:
+            return served[url], None
+        return None, "couldn't fetch that URL (HTTP 404)"
+
+    async def refresh(bot, row):
+        return row.get("_live")
+    monkeypatch.setattr(ih, "_fetch_bytes", fetch)
+    from discord_bot.cogs import welcome
+    monkeypatch.setattr(welcome, "_refresh_custom_bg_url", refresh)
+    st.served = served
+    return st
+
+
+def host_bot(clone_id=None):
+    ch = Chan(DEFAULT)
+    posted = []
+
+    async def send(content=None, file=None):
+        m = MagicMock()
+        m.id = 9000 + len(posted)
+        m.attachments = [types.SimpleNamespace(url=f"https://cdn.example/new{m.id}.png")]
+        posted.append((content, file.filename))
+        return m
+    ch.send = send
+    bot = Bot({DEFAULT: ch}, clone_id=clone_id)
+    guilds = {}
+    bot.get_guild = lambda gid: guilds.get(int(gid))
+    bot.guild_map = guilds
+    bot.posted = posted
+    return bot
+
+
+def row(gid, ch=None, msg=None, url=None, live=None):
+    return {"guild_id": gid, "custom_bg_channel_id": ch, "custom_bg_message_id": msg, "custom_background_url": url, "_live": live}
+
+
+def test_a_pasted_link_background_is_moved_into_the_hosting_channel(mover, monkeypatch):
+    mover.rows = {1: row(1, url="https://img.example/bg.png")}
+    mover.served["https://img.example/bg.png"] = PNG
+    bot = host_bot()
+    res = run(ih.move_backgrounds(bot, pause=0))
+    assert (res.moved, res.failed, res.already_ok) == (1, [], 0) and mover.moves == [1]
+    r = mover.rows[1]
+    assert r["custom_bg_channel_id"] == DEFAULT and r["custom_bg_message_id"] == 9000 and r["custom_background_url"].startswith("https://cdn.example/new")
+    assert bot.posted[0][1] == "background.png" and "guild `1`" in bot.posted[0][0]
+
+
+def test_a_background_in_an_old_unreachable_channel_is_recovered_through_its_message_or_link(mover):
+    mover.rows = {2: row(2, ch=555, msg=44, url="https://cdn.example/old.png", live="https://cdn.example/live.png")}
+    mover.served["https://cdn.example/live.png"] = JPG
+    bot = host_bot(clone_id=7)
+    res = run(ih.move_backgrounds(bot, pause=0))
+    assert res.moved == 1 and mover.rows[2]["custom_bg_channel_id"] == DEFAULT and bot.posted[0][1] == "background.jpg"
+
+
+def test_servers_already_in_the_hosting_channel_are_left_alone(mover):
+    mover.rows = {3: row(3, ch=DEFAULT, msg=77, url="https://cdn.example/a.png")}
+    bot = host_bot()
+    res = run(ih.move_backgrounds(bot, pause=0))
+    assert (res.checked, res.already_ok, res.moved) == (1, 1, 0) and bot.posted == []
+
+
+def test_an_unreadable_background_is_reported_and_its_row_is_untouched(mover):
+    mover.rows = {4: row(4, ch=555, msg=44, url="https://cdn.example/expired.png")}
+    before = dict(mover.rows[4])
+    bot = host_bot()
+    res = run(ih.move_backgrounds(bot, pause=0))
+    assert res.moved == 0 and res.failed and res.failed[0][0] == 4 and "hosting message is gone" in res.failed[0][1] and mover.rows[4] == before
+    text = ih.format_move_report(res, "main bot")
+    assert "`4`" in text and "/welcome custombg" in text
+
+
+def test_an_image_that_is_not_a_valid_background_is_not_moved(mover, monkeypatch):
+    mover.rows = {5: row(5, url="https://img.example/huge.png")}
+
+    async def fetch(url):
+        return None, "that image is over the 8MB limit"
+    monkeypatch.setattr(ih, "_fetch_bytes", fetch)
+    res = run(ih.move_backgrounds(host_bot(), pause=0))
+    assert res.failed == [(5, "that image is over the 8MB limit")]
+
+
+def test_an_admin_who_saved_a_new_background_meanwhile_is_not_overwritten(mover, monkeypatch):
+    mover.rows = {6: row(6, url="https://img.example/old.png")}
+    mover.served["https://img.example/old.png"] = PNG
+    orig = ih._saved_bytes
+
+    async def saved(bot, r):
+        out = await orig(bot, r)
+        mover.rows[6].update(custom_bg_message_id=1234, custom_background_url="https://cdn.example/brandnew.png")     # admin re-uploads
+        return out
+    monkeypatch.setattr(ih, "_saved_bytes", saved)
+    res = run(ih.move_backgrounds(host_bot(), pause=0))
+    assert res.moved == 0 and mover.rows[6]["custom_bg_message_id"] == 1234 and mover.rows[6]["custom_background_url"] == "https://cdn.example/brandnew.png"
+
+
+def test_per_run_limit_leaves_the_rest_for_the_next_run(mover):
+    mover.rows = {i: row(i, url=f"https://img.example/{i}.png") for i in range(1, 6)}
+    for i in range(1, 6):
+        mover.served[f"https://img.example/{i}.png"] = PNG
+    bot = host_bot()
+    res = run(ih.move_backgrounds(bot, limit=2, pause=0))
+    assert (res.moved, res.waiting) == (2, 3)
+    res2 = run(ih.move_backgrounds(bot, limit=10, pause=0))
+    assert res2.moved == 3 and res2.already_ok == 2 and res2.waiting == 0
+
+
+def test_no_reachable_channel_means_nothing_is_touched(mover):
+    mover.rows = {1: row(1, url="https://img.example/bg.png")}
+    res = run(ih.move_backgrounds(Bot(), pause=0))
+    assert res.error and mover.moves == [] and "Nothing was moved" in ih.format_move_report(res)
+
+
+def test_one_server_crashing_does_not_stop_the_others(mover, monkeypatch):
+    mover.rows = {1: row(1, url="https://img.example/1.png"), 2: row(2, url="https://img.example/2.png")}
+    mover.served.update({"https://img.example/1.png": PNG, "https://img.example/2.png": PNG})
+    orig = ih._saved_bytes
+
+    async def saved(bot, r):
+        if r["guild_id"] == 1:
+            raise ValueError("bad")
+        return await orig(bot, r)
+    monkeypatch.setattr(ih, "_saved_bytes", saved)
+    res = run(ih.move_backgrounds(host_bot(), pause=0))
+    assert res.moved == 1 and res.failed == [(1, "unexpected error (ValueError)")]
+
+
+def test_auto_move_tells_the_bot_owners_and_each_server_owner_once_a_week(mover):
+    mover.rows = {8: row(8, ch=555, msg=44, url="https://cdn.example/expired.png")}
+    bot = host_bot()
+    owner = MagicMock()
+    owner.send = AsyncMock()
+    guild = types.SimpleNamespace(id=8, name="Cool Server", owner_id=99, owner=owner)
+    bot.guild_map[8] = guild
+    res = run(ih.auto_move(bot))
+    assert res.failed and len(bot.dms) == 2 and "Could not move" in bot.dms[0][1]                    # both bot owners
+    assert owner.send.await_count == 1 and "Cool Server" in owner.send.await_args.args[0] and "/welcome custombg" in owner.send.await_args.args[0]
+    ih._alert_sent.clear()
+    run(ih.auto_move(bot))
+    assert owner.send.await_count == 1                                                               # not again within a week
+
+
+def test_server_owner_notices_can_be_switched_off_and_are_capped(mover, monkeypatch):
+    mover.rows = {i: row(i, ch=555, msg=44, url="https://cdn.example/expired.png") for i in range(1, 15)}
+    bot = host_bot()
+    sent = []
+    for i in range(1, 15):
+        o = MagicMock()
+        o.send = AsyncMock(side_effect=lambda t, i=i: sent.append(i))
+        bot.guild_map[i] = types.SimpleNamespace(id=i, name=f"G{i}", owner_id=100 + i, owner=o)
+    monkeypatch.setattr(ih, "NOTIFY_SERVER_OWNERS", False)
+    run(ih.auto_move(bot))
+    assert sent == []
+    monkeypatch.setattr(ih, "NOTIFY_SERVER_OWNERS", True)
+    ih._alert_sent.clear()
+    run(ih.auto_move(bot))
+    assert len(sent) == ih.MAX_SERVER_NOTICES_PER_RUN
+
+
+def test_auto_move_alerts_when_the_hosting_channel_is_unreachable(mover):
+    mover.rows = {1: row(1, url="https://img.example/bg.png")}
+    bot = Bot(clone_id=5)
+    run(ih.auto_move(bot))
+    assert len(bot.dms) == 2 and "Nothing was moved" in bot.dms[0][1] and "clone #5" in bot.dms[0][1]
+
+
+def test_background_jobs_start_once_and_run_the_startup_check_then_the_mover(env, monkeypatch):
+    calls = []
+
+    async def startup(bot, delay=0):
+        calls.append("startup")
+
+    async def move(bot):
+        calls.append("move")
+        raise asyncio.CancelledError
+    monkeypatch.setattr(ih, "startup_check", startup)
+    monkeypatch.setattr(ih, "auto_move", move)
+    monkeypatch.setattr(ih, "_jobs_started", False)
+    with pytest.raises(asyncio.CancelledError):
+        run(ih.background_jobs(Bot(), delay=0))
+    assert calls == ["startup", "move"]
+    run(ih.background_jobs(Bot(), delay=0))                                                          # second call returns at once
+    assert calls == ["startup", "move"]
+
+
+def test_sql_for_listing_and_moving_is_scoped_and_compare_and_set():
+    import inspect
+    import database
+    rows_sql = inspect.getsource(database.Database.welcome_custom_bg_rows)
+    assert "clone_id IS NOT DISTINCT FROM $1" in rows_sql and "ultra_pack_unlocked = TRUE" in rows_sql
+    move_sql = inspect.getsource(database.Database.welcome_custom_bg_move)
+    assert "guild_id = $1" in move_sql and "clone_id IS NOT DISTINCT FROM $2" in move_sql
+    assert "custom_bg_message_id IS NOT DISTINCT FROM $3" in move_sql and "custom_background_url IS NOT DISTINCT FROM $4" in move_sql
+
+
+def test_pasted_links_are_rehosted_when_saved_and_the_wizard_falls_back_to_the_link(env, monkeypatch):
+    import inspect
+    from discord_bot.cogs import _views_card_customize as wiz
+    src = inspect.getsource(wiz)
+    assert "_host_bytes(" in src and "hosted[2] or url" in src and "custom_background_url=url, custom_bg_channel_id=None" in src
+
+
+def test_host_bytes_posts_through_the_shared_helper(env, monkeypatch):
+    from discord_bot.cogs import welcome
+    got = {}
+
+    async def post(bot, data, label):
+        got.update(data=data, label=label)
+        return (1, 2, "u")
+    monkeypatch.setattr(ih, "post_to_host", post)
+    out = run(welcome._host_bytes(Bot(), PNG, types.SimpleNamespace(name="My Guild"), 12))
+    assert out == (1, 2, "u") and "guild `12`" in got["label"] and "My Guild" in got["label"]
+
+
+def test_changing_the_hosting_channel_starts_a_move(env):
+    import inspect
+    from discord_bot.cogs import welcome
+    src = inspect.getsource(welcome.WelcomeCog.hostingchannel)
+    assert "image_host.auto_move(self.bot)" in src

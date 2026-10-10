@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 ALERT_COOLDOWN_SECONDS = 6 * 3600
 _alert_sent: dict = {}
 _startup_done = False
+_jobs_started = False
+
+MOVE_PER_RUN = 50                  # re-hosted backgrounds per run (the rest wait for the next run)
+MOVE_PAUSE_SECONDS = 1.0           # between uploads, to stay well inside Discord's rate limits
+MOVE_EVERY_SECONDS = 12 * 3600
+NOTIFY_SERVER_OWNERS = True        # tell a server's owner when its background can't be moved (at most weekly per server)
+SERVER_NOTICE_COOLDOWN_DAYS = 7
+MAX_SERVER_NOTICES_PER_RUN = 10
 
 
 @dataclass
@@ -259,3 +267,177 @@ async def report_render_problem(bot, guild_id, reason: str) -> None:
     await notify_owners(bot, f"render:{guild_id}",
                         f"A custom welcome background was NOT used for server `{guild_id}`: {reason}. "
                         "Run **Test image hosting** in the owner panel (System). The server admin may need to run `/welcome custombg` again.")
+
+
+# ── moving saved backgrounds into the shared channel ─────────────────────────────────────────────────────────
+@dataclass
+class MoveResult:
+    checked: int = 0
+    already_ok: int = 0
+    moved: int = 0
+    waiting: int = 0                                  # left for the next run (per-run limit)
+    failed: list = None                               # [(guild_id, reason)]
+    error: str = ""                                   # the whole run could not start
+
+    def __post_init__(self):
+        if self.failed is None:
+            self.failed = []
+
+
+def _sniff_ext(data: bytes) -> str:
+    return "png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "jpg"
+
+
+async def post_to_host(bot, data: bytes, label: str):
+    """Re-post image bytes to the hosting channel THIS bot can reach. Returns (channel_id, message_id, cdn_url) or None."""
+    channel = await resolve_channel(bot)
+    if channel is None:
+        return None
+    try:
+        posted = await channel.send(content=label[:200], file=discord.File(io.BytesIO(data), filename=f"background.{_sniff_ext(data)}"))
+    except discord.HTTPException:
+        logger.warning("image host: couldn't post a background to the hosting channel", exc_info=True)
+        return None
+    return channel.id, posted.id, (posted.attachments[0].url if posted.attachments else None)
+
+
+async def _saved_bytes(bot, row: dict):
+    """(bytes, None) or (None, reason): the saved background, from its hosting message first, then from the stored link.
+    Same strict checks as the welcome card (png/jpeg, size cap)."""
+    from discord_bot.cogs import welcome as welcome_cog
+    reasons = []
+    url = None
+    if row.get("custom_bg_channel_id") and row.get("custom_bg_message_id"):
+        url = await welcome_cog._refresh_custom_bg_url(bot, row)
+        if url:
+            data, why = await _fetch_bytes(url)
+            if data:
+                return data, None
+            reasons.append(why)
+        else:
+            reasons.append("its hosting message is gone or unreachable")
+    stored = str(row.get("custom_background_url") or "").strip()
+    if stored and stored != url:
+        data, why = await _fetch_bytes(stored)
+        if data:
+            return data, None
+        reasons.append(why)
+    return None, "; ".join(r for r in reasons if r) or "no saved image to read"
+
+
+async def move_backgrounds(bot, *, limit: int = MOVE_PER_RUN, pause: float = MOVE_PAUSE_SECONDS) -> MoveResult:
+    """Make sure every server of THIS bot that has a saved custom background keeps it in the shared hosting channel.
+    Servers already there are left alone; the others are re-posted there and pointed at the new message. A server whose
+    image can no longer be read is reported (never silently dropped, and its old settings are not touched)."""
+    from database import db
+    out = MoveResult()
+    target = await resolve_channel(bot)
+    if target is None:
+        out.error = "no hosting channel this bot can reach"
+        return out
+    clone = getattr(bot, "clone_id", None)
+    rows = await db.welcome_custom_bg_rows(clone)
+    out.checked = len(rows)
+    todo = []
+    for r in rows:
+        if r.get("custom_bg_channel_id") == target.id and r.get("custom_bg_message_id"):
+            out.already_ok += 1
+        else:
+            todo.append(r)
+    out.waiting = max(0, len(todo) - limit)
+    for r in todo[:limit]:
+        gid = r["guild_id"]
+        try:
+            data, why = await _saved_bytes(bot, r)
+            if data is None:
+                out.failed.append((gid, why))
+                continue
+            posted = await post_to_host(bot, data, f"Custom welcome background (moved) — guild `{gid}`")
+            if posted is None:
+                out.failed.append((gid, "the hosting channel refused the upload"))
+                continue
+            ch_id, msg_id, cdn = posted
+            changed = await db.welcome_custom_bg_move(gid, clone, r.get("custom_bg_message_id"), r.get("custom_background_url"),
+                                                      ch_id, msg_id, cdn or r.get("custom_background_url"))
+            if changed:
+                out.moved += 1
+            else:
+                out.already_ok += 1                                           # the admin saved a new one meanwhile: leave it
+            await asyncio.sleep(pause)
+        except Exception as e:
+            logger.warning("image host: moving the background of guild %s failed", gid, exc_info=True)
+            out.failed.append((gid, f"unexpected error ({type(e).__name__})"))
+    return out
+
+
+def format_move_report(res: MoveResult, label: str = "") -> str:
+    head = f"🖼️ **Saved backgrounds**" + (f" ({label})" if label else "")
+    if res.error:
+        return f"{head}\n❌ Nothing was moved: {res.error}. Press **Test image hosting** to see why."
+    lines = [head,
+             f"✅ Already in the hosting channel: **{res.already_ok}**   ➡️ Moved now: **{res.moved}**   ❌ Could not move: **{len(res.failed)}**"
+             + (f"   ⏳ Waiting for the next run: **{res.waiting}**" if res.waiting else "")]
+    for gid, why in res.failed[:10]:
+        lines.append(f"❌ Server `{gid}`: {why}")
+    if len(res.failed) > 10:
+        lines.append(f"…and {len(res.failed) - 10} more (see the bot log).")
+    if res.failed:
+        lines.append("-# Those servers keep the stock card until their admin runs `/welcome custombg` and uploads the image again.")
+    return "\n".join(lines)[:1900]
+
+
+async def _tell_server_owners(bot, failed: list) -> int:
+    """DM the owner of each server whose background can't be moved, at most once a week per server."""
+    if not NOTIFY_SERVER_OWNERS or not failed:
+        return 0
+    from datetime import datetime, timezone, timedelta
+    from database import db
+    sent = 0
+    now = datetime.now(timezone.utc)
+    for gid, why in failed:
+        if sent >= MAX_SERVER_NOTICES_PER_RUN:
+            break
+        key = f"bgmove_notified:{getattr(bot, 'clone_id', None)}:{gid}"
+        try:
+            last = await db.get_global_setting(key)
+            if last and now - datetime.fromisoformat(last) < timedelta(days=SERVER_NOTICE_COOLDOWN_DAYS):
+                continue
+            guild = bot.get_guild(int(gid))
+            if guild is None or not guild.owner_id:
+                continue
+            owner = guild.owner or await bot.fetch_user(guild.owner_id)
+            await owner.send(f"Hi! The custom welcome background for **{guild.name}** can't be loaded any more ({why}), so new members "
+                             "get the standard card. Run `/welcome custombg` in your server and upload the image again to fix it.")
+            await db.set_global_setting(key, now.isoformat())
+            sent += 1
+        except Exception:
+            logger.warning("image host: couldn't tell the owner of guild %s", gid, exc_info=True)
+    return sent
+
+
+async def auto_move(bot) -> MoveResult:
+    """One scheduled run: move what can be moved, tell the bot owners and the server owners about what can't."""
+    res = await move_backgrounds(bot)
+    logger.info("[image-host] background move (%s): checked=%s ok=%s moved=%s failed=%s waiting=%s %s", bot_label(bot), res.checked,
+                res.already_ok, res.moved, len(res.failed), res.waiting, res.error)
+    if res.error:
+        await notify_owners(bot, "move-error", format_move_report(res, bot_label(bot)), cooldown=24 * 3600)
+    elif res.failed:
+        await notify_owners(bot, "move-failed", format_move_report(res, bot_label(bot)), cooldown=24 * 3600)
+        await _tell_server_owners(bot, res.failed)
+    return res
+
+
+async def background_jobs(bot, delay: float = 25.0) -> None:
+    """Started once per process by the welcome cog: the quiet startup check, then the background mover every 12 hours."""
+    global _jobs_started
+    if _jobs_started:
+        return
+    _jobs_started = True
+    await startup_check(bot, delay=delay)
+    while True:
+        try:
+            await auto_move(bot)
+        except Exception:
+            logger.warning("[image-host] background move crashed", exc_info=True)
+        await asyncio.sleep(MOVE_EVERY_SECONDS)

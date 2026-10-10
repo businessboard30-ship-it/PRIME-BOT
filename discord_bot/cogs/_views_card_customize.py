@@ -749,10 +749,19 @@ class CardBackgroundModal(discord.ui.Modal, title="Custom card background"):
             if data is None:
                 await interaction.followup.send(f"⚠️ Couldn't use that image — {reason}.", ephemeral=True)
                 return
-            await db.set_welcome_config(
-                self.guild_id, clone_id=self.clone_id,
-                custom_background_url=url, custom_bg_channel_id=None, custom_bg_message_id=None,
-            )
+            # A pasted link can expire or disappear, so keep our own copy in the hosting channel whenever it's available.
+            from discord_bot.cogs.welcome import _host_bytes
+            hosted = await _host_bytes(interaction.client, data, interaction.guild or interaction.client.get_guild(self.guild_id), self.guild_id)
+            if hosted is not None:
+                await db.set_welcome_config(
+                    self.guild_id, clone_id=self.clone_id,
+                    custom_background_url=hosted[2] or url, custom_bg_channel_id=hosted[0], custom_bg_message_id=hosted[1],
+                )
+            else:
+                await db.set_welcome_config(
+                    self.guild_id, clone_id=self.clone_id,
+                    custom_background_url=url, custom_bg_channel_id=None, custom_bg_message_id=None,
+                )
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 

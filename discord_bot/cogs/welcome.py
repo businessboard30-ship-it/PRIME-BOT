@@ -211,6 +211,14 @@ async def _upload_custom_bg(
     return host_channel.id, posted.id, cdn_url, None
 
 
+async def _host_bytes(bot: commands.Bot, data: bytes, guild: discord.Guild | None, guild_id: int):
+    """Re-host already-downloaded image bytes (a pasted link) in the hosting channel so the saved background can never
+    expire or vanish with the link. Returns (channel_id, message_id, cdn_url) or None when hosting isn't available."""
+    from modules import image_host
+    name = getattr(guild, "name", "?")
+    return await image_host.post_to_host(bot, data, f"Custom welcome background — guild `{guild_id}` ({name})")
+
+
 async def _refresh_custom_bg_url(bot: commands.Bot, config_row: dict) -> str | None:
     """Re-fetches the hosting message to get a live (non-expired)
     attachment URL. Returns None if the message/channel is gone."""
@@ -585,9 +593,10 @@ class WelcomeCog(GuildOnlyCog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Quiet one-time check that this bot (main or clone) can use the image hosting channel; tells the owners if not."""
+        """Once per process: a quiet check that this bot (main or clone) can use the image hosting channel (owners are told
+        only if not), then every 12 hours the mover that keeps every server's saved background in that channel."""
         from modules import image_host
-        asyncio.create_task(image_host.startup_check(self.bot))
+        asyncio.create_task(image_host.background_jobs(self.bot))
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -1556,9 +1565,12 @@ class WelcomeCog(GuildOnlyCog):
         await interaction.response.send_message(
             f"✅ Uploaded custom backgrounds (`/welcome custombg`'s `image` option) will now be stored in "
             f"#{interaction.channel.name}. Keep this channel private and don't delete old messages in it — "
-            f"each guild's background lives in one message here.",
+            f"each guild's background lives in one message here. Servers' saved backgrounds are being moved there now "
+            f"(each bot moves its own; clones do it on their next 12-hourly run).",
             ephemeral=True,
         )
+        from modules import image_host
+        asyncio.create_task(image_host.auto_move(self.bot))
 
     @group.command(name="theme", description="Pick which welcome-card look this server uses")
     @app_commands.choices(look=[
