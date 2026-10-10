@@ -851,3 +851,25 @@ def test_scam_shield_loads_after_admin_cog():
     """It mounts /admin scamchannel in cog_load, so AdminCog must already be loaded (this crashed startup once)."""
     src = (ROOT / "discord_bot" / "bot.py").read_text()
     assert src.index('"discord_bot.cogs.admin")') < src.index('"discord_bot.cogs.scam_shield")')
+
+
+def test_catch_posts_a_self_deleting_notice_in_the_channel(cog, monkeypatch):
+    from discord_bot.cogs import scam_shield as cog_mod
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=None))
+    m = _msg("free $3500 at fatowin.com use GIFT")
+    m.channel = SimpleNamespace(id=7, mention="#c", send=AsyncMock())
+    run(cog._inspect(m))
+    m.channel.send.assert_awaited_once()
+    kw = m.channel.send.await_args.kwargs
+    assert kw["delete_after"] == cog_mod.NOTICE_SECONDS
+    assert "deleted in a short time" in kw["embed"].description
+    assert "fatowin" not in kw["embed"].description                  # never repeats the scam
+    assert kw["allowed_mentions"].users is False or kw["allowed_mentions"].users == []
+
+
+def test_notice_failure_never_breaks_the_catch(cog, monkeypatch):
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=None))
+    m = _msg("free $3500 at fatowin.com use GIFT")
+    m.channel = SimpleNamespace(id=7, mention="#c", send=AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "no")))
+    assert run(cog._inspect(m)) is True
+    m.delete.assert_awaited_once()
