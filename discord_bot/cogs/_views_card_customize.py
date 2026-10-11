@@ -187,6 +187,8 @@ _BRACKET_LABELS = {"none": "No brackets (default)", "square": "[ Name ] square",
                    "slashes": "// Name // slashes", "stars": "* Name * stars"}
 _FOCUS_LABELS = {"center": "Crop: center (default)", "top": "Crop: keep the top", "bottom": "Crop: keep the bottom",
                  "left": "Crop: keep the left", "right": "Crop: keep the right"}
+_RATIO_LABELS = {"3:2": "Card shape: 3:2 classic (default)", "16:9": "Card shape: 16:9 widescreen", "2:1": "Card shape: 2:1 wide",
+                 "3:1": "Card shape: 3:1 strip (slim)", "4:3": "Card shape: 4:3 tall", "1:1": "Card shape: 1:1 square"}
 _COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red", "avatar": "Match my avatar (each member differs)"}
 
 
@@ -327,7 +329,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         if has_bg:
             bg_row.add_item(CardClearBackgroundButton(guild_id, clone_id, invoker_id))
         container.add_item(bg_row)
-        for select_cls in (CardDimSelect, CardFocusSelect):
+        for select_cls in (CardRatioSelect, CardDimSelect, CardFocusSelect):
             _select_row(select_cls)
     elif tab == "layout":
         for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect, CardShapeSelect):
@@ -608,6 +610,10 @@ class CardBracketSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Se
 
 class CardFocusSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("focus")):
     FIELD, ID, PLACEHOLDER, CHOICES = "focus", "focus", "Image crop focus", _FOCUS_LABELS
+
+
+class CardRatioSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("ratio")):
+    FIELD, ID, PLACEHOLDER, CHOICES = "ratio", "ratio", "Card shape (ratio)", _RATIO_LABELS
 
 
 class CardColorSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("color")):
@@ -1042,7 +1048,7 @@ class CardTabButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cardw
 
 DYNAMIC_ITEMS = (
     CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect, CardStyleSelect,
-    CardLayoutSelect, CardFontSelect, CardBracketSelect, CardFocusSelect,
+    CardLayoutSelect, CardFontSelect, CardBracketSelect, CardFocusSelect, CardRatioSelect,
     CardBackgroundButton, CardClearBackgroundButton, CardUnlockButton,
     CardHeadingButton, CardNumberToggleButton, CardResetButton, CardPreviewButton, CardDoneButton,
     CardTabButton, CardPresetSelect,

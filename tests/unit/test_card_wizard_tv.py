@@ -29,7 +29,7 @@ def build(tab="bg", tv=False, unlocked=False):
 
 def test_each_tab_shows_only_its_own_controls():
     common = {"tabbg", "tablayout", "tabtext", "reset", "unlock", "preset"}
-    assert kinds(build("bg")) == common | {"setbg", "dim", "focus"}
+    assert kinds(build("bg")) == common | {"setbg", "ratio", "dim", "focus"}
     assert kinds(build("layout")) == common | {"layout", "banner", "side", "shape"}
     assert kinds(build("text")) == common | {"color", "font", "bracket", "style", "heading", "number"}
 
