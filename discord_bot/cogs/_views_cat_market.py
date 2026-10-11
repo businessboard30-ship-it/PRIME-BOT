@@ -23,6 +23,7 @@ from modules import cat_board
 from modules import cat_log
 from modules import cat_market as cm
 from modules import cat_pool
+from modules import cat_public
 from modules import cat_rank as cr
 from modules import cat_wallet
 from modules import cat_features
@@ -348,6 +349,34 @@ class BoardView(discord.ui.View):
                                   else discord.ButtonStyle.secondary, disabled=self.mode == key)
             b.callback = (lambda k: (lambda i: self._switch(i, k)))(key)
             self.add_item(b)
+        if self.mode == "collectors":              # the richest board shows wallets, so it is never posted publicly
+            post = discord.ui.Button(label="Post to channel", emoji="\U0001F4E3", style=discord.ButtonStyle.success)
+            post.callback = self._post
+            self.add_item(post)
+
+    async def _post(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("Posting only works in a server channel.", ephemeral=True)
+            return
+        wait = cat_public.board_wait(interaction.channel_id, interaction.user.id)
+        if wait > 0:
+            await interaction.response.send_message(
+                f"The leaderboard was just posted here. Try again in {max(1, round(wait / 60))} min.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            rows, _ = await cat_board.top_collectors(10, None)
+        except Exception:
+            logger.exception("[cat-board] couldn't load the leaderboard to post")
+            await interaction.followup.send("The leaderboard isn't available right now.", ephemeral=True)
+            return
+        if not rows:
+            await interaction.followup.send("Nobody is on the board yet.", ephemeral=True)
+            return
+        if await cat_announce.announce(interaction, cat_public.board_text(rows), gold=True):
+            cat_public.mark_board(interaction.channel_id, interaction.user.id)
+        else:
+            await interaction.followup.send("I couldn't post here (the server may have public posts turned off).", ephemeral=True)
 
     async def embed(self) -> discord.Embed:
         try:
