@@ -174,11 +174,15 @@ def badge_line(slug: str) -> str:
     return f"{emoji} **{name}** (+{reward} 💎)"
 
 
-async def on_adopt(owner_id: int, clone_id, rarity: str) -> list:
-    """After a successful adoption. Never raises. Returns lines to show for any badge just earned."""
+async def on_adopt(owner_id: int, clone_id, rarity: str, awarded: Optional[list] = None) -> list:
+    """After a successful adoption. Never raises. Returns lines to show for any badge just earned.
+    If `awarded` is a list, the newly earned badge slugs are appended to it (for milestone posts)."""
     try:
         await record_progress(owner_id, clone_id, quest_keys_for("adopt", rarity))
-        return [badge_line(s) for s in await award_badges(owner_id, clone_id)]
+        new = await award_badges(owner_id, clone_id)
+        if awarded is not None:
+            awarded.extend(new)
+        return [badge_line(s) for s in new]
     except Exception:
         logger.warning("[cat-quests] adopt hook failed", exc_info=True)
         return []
