@@ -24,6 +24,7 @@ import io
 import logging
 import time
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
 import discord
@@ -31,6 +32,7 @@ from discord.ext import commands, tasks
 
 from database import db
 from discord_bot.cogs._admin_mount import mount_admin_command
+from modules import scam_check as sc
 from modules import scam_reputation as rep
 from modules import scam_shield as ss
 from modules import scam_vision as sv
@@ -45,6 +47,10 @@ def _support_invite() -> str:
     except Exception:
         return "our support server (see /help)"
 
+
+_check_cooldown = sc.Cooldown()
+_reported: dict = {}                         # (guild_id, message_id) -> monotonic time: one staff report per message
+REPORT_DEDUPE_SECONDS = 3600
 
 _warned: dict = {}                            # (guild_id, user_id) -> monotonic time until which we stay quiet
 
@@ -253,6 +259,124 @@ class ScamShieldCog(commands.Cog):
                               "Set one with `/modlog` to keep a permanent record.\n"
                               f"-# This message will be deleted in a short time ({JOIN_FALLBACK_SECONDS // 60} minutes).")
         await target.send(embed=embed, delete_after=JOIN_FALLBACK_SECONDS, **mods)
+        return True
+
+    # ── manual check: reply to a message, @mention the bot, write "scam shield" ─────────────
+    @commands.Cog.listener("on_message")
+    async def on_check_request(self, message: discord.Message):
+        try:
+            await self._check_request(message)
+        except Exception:
+            logger.exception("[scam-shield] manual check failed")
+
+    async def _target_of(self, message: discord.Message) -> Optional[discord.Message]:
+        ref = message.reference
+        if ref is None or not ref.message_id:
+            return None
+        found = ref.resolved if isinstance(ref.resolved, discord.Message) else None
+        if found is None:
+            try:
+                found = await message.channel.fetch_message(ref.message_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return None
+        return found
+
+    async def _answer(self, message: discord.Message, text: str, view=None, color=None) -> None:
+        embed = discord.Embed(title="🛡️ Scam Shield check", description=text + f"\n-# This message will be deleted in {sc.ANSWER_SECONDS} seconds.",
+                              color=color or discord.Color.blurple())
+        try:
+            await message.reply(embed=embed, view=view, mention_author=False, delete_after=sc.ANSWER_SECONDS,
+                                allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            logger.debug("[scam-shield] couldn't post the check answer", exc_info=True)
+
+    async def _check_request(self, message: discord.Message) -> None:
+        if message.guild is None or message.author.bot or self.bot.user is None:
+            return
+        if self.bot.user not in message.mentions or message.reference is None:
+            return
+        if not sc.is_check_request(message.content):
+            return
+        if not self._can_post(message.channel, message.guild):
+            return
+        target = await self._target_of(message)
+        if target is None:
+            await self._answer(message, sc.GONE_TEXT)
+            return
+        if target.author.id == self.bot.user.id:
+            return                                   # a reply to the bot's own message is normal AI chat
+        wait = _check_cooldown.wait_seconds(message.guild.id, message.author.id)
+        if wait > 0:
+            await self._answer(message, sc.wait_text(wait))
+            return
+        if ss.stale():
+            await ss.load()
+        clone_id = getattr(self.bot, "clone_id", None)
+        gs = await ss.guild_settings(message.guild.id, clone_id)
+        if not ss.is_enabled() or not gs["enabled"]:
+            await self._answer(message, sc.OFF_TEXT)
+            return
+        member = target.author if isinstance(target.author, discord.Member) else message.guild.get_member(target.author.id)
+        if member is not None and _is_trusted(SimpleNamespace(author=member, guild=message.guild)):
+            await self._answer(message, sc.STAFF_TEXT)
+            return
+        text = _text_of(target)
+        has_pictures = any((a.content_type or "").startswith("image/") or a.filename.lower().endswith(_IMG_EXT)
+                           for a in target.attachments)
+        if not text.strip() and not target.attachments:
+            await self._answer(message, sc.NOTHING_TEXT)
+            return
+        hit = ss.match_text(text, gs["allowed_domains"])
+        if hit is None:
+            hit = await self._match_pictures(target)
+        if hit is not None:
+            view = _ReportView(self, message.author.id, target, hit[0], clone_id)
+            await self._answer(message, sc.match_text(hit[0]), view=view, color=discord.Color.red())
+            return
+        pictures_unchecked = False
+        if has_pictures:
+            try:
+                cap, _prem = await sv.guild_cap(message.guild.id, clone_id)
+                pictures_unchecked = not sv.available() or sv.guild_used_today(message.guild.id, clone_id) >= cap
+            except Exception:
+                pictures_unchecked = True
+        await self._answer(message, sc.clean_text(pictures_unchecked), color=discord.Color.green())
+
+    async def _report_to_staff(self, reporter: discord.abc.User, target: discord.Message, kind: str, clone_id) -> bool:
+        """Tell the server's staff (mod-log channel first, else a self-deleting flag). Never deletes anything."""
+        key = (target.guild.id, target.id)
+        now = time.monotonic()
+        if len(_reported) > 2000:
+            for k in [k for k, v in _reported.items() if now - v > REPORT_DEDUPE_SECONDS]:
+                _reported.pop(k, None)
+        if now - _reported.get(key, -1e9) < REPORT_DEDUPE_SECONDS:
+            return True                              # already reported: same answer for the member, no second flag
+        _reported[key] = now
+        guild = target.guild
+        who = discord.utils.escape_markdown(str(target.author))[:40]
+        cfg = await db.get_automod_config(guild.id, clone_id=clone_id)
+        ch_id = cfg.get("log_channel_id")
+        ch = guild.get_channel(int(ch_id)) if ch_id else None
+        if ch is not None and self._can_post(ch, guild):
+            snippet = discord.utils.escape_mentions((target.content or "")[:300]) or "(image / embed only)"
+            embed = discord.Embed(title="🛡️ Member asked Scam Shield to check a message", description=snippet[:1000],
+                                  color=discord.Color.red())
+            embed.add_field(name="Author", value=f"{target.author} (`{target.author.id}`)")
+            embed.add_field(name="Reported by", value=f"{reporter} (`{reporter.id}`)")
+            embed.add_field(name="Result", value=sc.kind_word(kind))
+            embed.add_field(name="Message", value=f"[Jump to it]({target.jump_url})", inline=False)
+            await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            return True
+        fb = self._fallback_channel(guild, target.channel)
+        if fb is None:
+            return False
+        embed = discord.Embed(
+            title="🛡️ Scam Shield: a member reported a message",
+            description=(f"A message from **{who}** was checked and looks like a scam ({sc.kind_word(kind)}). "
+                         f"[Jump to it]({target.jump_url}). Staff: this server has no mod-log channel I can post in, "
+                         f"so I'm flagging it here (set one with `/modlog`).\n"
+                         f"-# This message will be deleted in {FALLBACK_SECONDS} seconds."), color=discord.Color.red())
+        await fb.send(embed=embed, delete_after=FALLBACK_SECONDS, allowed_mentions=discord.AllowedMentions.none())
         return True
 
     async def _inspect(self, message: discord.Message) -> bool:
@@ -499,6 +623,37 @@ class ScamShieldCog(commands.Cog):
         except Exception:
             logger.debug("[scam-shield] couldn't post the flag", exc_info=True)
             return None
+
+
+class _ReportView(discord.ui.View):
+    """One button under a "this looks like a scam" answer. Only the member who asked can press it."""
+
+    def __init__(self, cog: "ScamShieldCog", asker_id: int, target: discord.Message, kind: str, clone_id):
+        super().__init__(timeout=sc.ANSWER_SECONDS)
+        self.cog, self.asker_id, self.target, self.kind, self.clone_id = cog, asker_id, target, kind, clone_id
+        btn = discord.ui.Button(label="Tell server staff", emoji="🚨", style=discord.ButtonStyle.danger)
+        btn.callback = self._on_report
+        self.add_item(btn)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.asker_id:
+            await interaction.response.send_message("Only the person who asked for this check can use this button.", ephemeral=True)
+            return False
+        return True
+
+    async def _on_report(self, interaction: discord.Interaction):
+        try:
+            ok = await self.cog._report_to_staff(interaction.user, self.target, self.kind, self.clone_id)
+        except Exception:
+            logger.exception("[scam-shield] report to staff failed")
+            ok = False
+        for item in self.children:
+            item.disabled = True
+        note = "🚨 Server staff have been told. Thank you." if ok else \
+            "I couldn't reach the staff (no channel I can post in). Please message a moderator directly."
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send(note, ephemeral=True)
+        self.stop()
 
 
 async def setup(bot: commands.Bot):
