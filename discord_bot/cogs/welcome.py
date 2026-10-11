@@ -327,6 +327,10 @@ def _suggested_channel(guild: discord.Guild) -> discord.TextChannel | None:
 STICKER_PREFIX = "sticker_announce_"
 TEMPLATE_PREFIX = "template_announce_"
 SPIDER_PREFIX = "spider_announce_"
+# The automatic "New welcome card: Spider Realm Pro / Try it free (3 days)" post in #mod-logs is switched OFF: nothing is
+# sent to any server. The Try / No thanks buttons on messages that were already posted still work (_handle_spider_button),
+# and the table and sender are kept, so turning it back on later is flipping this flag.
+SPIDER_ANNOUNCE_ENABLED = False
 
 
 class StickerAnnounceView(discord.ui.View):
@@ -506,7 +510,8 @@ class WelcomeCog(GuildOnlyCog):
         await self._ensure_spider_table()
         self._nudge_owners.start()
         self._announce_card_features.start()
-        self._announce_spider_pro.start()
+        if SPIDER_ANNOUNCE_ENABLED:
+            self._announce_spider_pro.start()
         self._expire_card_trials.start()
         self._expire_ultra_trials.start()
 
@@ -834,6 +839,8 @@ class WelcomeCog(GuildOnlyCog):
 
     @tasks.loop(hours=24)
     async def _announce_spider_pro(self):
+        if not SPIDER_ANNOUNCE_ENABLED:
+            return                                   # offer is off: never post it (belt and braces with cog_load)
         clone_id = getattr(self.bot, "clone_id", None)
         try:
             done = await self._spider_announced_ids(clone_id)
