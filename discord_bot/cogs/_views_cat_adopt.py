@@ -1,7 +1,7 @@
 # path: discord_bot/cogs/_views_cat_adopt.py
 
 """
-Cat adoption UI (virtual only: no money, coins or purchases anywhere).
+Cat adoption UI (virtual only: play coins and diamonds earned by adopting, never real money).
 
   * Adopt button on every automatic cat spawn (a persistent DynamicItem, so it still works after a restart).
   * "My cats" button on spawns and on /cat: an ephemeral collection browser with Rename, Release and Trade.
@@ -18,7 +18,9 @@ from typing import List, Optional
 import discord
 
 from modules import cat_adopt as ca
+from modules import cat_log
 from modules import cat_pool
+from modules import cat_wallet
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,21 @@ GIFT_VALUE = "gift"
 
 def _clone_id(client):
     return getattr(client, "clone_id", None)
+
+
+def _event(interaction, cat: ca.Cat, user=None) -> dict:
+    """The facts for one storage-channel log line (see modules/cat_log.py)."""
+    user = user or interaction.user
+    guild = interaction.guild
+    return dict(guild_id=getattr(guild, "id", None), guild_name=getattr(guild, "name", None), user_id=user.id,
+                user_name=str(user), pool_id=cat.pool_id, cat_name=cat.name, rarity=cat.rarity, trait=cat.trait)
+
+
+def _other(user, cat: Optional[ca.Cat]) -> dict:
+    out = dict(other_id=user.id, other_name=str(user))
+    if cat is not None:
+        out.update(other_cat_name=cat.name, other_rarity=cat.rarity, other_trait=cat.trait)
+    return out
 
 
 def cat_line(cat: ca.Cat) -> str:
@@ -89,6 +106,7 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
                                                     else "😿 This cat is no longer available.", ephemeral=True)
             return
         cat = res.cat
+        cat_log.record(interaction.client, "adopt", **_event(interaction, cat))
         embed = (interaction.message.embeds[0] if interaction.message and interaction.message.embeds
                  else discord.Embed(color=PINK))
         embed.description = (f"💖 **{cat.name}** was adopted by {interaction.user.mention}!\n"
@@ -96,7 +114,8 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
         await interaction.response.edit_message(embed=embed, view=spawn_view(self.spawn_id, adopted=True))
         await interaction.followup.send(
             f"🎉 You adopted **{cat.name}**, a {ca.rarity_badge(cat.rarity)} {cat.trait.lower()} cat! "
-            "Open **My cats** to rename, trade or gift.", ephemeral=True)
+            + (f"\n{cat_wallet.reward_text(res.reward)}" if res.reward else "")
+            + "\nOpen **My cats** to rename, trade or gift.", ephemeral=True)
 
 
 class MyCatsButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_mine$"):
@@ -122,6 +141,8 @@ async def open_collection(interaction: discord.Interaction) -> None:
             "It's all just for fun, no money involved. 🐾", ephemeral=True)
         return
     view = CollectionView(interaction.client, interaction.user, cats)
+    await view.refresh_wallet()
+    view._build()
     await interaction.response.send_message(embed=await view.embed(), view=view, ephemeral=True)
 
 
@@ -147,15 +168,21 @@ class CollectionView(discord.ui.View):
         super().__init__(timeout=600)
         self.client, self.user, self.cats, self.index = client, user, cats, index
         self.confirm_release = False
+        self.wallet = cat_wallet.Wallet()
         self._build()
+
+    async def refresh_wallet(self) -> None:
+        self.wallet = await cat_wallet.safe_wallet(self.user.id, _clone_id(self.client))
 
     @property
     def current(self) -> ca.Cat:
         return self.cats[self.index]
 
     async def embed(self) -> discord.Embed:
-        return await cat_embed_full(self.client, self.current,
-                                    f"Cat {self.index + 1} of {len(self.cats)} · just for fun, no real money")
+        e = await cat_embed_full(self.client, self.current,
+                                 f"Cat {self.index + 1} of {len(self.cats)} · just for fun, no real money")
+        e.add_field(name="Your purse", value=cat_wallet.wallet_text(self.wallet), inline=False)
+        return e
 
     def _build(self) -> None:
         self.clear_items()
@@ -171,6 +198,32 @@ class CollectionView(discord.ui.View):
             b = discord.ui.Button(label=label, style=style, disabled=disabled)
             b.callback = fn
             self.add_item(b)
+        have = self.wallet.diamonds
+        for label, fn in ((f"{cat_wallet.DIAMOND} Convert 1", self._convert_one),
+                          (f"{cat_wallet.DIAMOND} Convert all ({have})", self._convert_all)):
+            b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=have < 1, row=1)
+            b.callback = fn
+            self.add_item(b)
+
+    async def _convert(self, interaction, count) -> None:
+        try:
+            result = await cat_wallet.convert(interaction.user.id, _clone_id(self.client), count)
+        except Exception:
+            logger.exception("[cat-wallet] convert failed")
+            await interaction.response.send_message("😿 Something went wrong, try again in a moment.", ephemeral=True)
+            return
+        await self.refresh_wallet()
+        self.confirm_release = False
+        self._build()
+        note = ("You don't have a diamond to convert." if result is None else
+                f"{cat_wallet.DIAMOND} Converted! You now have {result.coins:,} coins.")
+        await interaction.response.edit_message(content=note, embed=await self.embed(), view=self)
+
+    async def _convert_one(self, interaction):
+        await self._convert(interaction, 1)
+
+    async def _convert_all(self, interaction):
+        await self._convert(interaction, None)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
@@ -207,7 +260,8 @@ class CollectionView(discord.ui.View):
             await self._show(interaction)
             return
         cat = self.current
-        await ca.release(cat.id, interaction.user.id)
+        if await ca.release(cat.id, interaction.user.id):
+            cat_log.record(interaction.client, "release", **_event(interaction, cat))
         await self.reload(interaction.user.id)
         if not self.cats:
             await interaction.response.edit_message(
@@ -332,6 +386,8 @@ class TradeOfferView(discord.ui.View):
         status = await ca.trade(self.give.id, self.giver.id, self.take.id if self.take else None, self.taker.id,
                                 _clone_id(self.client))
         if status == "ok":
+            cat_log.record(self.client, "trade" if self.take else "gift", **_event(interaction, self.give, self.giver),
+                           **_other(self.taker, self.take))
             what = (f"{self.giver.mention} ↔ {self.taker.mention}: {cat_line(self.give)} for {cat_line(self.take)}"
                     if self.take else f"🎁 {self.giver.mention} gifted {cat_line(self.give)} to {self.taker.mention}")
             await self._finish(interaction, f"✅ **Trade done!** {what}. 💖")
