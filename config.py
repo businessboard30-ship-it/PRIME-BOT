@@ -438,6 +438,8 @@ XP_BOOST_DURATION_DAYS = 14
 # TOPGG_WEBHOOK_SECRET is the v1 "whs_..." secret, or the v0 Authorization
 # string — api/topgg_webhook.py accepts either. The vote link on the
 # leaderboard stays hidden until TOPGG_BOT_ID (or TOPGG_VOTE_URL) is set.
+# Optional: a free key from thecatapi.com raises the /cat rate limit. /cat works without it.
+CAT_API_KEY = os.getenv("CAT_API_KEY", "")
 TOPGG_WEBHOOK_SECRET = os.getenv("TOPGG_WEBHOOK_SECRET", "")
 TOPGG_BOT_ID = os.getenv("TOPGG_BOT_ID", "1539561247299604610")  # public application ID
 TOPGG_VOTE_URL = os.getenv("TOPGG_VOTE_URL") or (

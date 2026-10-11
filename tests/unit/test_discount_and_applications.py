@@ -75,19 +75,22 @@ def test_review_buttons_only_while_pending():
     assert not any(i.startswith("appl_rev") for i in _ids(va.build_review_view(_form(), sub, U(), result="✅ Accepted")))
 
 
-# ── join DM: Apply replaces Connect on page 1, Connect moves to page 2 ────
+# ── join DM: Applications moved to "More features" (page 1 has room for Cat); Connect on page 2 ────
 
-def test_join_dm_apply_on_page_one_connect_on_page_two():
+def test_join_dm_apply_in_more_screen_connect_on_page_two():
     from discord_bot.cogs import _views_join_dm as jd
     assert jd._ApplyFormButton in jd.DYNAMIC_ITEMS
     keys = list(jd.FEATURE_TOGGLES)
     p1 = _ids(jd.build_join_dm_view(123, None, keys, 0, intro="hi"))
     p2 = _ids(jd.build_join_dm_view(123, None, keys, 1, intro="hi"))
-    assert "join_dm_apply:123:-" in p1 and "join_dm_connect:123:-" not in p1
-    assert "join_dm_connect:123:-" in p2 and "join_dm_apply:123:-" not in p2
+    more = [getattr(c, "custom_id", None) for c in jd.build_join_dm_more_view(123, None).walk_children()]
+    assert "join_dm_apply:123:-" in more and "join_dm_apply:123:-" not in p1 + p2
+    assert "join_dm_more:123:-" in p1 and "join_dm_connect:123:-" not in p1
+    assert "join_dm_connect:123:-" in p2
     # a one-page DM must not lose Connect
     one = _ids(jd.build_join_dm_view(123, None, keys[:3], 0, intro="hi"))
-    assert "join_dm_connect:123:-" in one and "join_dm_apply:123:-" in one
+    assert "join_dm_connect:123:-" in one and "join_dm_more:123:-" in one
+
 
 
 # ── discount code ─────────────────────────────────────────────────────────
