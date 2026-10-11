@@ -87,31 +87,34 @@ def test_api_key_sent_only_when_configured(monkeypatch):
     assert not s2.calls[0][1]
 
 
-def test_falls_back_to_cataas_on_error_status_exception_or_garbage():
+def test_no_other_service_is_called_when_the_cat_api_fails():
     for first in (Resp(503, None), RuntimeError("boom"), Resp(200, {"nope": 1}), Resp(200, [])):
-        s = Session({cat.CAT_API_URL: first, cat.CATAAS_URL: Resp(200, {"id": "Ab12", "tags": []})})
-        assert run(cat.fetch_cat_url(s)) == "https://cataas.com/cat/Ab12"
+        s = Session({cat.CAT_API_URL: first})
+        assert run(cat.fetch_cat_url(s)) is None
+        assert [c[0] for c in s.calls] == [cat.CAT_API_URL]        # one call, to The Cat API only
 
 
 def test_unsafe_urls_are_never_returned():
     bad = ["http://cdn2.thecatapi.com/x.jpg", "https://evil.example/x.jpg", "https://thecatapi.com.evil.io/x.jpg",
-           "javascript:alert(1)", "https://cataas.com@evil.io/x", ""]
+           "javascript:alert(1)", "https://thecatapi.com@evil.io/x", "https://cataas.com/cat/1", ""]
     for url in bad:
         assert not cat.safe_image_url(url), url
-    s = Session({cat.CAT_API_URL: Resp(200, [{"url": "https://evil.example/x.jpg"}]),
-                 cat.CATAAS_URL: Resp(200, {"url": "http://cataas.com/cat/1"})})
+    s = Session({cat.CAT_API_URL: Resp(200, [{"url": "https://evil.example/x.jpg"}])})
     assert run(cat.fetch_cat_url(s)) is None
-    assert cat.safe_image_url("https://cataas.com/cat/1") and cat.safe_image_url(GOOD)
+    assert cat.safe_image_url(GOOD)
 
 
-def test_cataas_id_must_be_plain():
-    s = Session({cat.CAT_API_URL: Resp(503, None), cat.CATAAS_URL: Resp(200, {"id": "../../evil?x=1"})})
-    assert run(cat.fetch_cat_url(s)) is None
+def test_cataas_is_gone_from_the_cat_cog():
+    import inspect
+    src = inspect.getsource(cat).lower()
+    assert "cataas" not in src
+    assert not hasattr(cat, "CATAAS_URL") and not hasattr(cat, "_from_cataas") and not hasattr(cat, "_candidates_cataas")
+    assert cat.ALLOWED_HOSTS == ("thecatapi.com",)
 
 
-def test_recent_urls_used_when_both_services_are_down():
+def test_recent_urls_used_when_the_service_is_down():
     run(cat.fetch_cat_url(Session({cat.CAT_API_URL: Resp(200, [{"url": GOOD}])})))
-    down = Session({cat.CAT_API_URL: RuntimeError("x"), cat.CATAAS_URL: RuntimeError("y")})
+    down = Session({cat.CAT_API_URL: RuntimeError("x")})
     assert run(cat.fetch_cat_url(down)) == GOOD
     cat._recent.clear()
     assert run(cat.fetch_cat_url(down)) is None
