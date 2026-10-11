@@ -141,12 +141,14 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
         embed.description = cat_announce.adopt_text(interaction.user.mention, cat.name, cat.id,
                                                     ca.rarity_badge(cat.rarity), cat.trait, cat.rarity)
         await interaction.response.edit_message(embed=embed, view=spawn_view(self.spawn_id, adopted=True))
-        badge_lines = await cat_quests.on_adopt(interaction.user.id, _clone_id(interaction.client), cat.rarity)
+        earned: list = []
+        badge_lines = await cat_quests.on_adopt(interaction.user.id, _clone_id(interaction.client), cat.rarity, earned)
         await interaction.followup.send(
             f"🎉 You adopted **{cat.name}**, a {ca.rarity_badge(cat.rarity)} {cat.trait.lower()} cat! "
             + (f"\n{cat_wallet.reward_text(res.reward)}" if res.reward else "")
             + (("\n🏅 Badge earned: " + ", ".join(badge_lines)) if badge_lines else "")
             + "\nOpen **My cats** to rename, trade or gift.", ephemeral=True)
+        await cat_announce.announce_badges(interaction, earned)
 
 
 class MyCatsButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_mine$"):

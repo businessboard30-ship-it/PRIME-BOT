@@ -44,6 +44,8 @@ class CareButton(discord.ui.Button):
             return
         diamond = f" and 💎 **{result.diamonds} diamond**" if result.diamonds else ""
         await interaction.response.send_message(f"💖 Care complete! Streak: **{result.streak} days**. You earned 🪙 **{result.coins} coins**{diamond}.", view=share, ephemeral=True)
+        if result.streak in cat_announce.MILESTONE_STREAKS:
+            await cat_announce.announce(interaction, cat_announce.streak_text(interaction.user.mention, result.streak), kind="milestone")
 
 
 class CosmeticBuySelect(discord.ui.Select):
@@ -129,8 +131,8 @@ class ShareButton(discord.ui.Button):
         if isinstance(card, str):
             await interaction.followup.send(card, ephemeral=True)
             return
-        posted = await (cat_announce.announce(interaction, card[0]) if card[0] is not None
-                        else cat_announce.announce_embed(interaction, card[1]))
+        posted = await (cat_announce.announce(interaction, card[0], kind="share") if card[0] is not None
+                        else cat_announce.announce_embed(interaction, card[1], kind="share"))
         if posted:
             cat_share.mark_shared(interaction.user.id, self.kind)
         else:
@@ -275,6 +277,13 @@ class QuestClaimSelect(discord.ui.Select):
         text = {"ok": "🎁 Quest claimed! Your 💎 were added to your wallet.",
                 "not_ready": "That quest isn't ready, or you already claimed it."}.get(status, "Something went wrong.")
         await interaction.response.send_message(text, ephemeral=True)
+        if status == "ok":
+            try:
+                done = all(q.claimed for q in await cat_quests.quests(interaction.user.id, _clone(interaction)))
+            except Exception:
+                done = False
+            if done:
+                await cat_announce.announce(interaction, cat_announce.quests_text(interaction.user.mention), kind="milestone")
 
 
 class QuestsButton(discord.ui.Button):
@@ -318,6 +327,7 @@ class BadgesButton(discord.ui.Button):
         if have or new:
             view.add_item(ShareButton("badges"))
         await interaction.response.send_message(embed=discord.Embed(title="🏅 Collection badges", description=text, color=GOLD), view=view, ephemeral=True)
+        await cat_announce.announce_badges(interaction, new)
 
 
 # ── Wishlist ─────────────────────────────────────────────────────────────────
