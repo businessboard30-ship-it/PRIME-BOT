@@ -6,6 +6,7 @@ import discord
 
 from modules import cat_adopt
 from modules import cat_announce
+from modules import cat_public
 from modules import cat_features
 from modules import cat_quests
 from modules import cat_share
@@ -412,9 +413,9 @@ class WishlistNoteModal(discord.ui.Modal, title="Post a want"):
     note = discord.ui.TextInput(label="Optional note (plain text)", required=False, max_length=cat_wishlist.NOTE_MAX,
                                 placeholder="e.g. will swap a rare for it")
 
-    def __init__(self, rarity: str, trait):
+    def __init__(self, rarity: str, trait, share: bool = False):
         super().__init__()
-        self.rarity, self.trait = rarity, trait
+        self.rarity, self.trait, self.share = rarity, trait, share
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -427,6 +428,13 @@ class WishlistNoteModal(discord.ui.Modal, title="Post a want"):
                 "duplicate": "You already posted that exact want.",
                 "bad": "That note can't contain links or invites. Keep it to plain text."}.get(status, "Something went wrong.")
         await interaction.response.send_message(text, ephemeral=True)
+        if status == "ok" and self.share:
+            if not cat_public.wish_ok(interaction.user.id):
+                await interaction.followup.send("It's on the board. You can also post one want to the channel per day, "
+                                                "and you've used today's.", ephemeral=True)
+            elif await cat_announce.announce(interaction, cat_public.wish_text(
+                    interaction.user.mention, self.rarity, self.trait, self.note.value)):
+                cat_public.mark_wish(interaction.user.id)
 
 
 class WishlistPostView(discord.ui.View):
@@ -441,8 +449,18 @@ class WishlistPostView(discord.ui.View):
         trait.callback = self._trait
         self.go = discord.ui.Button(label="Continue", style=discord.ButtonStyle.success, disabled=True, row=2)
         self.go.callback = self._go
-        for item in (rar, trait, self.go):
+        self.share = False
+        self.share_btn = discord.ui.Button(label="Also post in this channel: off", emoji="📣",
+                                           style=discord.ButtonStyle.secondary, row=2)
+        self.share_btn.callback = self._toggle_share
+        for item in (rar, trait, self.go, self.share_btn):
             self.add_item(item)
+
+    async def _toggle_share(self, interaction: discord.Interaction):
+        self.share = not self.share
+        self.share_btn.label = f"Also post in this channel: {'on' if self.share else 'off'}"
+        self.share_btn.style = discord.ButtonStyle.primary if self.share else discord.ButtonStyle.secondary
+        await interaction.response.edit_message(view=self)
 
     async def _rarity(self, interaction: discord.Interaction):
         self.rarity = interaction.data["values"][0]
@@ -455,7 +473,7 @@ class WishlistPostView(discord.ui.View):
         await interaction.response.defer()
 
     async def _go(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(WishlistNoteModal(self.rarity, self.trait))
+        await interaction.response.send_modal(WishlistNoteModal(self.rarity, self.trait, self.share))
 
 
 class WishlistRemoveSelect(discord.ui.Select):
