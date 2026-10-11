@@ -1243,6 +1243,33 @@ class _WelcomeCardOptionsButton(discord.ui.DynamicItem[discord.ui.Button], templ
         await interaction.followup.send(view=view, ephemeral=interaction.guild is not None, **tv_kwargs)
 
 
+class _WelcomeCustomizeCardButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_wsub_custom:(\d+):(-|\d+)$"):
+    """\"Customize Card\" on the welcome sub-screen: opens the same ultra-card wizard as the /welcome setup wizard's
+    Customize Card button (own background, banner, colours, heading; free 5-day trial, then the one-time unlock).
+    DynamicItem like its siblings, so it survives bot restarts and never times out. Needs Manage Server in that server."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Customize Card", style=discord.ButtonStyle.success, emoji="🖼️",
+            custom_id=f"join_dm_wsub_custom:{guild_id}:{'-' if clone_id is None else clone_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        clone_part = match.group(2)
+        return cls(int(match.group(1)), None if clone_part == "-" else int(clone_part))
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_welcome import _check_access
+        if not await _check_access(interaction, None, self.guild_id):
+            return                                    # it already told the person why
+        await interaction.response.defer(ephemeral=interaction.guild is not None)
+        from discord_bot.cogs._views_card_customize import open_customize_wizard
+        await open_customize_wizard(interaction, self.guild_id, self.clone_id)
+
+
 class _WelcomePreviewRefreshButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_wsub_prev:(\d+):(-|\d+)$"):
     """Re-renders the card preview on this screen (use after changing card options)."""
 
@@ -1295,6 +1322,7 @@ class WelcomeSubLayoutView(discord.ui.LayoutView):
         welcome_container.add_item(row)
         row2 = discord.ui.ActionRow(
             _WelcomeCardOptionsButton(guild_id, clone_id),
+            _WelcomeCustomizeCardButton(guild_id, clone_id),
             _WelcomePreviewRefreshButton(guild_id, clone_id),
             _WelcomeBackButton(guild_id, clone_id),
         )
@@ -2174,7 +2202,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 
 # Registered in discord_bot/bot.py's setup_hook via bot.add_dynamic_items(...).
 DYNAMIC_ITEMS = (
-    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
+    _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomeCustomizeCardButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton, _ApplyFormButton,
 )
