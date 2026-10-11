@@ -174,7 +174,7 @@ def test_care_tick_runs_every_step_even_when_one_fails(monkeypatch):
     c, bot = _cog(monkeypatch, hungry=AsyncMock(side_effect=RuntimeError("db")))
     c.bot = bot
     out = run(c.care_tick())
-    assert out == {"hungry": 0, "warned": 1, "left": 0}
+    assert out == {"hungry": 0, "warned": 1, "left": 0, "faded": 0}
 
 
 def test_runaways_are_logged_and_owners_told_kindly(monkeypatch):

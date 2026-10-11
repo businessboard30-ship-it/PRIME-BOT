@@ -104,6 +104,8 @@ class Conn:
     async def fetchrow(self, sql, *a):
         if sql.startswith("UPDATE cat_spawns"):
             return {"pool_id": 100} if self.spawn_open else None
+        if sql.startswith("SELECT adopted_by FROM cat_spawns"):
+            return {"adopted_by": 7}                                   # somebody else already has it
         if sql.startswith("INSERT INTO cat_adoptions"):
             return {"id": 1, "owner_id": a[0], "clone_id": a[1], "pool_id": a[2], "name": a[3], "rarity": a[4], "trait": a[5],
                     "adopted_at": None, "traded_count": 0}

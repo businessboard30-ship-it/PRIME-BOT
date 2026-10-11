@@ -15,7 +15,8 @@ def sections() -> List[Tuple[str, str]]:
          "Every cat shows a **Next cat** time, in your own time zone, so you know when to come back."),
         ("🐾 Adopting",
          "Tap **Adopt me!** on a cat. The first person to tap gets it, and it comes with some coins "
-         f"(sometimes a {cat_wallet.DIAMOND} diamond). You can keep up to {cat_adopt.MAX_CATS} cats."),
+         f"(sometimes a {cat_wallet.DIAMOND} diamond). You can keep up to {cat_adopt.MAX_CATS} cats. "
+         f"A cat nobody adopts within {cat_adopt.SPAWN_EXPIRE_HOURS} hours wanders off."),
         ("🏠 My cats",
          "Rename, release, ⭐ rank up (spend coins, up to rank "
          f"{cat_rank.MAX_RANK}), trade or gift, and 🔍 filter or search your collection. "

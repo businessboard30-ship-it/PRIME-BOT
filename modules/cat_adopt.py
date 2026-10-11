@@ -24,6 +24,8 @@ from modules import cat_wallet
 
 logger = logging.getLogger(__name__)
 
+SPAWN_EXPIRE_HOURS = 6            # an unadopted cat wanders off after this long (proposal, adjust freely)
+EXPIRED_NOTE = "💨 This cat wandered off before anyone adopted it. Watch for the next one!"
 MAX_CATS = 100                  # per person, per bot (lists page through them, so any number is fine)
 NAME_MAX = 20
 
@@ -98,7 +100,7 @@ class Cat:
 
 @dataclass(frozen=True)
 class AdoptResult:
-    status: str                 # ok | taken | gone | limit
+    status: str                 # ok | taken | gone | limit | expired
     cat: Optional[Cat] = None
     reward: Optional[cat_wallet.Reward] = None      # coins or a diamond that came with the cat
 
@@ -126,6 +128,23 @@ async def set_spawn_message(spawn_id: int, message_id: int) -> None:
         await conn.execute("UPDATE cat_spawns SET message_id = $2 WHERE id = $1", spawn_id, message_id)
 
 
+async def expire_spawns(clone_id, limit: int = 20) -> list:
+    """Closes this bot's unadopted spawns that are older than SPAWN_EXPIRE_HOURS (0 = nobody, like a closed duplicate)
+    and returns them so their messages can be updated. A returned runaway whose spawn faded goes back in the queue."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                "UPDATE cat_spawns SET adopted_by = 0 WHERE id IN ("
+                " SELECT id FROM cat_spawns WHERE adopted_by IS NULL AND COALESCE(clone_id, -1) = $1 "
+                " AND created_at < NOW() - make_interval(hours => $2) ORDER BY id LIMIT $3 FOR UPDATE SKIP LOCKED) "
+                "RETURNING id, guild_id, channel_id, message_id, pool_id", _key(clone_id), SPAWN_EXPIRE_HOURS, limit)
+            for r in rows:
+                await conn.execute("UPDATE cat_runaways SET returned_at = NULL WHERE pool_id = $1 AND claimed_at IS NULL",
+                                   r["pool_id"])
+    return [dict(r) for r in rows]
+
+
 async def count_cats(user_id: int, clone_id) -> int:
     pool = await _pool()
     async with pool.acquire() as conn:
@@ -148,10 +167,13 @@ async def adopt(spawn_id: int, user_id: int, clone_id, guild_id: Optional[int] =
                 return AdoptResult("limit")
             row = await conn.fetchrow(
                 "UPDATE cat_spawns SET adopted_by = $2, adopted_at = NOW() "
-                "WHERE id = $1 AND adopted_by IS NULL RETURNING pool_id", spawn_id, user_id)
+                "WHERE id = $1 AND adopted_by IS NULL AND created_at > NOW() - make_interval(hours => $3) "
+                "RETURNING pool_id", spawn_id, user_id, SPAWN_EXPIRE_HOURS)
             if row is None:
-                known = await conn.fetchval("SELECT 1 FROM cat_spawns WHERE id = $1", spawn_id)
-                return AdoptResult("taken" if known else "gone")
+                known = await conn.fetchrow("SELECT adopted_by FROM cat_spawns WHERE id = $1", spawn_id)
+                if known is None:
+                    return AdoptResult("gone")
+                return AdoptResult("expired" if known["adopted_by"] is None else "taken")
             runaway = await conn.fetchrow(
                 "UPDATE cat_runaways SET claimed_at = NOW() WHERE pool_id = $1 AND claimed_at IS NULL "
                 "RETURNING cat_name, rarity, trait", row["pool_id"])
