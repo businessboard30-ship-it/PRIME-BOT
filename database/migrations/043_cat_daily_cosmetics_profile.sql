@@ -58,4 +58,3 @@ COMMENT ON TABLE cat_daily_care IS 'Idempotent UTC daily care claims and streak 
 COMMENT ON TABLE cat_cosmetic_ownership IS 'Cosmetics are account-owned, never attached to a cat that can be sold.';
 COMMENT ON TABLE cat_profiles IS 'Public showcase metadata; pinned cat IDs are validated against current ownership before display.';
 
--- The database.py schema guard must be bumped from 87 to 88 for this migration.

@@ -183,7 +183,8 @@ async def rename(cat_id: int, owner_id: int, new_name: str) -> bool:
     pool = await _pool()
     async with pool.acquire() as conn:
         return await conn.fetchval(
-            "UPDATE cat_adoptions SET name = $3 WHERE id = $1 AND owner_id = $2 RETURNING id",
+            "UPDATE cat_adoptions SET name = $3 WHERE id = $1 AND owner_id = $2 AND NOT EXISTS "
+            "(SELECT 1 FROM cat_listings l WHERE l.adoption_id = $1 AND l.status = 'open') RETURNING id",
             cat_id, owner_id, name) is not None
 
 
