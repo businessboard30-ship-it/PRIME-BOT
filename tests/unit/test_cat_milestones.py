@@ -13,6 +13,19 @@ def run(c):
     return asyncio.run(c)
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clean_announce_state():
+    """The setting cache and the rate limits are module globals: never leak them into other test files."""
+    for d in (an._mode_cache, an._user_posts, an._channel_last):
+        d.clear()
+    yield
+    for d in (an._mode_cache, an._user_posts, an._channel_last):
+        d.clear()
+
+
 class Inter:
     def __init__(self, uid=7, gid=1, channel=100, fails=False, guild=True):
         self.guild = SimpleNamespace(id=gid) if guild else None
