@@ -16,6 +16,8 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import os
+import random
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -26,6 +28,8 @@ from modules.cat_quality import Quality
 logger = logging.getLogger(__name__)
 
 URL_TTL_SECONDS = 6 * 3600
+# A server is not shown the same pooled picture again within this many days (while it has unseen ones left).
+SEEN_DAYS = int(os.getenv("CAT_SEEN_DAYS", "14") or 14)
 _url_cache: Dict[int, Tuple[float, str]] = {}
 
 
@@ -67,21 +71,70 @@ async def _forget(row_id: int) -> None:
     pool = await _pool()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM cat_image_pool WHERE id = $1", row_id)
+        try:
+            await conn.execute("DELETE FROM cat_pool_seen WHERE pool_id = $1", row_id)
+        except Exception:
+            logger.debug("[cat-pool] couldn't clear seen rows", exc_info=True)
 
 
 async def _channel(bot, channel_id: int):
     return bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
 
 
-async def pick(bot) -> Optional[str]:
-    """A fresh link to one pooled picture (least used first, random among ties), or None."""
+_PICK_SQL = (
+    "SELECT p.id, p.channel_id, p.message_id FROM cat_image_pool p "
+    "LEFT JOIN cat_pool_seen s ON s.guild_id = $1 AND s.pool_id = p.id "
+    "CROSS JOIN LATERAL (SELECT (s.seen_at IS NOT NULL AND s.seen_at > NOW() - make_interval(days => $2)) AS recent) r "
+    "{where}"
+    "ORDER BY r.recent ASC, CASE WHEN r.recent THEN s.seen_at END ASC NULLS FIRST, "
+    "EXISTS (SELECT 1 FROM cat_adoptions a WHERE a.pool_id = p.id) ASC, p.uses ASC, random() LIMIT 1")
+_PICK_PLAIN_SQL = (
+    "SELECT p.id, p.channel_id, p.message_id FROM cat_image_pool p "
+    "ORDER BY EXISTS (SELECT 1 FROM cat_adoptions a WHERE a.pool_id = p.id) ASC, p.uses ASC, random() LIMIT 1")
+
+
+async def _row(conn, guild_id: Optional[int], unseen_only: bool):
+    """The next picture to show. With a server: pictures it hasn't seen in SEEN_DAYS come first (and with
+    `unseen_only` ONLY those); if it has seen everything, the one it saw longest ago. Without a server (or if the
+    seen-table isn't there yet) it is the old global least-used-first pick."""
+    if guild_id is not None:
+        try:
+            where = "WHERE NOT r.recent " if unseen_only else ""
+            return await conn.fetchrow(_PICK_SQL.format(where=where), int(guild_id), SEEN_DAYS)
+        except Exception:
+            logger.warning("[cat-pool] seen-tracking query failed, picking without it", exc_info=True)
+            if unseen_only:
+                return None
+    return await conn.fetchrow(_PICK_PLAIN_SQL)
+
+
+async def mark_seen(guild_id: Optional[int], pool_id: Optional[int]) -> None:
+    """Remember that this server was shown this pooled picture. Never raises (a cat still gets posted)."""
+    if guild_id is None or not pool_id:
+        return
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO cat_pool_seen (guild_id, pool_id) VALUES ($1, $2) "
+                "ON CONFLICT (guild_id, pool_id) DO UPDATE SET seen_at = NOW()", int(guild_id), int(pool_id))
+            if random.randrange(200) == 0:                       # housekeeping: rows past the window mean nothing
+                await conn.execute("DELETE FROM cat_pool_seen WHERE seen_at < NOW() - make_interval(days => $1)",
+                                   SEEN_DAYS)
+    except Exception:
+        logger.debug("[cat-pool] couldn't record the seen picture", exc_info=True)
+
+
+async def pick(bot, guild_id: Optional[int] = None, unseen_only: bool = False) -> Optional[str]:
+    """A fresh link to one pooled picture, or None.
+
+    Without `guild_id`: least used first, random among ties (the original behaviour).
+    With `guild_id`: a picture that server hasn't seen lately comes first and is recorded as seen. With
+    `unseen_only` it returns None when the server has seen them all, so the caller can fetch new ones instead."""
     for _ in range(3):
         pool = await _pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT p.id, p.channel_id, p.message_id FROM cat_image_pool p "
-                "ORDER BY EXISTS (SELECT 1 FROM cat_adoptions a WHERE a.pool_id = p.id) ASC, p.uses ASC, random() "
-                "LIMIT 1")
+            row = await _row(conn, guild_id, unseen_only)
             if row is None:
                 return None
             cached = _url_cache.get(row["id"])
@@ -103,7 +156,8 @@ async def pick(bot) -> Optional[str]:
                 if len(_url_cache) > 2000:
                     _url_cache.clear()
             await conn.execute("UPDATE cat_image_pool SET uses = uses + 1 WHERE id = $1", row["id"])
-            return PooledUrl(url, int(row["id"]))
+        await mark_seen(guild_id, int(row["id"]))
+        return PooledUrl(url, int(row["id"]))
     return None
 
 

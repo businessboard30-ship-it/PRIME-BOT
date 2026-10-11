@@ -183,10 +183,21 @@ async def _grow_in_background(bot) -> None:
         logger.warning("[cat] background pool top-up failed", exc_info=True)
 
 
-async def _fetch_via_pool(bot, session):
+async def _pick(bot, guild_id, unseen_only=False):
+    # Without a server the original pick is used unchanged (also keeps older callers/tests working).
+    if guild_id is None:
+        return await cat_pool.pick(bot)
+    return await cat_pool.pick(bot, guild_id=guild_id, unseen_only=unseen_only)
+
+
+async def _fetch_via_pool(bot, session, guild_id=None):
+    """Order of preference, cheapest first:
+    1. a pooled picture this server has NOT seen lately (no API call at all);
+    2. the cat API (only now, because the server has seen everything we hold), saving every good result to the pool;
+    3. if the API gave nothing, a repeat from the pool (the one this server saw longest ago) rather than no cat."""
     n = await cat_pool.pool_count()
     if n >= POOL_MIN:
-        url = await cat_pool.pick(bot)
+        url = await _pick(bot, guild_id, unseen_only=True)
         if url:
             if n < POOL_MAX and random.randrange(GROW_ONE_IN) == 0 and not _fill_lock.locked():
                 task = asyncio.create_task(_grow_in_background(bot))
@@ -195,21 +206,26 @@ async def _fetch_via_pool(bot, session):
             return url
     async with _fill_lock:
         url = await _grow_pool(bot, session)
-    return url or await cat_pool.pick(bot)
+    if url:
+        if guild_id is not None:
+            await cat_pool.mark_seen(guild_id, getattr(url, "pool_id", None))
+        return url
+    return await _pick(bot, guild_id)
 
 
-async def fetch_cat_url(session=None, bot=None):
+async def fetch_cat_url(session=None, bot=None, guild_id=None):
     """A cat picture URL, or None if nothing is available. Never raises.
 
     With `bot`, pictures come from the shared quality-filtered pool (see modules/cat_pool.py) and the cat APIs are
-    only called to top it up. Without it (or if the pool is unavailable) the old direct path is used."""
+    only called to top it up. With `guild_id` that server is also not shown a picture it has already seen lately
+    (until it has seen them all). Without `bot` (or if the pool is unavailable) the old direct path is used."""
     own = session is None
     if own:
         session = aiohttp.ClientSession()
     try:
         if bot is not None:
             try:
-                url = await _fetch_via_pool(bot, session)
+                url = await _fetch_via_pool(bot, session, guild_id)
                 if url:
                     _recent.append(url)
                     return url
@@ -254,7 +270,7 @@ async def send_cat(interaction: discord.Interaction) -> None:
         await interaction.response.send_message(f"😺 Easy there, another cat in {wait:.0f}s.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
-    url = await fetch_cat_url(bot=interaction.client)
+    url = await fetch_cat_url(bot=interaction.client, guild_id=interaction.guild_id)
     if not url:
         await interaction.followup.send("😿 I couldn't find a cat right now. Try again in a moment.", ephemeral=True)
         return
@@ -272,7 +288,7 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int) -> bool:
     perms = ch.permissions_for(guild.me)
     if not (perms.view_channel and perms.send_messages and perms.embed_links):
         return False
-    url = await fetch_cat_url(bot=bot)
+    url = await fetch_cat_url(bot=bot, guild_id=guild.id)
     if not url:
         return False
     pool_id = getattr(url, "pool_id", None)

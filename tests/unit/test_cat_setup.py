@@ -220,7 +220,7 @@ def _cog(monkeypatch, guild, cfg, premium, claimed=True):
     claim = AsyncMock(return_value=claimed)
     monkeypatch.setattr(cs, "claim", claim)
 
-    async def fetch(session=None, bot=None): return "https://cdn.discordapp.com/attachments/1/2/c.jpg"
+    async def fetch(session=None, bot=None, guild_id=None): return "https://cdn.discordapp.com/attachments/1/2/c.jpg"
     monkeypatch.setattr(cat, "fetch_cat_url", fetch)
     c = cat.CatCog.__new__(cat.CatCog); c.bot = bot
     return c, claim
@@ -272,6 +272,7 @@ def test_no_permission_means_no_post_and_no_crash(monkeypatch):
 class FI:
     def __init__(self):
         self.user = SimpleNamespace(id=42)
+        self.guild_id = 7
         self.client = SimpleNamespace(get_guild=lambda gid: SimpleNamespace(id=gid, text_channels=[]))
         self.followups, self.sent, self._done = [], [], False
         self.response = self; self.followup = self
@@ -298,7 +299,7 @@ def test_admin_tapping_cat_gets_the_setup_in_their_server(monkeypatch):
 def test_non_admin_tapping_cat_still_gets_a_cat(monkeypatch):
     async def no(*a, **k): return False
     monkeypatch.setattr(jd, "user_can_manage_guild", no)
-    async def fake(session=None, bot=None): return "https://cdn2.thecatapi.com/images/abc.jpg"
+    async def fake(session=None, bot=None, guild_id=None): return "https://cdn2.thecatapi.com/images/abc.jpg"
     monkeypatch.setattr(cat, "fetch_cat_url", fake)
     cat._last_use.clear()
     i = FI()
