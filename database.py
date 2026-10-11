@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "76"
+SCHEMA_VERSION = "77"
+# "76" -> "77" adds 033_cat_adopt.sql (cat_spawns: one row per adoptable cat spawn; cat_adoptions: adopted cats, owner, name, rarity, trait, trade count). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "75" -> "76" adds 032_cat_setup.sql (cat_guild_config: per-server auto-cat channel + interval; cat_image_pool: shared quality-filtered cat pictures hosted in the image-hosting channel). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "74" -> "75" adds idx_scam_shield_hits_user (scam_shield_hits by user_id + time) so the join-time "was this account caught in another server?" lookup (modules/scam_reputation.py) stays fast as the catch log grows. CREATE INDEX IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if this changes without a bump.
 # "73" -> "74" adds ultra_trial_started_at, ultra_trial_admin_id and ultra_trial_notified to discord_welcome_config for the one-time 5-day Customize Card trial. ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5574,6 +5575,11 @@ class Database:
         cat_setup_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "032_cat_setup.sql"
         if cat_setup_migration.exists():
             await conn.execute(cat_setup_migration.read_text())
+
+        # Cat adoption (spawn Adopt button, collections, trades). Additive/idempotent.
+        cat_adopt_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "033_cat_adopt.sql"
+        if cat_adopt_migration.exists():
+            await conn.execute(cat_adopt_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
