@@ -19,6 +19,7 @@ from typing import Optional
 
 import discord
 
+from modules import cat_announce
 from modules import cat_setup as cs
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,12 @@ def _range_text(tier, pace: int) -> str:
     p = cs.clamp_pace(pace)
     lo, hi = cs.pace_target(tier.daily_min, p), cs.pace_target(tier.daily_max, p)
     return f"{lo} to {hi}" if lo != hi else str(lo)
+
+
+ANNOUNCE_LABELS = {"all": "all", "milestones": "milestones only", "off": "off"}
+ANNOUNCE_HELP = {"all": "adoptions, rank-ups, sales and milestones",
+                 "milestones": "big moments (rare badges, 7/30-day streaks, all daily quests done) and cards players choose to Share",
+                 "off": "nothing: cat actions and Share buttons stay private"}
 
 
 def pace_label(tier, pace: int) -> str:
@@ -74,6 +81,7 @@ def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "", problems: s
         f"**Spawn channel{'s' if tier.max_channels > 1 else ''}:** {chans}",
         f"**Cats a day:** about {_range_text(tier, cfg.pace_percent)}, spread across {'the day' if cs.window_hours(cfg.active_start, cfg.active_end) == 24 else 'your spawn hours'}",
         f"**Spawn hours:** {hours_text(cfg.active_start, cfg.active_end)}",
+        f"**Public posts:** {ANNOUNCE_HELP[cs.clamp_announce(cfg.announce_mode)]}",
         "",
         ("⭐ **Premium server:** up to 3 spawn channels, 250 to 300 cats a day (shared between your channels)." if premium else
          "**Free server:** 1 spawn channel, 120 to 140 cats a day.\n"
@@ -118,6 +126,9 @@ class CatSetupView(discord.ui.View):
         self.check = discord.ui.Button(label="Check permissions", emoji="🔍", style=discord.ButtonStyle.secondary, row=4)
         self.check.callback = self._on_check
         self.add_item(self.check)
+        self.announce = discord.ui.Button(style=discord.ButtonStyle.secondary, row=4)
+        self.announce.callback = self._on_announce
+        self.add_item(self.announce)
         close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, row=4)
         close.callback = self._on_close
         self.add_item(close)
@@ -157,6 +168,8 @@ class CatSetupView(discord.ui.View):
         self.toggle.disabled = not self.cfg.channel_ids
         self.send_now.disabled = not self.cfg.channel_ids
         self.check.disabled = not self.cfg.channel_ids
+        self.announce.label = f"Public posts: {ANNOUNCE_LABELS[cs.clamp_announce(self.cfg.announce_mode)]}"
+        self.announce.emoji = "📣"
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -220,6 +233,13 @@ class CatSetupView(discord.ui.View):
 
     async def _on_end(self, interaction: discord.Interaction):
         await self._apply(interaction, active_end=cs.clamp_hour(self.end_hour.values[0], 24))
+
+    async def _on_announce(self, interaction: discord.Interaction):
+        modes = cs.ANNOUNCE_MODES
+        nxt = modes[(modes.index(cs.clamp_announce(self.cfg.announce_mode)) + 1) % len(modes)]
+        await self._apply(interaction, announce_mode=nxt)
+        if self.cfg.announce_mode == nxt:
+            cat_announce.remember_mode(self.guild.id, self.clone_id, nxt)
 
     async def _on_toggle(self, interaction: discord.Interaction):
         await self._apply(interaction, enabled=not self.cfg.enabled)

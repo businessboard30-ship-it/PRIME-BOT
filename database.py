@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "90"
+SCHEMA_VERSION = "91"
+# "90" -> "91" adds 046_cat_announce_mode.sql (cat_guild_config.announce_mode: a server picks all / milestones / off for public cat posts, default all). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "89" -> "90" adds 045_cat_wishlist.sql (cat_wishlist: "looking for a legendary" posts, 14-day expiry). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "88" -> "89" adds 044_cat_quests_badges.sql (cat_daily_quests, cat_badge_awards). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "87" -> "88" adds 043_cat_daily_cosmetics_profile.sql (daily care streaks, cosmetic ownership, public cat profiles). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5643,6 +5644,11 @@ class Database:
         cat_wishlist_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "045_cat_wishlist.sql"
         if cat_wishlist_migration.exists():
             await conn.execute(cat_wishlist_migration.read_text())
+
+        # Cat game: per-server public-post setting. Additive/idempotent.
+        cat_announce_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "046_cat_announce_mode.sql"
+        if cat_announce_migration.exists():
+            await conn.execute(cat_announce_migration.read_text())
 
         # Cat storage-channel backfill ledger. Additive/idempotent.
         cat_backfill_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "039_cat_log_backfill.sql"
