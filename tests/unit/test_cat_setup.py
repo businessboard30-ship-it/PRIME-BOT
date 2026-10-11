@@ -83,7 +83,7 @@ def test_sharpness_limit_can_be_tuned_by_env(sharp_bytes, monkeypatch):
 
 def test_tier_limits():
     assert cs.FREE.max_channels == 1 and cs.PREMIUM.max_channels == 3
-    assert (cs.FREE.daily_min, cs.FREE.daily_max) == (80, 90) and (cs.PREMIUM.daily_min, cs.PREMIUM.daily_max) == (150, 200)
+    assert (cs.FREE.daily_min, cs.FREE.daily_max) == (120, 140) and (cs.PREMIUM.daily_min, cs.PREMIUM.daily_max) == (250, 300)
 
 
 def test_free_server_keeps_one_channel_premium_three():
@@ -99,7 +99,7 @@ def test_daily_amount_is_inside_the_tier_range_and_stable_for_the_day():
     for g in range(1, 400):
         d = date(2026, 10, 11)
         f, p = cs.daily_target(g, None, cs.FREE, d), cs.daily_target(g, None, cs.PREMIUM, d)
-        assert 80 <= f <= 90 and 150 <= p <= 200
+        assert 120 <= f <= 140 and 250 <= p <= 300
         assert f == cs.daily_target(g, None, cs.FREE, d)                      # same all day
     assert len({cs.daily_target(g, None, cs.FREE, date(2026, 10, 11)) for g in range(1, 400)}) > 5   # varies between servers
 
@@ -112,9 +112,9 @@ def test_lapsed_premium_is_clamped_when_spawning():
     from datetime import date
     cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(1, 2, 3))
     ch, gap = cfg.effective(True, date(2026, 10, 11))
-    assert ch == (1, 2, 3) and 86400 / 200 <= gap <= 86400 / 150
+    assert ch == (1, 2, 3) and 86400 / 300 <= gap <= 86400 / 250
     ch, gap = cfg.effective(False, date(2026, 10, 11))
-    assert ch == (1,) and 86400 / 90 <= gap <= 86400 / 80
+    assert ch == (1,) and 86400 / 140 <= gap <= 86400 / 120
 
 
 def test_after_change_timing():
@@ -232,7 +232,7 @@ def test_free_server_posts_in_its_one_channel_even_if_three_are_stored(monkeypat
     c, claim = _cog(monkeypatch, g, cfg, premium=False)
     assert run(c.spawn_due()) == 1
     chans[1].send.assert_awaited_once(); chans[2].send.assert_not_awaited(); chans[3].send.assert_not_awaited()
-    assert 86400 / 90 * 0.85 <= claim.await_args.args[2] <= 86400 / 80 * 1.15
+    assert 86400 / 140 * 0.85 <= claim.await_args.args[2] <= 86400 / 120 * 1.15
 
 
 def test_premium_server_gets_one_cat_per_turn_rotating_its_channels(monkeypatch):
@@ -240,7 +240,7 @@ def test_premium_server_gets_one_cat_per_turn_rotating_its_channels(monkeypatch)
     cfg = cs.CatConfig(guild_id=77, enabled=True, channel_ids=(1, 2, 3))
     c, claim = _cog(monkeypatch, g, cfg, premium=True)
     assert run(c.spawn_due()) == 1 and sum(ch.send.await_count for ch in chans.values()) == 1
-    assert 86400 / 200 * 0.85 <= claim.await_args.args[2] <= 86400 / 150 * 1.15
+    assert 86400 / 300 * 0.85 <= claim.await_args.args[2] <= 86400 / 250 * 1.15
 
 
 def test_a_blocked_channel_falls_through_to_the_next_one(monkeypatch):
@@ -310,9 +310,9 @@ def test_non_admin_tapping_cat_still_gets_a_cat(monkeypatch):
 def test_setup_embed_explains_the_free_and_premium_limits():
     cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(5,))
     free = wiz.render_embed(cfg, premium=False).description
-    assert "Free server" in free and "/premium" in free and "80 to 90" in free and "🟢 ON" in free
+    assert "Free server" in free and "/premium" in free and "120 to 140" in free and "🟢 ON" in free
     prem = wiz.render_embed(cfg, premium=True).description
-    assert "Premium server" in prem and "150 to 200" in prem and "/premium" not in prem
+    assert "Premium server" in prem and "250 to 300" in prem and "/premium" not in prem
 
 
 # ── cat embed + AI cat check ──────────────────────────────────────────────
@@ -369,18 +369,18 @@ def test_pace_lowers_the_daily_amount_never_raises_it():
         ch, gap = cs.replace(full, pace_percent=pace).effective(False, d)
         assert gap > full.effective(False, d)[1]
         n = 86400 / gap
-        assert 80 * pace / 100 - 1 <= n <= 90 * pace / 100 + 1
+        assert 120 * pace / 100 - 1 <= n <= 140 * pace / 100 + 1
     assert cs.replace(full, pace_percent=999).effective(False, d) == full.effective(False, d)
 
 
 def test_wizard_offers_the_paces_and_shows_the_chosen_amount():
     cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(5,), pace_percent=50)
-    assert "40 to 45" in wiz.render_embed(cfg, premium=False).description
-    assert "75 to 100" in wiz.render_embed(cfg, premium=True).description
+    assert "60 to 70" in wiz.render_embed(cfg, premium=False).description
+    assert "125 to 150" in wiz.render_embed(cfg, premium=True).description
     assert [p for p in cs.PACES] == [100, 75, 50, 25, 10]
 
 
 def test_ai_knows_about_scam_shield_and_cats():
     from modules import ai_features as af
     assert "Scam Shield" in af.BOT_RULES and "/serversetup" in af.BOT_RULES
-    assert "80 to 90" in af.BOT_RULES and "150 to" in af.BOT_RULES and "/cat" in af.BOT_RULES
+    assert "120 to 140" in af.BOT_RULES and "250 to" in af.BOT_RULES and "/cat" in af.BOT_RULES

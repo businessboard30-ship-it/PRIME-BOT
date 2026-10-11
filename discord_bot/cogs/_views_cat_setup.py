@@ -5,7 +5,7 @@ Cat setup wizard: opened from the Cat button on the join DM by someone with Mana
 
 It is posted in a SERVER channel (a DM can't show a server's channel list, same reason the other wizards are posted
 in the server). Only the person who opened it can use it. The Premium limits are explained right in the wizard:
-a free server picks 1 spawn channel and gets 80 to 90 cats a day, a Premium server up to 3 channels and 150 to 200
+a free server picks 1 spawn channel and gets 120 to 140 cats a day, a Premium server up to 3 channels and 250 to 300
 a day. Picking more channels than the plan allows keeps the first ones and says so.
 """
 
@@ -58,9 +58,9 @@ def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "") -> discord.
         f"**Spawn channel{'s' if tier.max_channels > 1 else ''}:** {chans}",
         f"**Cats a day:** about {_range_text(tier, cfg.pace_percent)}, spread across the day",
         "",
-        ("⭐ **Premium server:** up to 3 spawn channels, 150 to 200 cats a day (shared between your channels)." if premium else
-         "**Free server:** 1 spawn channel, 80 to 90 cats a day.\n"
-         "⭐ **Premium:** up to 3 channels and 150 to 200 cats a day. Upgrade with `/premium` in your server."),
+        ("⭐ **Premium server:** up to 3 spawn channels, 250 to 300 cats a day (shared between your channels)." if premium else
+         "**Free server:** 1 spawn channel, 120 to 140 cats a day.\n"
+         "⭐ **Premium:** up to 3 channels and 250 to 300 cats a day. Upgrade with `/premium` in your server."),
     ]
     e = discord.Embed(title="🐱 Cat setup", description="\n".join(lines), color=discord.Color.from_rgb(255, 182, 193))
     e.set_footer(text="Only sharp, high-resolution cats are posted.")

@@ -45,7 +45,8 @@ _TIMEOUT = aiohttp.ClientTimeout(total=6)
 # calling the cat APIs; one request in GROW_ONE_IN still tops the pool up (until POOL_MAX).
 CAT_API_BATCH_URL = CAT_API_URL + "?limit=5&size=full&mime_types=jpg,png"
 POOL_MIN = 20
-POOL_MAX = 400
+POOL_MAX = 1500           # pictures live in the image-hosting channel; sized so the busiest server (250-300 cats a day)
+                         # can go ~5 days before it has seen them all
 GROW_ONE_IN = 8
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=12)
 SPAWN_TICK_SECONDS = 30
@@ -183,11 +184,19 @@ async def _grow_in_background(bot) -> None:
         logger.warning("[cat] background pool top-up failed", exc_info=True)
 
 
-async def _pick(bot, guild_id, unseen_only=False):
+def seen_window(pool_size: int) -> int:
+    """How many days back "this server already saw it" counts. It must fit the pool: if the window holds more
+    pictures than the pool has, a busy server would see everything within days and every post would need the cat
+    API. So it is the pool size divided by the busiest server's daily cats (Premium max), between 1 day and
+    cat_pool.SEEN_DAYS: a 400-picture pool gives 1 day, 1500 gives 5."""
+    return max(1, min(cat_pool.SEEN_DAYS, pool_size // max(1, cat_setup.PREMIUM.daily_max)))
+
+
+async def _pick(bot, guild_id, unseen_only=False, seen_days=None):
     # Without a server the original pick is used unchanged (also keeps older callers/tests working).
     if guild_id is None:
         return await cat_pool.pick(bot)
-    return await cat_pool.pick(bot, guild_id=guild_id, unseen_only=unseen_only)
+    return await cat_pool.pick(bot, guild_id=guild_id, unseen_only=unseen_only, seen_days=seen_days)
 
 
 async def _fetch_via_pool(bot, session, guild_id=None):
@@ -197,7 +206,8 @@ async def _fetch_via_pool(bot, session, guild_id=None):
     3. if the API gave nothing, a repeat from the pool (the one this server saw longest ago) rather than no cat."""
     n = await cat_pool.pool_count()
     if n >= POOL_MIN:
-        url = await _pick(bot, guild_id, unseen_only=True)
+        window = seen_window(n)
+        url = await _pick(bot, guild_id, unseen_only=True, seen_days=window)
         if url:
             if n < POOL_MAX and random.randrange(GROW_ONE_IN) == 0 and not _fill_lock.locked():
                 task = asyncio.create_task(_grow_in_background(bot))
@@ -210,7 +220,7 @@ async def _fetch_via_pool(bot, session, guild_id=None):
         if guild_id is not None:
             await cat_pool.mark_seen(guild_id, getattr(url, "pool_id", None))
         return url
-    return await _pick(bot, guild_id)
+    return await _pick(bot, guild_id, seen_days=seen_window(n))
 
 
 async def fetch_cat_url(session=None, bot=None, guild_id=None):

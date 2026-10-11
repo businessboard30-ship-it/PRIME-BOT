@@ -93,14 +93,14 @@ _PICK_PLAIN_SQL = (
     "ORDER BY EXISTS (SELECT 1 FROM cat_adoptions a WHERE a.pool_id = p.id) ASC, p.uses ASC, random() LIMIT 1")
 
 
-async def _row(conn, guild_id: Optional[int], unseen_only: bool):
+async def _row(conn, guild_id: Optional[int], unseen_only: bool, seen_days: Optional[int] = None):
     """The next picture to show. With a server: pictures it hasn't seen in SEEN_DAYS come first (and with
     `unseen_only` ONLY those); if it has seen everything, the one it saw longest ago. Without a server (or if the
     seen-table isn't there yet) it is the old global least-used-first pick."""
     if guild_id is not None:
         try:
             where = "WHERE NOT r.recent " if unseen_only else ""
-            return await conn.fetchrow(_PICK_SQL.format(where=where), int(guild_id), SEEN_DAYS)
+            return await conn.fetchrow(_PICK_SQL.format(where=where), int(guild_id), int(seen_days or SEEN_DAYS))
         except Exception:
             logger.warning("[cat-pool] seen-tracking query failed, picking without it", exc_info=True)
             if unseen_only:
@@ -125,16 +125,18 @@ async def mark_seen(guild_id: Optional[int], pool_id: Optional[int]) -> None:
         logger.debug("[cat-pool] couldn't record the seen picture", exc_info=True)
 
 
-async def pick(bot, guild_id: Optional[int] = None, unseen_only: bool = False) -> Optional[str]:
+async def pick(bot, guild_id: Optional[int] = None, unseen_only: bool = False,
+               seen_days: Optional[int] = None) -> Optional[str]:
     """A fresh link to one pooled picture, or None.
 
     Without `guild_id`: least used first, random among ties (the original behaviour).
     With `guild_id`: a picture that server hasn't seen lately comes first and is recorded as seen. With
-    `unseen_only` it returns None when the server has seen them all, so the caller can fetch new ones instead."""
+    `unseen_only` it returns None when the server has seen them all, so the caller can fetch new ones instead.
+    `seen_days` overrides how far back "seen" counts (default SEEN_DAYS); see cat.seen_window()."""
     for _ in range(3):
         pool = await _pool()
         async with pool.acquire() as conn:
-            row = await _row(conn, guild_id, unseen_only)
+            row = await _row(conn, guild_id, unseen_only, seen_days)
             if row is None:
                 return None
             cached = _url_cache.get(row["id"])
