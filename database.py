@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "83"
+SCHEMA_VERSION = "84"
+# "83" -> "84" adds 039_cat_log_backfill.sql (cat_log_backfill: which old cats/pictures were already written up in the storage channel, so the backfill never logs one twice). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "82" -> "83" adds 038_cat_setup_reminders.sql (cat_setup_reminders: at most 2 reminders per server, inside one week, for servers with the Cat game off). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "81" -> "82" adds 037_cat_trade_ids.sql (cat_owner_ids: one fixed 7-word trade ID per cat owner per bot, for Premium cross-server trading). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "79" -> "80" adds 035_cat_wallet.sql (cat_wallets: play coins and diamonds earned by adopting cats). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5606,6 +5607,11 @@ class Database:
         cat_ids_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "037_cat_trade_ids.sql"
         if cat_ids_migration.exists():
             await conn.execute(cat_ids_migration.read_text())
+
+        # Cat storage-channel backfill ledger. Additive/idempotent.
+        cat_backfill_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "039_cat_log_backfill.sql"
+        if cat_backfill_migration.exists():
+            await conn.execute(cat_backfill_migration.read_text())
 
         # Cat game reminders (max 2, one week). Additive/idempotent.
         cat_rem_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "038_cat_setup_reminders.sql"

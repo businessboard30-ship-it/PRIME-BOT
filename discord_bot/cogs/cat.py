@@ -50,6 +50,7 @@ POOL_MAX = 1500           # pictures live in the image-hosting channel; sized so
 GROW_ONE_IN = 8
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=12)
 SPAWN_TICK_SECONDS = 30
+BACKFILL_TICK_MINUTES = 5            # old-cat backfill: 15 items a tick, so even a big backlog drains in hours, gently
 REMINDER_TICK_MINUTES = 10
 REMINDER_PER_TICK = 5
 SPAWN_PER_TICK = 60                 # servers handled per tick (Premium servers post as often as every ~7 minutes)
@@ -343,10 +344,29 @@ class CatCog(commands.Cog):
     async def cog_load(self):
         self._spawner.start()
         self._reminders.start()
+        # Writing up old cats in the storage channel: main bot only (the pool and channel are shared by every bot).
+        if getattr(self.bot, "clone_id", None) is None:
+            self._backfill.start()
 
     async def cog_unload(self):
         self._spawner.cancel()
         self._reminders.cancel()
+        self._backfill.cancel()
+
+    @tasks.loop(minutes=BACKFILL_TICK_MINUTES)
+    async def _backfill(self):
+        try:
+            from modules import cat_log_backfill
+            if cat_log_backfill.enabled():
+                result = await cat_log_backfill.run_once(self.bot)
+                if any(result.get(k) for k in ("logged", "captions", "retry")):
+                    logger.info("[cat] backfill tick: %s", result)
+        except Exception:
+            logger.exception("[cat] backfill tick failed")
+
+    @_backfill.before_loop
+    async def _before_backfill(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=REMINDER_TICK_MINUTES)
     async def _reminders(self):
