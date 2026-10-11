@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 URL_TTL_SECONDS = 6 * 3600
 _url_cache: Dict[int, Tuple[float, str]] = {}
+
+
+class PooledUrl(str):
+    """A picture link that remembers which pool row it came from (needed to adopt that cat)."""
+    pool_id: Optional[int] = None
+
+    def __new__(cls, url: str, pool_id: Optional[int] = None):
+        obj = super().__new__(cls, url)
+        obj.pool_id = pool_id
+        return obj
 _EXT = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
 
 
@@ -69,7 +79,9 @@ async def pick(bot) -> Optional[str]:
         pool = await _pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, channel_id, message_id FROM cat_image_pool ORDER BY uses ASC, random() LIMIT 1")
+                "SELECT p.id, p.channel_id, p.message_id FROM cat_image_pool p "
+                "ORDER BY EXISTS (SELECT 1 FROM cat_adoptions a WHERE a.pool_id = p.id) ASC, p.uses ASC, random() "
+                "LIMIT 1")
             if row is None:
                 return None
             cached = _url_cache.get(row["id"])
@@ -91,7 +103,7 @@ async def pick(bot) -> Optional[str]:
                 if len(_url_cache) > 2000:
                     _url_cache.clear()
             await conn.execute("UPDATE cat_image_pool SET uses = uses + 1 WHERE id = $1", row["id"])
-            return url
+            return PooledUrl(url, int(row["id"]))
     return None
 
 
@@ -117,9 +129,31 @@ async def store(bot, data: bytes, q: Quality, source: str, source_id: Optional[s
     if not msg.attachments:
         return None
     async with pool.acquire() as conn:
-        await conn.execute(
+        pool_id = await conn.fetchval(
             "INSERT INTO cat_image_pool (sha256, source, source_id, width, height, sharpness, bytes, channel_id, "
-            "message_id, added_by_clone) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (sha256) DO NOTHING",
+            "message_id, added_by_clone) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (sha256) DO NOTHING "
+            "RETURNING id",
             sha, source, str(source_id) if source_id else None, q.width, q.height, float(q.sharpness), q.size,
             host.id, msg.id, getattr(bot, "clone_id", None))
-    return msg.attachments[0].url
+    return PooledUrl(msg.attachments[0].url, int(pool_id) if pool_id else None)
+
+
+async def url_for(bot, pool_id: int) -> Optional[str]:
+    """A fresh link to one specific pooled picture (an adopted cat's photo), or None if it can't be read."""
+    cached = _url_cache.get(pool_id)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT channel_id, message_id FROM cat_image_pool WHERE id = $1", pool_id)
+    if row is None:
+        return None
+    try:
+        ch = await _channel(bot, int(row["channel_id"]))
+        msg = await ch.fetch_message(int(row["message_id"]))
+        url = msg.attachments[0].url if msg.attachments else None
+    except (discord.HTTPException, AttributeError):
+        return None
+    if url:
+        _url_cache[pool_id] = (time.monotonic() + URL_TTL_SECONDS, url)
+    return url
