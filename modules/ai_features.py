@@ -174,7 +174,7 @@ BOT_RULES = (
     "300 a day (shared between the channels). Pace choices: 75%, 50%, 25% or 10% of the amount; it can also be turned off. Only "
     "sharp, high-resolution cat pictures are posted. Members tap Adopt me! on a cat to keep it (up to 30 cats each), open My cats "
     "to rename, release, trade or gift them, and earn play coins and diamonds when they adopt (just for fun, never real money). "
-    "Every cat owner has a fixed trade ID of 7 random words, shown in My cats. Trading is with members of the same server; "
+    "Every cat owner has a fixed short trade ID (6 digits and a letter, like 142574D), shown in My cats. Trading is with members of the same server; "
     "Premium servers can also trade with anyone from any server by typing their trade ID. If asked for more than the plan "
     "allows, say Premium is the way to get more; don't promise anything else. When you explain or offer the Cat game you may add "
     f"{CAT_TOKEN} at the very end of your answer and a cat picture is attached for you; never write an image link yourself.\n"

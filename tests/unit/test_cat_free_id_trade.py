@@ -23,7 +23,7 @@ class Box:                                   # text input stand-in
 
 def _modal():
     m = v.TradeIdModal(_parent())
-    m.trade_id = Box("a b c d e f g")
+    m.trade_id = Box("142574D")
     return m
 
 

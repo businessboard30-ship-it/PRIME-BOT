@@ -1,4 +1,5 @@
 """Cat ranks, the clearer sell screens, and the trade-ID uniqueness migration (light, no database needed)."""
+import re
 import asyncio
 from pathlib import Path
 
@@ -52,7 +53,7 @@ def test_migration_adds_rank_for_all_cats_and_global_trade_id_uniqueness():
     assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_cat_owner_ids_trade_global ON cat_owner_ids (trade_id)" in sql
     assert sql.index("DELETE FROM cat_owner_ids") < sql.index("ux_cat_owner_ids_trade_global")   # clashes cleared first
     db = (ROOT / "database.py").read_text()
-    assert "041_cat_ranks.sql" in db and 'SCHEMA_VERSION = "86"' in db
+    assert "041_cat_ranks.sql" in db and int(re.search(r'^SCHEMA_VERSION = "(\d+)"', db, re.M).group(1)) >= 86
 
 
 # ---------- the sell screens say which cat it is ----------
