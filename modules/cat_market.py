@@ -167,13 +167,13 @@ async def buy(listing_id: int, buyer_id: int, buyer_clone_id) -> BuyResult:
             paid = await conn.fetchval(
                 "UPDATE cat_wallets SET coins = coins - $3, updated_at = NOW() "
                 "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND coins >= $3 RETURNING coins",
-                buyer_id, _key(buyer_clone_id), price)
+                buyer_id, -1, price)                  # -1: the wallet is shared by every bot
             if paid is None:
                 return BuyResult("poor")
             await conn.execute(
                 "INSERT INTO cat_wallets (owner_id, clone_id, coins, diamonds) VALUES ($1, $2, $3, 0) "
                 "ON CONFLICT (owner_id, (COALESCE(clone_id, -1))) DO UPDATE SET "
-                "coins = cat_wallets.coins + EXCLUDED.coins, updated_at = NOW()", seller_id, seller_clone, price)
+                "coins = cat_wallets.coins + EXCLUDED.coins, updated_at = NOW()", seller_id, None, price)
             await conn.execute("UPDATE cat_adoptions SET owner_id = $2, clone_id = $3, traded_count = traded_count + 1 "
                                "WHERE id = $1", row["adoption_id"], buyer_id, buyer_clone_id)
             await conn.execute("UPDATE cat_listings SET status = 'sold', buyer_id = $2, buyer_clone_id = $3, "

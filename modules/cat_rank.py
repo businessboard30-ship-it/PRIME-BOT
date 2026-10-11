@@ -92,11 +92,11 @@ async def rank_up(cat_id: int, owner_id: int, clone_id, expect_rank: int) -> Ran
             left = await conn.fetchval(
                 "UPDATE cat_wallets SET coins = coins - $3, updated_at = NOW() "
                 "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND coins >= $3 RETURNING coins",
-                owner_id, _key(clone_id), cost)
+                owner_id, -1, cost)                 # -1: the wallet is shared by every bot
             if left is None:
                 have = await conn.fetchval(
                     "SELECT coins FROM cat_wallets WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2",
-                    owner_id, _key(clone_id))
+                    owner_id, -1)
                 return RankResult("poor", rank, cost, int(have or 0))
             await conn.execute("UPDATE cat_adoptions SET cat_rank = $2 WHERE id = $1", cat_id, rank + 1)
     return RankResult("ok", rank + 1, cost, int(left))

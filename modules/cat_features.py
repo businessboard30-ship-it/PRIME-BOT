@@ -64,7 +64,7 @@ async def care(owner_id: int, clone_id, today: Optional[date] = None) -> CareRes
             await conn.execute(
                 "INSERT INTO cat_wallets(owner_id,clone_id,coins,diamonds) VALUES($1,$2,$3,$4) "
                 "ON CONFLICT (owner_id, (COALESCE(clone_id,-1))) DO UPDATE SET coins=cat_wallets.coins+EXCLUDED.coins, diamonds=cat_wallets.diamonds+EXCLUDED.diamonds, updated_at=NOW()",
-                owner_id, clone_id, coins, diamonds)
+                owner_id, None, coins, diamonds)      # one wallet for every bot
     return CareResult("ok", streak, coins, diamonds)
 
 
@@ -85,10 +85,10 @@ async def buy_cosmetic(owner_id: int, clone_id, cosmetic_id: int) -> str:
                 return "missing"
             if await conn.fetchval("SELECT 1 FROM cat_cosmetic_ownership WHERE owner_id=$1 AND COALESCE(clone_id,-1)=$2 AND cosmetic_id=$3", owner_id, _key(clone_id), cosmetic_id):
                 return "owned"
-            wallet = await conn.fetchrow("SELECT coins, diamonds FROM cat_wallets WHERE owner_id=$1 AND COALESCE(clone_id,-1)=$2 FOR UPDATE", owner_id, _key(clone_id))
+            wallet = await conn.fetchrow("SELECT coins, diamonds FROM cat_wallets WHERE owner_id=$1 AND COALESCE(clone_id,-1)=$2 FOR UPDATE", owner_id, -1)
             if not wallet or int(wallet["coins"]) < int(item["price_coins"]) or int(wallet["diamonds"]) < int(item["price_diamonds"]):
                 return "poor"
-            await conn.execute("UPDATE cat_wallets SET coins=coins-$3, diamonds=diamonds-$4, updated_at=NOW() WHERE owner_id=$1 AND COALESCE(clone_id,-1)=$2", owner_id, _key(clone_id), int(item["price_coins"]), int(item["price_diamonds"]))
+            await conn.execute("UPDATE cat_wallets SET coins=coins-$3, diamonds=diamonds-$4, updated_at=NOW() WHERE owner_id=$1 AND COALESCE(clone_id,-1)=$2", owner_id, -1, int(item["price_coins"]), int(item["price_diamonds"]))
             await conn.execute("INSERT INTO cat_cosmetic_ownership(owner_id,clone_id,cosmetic_id) VALUES($1,$2,$3)", owner_id, clone_id, cosmetic_id)
     return "ok"
 
