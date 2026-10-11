@@ -303,3 +303,42 @@ def test_setup_embed_explains_the_free_and_premium_limits():
     assert "Free server" in free and "/premium" in free and "every 12 hours" in free and "🟢 ON" in free
     prem = wiz.render_embed(cfg, premium=True).description
     assert "Premium server" in prem and "/premium" not in prem
+
+
+# ── cat embed + AI cat check ──────────────────────────────────────────────
+
+def test_cat_embed_has_no_source_footer_and_a_cute_title():
+    e = cat.cat_embed("https://cdn2.thecatapi.com/images/x.jpg")
+    assert e.footer.text is None and e.title in cat.CAT_TITLES
+    assert "here's a cat" not in e.title.lower()
+    assert all(t[0] in "😻🐱😸😽🐈😺" for t in cat.CAT_TITLES)
+    assert "thecatapi" not in (e.title + (e.description or ""))
+
+
+from modules import cat_vision as cv  # noqa: E402
+
+
+@pytest.mark.parametrize("text,expected", [("KEEP", True), ("keep.", True), ("SKIP", False), ("**Skip**", False),
+                                           ("", None), ("hmm", None)])
+def test_cat_vision_parse(text, expected):
+    assert cv.parse_verdict(text) is expected
+
+
+def test_cat_vision_fails_open(monkeypatch):
+    monkeypatch.delenv("CAT_VISION_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert run(cv.approve(b"x" * 50000)) is True                    # no key: keep
+
+
+def test_ai_skip_keeps_a_picture_out_of_the_pool(pool_env, monkeypatch):
+    pool_env.count = 3
+    monkeypatch.setattr(cv, "approve", AsyncMock(return_value=False))
+    run(cat.fetch_cat_url(FakeSession(), bot=MagicMock()))
+    assert pool_env.stored == []                                     # sharp but the AI said SKIP: never saved
+
+
+def test_ai_keep_lets_it_in(pool_env, monkeypatch):
+    pool_env.count = 3
+    monkeypatch.setattr(cv, "approve", AsyncMock(return_value=True))
+    run(cat.fetch_cat_url(FakeSession(), bot=MagicMock()))
+    assert [s[1] for s in pool_env.stored] == ["a"]

@@ -32,7 +32,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
-from modules import cat_pool, cat_quality, cat_setup
+from modules import cat_pool, cat_quality, cat_setup, cat_vision
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +170,8 @@ async def _grow_pool(bot, session):
                 continue
             q = cat_quality.assess(data) if data else None
             if q is not None and q.ok:
+                if not await cat_vision.approve(data):          # AI: must be a clear, nice photo of a cat
+                    continue
                 good.append((q, data, c))
             elif q is not None:
                 logger.info("[cat] skipped a picture: %s", q.reason)
@@ -246,10 +248,20 @@ async def fetch_cat_url(session=None, bot=None):
     return random.choice(list(_recent)) if _recent else None
 
 
+CAT_TITLES = (
+    "😻✨ Meow! A cutie just landed 🐾",
+    "🐱💖 Fresh cat, just for you! 🌸",
+    "😸🎀 Paws-itively adorable! 🐾",
+    "😽🌟 Purr-fect timing, look who's here! 💕",
+    "🐈🍀 Cat delivery! Handle with love 🐾",
+    "😺🌈 Say hi to this little fluff! ✨",
+    "😻🧶 Someone ordered a cat? 🐾💗",
+)
+
+
 def cat_embed(url: str) -> discord.Embed:
-    embed = discord.Embed(title="🐱 Here's a cat", color=discord.Color.from_rgb(255, 182, 193))
+    embed = discord.Embed(title=random.choice(CAT_TITLES), color=discord.Color.from_rgb(255, 182, 193))
     embed.set_image(url=url)
-    embed.set_footer(text="Pictures from thecatapi.com and cataas.com")
     return embed
 
 
