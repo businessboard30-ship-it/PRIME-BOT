@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import logging
 
 import discord
 
 from modules import cat_adopt
 from modules import cat_announce
+from modules import cat_profile_card
 from modules import cat_public
 from modules import cat_features
 from modules import cat_quests
 from modules import cat_share
 from modules import cat_wallet
 from modules import cat_wishlist
+
+logger = logging.getLogger(__name__)
 
 PINK = discord.Color.from_rgb(255, 182, 193)
 GOLD = discord.Color.gold()
@@ -106,6 +111,8 @@ class ProfileButton(discord.ui.Button):
         if not profile["show_profile"]:
             embed.set_footer(text="Hidden: only you can see this. Tap Show profile to let others see it.")
         await interaction.response.send_message(embed=embed, view=ProfileView(profile), ephemeral=True)
+        await upgrade_to_card(interaction, interaction.user, profile, badges,
+                              footer=embed.footer.text if not profile["show_profile"] else None)
 
 
 class ShareButton(discord.ui.Button):
@@ -133,7 +140,8 @@ class ShareButton(discord.ui.Button):
             await interaction.followup.send(card, ephemeral=True)
             return
         posted = await (cat_announce.announce(interaction, card[0], kind="share") if card[0] is not None
-                        else cat_announce.announce_embed(interaction, card[1], kind="share"))
+                        else cat_announce.announce_embed(interaction, card[1], kind="share",
+                                                         png=card[2] if len(card) > 2 else None))
         if posted:
             cat_share.mark_shared(interaction.user.id, self.kind)
         else:
@@ -151,6 +159,9 @@ class ShareButton(discord.ui.Button):
         if not profile["show_profile"]:
             return "Your profile is hidden, so it can't be shared. Tap Show profile first."
         badges = await cat_quests.owned_badges(who.id, clone)
+        png = await cat_profile_card.render(interaction.client, who, who.display_name, profile, badges)
+        if png is not None:
+            return None, cat_share.profile_card_embed(who.display_name), png
         return None, cat_share.profile_embed(who.display_name, profile, badges, _avatar(who))
 
 
@@ -257,6 +268,23 @@ async def show_public_profile(interaction: discord.Interaction, target) -> None:
     embed = cat_share.profile_embed(target.display_name, profile, badges, _avatar(target))
     mine_hidden = not profile["show_profile"]
     await interaction.response.send_message(embed=embed, ephemeral=mine_hidden, allowed_mentions=discord.AllowedMentions.none())
+    await upgrade_to_card(interaction, target, profile, badges, footer=None)
+
+
+async def upgrade_to_card(interaction, user, profile: dict, badges, footer=None) -> None:
+    """The plain profile embed is already on screen (so the 3-second reply window is never at risk). Draw the card and
+    swap it in. If anything goes wrong the plain embed simply stays. Never raises."""
+    try:
+        png = await cat_profile_card.render(interaction.client, user, user.display_name, profile, badges)
+        if png is None:
+            return
+        embed = cat_share.profile_card_embed(user.display_name)
+        if footer:
+            embed.set_footer(text=footer)
+        await interaction.edit_original_response(
+            embed=embed, attachments=[discord.File(io.BytesIO(png), filename=cat_profile_card.FILE_NAME)])
+    except Exception:
+        logging.getLogger(__name__).info("[cat-profile] kept the plain profile (card not shown)", exc_info=True)
 
 
 def _avatar(user):
