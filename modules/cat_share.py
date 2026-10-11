@@ -62,6 +62,14 @@ def profile_embed(display_name: str, profile: dict, badges, avatar_url: Optional
     return e
 
 
+def profile_card_embed(display_name: str) -> discord.Embed:
+    """The profile as a drawn card (modules/cat_profile_card.py). The picture carries the details; the title keeps the
+    message readable for screen readers and notifications."""
+    e = discord.Embed(title=f"\U0001F4D6 {display_name}'s cat profile", color=GOLD)
+    e.set_image(url="attachment://cat_profile.png")
+    return e
+
+
 def badges_embed(display_name: str, badges) -> Optional[discord.Embed]:
     names = [f"{cat_quests.BADGES[s][0]} **{cat_quests.BADGES[s][1]}**" for s in cat_quests.BADGES if s in badges]
     if not names:

@@ -34,7 +34,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
-from modules import cat_perms, cat_pool, cat_quality, cat_reminder, cat_setup, cat_vision
+from modules import cat_care, cat_log, cat_perms, cat_pool, cat_quality, cat_reminder, cat_setup, cat_vision
 
 logger = logging.getLogger(__name__)
 
@@ -280,8 +280,10 @@ CAT_TITLES = (
 )
 
 
-def cat_embed(url: str, next_at: Optional[datetime] = None) -> discord.Embed:
-    embed = discord.Embed(title=random.choice(CAT_TITLES), color=discord.Color.from_rgb(255, 182, 193))
+def cat_embed(url: str, next_at: Optional[datetime] = None, title: Optional[str] = None,
+              description: Optional[str] = None) -> discord.Embed:
+    embed = discord.Embed(title=title or random.choice(CAT_TITLES), description=description,
+                          color=discord.Color.from_rgb(255, 182, 193))
     embed.set_image(url=url)
     if next_at is not None:
         ts = int(next_at.timestamp())
@@ -326,11 +328,25 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int, next_at: Optional
     if missing:
         logger.info("[cat] not posting in %s (guild %s): missing %s", channel_id, guild.id, ", ".join(missing))
         return False
-    hint = cat_pool.server_hint.set((guild.id, guild.name))      # the stored picture's message will name this server
-    try:
-        url = await fetch_cat_url(bot=bot, guild_id=guild.id)
-    finally:
-        cat_pool.server_hint.reset(hint)
+    runaway, url = None, None
+    try:                                  # a cat that wandered off from a hungry home comes back in a spawn first
+        runaway = await cat_care.take_runaway(guild.id)
+        if runaway is not None:
+            raw = await cat_pool.url_for(bot, runaway.pool_id)
+            if raw:
+                url = cat_pool.PooledUrl(raw, runaway.pool_id)
+            else:
+                await cat_care.undo_return(runaway.pool_id)
+                runaway = None
+    except Exception:
+        logger.warning("[cat] couldn't bring a runaway cat back", exc_info=True)
+        runaway, url = None, None
+    if url is None:
+        hint = cat_pool.server_hint.set((guild.id, guild.name))      # the stored picture's message will name this server
+        try:
+            url = await fetch_cat_url(bot=bot, guild_id=guild.id)
+        finally:
+            cat_pool.server_hint.reset(hint)
     if not url:
         return False
     pool_id = getattr(url, "pool_id", None)
@@ -346,10 +362,17 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int, next_at: Optional
         if spawn_id is not None:
             from discord_bot.cogs._views_cat_adopt import spawn_view
             kwargs["view"] = spawn_view(spawn_id)
-        msg = await ch.send(embed=cat_embed(url, next_at), allowed_mentions=discord.AllowedMentions.none(), **kwargs)
+        embed = (cat_embed(url, next_at, title="🐾 A familiar face!", description=cat_care.returned_embed_text(runaway.cat_name))
+                 if runaway else cat_embed(url, next_at))
+        msg = await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none(), **kwargs)
     except discord.HTTPException:
         logger.info("[cat] couldn't post in channel %s", channel_id, exc_info=True)
+        if runaway:
+            await cat_care.undo_return(runaway.pool_id)
         return False
+    if runaway:
+        cat_log.record(bot, "returned", guild_id=guild.id, guild_name=guild.name, pool_id=runaway.pool_id,
+                       cat_name=runaway.cat_name, rarity=runaway.rarity, trait=runaway.trait)
     if spawn_id is not None:
         try:
             await cat_adopt.set_spawn_message(spawn_id, msg.id)
@@ -363,6 +386,7 @@ class CatCog(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
+        self._care.start()
         self._spawner.start()
         self._reminders.start()
         # Writing up old cats in the storage channel: main bot only (the pool and channel are shared by every bot).
@@ -370,9 +394,66 @@ class CatCog(commands.Cog):
             self._backfill.start()
 
     async def cog_unload(self):
+        self._care.cancel()
         self._spawner.cancel()
         self._reminders.cancel()
         self._backfill.cancel()
+
+    @tasks.loop(seconds=cat_care.HUNGER_TICK_SECONDS)
+    async def _care(self):
+        try:
+            await self.care_tick()
+        except Exception:
+            logger.exception("[cat] care tick failed")
+
+    @_care.before_loop
+    async def _before_care(self):
+        await self.bot.wait_until_ready()
+
+    async def care_tick(self) -> dict:
+        """Random hunger, one gentle heads-up per owner, and cats that wander off after 48 hours hungry (this bot's
+        cats only). Every step is independent: one failing never stops the others."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        out = {"hungry": 0, "warned": 0, "left": 0}
+        try:
+            out["hungry"] = await cat_care.make_hungry(clone_id)
+        except Exception:
+            logger.warning("[cat] hunger step failed", exc_info=True)
+        try:
+            for owner_id, names in (await cat_care.due_warnings(clone_id)).items():
+                if await self._dm(owner_id, cat_care.warning_text(names)):
+                    out["warned"] += 1
+                await asyncio.sleep(2)
+        except Exception:
+            logger.warning("[cat] hunger warning step failed", exc_info=True)
+        try:
+            gone = await cat_care.make_runaways(clone_id)
+            out["left"] = len(gone)
+            by_owner: dict = {}
+            for c in gone:
+                guild = self.bot.get_guild(c["guild_id"]) if c.get("guild_id") else None
+                cat_log.record(self.bot, "runaway", guild_id=c.get("guild_id"), guild_name=getattr(guild, "name", None),
+                               user_id=c["owner_id"], pool_id=c["pool_id"], cat_name=c["cat_name"], rarity=c["rarity"],
+                               trait=c["trait"])
+                by_owner.setdefault(c["owner_id"], []).append(c["cat_name"])
+            for owner_id, names in by_owner.items():
+                await self._dm(owner_id, cat_care.runaway_owner_text(names))
+                await asyncio.sleep(2)
+        except Exception:
+            logger.warning("[cat] runaway step failed", exc_info=True)
+        if any(out.values()):
+            logger.info("[cat] care tick: %s", out)
+        return out
+
+    async def _dm(self, user_id: int, text: str) -> bool:
+        try:
+            user = await self.bot.fetch_user(user_id)
+            if user is None or user.bot:
+                return False
+            await user.send(text)
+            return True
+        except discord.HTTPException:
+            return False                    # closed DMs: skip, never retried
 
     @tasks.loop(minutes=BACKFILL_TICK_MINUTES)
     async def _backfill(self):

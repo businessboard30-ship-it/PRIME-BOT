@@ -120,7 +120,16 @@ async def announce(interaction: discord.Interaction, text: str, gold: bool = Fal
     return await announce_embed(interaction, discord.Embed(description=text, color=GOLD if gold else PINK), kind)
 
 
-async def announce_embed(interaction: discord.Interaction, embed: discord.Embed, kind: str = "event") -> bool:
+def _pic(png: Optional[bytes], name: str) -> dict:
+    """A fresh discord.File for each send (a File can only be sent once), or nothing."""
+    if not png:
+        return {}
+    import io
+    return {"file": discord.File(io.BytesIO(png), filename=name)}
+
+
+async def announce_embed(interaction: discord.Interaction, embed: discord.Embed, kind: str = "event",
+                         png: Optional[bytes] = None, png_name: str = "cat_profile.png") -> bool:
     """Same as `announce`, for a ready-made card (profile, badges). Mentions never ping. Never raises."""
     guild = getattr(interaction, "guild", None)
     if guild is None:
@@ -135,7 +144,7 @@ async def announce_embed(interaction: discord.Interaction, embed: discord.Embed,
     quiet = discord.AllowedMentions.none()
     posted = False
     try:
-        await interaction.followup.send(embed=embed, ephemeral=False, allowed_mentions=quiet)
+        await interaction.followup.send(embed=embed, ephemeral=False, allowed_mentions=quiet, **_pic(png, png_name))
         posted = True
     except Exception:
         logger.debug("[cat-announce] follow-up failed, trying the channel", exc_info=True)
@@ -143,7 +152,7 @@ async def announce_embed(interaction: discord.Interaction, embed: discord.Embed,
         try:
             channel = getattr(interaction, "channel", None)
             if channel is not None:
-                await channel.send(embed=embed, allowed_mentions=quiet)
+                await channel.send(embed=embed, allowed_mentions=quiet, **_pic(png, png_name))
                 posted = True
         except Exception:
             logger.debug("[cat-announce] couldn't post in the channel either", exc_info=True)
