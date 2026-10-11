@@ -44,9 +44,14 @@ def sale_text(buyer: str, seller: str, name: str, cat_id: int, rank: int, price:
 async def announce(interaction: discord.Interaction, text: str, gold: bool = False) -> bool:
     """Post `text` where everyone can see it: as a public follow-up to the button that was pressed (no channel
     permission needed), else straight into the channel. Never raises. Does nothing in DMs."""
+    embed = discord.Embed(description=text, color=GOLD if gold else PINK)
+    return await announce_embed(interaction, embed)
+
+
+async def announce_embed(interaction: discord.Interaction, embed: discord.Embed) -> bool:
+    """Same as `announce`, for a ready-made card (profile, badges). Mentions never ping. Never raises."""
     if getattr(interaction, "guild", None) is None:
         return False
-    embed = discord.Embed(description=text, color=GOLD if gold else PINK)
     quiet = discord.AllowedMentions.none()
     try:
         await interaction.followup.send(embed=embed, ephemeral=False, allowed_mentions=quiet)

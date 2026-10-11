@@ -24,6 +24,7 @@ import logging
 import random
 import time
 from collections import deque
+from typing import Optional
 from urllib.parse import urlparse
 
 import aiohttp
@@ -486,7 +487,12 @@ class CatCog(commands.Cog):
             logger.warning("[cat] permission alert failed for guild %s", guild.id, exc_info=True)
 
     @app_commands.command(name="cat", description="A random cute cat picture 🐱")
-    async def cat(self, interaction: discord.Interaction):
+    @app_commands.describe(profile="Show this player's cat profile instead of a cat picture")
+    async def cat(self, interaction: discord.Interaction, profile: Optional[discord.User] = None):
+        if profile is not None:
+            from discord_bot.cogs._views_cat_features import show_public_profile
+            await show_public_profile(interaction, profile)
+            return
         await send_cat(interaction)
 
 
