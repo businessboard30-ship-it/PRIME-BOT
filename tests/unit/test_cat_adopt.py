@@ -218,7 +218,7 @@ def test_accepting_a_swap_runs_one_atomic_trade(monkeypatch):
     monkeypatch.setattr(ca, "trade", t)
     i = _offer_interaction(20)
     run(_offer()._accept(i))
-    t.assert_awaited_once_with(1, 10, 2, 20, None)
+    t.assert_awaited_once_with(1, 10, 2, 20, None, taker_clone_id=None)
     assert "Trade done" in i.edits[0]["embed"].description and i.edits[0]["view"] is None
 
 
@@ -227,7 +227,7 @@ def test_accepting_a_gift(monkeypatch):
     monkeypatch.setattr(ca, "trade", t)
     i = _offer_interaction(20)
     run(_offer(take=False)._accept(i))
-    t.assert_awaited_once_with(1, 10, None, 20, None)
+    t.assert_awaited_once_with(1, 10, None, 20, None, taker_clone_id=None)
     assert "gifted" in i.edits[0]["embed"].description
 
 
@@ -260,8 +260,17 @@ def test_sending_an_offer_posts_it_publicly_and_pings_only_the_target(monkeypatc
     assert "Offer sent" in i.edits[0]["content"]
 
 
-def test_gift_option_is_first_and_swap_choices_capped_at_24():
-    cats = [mkcat(i, owner=20, name=f"C{i}") for i in range(2, 40)]
+def test_gift_option_is_first_and_swap_choices_page_through_every_cat():
+    """40 cats used to be cut off at 24. Now every cat is reachable: 23 per page plus the gift slot."""
+    cats = [mkcat(i, owner=20, name=f"C{i}") for i in range(2, 42)]            # 40 cats
     view = v.TradeAskView(v.CollectionView(SimpleNamespace(clone_id=None), SimpleNamespace(id=10), [mkcat(1)]),
                           SimpleNamespace(id=20), cats)
-    assert view.pick.options[0].value == v.GIFT_VALUE and len(view.pick.options) == 25
+    assert view.pick.options[0].value == v.GIFT_VALUE and len(view.pick.options) == 24
+    first = {o.value for o in view.pick.options[1:]}
+    view.page = 1
+    view._build()
+    second = {o.value for o in view.pick.options[1:]}
+    assert not first & second and len(first) == 23
+    view.page = 1; view._build()
+    assert len({o.value for o in view.pick.options[1:]}) == 17                 # 40 - 23 on the last page
+    assert view.their[cats[-1].id] is cats[-1]                                 # still choosable

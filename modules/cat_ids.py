@@ -1,7 +1,7 @@
 # path: modules/cat_ids.py
 
 """
-Cat trade IDs. Every cat owner (per bot: the main bot and each clone are separate worlds) has ONE fixed ID made of
+Cat trade IDs. Every cat owner (per bot: the main bot and each clone keep separate collections) has ONE fixed ID made of
 7 random words, e.g. `maple-otter-river-cloud-pepper-lantern-fox`. It never changes. Giving your ID to someone lets
 them send you a trade offer from another server; nothing happens until you press Accept.
 
@@ -116,3 +116,16 @@ async def find_owner(text, clone_id) -> Optional[int]:
         v = await conn.fetchval(
             "SELECT owner_id FROM cat_owner_ids WHERE trade_id = $1 AND COALESCE(clone_id, -1) = $2", tid, _key(clone_id))
     return int(v) if v is not None else None
+
+
+async def find_identity(text):
+    """(owner_id, clone_id) for what the person typed, looked up across the main bot AND every clone, or None.
+    clone_id says which bot's collection that person's cats are in (None = main bot)."""
+    tid = normalize(text)
+    if tid is None:
+        return None
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT owner_id, clone_id FROM cat_owner_ids WHERE trade_id = $1 ORDER BY created_at LIMIT 1", tid)
+    return (int(row["owner_id"]), row["clone_id"]) if row is not None else None

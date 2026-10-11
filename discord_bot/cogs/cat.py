@@ -302,8 +302,11 @@ async def send_cat(interaction: discord.Interaction) -> None:
         await interaction.followup.send("😿 I couldn't find a cat right now. Try again in a moment.", ephemeral=True)
         return
     from discord_bot.cogs._views_cat_adopt import MyCatsButton
+    from discord_bot.cogs._views_cat_market import LeaderboardButton, MarketButton
     view = discord.ui.View(timeout=None)
     view.add_item(MyCatsButton())
+    view.add_item(LeaderboardButton())
+    view.add_item(MarketButton())
     await interaction.followup.send(embed=cat_embed(url), view=view)
 
 

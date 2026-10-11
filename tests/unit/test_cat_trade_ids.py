@@ -162,12 +162,12 @@ def test_modal_refuses_free_unknown_and_self(monkeypatch):
     assert "Premium" in i.response.send_message.call_args.args[0]
     # premium, unknown id
     monkeypatch.setattr(cs, "is_premium", AsyncMock(return_value=True))
-    monkeypatch.setattr(ids, "find_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(ids, "find_identity", AsyncMock(return_value=None))
     i = _interaction()
     run(modal.on_submit(i))
     assert "don't know that ID" in i.response.send_message.call_args.args[0]
     # own id
-    monkeypatch.setattr(ids, "find_owner", AsyncMock(return_value=10))
+    monkeypatch.setattr(ids, "find_identity", AsyncMock(return_value=(10, None)))
     i = _interaction()
     run(modal.on_submit(i))
     assert "your own" in i.response.send_message.call_args.args[0]

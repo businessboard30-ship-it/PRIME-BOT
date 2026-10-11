@@ -7,7 +7,8 @@ Cat wallet: play coins and diamonds (virtual only, never bought with or sold for
   * 1 diamond converts into 10,000 coins (one tap in "My cats").
   * Coins are spent on the cats' care (water, a bed, food), added in a later phase.
   * A wallet belongs to one person on one bot (main bot vs each clone), like the cats themselves.
-  * Wallets cannot be gifted, traded or sold: only cats move between people, never coins.
+  * Coins move between people only through the cat market (modules/cat_market.py): a buyer pays the price the seller
+    asked and the seller receives exactly that. Wallets cannot be gifted, and diamonds are never traded.
 
 Pure rules live at the top (no database), the wallet queries at the bottom.
 """
