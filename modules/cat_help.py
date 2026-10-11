@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from modules import cat_adopt, cat_market, cat_rank, cat_wallet, cat_wishlist
+from modules import cat_adopt, cat_care, cat_market, cat_rank, cat_wallet, cat_wishlist
 
 FOOTER = "Just for fun: play coins only, no real money."
 
@@ -20,6 +20,11 @@ def sections() -> List[Tuple[str, str]]:
          "Rename, release, ⭐ rank up (spend coins, up to rank "
          f"{cat_rank.MAX_RANK}), trade or gift, and 🔍 filter or search your collection. "
          f"{cat_wallet.DIAMOND} 1 diamond converts into {cat_wallet.DIAMOND_COINS:,} {cat_wallet.COINS} coins."),
+        ("🍖 Care",
+         f"Your cats get hungry now and then. In **My cats**, tap {cat_care.FOOD} **Feed** ({cat_care.FOOD_COST} coins). "
+         f"{cat_care.DROP} **Water** ({cat_care.WATER_COST}) and a {cat_care.BED} **Bed** ({cat_care.BED_COST}, rented for "
+         f"{cat_care.COMFORT_HOURS}h) make a cat less likely to get hungry. A cat that stays hungry for "
+         f"{cat_care.LEAVE_AFTER_HOURS} hours may wander off. It's safe and comes back in a spawn, so someone can adopt it again."),
         ("🏷️ Market",
          f"Sell a cat for coins ({cat_market.MIN_PRICE:,} to {cat_market.MAX_PRICE:,}, up to "
          f"{cat_market.MAX_OPEN_PER_SELLER} for sale at once). Tap **Market** to browse and buy. "

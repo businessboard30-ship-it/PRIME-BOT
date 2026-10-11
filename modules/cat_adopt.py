@@ -75,6 +75,9 @@ class Cat:
     adopted_at: Optional[datetime] = None
     traded_count: int = 0
     cat_rank: int = 0               # 0-5, bought with coins (see modules/cat_rank.py)
+    hungry_since: Optional[datetime] = None     # care (modules/cat_care.py): None = not hungry
+    watered_until: Optional[datetime] = None
+    bed_until: Optional[datetime] = None
 
     @classmethod
     def from_row(cls, r) -> "Cat":
@@ -82,9 +85,15 @@ class Cat:
             rank = int(r["cat_rank"] or 0)
         except (KeyError, IndexError):
             rank = 0
+        def opt(key):
+            try:
+                return r[key]
+            except (KeyError, IndexError):
+                return None
         return cls(id=int(r["id"]), owner_id=int(r["owner_id"]), clone_id=r["clone_id"], pool_id=int(r["pool_id"]),
                    name=r["name"], rarity=r["rarity"], trait=r["trait"], adopted_at=r["adopted_at"],
-                   traded_count=int(r["traded_count"] or 0), cat_rank=rank)
+                   traded_count=int(r["traded_count"] or 0), cat_rank=rank, hungry_since=opt("hungry_since"),
+                   watered_until=opt("watered_until"), bed_until=opt("bed_until"))
 
 
 @dataclass(frozen=True)
@@ -128,6 +137,7 @@ async def count_cats(user_id: int, clone_id) -> int:
 async def adopt(spawn_id: int, user_id: int, clone_id, guild_id: Optional[int] = None) -> AdoptResult:
     """First person wins. All-or-nothing: the spawn is claimed and the cat created in one transaction."""
     name, rarity, trait = roll_name(), roll_rarity(), roll_trait()
+    came_back = False
     pool = await _pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -142,6 +152,11 @@ async def adopt(spawn_id: int, user_id: int, clone_id, guild_id: Optional[int] =
             if row is None:
                 known = await conn.fetchval("SELECT 1 FROM cat_spawns WHERE id = $1", spawn_id)
                 return AdoptResult("taken" if known else "gone")
+            runaway = await conn.fetchrow(
+                "UPDATE cat_runaways SET claimed_at = NOW() WHERE pool_id = $1 AND claimed_at IS NULL "
+                "RETURNING cat_name, rarity, trait", row["pool_id"])
+            if runaway is not None:             # a cat that left home keeps who it is
+                name, rarity, trait, came_back = runaway["cat_name"], runaway["rarity"], runaway["trait"], True
             if await conn.fetchval("SELECT 1 FROM cat_adoptions WHERE pool_id = $1", row["pool_id"]):
                 dup = True                          # this picture already has an owner (maybe on another bot)
             else:
@@ -155,13 +170,14 @@ async def adopt(spawn_id: int, user_id: int, clone_id, guild_id: Optional[int] =
                 await conn.execute("UPDATE cat_spawns SET adopted_by = 0 WHERE id = $1", spawn_id)
                 return AdoptResult("taken")
             reward = None
-            try:
-                async with conn.transaction():          # a savepoint: a wallet problem must never undo the adoption
-                    reward = cat_wallet.roll_reward(rarity)
-                    await cat_wallet.add_reward(conn, user_id, clone_id, reward)
-            except Exception:
-                reward = None
-                logger.warning("[cat-adopt] couldn't grant the adoption reward", exc_info=True)
+            if not came_back:                           # a cat that came back brings no reward: welcomed home, not farmed
+                try:
+                    async with conn.transaction():      # a savepoint: a wallet problem must never undo the adoption
+                        reward = cat_wallet.roll_reward(rarity)
+                        await cat_wallet.add_reward(conn, user_id, clone_id, reward)
+                except Exception:
+                    reward = None
+                    logger.warning("[cat-adopt] couldn't grant the adoption reward", exc_info=True)
     return AdoptResult("ok", Cat.from_row(cat), reward)
 
 

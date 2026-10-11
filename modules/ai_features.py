@@ -172,7 +172,7 @@ BOT_RULES = (
     "A free server gets 1 cat channel and about 120 to 140 cats a day; a Premium server gets up to 3 channels and about 250 to "
     "300 a day (shared between the channels). Pace choices: 75%, 50%, 25% or 10% of the amount; it can also be turned off. Only "
     "sharp, high-resolution cat pictures are posted. Members tap Adopt me! on a cat to keep it (up to 30 cats each), open My cats "
-    "to rename, release, trade or gift them, and earn play coins and diamonds when they adopt (just for fun, never real money). "
+    "to rename, release, trade or gift them, feed them (cats get hungry; food, water and a bed cost play coins, and a cat left hungry for about two days wanders off and returns in a spawn), and earn play coins and diamonds when they adopt (just for fun, never real money). "
     "Every cat owner has a fixed short trade ID (6 digits and a letter, like 142574D), shown in My cats. Trading is with members of the same server; "
     "Premium servers can also trade with anyone from any server by typing their trade ID. If asked for more than the plan "
     "allows, say Premium is the way to get more; don't promise anything else. You can only explain the Cat game in words: "

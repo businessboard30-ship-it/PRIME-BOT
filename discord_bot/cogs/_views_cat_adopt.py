@@ -17,6 +17,7 @@ from typing import List, Optional
 
 import discord
 
+from modules import cat_care
 from modules import cat_filter
 from modules import cat_help
 from modules import cat_quests
@@ -65,7 +66,7 @@ async def cat_embed_full(client, cat: ca.Cat, position: str = "") -> discord.Emb
     e = discord.Embed(title=f"{ca.RARITY_EMOJI.get(cat.rarity, '🐱')} {cat.name}", color=PINK)
     e.description = (f"**Rarity:** {ca.rarity_badge(cat.rarity)}\n**Personality:** {cat.trait}\n"
                      f"**Rank:** {cr.badge(cat.cat_rank)}\n**Times traded:** {cat.traded_count}\n"
-                     f"**Cat ID:** #{cat.id}")
+                     f"**Cat ID:** #{cat.id}\n\n{cat_care.status_lines(cat)}")
     try:
         url = await cat_pool.url_for(client, cat.pool_id)
     except Exception:
@@ -276,6 +277,49 @@ class CollectionView(discord.ui.View):
                 style=discord.ButtonStyle.danger if armed else discord.ButtonStyle.primary, row=1)
         rb.callback = self._rank_up
         self.add_item(rb)
+        hungry = cat_care.is_hungry(self.current)
+        for label, emoji, fn, style, disabled in (
+                (f"Feed · {cat_care.FOOD_COST}", cat_care.FOOD, self._feed,
+                 discord.ButtonStyle.danger if hungry else discord.ButtonStyle.secondary, not hungry),
+                (f"Water · {cat_care.WATER_COST}", cat_care.DROP, self._water, discord.ButtonStyle.secondary, False),
+                (f"Bed · {cat_care.BED_COST}", cat_care.BED, self._bed, discord.ButtonStyle.secondary, False)):
+            b = discord.ui.Button(label=label, emoji=emoji, style=style, disabled=disabled, row=4)
+            b.callback = fn
+            self.add_item(b)
+
+    async def _care(self, interaction, action, ok_text) -> None:
+        cat = self.current
+        try:
+            res = await action(cat.id, interaction.user.id, _clone_id(self.client))
+        except Exception:
+            logger.exception("[cat-care] care action failed for cat %s", cat.id)
+            await interaction.response.send_message("😿 Something went wrong, try again in a moment.", ephemeral=True)
+            return
+        until = f"<t:{int(res.until.timestamp())}:R>" if res.until else ""
+        note = {
+            "ok": ok_text.format(name=cat.name, coins=res.coins, cost=res.cost, until=until),
+            "poor": f"You need {res.cost:,} coins and have {res.coins:,}. Adopt cats, sell a cat or convert a diamond to earn more.",
+            "not_hungry": f"**{cat.name}** isn't hungry right now.",
+            "already": f"**{cat.name}** is already set until {until}. You can top it up when less than "
+                       f"{cat_care.RENEW_WINDOW_HOURS} hours are left.",
+            "gone": f"**{cat.name}** isn't yours any more.",
+        }.get(res.status, "Something went wrong, try again in a moment.")
+        await self.reload(interaction.user.id)
+        if not self.cats:                      # the cat wandered off while this screen was open and it was the last one
+            await interaction.response.edit_message(content=note + "\nYou don't have any cats right now.", embed=None, view=None)
+            return
+        await self.refresh_wallet()
+        self._build()
+        await interaction.response.edit_message(content=note, embed=await self.embed(), view=self)
+
+    async def _feed(self, interaction):
+        await self._care(interaction, cat_care.feed, f"{cat_care.FOOD} **{{name}}** ate happily and purrs. ({{cost}} coins, {{coins:,}} left)")
+
+    async def _water(self, interaction):
+        await self._care(interaction, cat_care.water, f"{cat_care.DROP} **{{name}}** has fresh water until {{until}}. ({{cost}} coins, {{coins:,}} left)")
+
+    async def _bed(self, interaction):
+        await self._care(interaction, cat_care.rent_bed, f"{cat_care.BED} **{{name}}** has a cosy bed until {{until}}. ({{cost}} coins, {{coins:,}} left)")
 
     async def _rank_up(self, interaction):
         cat = self.current
@@ -342,7 +386,8 @@ class CollectionView(discord.ui.View):
         self._reapply()
         self.index = next((i for i, c in enumerate(self.cats) if c.id == keep), min(self.index, max(len(self.cats) - 1, 0)))
         self.confirm_release = False
-        self._build()
+        if self.cats:                           # nothing to draw when the last cat is gone (sold, released, wandered off)
+            self._build()
 
     def _reapply(self) -> None:
         """Rebuild the visible list from everything owned. An untouched filter keeps the original order. If nothing
