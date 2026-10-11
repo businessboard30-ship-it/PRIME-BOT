@@ -303,7 +303,8 @@ async def send_cat(interaction: discord.Interaction) -> None:
         return
     from discord_bot.cogs._views_cat_adopt import MyCatsButton
     from discord_bot.cogs._views_cat_market import LeaderboardButton, MarketButton
-    view = discord.ui.View(timeout=None)
+    from discord_bot.cogs._views_cat_features import feature_button_view
+    view = feature_button_view()
     view.add_item(MyCatsButton())
     view.add_item(LeaderboardButton())
     view.add_item(MarketButton())

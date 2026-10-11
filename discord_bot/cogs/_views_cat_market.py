@@ -25,6 +25,7 @@ from modules import cat_market as cm
 from modules import cat_pool
 from modules import cat_rank as cr
 from modules import cat_wallet
+from modules import cat_features
 
 logger = logging.getLogger(__name__)
 
