@@ -14,7 +14,8 @@ A server's own setup is always respected: off means no cats, cats only appear in
 (and only where the bot can post), and the limits are enforced twice (the wizard stops a free server picking more
 channels, and the spawner clamps whatever is stored to the plan the server has RIGHT NOW, so a lapsed Premium
 server drops to the free amount by itself). `interval_minutes` is a legacy column from the first version and is
-no longer used for pacing.
+no longer used for pacing. A server may choose FEWER cats (`pace_percent`: 75 / 50 / 25 / 10 % of its plan amount);
+never more than the plan.
 """
 
 from __future__ import annotations
@@ -52,6 +53,23 @@ def daily_target(guild_id: int, clone_id: Optional[int], tier: Tier, day: date) 
         tier.daily_min, tier.daily_max)
 
 
+PACES = (100, 75, 50, 25, 10)            # % of the plan's daily amount a server can choose (never more than 100)
+
+
+def clamp_pace(value) -> int:
+    """Nearest allowed pace that is not higher than asked; junk or None means the full amount."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return 100
+    lower = [p for p in PACES if p <= v]
+    return max(lower) if lower else min(PACES)
+
+
+def pace_target(target: int, pace: int) -> int:
+    return max(1, round(int(target) * clamp_pace(pace) / 100))
+
+
 def gap_seconds(target: int) -> float:
     """Average seconds between two cats for a daily target."""
     return SECONDS_PER_DAY / max(1, int(target))
@@ -73,6 +91,7 @@ class CatConfig:
     enabled: bool = False
     channel_ids: Tuple[int, ...] = ()
     interval_minutes: int = 720         # legacy column, not used for pacing any more
+    pace_percent: int = 100             # the server's own choice: 100 = full plan amount, less = fewer cats
     next_at: Optional[datetime] = None
     last_post_at: Optional[datetime] = None
 
@@ -80,7 +99,8 @@ class CatConfig:
         """(channels, average seconds between cats) after applying the limits of the server's CURRENT plan."""
         tier = tier_for(premium)
         today = today or datetime.now(timezone.utc).date()
-        return clamp_channels(self.channel_ids, tier), gap_seconds(daily_target(self.guild_id, self.clone_id, tier, today))
+        target = pace_target(daily_target(self.guild_id, self.clone_id, tier, today), self.pace_percent)
+        return clamp_channels(self.channel_ids, tier), gap_seconds(target)
 
     @classmethod
     def from_row(cls, row) -> "CatConfig":
@@ -88,6 +108,7 @@ class CatConfig:
             guild_id=int(row["guild_id"]), clone_id=row["clone_id"], enabled=bool(row["enabled"]),
             channel_ids=tuple(int(c) for c in (row["channel_ids"] or ())),
             interval_minutes=int(row["interval_minutes"]),
+            pace_percent=clamp_pace(row["pace_percent"] if "pace_percent" in row.keys() else 100),
             next_at=row["next_at"], last_post_at=row["last_post_at"])
 
 
@@ -130,15 +151,15 @@ async def save_config(cfg: CatConfig, updated_by: Optional[int] = None) -> None:
         await conn.execute(
             """
             INSERT INTO cat_guild_config
-                (guild_id, clone_id, enabled, channel_ids, interval_minutes, next_at, updated_by, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                (guild_id, clone_id, enabled, channel_ids, interval_minutes, next_at, updated_by, pace_percent, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
             ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
                 enabled = EXCLUDED.enabled, channel_ids = EXCLUDED.channel_ids,
                 interval_minutes = EXCLUDED.interval_minutes, next_at = EXCLUDED.next_at,
-                updated_by = EXCLUDED.updated_by, updated_at = NOW()
+                updated_by = EXCLUDED.updated_by, pace_percent = EXCLUDED.pace_percent, updated_at = NOW()
             """,
             cfg.guild_id, cfg.clone_id, cfg.enabled, list(cfg.channel_ids), cfg.interval_minutes,
-            cfg.next_at, updated_by)
+            cfg.next_at, updated_by, clamp_pace(cfg.pace_percent))
 
 
 async def due(clone_id: Optional[int], limit: int = 10) -> List[CatConfig]:
