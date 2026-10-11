@@ -60,7 +60,7 @@ class Listing:
             if r["name"] is not None:
                 cat = ca.Cat(id=int(r["adoption_id"]), owner_id=int(r["seller_id"]), clone_id=r["seller_clone_id"],
                              pool_id=int(r["pool_id"]), name=r["name"], rarity=r["rarity"], trait=r["trait"],
-                             traded_count=int(r["traded_count"] or 0))
+                             traded_count=int(r["traded_count"] or 0), cat_rank=int(r.get("cat_rank") or 0))
         except (KeyError, TypeError):
             cat = None
         return cls(id=int(r["id"]), adoption_id=int(r["adoption_id"]), seller_id=int(r["seller_id"]),
@@ -74,7 +74,7 @@ class BuyResult:
     listing: Optional[Listing] = None
 
 
-_JOIN = ("SELECT l.*, a.name, a.rarity, a.trait, a.pool_id, a.traded_count FROM cat_listings l "
+_JOIN = ("SELECT l.*, a.name, a.rarity, a.trait, a.pool_id, a.traded_count, a.cat_rank FROM cat_listings l "
          "JOIN cat_adoptions a ON a.id = l.adoption_id ")
 
 

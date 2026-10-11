@@ -74,12 +74,17 @@ class Cat:
     trait: str
     adopted_at: Optional[datetime] = None
     traded_count: int = 0
+    cat_rank: int = 0               # 0-5, bought with coins (see modules/cat_rank.py)
 
     @classmethod
     def from_row(cls, r) -> "Cat":
+        try:
+            rank = int(r["cat_rank"] or 0)
+        except (KeyError, IndexError):
+            rank = 0
         return cls(id=int(r["id"]), owner_id=int(r["owner_id"]), clone_id=r["clone_id"], pool_id=int(r["pool_id"]),
                    name=r["name"], rarity=r["rarity"], trait=r["trait"], adopted_at=r["adopted_at"],
-                   traded_count=int(r["traded_count"] or 0))
+                   traded_count=int(r["traded_count"] or 0), cat_rank=rank)
 
 
 @dataclass(frozen=True)
