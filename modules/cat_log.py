@@ -72,7 +72,7 @@ def _who(f: Dict[str, Any], prefix: str = "user") -> str:
 
 
 def format_event(kind: str, f: Dict[str, Any]) -> str:
-    """One compact line. `kind`: adopt | release | gift | trade | runaway | returned | history."""
+    """One compact line. `kind`: adopt | release | gift | trade | sale | runaway | returned | history."""
     where = f" · server: {server_text(f.get('guild_id'), f.get('guild_name'))}" if f.get("guild_id") else ""
     if kind == "history":
         # Written later for cats adopted before logging existed. It only claims what the database knows: who owns the cat
@@ -93,6 +93,8 @@ def format_event(kind: str, f: Dict[str, Any]) -> str:
         return f"🎁 **Gifted** · {_cat(f)} · {_who(f)} → {_who(f, 'other')}{where}"
     if kind == "trade":
         return f"🔁 **Traded** · {_cat(f)} ⇄ {_cat(f, 'other_')} · {_who(f)} ⇄ {_who(f, 'other')}{where}"
+    if kind == "sale":
+        return (f"💰 **Sold** · {_cat(f)} · {_who(f, 'other')} → {_who(f)} for {int(f.get('price') or 0):,} coins{where}")
     if kind == "runaway":
         return f"🐾 **Left home** · {_cat(f)} · owner was {_who(f)}{where}"
     if kind == "returned":

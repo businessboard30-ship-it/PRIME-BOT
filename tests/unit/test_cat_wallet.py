@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import discord
 import pytest
 
 from discord_bot.cogs import _views_cat_adopt as v
@@ -96,6 +97,8 @@ class Conn:
     async def fetchval(self, sql, *a):
         if "COUNT(*)" in sql:
             return self.owned
+        if "FROM cat_adoptions WHERE pool_id" in sql:      # one cat, one owner across all bots: nobody owns it yet
+            return None
         return 1
 
     async def fetchrow(self, sql, *a):
@@ -263,7 +266,7 @@ def _view(monkeypatch, wallet, convert=None):
 
 
 def _labels(view):
-    return [(c.label, c.disabled) for c in view.children]
+    return [(c.label, c.disabled) for c in view.children if isinstance(c, discord.ui.Button)]
 
 
 def test_purse_is_shown_on_the_cat_card(monkeypatch):
@@ -277,7 +280,7 @@ def test_convert_buttons_are_disabled_without_diamonds_and_on_with_them(monkeypa
     assert none["💎 Convert 1"] is True and none["💎 Convert all (0)"] is True
     some = dict(_labels(_view(monkeypatch, cw.Wallet(500, 4))))
     assert some["💎 Convert 1"] is False and some["💎 Convert all (4)"] is False
-    assert all(c.row == 1 for c in _view(monkeypatch, cw.Wallet(0, 1)).children if "Convert" in c.label)
+    assert all(c.row == 1 for c in _view(monkeypatch, cw.Wallet(0, 1)).children if isinstance(c, discord.ui.Button) and "Convert" in c.label)
 
 
 def test_convert_one_converts_one_refreshes_and_says_so(monkeypatch):

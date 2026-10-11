@@ -33,7 +33,7 @@ def _member(uid=77, bot=False):
 
 def _setup(monkeypatch, premium, owner_id=77, member=None, fetch_raises=False):
     monkeypatch.setattr(cs, "is_premium", AsyncMock(return_value=premium))
-    monkeypatch.setattr(ids, "find_owner", AsyncMock(return_value=owner_id))
+    monkeypatch.setattr(ids, "find_identity", AsyncMock(return_value=None if owner_id is None else (owner_id, None)))
     monkeypatch.setattr(ca, "list_cats", AsyncMock(return_value=[_cat(5, owner_id)]))
     i = _interaction()
     if fetch_raises:

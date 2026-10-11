@@ -7,7 +7,8 @@ Cat adoption (virtual only: the coins and diamonds come from playing, never from
   * An adopted cat gets a cute random name, a rarity and a personality, and goes to the person's collection.
   * Cats can be renamed, released, gifted, or swapped with another member (the other person must accept).
 
-Everything is per bot (main bot vs each clone), like the other economies in this project.
+Collections and wallets are per bot (main bot vs each clone), but the cats themselves are shared: a picture can be
+adopted only once across ALL bots, and cats can be traded or sold between the main bot and the clones.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from modules import cat_wallet
 
 logger = logging.getLogger(__name__)
 
-MAX_CATS = 30                   # per person, per bot
+MAX_CATS = 100                  # per person, per bot (lists page through them, so any number is fine)
 NAME_MAX = 20
 
 RARITIES = (("common", 70, "🐱"), ("uncommon", 20, "😺"), ("rare", 8, "😻"), ("legendary", 2, "👑"))
@@ -136,10 +137,18 @@ async def adopt(spawn_id: int, user_id: int, clone_id, guild_id: Optional[int] =
             if row is None:
                 known = await conn.fetchval("SELECT 1 FROM cat_spawns WHERE id = $1", spawn_id)
                 return AdoptResult("taken" if known else "gone")
-            cat = await conn.fetchrow(
-                "INSERT INTO cat_adoptions (owner_id, clone_id, pool_id, name, rarity, trait, adopted_guild_id) "
-                "VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
-                user_id, clone_id, row["pool_id"], name, rarity, trait, guild_id)
+            if await conn.fetchval("SELECT 1 FROM cat_adoptions WHERE pool_id = $1", row["pool_id"]):
+                dup = True                          # this picture already has an owner (maybe on another bot)
+            else:
+                dup = False
+                cat = await conn.fetchrow(
+                    "INSERT INTO cat_adoptions (owner_id, clone_id, pool_id, name, rarity, trait, adopted_guild_id) "
+                    "VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
+                    user_id, clone_id, row["pool_id"], name, rarity, trait, guild_id)
+            if dup:
+                # Close the spawn for everybody (0 = nobody) and keep that, instead of rolling it back.
+                await conn.execute("UPDATE cat_spawns SET adopted_by = 0 WHERE id = $1", spawn_id)
+                return AdoptResult("taken")
             reward = None
             try:
                 async with conn.transaction():          # a savepoint: a wallet problem must never undo the adoption
@@ -177,31 +186,45 @@ async def release(cat_id: int, owner_id: int) -> bool:
     pool = await _pool()
     async with pool.acquire() as conn:
         return await conn.fetchval(
-            "DELETE FROM cat_adoptions WHERE id = $1 AND owner_id = $2 RETURNING id", cat_id, owner_id) is not None
+            "DELETE FROM cat_adoptions WHERE id = $1 AND owner_id = $2 AND NOT EXISTS "
+            "(SELECT 1 FROM cat_listings l WHERE l.adoption_id = $1 AND l.status = 'open') RETURNING id",
+            cat_id, owner_id) is not None
 
 
-async def trade(give_id: int, giver_id: int, take_id: Optional[int], taker_id: int, clone_id) -> str:
+_SAME = object()
+
+
+async def trade(give_id: int, giver_id: int, take_id: Optional[int], taker_id: int, clone_id,
+                taker_clone_id=_SAME) -> str:
     """Swap `give_id` (owned by giver) for `take_id` (owned by taker), or gift it when take_id is None.
-    One transaction with both rows locked, so a cat can never be traded twice. Returns ok | gone | limit."""
+    `clone_id` is the giver's bot, `taker_clone_id` the taker's (default: the same bot). The two can differ: a cat
+    that moves lands in its new owner's bot, so main bot and clones trade with each other.
+    One transaction with both rows locked, so a cat can never be traded twice or while it is for sale.
+    Returns ok | gone | limit."""
+    if taker_clone_id is _SAME:
+        taker_clone_id = clone_id
     ids = [give_id] + ([take_id] if take_id is not None else [])
     pool = await _pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
             rows = await conn.fetch(
-                "SELECT id, owner_id FROM cat_adoptions WHERE id = ANY($1::bigint[]) "
-                "AND COALESCE(clone_id, -1) = $2 FOR UPDATE", ids, _key(clone_id))
-            owners = {int(r["id"]): int(r["owner_id"]) for r in rows}
-            if owners.get(give_id) != giver_id or (take_id is not None and owners.get(take_id) != taker_id):
+                "SELECT id, owner_id, clone_id FROM cat_adoptions WHERE id = ANY($1::bigint[]) FOR UPDATE", ids)
+            have = {int(r["id"]): (int(r["owner_id"]), _key(r["clone_id"])) for r in rows}
+            if have.get(give_id) != (giver_id, _key(clone_id)) or \
+                    (take_id is not None and have.get(take_id) != (taker_id, _key(taker_clone_id))):
                 return "gone"
+            if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = ANY($1::bigint[]) "
+                                   "AND status = 'open'", ids):
+                return "gone"                       # a cat that is for sale can't be swapped at the same time
             if take_id is None:
                 held = await conn.fetchval(
                     "SELECT COUNT(*) FROM cat_adoptions WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2",
-                    taker_id, _key(clone_id))
+                    taker_id, _key(taker_clone_id))
                 if int(held or 0) >= MAX_CATS:
                     return "limit"
-            await conn.execute("UPDATE cat_adoptions SET owner_id = $2, traded_count = traded_count + 1 WHERE id = $1",
-                               give_id, taker_id)
+            await conn.execute("UPDATE cat_adoptions SET owner_id = $2, clone_id = $3, traded_count = traded_count + 1 "
+                               "WHERE id = $1", give_id, taker_id, taker_clone_id)
             if take_id is not None:
-                await conn.execute("UPDATE cat_adoptions SET owner_id = $2, traded_count = traded_count + 1 "
-                                   "WHERE id = $1", take_id, giver_id)
+                await conn.execute("UPDATE cat_adoptions SET owner_id = $2, clone_id = $3, "
+                                   "traded_count = traded_count + 1 WHERE id = $1", take_id, giver_id, clone_id)
     return "ok"

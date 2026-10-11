@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 PINK = discord.Color.from_rgb(255, 182, 193)
 OFFER_TIMEOUT = 600
 GIFT_VALUE = "gift"
+JUMP_PAGE = 25                   # a select holds 25 options; the jump list pages through bigger collections
+ASK_PAGE = 23                    # their cats per page in the trade picker (+1 slot for "just gift mine")
 
 
 def _clone_id(client):
@@ -206,6 +208,19 @@ class CollectionView(discord.ui.View):
             b = discord.ui.Button(label=label, style=style, disabled=disabled)
             b.callback = fn
             self.add_item(b)
+        if len(self.cats) > 1:
+            page = self.index // JUMP_PAGE
+            chunk = self.cats[page * JUMP_PAGE:(page + 1) * JUMP_PAGE]
+            pages = -(-len(self.cats) // JUMP_PAGE)
+            jump = discord.ui.Select(
+                placeholder=(f"Jump to a cat ({page * JUMP_PAGE + 1}-{page * JUMP_PAGE + len(chunk)} of {len(self.cats)})"
+                             if pages > 1 else "Jump to a cat"),
+                options=[discord.SelectOption(label=f"{page * JUMP_PAGE + i + 1}. {c.name} \u00b7 {c.rarity.title()}"[:100],
+                                              value=str(page * JUMP_PAGE + i), emoji=ca.RARITY_EMOJI.get(c.rarity),
+                                              default=(page * JUMP_PAGE + i) == self.index)
+                         for i, c in enumerate(chunk)], row=2)
+            jump.callback = self._jump
+            self.add_item(jump)
         have = self.wallet.diamonds
         for label, fn in ((f"{cat_wallet.DIAMOND} Convert 1", self._convert_one),
                           (f"{cat_wallet.DIAMOND} Convert all ({have})", self._convert_all)):
@@ -250,6 +265,10 @@ class CollectionView(discord.ui.View):
     async def _show(self, interaction):
         self._build()
         await interaction.response.edit_message(embed=await self.embed(), view=self)
+
+    async def _jump(self, interaction):
+        self.index, self.confirm_release = int(interaction.data["values"][0]), False
+        await self._show(interaction)
 
     async def _prev(self, interaction):
         self.index, self.confirm_release = (self.index - 1) % len(self.cats), False
@@ -300,6 +319,9 @@ class TradeTargetView(discord.ui.View):
         by_id = discord.ui.Button(label="Trade by ID", emoji="🆔", style=discord.ButtonStyle.primary)
         by_id.callback = self._by_id
         self.add_item(by_id)
+        sell = discord.ui.Button(label="Sell for coins", emoji="\U0001F3F7\uFE0F", style=discord.ButtonStyle.success)
+        sell.callback = self._sell
+        self.add_item(sell)
         back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
         back.callback = self._back
         self.add_item(back)
@@ -309,6 +331,10 @@ class TradeTargetView(discord.ui.View):
 
     async def _back(self, interaction):
         await interaction.response.edit_message(content=None, embed=await self.parent.embed(), view=self.parent)
+
+    async def _sell(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_cat_market import SellModal
+        await interaction.response.send_modal(SellModal(self.parent.current))
 
     async def _by_id(self, interaction: discord.Interaction):
         # Everyone can type an ID. Whether it works across servers is decided after the ID is read (TradeIdModal).
@@ -357,7 +383,8 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
     async def on_submit(self, interaction: discord.Interaction):
         client = interaction.client
         guild = interaction.guild
-        owner_id = await cat_ids.find_owner(str(self.trade_id), _clone_id(client))
+        ident = await cat_ids.find_identity(str(self.trade_id))      # looks across the main bot and every clone
+        owner_id, their_clone = ident if ident else (None, None)
         member = None
         if owner_id is not None and owner_id != interaction.user.id and guild is not None:
             member = await _member_of(guild, owner_id)
@@ -388,11 +415,11 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
             if member.bot:
                 await interaction.response.send_message("That ID doesn't belong to a person.", ephemeral=True)
                 return
-            theirs = await ca.list_cats(owner_id, _clone_id(client))
+            theirs = await ca.list_cats(owner_id, their_clone)
             await interaction.response.edit_message(
                 content=(f"🆔 Trading with **{member.display_name}** (a member of this server). What should "
                          f"**{self.parent.current.name}** be swapped for? Or just gift yours."),
-                embed=None, view=TradeAskView(self.parent, member, theirs))
+                embed=None, view=TradeAskView(self.parent, member, theirs, their_clone=their_clone))
             return
         try:
             target = await client.fetch_user(owner_id)
@@ -401,27 +428,55 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
         if target is None or target.bot:
             await interaction.response.send_message("😿 I couldn't find that person right now.", ephemeral=True)
             return
-        theirs = await ca.list_cats(owner_id, _clone_id(client))
-        view = TradeAskView(self.parent, target, theirs, remote=True)
+        theirs = await ca.list_cats(owner_id, their_clone)
+        view = TradeAskView(self.parent, target, theirs, remote=True, their_clone=their_clone)
         await interaction.response.edit_message(
             content=(f"🌍 Trading with **{target.display_name}** (from any server). What should "
                      f"**{self.parent.current.name}** be swapped for? Or just gift yours."), embed=None, view=view)
 
 
+_UNSET = object()
+
+
 class TradeAskView(discord.ui.View):
-    def __init__(self, parent: CollectionView, target, their_cats: List[ca.Cat], remote: bool = False):
+    def __init__(self, parent: CollectionView, target, their_cats: List[ca.Cat], remote: bool = False,
+                 their_clone=_UNSET):
         super().__init__(timeout=300)
         self.remote = remote
-        self.parent, self.target, self.their = parent, target, {c.id: c for c in their_cats[:24]}
-        options = [discord.SelectOption(label="🎁 Just gift mine, ask for nothing", value=GIFT_VALUE)]
-        options += [discord.SelectOption(label=f"{c.name} · {c.rarity.title()}", description=c.trait, value=str(c.id),
-                                         emoji=ca.RARITY_EMOJI.get(c.rarity)) for c in self.their.values()]
-        self.pick = discord.ui.Select(placeholder="Swap for…", options=options)
+        # which bot's collection their cats are in: this one unless the ID they gave belongs to another bot
+        self.their_clone = _clone_id(getattr(parent, "client", None)) if their_clone is _UNSET else their_clone
+        self.parent, self.target = parent, target
+        self.their = {c.id: c for c in their_cats}             # every cat; the select shows one page at a time
+        self.page = 0
+        self._build()
+
+    def _build(self) -> None:
+        self.clear_items()
+        cats = list(self.their.values())
+        pages = max(1, -(-len(cats) // ASK_PAGE))
+        self.page = min(self.page, pages - 1)
+        chunk = cats[self.page * ASK_PAGE:(self.page + 1) * ASK_PAGE]
+        options = [discord.SelectOption(label="\U0001F381 Just gift mine, ask for nothing", value=GIFT_VALUE)]
+        options += [discord.SelectOption(label=f"{c.name} \u00b7 {c.rarity.title()}", description=c.trait, value=str(c.id),
+                                         emoji=ca.RARITY_EMOJI.get(c.rarity)) for c in chunk]
+        self.pick = discord.ui.Select(
+            placeholder=(f"Swap for\u2026 (cats {self.page * ASK_PAGE + 1}-{self.page * ASK_PAGE + len(chunk)} of {len(cats)})"
+                         if pages > 1 else "Swap for\u2026"), options=options)
         self.pick.callback = self._chosen
         self.add_item(self.pick)
+        if pages > 1:
+            for label, delta, off in (("\u25C0", -1, self.page <= 0), ("\u25B6", 1, self.page >= pages - 1)):
+                b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=off)
+                b.callback = (lambda d: (lambda i: self._turn(i, d)))(delta)
+                self.add_item(b)
         back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
         back.callback = self._back
         self.add_item(back)
+
+    async def _turn(self, interaction, delta: int):
+        self.page += delta
+        self._build()
+        await interaction.response.edit_message(view=self)
 
     async def interaction_check(self, interaction):
         return await self.parent.interaction_check(interaction)
@@ -436,7 +491,8 @@ class TradeAskView(discord.ui.View):
         if value != GIFT_VALUE and want is None:
             await interaction.response.send_message("That cat isn't available any more.", ephemeral=True)
             return
-        offer = TradeOfferView(interaction.client, interaction.user, self.target, mine, want, remote=self.remote)
+        offer = TradeOfferView(interaction.client, interaction.user, self.target, mine, want, remote=self.remote,
+                               taker_clone=self.their_clone)
         embed = discord.Embed(title="🤝 Cat trade offer", color=PINK)
         where = f" from **{interaction.guild.name}**" if self.remote and interaction.guild else ""
         embed.description = (
@@ -490,9 +546,11 @@ class TradeAskView(discord.ui.View):
 class TradeOfferView(discord.ui.View):
     """Public offer. Only the other person can accept or decline; only the sender can cancel."""
 
-    def __init__(self, client, giver, taker, give: ca.Cat, take: Optional[ca.Cat], remote: bool = False):
+    def __init__(self, client, giver, taker, give: ca.Cat, take: Optional[ca.Cat], remote: bool = False,
+                 taker_clone=_UNSET):
         super().__init__(timeout=OFFER_TIMEOUT)
         self.client, self.giver, self.taker, self.give, self.take = client, giver, taker, give, take
+        self.taker_clone = _clone_id(client) if taker_clone is _UNSET else taker_clone
         self.remote, self.counted = remote, False
         self.message: Optional[discord.Message] = None
         for label, fn, style in (("Accept", self._accept, discord.ButtonStyle.success),
@@ -533,7 +591,7 @@ class TradeOfferView(discord.ui.View):
             await interaction.response.send_message("Only the person this offer is for can accept it.", ephemeral=True)
             return
         status = await ca.trade(self.give.id, self.giver.id, self.take.id if self.take else None, self.taker.id,
-                                _clone_id(self.client))
+                                _clone_id(self.client), taker_clone_id=self.taker_clone)
         if status == "ok":
             cat_log.record(self.client, "trade" if self.take else "gift", **_event(interaction, self.give, self.giver),
                            **_other(self.taker, self.take))
@@ -570,4 +628,6 @@ class TradeOfferView(discord.ui.View):
                 pass
 
 
-DYNAMIC_ITEMS = (AdoptButton, MyCatsButton)
+from discord_bot.cogs import _views_cat_market as _market  # noqa: E402  (needs the names defined above)
+
+DYNAMIC_ITEMS = (AdoptButton, MyCatsButton) + _market.DYNAMIC_ITEMS
