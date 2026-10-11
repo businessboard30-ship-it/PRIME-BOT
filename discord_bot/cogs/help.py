@@ -34,6 +34,7 @@ CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
         (["welcome"], "welcome cards for new members — themes, colors, custom background, sticker/GIF"),
         (["setupverification"], "anti-raid join verification gate"),
         (["antiraid"], "raid protection: spike detection, lockdown and staff alerts"),
+        (["scamshield"], "scam protection: status, allowed domains, link checker, plus premium strict mode and deep reports"),
         (["honeypot"], "free trap channel that auto-actions spam bots and hacked accounts"),
         (["modlog"], "server activity logging (roles, channels, members, moderation, voice, invites)"),
     ],
