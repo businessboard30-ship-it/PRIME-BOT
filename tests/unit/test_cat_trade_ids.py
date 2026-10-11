@@ -57,17 +57,48 @@ def test_migration_and_wiring():
 
 
 class FakeConn:
+    """Stand-in for cat_owner_ids: rows[(owner, clone_key)] = {"short": ..., "words": ...}."""
     def __init__(self):
         self.rows = {}
+        self.clash_next = 0                        # make the next N writes hit somebody else's number
+
+    def _owner_of(self, col, value, clone=None):
+        for (o, c), r in self.rows.items():
+            if r.get(col) == value and (clone is None or c == clone):
+                return o
+        return None
 
     async def fetchval(self, sql, *a):
-        if "SELECT trade_id" in sql:
-            return self.rows.get((a[0], a[1]))
+        if "SELECT short_id" in sql:
+            return (self.rows.get((a[0], a[1])) or {}).get("short")
         if "SELECT owner_id" in sql:
-            return next((k[0] for k, t in self.rows.items() if t == a[0] and k[1] == a[1]), None)
+            col = "short" if "short_id =" in sql else "words"
+            return self._owner_of(col, a[0], a[1])
 
-    async def execute(self, sql, owner, clone, tid):
-        self.rows.setdefault((owner, -1 if clone is None else clone), tid)
+    async def fetchrow(self, sql, *a):
+        col = "short" if "short_id =" in sql else "words"
+        for (o, c), r in self.rows.items():
+            if r.get(col) == a[0]:
+                return {"owner_id": o, "clone_id": None if c == -1 else c}
+        return None
+
+    async def execute(self, sql, owner, clone_key, *rest):
+        if self.clash_next:
+            self.clash_next -= 1
+            if sql.startswith("UPDATE"):
+                raise Exception('duplicate key value violates unique constraint "ux_cat_owner_ids_short"')
+            return "INSERT 0 0"
+        if sql.startswith("UPDATE"):
+            r = self.rows.get((owner, clone_key))
+            if r is not None and r.get("short") is None:
+                r["short"] = rest[0]
+                return "UPDATE 1"
+            return "UPDATE 0"
+        key = (owner, -1 if clone_key is None else clone_key)
+        if key in self.rows or any(r.get("short") == rest[0] for r in self.rows.values()):
+            return "INSERT 0 0"
+        self.rows[key] = {"short": rest[0], "words": None}
+        return "INSERT 0 1"
 
 
 class FakePool:
@@ -95,13 +126,14 @@ def _patch_pool(monkeypatch):
 def test_id_is_fixed_per_owner_and_separate_per_bot(monkeypatch):
     _patch_pool(monkeypatch)
     a1 = run(ids.get_or_create(1, None))
+    assert ids.normalize_short(a1) == a1
     assert run(ids.get_or_create(1, None)) == a1
     assert run(ids.get_or_create(2, None)) != a1
     other_bot = run(ids.get_or_create(1, 7))
     assert run(ids.find_owner(a1, None)) == 1
     assert run(ids.find_owner(a1, 7)) is None             # the main bot's ID doesn't exist on a clone
     assert run(ids.find_owner(other_bot, 7)) == 1
-    assert run(ids.find_owner("not seven words", None)) is None
+    assert run(ids.find_owner("not an id", None)) is None
 
 
 def test_safe_get_never_raises(monkeypatch):
@@ -156,7 +188,8 @@ def test_modal_refuses_free_unknown_and_self(monkeypatch):
         def __str__(s): return s.t
     # free server
     monkeypatch.setattr(cs, "is_premium", AsyncMock(return_value=False))
-    modal.trade_id = T("a b c d e f g")
+    monkeypatch.setattr(ids, "find_identity", AsyncMock(return_value=(99, None)))     # exists, but not a member of this server
+    modal.trade_id = T("142574D")
     i = _interaction()
     run(modal.on_submit(i))
     assert "Premium" in i.response.send_message.call_args.args[0]
@@ -165,7 +198,7 @@ def test_modal_refuses_free_unknown_and_self(monkeypatch):
     monkeypatch.setattr(ids, "find_identity", AsyncMock(return_value=None))
     i = _interaction()
     run(modal.on_submit(i))
-    assert "don't know that ID" in i.response.send_message.call_args.args[0]
+    assert "don't know that ID" in i.response.send_message.call_args.args[0] and ids.lookup_allowed(10)
     # own id
     monkeypatch.setattr(ids, "find_identity", AsyncMock(return_value=(10, None)))
     i = _interaction()

@@ -421,8 +421,8 @@ async def _member_of(guild, user_id: int):
 
 
 class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
-    trade_id = discord.ui.TextInput(label="Their 7-word trade ID", min_length=7, max_length=120,
-                                    placeholder="maple-otter-river-cloud-pepper-lantern-fox")
+    trade_id = discord.ui.TextInput(label="Their trade ID", min_length=7, max_length=120,
+                                    placeholder="142574D")
 
     def __init__(self, parent: "CollectionView"):
         super().__init__()
@@ -431,7 +431,18 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
     async def on_submit(self, interaction: discord.Interaction):
         client = interaction.client
         guild = interaction.guild
-        ident = await cat_ids.find_identity(str(self.trade_id))      # looks across the main bot and every clone
+        typed = str(self.trade_id)
+        if cat_ids.parse(typed) is None:
+            # Wrong shape or a wrong check letter: a typo, caught without looking anything up (and not counted as a guess).
+            await interaction.response.send_message(
+                "🤔 That doesn't look like a trade ID. It is 6 digits and a letter, like `142574D`. Check it and try again "
+                "(ask them to open **My cats** and copy theirs).", ephemeral=True)
+            return
+        if not cat_ids.lookup_allowed(interaction.user.id):
+            await interaction.response.send_message(
+                "😺 That's a lot of IDs that don't exist. Please wait a little while and try again.", ephemeral=True)
+            return
+        ident = await cat_ids.find_identity(typed)      # looks across the main bot and every clone
         owner_id, their_clone = ident if ident else (None, None)
         member = None
         if owner_id is not None and owner_id != interaction.user.id and guild is not None:
@@ -441,14 +452,16 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
                 and not cat_ids.can_trade_across_servers(premium):
             # Free server and the ID isn't a member here. Unknown ID and outside person get the SAME answer, so
             # nobody can use this box to find out whether some ID exists.
+            cat_ids.note_failed_lookup(interaction.user.id)         # same answer as "unknown ID", so it counts the same
             await interaction.response.send_message(
                 "🤔 I can't find that ID **in this server**. Free servers trade by ID with members of this server only "
                 "(ask them to open **My cats** and copy their ID). ⭐ **Premium** servers can trade with anyone from "
                 "any server.", ephemeral=True)
             return
         if owner_id is None:
+            cat_ids.note_failed_lookup(interaction.user.id)
             await interaction.response.send_message(
-                "🤔 I don't know that ID. It is exactly 7 words (like `maple-otter-river-cloud-pepper-lantern-fox`); "
+                "🤔 I don't know that ID. It is 6 digits and a letter (like `142574D`); "
                 "ask them to open **My cats** and copy theirs." if premium else
                 "🤔 I can't find that ID **in this server**. Free servers trade by ID with members of this server only "
                 "(ask them to open **My cats** and copy their ID). ⭐ **Premium** servers can trade with anyone from "
