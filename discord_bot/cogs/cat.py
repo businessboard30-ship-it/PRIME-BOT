@@ -24,6 +24,7 @@ import logging
 import random
 import time
 from collections import deque
+from datetime import datetime
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -279,9 +280,13 @@ CAT_TITLES = (
 )
 
 
-def cat_embed(url: str) -> discord.Embed:
+def cat_embed(url: str, next_at: Optional[datetime] = None) -> discord.Embed:
     embed = discord.Embed(title=random.choice(CAT_TITLES), color=discord.Color.from_rgb(255, 182, 193))
     embed.set_image(url=url)
+    if next_at is not None:
+        ts = int(next_at.timestamp())
+        # Discord shows <t:..> in each viewer's own time zone, so "around 8:40 PM" is right for everybody
+        embed.add_field(name="⏰ Next cat", value=f"Around <t:{ts}:t> (<t:{ts}:R>)", inline=False)
     return embed
 
 
@@ -312,7 +317,7 @@ async def send_cat(interaction: discord.Interaction) -> None:
     await interaction.followup.send(embed=cat_embed(url), view=view)
 
 
-async def post_cat(bot, guild: discord.Guild, channel_id: int) -> bool:
+async def post_cat(bot, guild: discord.Guild, channel_id: int, next_at: Optional[datetime] = None) -> bool:
     """Posts one cat in a server channel. False if the channel is gone / not allowed / no cat was available."""
     ch = guild.get_channel(channel_id)
     if not isinstance(ch, discord.TextChannel):
@@ -341,7 +346,7 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int) -> bool:
         if spawn_id is not None:
             from discord_bot.cogs._views_cat_adopt import spawn_view
             kwargs["view"] = spawn_view(spawn_id)
-        msg = await ch.send(embed=cat_embed(url), allowed_mentions=discord.AllowedMentions.none(), **kwargs)
+        msg = await ch.send(embed=cat_embed(url, next_at), allowed_mentions=discord.AllowedMentions.none(), **kwargs)
     except discord.HTTPException:
         logger.info("[cat] couldn't post in channel %s", channel_id, exc_info=True)
         return False
@@ -457,8 +462,10 @@ class CatCog(commands.Cog):
             # one cat per turn, rotating through the channels the server picked (the daily amount is per server)
             start = int(time.time() // max(gap, 1)) % len(channels)
             done = False
+            # claim() just scheduled the next cat: show that time on this one
+            next_at = cat_setup.upcoming(cfg, await cat_setup.get_next_at(cfg.guild_id, clone_id))
             for channel_id in channels[start:] + channels[:start]:
-                if await post_cat(self.bot, guild, channel_id):
+                if await post_cat(self.bot, guild, channel_id, next_at):
                     posted += 1
                     done = True
                     break

@@ -10,6 +10,9 @@ FOOTER = "Just for fun: play coins only, no real money."
 
 def sections() -> List[Tuple[str, str]]:
     return [
+        ("⏰ Spawns",
+         "Cats appear by themselves in the channel(s) the server owner picked with **/catsetup** (spawn hours are in UTC). "
+         "Every cat shows a **Next cat** time, in your own time zone, so you know when to come back."),
         ("🐾 Adopting",
          "Tap **Adopt me!** on a cat. The first person to tap gets it, and it comes with some coins "
          f"(sometimes a {cat_wallet.DIAMOND} diamond). You can keep up to {cat_adopt.MAX_CATS} cats."),
@@ -27,6 +30,14 @@ def sections() -> List[Tuple[str, str]]:
         ("🎁 Every day",
          "Use **/cat** for the full panel: 💖 Daily care (streak rewards), 🎯 Daily quests, 🏅 Badges, "
          f"✨ Cosmetics, 🔎 Wishlist (up to {cat_wishlist.MAX_OPEN} wants) and 📖 your profile."),
+        ("📖 Profile",
+         "Your profile shows your Discord picture, bio, collection size, rarest cat, showcase and badges. Edit your bio, "
+         "📌 pin cats to show off, 📣 share it, or 🙈 hide it. Look at anyone's with **/cat profile:@player**."),
+        ("🏆 Leaderboard",
+         "Top collectors and richest players, across all servers. Tap **Leaderboard** on /cat."),
+        ("🛠️ For server owners",
+         "**/catsetup** (needs Manage Server): pick the channel, the pace and the spawn hours, then turn it on. "
+         "The bot needs Send Messages and Embed Links there. Premium servers get more channels and more cats a day."),
     ]
 
 

@@ -250,6 +250,30 @@ async def claim(guild_id: int, clone_id: Optional[int], gap: float) -> bool:
     return got is not None
 
 
+def upcoming(cfg: "CatConfig", next_at: Optional[datetime], now: Optional[datetime] = None) -> Optional[datetime]:
+    """When the server's next cat will actually appear: the scheduled time, pushed to the next opening of the
+    server's spawn hours if that time falls outside them. None when nothing is scheduled."""
+    if next_at is None:
+        return None
+    if next_at.tzinfo is None:
+        next_at = next_at.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    when = max(next_at, now)
+    return next_window_start(cfg.active_start, cfg.active_end, when)
+
+
+async def get_next_at(guild_id: int, clone_id: Optional[int]) -> Optional[datetime]:
+    """The next scheduled cat time of a server (set by claim), or None. Never raises."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT next_at FROM cat_guild_config WHERE guild_id = $1 AND COALESCE(clone_id, -1) = $2",
+                guild_id, _key(clone_id))
+    except Exception:
+        return None
+
+
 async def defer(guild_id: int, clone_id: Optional[int], until: datetime) -> None:
     """Outside the server's active hours: nothing is posted, just try again when the window opens."""
     pool = await _pool()

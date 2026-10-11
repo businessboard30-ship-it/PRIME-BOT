@@ -133,41 +133,24 @@ def test_tick_still_sends_without_a_picture(monkeypatch):
     assert send.await_args.kwargs["embed"] is None
 
 
-# ── AI chat: [[CAT]] token and the game knowledge ────────────────────────
-def test_cat_token_becomes_one_marker():
+# ── AI chat: the AI never produces or attaches a cat ─────────────────────
+def test_cat_token_is_deleted_and_nothing_is_attached():
     out = af.render_cat_image("Set it up with /catsetup. [[CAT]]")
-    assert "[[" not in out and out.count(af.CAT_IMAGE_MARKER) == 1
-    assert af.render_cat_image("hi [[cat]] and [[ CAT ]]").count(af.CAT_IMAGE_MARKER) == 1
+    assert out == "Set it up with /catsetup."
+    assert af.render_cat_image("hi [[cat]] and [[ CAT ]]") == "hi and"
     assert af.render_cat_image("no token here") == "no token here"
 
 
-def test_marker_is_stripped_before_sending():
-    text, had = ai_tools.strip_cat_marker(f"Try it! {af.CAT_IMAGE_MARKER}")
-    assert had and text == "Try it!" and af.CAT_IMAGE_MARKER not in text
-    assert ai_tools.strip_cat_marker("plain") == ("plain", False)
+def test_ai_has_no_cat_picture_code_left():
+    src = (ROOT / "discord_bot/cogs/ai_tools.py").read_text()
+    for gone in ("strip_cat_marker", "cat_image_embed", "send_with_cat", "CAT_IMAGE_MARKER"):
+        assert gone not in src
+    assert not hasattr(af, "CAT_IMAGE_MARKER")
 
 
-def test_ai_knows_how_to_set_up_the_game_and_the_new_features():
+def test_ai_knows_how_to_set_up_the_game_but_never_sends_a_cat():
     src = (ROOT / "modules/ai_features.py").read_text()
-    for needle in ("/catsetup", "spawn hours", "Turn on", "trade ID", "Adopt me!", "{CAT_TOKEN}"):
+    for needle in ("/catsetup", "spawn hours", "Turn on", "trade ID", "Adopt me!"):
         assert needle in src
-    assert "never write an image link" in src
-
-
-def test_cat_picture_is_attached_and_a_refused_embed_falls_back():
-    calls = []
-
-    async def send(embed=None):
-        calls.append(embed)
-        if embed is not None:
-            raise discord.HTTPException(MagicMock(status=400), "bad embed")
-        return "sent"
-    assert run(ai_tools.send_with_cat(send, discord.Embed())) == "sent"
-    assert calls[0] is not None and calls[1] is None            # tried with the picture, then without
-    calls.clear()
-    assert run(ai_tools.send_with_cat(send, None)) == "sent" and calls == [None]
-
-
-def test_missing_picture_never_breaks_the_reply(monkeypatch):
-    monkeypatch.setattr(cat, "fetch_cat_url", AsyncMock(side_effect=RuntimeError("down")))
-    assert run(ai_tools.cat_image_embed(SimpleNamespace(), None)) is None
+    assert "never send, show, attach or produce a cat picture" in src
+    assert "{CAT_TOKEN} at the very end" not in src
