@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "79"
+SCHEMA_VERSION = "80"
+# "79" -> "80" adds 035_cat_wallet.sql (cat_wallets: play coins and diamonds earned by adopting cats). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "78" -> "79" adds 034_cat_seen.sql (cat_pool_seen: which pooled cat pictures each server has already seen, so servers get an unseen one from the pool before the cat API is called). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "77" -> "78" adds 033_cat_adopt.sql (cat_spawns: one row per adoptable cat spawn; cat_adoptions: adopted cats, owner, name, rarity, trait, trade count). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "76" -> "77" adds 033_cat_pace.sql (cat_guild_config.pace_percent: a server can ask for fewer cats a day than its plan). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5592,6 +5593,11 @@ class Database:
         cat_seen_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "034_cat_seen.sql"
         if cat_seen_migration.exists():
             await conn.execute(cat_seen_migration.read_text())
+
+        # Cat wallet (play coins and diamonds). Additive/idempotent.
+        cat_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "035_cat_wallet.sql"
+        if cat_wallet_migration.exists():
+            await conn.execute(cat_wallet_migration.read_text())
 
         # --- Trading cards (cross-server marketplace) --------------------------
         # Deliberately GLOBAL (no guild_id anywhere here) — the whole point
