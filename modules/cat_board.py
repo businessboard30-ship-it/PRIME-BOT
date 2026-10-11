@@ -3,7 +3,8 @@
 """
 Cat leaderboards (play game only). Counts every cat a person owns across the main bot and all clones.
 
-  * Collectors: rarity points (common 1, uncommon 3, rare 8, legendary 25), then number of cats.
+  * Collectors: rarity points (common 1, uncommon 3, rare 8, legendary 25) plus 2 for every rank a cat has been
+    ranked up (see cat_rank.py), then number of cats.
   * Richest: coins in their wallets (a diamond counts as 10,000 coins), summed across bots.
 """
 
@@ -17,7 +18,7 @@ POINTS = {"common": 1, "uncommon": 3, "rare": 8, "legendary": 25}
 MEDALS = ("\U0001F947", "\U0001F948", "\U0001F949")
 
 _POINTS_SQL = ("CASE rarity WHEN 'legendary' THEN 25 WHEN 'rare' THEN 8 WHEN 'uncommon' THEN 3 ELSE 1 END")
-_COLLECTORS = (f"SELECT owner_id, COUNT(*) AS cats, SUM({_POINTS_SQL}) AS score, "
+_COLLECTORS = (f"SELECT owner_id, COUNT(*) AS cats, SUM({_POINTS_SQL} + cat_rank * 2) AS score, "
                "COUNT(*) FILTER (WHERE rarity = 'legendary') AS legendary FROM cat_adoptions GROUP BY owner_id")
 _RICHEST = ("SELECT owner_id, SUM(coins + diamonds::bigint * $1) AS score FROM cat_wallets GROUP BY owner_id "
             "HAVING SUM(coins + diamonds::bigint * $1) > 0")

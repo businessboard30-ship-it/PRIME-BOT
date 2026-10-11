@@ -18,10 +18,12 @@ from typing import List, Optional
 import discord
 
 from modules import cat_adopt as ca
+from modules import cat_announce
 from modules import cat_ids
 from modules import cat_log
 from modules import cat_setup as cs
 from modules import cat_pool
+from modules import cat_rank as cr
 from modules import cat_wallet
 
 logger = logging.getLogger(__name__)
@@ -59,7 +61,8 @@ def cat_line(cat: ca.Cat) -> str:
 async def cat_embed_full(client, cat: ca.Cat, position: str = "") -> discord.Embed:
     e = discord.Embed(title=f"{ca.RARITY_EMOJI.get(cat.rarity, '🐱')} {cat.name}", color=PINK)
     e.description = (f"**Rarity:** {ca.rarity_badge(cat.rarity)}\n**Personality:** {cat.trait}\n"
-                     f"**Times traded:** {cat.traded_count}")
+                     f"**Rank:** {cr.badge(cat.cat_rank)}\n**Times traded:** {cat.traded_count}\n"
+                     f"**Cat ID:** #{cat.id}")
     try:
         url = await cat_pool.url_for(client, cat.pool_id)
     except Exception:
@@ -113,8 +116,8 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
         cat_log.record(interaction.client, "adopt", **_event(interaction, cat))
         embed = (interaction.message.embeds[0] if interaction.message and interaction.message.embeds
                  else discord.Embed(color=PINK))
-        embed.description = (f"💖 **{cat.name}** was adopted by {interaction.user.mention}!\n"
-                             f"{ca.rarity_badge(cat.rarity)} · {cat.trait}")
+        embed.description = cat_announce.adopt_text(interaction.user.mention, cat.name, cat.id,
+                                                    ca.rarity_badge(cat.rarity), cat.trait, cat.rarity)
         await interaction.response.edit_message(embed=embed, view=spawn_view(self.spawn_id, adopted=True))
         await interaction.followup.send(
             f"🎉 You adopted **{cat.name}**, a {ca.rarity_badge(cat.rarity)} {cat.trait.lower()} cat! "
@@ -172,6 +175,7 @@ class CollectionView(discord.ui.View):
         super().__init__(timeout=600)
         self.client, self.user, self.cats, self.index = client, user, cats, index
         self.confirm_release = False
+        self.confirm_rank_for = None        # (cat id, rank) the person tapped once; a second tap spends the coins
         self.wallet = cat_wallet.Wallet()
         self._build()
 
@@ -217,6 +221,7 @@ class CollectionView(discord.ui.View):
                              if pages > 1 else "Jump to a cat"),
                 options=[discord.SelectOption(label=f"{page * JUMP_PAGE + i + 1}. {c.name} \u00b7 {c.rarity.title()}"[:100],
                                               value=str(page * JUMP_PAGE + i), emoji=ca.RARITY_EMOJI.get(c.rarity),
+                                              description=(cr.badge(c.cat_rank) if c.cat_rank else None),
                                               default=(page * JUMP_PAGE + i) == self.index)
                          for i, c in enumerate(chunk)], row=2)
             jump.callback = self._jump
@@ -227,6 +232,47 @@ class CollectionView(discord.ui.View):
             b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=have < 1, row=1)
             b.callback = fn
             self.add_item(b)
+        cost = cr.next_cost(self.current)
+        if cost is None:
+            rb = discord.ui.Button(label="Top rank \U0001F31F", style=discord.ButtonStyle.secondary, disabled=True, row=1)
+        else:
+            armed = self.confirm_rank_for == (self.current.id, self.current.cat_rank)
+            rb = discord.ui.Button(
+                label=(f"Tap again: spend {cost:,} coins" if armed else f"\u2B50 Rank up \u00b7 {cost:,} coins")[:80],
+                style=discord.ButtonStyle.danger if armed else discord.ButtonStyle.primary, row=1)
+        rb.callback = self._rank_up
+        self.add_item(rb)
+
+    async def _rank_up(self, interaction):
+        cat = self.current
+        key = (cat.id, cat.cat_rank)
+        if self.confirm_rank_for != key:                     # first tap: just arm the button
+            self.confirm_rank_for = key
+            await self._show(interaction)
+            return
+        self.confirm_rank_for = None
+        try:
+            res = await cr.rank_up(cat.id, interaction.user.id, _clone_id(self.client), cat.cat_rank)
+        except Exception:
+            logger.exception("[cat-rank] rank up failed for cat %s", cat.id)
+            await interaction.response.send_message("😿 Something went wrong, try again in a moment.", ephemeral=True)
+            return
+        note = {
+            "ok": f"\u2B50 **{cat.name}** is now {cr.badge(res.rank)}! (spent {res.cost:,} coins, {res.coins:,} left)",
+            "poor": f"You need {res.cost:,} coins to rank **{cat.name}** up and you have {res.coins:,}. "
+                    "Adopt cats, sell a cat or convert a diamond to earn more.",
+            "listed": f"**{cat.name}** is for sale. Take it off the market first (Market button).",
+            "max": f"**{cat.name}** is already at the top rank.",
+            "stale": f"**{cat.name}**'s rank just changed. Have a look and try again.",
+            "not_yours": "That cat isn't yours any more.",
+        }.get(res.status, "Something went wrong, try again in a moment.")
+        await self.reload(interaction.user.id)
+        await self.refresh_wallet()
+        self._build()
+        await interaction.response.edit_message(content=note, embed=await self.embed(), view=self)
+        if res.status == "ok":
+            await cat_announce.announce(interaction, cat_announce.rank_up_text(
+                interaction.user.mention, cat.name, cat.id, res.rank), gold=res.rank >= cr.MAX_RANK)
 
     async def _convert(self, interaction, count) -> None:
         try:
@@ -302,9 +348,11 @@ class CollectionView(discord.ui.View):
             await interaction.response.send_message("Trades happen in a server channel, not in DMs.", ephemeral=True)
             return
         view = TradeTargetView(self)
+        cat = self.current
         await interaction.response.edit_message(
-            content=f"🤝 Who do you want to trade **{self.current.name}** with? (Just for fun, no money.)",
-            embed=None, view=view)
+            content=(f"🤝 **{cat.name}** (cat #{cat.id}, {cr.badge(cat.cat_rank)}): pick a member to trade or gift with, "
+                     "use Trade by ID, or sell it for coins. (Trades and gifts are just for fun.)"),
+            embed=await cat_embed_full(self.client, cat, "This is the cat you are trading or selling"), view=view)
 
 
 # ── trade flow ────────────────────────────────────────────────────────────
