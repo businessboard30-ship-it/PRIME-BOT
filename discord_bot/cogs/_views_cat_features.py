@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+
 import discord
 
 from modules import cat_adopt
+from modules import cat_announce
 from modules import cat_features
 from modules import cat_quests
+from modules import cat_share
 from modules import cat_wallet
 from modules import cat_wishlist
 
@@ -33,11 +37,13 @@ class CareButton(discord.ui.Button):
         except Exception:
             await interaction.response.send_message("Daily care is temporarily unavailable. Try again shortly.", ephemeral=True)
             return
+        share = discord.ui.View(timeout=120)
+        share.add_item(ShareButton("care", streak=result.streak))
         if result.status == "already":
-            await interaction.response.send_message(f"You already cared for your cats today. Streak: **{result.streak} days**.", ephemeral=True)
+            await interaction.response.send_message(f"You already cared for your cats today. Streak: **{result.streak} days**.", view=share, ephemeral=True)
             return
         diamond = f" and 💎 **{result.diamonds} diamond**" if result.diamonds else ""
-        await interaction.response.send_message(f"💖 Care complete! Streak: **{result.streak} days**. You earned 🪙 **{result.coins} coins**{diamond}.", ephemeral=True)
+        await interaction.response.send_message(f"💖 Care complete! Streak: **{result.streak} days**. You earned 🪙 **{result.coins} coins**{diamond}.", view=share, ephemeral=True)
 
 
 class CosmeticBuySelect(discord.ui.Select):
@@ -88,21 +94,166 @@ class ProfileButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         try:
-            profile = await cat_features.public_profile(interaction.user.id, getattr(interaction.client, "clone_id", None))
+            profile = await cat_features.public_profile(interaction.user.id, _clone(interaction))
+            badges = await cat_quests.owned_badges(interaction.user.id, _clone(interaction))
         except Exception:
             await interaction.response.send_message("Your profile is temporarily unavailable.", ephemeral=True)
             return
+        embed = cat_share.profile_embed(interaction.user.display_name, profile, badges)
         if not profile["show_profile"]:
-            await interaction.response.send_message("Your profile is hidden. You can make it public from profile settings.", ephemeral=True)
+            embed.set_footer(text="Hidden: only you can see this. Tap Show profile to let others see it.")
+        await interaction.response.send_message(embed=embed, view=ProfileView(profile), ephemeral=True)
+
+
+class ShareButton(discord.ui.Button):
+    """Posts a card publicly, only because the player tapped it. Rebuilt from the database at that moment."""
+
+    def __init__(self, kind: str, streak: int = 0, row=None):
+        super().__init__(label="Share", emoji="📣", style=discord.ButtonStyle.success, row=row)
+        self.kind, self.streak = kind, streak
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message("Sharing only works in a server channel.", ephemeral=True)
             return
-        embed = discord.Embed(title=f"📖 {interaction.user.display_name}'s cat profile", color=GOLD)
-        embed.description = profile["bio"] or "No bio yet — your cats are waiting for a story."
-        embed.add_field(name="Collection", value=f"🐾 **{profile['collection_size']}** cats", inline=True)
-        rarest = profile["rarest"]
-        embed.add_field(name="Rarest", value=rarest and f"{rarest.name} · {rarest.rarity.title()}" or "None yet", inline=True)
-        if profile["pinned"]:
-            embed.add_field(name="Showcase", value="\n".join(f"🐱 **{cat.name}** · {cat.trait}" for cat in profile["pinned"]), inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        wait = cat_share.cooldown_left(interaction.user.id, self.kind)
+        if wait > 0:
+            await interaction.response.send_message(f"You just shared that. Try again in {wait:.0f}s.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            card = await self._card(interaction)
+        except Exception:
+            await interaction.followup.send("Sharing is temporarily unavailable.", ephemeral=True)
+            return
+        if isinstance(card, str):
+            await interaction.followup.send(card, ephemeral=True)
+            return
+        posted = await (cat_announce.announce(interaction, card[0]) if card[0] is not None
+                        else cat_announce.announce_embed(interaction, card[1]))
+        if posted:
+            cat_share.mark_shared(interaction.user.id, self.kind)
+        else:
+            await interaction.followup.send("I couldn't post in this channel.", ephemeral=True)
+
+    async def _card(self, interaction):
+        """Returns a private message (str) when there is nothing to share, else (text, None) or (None, embed)."""
+        who, clone = interaction.user, _clone(interaction)
+        if self.kind == "care":
+            return cat_share.care_text(who.mention, self.streak), None
+        if self.kind == "badges":
+            embed = cat_share.badges_embed(who.display_name, await cat_quests.owned_badges(who.id, clone))
+            return "You have no badges to show yet." if embed is None else (None, embed)
+        profile = await cat_features.public_profile(who.id, clone)
+        if not profile["show_profile"]:
+            return "Your profile is hidden, so it can't be shared. Tap Show profile first."
+        badges = await cat_quests.owned_badges(who.id, clone)
+        return None, cat_share.profile_embed(who.display_name, profile, badges)
+
+
+class BioModal(discord.ui.Modal, title="Edit your cat bio"):
+    bio = discord.ui.TextInput(label="Bio (plain text)", style=discord.TextStyle.paragraph, required=False,
+                               max_length=cat_share.BIO_MAX, placeholder="Tell people about your cats")
+
+    def __init__(self, current: str = ""):
+        super().__init__()
+        self.bio.default = current or None
+
+    async def on_submit(self, interaction: discord.Interaction):
+        text = cat_share.clean_bio(self.bio.value)
+        if text is None:
+            await interaction.response.send_message("A bio can't contain links or invites. Keep it to plain text.", ephemeral=True)
+            return
+        await _update_profile(interaction, bio=text, done="📖 Bio saved.")
+
+
+async def _update_profile(interaction, bio=None, pinned=None, show=None, done="Saved."):
+    """Change one thing on the profile and keep the rest. Never raises."""
+    try:
+        cur = await cat_features.public_profile(interaction.user.id, _clone(interaction))
+        await cat_features.save_profile(
+            interaction.user.id, _clone(interaction),
+            cur["bio"] if bio is None else bio,
+            [c.id for c in cur["pinned"]] if pinned is None else pinned,
+            cur["show_profile"] if show is None else show)
+    except Exception:
+        await interaction.response.send_message("Your profile is temporarily unavailable.", ephemeral=True)
+        return
+    await interaction.response.send_message(done, ephemeral=True)
+
+
+class PinSelect(discord.ui.Select):
+    def __init__(self, cats):
+        super().__init__(placeholder="Pick up to 3 cats to show off…", min_values=1, max_values=min(3, len(cats)), options=[
+            discord.SelectOption(label=c.name[:100], value=str(c.id), emoji=cat_adopt.RARITY_EMOJI.get(c.rarity),
+                                 description=f"{c.rarity.title()} · {c.trait}"[:100]) for c in cats])
+
+    async def callback(self, interaction: discord.Interaction):
+        await _update_profile(interaction, pinned=[int(v) for v in self.values], done="🐱 Showcase updated.")
+
+
+class ProfileView(discord.ui.View):
+    def __init__(self, profile: dict):
+        super().__init__(timeout=180)
+        self.profile = profile
+        share = ShareButton("profile", row=0)
+        share.disabled = not profile["show_profile"]
+        self.add_item(share)
+        for label, emoji, cb in (("Edit bio", "✏️", self._bio), ("Pin cats", "📌", self._pin), ("Clear pins", "🧹", self._clear)):
+            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=0)
+            b.callback = cb
+            self.add_item(b)
+        vis = discord.ui.Button(label="Hide profile" if profile["show_profile"] else "Show profile",
+                                emoji="🙈" if profile["show_profile"] else "👀", style=discord.ButtonStyle.secondary, row=0)
+        vis.callback = self._toggle
+        self.add_item(vis)
+
+    async def _bio(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BioModal(self.profile["bio"]))
+
+    async def _pin(self, interaction: discord.Interaction):
+        try:
+            cats = (await cat_adopt.list_cats(interaction.user.id, _clone(interaction)))[:25]
+        except Exception:
+            await interaction.response.send_message("Your cats are temporarily unavailable.", ephemeral=True)
+            return
+        if not cats:
+            await interaction.response.send_message("Adopt a cat first, then you can pin it.", ephemeral=True)
+            return
+        view = discord.ui.View(timeout=120)
+        view.add_item(PinSelect(cats))
+        note = " Showing your 25 rarest." if len(cats) == 25 else ""
+        await interaction.response.send_message("Which cats should your profile show off?" + note, view=view, ephemeral=True)
+
+    async def _clear(self, interaction: discord.Interaction):
+        await _update_profile(interaction, pinned=[], done="🧹 Showcase cleared.")
+
+    async def _toggle(self, interaction: discord.Interaction):
+        now_show = not self.profile["show_profile"]
+        await _update_profile(interaction, show=now_show,
+                              done="👀 Your profile is public." if now_show else "🙈 Your profile is hidden from others.")
+
+
+async def show_public_profile(interaction: discord.Interaction, target) -> None:
+    """`/cat profile:@player`: anyone can look. A hidden profile stays hidden, and the card never has private data."""
+    if getattr(target, "bot", False):
+        await interaction.response.send_message("Bots don't collect cats 🐾", ephemeral=True)
+        return
+    try:
+        profile = await asyncio.wait_for(cat_features.public_profile(target.id, _clone(interaction)), 2.0)
+        badges = await asyncio.wait_for(cat_quests.owned_badges(target.id, _clone(interaction)), 2.0)
+    except Exception:
+        await interaction.response.send_message("Profiles are temporarily unavailable. Try again shortly.", ephemeral=True)
+        return
+    if not profile["show_profile"] and target.id != interaction.user.id:
+        await interaction.response.send_message("That player keeps their cat profile private.", ephemeral=True)
+        return
+    if not profile["collection_size"] and not profile["bio"]:
+        await interaction.response.send_message(f"{target.display_name} hasn't adopted any cats yet.", ephemeral=True)
+        return
+    embed = cat_share.profile_embed(target.display_name, profile, badges)
+    mine_hidden = not profile["show_profile"]
+    await interaction.response.send_message(embed=embed, ephemeral=mine_hidden, allowed_mentions=discord.AllowedMentions.none())
 
 
 def _clone(interaction):
@@ -163,7 +314,10 @@ class BadgesButton(discord.ui.Button):
         text = "\n".join(lines)
         if new:
             text = "🎉 New: " + ", ".join(cat_quests.badge_line(s) for s in new) + "\n\n" + text
-        await interaction.response.send_message(embed=discord.Embed(title="🏅 Collection badges", description=text, color=GOLD), ephemeral=True)
+        view = discord.ui.View(timeout=120)
+        if have or new:
+            view.add_item(ShareButton("badges"))
+        await interaction.response.send_message(embed=discord.Embed(title="🏅 Collection badges", description=text, color=GOLD), view=view, ephemeral=True)
 
 
 # ── Wishlist ─────────────────────────────────────────────────────────────────
