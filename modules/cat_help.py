@@ -10,6 +10,9 @@ FOOTER = "Just for fun: play coins only, no real money."
 
 def sections() -> List[Tuple[str, str]]:
     return [
+        ("⏰ Spawns",
+         "Cats appear by themselves in the channel(s) the server owner picked with **/catsetup** (spawn hours are in UTC). "
+         "Every cat shows a **Next cat** time, in your own time zone, so you know when to come back."),
         ("🐾 Adopting",
          "Tap **Adopt me!** on a cat. The first person to tap gets it, and it comes with some coins "
          f"(sometimes a {cat_wallet.DIAMOND} diamond). You can keep up to {cat_adopt.MAX_CATS} cats."),
@@ -27,11 +30,19 @@ def sections() -> List[Tuple[str, str]]:
         ("🎁 Every day",
          "Use **/cat** for the full panel: 💖 Daily care (streak rewards), 🎯 Daily quests, 🏅 Badges, "
          f"✨ Cosmetics, 🔎 Wishlist (up to {cat_wishlist.MAX_OPEN} wants) and 📖 your profile."),
+        ("📖 Profile",
+         "Your profile shows your Discord picture, bio, collection size, rarest cat, showcase and badges. Edit your bio, "
+         "📌 pin cats to show off, 📣 share it, or 🙈 hide it. Look at anyone's with **/cat profile:@player**."),
         ("📣 Showing off",
          "Tap **Share** on your profile, badges or care streak to post it in the channel. Anyone can look at a profile with "
          "`/cat profile:@player` (hidden profiles stay hidden). In **My profile** you can edit your bio, pin up to 3 cats and "
          "hide or show it. A wishlist post can also go to the channel, and the leaderboard has **Post to channel**. "
          "Server managers choose in `/catsetup` whether the bot posts all, milestones only, or nothing."),
+        ("🏆 Leaderboard",
+         "Top collectors and richest players, across all servers. Tap **Leaderboard** on /cat."),
+        ("🛠️ For server owners",
+         "**/catsetup** (needs Manage Server): pick the channel, the pace and the spawn hours, then turn it on. "
+         "The bot needs Send Messages and Embed Links there. Premium servers get more channels and more cats a day."),
     ]
 
 

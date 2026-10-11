@@ -43,9 +43,11 @@ def mark_shared(user_id: int, kind: str, now: Optional[float] = None) -> None:
     _last_share[(user_id, kind)] = time.monotonic() if now is None else now
 
 
-def profile_embed(display_name: str, profile: dict, badges) -> discord.Embed:
+def profile_embed(display_name: str, profile: dict, badges, avatar_url: Optional[str] = None) -> discord.Embed:
     """Public card. Only collection size, rarest cat, pinned (still owned) cats and badge names."""
     e = discord.Embed(title=f"\U0001F4D6 {display_name}'s cat profile", color=GOLD)
+    if avatar_url:
+        e.set_thumbnail(url=avatar_url)          # the player's own Discord picture, nothing private
     e.description = profile.get("bio") or "No bio yet \u2014 their cats are waiting for a story."
     e.add_field(name="Collection", value=f"\U0001F43E **{profile['collection_size']}** cats", inline=True)
     rarest = profile.get("rarest")

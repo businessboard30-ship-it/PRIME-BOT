@@ -102,7 +102,7 @@ class ProfileButton(discord.ui.Button):
         except Exception:
             await interaction.response.send_message("Your profile is temporarily unavailable.", ephemeral=True)
             return
-        embed = cat_share.profile_embed(interaction.user.display_name, profile, badges)
+        embed = cat_share.profile_embed(interaction.user.display_name, profile, badges, _avatar(interaction.user))
         if not profile["show_profile"]:
             embed.set_footer(text="Hidden: only you can see this. Tap Show profile to let others see it.")
         await interaction.response.send_message(embed=embed, view=ProfileView(profile), ephemeral=True)
@@ -151,7 +151,7 @@ class ShareButton(discord.ui.Button):
         if not profile["show_profile"]:
             return "Your profile is hidden, so it can't be shared. Tap Show profile first."
         badges = await cat_quests.owned_badges(who.id, clone)
-        return None, cat_share.profile_embed(who.display_name, profile, badges)
+        return None, cat_share.profile_embed(who.display_name, profile, badges, _avatar(who))
 
 
 class BioModal(discord.ui.Modal, title="Edit your cat bio"):
@@ -254,9 +254,17 @@ async def show_public_profile(interaction: discord.Interaction, target) -> None:
     if not profile["collection_size"] and not profile["bio"]:
         await interaction.response.send_message(f"{target.display_name} hasn't adopted any cats yet.", ephemeral=True)
         return
-    embed = cat_share.profile_embed(target.display_name, profile, badges)
+    embed = cat_share.profile_embed(target.display_name, profile, badges, _avatar(target))
     mine_hidden = not profile["show_profile"]
     await interaction.response.send_message(embed=embed, ephemeral=mine_hidden, allowed_mentions=discord.AllowedMentions.none())
+
+
+def _avatar(user):
+    """The user's current Discord avatar (server one if they have it), or None. Never raises."""
+    try:
+        return user.display_avatar.url
+    except Exception:
+        return None
 
 
 def _clone(interaction):
