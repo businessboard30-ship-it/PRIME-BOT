@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import discord
 
+from modules import cat_adopt
 from modules import cat_features
 from modules import cat_quests
 from modules import cat_wallet
+from modules import cat_wishlist
 
 PINK = discord.Color.from_rgb(255, 182, 193)
 GOLD = discord.Color.gold()
@@ -16,6 +18,7 @@ def feature_button_view() -> discord.ui.View:
     view.add_item(CosmeticsButton())
     view.add_item(QuestsButton())
     view.add_item(BadgesButton())
+    view.add_item(WishlistButton())
     view.add_item(ProfileButton())
     return view
 
@@ -161,3 +164,159 @@ class BadgesButton(discord.ui.Button):
         if new:
             text = "🎉 New: " + ", ".join(cat_quests.badge_line(s) for s in new) + "\n\n" + text
         await interaction.response.send_message(embed=discord.Embed(title="🏅 Collection badges", description=text, color=GOLD), ephemeral=True)
+
+
+# ── Wishlist ─────────────────────────────────────────────────────────────────
+
+def _board_embed(wants, total: int, page: int, rarity) -> discord.Embed:
+    lines = [f"<@{w.owner_id}> is looking for {w.text()}" for w in wants]
+    desc = "\n".join(lines) or "Nobody is looking for anything yet. Be the first to post a want!"
+    e = discord.Embed(title="🔎 Cat wishlist" + (f" · {rarity}" if rarity else ""), description=desc, color=PINK)
+    pages = max(1, -(-total // cat_wishlist.PAGE_SIZE))
+    e.set_footer(text=f"Page {page + 1}/{pages} · {total} open · Got a match? Open My cats, then Trade / gift. Wants expire after "
+                      f"{cat_wishlist.LIFETIME_DAYS} days.")
+    return e
+
+
+class WishlistBoardView(discord.ui.View):
+    def __init__(self, page: int = 0, total: int = 0, rarity=None):
+        super().__init__(timeout=300)
+        self.page, self.rarity = page, rarity
+        pages = max(1, -(-total // cat_wishlist.PAGE_SIZE))
+        for label, delta, off in (("◀", -1, page <= 0), ("▶", 1, page >= pages - 1)):
+            b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=off, row=0)
+            b.callback = self._turn(delta)
+            self.add_item(b)
+        post = discord.ui.Button(label="Post a want", emoji="➕", style=discord.ButtonStyle.success, row=0)
+        post.callback = self._post
+        mine = discord.ui.Button(label="My wants", emoji="📝", style=discord.ButtonStyle.secondary, row=0)
+        mine.callback = self._mine
+        self.add_item(post)
+        self.add_item(mine)
+        sel = discord.ui.Select(placeholder="Show only…", row=1, options=[
+            discord.SelectOption(label="All rarities", value="any", default=rarity is None)] + [
+            discord.SelectOption(label=r.title(), value=r, emoji=cat_adopt.RARITY_EMOJI.get(r), default=rarity == r)
+            for r in cat_wishlist.RARITIES])
+        sel.callback = self._filter
+        self.add_item(sel)
+
+    async def _render(self, interaction, page: int, rarity, edit: bool = True):
+        wants, total = await cat_wishlist.board(page, rarity=rarity)
+        view = WishlistBoardView(page, total, rarity)
+        embed = _board_embed(wants, total, page, rarity)
+        if edit:
+            await interaction.response.edit_message(embed=embed, view=view)
+        else:
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    def _turn(self, delta):
+        async def cb(interaction: discord.Interaction):
+            try:
+                await self._render(interaction, max(0, self.page + delta), self.rarity)
+            except Exception:
+                await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
+        return cb
+
+    async def _filter(self, interaction: discord.Interaction):
+        v = interaction.data["values"][0]
+        try:
+            await self._render(interaction, 0, None if v == "any" else v)
+        except Exception:
+            await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
+
+    async def _post(self, interaction: discord.Interaction):
+        view = WishlistPostView()
+        await interaction.response.send_message("What are you looking for? Pick a rarity (and a trait if you like).",
+                                                view=view, ephemeral=True)
+
+    async def _mine(self, interaction: discord.Interaction):
+        try:
+            mine = await cat_wishlist.mine(interaction.user.id, _clone(interaction))
+        except Exception:
+            await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
+            return
+        if not mine:
+            await interaction.response.send_message("You have no open wants. Tap **Post a want** to add one.", ephemeral=True)
+            return
+        view = discord.ui.View(timeout=120)
+        view.add_item(WishlistRemoveSelect(mine))
+        await interaction.response.send_message("\n".join(f"• {w.text()}" for w in mine) + "\n\nPick one to remove it.",
+                                                view=view, ephemeral=True)
+
+
+class WishlistNoteModal(discord.ui.Modal, title="Post a want"):
+    note = discord.ui.TextInput(label="Optional note (plain text)", required=False, max_length=cat_wishlist.NOTE_MAX,
+                                placeholder="e.g. will swap a rare for it")
+
+    def __init__(self, rarity: str, trait):
+        super().__init__()
+        self.rarity, self.trait = rarity, trait
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            status = await cat_wishlist.add(interaction.user.id, _clone(interaction), self.rarity, self.trait, self.note.value)
+        except Exception:
+            await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
+            return
+        text = {"ok": "🔎 Posted! Traders can see your want for 14 days.",
+                "limit": f"You already have {cat_wishlist.MAX_OPEN} open wants. Remove one in **My wants** first.",
+                "duplicate": "You already posted that exact want.",
+                "bad": "That note can't contain links or invites. Keep it to plain text."}.get(status, "Something went wrong.")
+        await interaction.response.send_message(text, ephemeral=True)
+
+
+class WishlistPostView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        self.rarity, self.trait = None, None
+        rar = discord.ui.Select(placeholder="Rarity (required)", row=0, options=[
+            discord.SelectOption(label=r.title(), value=r, emoji=cat_adopt.RARITY_EMOJI.get(r)) for r in cat_wishlist.RARITIES])
+        rar.callback = self._rarity
+        trait = discord.ui.Select(placeholder="Trait (optional)", row=1, options=[
+            discord.SelectOption(label="Any trait", value="any")] + [discord.SelectOption(label=t, value=t) for t in cat_adopt.TRAITS])
+        trait.callback = self._trait
+        self.go = discord.ui.Button(label="Continue", style=discord.ButtonStyle.success, disabled=True, row=2)
+        self.go.callback = self._go
+        for item in (rar, trait, self.go):
+            self.add_item(item)
+
+    async def _rarity(self, interaction: discord.Interaction):
+        self.rarity = interaction.data["values"][0]
+        self.go.disabled = False
+        await interaction.response.edit_message(view=self)
+
+    async def _trait(self, interaction: discord.Interaction):
+        v = interaction.data["values"][0]
+        self.trait = None if v == "any" else v
+        await interaction.response.defer()
+
+    async def _go(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(WishlistNoteModal(self.rarity, self.trait))
+
+
+class WishlistRemoveSelect(discord.ui.Select):
+    def __init__(self, mine):
+        super().__init__(placeholder="Remove a want…", options=[
+            discord.SelectOption(label=(f"{w.rarity.title()} {w.trait or ''}".strip())[:100], value=str(w.id)) for w in mine])
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            ok = await cat_wishlist.remove(int(self.values[0]), interaction.user.id)
+        except Exception:
+            await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
+            return
+        await interaction.response.send_message("🗑 Removed." if ok else "That want is already gone.", ephemeral=True)
+
+
+class WishlistButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Wishlist", emoji="🔎", style=discord.ButtonStyle.secondary, custom_id="cat_feature:wishlist")
+
+    async def callback(self, interaction: discord.Interaction):
+        try:
+            wants, total = await cat_wishlist.board()
+        except Exception:
+            await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=_board_embed(wants, total, 0, None),
+                                                view=WishlistBoardView(0, total, None), ephemeral=True)
