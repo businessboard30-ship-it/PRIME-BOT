@@ -186,3 +186,24 @@ def test_report_goes_to_the_modlog_once_and_only_the_asker_can_press(cog, monkey
 def test_ai_chat_knows_the_reply_and_mention_method():
     from modules import ai_features as af
     assert "scam shield" in af.BOT_RULES and "reply" in af.BOT_RULES and "never deletes" in af.BOT_RULES
+
+
+# ── AI chat must never answer a scam-check request ────────────────────────
+
+def test_ai_chat_stays_out_even_when_the_replied_message_cannot_be_loaded(monkeypatch):
+    from discord_bot.cogs import ai_tools
+    chat = ai_tools.AIToolsCog.__new__(ai_tools.AIToolsCog) if hasattr(ai_tools, "AIToolsCog") else None
+    if chat is None:
+        cls = next(v for v in vars(ai_tools).values() if isinstance(v, type) and hasattr(v, "on_bot_chat") and v.__module__ == ai_tools.__name__)
+        chat = cls.__new__(cls)
+    chat.bot = MagicMock(); chat.bot.user = BOT
+    chat._run_reply_turn = AsyncMock(return_value=("hi", None))
+    chat._roast_active_in = AsyncMock(return_value=False)
+    req, _ = make("x")
+    req.reference = SimpleNamespace(message_id=5, resolved=None)          # not cached
+    req.channel = SimpleNamespace(id=7, fetch_message=AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "gone")),
+                                  typing=MagicMock())
+    req.channel.fetch_message = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "gone"))
+    req.author.bot = False
+    run(chat.on_bot_chat(req))
+    chat._run_reply_turn.assert_not_awaited()                              # no AI answer
