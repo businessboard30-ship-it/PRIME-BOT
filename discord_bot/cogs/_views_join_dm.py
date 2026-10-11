@@ -298,27 +298,23 @@ class JoinDMLayoutView(discord.ui.LayoutView):
         # registered below so buttons on already-sent DMs keep working).
         # "Remind me later" no longer rendered (_RemindLaterButton stays registered
         # below so buttons on already-sent DMs keep working).
-        bottom_children = [_AdvertiseButton(guild_id, clone_id)]
+        # Page 1 no longer carries Applications / Partnership / Advertise with us: they live on the
+        # "More features" screen (see JoinDMMoreView) so the first page has room for Cat. Later
+        # pages keep Advertise exactly as before. The buttons' custom_ids are unchanged, so DMs
+        # that were already sent keep working.
+        bottom_children = [] if page == 0 else [_AdvertiseButton(guild_id, clone_id)]
         extra_connect_row = None
         if page == 1:
-            # Connect lives on page 2 now (page 1 has the Apply button in its slot).
+            # Connect lives on page 2 now (page 1 has the More features button in its slot).
             bottom_children.insert(0, _ConnectButton(guild_id, clone_id))
         elif page == 0 and total_pages == 1:
-            # A one-page DM has no page 2, so Connect gets its own row rather than vanishing
-            # (page 1's button row is already full at 5).
+            # A one-page DM has no page 2, so Connect gets its own row rather than vanishing.
             extra_connect_row = discord.ui.ActionRow(_ConnectButton(guild_id, clone_id))
         if page == 0:
-            bottom_children.insert(0, _ApplyFormButton(guild_id, clone_id))
-            # Partnership (bump network) — first page only, appended AFTER the
-            # existing buttons so Connect/Advertise keep their positions.
-            bottom_children.append(_PartnershipButton(guild_id, clone_id))
-            # Honeypot (free trap channel) — first page only, appended
-            # AFTER Partnership so Connect/Advertise/Partnership keep their
-            # positions.
+            bottom_children.append(_MoreFeaturesButton(guild_id, clone_id))
             bottom_children.append(_HoneypotButton(guild_id, clone_id))
-            # Open server panel — first page only, appended AFTER Honeypot so
-            # Connect/Advertise/Partnership/Honeypot all keep their positions
-            # (5th and last slot a row allows). Same button the /start pointer uses.
+            bottom_children.append(_CatButton(guild_id, clone_id))
+            # Open server panel stays LAST on the first page (same button the /start pointer uses).
             from discord_bot.cogs._views_quickstart_pointer import OpenPanelButton
             bottom_children.append(OpenPanelButton(guild_id, clone_id))
 
@@ -2201,10 +2197,127 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 
 
 # Registered in discord_bot/bot.py's setup_hook via bot.add_dynamic_items(...).
+# ── "More features" screen + Cat button ──────────────────────────────────
+
+class JoinDMMoreView(discord.ui.LayoutView):
+    """The "More features" screen: Applications, Partnership (Bump) and Advertise with us,
+    which used to crowd the first page. Same message, edited in place; Back returns to page 1.
+    Each item is a Section (text + its own button) so a button can't drift from its text, and
+    the buttons are the same DynamicItems (same custom_ids, same Manage Server checks) as before."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        super().__init__(timeout=None)
+        container = discord.ui.Container(accent_colour=discord.Color.blurple())
+        container.add_item(discord.ui.TextDisplay("## ➕ More features\nExtras for growing and running your server."))
+        for text, button in (
+            ("📝 **Applications**\nBuild an application form (staff, partners, anything) with accept/deny review buttons.",
+             _ApplyFormButton(guild_id, clone_id)),
+            ("🤝 **Partnership (Bump)**\nSet up the bump network so other servers can find yours.",
+             _PartnershipButton(guild_id, clone_id)),
+            ("📣 **Advertise with us**\nPromote your server or business to the servers I'm in.",
+             _AdvertiseButton(guild_id, clone_id)),
+        ):
+            section = discord.ui.Section(accessory=button)
+            section.add_item(text)
+            container.add_item(section)
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.ActionRow(_MoreBackButton(guild_id, clone_id)))
+        self.add_item(container)
+
+
+def build_join_dm_more_view(guild_id: int, clone_id=None) -> JoinDMMoreView:
+    return JoinDMMoreView(guild_id, clone_id)
+
+
+class _MoreFeaturesButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_more:(\d+):(-|\d+)$"):
+    """Opens the More features screen by editing this same DM message."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="More features", style=discord.ButtonStyle.secondary, emoji="➕",
+            custom_id=_encode("more", guild_id, clone_id), row=4,
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await interaction.edit_original_response(view=build_join_dm_more_view(self.guild_id, self.clone_id))
+
+
+class _MoreBackButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_more_back:(\d+):(-|\d+)$"):
+    """Back from More features to page 1 of the join DM (rebuilt live, so it works after a restart)."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Back", style=discord.ButtonStyle.secondary, emoji="⬅️",
+            custom_id=_encode("more_back", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        # Defer first: the lookups below can outrun Discord's 3-second window (see _PageNavButton).
+        await interaction.response.defer()
+        enabled = await _enabled_feature_keys(self.guild_id, self.clone_id)
+        guild = interaction.client.get_guild(self.guild_id)
+        intro, title, notices = await _build_main_join_dm_parts(interaction.client, self.guild_id, self.clone_id)
+        main_view = build_join_dm_view(
+            self.guild_id, clone_id=self.clone_id, feature_keys=list(FEATURE_TOGGLES.keys()), page=0,
+            intro=intro, title=title, notices=notices, enabled_keys=enabled,
+            guild_name=guild.name if guild else None,
+        )
+        await interaction.edit_original_response(view=main_view)
+
+
+class _CatButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_cat:(\d+):(-|\d+)$"):
+    """A random cute cat picture, same as /cat (the picture logic lives in cogs/cat.py). Harmless,
+    so no Manage Server check; it has its own per-person cooldown."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Cat", style=discord.ButtonStyle.secondary, emoji="🐱",
+            custom_id=_encode("cat", guild_id, clone_id), row=4,
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs.cat import send_cat
+        try:
+            await send_cat(interaction)
+        except Exception:
+            logger.exception("join_dm cat failed for guild %s", self.guild_id)
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send("😿 Something went wrong fetching a cat. Try again in a moment.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("😿 Something went wrong fetching a cat. Try again in a moment.", ephemeral=True)
+            except Exception:
+                pass
+
+
+
 DYNAMIC_ITEMS = (
     _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomeCustomizeCardButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton, _ApplyFormButton,
+    _MoreFeaturesButton, _MoreBackButton, _CatButton,
 )
 
 # Compact quick-start message buttons (Open server panel / Full setup guide).
