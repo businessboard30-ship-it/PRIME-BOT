@@ -66,6 +66,10 @@ def clean():
 GOOD = "https://cdn2.thecatapi.com/images/abc.jpg"
 
 
+async def _false():
+    return False
+
+
 # ---------- picture sources ----------
 def test_thecatapi_first():
     s = Session({cat.CAT_API_URL: Resp(200, [{"url": GOOD}])})
@@ -193,6 +197,7 @@ def test_buttons_round_trip_their_custom_id(cls, cid, clone):
 class FakeInteraction:
     def __init__(self):
         self.user = type("U", (), {"id": 42})()
+        self.client = type("C", (), {"get_guild": lambda self, gid: object()})()
         self.sent, self.followups, self.edits, self._done = [], [], [], False
         self.response = self
         self.followup = self
@@ -221,7 +226,8 @@ def test_more_button_edits_the_message_into_the_more_screen():
 
 
 def test_cat_button_sends_an_embed_then_rate_limits(monkeypatch):
-    async def fake(session=None):
+    monkeypatch.setattr(jd, "user_can_manage_guild", lambda *a, **k: _false())
+    async def fake(session=None, bot=None):
         return GOOD
     monkeypatch.setattr(cat, "fetch_cat_url", fake)
     i = FakeInteraction()
@@ -233,7 +239,8 @@ def test_cat_button_sends_an_embed_then_rate_limits(monkeypatch):
 
 
 def test_cat_button_says_sorry_when_no_cat(monkeypatch):
-    async def none(session=None):
+    monkeypatch.setattr(jd, "user_can_manage_guild", lambda *a, **k: _false())
+    async def none(session=None, bot=None):
         return None
     monkeypatch.setattr(cat, "fetch_cat_url", none)
     i = FakeInteraction()

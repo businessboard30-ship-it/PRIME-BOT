@@ -2281,8 +2281,9 @@ class _MoreBackButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^joi
 
 
 class _CatButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_cat:(\d+):(-|\d+)$"):
-    """A random cute cat picture, same as /cat (the picture logic lives in cogs/cat.py). Harmless,
-    so no Manage Server check; it has its own per-person cooldown."""
+    """Cat. For someone with Manage Server it opens the Cat setup wizard in their server (pick the spawn channel and
+    how often cats appear; Premium raises the limits). For anyone else it is a random cute cat picture, same as /cat
+    (the picture logic lives in cogs/cat.py), with its own per-person cooldown."""
 
     def __init__(self, guild_id: int, clone_id=None):
         self.guild_id = guild_id
@@ -2298,18 +2299,43 @@ class _CatButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_
         return cls(guild_id, clone_id)
 
     async def callback(self, interaction: discord.Interaction):
-        from discord_bot.cogs.cat import send_cat
         try:
+            guild = interaction.client.get_guild(self.guild_id)
+            if guild is not None and await user_can_manage_guild(guild, interaction.user.id):
+                await self._open_setup(interaction, guild)
+                return
+            from discord_bot.cogs.cat import send_cat
             await send_cat(interaction)
         except Exception:
             logger.exception("join_dm cat failed for guild %s", self.guild_id)
             try:
                 if interaction.response.is_done():
-                    await interaction.followup.send("😿 Something went wrong fetching a cat. Try again in a moment.", ephemeral=True)
+                    await interaction.followup.send("😿 Something went wrong with the cat. Try again in a moment.", ephemeral=True)
                 else:
-                    await interaction.response.send_message("😿 Something went wrong fetching a cat. Try again in a moment.", ephemeral=True)
+                    await interaction.response.send_message("😿 Something went wrong with the cat. Try again in a moment.", ephemeral=True)
             except Exception:
                 pass
+
+    async def _open_setup(self, interaction: discord.Interaction, guild: discord.Guild):
+        await interaction.response.defer(ephemeral=True)
+        channel = _default_text_channel(guild)
+        if channel is None:
+            await interaction.followup.send(
+                "I couldn't find a channel I'm able to post in. Give me **Send Messages** and **Embed Links** in one "
+                "and tap Cat again.", ephemeral=True)
+            return
+        try:
+            from discord_bot.cogs._views_cat_setup import open_setup
+            await open_setup(interaction.client, guild, self.clone_id, interaction.user.id, channel)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("join_dm cat setup failed for guild %s", self.guild_id)
+            await interaction.followup.send(
+                "I couldn't post the Cat setup. Make sure I can **Send Messages** and **Embed Links** in your server.",
+                ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"🐱 Cat setup is open in {channel.mention}. Pick the channel where cats appear and how often.",
+            ephemeral=True)
 
 
 
