@@ -152,6 +152,37 @@ def strip_dashboard_marker(text):
     return (cleaned or "Here you go, tap the button below."), True
 
 
+def strip_cat_marker(text):
+    """Remove CAT_IMAGE_MARKER (left by modules.ai_features when the AI wrote [[CAT]]). Returns (text, had_marker)."""
+    from modules.ai_features import CAT_IMAGE_MARKER
+    if not text or CAT_IMAGE_MARKER not in text:
+        return text, False
+    cleaned = str(text).replace(CAT_IMAGE_MARKER, "").rstrip()
+    return (cleaned or "Meet the cats! 🐱"), True
+
+
+async def cat_image_embed(bot, guild=None):
+    """One real cat picture (from the shared pool) as an embed, or None. Never raises: the reply must go out without it."""
+    try:
+        from discord_bot.cogs.cat import cat_embed, fetch_cat_url
+        url = await fetch_cat_url(bot=bot, guild_id=getattr(guild, "id", None))
+        return cat_embed(url) if url else None
+    except Exception:
+        logger.warning("[aichat] couldn't get a cat picture for the reply", exc_info=True)
+        return None
+
+
+async def send_with_cat(send_fn, embed):
+    """send_fn(embed=<Embed or None>) -> message. A refused embed never makes the reply vanish: retry without it."""
+    if embed is None:
+        return await send_fn(embed=None)
+    try:
+        return await send_fn(embed=embed)
+    except (discord.Forbidden, discord.HTTPException):
+        logger.warning("[aichat] reply with a cat picture was refused; sending it without")
+        return await send_fn(embed=None)
+
+
 async def send_with_fallbacks(send, view, dash_btn, file=None):
     """Send an AI reply so an optional extra can never make it vanish. `send(**kw)` is the real send. Tries everything
     first, then without the dashboard button, then also without the voice file; raises the last error only when even the
@@ -877,6 +908,8 @@ class AIToolsCog(commands.Cog):
         text = extract_support_marker(text, view)
         dash_btn = None
         text, wrote_dash = strip_dashboard_marker(text)
+        text, wants_cat = strip_cat_marker(text)
+        cat_emb = await cat_image_embed(self.bot, interaction.guild) if wants_cat else None
         dash_path = self._dashboard_path(message) or ("/me" if wrote_dash else None)
         if dash_path:
             dash_btn = dashboard_button(self.bot, dash_path)
@@ -887,7 +920,11 @@ class AIToolsCog(commands.Cog):
             voice_file = await self._voice_file(user_id, text, explicit=ai_voice.wants_voice(message))
 
         async def _send(**kw):
-            return await interaction.followup.send(text, wait=True, suppress_embeds=True, **kw)
+            async def _go(embed=None):
+                if embed is not None:
+                    return await interaction.followup.send(text, wait=True, embed=embed, **kw)
+                return await interaction.followup.send(text, wait=True, suppress_embeds=True, **kw)
+            return await send_with_cat(_go, cat_emb)
         sent = await send_with_fallbacks(_send, view, dash_btn, voice_file)
 
         # Remember this message's id so a reply to it continues the same
@@ -1133,6 +1170,8 @@ class AIToolsCog(commands.Cog):
                 text = extract_support_marker(text, view)
             dash_btn = None
             text, wrote_dash = strip_dashboard_marker(text)
+            text, wants_cat = strip_cat_marker(text)
+            cat_emb = await cat_image_embed(self.bot, message.guild) if wants_cat else None
             dash_path = self._dashboard_path(content) or ("/me" if wrote_dash else None)
             if dash_path:
                 dash_btn = dashboard_button(self.bot, dash_path)
@@ -1142,9 +1181,12 @@ class AIToolsCog(commands.Cog):
             none = discord.AllowedMentions.none()
 
             async def _send(**kw):
-                if message.guild is None:
-                    return await message.channel.send(text, allowed_mentions=none, suppress_embeds=True, **kw)
-                return await message.reply(text, mention_author=False, allowed_mentions=none, suppress_embeds=True, **kw)
+                async def _go(embed=None):
+                    extra = {"embed": embed} if embed is not None else {"suppress_embeds": True}
+                    if message.guild is None:
+                        return await message.channel.send(text, allowed_mentions=none, **extra, **kw)
+                    return await message.reply(text, mention_author=False, allowed_mentions=none, **extra, **kw)
+                return await send_with_cat(_go, cat_emb)
             await send_with_fallbacks(_send, view if view else None, dash_btn, voice_file)
         except Exception:
             logger.exception("[aichat] reply/DM chat failed")
