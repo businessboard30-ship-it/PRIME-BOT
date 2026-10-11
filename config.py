@@ -314,7 +314,7 @@ GUMROAD_PRODUCT_LINKS = {
     "xp_boost_5": os.getenv("GUMROAD_XP_BOOST_5_LINK", "https://boardmaster87.gumroad.com/l/bubsuj"),
     "xp_server_boost": "https://boardmaster87.gumroad.com/l/slwtmv",
     "xp_server_boost_month": "https://boardmaster87.gumroad.com/l/abnbyt",
-    # Premium is a Gumroad MEMBERSHIP ($2/month) created by hand in the
+    # Premium is a Gumroad MEMBERSHIP ($2.99/month) created by hand in the
     # Gumroad dashboard (the API can't create memberships) — paste its link
     # / product id via these env vars (or edit here) once it exists.
     "premium": os.getenv("GUMROAD_PREMIUM_LINK", "https://boardmaster87.gumroad.com/l/naceb"),
@@ -374,7 +374,7 @@ USER_PLAN_PAYSTACK_CODES = {
 AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "2"))
 
 # ─────────────────────────────────────────────────────────────────────
-# Premium: $4/month PER SERVER (or yearly / lifetime, below), unlocks every current and future package
+# Premium: $2.99/month PER SERVER (or yearly / lifetime, below), unlocks every current and future package
 # (welcome card pack, ultra welcome pack, custom roles, Music Pro, ...).
 # Deliberately NOT included: Discord Clone activation / clone monetization
 # (they cost real hosting) and the temporary XP boosts (consumables).
@@ -384,7 +384,7 @@ AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "2"))
 # 31 days never cause a gap. PREMIUM_GRACE_DAYS keeps features on briefly
 # after expiry so a slow renewal doesn't cut anyone off mid-payment.
 # ─────────────────────────────────────────────────────────────────────
-PREMIUM_FEE_USD = 4
+PREMIUM_FEE_USD = 2.99
 
 # Minimum XP level a member needs before they can hold a clan-chief seat
 # (top-5 on the XP leaderboard is necessary but no longer sufficient).
@@ -398,7 +398,7 @@ PREMIUM_GRACE_DAYS = 3
 PREMIUM_REMINDER_DAYS = 3
 
 # Longer Premium plans (one-time payments, per server, same perks as monthly).
-# Yearly = 12 months for the price of 9 (25% off $4/mo). Lifetime is stored as a
+# Yearly = $16 (about 55% off 12 x the $2.99 monthly price). Lifetime is stored as a
 # far-future expiry (100 years), so no schema change and reminders never fire.
 PREMIUM_YEARLY_FEE_USD = 16
 PREMIUM_YEARLY_DAYS = 365
