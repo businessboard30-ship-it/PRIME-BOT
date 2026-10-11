@@ -32,7 +32,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
-from modules import cat_pool, cat_quality, cat_setup, cat_vision
+from modules import cat_pool, cat_quality, cat_reminder, cat_setup, cat_vision
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,8 @@ POOL_MAX = 1500           # pictures live in the image-hosting channel; sized so
 GROW_ONE_IN = 8
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=12)
 SPAWN_TICK_SECONDS = 30
+REMINDER_TICK_MINUTES = 10
+REMINDER_PER_TICK = 5
 SPAWN_PER_TICK = 60                 # servers handled per tick (Premium servers post as often as every ~7 minutes)
 
 _recent = deque(maxlen=50)          # last good URLs, used only if both services fail
@@ -340,9 +342,54 @@ class CatCog(commands.Cog):
 
     async def cog_load(self):
         self._spawner.start()
+        self._reminders.start()
 
     async def cog_unload(self):
         self._spawner.cancel()
+        self._reminders.cancel()
+
+    @tasks.loop(minutes=REMINDER_TICK_MINUTES)
+    async def _reminders(self):
+        try:
+            await self.remind_due()
+        except Exception:
+            logger.exception("[cat] reminder tick failed")
+
+    @_reminders.before_loop
+    async def _before_reminders(self):
+        await self.bot.wait_until_ready()
+
+    async def remind_due(self) -> int:
+        """Reminds a few servers (of THIS bot) whose Cat game is off. Each server gets at most 2 reminders inside one
+        week, then never again (modules/cat_reminder.py). A few per tick so a big rollout never floods Discord."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        on = await cat_reminder.enabled_guilds(clone_id)
+        known = await cat_reminder.states(clone_id)
+        off = {g.id: g.id not in on for g in self.bot.guilds}
+        sent = 0
+        for guild in cat_reminder.pick_candidates(self.bot.guilds, off, known, limit=REMINDER_PER_TICK):
+            if not await cat_reminder.claim(guild.id, clone_id):
+                continue
+            try:
+                owner = await self.bot.fetch_user(guild.owner_id)
+            except discord.HTTPException:
+                owner = None
+            if owner is None or owner.bot:
+                await cat_reminder.finish(guild.id, clone_id)
+                continue
+            embed = None
+            try:
+                url = await fetch_cat_url(bot=self.bot, guild_id=guild.id)
+                embed = cat_embed(url) if url else None
+            except Exception:
+                logger.warning("[cat] no cat picture for the reminder of guild %s", guild.id, exc_info=True)
+            try:
+                await owner.send(cat_reminder.reminder_text(guild.name), embed=embed)
+                sent += 1
+            except discord.HTTPException:
+                await cat_reminder.finish(guild.id, clone_id)          # closed DMs: never retried
+            await asyncio.sleep(2)
+        return sent
 
     @tasks.loop(seconds=SPAWN_TICK_SECONDS)
     async def _spawner(self):
