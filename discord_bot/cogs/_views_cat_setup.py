@@ -61,12 +61,14 @@ def hours_text(start: int, end: int) -> str:
             f"({start:02d}:00 to {end % 24:02d}:00 UTC)")
 
 
-def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "") -> discord.Embed:
+def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "", problems: str = "") -> discord.Embed:
     tier = cs.tier_for(premium)
     chans = " ".join(f"<#{c}>" for c in cfg.channel_ids) or "none yet, pick below"
     lines = []
     if notice:
         lines += [f"⚠️ {notice}", ""]
+    if problems:
+        lines += [problems, ""]
     lines += [
         f"**Status:** {'🟢 ON' if cfg.enabled else '🔴 OFF'}",
         f"**Spawn channel{'s' if tier.max_channels > 1 else ''}:** {chans}",
@@ -113,6 +115,9 @@ class CatSetupView(discord.ui.View):
         self.send_now = discord.ui.Button(label="Send a cat now", emoji="🐱", style=discord.ButtonStyle.primary, row=4)
         self.send_now.callback = self._on_send_now
         self.add_item(self.send_now)
+        self.check = discord.ui.Button(label="Check permissions", emoji="🔍", style=discord.ButtonStyle.secondary, row=4)
+        self.check.callback = self._on_check
+        self.add_item(self.check)
         close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, row=4)
         close.callback = self._on_close
         self.add_item(close)
@@ -128,6 +133,18 @@ class CatSetupView(discord.ui.View):
         return [discord.SelectOption(label=(f"{h:02d}:00 UTC" if h < 24 else "24:00 UTC (midnight)"), value=str(h),
                                      default=(h == current)) for h in hours]
 
+    def _problems(self) -> str:
+        """Live check of the spawn channels (permissions can change after the server picked them). Only shown while
+        the game is ON, because that is when 'on but not working' matters; never raises."""
+        if not self.cfg.enabled or not self.cfg.channel_ids:
+            return ""
+        try:
+            from modules import cat_perms
+            return cat_perms.panel_text(cat_perms.diagnose(self.guild, self.cfg.channel_ids, discord.TextChannel))
+        except Exception:
+            logger.debug("[cat] permission check failed", exc_info=True)
+            return ""
+
     def _sync(self) -> None:
         for opt in self.start_hour.options:
             opt.default = int(opt.value) == self.cfg.active_start
@@ -139,6 +156,7 @@ class CatSetupView(discord.ui.View):
         self.toggle.style = discord.ButtonStyle.danger if self.cfg.enabled else discord.ButtonStyle.success
         self.toggle.disabled = not self.cfg.channel_ids
         self.send_now.disabled = not self.cfg.channel_ids
+        self.check.disabled = not self.cfg.channel_ids
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -161,8 +179,15 @@ class CatSetupView(discord.ui.View):
         else:
             self.cfg = new
         self._sync()
-        await interaction.response.edit_message(embed=render_embed(self.cfg, self.premium, self.notice), view=self)
+        await interaction.response.edit_message(embed=render_embed(self.cfg, self.premium, self.notice, self._problems()), view=self)
         self.notice = ""
+
+    async def _on_check(self, interaction: discord.Interaction):
+        from modules import cat_perms
+        found = cat_perms.diagnose(self.guild, self.cfg.channel_ids, discord.TextChannel)
+        await interaction.response.send_message(
+            cat_perms.panel_text(found).replace("The Cat game is ON but I can't post", "I can't post") if found else
+            "✅ I can post in your spawn channel" + ("s" if len(self.cfg.channel_ids) > 1 else "") + ".", ephemeral=True)
 
     async def _on_channels(self, interaction: discord.Interaction):
         usable, bad = [], []
@@ -233,7 +258,7 @@ async def open_setup(bot, guild: discord.Guild, clone_id, owner_id: int, channel
     cfg = await cs.get_config(guild.id, clone_id)
     premium = await cs.is_premium(guild.id, clone_id)
     view = CatSetupView(bot, guild, clone_id, owner_id, cfg, premium)
-    msg = await channel.send(embed=render_embed(cfg, premium), view=view,
+    msg = await channel.send(embed=render_embed(cfg, premium, problems=view._problems()), view=view,
                              allowed_mentions=discord.AllowedMentions.none())
     view.message = msg
     return msg

@@ -131,13 +131,13 @@ def _parent():
     return SimpleNamespace(current=_cat(), interaction_check=AsyncMock(return_value=True))
 
 
-def test_free_server_cannot_trade_by_id(monkeypatch):
+def test_free_server_can_open_the_id_box(monkeypatch):
+    """Free servers may type an ID (it then only works for people in the same server, see test_cat_free_id_trade)."""
     monkeypatch.setattr(cs, "is_premium", AsyncMock(return_value=False))
     view = v.TradeTargetView(_parent())
     i = _interaction()
     run(view._by_id(i))
-    i.response.send_modal.assert_not_called()
-    assert "Premium" in i.response.send_message.call_args.args[0]
+    i.response.send_modal.assert_called_once()
 
 
 def test_premium_server_opens_the_id_modal(monkeypatch):

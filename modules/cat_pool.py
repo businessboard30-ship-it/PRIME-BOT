@@ -36,6 +36,9 @@ _url_cache: Dict[int, Tuple[float, str]] = {}
 # (guild_id, guild_name) of the server a picture is being fetched for. Set by whoever is posting a cat, read by store()
 # so the stored message names that server, without changing any function signature in between.
 server_hint: contextvars.ContextVar = contextvars.ContextVar("cat_server_hint", default=None)
+# True while a person is asking for a cat (/cat or the Cat button). cat._fetch_via_pool then serves a stored picture
+# and never calls the cat API for it. A ContextVar so the fetch functions keep their signatures.
+manual_request: contextvars.ContextVar = contextvars.ContextVar("cat_manual_request", default=False)
 
 
 class PooledUrl(str):

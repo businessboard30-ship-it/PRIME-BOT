@@ -188,7 +188,7 @@ class CollectionView(discord.ui.View):
             self.trade_id = await cat_ids.safe_get(self.user.id, _clone_id(self.client)) or ""
         if self.trade_id:
             e.add_field(name="🆔 Your trade ID (yours for good)", value=f"`{self.trade_id}`\n"
-                        "Premium servers can trade with you from other servers using it. Nothing happens until you accept.",
+                        "Members of your server can use it to offer you a trade, and ⭐ Premium servers can use it from any server. Nothing happens until you accept.",
                         inline=False)
         return e
 
@@ -297,7 +297,7 @@ class TradeTargetView(discord.ui.View):
         self.picker = discord.ui.UserSelect(placeholder="Pick a member", min_values=1, max_values=1)
         self.picker.callback = self._picked
         self.add_item(self.picker)
-        by_id = discord.ui.Button(label="Trade by ID (Premium)", emoji="🌍", style=discord.ButtonStyle.primary)
+        by_id = discord.ui.Button(label="Trade by ID", emoji="🆔", style=discord.ButtonStyle.primary)
         by_id.callback = self._by_id
         self.add_item(by_id)
         back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
@@ -311,12 +311,7 @@ class TradeTargetView(discord.ui.View):
         await interaction.response.edit_message(content=None, embed=await self.parent.embed(), view=self.parent)
 
     async def _by_id(self, interaction: discord.Interaction):
-        premium = await cs.is_premium(interaction.guild.id, _clone_id(interaction.client)) if interaction.guild else False
-        if not cat_ids.can_trade_across_servers(premium):
-            await interaction.response.send_message(
-                "🌍 Free servers trade with members of **this server** (pick one above). ⭐ **Premium** servers can also "
-                "trade with anyone from any server using their 7-word trade ID.", ephemeral=True)
-            return
+        # Everyone can type an ID. Whether it works across servers is decided after the ID is read (TradeIdModal).
         await interaction.response.send_modal(TradeIdModal(self.parent))
 
     async def _picked(self, interaction: discord.Interaction):
@@ -337,6 +332,20 @@ _remote_at: dict = {}
 _remote_pending: dict = {}
 
 
+async def _member_of(guild, user_id: int):
+    """The person as a member of this server, or None (not here / can't tell). Never raises."""
+    try:
+        m = guild.get_member(user_id)
+        if m is not None:
+            return m
+        return await guild.fetch_member(user_id)
+    except discord.HTTPException:          # NotFound (not a member) is one too
+        return None
+    except Exception:
+        logger.debug("[cat] member lookup failed", exc_info=True)
+        return None
+
+
 class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
     trade_id = discord.ui.TextInput(label="Their 7-word trade ID", min_length=7, max_length=120,
                                     placeholder="maple-otter-river-cloud-pepper-lantern-fox")
@@ -347,18 +356,43 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
 
     async def on_submit(self, interaction: discord.Interaction):
         client = interaction.client
-        premium = await cs.is_premium(interaction.guild.id, _clone_id(client)) if interaction.guild else False
-        if not cat_ids.can_trade_across_servers(premium):
-            await interaction.response.send_message("⭐ Trading by ID needs a Premium server.", ephemeral=True)
-            return
+        guild = interaction.guild
         owner_id = await cat_ids.find_owner(str(self.trade_id), _clone_id(client))
+        member = None
+        if owner_id is not None and owner_id != interaction.user.id and guild is not None:
+            member = await _member_of(guild, owner_id)
+        premium = await cs.is_premium(guild.id, _clone_id(client)) if guild else False
+        if owner_id is not None and owner_id != interaction.user.id and member is None \
+                and not cat_ids.can_trade_across_servers(premium):
+            # Free server and the ID isn't a member here. Unknown ID and outside person get the SAME answer, so
+            # nobody can use this box to find out whether some ID exists.
+            await interaction.response.send_message(
+                "🤔 I can't find that ID **in this server**. Free servers trade by ID with members of this server only "
+                "(ask them to open **My cats** and copy their ID). ⭐ **Premium** servers can trade with anyone from "
+                "any server.", ephemeral=True)
+            return
         if owner_id is None:
             await interaction.response.send_message(
                 "🤔 I don't know that ID. It is exactly 7 words (like `maple-otter-river-cloud-pepper-lantern-fox`); "
-                "ask them to open **My cats** and copy theirs.", ephemeral=True)
+                "ask them to open **My cats** and copy theirs." if premium else
+                "🤔 I can't find that ID **in this server**. Free servers trade by ID with members of this server only "
+                "(ask them to open **My cats** and copy their ID). ⭐ **Premium** servers can trade with anyone from "
+                "any server.", ephemeral=True)
             return
         if owner_id == interaction.user.id:
             await interaction.response.send_message("That's your own ID 😄", ephemeral=True)
+            return
+        if member is not None:
+            # Same server: works for free and Premium alike, and runs exactly like picking them from the member list
+            # (the offer is posted here, nothing is sent by DM).
+            if member.bot:
+                await interaction.response.send_message("That ID doesn't belong to a person.", ephemeral=True)
+                return
+            theirs = await ca.list_cats(owner_id, _clone_id(client))
+            await interaction.response.edit_message(
+                content=(f"🆔 Trading with **{member.display_name}** (a member of this server). What should "
+                         f"**{self.parent.current.name}** be swapped for? Or just gift yours."),
+                embed=None, view=TradeAskView(self.parent, member, theirs))
             return
         try:
             target = await client.fetch_user(owner_id)
