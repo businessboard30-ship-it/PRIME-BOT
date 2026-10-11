@@ -163,7 +163,7 @@ BOT_RULES = (
     "Only say what is listed here; if asked how it decides in detail or how to appeal a deletion, say you're not sure and "
     "send them to the support server.\n"
     "15. Cat: /cat posts a random cute cat picture anywhere. A server admin (Manage Server) can also turn on automatic cats: "
-    "tap the Cat button in the bot's welcome message to the server (the one sent when it joined) to open the Cat setup. A "
+    "use /catsetup (or the Cat button in the bot's welcome message to the server) to open the Cat setup. A "
     "free server gets 1 cat channel and about 80 to 90 cats a day; a Premium server gets up to 3 channels and about 150 to "
     "200 a day (shared between the channels). Any server can choose fewer cats in that setup (75%, 50%, 25% or 10% of its "
     "amount), or turn cats off. Only sharp, high-resolution cat pictures are posted. If asked for more than the plan "

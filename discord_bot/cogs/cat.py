@@ -1,7 +1,8 @@
 # path: discord_bot/cogs/cat.py
 
 """
-Cute cat pictures: ONE slash command, /cat, plus the Cat button on the join DM.
+Cute cat pictures: the /cat slash command, /catsetup (opens the Cat setup wizard, same as the Cat button on the join DM)
+and that Cat button.
 
 Images come from The Cat API (thecatapi.com), a free third-party service, so:
   * only https URLs on that host are ever shown (a bad or odd response can't
@@ -11,10 +12,10 @@ Images come from The Cat API (thecatapi.com), a free third-party service, so:
   * each person gets one cat every few seconds, so the button/command can't be
     used to hammer the APIs.
 
-Deliberately ONE top-level slash command: Discord caps a bot at 100 GLOBAL slash
+Deliberately only TWO top-level slash commands (each in its own cog, added one by one): Discord caps a bot at 100 GLOBAL slash
 commands and this project has crash-looped at that ceiling before (see
 custom_role.py). setup() below therefore catches CommandLimitReached: if there is
-no slot left, /cat is skipped and logged, the bot still starts, and the join DM
+no slot left, the command that doesn't fit is skipped and logged, the bot still starts, and the join DM
 Cat button (which only needs fetch_cat_url) keeps working.
 """
 
@@ -325,8 +326,62 @@ class CatCog(commands.Cog):
         await send_cat(interaction)
 
 
+class CatSetupCog(commands.Cog):
+    """/catsetup: opens the same Cat setup wizard as the Cat button on the join DM."""
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name="catsetup", description="Set up automatic cats in this server (needs Manage Server) 🐱")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    async def catsetup(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Use this in a server.", ephemeral=True)
+            return
+        from discord_bot.cogs._views_shared import user_can_manage_guild
+        if not await user_can_manage_guild(guild, interaction.user.id):
+            await interaction.response.send_message("You need the **Manage Server** permission to set up cats.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel if self._can_post(interaction.channel, guild) else self._fallback(guild)
+        if channel is None:
+            await interaction.followup.send(
+                "I couldn't find a channel I can post in. Give me **Send Messages** and **Embed Links** in one and try again.",
+                ephemeral=True)
+            return
+        try:
+            from discord_bot.cogs._views_cat_setup import open_setup
+            await open_setup(self.bot, guild, getattr(self.bot, "clone_id", None), interaction.user.id, channel)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("[cat] /catsetup couldn't post the wizard in guild %s", guild.id)
+            await interaction.followup.send(
+                "I couldn't post the Cat setup. Make sure I can **Send Messages** and **Embed Links** in that channel.", ephemeral=True)
+            return
+        where = "here" if channel == interaction.channel else channel.mention
+        await interaction.followup.send(f"🐱 Cat setup opened {where}. Only you can use it.", ephemeral=True)
+
+    @staticmethod
+    def _can_post(channel, guild) -> bool:
+        if not isinstance(channel, discord.TextChannel):
+            return False
+        p = channel.permissions_for(guild.me)
+        return bool(p.view_channel and p.send_messages and p.embed_links)
+
+    def _fallback(self, guild):
+        for ch in [guild.system_channel, *guild.text_channels]:
+            if self._can_post(ch, guild):
+                return ch
+        return None
+
+
 async def setup(bot):
     try:
         await bot.add_cog(CatCog(bot))
     except app_commands.CommandLimitReached:
         logger.warning("[cat] no global slash-command slot left: /cat skipped (the join DM Cat button still works)")
+    try:
+        await bot.add_cog(CatSetupCog(bot))
+    except app_commands.CommandLimitReached:
+        logger.warning("[cat] no global slash-command slot left: /catsetup skipped (the join DM Cat button still opens the setup)")
