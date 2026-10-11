@@ -18,7 +18,9 @@ from typing import List, Optional
 import discord
 
 from modules import cat_adopt as ca
+from modules import cat_ids
 from modules import cat_log
+from modules import cat_setup as cs
 from modules import cat_pool
 from modules import cat_wallet
 
@@ -182,6 +184,12 @@ class CollectionView(discord.ui.View):
         e = await cat_embed_full(self.client, self.current,
                                  f"Cat {self.index + 1} of {len(self.cats)} · just for fun, no real money")
         e.add_field(name="Your purse", value=cat_wallet.wallet_text(self.wallet), inline=False)
+        if getattr(self, "trade_id", None) is None:
+            self.trade_id = await cat_ids.safe_get(self.user.id, _clone_id(self.client)) or ""
+        if self.trade_id:
+            e.add_field(name="🆔 Your trade ID (yours for good)", value=f"`{self.trade_id}`\n"
+                        "Premium servers can trade with you from other servers using it. Nothing happens until you accept.",
+                        inline=False)
         return e
 
     def _build(self) -> None:
@@ -289,6 +297,9 @@ class TradeTargetView(discord.ui.View):
         self.picker = discord.ui.UserSelect(placeholder="Pick a member", min_values=1, max_values=1)
         self.picker.callback = self._picked
         self.add_item(self.picker)
+        by_id = discord.ui.Button(label="Trade by ID (Premium)", emoji="🌍", style=discord.ButtonStyle.primary)
+        by_id.callback = self._by_id
+        self.add_item(by_id)
         back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
         back.callback = self._back
         self.add_item(back)
@@ -298,6 +309,15 @@ class TradeTargetView(discord.ui.View):
 
     async def _back(self, interaction):
         await interaction.response.edit_message(content=None, embed=await self.parent.embed(), view=self.parent)
+
+    async def _by_id(self, interaction: discord.Interaction):
+        premium = await cs.is_premium(interaction.guild.id, _clone_id(interaction.client)) if interaction.guild else False
+        if not cat_ids.can_trade_across_servers(premium):
+            await interaction.response.send_message(
+                "🌍 Free servers trade with members of **this server** (pick one above). ⭐ **Premium** servers can also "
+                "trade with anyone from any server using their 7-word trade ID.", ephemeral=True)
+            return
+        await interaction.response.send_modal(TradeIdModal(self.parent))
 
     async def _picked(self, interaction: discord.Interaction):
         target = self.picker.values[0]
@@ -311,9 +331,53 @@ class TradeTargetView(discord.ui.View):
                      "cats, or just gift yours."), view=view)
 
 
+REMOTE_COOLDOWN = 60.0                 # seconds between two cross-server offers from the same person
+REMOTE_PENDING_MAX = 3                 # open cross-server offers one person can have waiting at the same time
+_remote_at: dict = {}
+_remote_pending: dict = {}
+
+
+class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
+    trade_id = discord.ui.TextInput(label="Their 7-word trade ID", min_length=7, max_length=120,
+                                    placeholder="maple-otter-river-cloud-pepper-lantern-fox")
+
+    def __init__(self, parent: "CollectionView"):
+        super().__init__()
+        self.parent = parent
+
+    async def on_submit(self, interaction: discord.Interaction):
+        client = interaction.client
+        premium = await cs.is_premium(interaction.guild.id, _clone_id(client)) if interaction.guild else False
+        if not cat_ids.can_trade_across_servers(premium):
+            await interaction.response.send_message("⭐ Trading by ID needs a Premium server.", ephemeral=True)
+            return
+        owner_id = await cat_ids.find_owner(str(self.trade_id), _clone_id(client))
+        if owner_id is None:
+            await interaction.response.send_message(
+                "🤔 I don't know that ID. It is exactly 7 words (like `maple-otter-river-cloud-pepper-lantern-fox`); "
+                "ask them to open **My cats** and copy theirs.", ephemeral=True)
+            return
+        if owner_id == interaction.user.id:
+            await interaction.response.send_message("That's your own ID 😄", ephemeral=True)
+            return
+        try:
+            target = await client.fetch_user(owner_id)
+        except discord.HTTPException:
+            target = None
+        if target is None or target.bot:
+            await interaction.response.send_message("😿 I couldn't find that person right now.", ephemeral=True)
+            return
+        theirs = await ca.list_cats(owner_id, _clone_id(client))
+        view = TradeAskView(self.parent, target, theirs, remote=True)
+        await interaction.response.edit_message(
+            content=(f"🌍 Trading with **{target.display_name}** (from any server). What should "
+                     f"**{self.parent.current.name}** be swapped for? Or just gift yours."), embed=None, view=view)
+
+
 class TradeAskView(discord.ui.View):
-    def __init__(self, parent: CollectionView, target, their_cats: List[ca.Cat]):
+    def __init__(self, parent: CollectionView, target, their_cats: List[ca.Cat], remote: bool = False):
         super().__init__(timeout=300)
+        self.remote = remote
         self.parent, self.target, self.their = parent, target, {c.id: c for c in their_cats[:24]}
         options = [discord.SelectOption(label="🎁 Just gift mine, ask for nothing", value=GIFT_VALUE)]
         options += [discord.SelectOption(label=f"{c.name} · {c.rarity.title()}", description=c.trait, value=str(c.id),
@@ -338,13 +402,44 @@ class TradeAskView(discord.ui.View):
         if value != GIFT_VALUE and want is None:
             await interaction.response.send_message("That cat isn't available any more.", ephemeral=True)
             return
-        offer = TradeOfferView(interaction.client, interaction.user, self.target, mine, want)
+        offer = TradeOfferView(interaction.client, interaction.user, self.target, mine, want, remote=self.remote)
         embed = discord.Embed(title="🤝 Cat trade offer", color=PINK)
+        where = f" from **{interaction.guild.name}**" if self.remote and interaction.guild else ""
         embed.description = (
-            f"{interaction.user.mention} offers {cat_line(mine)}\n"
+            f"{interaction.user.mention}{where} offers {cat_line(mine)}\n"
             + (f"in exchange for {self.target.mention}'s {cat_line(want)}" if want else
                f"as a **gift** to {self.target.mention} 🎁")
             + "\n\nJust for fun, no real money. Nothing moves until it's accepted.")
+        if self.remote:
+            premium = await cs.is_premium(interaction.guild.id, _clone_id(interaction.client)) if interaction.guild else False
+            if not cat_ids.can_trade_across_servers(premium):
+                await interaction.response.edit_message(content="⭐ Trading by ID needs a Premium server.", view=None)
+                return
+            import time
+            wait = REMOTE_COOLDOWN - (time.monotonic() - _remote_at.get(interaction.user.id, -1e9))
+            if wait > 0:
+                await interaction.response.send_message(f"😺 Easy there, another offer in {wait:.0f}s.", ephemeral=True)
+                return
+            if _remote_pending.get(self.target.id, 0) >= REMOTE_PENDING_MAX:
+                await interaction.response.send_message(
+                    f"📬 {self.target.display_name} already has {REMOTE_PENDING_MAX} offers waiting. Try again later.",
+                    ephemeral=True)
+                return
+            try:
+                msg = await self.target.send(embed=embed, view=offer)
+            except discord.HTTPException:
+                await interaction.response.edit_message(
+                    content="😿 I couldn't message them (their DMs are closed). Ask them to open DMs, or trade in a "
+                            "server you share.", view=None)
+                return
+            _remote_at[interaction.user.id] = time.monotonic()
+            _remote_pending[self.target.id] = _remote_pending.get(self.target.id, 0) + 1
+            offer.counted = True
+            offer.message = msg
+            await interaction.response.edit_message(
+                content=f"✅ Offer sent to {self.target.display_name} by DM. They have {OFFER_TIMEOUT // 60} minutes to "
+                        "answer, and I'll tell you what they say.", embed=None, view=None)
+            return
         try:
             msg = await interaction.channel.send(
                 content=self.target.mention, embed=embed, view=offer,
@@ -361,9 +456,10 @@ class TradeAskView(discord.ui.View):
 class TradeOfferView(discord.ui.View):
     """Public offer. Only the other person can accept or decline; only the sender can cancel."""
 
-    def __init__(self, client, giver, taker, give: ca.Cat, take: Optional[ca.Cat]):
+    def __init__(self, client, giver, taker, give: ca.Cat, take: Optional[ca.Cat], remote: bool = False):
         super().__init__(timeout=OFFER_TIMEOUT)
         self.client, self.giver, self.taker, self.give, self.take = client, giver, taker, give, take
+        self.remote, self.counted = remote, False
         self.message: Optional[discord.Message] = None
         for label, fn, style in (("Accept", self._accept, discord.ButtonStyle.success),
                                  ("Decline", self._decline, discord.ButtonStyle.danger),
@@ -372,8 +468,27 @@ class TradeOfferView(discord.ui.View):
             b.callback = fn
             self.add_item(b)
 
+    def _release_slot(self) -> None:
+        if self.counted:
+            self.counted = False
+            left = _remote_pending.get(self.taker.id, 1) - 1
+            if left > 0:
+                _remote_pending[self.taker.id] = left
+            else:
+                _remote_pending.pop(self.taker.id, None)
+
+    async def _tell_giver(self, text: str) -> None:
+        """Cross-server offers: the sender isn't in the same channel, so they get the answer by DM."""
+        if self.remote:
+            try:
+                await self.giver.send(text)
+            except discord.HTTPException:
+                pass
+
     async def _finish(self, interaction, text: str):
         self.stop()
+        self._release_slot()
+        await self._tell_giver(text)
         embed = interaction.message.embeds[0] if interaction.message and interaction.message.embeds else None
         if embed is not None:
             embed.description = text
@@ -410,6 +525,8 @@ class TradeOfferView(discord.ui.View):
         await self._finish(interaction, f"↩️ {self.giver.mention} cancelled the offer.")
 
     async def on_timeout(self) -> None:
+        self._release_slot()
+        await self._tell_giver("⏰ Your cat trade offer expired without an answer.")
         if self.message is not None:
             try:
                 await self.message.edit(content=None, view=None,
