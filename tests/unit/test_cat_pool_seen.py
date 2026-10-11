@@ -165,7 +165,9 @@ def test_migration_and_schema_wiring():
     sql = (ROOT / "database/migrations/034_cat_seen.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS cat_pool_seen" in sql and "PRIMARY KEY (guild_id, pool_id)" in sql
     db = (ROOT / "database.py").read_text(encoding="utf-8")
-    assert "034_cat_seen.sql" in db and 'SCHEMA_VERSION = "79"' in db
+    import re
+    # registered, and the schema number is at least the one that introduced it (later migrations bump it further)
+    assert "034_cat_seen.sql" in db and int(re.search(r'^SCHEMA_VERSION = "(\d+)"', db, re.M).group(1)) >= 79
 
 
 # ── real SQL (skipped unless a Postgres is provided) ──────────────────────

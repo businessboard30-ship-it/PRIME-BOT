@@ -1,7 +1,7 @@
 # path: modules/cat_adopt.py
 
 """
-Cat adoption (virtual only, there is no money, coins or purchase of any kind).
+Cat adoption (virtual only: the coins and diamonds come from playing, never from real money; see modules/cat_wallet.py).
 
   * Every automatic cat spawn carries an Adopt button. The first person to tap it adopts that cat.
   * An adopted cat gets a cute random name, a rarity and a personality, and goes to the person's collection.
@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
+
+from modules import cat_wallet
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,7 @@ class Cat:
 class AdoptResult:
     status: str                 # ok | taken | gone | limit
     cat: Optional[Cat] = None
+    reward: Optional[cat_wallet.Reward] = None      # coins or a diamond that came with the cat
 
 
 async def _pool():
@@ -137,7 +140,15 @@ async def adopt(spawn_id: int, user_id: int, clone_id, guild_id: Optional[int] =
                 "INSERT INTO cat_adoptions (owner_id, clone_id, pool_id, name, rarity, trait, adopted_guild_id) "
                 "VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *",
                 user_id, clone_id, row["pool_id"], name, rarity, trait, guild_id)
-    return AdoptResult("ok", Cat.from_row(cat))
+            reward = None
+            try:
+                async with conn.transaction():          # a savepoint: a wallet problem must never undo the adoption
+                    reward = cat_wallet.roll_reward(rarity)
+                    await cat_wallet.add_reward(conn, user_id, clone_id, reward)
+            except Exception:
+                reward = None
+                logger.warning("[cat-adopt] couldn't grant the adoption reward", exc_info=True)
+    return AdoptResult("ok", Cat.from_row(cat), reward)
 
 
 async def list_cats(user_id: int, clone_id) -> List[Cat]:
