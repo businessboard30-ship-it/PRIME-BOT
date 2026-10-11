@@ -258,7 +258,10 @@ async def send_cat(interaction: discord.Interaction) -> None:
     if not url:
         await interaction.followup.send("😿 I couldn't find a cat right now. Try again in a moment.", ephemeral=True)
         return
-    await interaction.followup.send(embed=cat_embed(url))
+    from discord_bot.cogs._views_cat_adopt import MyCatsButton
+    view = discord.ui.View(timeout=None)
+    view.add_item(MyCatsButton())
+    await interaction.followup.send(embed=cat_embed(url), view=view)
 
 
 async def post_cat(bot, guild: discord.Guild, channel_id: int) -> bool:
@@ -272,11 +275,28 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int) -> bool:
     url = await fetch_cat_url(bot=bot)
     if not url:
         return False
+    pool_id = getattr(url, "pool_id", None)
+    spawn_id = None
+    if pool_id:                                   # only pooled pictures are adoptable (their photo is kept for good)
+        try:
+            from modules import cat_adopt
+            spawn_id = await cat_adopt.create_spawn(guild.id, getattr(bot, "clone_id", None), channel_id, pool_id)
+        except Exception:
+            logger.warning("[cat] couldn't record the spawn, posting without Adopt", exc_info=True)
     try:
-        await ch.send(embed=cat_embed(url), allowed_mentions=discord.AllowedMentions.none())
+        kwargs = {}
+        if spawn_id is not None:
+            from discord_bot.cogs._views_cat_adopt import spawn_view
+            kwargs["view"] = spawn_view(spawn_id)
+        msg = await ch.send(embed=cat_embed(url), allowed_mentions=discord.AllowedMentions.none(), **kwargs)
     except discord.HTTPException:
         logger.info("[cat] couldn't post in channel %s", channel_id, exc_info=True)
         return False
+    if spawn_id is not None:
+        try:
+            await cat_adopt.set_spawn_message(spawn_id, msg.id)
+        except Exception:
+            logger.debug("[cat] couldn't save the spawn message id", exc_info=True)
     return True
 
 
