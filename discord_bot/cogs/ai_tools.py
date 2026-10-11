@@ -49,7 +49,7 @@ from discord.ext import commands
 from database import db
 import re
 
-from modules import leveling, ai_prefs, ai_voice
+from modules import leveling, ai_prefs, ai_voice, scam_check
 from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
@@ -1079,6 +1079,11 @@ class AIToolsCog(commands.Cog):
             return
         content = (message.content or "").strip()
         if not content or len(content) > 1000 or content.startswith(("!", "/")):
+            return
+        # "reply to a message + @mention + scam shield" belongs to Scam Shield (discord_bot/cogs/scam_shield.py), always:
+        # even if the replied-to message can't be loaded, this must never fall through to AI chat.
+        if (message.guild is not None and message.reference is not None and self.bot.user in message.mentions
+                and scam_check.is_check_request(content)):
             return
         try:
             if message.guild is None:

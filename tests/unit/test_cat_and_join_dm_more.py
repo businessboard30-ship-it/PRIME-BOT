@@ -138,15 +138,79 @@ def test_setup_survives_command_limit():
     run(cat.setup(Bot()))                       # must not raise
 
 
-def test_setup_registers_one_command():
+def test_setup_registers_cat_and_catsetup_in_separate_cogs():
     added = []
 
     class Bot:
         async def add_cog(self, c):
             added.append(c)
     run(cat.setup(Bot()))
-    assert len(added) == 1
+    assert [[c.name for c in cog.get_app_commands()] for cog in added] == [["cat"], ["catsetup"]]
+
+
+def test_a_full_command_list_keeps_cat_when_only_one_slot_is_left():
+    added = []
+
+    class Bot:
+        async def add_cog(self, c):
+            if isinstance(c, cat.CatSetupCog):
+                raise app_commands.CommandLimitReached(None, 100)
+            added.append(c)
+    run(cat.setup(Bot()))                       # must not raise, /cat still registered
     assert [c.name for c in added[0].get_app_commands()] == ["cat"]
+
+
+def _interaction(can_manage=True, in_text_channel=True):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+    ch = MagicMock(spec=discord.TextChannel); ch.id = 7; ch.mention = "#c"
+    ch.permissions_for.return_value = SimpleNamespace(view_channel=True, send_messages=True, embed_links=in_text_channel)
+    guild = SimpleNamespace(id=1, me=object(), owner_id=5 if can_manage else 6, system_channel=None, text_channels=[ch],
+                            get_member=lambda uid: None)
+    i = MagicMock()
+    i.guild, i.channel, i.user = guild, ch, SimpleNamespace(id=5)
+    i.response.send_message, i.response.defer, i.followup.send = AsyncMock(), AsyncMock(), AsyncMock()
+    return i, ch
+
+
+def test_catsetup_opens_the_same_wizard_as_the_cat_button(monkeypatch):
+    from unittest.mock import AsyncMock
+    from discord_bot.cogs import _views_cat_setup as wiz
+    opened = AsyncMock()
+    monkeypatch.setattr(wiz, "open_setup", opened)
+    c = cat.CatSetupCog(type("B", (), {"clone_id": 3})())
+    i, ch = _interaction()
+    run(c.catsetup.callback(c, i))
+    opened.assert_awaited_once()
+    args = opened.await_args.args
+    assert args[1] is i.guild and args[2] == 3 and args[3] == 5 and args[4] is ch
+    assert "Cat setup opened" in i.followup.send.await_args.args[0]
+
+
+def test_catsetup_needs_manage_server(monkeypatch):
+    from unittest.mock import AsyncMock
+    from discord_bot.cogs import _views_cat_setup as wiz
+    opened = AsyncMock()
+    monkeypatch.setattr(wiz, "open_setup", opened)
+    c = cat.CatSetupCog(object())
+    i, _ = _interaction(can_manage=False)
+    async def no(guild, uid, permission="manage_guild"): return False
+    import discord_bot.cogs._views_shared as shared
+    monkeypatch.setattr(shared, "user_can_manage_guild", no)
+    run(c.catsetup.callback(c, i))
+    opened.assert_not_awaited()
+    assert "Manage Server" in i.response.send_message.await_args.args[0]
+
+
+def test_catsetup_says_so_when_it_cannot_post_anywhere(monkeypatch):
+    from unittest.mock import AsyncMock
+    from discord_bot.cogs import _views_cat_setup as wiz
+    monkeypatch.setattr(wiz, "open_setup", AsyncMock())
+    c = cat.CatSetupCog(object())
+    i, _ = _interaction(in_text_channel=False)
+    run(c.catsetup.callback(c, i))
+    wiz.open_setup.assert_not_awaited()
+    assert "couldn't find a channel" in i.followup.send.await_args.args[0]
 
 
 # ---------- join DM layout ----------
