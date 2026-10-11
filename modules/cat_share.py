@@ -52,6 +52,9 @@ def profile_embed(display_name: str, profile: dict, badges, avatar_url: Optional
     e.add_field(name="Collection", value=f"\U0001F43E **{profile['collection_size']}** cats", inline=True)
     rarest = profile.get("rarest")
     e.add_field(name="Rarest", value=f"{rarest.name} \u00b7 {rarest.rarity.title()}" if rarest else "None yet", inline=True)
+    worn = [f"{v['emoji']} {v['name']}" for v in (profile.get("equipped") or {}).values() if v]
+    if worn:
+        e.add_field(name="Wearing", value=" \u00b7 ".join(worn), inline=False)
     if profile.get("pinned"):
         e.add_field(name="Showcase", value="\n".join(f"\U0001F431 **{c.name}** \u00b7 {c.trait}" for c in profile["pinned"]),
                     inline=False)
