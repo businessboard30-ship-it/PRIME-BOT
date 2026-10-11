@@ -3,12 +3,11 @@
 """
 Cute cat pictures: ONE slash command, /cat, plus the Cat button on the join DM.
 
-Images come from The Cat API (thecatapi.com), with Cataas (cataas.com) as the
-fallback when it is down or slow. Both are free third-party services, so:
-  * only https URLs on those two hosts are ever shown (a bad or odd response can't
+Images come from The Cat API (thecatapi.com), a free third-party service, so:
+  * only https URLs on that host are ever shown (a bad or odd response can't
     point the embed at some other site),
-  * the last few good URLs are kept in memory, so a cat still appears if both
-    services are down at the same moment,
+  * the last few good URLs are kept in memory, so a cat still appears if the
+    service is down at the moment,
   * each person gets one cat every few seconds, so the button/command can't be
     used to hammer the APIs.
 
@@ -37,8 +36,7 @@ from modules import cat_pool, cat_quality, cat_setup, cat_vision
 logger = logging.getLogger(__name__)
 
 CAT_API_URL = "https://api.thecatapi.com/v1/images/search"
-CATAAS_URL = "https://cataas.com/cat?json=true"
-ALLOWED_HOSTS = ("thecatapi.com", "cataas.com")
+ALLOWED_HOSTS = ("thecatapi.com",)
 COOLDOWN_SECONDS = 5.0
 _TIMEOUT = aiohttp.ClientTimeout(total=6)
 
@@ -57,7 +55,7 @@ _last_use: dict = {}                # user id -> monotonic time of their last ca
 
 
 def safe_image_url(url) -> bool:
-    """https only, and the host must be one of the two services (or a subdomain, e.g. cdn2.thecatapi.com)."""
+    """https only, and the host must be The Cat API (or a subdomain, e.g. cdn2.thecatapi.com)."""
     try:
         u = urlparse(str(url))
     except ValueError:
@@ -94,18 +92,6 @@ async def _from_thecatapi(session):
     return None
 
 
-async def _from_cataas(session):
-    data = await _get_json(session, CATAAS_URL)
-    if not isinstance(data, dict):
-        return None
-    if data.get("url"):
-        return data["url"]
-    cat_id = data.get("id") or data.get("_id")
-    if cat_id and str(cat_id).replace("-", "").replace("_", "").isalnum():
-        return f"https://cataas.com/cat/{cat_id}"
-    return None
-
-
 _fill_lock = asyncio.Lock()
 _background: set = set()
 
@@ -127,11 +113,6 @@ async def _candidates_thecatapi(session) -> list:
     return out[:5]
 
 
-async def _candidates_cataas(session) -> list:
-    url = await _from_cataas(session)
-    return [{"url": url, "id": url.rsplit("/", 1)[-1], "pixels": 0}] if url and safe_image_url(url) else []
-
-
 async def _download(session, url: str):
     """The picture's bytes (capped), or None. Only allow-listed hosts."""
     if not safe_image_url(url):
@@ -150,7 +131,7 @@ async def _download(session, url: str):
 async def _grow_pool(bot, session):
     """ONE API call: download the candidates, keep EVERY one that passes the quality filter (the call is already
     paid for), save them to the shared pool, and return the sharpest one's link (None if nothing passed)."""
-    for source, getter in (("thecatapi", _candidates_thecatapi), ("cataas", _candidates_cataas)):
+    for source, getter in (("thecatapi", _candidates_thecatapi),):
         try:
             cands = await getter(session)
         except Exception:
@@ -233,7 +214,7 @@ async def fetch_cat_url(session=None, bot=None):
                     return url
             except Exception:
                 logger.warning("[cat] pool path failed, using the direct API", exc_info=True)
-        for source in (_from_thecatapi, _from_cataas):
+        for source in (_from_thecatapi,):
             try:
                 url = await source(session)
             except Exception:

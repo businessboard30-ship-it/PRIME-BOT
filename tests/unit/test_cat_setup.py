@@ -187,8 +187,6 @@ def test_api_down_falls_back_to_a_pooled_picture(pool_env, monkeypatch):
         raise RuntimeError("down")
     monkeypatch.setattr(cat, "_candidates_thecatapi", boom)
 
-    async def none(session): return []
-    monkeypatch.setattr(cat, "_candidates_cataas", none)
     url = run(cat.fetch_cat_url(FakeSession(), bot=MagicMock()))
     assert "cat_pool.jpg" in url
 
