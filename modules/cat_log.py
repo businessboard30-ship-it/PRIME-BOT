@@ -72,8 +72,19 @@ def _who(f: Dict[str, Any], prefix: str = "user") -> str:
 
 
 def format_event(kind: str, f: Dict[str, Any]) -> str:
-    """One compact line. `kind`: adopt | release | gift | trade | runaway | returned."""
+    """One compact line. `kind`: adopt | release | gift | trade | runaway | returned | history."""
     where = f" · server: {server_text(f.get('guild_id'), f.get('guild_name'))}" if f.get("guild_id") else ""
+    if kind == "history":
+        # Written later for cats adopted before logging existed. It only claims what the database knows: who owns the cat
+        # now (not who first adopted it, which wasn't recorded), where and when it was adopted, how often it changed hands.
+        out = f"📜 **Earlier record** · {_cat(f)} · owner now: {_who(f)}"
+        if f.get("guild_id"):
+            out += f" · adopted in server: {server_text(f.get('guild_id'), f.get('guild_name'))}"
+        if f.get("adopted_on"):
+            out += f" on {clean_name(f.get('adopted_on'))}"
+        if f.get("traded"):
+            out += f" · changed hands {int(f['traded'])}x"
+        return out
     if kind == "adopt":
         return f"💖 **Adopted** · {_cat(f)} · by {_who(f)}{where}"
     if kind == "release":
