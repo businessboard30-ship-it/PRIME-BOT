@@ -57,10 +57,12 @@ class Session:
 
 
 @pytest.fixture(autouse=True)
-def clean():
-    cat._recent.clear()
-    cat._last_use.clear()
+def clean(monkeypatch):
+    monkeypatch.setattr(cat.config, "CAT_API_KEYS", (), raising=False)
+    monkeypatch.setattr(cat.config, "CAT_API_KEY", "", raising=False)
+    cat.reset_state()
     yield
+    cat.reset_state()
 
 
 GOOD = "https://cdn2.thecatapi.com/images/abc.jpg"
@@ -221,21 +223,21 @@ def test_more_button_edits_the_message_into_the_more_screen():
 
 
 def test_cat_button_sends_an_embed_then_rate_limits(monkeypatch):
-    async def fake(session=None):
-        return GOOD
-    monkeypatch.setattr(cat, "fetch_cat_url", fake)
+    async def fake(count=1, breed=None, session=None):
+        return [GOOD]
+    monkeypatch.setattr(cat, "fetch_cat_urls", fake)
     i = FakeInteraction()
     run(jd._CatButton(7, None).callback(i))
-    assert i.followups[0][1]["embed"].image.url == GOOD
+    assert i.followups[0][1]["embeds"][0].image.url == GOOD
     j = FakeInteraction()
     run(jd._CatButton(7, None).callback(j))                   # same user, straight away
     assert "another cat" in j.sent[0][0] and j.sent[0][1]["ephemeral"] is True and not j.followups
 
 
 def test_cat_button_says_sorry_when_no_cat(monkeypatch):
-    async def none(session=None):
-        return None
-    monkeypatch.setattr(cat, "fetch_cat_url", none)
+    async def none(count=1, breed=None, session=None):
+        return []
+    monkeypatch.setattr(cat, "fetch_cat_urls", none)
     i = FakeInteraction()
     run(jd._CatButton(7, None).callback(i))
     assert "couldn't find a cat" in i.followups[0][0] and i.followups[0][1]["ephemeral"] is True
