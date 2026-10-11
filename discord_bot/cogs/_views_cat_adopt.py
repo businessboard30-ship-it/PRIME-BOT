@@ -18,6 +18,7 @@ from typing import List, Optional
 import discord
 
 from modules import cat_filter
+from modules import cat_help
 from modules import cat_quests
 from modules import cat_adopt as ca
 from modules import cat_announce
@@ -82,7 +83,26 @@ def spawn_view(spawn_id: int, adopted: bool = False) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     view.add_item(AdoptButton(spawn_id, adopted=adopted))
     view.add_item(MyCatsButton())
+    view.add_item(_market.MarketButton())
+    view.add_item(HelpButton())
     return view
+
+
+class HelpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_help$"):
+    """Explains the cat game to the person who tapped it. Private to them, changes nothing."""
+
+    def __init__(self):
+        super().__init__(discord.ui.Button(label="Help", emoji="❓", style=discord.ButtonStyle.secondary,
+                                           custom_id="cat_help"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls()
+
+    async def callback(self, interaction: discord.Interaction):
+        embed = discord.Embed(title="🐱 How the cat game works", description=cat_help.build_text(), color=PINK)
+        embed.set_footer(text=cat_help.FOOTER)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_adopt:(\d+)$"):
@@ -722,7 +742,7 @@ class TradeOfferView(discord.ui.View):
 
 from discord_bot.cogs import _views_cat_market as _market  # noqa: E402  (needs the names defined above)
 
-DYNAMIC_ITEMS = (AdoptButton, MyCatsButton) + _market.DYNAMIC_ITEMS
+DYNAMIC_ITEMS = (AdoptButton, MyCatsButton, HelpButton) + _market.DYNAMIC_ITEMS
 
 
 # ── My cats: search, filters, sorting ──────────────────────────────────────
