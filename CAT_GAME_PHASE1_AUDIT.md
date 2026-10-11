@@ -21,8 +21,15 @@ The `/cat` response now includes compact, emoji-led buttons for Daily care, Cosm
 ## Database change
 Migration `043_cat_daily_cosmetics_profile.sql` adds daily claims, cosmetic catalog/ownership, and profile tables. `database.py` schema version is bumped from `87` to `88`.
 
+## Phase 2 added in this continuation
+1. **Daily quests** — UTC quest records for adopting cats, ranking a cat, and adopting rare cats, with idempotent diamond claims.
+2. **Auctions** — 24-hour open auctions with atomic bidder debits and outbid refunds. The seller keeps ownership until settlement, so a listed cat remains accessible and cannot be duplicated.
+3. **Collections and badges** — trait, rarity, and collection-size checks award one-time badge rewards.
+
+The new feature buttons are compact and stay within Discord's component budget. Auction creation/settlement UI and the remaining phases (kittens, events, server competitions, wishlist, undo/history, and advanced My Cats search/filter/bulk actions) remain follow-up work.
+
 ## Deliberately not included in this phase
-Daily quests, auctions, collections/badges, kittens, events, server competitions, wishlist, undo/history, and advanced My Cats search/filter/bulk actions remain follow-up phases. They should be added behind the existing command/component budget rather than creating many new global slash commands.
+Kittens, events, server competitions, wishlist, undo/history, and advanced My Cats search/filter/bulk actions remain follow-up phases. They should be added behind the existing command/component budget rather than creating many new global slash commands.
 
 ## Review checklist for the next AI
 - Apply migration 043 on a disposable database and verify nullable clone uniqueness on the generated clone key.

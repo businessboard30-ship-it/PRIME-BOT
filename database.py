@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "88"
+SCHEMA_VERSION = "89"
+# "88" -> "89" adds 044_cat_quests_auctions_badges.sql (daily quests, timed auctions, and collection badges).
 # "87" -> "88" adds 043_cat_daily_cosmetics_profile.sql (daily care streaks, cosmetic ownership, public cat profiles).
 # "86" -> "87" adds 042_cat_short_ids.sql (cat_owner_ids.short_id: short trade IDs like 142574M, unique across every bot; the old 7-word IDs are kept and still work). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "85" -> "86" adds 041_cat_ranks.sql (cat_adoptions.cat_rank: coins can rank a cat up, old cats start at 0; trade IDs unique across every bot, earliest keeps a clash). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -12860,7 +12861,7 @@ class Database:
 
     # ─────────────────────────────────────────────────────────────────────
     # Discord: economy game (Phase 3)
-    # ─────────────────────────────────────────────────────────────────────
+    # ──────────────────────────���──────────────────────────────────────────
 
     _ECONOMY_CONFIG_DEFAULTS = {
         "currency_name": "Coins", "currency_symbol": "🪙",

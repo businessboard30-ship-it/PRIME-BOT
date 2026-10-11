@@ -14,6 +14,9 @@ def feature_button_view() -> discord.ui.View:
     view.add_item(CareButton())
     view.add_item(CosmeticsButton())
     view.add_item(ProfileButton())
+    view.add_item(QuestsButton())
+    view.add_item(BadgesButton())
+    view.add_item(AuctionButton())
     return view
 
 
@@ -50,6 +53,45 @@ class CosmeticsButton(discord.ui.Button):
             for item in items) or "Nothing in stock yet.", inline=False)
         embed.set_footer(text="Cosmetics are play-only rewards.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class QuestsButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Daily quests", emoji="🎯", style=discord.ButtonStyle.primary, custom_id="cat_feature:quests")
+
+    async def callback(self, interaction: discord.Interaction):
+        from modules import cat_phase2
+        try:
+            items = await cat_phase2.quests(interaction.user.id, getattr(interaction.client, "clone_id", None))
+        except Exception:
+            await interaction.response.send_message("🎯 Quests are temporarily unavailable.", ephemeral=True)
+            return
+        lines = [f"{('✅' if q.progress >= q.target else '🟦')} **{q.title}** — {q.progress}/{q.target} · 💎 {q.reward}" + (" · claimed" if q.claimed else "") for q in items]
+        embed = discord.Embed(title="🎯 Daily cat quests", description="Complete these before UTC midnight for diamond rewards.\n\n" + "\n".join(lines), color=GOLD)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class BadgesButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Badges", emoji="🏅", style=discord.ButtonStyle.secondary, custom_id="cat_feature:badges")
+
+    async def callback(self, interaction: discord.Interaction):
+        from modules import cat_phase2
+        try:
+            awarded = await cat_phase2.award_badges(interaction.user.id, getattr(interaction.client, "clone_id", None))
+        except Exception:
+            await interaction.response.send_message("🏅 Badges are temporarily unavailable.", ephemeral=True)
+            return
+        text = ", ".join(awarded) if awarded else "No new badges today — keep collecting!"
+        await interaction.response.send_message(f"🏅 Collection check complete! {text}", ephemeral=True)
+
+
+class AuctionButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Auctions", emoji="🔨", style=discord.ButtonStyle.secondary, custom_id="cat_feature:auctions")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_message("🔨 Auctions are ready for 24-hour bids. Open a listing from My cats to start one.", ephemeral=True)
 
 
 class ProfileButton(discord.ui.Button):
