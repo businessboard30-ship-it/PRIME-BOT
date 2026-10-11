@@ -83,7 +83,7 @@ def test_sharpness_limit_can_be_tuned_by_env(sharp_bytes, monkeypatch):
 
 def test_tier_limits():
     assert cs.FREE.max_channels == 1 and cs.PREMIUM.max_channels == 3
-    assert min(cs.FREE.intervals) == 360 and min(cs.PREMIUM.intervals) == 15
+    assert (cs.FREE.daily_min, cs.FREE.daily_max) == (80, 90) and (cs.PREMIUM.daily_min, cs.PREMIUM.daily_max) == (150, 200)
 
 
 def test_free_server_keeps_one_channel_premium_three():
@@ -94,34 +94,35 @@ def test_free_server_keeps_one_channel_premium_three():
     assert wiz.pick_channels([5], False) == ((5,), "")
 
 
-def test_premium_only_interval_is_refused_on_free_with_a_hint():
-    minutes, note = wiz.pick_interval(15, premium=False, current=720)
-    assert minutes == 720 and "Premium" in note
-    assert wiz.pick_interval(15, premium=True, current=720) == (15, "")
-    assert wiz.pick_interval(360, premium=False, current=720) == (360, "")
+def test_daily_amount_is_inside_the_tier_range_and_stable_for_the_day():
+    from datetime import date
+    for g in range(1, 400):
+        d = date(2026, 10, 11)
+        f, p = cs.daily_target(g, None, cs.FREE, d), cs.daily_target(g, None, cs.PREMIUM, d)
+        assert 80 <= f <= 90 and 150 <= p <= 200
+        assert f == cs.daily_target(g, None, cs.FREE, d)                      # same all day
+    assert len({cs.daily_target(g, None, cs.FREE, date(2026, 10, 11)) for g in range(1, 400)}) > 5   # varies between servers
+
+
+def test_spacing_adds_up_to_the_daily_amount():
+    assert round(86400 / cs.gap_seconds(85)) == 85 and round(86400 / cs.gap_seconds(200)) == 200
 
 
 def test_lapsed_premium_is_clamped_when_spawning():
-    cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(1, 2, 3), interval_minutes=15)
-    assert cfg.effective(True) == ((1, 2, 3), 15)
-    assert cfg.effective(False) == ((1,), 360)                       # slowest-allowed >= asked: 6 hours
-
-
-def test_clamp_interval_picks_nearest_allowed_not_faster():
-    assert cs.clamp_interval(45, cs.FREE) == 360
-    assert cs.clamp_interval(99999, cs.FREE) == 1440
-    assert cs.clamp_interval(60, cs.PREMIUM) == 60
+    from datetime import date
+    cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(1, 2, 3))
+    ch, gap = cfg.effective(True, date(2026, 10, 11))
+    assert ch == (1, 2, 3) and 86400 / 200 <= gap <= 86400 / 150
+    ch, gap = cfg.effective(False, date(2026, 10, 11))
+    assert ch == (1,) and 86400 / 90 <= gap <= 86400 / 80
 
 
 def test_after_change_timing():
     now = datetime(2026, 10, 11, tzinfo=timezone.utc)
-    off = cs.CatConfig(guild_id=1, channel_ids=(5,), interval_minutes=720)
+    off = cs.CatConfig(guild_id=1, channel_ids=(5,))
     assert cs.after_change(off, cs.replace(off, enabled=True), now).next_at == now      # first cat right away
-    on = cs.replace(off, enabled=True, next_at=now + timedelta(hours=11))
-    faster = cs.replace(on, interval_minutes=360)
-    assert cs.after_change(on, faster, now).next_at == now + timedelta(hours=6)          # never waits longer
-    slower = cs.replace(on, interval_minutes=1440)
-    assert cs.after_change(on, slower, now).next_at == now + timedelta(hours=11)         # but not pushed later
+    on = cs.replace(off, enabled=True, next_at=now + timedelta(minutes=9))
+    assert cs.after_change(on, cs.replace(on, channel_ids=(5, 6)), now).next_at == on.next_at   # other edits don't reset the timer
 
 
 # ── shared pool ───────────────────────────────────────────────────────────
@@ -225,20 +226,30 @@ def _cog(monkeypatch, guild, cfg, premium, claimed=True):
     return c, claim
 
 
-def test_free_server_gets_one_cat_in_one_channel_even_if_three_are_stored(monkeypatch):
+def test_free_server_posts_in_its_one_channel_even_if_three_are_stored(monkeypatch):
     g, chans = _guild([1, 2, 3])
-    cfg = cs.CatConfig(guild_id=77, enabled=True, channel_ids=(1, 2, 3), interval_minutes=15)
+    cfg = cs.CatConfig(guild_id=77, enabled=True, channel_ids=(1, 2, 3))
     c, claim = _cog(monkeypatch, g, cfg, premium=False)
     assert run(c.spawn_due()) == 1
-    chans[1].send.assert_awaited_once(); chans[2].send.assert_not_awaited()
-    assert claim.await_args.args[2] == 360
+    chans[1].send.assert_awaited_once(); chans[2].send.assert_not_awaited(); chans[3].send.assert_not_awaited()
+    assert 86400 / 90 * 0.85 <= claim.await_args.args[2] <= 86400 / 80 * 1.15
 
 
-def test_premium_server_gets_a_cat_in_every_channel(monkeypatch):
+def test_premium_server_gets_one_cat_per_turn_rotating_its_channels(monkeypatch):
     g, chans = _guild([1, 2, 3])
-    cfg = cs.CatConfig(guild_id=77, enabled=True, channel_ids=(1, 2, 3), interval_minutes=15)
+    cfg = cs.CatConfig(guild_id=77, enabled=True, channel_ids=(1, 2, 3))
     c, claim = _cog(monkeypatch, g, cfg, premium=True)
-    assert run(c.spawn_due()) == 3 and claim.await_args.args[2] == 15
+    assert run(c.spawn_due()) == 1 and sum(ch.send.await_count for ch in chans.values()) == 1
+    assert 86400 / 200 * 0.85 <= claim.await_args.args[2] <= 86400 / 150 * 1.15
+
+
+def test_a_blocked_channel_falls_through_to_the_next_one(monkeypatch):
+    g, chans = _guild([1, 2])
+    chans[1].permissions_for.return_value = SimpleNamespace(view_channel=True, send_messages=False, embed_links=True)
+    cfg = cs.CatConfig(guild_id=77, enabled=True, channel_ids=(1, 2))
+    c, _ = _cog(monkeypatch, g, cfg, premium=True)
+    monkeypatch.setattr(cat.time, "time", lambda: 0.0)                       # rotation starts at channel 1
+    assert run(c.spawn_due()) == 1 and chans[2].send.await_count == 1
 
 
 def test_a_server_someone_else_already_claimed_is_skipped(monkeypatch):
@@ -296,11 +307,11 @@ def test_non_admin_tapping_cat_still_gets_a_cat(monkeypatch):
 
 
 def test_setup_embed_explains_the_free_and_premium_limits():
-    cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(5,), interval_minutes=720)
+    cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(5,))
     free = wiz.render_embed(cfg, premium=False).description
-    assert "Free server" in free and "/premium" in free and "every 12 hours" in free and "🟢 ON" in free
+    assert "Free server" in free and "/premium" in free and "80 to 90" in free and "🟢 ON" in free
     prem = wiz.render_embed(cfg, premium=True).description
-    assert "Premium server" in prem and "/premium" not in prem
+    assert "Premium server" in prem and "150 to 200" in prem and "/premium" not in prem
 
 
 # ── cat embed + AI cat check ──────────────────────────────────────────────
