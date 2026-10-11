@@ -17,6 +17,7 @@ from typing import List, Optional
 
 import discord
 
+from modules import cat_filter
 from modules import cat_quests
 from modules import cat_adopt as ca
 from modules import cat_announce
@@ -177,6 +178,8 @@ class CollectionView(discord.ui.View):
     def __init__(self, client, user, cats: List[ca.Cat], index: int = 0):
         super().__init__(timeout=600)
         self.client, self.user, self.cats, self.index = client, user, cats, index
+        self.all_cats = list(cats)                  # everything the person owns; self.cats is the filtered view of it
+        self.filter = cat_filter.CatFilter()
         self.confirm_release = False
         self.confirm_rank_for = None        # (cat id, rank) the person tapped once; a second tap spends the coins
         self.wallet = cat_wallet.Wallet()
@@ -191,7 +194,9 @@ class CollectionView(discord.ui.View):
 
     async def embed(self) -> discord.Embed:
         e = await cat_embed_full(self.client, self.current,
-                                 f"Cat {self.index + 1} of {len(self.cats)} · just for fun, no real money")
+                                 f"Cat {self.index + 1} of {len(self.cats)}"
+                                 + (f" (filtered from {len(self.all_cats)})" if len(self.cats) != len(self.all_cats) else "")
+                                 + " · just for fun, no real money")
         e.add_field(name="Your purse", value=cat_wallet.wallet_text(self.wallet), inline=False)
         if getattr(self, "trade_id", None) is None:
             self.trade_id = await cat_ids.safe_get(self.user.id, _clone_id(self.client)) or ""
@@ -229,6 +234,10 @@ class CollectionView(discord.ui.View):
                          for i, c in enumerate(chunk)], row=2)
             jump.callback = self._jump
             self.add_item(jump)
+        fb = discord.ui.Button(label=(f"Filter ({self.filter.active})" if self.filter.active else "Filter / search"),
+                               emoji="\U0001F50D", style=discord.ButtonStyle.secondary, row=3)
+        fb.callback = self._open_filter
+        self.add_item(fb)
         have = self.wallet.diamonds
         for label, fn in ((f"{cat_wallet.DIAMOND} Convert 1", self._convert_one),
                           (f"{cat_wallet.DIAMOND} Convert all ({have})", self._convert_all)):
@@ -307,10 +316,28 @@ class CollectionView(discord.ui.View):
 
     async def reload(self, user_id: int) -> None:
         keep = self.current.id if self.cats else None
-        self.cats = await ca.list_cats(user_id, _clone_id(self.client))
+        self.all_cats = await ca.list_cats(user_id, _clone_id(self.client))
+        self._reapply()
         self.index = next((i for i, c in enumerate(self.cats) if c.id == keep), min(self.index, max(len(self.cats) - 1, 0)))
         self.confirm_release = False
         self._build()
+
+    def _reapply(self) -> None:
+        """Rebuild the visible list from everything owned. An untouched filter keeps the original order. If nothing
+        matches any more (the last match was sold, say) the filter is cleared so the screen is never empty."""
+        if self.filter == cat_filter.CatFilter():
+            self.cats = list(self.all_cats)
+            return
+        shown = cat_filter.apply(self.all_cats, self.filter)
+        if not shown and self.all_cats:
+            self.filter = cat_filter.CatFilter()
+            shown = list(self.all_cats)
+        self.cats = shown
+
+    async def _open_filter(self, interaction):
+        self.confirm_release = False
+        view = FilterView(self)
+        await interaction.response.edit_message(content=view.status(), embed=None, view=view)
 
     async def _show(self, interaction):
         self._build()
@@ -696,3 +723,100 @@ class TradeOfferView(discord.ui.View):
 from discord_bot.cogs import _views_cat_market as _market  # noqa: E402  (needs the names defined above)
 
 DYNAMIC_ITEMS = (AdoptButton, MyCatsButton) + _market.DYNAMIC_ITEMS
+
+
+# ── My cats: search, filters, sorting ──────────────────────────────────────
+
+class SearchModal(discord.ui.Modal, title="Search your cats"):
+    text = discord.ui.TextInput(label="Cat name or cat #ID", required=False, max_length=cat_filter.QUERY_MAX,
+                                placeholder="leave empty to clear the search")
+
+    def __init__(self, parent: "FilterView"):
+        super().__init__()
+        self.parent = parent
+        self.text.default = parent.f.query or None
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.parent.f = self.parent.f.with_(query=cat_filter.clean_query(self.text.value))
+        self.parent._build()
+        await interaction.response.edit_message(content=self.parent.status(), view=self.parent)
+
+
+class FilterView(discord.ui.View):
+    """Pick a rarity, a trait, a sort order or a name search, then Done. Nothing is changed in the collection."""
+
+    def __init__(self, parent: CollectionView):
+        super().__init__(timeout=300)
+        self.parent = parent
+        self.f = parent.filter                     # a draft: the real filter only changes when Done is tapped
+        self._build()
+
+    def _matches(self) -> int:
+        return len(cat_filter.apply(self.parent.all_cats, self.f))
+
+    def status(self) -> str:
+        f = self.f
+        n, total = self._matches(), len(self.parent.all_cats)
+        return (f"\U0001F50D **Filter your cats**: {n} of {total} match ({cat_filter.describe(f)}).\n"
+                + ("Tap **Done** to see them." if n else "No cat matches. Change a filter or tap **Clear**."))
+
+    def _build(self) -> None:
+        self.clear_items()
+        f = self.f
+        rar = discord.ui.Select(placeholder="Rarity", row=0, options=[
+            discord.SelectOption(label="Any rarity", value="any", default=f.rarity is None)] + [
+            discord.SelectOption(label=r.title(), value=r, emoji=ca.RARITY_EMOJI.get(r), default=f.rarity == r)
+            for r in ca.RARITY_RANK])
+        rar.callback = self._rarity
+        trait = discord.ui.Select(placeholder="Trait", row=1, options=[
+            discord.SelectOption(label="Any trait", value="any", default=f.trait is None)] + [
+            discord.SelectOption(label=t, value=t, default=f.trait == t) for t in ca.TRAITS])
+        trait.callback = self._trait
+        sort = discord.ui.Select(placeholder="Sort by", row=2, options=[
+            discord.SelectOption(label=label, value=key, default=f.sort == key) for key, label in cat_filter.SORTS.items()])
+        sort.callback = self._sort
+        for item in (rar, trait, sort):
+            self.add_item(item)
+        for label, fn, style, disabled in (
+            ("Search name / ID", self._search, discord.ButtonStyle.secondary, False),
+            ("Clear", self._clear, discord.ButtonStyle.secondary, f == cat_filter.CatFilter()),
+            ("Done", self._done, discord.ButtonStyle.success, self._matches() == 0),
+        ):
+            b = discord.ui.Button(label=label, style=style, disabled=disabled, row=3)
+            b.callback = fn
+            self.add_item(b)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await self.parent.interaction_check(interaction)
+
+    async def _update(self, interaction, **kw):
+        self.f = self.f.with_(**kw)
+        self._build()
+        await interaction.response.edit_message(content=self.status(), view=self)
+
+    async def _rarity(self, interaction):
+        v = interaction.data["values"][0]
+        await self._update(interaction, rarity=None if v == "any" else v)
+
+    async def _trait(self, interaction):
+        v = interaction.data["values"][0]
+        await self._update(interaction, trait=None if v == "any" else v)
+
+    async def _sort(self, interaction):
+        v = interaction.data["values"][0]
+        await self._update(interaction, sort=v if v in cat_filter.SORTS else cat_filter.DEFAULT_SORT)
+
+    async def _search(self, interaction):
+        await interaction.response.send_modal(SearchModal(self))
+
+    async def _clear(self, interaction):
+        self.f = cat_filter.CatFilter()
+        self._build()
+        await interaction.response.edit_message(content=self.status(), view=self)
+
+    async def _done(self, interaction):
+        self.parent.filter = self.f
+        self.parent._reapply()
+        self.parent.index = 0
+        self.parent._build()
+        await interaction.response.edit_message(content=None, embed=await self.parent.embed(), view=self.parent)
