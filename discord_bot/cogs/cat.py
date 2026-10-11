@@ -19,6 +19,7 @@ no slot left, /cat is skipped and logged, the bot still starts, and the join DM
 Cat button (which only needs fetch_cat_url) keeps working.
 """
 
+import asyncio
 import logging
 import random
 import time
@@ -28,9 +29,10 @@ from urllib.parse import urlparse
 import aiohttp
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import config
+from modules import cat_pool, cat_quality, cat_setup
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,16 @@ CATAAS_URL = "https://cataas.com/cat?json=true"
 ALLOWED_HOSTS = ("thecatapi.com", "cataas.com")
 COOLDOWN_SECONDS = 5.0
 _TIMEOUT = aiohttp.ClientTimeout(total=6)
+
+# Shared pool (main bot + every clone): once it holds POOL_MIN good pictures, bots post pooled ones instead of
+# calling the cat APIs; one request in GROW_ONE_IN still tops the pool up (until POOL_MAX).
+CAT_API_BATCH_URL = CAT_API_URL + "?limit=5&size=full&mime_types=jpg,png"
+POOL_MIN = 20
+POOL_MAX = 400
+GROW_ONE_IN = 8
+DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=12)
+SPAWN_TICK_SECONDS = 60
+SPAWN_PER_TICK = 10
 
 _recent = deque(maxlen=50)          # last good URLs, used only if both services fail
 _last_use: dict = {}                # user id -> monotonic time of their last cat
@@ -94,12 +106,131 @@ async def _from_cataas(session):
     return None
 
 
-async def fetch_cat_url(session=None):
-    """A cat picture URL, or None if nothing is available. Never raises."""
+_fill_lock = asyncio.Lock()
+_background: set = set()
+
+
+async def _candidates_thecatapi(session) -> list:
+    """Up to 5 pictures from ONE API call, big ones first. Pictures already known to be too small are dropped here."""
+    headers = {"x-api-key": config.CAT_API_KEY} if getattr(config, "CAT_API_KEY", "") else None
+    data = await _get_json(session, CAT_API_BATCH_URL, headers)
+    out = []
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict) or not safe_image_url(item.get("url")):
+            continue
+        w, h = item.get("width"), item.get("height")
+        if isinstance(w, int) and isinstance(h, int) and (min(w, h) < cat_quality.MIN_SHORT_SIDE
+                                                           or max(w, h) < cat_quality.MIN_LONG_SIDE):
+            continue
+        out.append({"url": item["url"], "id": str(item.get("id") or ""), "pixels": (w or 0) * (h or 0)})
+    out.sort(key=lambda c: -c["pixels"])
+    return out[:5]
+
+
+async def _candidates_cataas(session) -> list:
+    url = await _from_cataas(session)
+    return [{"url": url, "id": url.rsplit("/", 1)[-1], "pixels": 0}] if url and safe_image_url(url) else []
+
+
+async def _download(session, url: str):
+    """The picture's bytes (capped), or None. Only allow-listed hosts."""
+    if not safe_image_url(url):
+        return None
+    async with session.get(url, timeout=DOWNLOAD_TIMEOUT) as r:
+        if r.status != 200:
+            return None
+        buf = bytearray()
+        async for chunk in r.content.iter_chunked(64 * 1024):
+            buf += chunk
+            if len(buf) > cat_quality.MAX_BYTES:
+                return None
+        return bytes(buf)
+
+
+async def _grow_pool(bot, session):
+    """ONE API call: download the candidates, keep EVERY one that passes the quality filter (the call is already
+    paid for), save them to the shared pool, and return the sharpest one's link (None if nothing passed)."""
+    for source, getter in (("thecatapi", _candidates_thecatapi), ("cataas", _candidates_cataas)):
+        try:
+            cands = await getter(session)
+        except Exception:
+            logger.warning("[cat] %s failed", source, exc_info=True)
+            continue
+        try:
+            known = await cat_pool.known_source_ids(source, [c["id"] for c in cands])
+        except Exception:
+            known = set()
+        good = []
+        for c in cands:
+            if c["id"] and c["id"] in known:
+                continue
+            try:
+                data = await _download(session, c["url"])
+            except Exception:
+                continue
+            q = cat_quality.assess(data) if data else None
+            if q is not None and q.ok:
+                good.append((q, data, c))
+            elif q is not None:
+                logger.info("[cat] skipped a picture: %s", q.reason)
+        good.sort(key=lambda g: -g[0].sharpness)
+        best = None
+        for q, data, c in good:
+            try:
+                url = await cat_pool.store(bot, data, q, source, c["id"])
+            except Exception:
+                logger.warning("[cat] couldn't save to the pool", exc_info=True)
+                url = None
+            best = best or url
+        if best:
+            return best
+        if good:                                    # passed the filter but couldn't be pooled: use it directly
+            return good[0][2]["url"]
+    return None
+
+
+async def _grow_in_background(bot) -> None:
+    try:
+        if _fill_lock.locked():
+            return
+        async with _fill_lock, aiohttp.ClientSession() as session:
+            await _grow_pool(bot, session)
+    except Exception:
+        logger.warning("[cat] background pool top-up failed", exc_info=True)
+
+
+async def _fetch_via_pool(bot, session):
+    n = await cat_pool.pool_count()
+    if n >= POOL_MIN:
+        url = await cat_pool.pick(bot)
+        if url:
+            if n < POOL_MAX and random.randrange(GROW_ONE_IN) == 0 and not _fill_lock.locked():
+                task = asyncio.create_task(_grow_in_background(bot))
+                _background.add(task)
+                task.add_done_callback(_background.discard)
+            return url
+    async with _fill_lock:
+        url = await _grow_pool(bot, session)
+    return url or await cat_pool.pick(bot)
+
+
+async def fetch_cat_url(session=None, bot=None):
+    """A cat picture URL, or None if nothing is available. Never raises.
+
+    With `bot`, pictures come from the shared quality-filtered pool (see modules/cat_pool.py) and the cat APIs are
+    only called to top it up. Without it (or if the pool is unavailable) the old direct path is used."""
     own = session is None
     if own:
         session = aiohttp.ClientSession()
     try:
+        if bot is not None:
+            try:
+                url = await _fetch_via_pool(bot, session)
+                if url:
+                    _recent.append(url)
+                    return url
+            except Exception:
+                logger.warning("[cat] pool path failed, using the direct API", exc_info=True)
         for source in (_from_thecatapi, _from_cataas):
             try:
                 url = await source(session)
@@ -129,16 +260,69 @@ async def send_cat(interaction: discord.Interaction) -> None:
         await interaction.response.send_message(f"😺 Easy there, another cat in {wait:.0f}s.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
-    url = await fetch_cat_url()
+    url = await fetch_cat_url(bot=interaction.client)
     if not url:
         await interaction.followup.send("😿 I couldn't find a cat right now. Try again in a moment.", ephemeral=True)
         return
     await interaction.followup.send(embed=cat_embed(url))
 
 
+async def post_cat(bot, guild: discord.Guild, channel_id: int) -> bool:
+    """Posts one cat in a server channel. False if the channel is gone / not allowed / no cat was available."""
+    ch = guild.get_channel(channel_id)
+    if not isinstance(ch, discord.TextChannel):
+        return False
+    perms = ch.permissions_for(guild.me)
+    if not (perms.view_channel and perms.send_messages and perms.embed_links):
+        return False
+    url = await fetch_cat_url(bot=bot)
+    if not url:
+        return False
+    try:
+        await ch.send(embed=cat_embed(url), allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+        logger.info("[cat] couldn't post in channel %s", channel_id, exc_info=True)
+        return False
+    return True
+
+
 class CatCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    async def cog_load(self):
+        self._spawner.start()
+
+    async def cog_unload(self):
+        self._spawner.cancel()
+
+    @tasks.loop(seconds=SPAWN_TICK_SECONDS)
+    async def _spawner(self):
+        try:
+            await self.spawn_due()
+        except Exception:
+            logger.exception("[cat] spawner tick failed")
+
+    @_spawner.before_loop
+    async def _before_spawner(self):
+        await self.bot.wait_until_ready()
+
+    async def spawn_due(self) -> int:
+        """Posts the cats that are due for THIS bot (main or one clone). Returns how many were posted."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        posted = 0
+        for cfg in await cat_setup.due(clone_id, SPAWN_PER_TICK):
+            guild = self.bot.get_guild(cfg.guild_id)
+            if guild is None:
+                continue
+            premium = await cat_setup.is_premium(guild.id, clone_id)
+            channels, interval = cfg.effective(premium)       # a lapsed Premium server drops to the free limits
+            if not channels or not await cat_setup.claim(cfg.guild_id, clone_id, interval):
+                continue
+            for channel_id in channels:
+                if await post_cat(self.bot, guild, channel_id):
+                    posted += 1
+        return posted
 
     @app_commands.command(name="cat", description="A random cute cat picture 🐱")
     async def cat(self, interaction: discord.Interaction):
