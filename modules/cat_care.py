@@ -136,7 +136,7 @@ async def _spend(conn, owner_id: int, clone_id, cost: int) -> Optional[int]:
     row = await conn.fetchrow(
         "UPDATE cat_wallets SET coins = coins - $3, updated_at = NOW() "
         "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND coins >= $3 RETURNING coins",
-        owner_id, _key(clone_id), int(cost))
+        owner_id, -1, int(cost))                  # -1: the wallet is shared by every bot
     return int(row["coins"]) if row else None
 
 

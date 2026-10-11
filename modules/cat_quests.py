@@ -136,6 +136,7 @@ async def claim(owner_id: int, clone_id, key: str, day: Optional[date] = None) -
 
 
 async def _pay_diamonds(conn, owner_id, clone_id, diamonds: int) -> None:
+    clone_id = None                         # one wallet for every bot
     await conn.execute(
         "INSERT INTO cat_wallets (owner_id, clone_id, coins, diamonds) VALUES ($1,$2,0,$3) "
         "ON CONFLICT (owner_id, (COALESCE(clone_id, -1))) DO UPDATE SET "

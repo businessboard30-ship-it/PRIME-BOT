@@ -71,6 +71,9 @@ async def _pool():
     return await get_pool()
 
 
+SHARED_KEY = -1                  # coins and diamonds are one wallet per person across the main bot and every clone
+
+
 def _key(clone_id) -> int:
     return -1 if clone_id is None else int(clone_id)
 
@@ -79,6 +82,7 @@ async def add_reward(conn, owner_id: int, clone_id, reward: Reward) -> None:
     """Add a reward inside the caller's transaction (so it commits or rolls back together with the adoption)."""
     coins = reward.amount if reward.kind == "coins" else 0
     diamonds = reward.amount if reward.kind == "diamond" else 0
+    clone_id = None                         # one wallet for every bot (main bot and all clones)
     await conn.execute(
         "INSERT INTO cat_wallets (owner_id, clone_id, coins, diamonds) VALUES ($1, $2, $3, $4) "
         "ON CONFLICT (owner_id, (COALESCE(clone_id, -1))) DO UPDATE SET "
@@ -90,7 +94,7 @@ async def get_wallet(owner_id: int, clone_id) -> Wallet:
     pool = await _pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT coins, diamonds FROM cat_wallets WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2",
-                                  owner_id, _key(clone_id))
+                                  owner_id, SHARED_KEY)
     return Wallet(int(row["coins"]), int(row["diamonds"])) if row else Wallet()
 
 
@@ -112,10 +116,10 @@ async def convert(owner_id: int, clone_id, count: Optional[int] = 1) -> Optional
             row = await conn.fetchrow(
                 "UPDATE cat_wallets SET coins = coins + diamonds::bigint * $3, diamonds = 0, updated_at = NOW() "
                 "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND diamonds >= 1 RETURNING coins, diamonds",
-                owner_id, _key(clone_id), DIAMOND_COINS)
+                owner_id, SHARED_KEY, DIAMOND_COINS)
         else:
             row = await conn.fetchrow(
                 "UPDATE cat_wallets SET diamonds = diamonds - $3, coins = coins + $3::bigint * $4, updated_at = NOW() "
                 "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND diamonds >= $3 RETURNING coins, diamonds",
-                owner_id, _key(clone_id), int(count), DIAMOND_COINS)
+                owner_id, SHARED_KEY, int(count), DIAMOND_COINS)
     return Wallet(int(row["coins"]), int(row["diamonds"])) if row else None

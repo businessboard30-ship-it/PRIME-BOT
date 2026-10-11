@@ -166,7 +166,7 @@ def test_a_diamond_lands_as_a_diamond(monkeypatch):
     conn = use_db(monkeypatch, Conn())
     monkeypatch.setattr(cw, "roll_reward", lambda rarity, rng=random: cw.Reward("diamond", 1))
     run(ca.adopt(1, 10, 7, 5))
-    assert conn.wallet == {(10, 7): [0, 1]}
+    assert conn.wallet == {(10, -1): [0, 1]}          # a clone's reward lands in the one shared wallet
 
 
 def test_rewards_add_up_across_adoptions(monkeypatch):
@@ -218,11 +218,18 @@ def test_cannot_convert_what_you_dont_have(monkeypatch):
     assert conn.wallet[(10, -1)] == [500, 0]
 
 
-def test_wallets_are_separate_per_bot(monkeypatch):
-    use_db(monkeypatch, Conn(wallet={(10, -1): [0, 1], (10, 7): [5, 0]}))
-    assert run(cw.get_wallet(10, None)) == cw.Wallet(0, 1) and run(cw.get_wallet(10, 7)) == cw.Wallet(5, 0)
-    assert run(cw.get_wallet(11, None)) == cw.Wallet()
-    assert run(cw.convert(10, 7, 1)) is None                          # the clone wallet has no diamond to spend
+def test_one_wallet_for_every_bot(monkeypatch):
+    use_db(monkeypatch, Conn(wallet={(10, -1): [5, 1]}))
+    assert run(cw.get_wallet(10, None)) == cw.Wallet(5, 1) and run(cw.get_wallet(10, 7)) == cw.Wallet(5, 1)
+    assert run(cw.get_wallet(11, 7)) == cw.Wallet()
+    assert run(cw.convert(10, 7, 1)) == cw.Wallet(5 + cw.DIAMOND_COINS, 0)     # spending from a clone uses the same wallet
+
+
+def test_migration_merges_per_bot_wallets_without_deleting():
+    from pathlib import Path
+    sql = (Path(__file__).resolve().parents[2] / "database/migrations/049_cat_shared_wallet.sql").read_text()
+    assert "SUM(coins)" in sql and "GROUP BY owner_id" in sql and "DELETE FROM" not in sql.upper() and "DROP " not in sql.upper()
+    assert "clone_id IS NOT NULL" in sql
 
 
 def test_safe_wallet_never_raises(monkeypatch):
