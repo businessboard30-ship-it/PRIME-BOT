@@ -18,6 +18,7 @@ from typing import List, Optional
 import discord
 
 from modules import cat_adopt as ca
+from modules import cat_announce
 from modules import cat_board
 from modules import cat_log
 from modules import cat_market as cm
@@ -304,6 +305,9 @@ class MarketDetailView(discord.ui.View):
         await interaction.response.edit_message(
             content=f"\U0001F389 **{l.cat.name}** is yours! Open **My cats** to see it.", embed=None, view=None)
         await _after_sale(interaction.client, l, interaction.user)
+        if l.cat:
+            await cat_announce.announce(interaction, cat_announce.sale_text(
+                interaction.user.mention, f"<@{l.seller_id}>", l.cat.name, l.cat.id, l.cat.cat_rank, l.price))
         # Best effort: close the original listing post, if this bot can reach it.
         try:
             if l.channel_id and l.message_id:

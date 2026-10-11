@@ -18,6 +18,7 @@ from typing import List, Optional
 import discord
 
 from modules import cat_adopt as ca
+from modules import cat_announce
 from modules import cat_ids
 from modules import cat_log
 from modules import cat_setup as cs
@@ -115,8 +116,8 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
         cat_log.record(interaction.client, "adopt", **_event(interaction, cat))
         embed = (interaction.message.embeds[0] if interaction.message and interaction.message.embeds
                  else discord.Embed(color=PINK))
-        embed.description = (f"💖 **{cat.name}** was adopted by {interaction.user.mention}!\n"
-                             f"{ca.rarity_badge(cat.rarity)} · {cat.trait}")
+        embed.description = cat_announce.adopt_text(interaction.user.mention, cat.name, cat.id,
+                                                    ca.rarity_badge(cat.rarity), cat.trait, cat.rarity)
         await interaction.response.edit_message(embed=embed, view=spawn_view(self.spawn_id, adopted=True))
         await interaction.followup.send(
             f"🎉 You adopted **{cat.name}**, a {ca.rarity_badge(cat.rarity)} {cat.trait.lower()} cat! "
@@ -269,6 +270,9 @@ class CollectionView(discord.ui.View):
         await self.refresh_wallet()
         self._build()
         await interaction.response.edit_message(content=note, embed=await self.embed(), view=self)
+        if res.status == "ok":
+            await cat_announce.announce(interaction, cat_announce.rank_up_text(
+                interaction.user.mention, cat.name, cat.id, res.rank), gold=res.rank >= cr.MAX_RANK)
 
     async def _convert(self, interaction, count) -> None:
         try:
