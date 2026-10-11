@@ -1,21 +1,28 @@
 # path: modules/cat_setup.py
 
 """
-Per-server Cat setup: which channel(s) get an automatic cat, and how often. Premium logic lives here.
+Per-server Cat setup: which channel(s) get automatic cats. Premium logic lives here.
 
-  Free server:     1 spawn channel,  a cat every 6, 12 or 24 hours.
-  Premium server:  up to 3 spawn channels, a cat every 15 / 30 minutes, 1 / 2 / 3 / 6 / 12 / 24 hours.
+  Free server:     1 spawn channel,   80 to 90 cats a day.
+  Premium server:  up to 3 channels, 150 to 200 cats a day.
 
-The limits are enforced twice: the setup wizard stops a free server from picking more (and says why), and the
-spawner clamps whatever is stored to the tier the server has RIGHT NOW, so a server whose Premium ended slows
-down by itself without anyone having to edit anything.
+Each server's amount for a given UTC day is picked inside its tier's range (the same number all day, different
+tomorrow, no storage needed) and the cats are spread evenly across the day. With several channels the cats rotate
+between them, so the daily amount is for the whole server, not per channel.
+
+A server's own setup is always respected: off means no cats, cats only appear in the channels the server picked
+(and only where the bot can post), and the limits are enforced twice (the wizard stops a free server picking more
+channels, and the spawner clamps whatever is stored to the plan the server has RIGHT NOW, so a lapsed Premium
+server drops to the free amount by itself). `interval_minutes` is a legacy column from the first version and is
+no longer used for pacing.
 """
 
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -25,32 +32,29 @@ logger = logging.getLogger(__name__)
 class Tier:
     name: str
     max_channels: int
-    intervals: Tuple[int, ...]          # minutes
-    default_interval: int
+    daily_min: int                      # cats per day, inclusive range
+    daily_max: int
 
 
-FREE = Tier("free", 1, (360, 720, 1440), 720)
-PREMIUM = Tier("premium", 3, (15, 30, 60, 120, 180, 360, 720, 1440), 60)
-ALL_INTERVALS = PREMIUM.intervals
+FREE = Tier("free", 1, 80, 90)
+PREMIUM = Tier("premium", 3, 150, 200)
+SECONDS_PER_DAY = 86400
+GAP_JITTER = 0.15                       # +/-15% on each gap so servers don't all post on the same second
 
 
 def tier_for(premium: bool) -> Tier:
     return PREMIUM if premium else FREE
 
 
-def interval_label(minutes: int) -> str:
-    if minutes < 60:
-        return f"{minutes} minutes"
-    hours = minutes // 60
-    return "1 hour" if hours == 1 else f"{hours} hours"
+def daily_target(guild_id: int, clone_id: Optional[int], tier: Tier, day: date) -> int:
+    """How many cats this server gets on this UTC day: stable all day, inside the tier's range."""
+    return random.Random(f"cat:{guild_id}:{-1 if clone_id is None else clone_id}:{day.isoformat()}").randint(
+        tier.daily_min, tier.daily_max)
 
 
-def clamp_interval(minutes: int, tier: Tier) -> int:
-    """The tier's own allowed value closest to (and not faster than) what was asked for."""
-    if minutes in tier.intervals:
-        return minutes
-    slower = [m for m in tier.intervals if m >= minutes]
-    return min(slower) if slower else max(tier.intervals)
+def gap_seconds(target: int) -> float:
+    """Average seconds between two cats for a daily target."""
+    return SECONDS_PER_DAY / max(1, int(target))
 
 
 def clamp_channels(ids, tier: Tier) -> Tuple[int, ...]:
@@ -68,14 +72,15 @@ class CatConfig:
     clone_id: Optional[int] = None
     enabled: bool = False
     channel_ids: Tuple[int, ...] = ()
-    interval_minutes: int = FREE.default_interval
+    interval_minutes: int = 720         # legacy column, not used for pacing any more
     next_at: Optional[datetime] = None
     last_post_at: Optional[datetime] = None
 
-    def effective(self, premium: bool) -> Tuple[Tuple[int, ...], int]:
-        """(channels, minutes between cats) after applying the limits of the server's CURRENT plan."""
+    def effective(self, premium: bool, today: Optional[date] = None) -> Tuple[Tuple[int, ...], float]:
+        """(channels, average seconds between cats) after applying the limits of the server's CURRENT plan."""
         tier = tier_for(premium)
-        return clamp_channels(self.channel_ids, tier), clamp_interval(self.interval_minutes, tier)
+        today = today or datetime.now(timezone.utc).date()
+        return clamp_channels(self.channel_ids, tier), gap_seconds(daily_target(self.guild_id, self.clone_id, tier, today))
 
     @classmethod
     def from_row(cls, row) -> "CatConfig":
@@ -88,16 +93,12 @@ class CatConfig:
 
 def after_change(old: CatConfig, new: CatConfig, now: Optional[datetime] = None) -> CatConfig:
     """When the next cat is due after the owner changes something: turning it on (or giving a switched-on server
-    its first channel) posts one on the next tick so they see it work; a new interval never makes a cat wait
-    longer than that interval."""
+    its first channel) posts one on the next tick so they see it work."""
     now = now or datetime.now(timezone.utc)
     turned_on = new.enabled and not old.enabled
     first_channel = new.enabled and new.channel_ids and not old.channel_ids
     if turned_on or first_channel:
         return replace(new, next_at=now)
-    if new.interval_minutes != old.interval_minutes:
-        cap = now + timedelta(minutes=new.interval_minutes)
-        return replace(new, next_at=min(new.next_at or cap, cap))
     return new
 
 
@@ -151,15 +152,21 @@ async def due(clone_id: Optional[int], limit: int = 10) -> List[CatConfig]:
     return [CatConfig.from_row(r) for r in rows]
 
 
-async def claim(guild_id: int, clone_id: Optional[int], interval_minutes: int) -> bool:
-    """Atomically take this server's turn and schedule the next one. False = someone else already did."""
+async def claim(guild_id: int, clone_id: Optional[int], gap: float) -> bool:
+    """Atomically take this server's turn and schedule the next one. False = someone else already did.
+    The next time is counted from when this cat was DUE (not from now), so a late tick doesn't make a server
+    drift below its daily amount; a server that fell far behind (bot was down) restarts from now instead of
+    bursting to catch up."""
     pool = await _pool()
     async with pool.acquire() as conn:
         got = await conn.fetchval(
-            "UPDATE cat_guild_config SET next_at = NOW() + make_interval(mins => $3), last_post_at = NOW() "
+            "UPDATE cat_guild_config SET "
+            "next_at = CASE WHEN next_at IS NULL OR next_at < NOW() - make_interval(secs => $3) "
+            "THEN NOW() + make_interval(secs => $3) ELSE next_at + make_interval(secs => $3) END, "
+            "last_post_at = NOW() "
             "WHERE guild_id = $1 AND COALESCE(clone_id, -1) = $2 AND enabled "
             "AND (next_at IS NULL OR next_at <= NOW()) RETURNING guild_id",
-            guild_id, _key(clone_id), int(interval_minutes))
+            guild_id, _key(clone_id), float(gap))
     return got is not None
 
 

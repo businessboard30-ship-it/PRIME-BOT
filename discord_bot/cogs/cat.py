@@ -47,8 +47,8 @@ POOL_MIN = 20
 POOL_MAX = 400
 GROW_ONE_IN = 8
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=12)
-SPAWN_TICK_SECONDS = 60
-SPAWN_PER_TICK = 10
+SPAWN_TICK_SECONDS = 30
+SPAWN_PER_TICK = 60                 # servers handled per tick (Premium servers post as often as every ~7 minutes)
 
 _recent = deque(maxlen=50)          # last good URLs, used only if both services fail
 _last_use: dict = {}                # user id -> monotonic time of their last cat
@@ -309,12 +309,15 @@ class CatCog(commands.Cog):
             if guild is None:
                 continue
             premium = await cat_setup.is_premium(guild.id, clone_id)
-            channels, interval = cfg.effective(premium)       # a lapsed Premium server drops to the free limits
-            if not channels or not await cat_setup.claim(cfg.guild_id, clone_id, interval):
+            channels, gap = cfg.effective(premium)            # a lapsed Premium server drops to the free amount
+            if not channels or not await cat_setup.claim(cfg.guild_id, clone_id, gap * random.uniform(1 - cat_setup.GAP_JITTER, 1 + cat_setup.GAP_JITTER)):
                 continue
-            for channel_id in channels:
+            # one cat per turn, rotating through the channels the server picked (the daily amount is per server)
+            start = int(time.time() // max(gap, 1)) % len(channels)
+            for channel_id in channels[start:] + channels[:start]:
                 if await post_cat(self.bot, guild, channel_id):
                     posted += 1
+                    break
         return posted
 
     @app_commands.command(name="cat", description="A random cute cat picture 🐱")
