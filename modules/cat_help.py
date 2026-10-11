@@ -27,6 +27,11 @@ def sections() -> List[Tuple[str, str]]:
         ("🎁 Every day",
          "Use **/cat** for the full panel: 💖 Daily care (streak rewards), 🎯 Daily quests, 🏅 Badges, "
          f"✨ Cosmetics, 🔎 Wishlist (up to {cat_wishlist.MAX_OPEN} wants) and 📖 your profile."),
+        ("📣 Showing off",
+         "Tap **Share** on your profile, badges or care streak to post it in the channel. Anyone can look at a profile with "
+         "`/cat profile:@player` (hidden profiles stay hidden). In **My profile** you can edit your bio, pin up to 3 cats and "
+         "hide or show it. A wishlist post can also go to the channel, and the leaderboard has **Post to channel**. "
+         "Server managers choose in `/catsetup` whether the bot posts all, milestones only, or nothing."),
     ]
 
 
