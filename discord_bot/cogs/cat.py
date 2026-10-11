@@ -355,6 +355,10 @@ class CatCog(commands.Cog):
             guild = self.bot.get_guild(cfg.guild_id)
             if guild is None:
                 continue
+            if not cfg.is_open():
+                # outside the server's chosen hours: post nothing, wake up when the window opens
+                await cat_setup.defer(cfg.guild_id, clone_id, cat_setup.next_window_start(cfg.active_start, cfg.active_end))
+                continue
             premium = await cat_setup.is_premium(guild.id, clone_id)
             channels, gap = cfg.effective(premium)            # a lapsed Premium server drops to the free amount
             if not channels or not await cat_setup.claim(cfg.guild_id, clone_id, gap * random.uniform(1 - cat_setup.GAP_JITTER, 1 + cat_setup.GAP_JITTER)):
