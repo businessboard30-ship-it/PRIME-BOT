@@ -351,3 +351,35 @@ def test_ai_keep_lets_it_in(pool_env, monkeypatch):
     monkeypatch.setattr(cv, "approve", AsyncMock(return_value=True))
     run(cat.fetch_cat_url(FakeSession(), bot=MagicMock()))
     assert [s[1] for s in pool_env.stored] == ["a"]
+
+
+# ── pace: a server can choose FEWER cats ──────────────────────────────────
+
+def test_clamp_pace_never_goes_above_full_and_junk_means_full():
+    assert cs.clamp_pace(100) == 100 and cs.clamp_pace(500) == 100 and cs.clamp_pace(None) == 100 and cs.clamp_pace("x") == 100
+    assert cs.clamp_pace(60) == 50 and cs.clamp_pace(3) == 10 and cs.clamp_pace(0) == 10
+
+
+def test_pace_lowers_the_daily_amount_never_raises_it():
+    from datetime import date
+    d = date(2026, 10, 11)
+    full = cs.CatConfig(guild_id=9, enabled=True, channel_ids=(1,))
+    for pace in (75, 50, 25, 10):
+        ch, gap = cs.replace(full, pace_percent=pace).effective(False, d)
+        assert gap > full.effective(False, d)[1]
+        n = 86400 / gap
+        assert 80 * pace / 100 - 1 <= n <= 90 * pace / 100 + 1
+    assert cs.replace(full, pace_percent=999).effective(False, d) == full.effective(False, d)
+
+
+def test_wizard_offers_the_paces_and_shows_the_chosen_amount():
+    cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(5,), pace_percent=50)
+    assert "40 to 45" in wiz.render_embed(cfg, premium=False).description
+    assert "75 to 100" in wiz.render_embed(cfg, premium=True).description
+    assert [p for p in cs.PACES] == [100, 75, 50, 25, 10]
+
+
+def test_ai_knows_about_scam_shield_and_cats():
+    from modules import ai_features as af
+    assert "Scam Shield" in af.BOT_RULES and "/serversetup" in af.BOT_RULES
+    assert "80 to 90" in af.BOT_RULES and "150 to" in af.BOT_RULES and "/cat" in af.BOT_RULES

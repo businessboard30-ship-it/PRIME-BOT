@@ -37,6 +37,16 @@ def pick_channels(requested_ids, premium: bool):
     return kept, ""
 
 
+def _range_text(tier, pace: int) -> str:
+    p = cs.clamp_pace(pace)
+    lo, hi = cs.pace_target(tier.daily_min, p), cs.pace_target(tier.daily_max, p)
+    return f"{lo} to {hi}" if lo != hi else str(lo)
+
+
+def pace_label(tier, pace: int) -> str:
+    return "Full amount" if pace == 100 else f"{pace}% of the full amount"
+
+
 def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "") -> discord.Embed:
     tier = cs.tier_for(premium)
     chans = " ".join(f"<#{c}>" for c in cfg.channel_ids) or "none yet, pick below"
@@ -46,7 +56,7 @@ def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "") -> discord.
     lines += [
         f"**Status:** {'🟢 ON' if cfg.enabled else '🔴 OFF'}",
         f"**Spawn channel{'s' if tier.max_channels > 1 else ''}:** {chans}",
-        f"**Cats a day:** about {tier.daily_min} to {tier.daily_max}, spread across the day",
+        f"**Cats a day:** about {_range_text(tier, cfg.pace_percent)}, spread across the day",
         "",
         ("⭐ **Premium server:** up to 3 spawn channels, 150 to 200 cats a day (shared between your channels)." if premium else
          "**Free server:** 1 spawn channel, 80 to 90 cats a day.\n"
@@ -71,18 +81,29 @@ class CatSetupView(discord.ui.View):
         self.channels.callback = self._on_channels
         self.add_item(self.channels)
 
-        self.toggle = discord.ui.Button(label="Turn on", style=discord.ButtonStyle.success, row=1)
+        self.pace = discord.ui.Select(placeholder="Want fewer cats? Pick how many", row=1, options=self._pace_options())
+        self.pace.callback = self._on_pace
+        self.add_item(self.pace)
+
+        self.toggle = discord.ui.Button(label="Turn on", style=discord.ButtonStyle.success, row=2)
         self.toggle.callback = self._on_toggle
         self.add_item(self.toggle)
-        self.send_now = discord.ui.Button(label="Send a cat now", emoji="🐱", style=discord.ButtonStyle.primary, row=1)
+        self.send_now = discord.ui.Button(label="Send a cat now", emoji="🐱", style=discord.ButtonStyle.primary, row=2)
         self.send_now.callback = self._on_send_now
         self.add_item(self.send_now)
-        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, row=1)
+        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, row=2)
         close.callback = self._on_close
         self.add_item(close)
         self._sync()
 
+    def _pace_options(self):
+        tier = cs.tier_for(self.premium)
+        return [discord.SelectOption(label=f"{pace_label(tier, p)} (about {_range_text(tier, p)} a day)", value=str(p),
+                                     default=(p == cs.clamp_pace(self.cfg.pace_percent))) for p in cs.PACES]
+
     def _sync(self) -> None:
+        for opt in self.pace.options:
+            opt.default = int(opt.value) == cs.clamp_pace(self.cfg.pace_percent)
         self.toggle.label = "Turn off" if self.cfg.enabled else "Turn on"
         self.toggle.style = discord.ButtonStyle.danger if self.cfg.enabled else discord.ButtonStyle.success
         self.toggle.disabled = not self.cfg.channel_ids
@@ -134,6 +155,9 @@ class CatSetupView(discord.ui.View):
             self.notice = ""
             return
         await self._apply(interaction, channel_ids=kept)
+
+    async def _on_pace(self, interaction: discord.Interaction):
+        await self._apply(interaction, pace_percent=cs.clamp_pace(self.pace.values[0]))
 
     async def _on_toggle(self, interaction: discord.Interaction):
         await self._apply(interaction, enabled=not self.cfg.enabled)
