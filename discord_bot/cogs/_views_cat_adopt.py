@@ -17,6 +17,7 @@ from typing import List, Optional
 
 import discord
 
+from modules import cat_quests
 from modules import cat_adopt as ca
 from modules import cat_announce
 from modules import cat_ids
@@ -119,9 +120,11 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
         embed.description = cat_announce.adopt_text(interaction.user.mention, cat.name, cat.id,
                                                     ca.rarity_badge(cat.rarity), cat.trait, cat.rarity)
         await interaction.response.edit_message(embed=embed, view=spawn_view(self.spawn_id, adopted=True))
+        badge_lines = await cat_quests.on_adopt(interaction.user.id, _clone_id(interaction.client), cat.rarity)
         await interaction.followup.send(
             f"🎉 You adopted **{cat.name}**, a {ca.rarity_badge(cat.rarity)} {cat.trait.lower()} cat! "
             + (f"\n{cat_wallet.reward_text(res.reward)}" if res.reward else "")
+            + (("\n🏅 Badge earned: " + ", ".join(badge_lines)) if badge_lines else "")
             + "\nOpen **My cats** to rename, trade or gift.", ephemeral=True)
 
 
@@ -273,6 +276,7 @@ class CollectionView(discord.ui.View):
         if res.status == "ok":
             await cat_announce.announce(interaction, cat_announce.rank_up_text(
                 interaction.user.mention, cat.name, cat.id, res.rank), gold=res.rank >= cr.MAX_RANK)
+            await cat_quests.on_rank(interaction.user.id, _clone_id(self.client))
 
     async def _convert(self, interaction, count) -> None:
         try:
