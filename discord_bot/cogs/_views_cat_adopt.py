@@ -80,9 +80,9 @@ async def cat_embed_full(client, cat: ca.Cat, position: str = "") -> discord.Emb
 
 # ── Adopt button on a spawn ───────────────────────────────────────────────
 
-def spawn_view(spawn_id: int, adopted: bool = False) -> discord.ui.View:
+def spawn_view(spawn_id: int, adopted: bool = False, gone: bool = False) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
-    view.add_item(AdoptButton(spawn_id, adopted=adopted))
+    view.add_item(AdoptButton(spawn_id, adopted=adopted, gone=gone))
     view.add_item(MyCatsButton())
     view.add_item(_market.MarketButton())
     view.add_item(HelpButton())
@@ -107,12 +107,13 @@ class HelpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_help
 
 
 class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_adopt:(\d+)$"):
-    def __init__(self, spawn_id: int, adopted: bool = False):
+    def __init__(self, spawn_id: int, adopted: bool = False, gone: bool = False):
         self.spawn_id = spawn_id
+        done = adopted or gone
         super().__init__(discord.ui.Button(
-            label="Adopted 💖" if adopted else "Adopt me!", emoji=None if adopted else "🐾",
-            style=discord.ButtonStyle.secondary if adopted else discord.ButtonStyle.success,
-            custom_id=f"cat_adopt:{spawn_id}", disabled=adopted))
+            label="Ran away 💨" if gone else "Adopted 💖" if adopted else "Adopt me!", emoji=None if done else "🐾",
+            style=discord.ButtonStyle.secondary if done else discord.ButtonStyle.success,
+            custom_id=f"cat_adopt:{spawn_id}", disabled=done))
 
     @classmethod
     async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
@@ -130,6 +131,15 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
             await interaction.response.send_message(
                 f"🏠 Your home is full! You can keep up to {ca.MAX_CATS} cats. Release or trade one in **My cats**.",
                 ephemeral=True)
+            return
+        if res.status == "expired":
+            await interaction.response.send_message("💨 This cat already wandered off. Watch for the next one!", ephemeral=True)
+            try:                                    # also close the old spawn for everybody else
+                embed = discord.Embed.from_dict(interaction.message.embeds[0].to_dict())
+                embed.description = ca.EXPIRED_NOTE
+                await interaction.message.edit(embed=embed, view=spawn_view(self.spawn_id, gone=True))
+            except Exception:
+                logger.debug("[cat-adopt] couldn't mark the spawn as gone", exc_info=True)
             return
         if res.status in ("taken", "gone"):
             await interaction.response.send_message("😿 Someone else already adopted this cat." if res.status == "taken"

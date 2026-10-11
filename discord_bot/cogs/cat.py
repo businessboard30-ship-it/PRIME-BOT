@@ -55,6 +55,7 @@ SPAWN_TICK_SECONDS = 30
 BACKFILL_TICK_MINUTES = 5            # old-cat backfill: 15 items a tick, so even a big backlog drains in hours, gently
 REMINDER_TICK_MINUTES = 10
 REMINDER_PER_TICK = 5
+SPAWN_EXPIRE_PER_TICK = 20          # old spawns tidied per care tick (every 30 min)
 SPAWN_PER_TICK = 60                 # servers handled per tick (Premium servers post as often as every ~7 minutes)
 
 _alerts = cat_perms.AlertTracker()
@@ -414,7 +415,7 @@ class CatCog(commands.Cog):
         """Random hunger, one gentle heads-up per owner, and cats that wander off after 48 hours hungry (this bot's
         cats only). Every step is independent: one failing never stops the others."""
         clone_id = getattr(self.bot, "clone_id", None)
-        out = {"hungry": 0, "warned": 0, "left": 0}
+        out = {"hungry": 0, "warned": 0, "left": 0, "faded": 0}
         try:
             out["hungry"] = await cat_care.make_hungry(clone_id)
         except Exception:
@@ -441,9 +442,34 @@ class CatCog(commands.Cog):
                 await asyncio.sleep(2)
         except Exception:
             logger.warning("[cat] runaway step failed", exc_info=True)
+        try:
+            out["faded"] = await self.fade_spawns(clone_id)
+        except Exception:
+            logger.warning("[cat] spawn expiry step failed", exc_info=True)
         if any(out.values()):
             logger.info("[cat] care tick: %s", out)
         return out
+
+    async def fade_spawns(self, clone_id) -> int:
+        """Unadopted cats older than cat_adopt.SPAWN_EXPIRE_HOURS wander off: the Adopt button is disabled and the post
+        says so. A message that can't be edited (deleted, no access) is simply skipped."""
+        from modules import cat_adopt
+        from discord_bot.cogs._views_cat_adopt import spawn_view
+        rows = await cat_adopt.expire_spawns(clone_id, SPAWN_EXPIRE_PER_TICK)
+        for r in rows:
+            guild = self.bot.get_guild(r["guild_id"])
+            ch = guild.get_channel(r["channel_id"]) if guild else None
+            if ch is None or not r.get("message_id"):
+                continue
+            try:
+                msg = await ch.fetch_message(r["message_id"])
+                embed = discord.Embed.from_dict(msg.embeds[0].to_dict()) if msg.embeds else discord.Embed(color=discord.Color.from_rgb(255, 182, 193))
+                embed.description = cat_adopt.EXPIRED_NOTE
+                await msg.edit(embed=embed, view=spawn_view(r["id"], gone=True))
+            except discord.HTTPException:
+                logger.debug("[cat] couldn't mark spawn %s as gone", r["id"], exc_info=True)
+            await asyncio.sleep(1)
+        return len(rows)
 
     async def _dm(self, user_id: int, text: str) -> bool:
         try:
