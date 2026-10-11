@@ -33,6 +33,11 @@ def sections() -> List[Tuple[str, str]]:
         ("📖 Profile",
          "Your profile shows your Discord picture, bio, collection size, rarest cat, showcase and badges. Edit your bio, "
          "📌 pin cats to show off, 📣 share it, or 🙈 hide it. Look at anyone's with **/cat profile:@player**."),
+        ("📣 Showing off",
+         "Tap **Share** on your profile, badges or care streak to post it in the channel. Anyone can look at a profile with "
+         "`/cat profile:@player` (hidden profiles stay hidden). In **My profile** you can edit your bio, pin up to 3 cats and "
+         "hide or show it. A wishlist post can also go to the channel, and the leaderboard has **Post to channel**. "
+         "Server managers choose in `/catsetup` whether the bot posts all, milestones only, or nothing."),
         ("🏆 Leaderboard",
          "Top collectors and richest players, across all servers. Tap **Leaderboard** on /cat."),
         ("🛠️ For server owners",

@@ -47,6 +47,9 @@ class Inter:
 def reset():
     cat_public._wish_day.clear()
     cat_public._board_last.clear()
+    from modules import cat_announce
+    for d in (cat_announce._mode_cache, cat_announce._user_posts, cat_announce._channel_last):
+        d.clear()
 
 
 def submit(inter, status="ok", share=True, note="hello"):
