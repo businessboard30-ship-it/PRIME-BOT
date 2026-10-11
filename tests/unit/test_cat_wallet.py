@@ -362,4 +362,4 @@ def test_migration_is_additive_idempotent_and_registered():
     assert "CHECK (coins >= 0)" in body and "CHECK (diamonds >= 0)" in body
     assert not re.search(r"\b(DROP|DELETE|TRUNCATE)\b", body, re.I)
     db = (ROOT / "database.py").read_text()
-    assert "035_cat_wallet.sql" in db and re.search(r'^SCHEMA_VERSION = "80"', db, re.M)
+    assert "035_cat_wallet.sql" in db and int(re.search(r'^SCHEMA_VERSION = "(\d+)"', db, re.M).group(1)) >= 80

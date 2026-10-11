@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,41 @@ def gap_seconds(target: int) -> float:
     return SECONDS_PER_DAY / max(1, int(target))
 
 
+def clamp_hour(value, default: int) -> int:
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return default
+    return v if 0 <= v <= 24 else default
+
+
+def window_hours(start: int, end: int) -> int:
+    """Length in hours of the daily window [start, end) in UTC. start == end (or 0/24) means the whole day."""
+    start, end = clamp_hour(start, 0) % 24, clamp_hour(end, 24)
+    if end == 24 and start == 0:
+        return 24
+    length = (end - start) % 24
+    return length or 24
+
+
+def in_window(start: int, end: int, now: Optional[datetime] = None) -> bool:
+    now = now or datetime.now(timezone.utc)
+    if window_hours(start, end) == 24:
+        return True
+    start = clamp_hour(start, 0) % 24
+    return (now.hour - start) % 24 < window_hours(start, end)
+
+
+def next_window_start(start: int, end: int, now: Optional[datetime] = None) -> datetime:
+    """The next moment (UTC) the window opens; `now` itself if it is already open."""
+    now = now or datetime.now(timezone.utc)
+    if in_window(start, end, now):
+        return now
+    s = clamp_hour(start, 0) % 24
+    opens = now.replace(hour=s, minute=0, second=0, microsecond=0)
+    return opens if opens > now else opens + timedelta(days=1)
+
+
 def clamp_channels(ids, tier: Tier) -> Tuple[int, ...]:
     seen: List[int] = []
     for i in ids:
@@ -92,6 +127,8 @@ class CatConfig:
     channel_ids: Tuple[int, ...] = ()
     interval_minutes: int = 720         # legacy column, not used for pacing any more
     pace_percent: int = 100             # the server's own choice: 100 = full plan amount, less = fewer cats
+    active_start: int = 0               # spawn timing: cats only appear from this UTC hour ...
+    active_end: int = 24                # ... up to this one (0/24 = all day). The daily amount is unchanged.
     next_at: Optional[datetime] = None
     last_post_at: Optional[datetime] = None
 
@@ -100,7 +137,12 @@ class CatConfig:
         tier = tier_for(premium)
         today = today or datetime.now(timezone.utc).date()
         target = pace_target(daily_target(self.guild_id, self.clone_id, tier, today), self.pace_percent)
-        return clamp_channels(self.channel_ids, tier), gap_seconds(target)
+        # the same daily amount is spread over the server's active window only (a shorter window = shorter gaps)
+        window = SECONDS_PER_DAY * window_hours(self.active_start, self.active_end) // 24
+        return clamp_channels(self.channel_ids, tier), max(1.0, window / max(1, target))
+
+    def is_open(self, now: Optional[datetime] = None) -> bool:
+        return in_window(self.active_start, self.active_end, now)
 
     @classmethod
     def from_row(cls, row) -> "CatConfig":
@@ -109,6 +151,8 @@ class CatConfig:
             channel_ids=tuple(int(c) for c in (row["channel_ids"] or ())),
             interval_minutes=int(row["interval_minutes"]),
             pace_percent=clamp_pace(row["pace_percent"] if "pace_percent" in row.keys() else 100),
+            active_start=clamp_hour(row["active_start"] if "active_start" in row.keys() else 0, 0) % 24,
+            active_end=clamp_hour(row["active_end"] if "active_end" in row.keys() else 24, 24),
             next_at=row["next_at"], last_post_at=row["last_post_at"])
 
 
@@ -120,6 +164,8 @@ def after_change(old: CatConfig, new: CatConfig, now: Optional[datetime] = None)
     first_channel = new.enabled and new.channel_ids and not old.channel_ids
     if turned_on or first_channel:
         return replace(new, next_at=now)
+    if (new.active_start, new.active_end) != (old.active_start, old.active_end):
+        return replace(new, next_at=None)       # re-evaluated on the next tick against the new hours
     return new
 
 
@@ -151,15 +197,18 @@ async def save_config(cfg: CatConfig, updated_by: Optional[int] = None) -> None:
         await conn.execute(
             """
             INSERT INTO cat_guild_config
-                (guild_id, clone_id, enabled, channel_ids, interval_minutes, next_at, updated_by, pace_percent, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                (guild_id, clone_id, enabled, channel_ids, interval_minutes, next_at, updated_by, pace_percent,
+                 active_start, active_end, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
             ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
                 enabled = EXCLUDED.enabled, channel_ids = EXCLUDED.channel_ids,
                 interval_minutes = EXCLUDED.interval_minutes, next_at = EXCLUDED.next_at,
-                updated_by = EXCLUDED.updated_by, pace_percent = EXCLUDED.pace_percent, updated_at = NOW()
+                updated_by = EXCLUDED.updated_by, pace_percent = EXCLUDED.pace_percent,
+                active_start = EXCLUDED.active_start, active_end = EXCLUDED.active_end, updated_at = NOW()
             """,
             cfg.guild_id, cfg.clone_id, cfg.enabled, list(cfg.channel_ids), cfg.interval_minutes,
-            cfg.next_at, updated_by, clamp_pace(cfg.pace_percent))
+            cfg.next_at, updated_by, clamp_pace(cfg.pace_percent),
+            clamp_hour(cfg.active_start, 0) % 24, clamp_hour(cfg.active_end, 24))
 
 
 async def due(clone_id: Optional[int], limit: int = 10) -> List[CatConfig]:
@@ -189,6 +238,15 @@ async def claim(guild_id: int, clone_id: Optional[int], gap: float) -> bool:
             "AND (next_at IS NULL OR next_at <= NOW()) RETURNING guild_id",
             guild_id, _key(clone_id), float(gap))
     return got is not None
+
+
+async def defer(guild_id: int, clone_id: Optional[int], until: datetime) -> None:
+    """Outside the server's active hours: nothing is posted, just try again when the window opens."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE cat_guild_config SET next_at = $3 WHERE guild_id = $1 AND COALESCE(clone_id, -1) = $2",
+            guild_id, _key(clone_id), until)
 
 
 async def is_premium(guild_id: int, clone_id: Optional[int] = None) -> bool:

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Optional
 
 import discord
@@ -47,6 +48,19 @@ def pace_label(tier, pace: int) -> str:
     return "Full amount" if pace == 100 else f"{pace}% of the full amount"
 
 
+def _hour_ts(hour: int) -> int:
+    """Unix time of the next top-of-hour `hour` (UTC), so Discord can show it in each viewer's own time zone."""
+    now = datetime.now(timezone.utc)
+    return int(now.replace(hour=hour % 24, minute=0, second=0, microsecond=0).timestamp())
+
+
+def hours_text(start: int, end: int) -> str:
+    if cs.window_hours(start, end) == 24:
+        return "all day"
+    return (f"<t:{_hour_ts(start)}:t> to <t:{_hour_ts(end)}:t> your time "
+            f"({start:02d}:00 to {end % 24:02d}:00 UTC)")
+
+
 def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "") -> discord.Embed:
     tier = cs.tier_for(premium)
     chans = " ".join(f"<#{c}>" for c in cfg.channel_ids) or "none yet, pick below"
@@ -56,7 +70,8 @@ def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "") -> discord.
     lines += [
         f"**Status:** {'🟢 ON' if cfg.enabled else '🔴 OFF'}",
         f"**Spawn channel{'s' if tier.max_channels > 1 else ''}:** {chans}",
-        f"**Cats a day:** about {_range_text(tier, cfg.pace_percent)}, spread across the day",
+        f"**Cats a day:** about {_range_text(tier, cfg.pace_percent)}, spread across {'the day' if cs.window_hours(cfg.active_start, cfg.active_end) == 24 else 'your spawn hours'}",
+        f"**Spawn hours:** {hours_text(cfg.active_start, cfg.active_end)}",
         "",
         ("⭐ **Premium server:** up to 3 spawn channels, 250 to 300 cats a day (shared between your channels)." if premium else
          "**Free server:** 1 spawn channel, 120 to 140 cats a day.\n"
@@ -85,13 +100,20 @@ class CatSetupView(discord.ui.View):
         self.pace.callback = self._on_pace
         self.add_item(self.pace)
 
-        self.toggle = discord.ui.Button(label="Turn on", style=discord.ButtonStyle.success, row=2)
+        self.start_hour = discord.ui.Select(placeholder="Spawn timing: cats start at (UTC)", row=2, options=self._hour_options(range(0, 24), self.cfg.active_start))
+        self.start_hour.callback = self._on_start
+        self.add_item(self.start_hour)
+        self.end_hour = discord.ui.Select(placeholder="Spawn timing: cats stop at (UTC)", row=3, options=self._hour_options(range(1, 25), self.cfg.active_end))
+        self.end_hour.callback = self._on_end
+        self.add_item(self.end_hour)
+
+        self.toggle = discord.ui.Button(label="Turn on", style=discord.ButtonStyle.success, row=4)
         self.toggle.callback = self._on_toggle
         self.add_item(self.toggle)
-        self.send_now = discord.ui.Button(label="Send a cat now", emoji="🐱", style=discord.ButtonStyle.primary, row=2)
+        self.send_now = discord.ui.Button(label="Send a cat now", emoji="🐱", style=discord.ButtonStyle.primary, row=4)
         self.send_now.callback = self._on_send_now
         self.add_item(self.send_now)
-        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, row=2)
+        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, row=4)
         close.callback = self._on_close
         self.add_item(close)
         self._sync()
@@ -101,7 +123,16 @@ class CatSetupView(discord.ui.View):
         return [discord.SelectOption(label=f"{pace_label(tier, p)} (about {_range_text(tier, p)} a day)", value=str(p),
                                      default=(p == cs.clamp_pace(self.cfg.pace_percent))) for p in cs.PACES]
 
+    @staticmethod
+    def _hour_options(hours, current):
+        return [discord.SelectOption(label=(f"{h:02d}:00 UTC" if h < 24 else "24:00 UTC (midnight)"), value=str(h),
+                                     default=(h == current)) for h in hours]
+
     def _sync(self) -> None:
+        for opt in self.start_hour.options:
+            opt.default = int(opt.value) == self.cfg.active_start
+        for opt in self.end_hour.options:
+            opt.default = int(opt.value) == self.cfg.active_end
         for opt in self.pace.options:
             opt.default = int(opt.value) == cs.clamp_pace(self.cfg.pace_percent)
         self.toggle.label = "Turn off" if self.cfg.enabled else "Turn on"
@@ -158,6 +189,12 @@ class CatSetupView(discord.ui.View):
 
     async def _on_pace(self, interaction: discord.Interaction):
         await self._apply(interaction, pace_percent=cs.clamp_pace(self.pace.values[0]))
+
+    async def _on_start(self, interaction: discord.Interaction):
+        await self._apply(interaction, active_start=cs.clamp_hour(self.start_hour.values[0], 0) % 24)
+
+    async def _on_end(self, interaction: discord.Interaction):
+        await self._apply(interaction, active_end=cs.clamp_hour(self.end_hour.values[0], 24))
 
     async def _on_toggle(self, interaction: discord.Interaction):
         await self._apply(interaction, enabled=not self.cfg.enabled)
