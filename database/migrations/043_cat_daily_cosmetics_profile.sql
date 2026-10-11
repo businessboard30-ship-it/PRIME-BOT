@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS cat_cosmetic_ownership (
     clone_id BIGINT,
     cosmetic_id BIGINT NOT NULL REFERENCES cat_cosmetics(id) ON DELETE CASCADE,
     purchased_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (owner_id, COALESCE(clone_id, -1), cosmetic_id)
+    clone_key BIGINT GENERATED ALWAYS AS (COALESCE(clone_id, -1)) STORED,
+    PRIMARY KEY (owner_id, clone_key, cosmetic_id)
 );
 
 CREATE TABLE IF NOT EXISTS cat_profiles (
