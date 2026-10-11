@@ -486,7 +486,7 @@ ULTRA_DEFAULTS = {
 }
 ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast")
 ULTRA_LAYOUTS = ("banner", "centered")
-ULTRA_FOCUS = ("center", "top", "bottom", "left", "right")
+ULTRA_FOCUS = ("center", "top", "bottom", "left", "right", "auto")   # "auto" = smart crop (keeps the busiest part)
 # Bundled OFL fonts (assets/fonts). "classic" = the card's normal font.
 ULTRA_FONTS = {
     "classic": None,
@@ -518,6 +518,51 @@ ULTRA_BRACKETS = {
 # renders exactly as before. The width never changes; the height follows the ratio.
 ULTRA_RATIOS = {"3:2": (3, 2), "16:9": (16, 9), "2:1": (2, 1), "3:1": (3, 1), "4:3": (4, 3), "1:1": (1, 1)}
 ULTRA_DEFAULT_RATIO = "3:2"
+ULTRA_RATIO_AUTO = "auto"            # pick the card shape from the uploaded image itself
+
+
+def nearest_ratio(width: int, height: int) -> str:
+    """The supported card shape whose proportions are closest to an image of this size (so the least is cropped).
+    Wider than 3:1 gives 3:1, portrait gives 1:1: those are the widest and tallest cards we offer."""
+    import math
+    if width <= 0 or height <= 0:
+        return ULTRA_DEFAULT_RATIO
+    r = width / height
+    return min(ULTRA_RATIOS, key=lambda k: abs(math.log(r / (ULTRA_RATIOS[k][0] / ULTRA_RATIOS[k][1]))))
+
+
+def _smart_crop_start(img: Image.Image, axis: int, window: int) -> int:
+    """Where to start a `window`-pixel-wide crop along `axis` (0 = x, 1 = y) so it keeps the most detail (edges), with a
+    small pull toward the middle so a flat sky or empty edge never wins by accident. Cheap: works on a 96px thumbnail."""
+    total = img.size[axis]
+    if window >= total:
+        return 0
+    small_len = 96                       # positions are scored on 96 slots...
+    work = 480                           # ...but edges are found on a 480px copy so fine texture isn't averaged away
+    wscale = work / total
+    thumb = img.convert("L").resize((work, max(1, round(img.size[1 - axis] * wscale))) if axis == 0
+                                    else (max(1, round(img.size[0] * wscale)), work))
+    edges = thumb.filter(ImageFilter.FIND_EDGES)
+    strip = edges.resize((small_len, 1), Image.BOX) if axis == 0 else edges.resize((1, small_len), Image.BOX)
+    scale = small_len / total
+    vals = list(strip.tobytes())                     # mode L: one byte per slot
+    if len(vals) > 2:
+        vals[0], vals[-1] = vals[1], vals[-2]          # the edge filter lights up the picture's own border: ignore that
+    w = max(1, round(window * scale))
+    if w >= small_len:
+        return max(0, (total - window) // 2)
+    span = small_len - w
+    centre = span / 2
+    csum = [0]
+    for v in vals:
+        csum.append(csum[-1] + v)
+    best, best_score = round(centre), None
+    for start in range(0, span + 1):
+        score = (csum[start + w] - csum[start]) * (1.0 - 0.15 * abs(start - centre) / (centre or 1))
+        # strictly better wins; a tie (a flat image) goes to the position nearest the middle
+        if best_score is None or score > best_score + 1e-9 or (abs(score - best_score) <= 1e-9 and abs(start - centre) < abs(best - centre)):
+            best, best_score = start, score
+    return min(total - window, max(0, round(best / scale)))
 
 
 def ratio_height(key) -> int:
@@ -572,7 +617,7 @@ def parse_ultra_options(raw) -> dict:
         opts["focus"] = raw["focus"]
     if raw.get("bracket") in ULTRA_BRACKETS:
         opts["bracket"] = raw["bracket"]
-    if isinstance(raw.get("ratio"), str) and raw["ratio"] in ULTRA_RATIOS:
+    if isinstance(raw.get("ratio"), str) and (raw["ratio"] in ULTRA_RATIOS or raw["ratio"] == ULTRA_RATIO_AUTO):
         opts["ratio"] = raw["ratio"]
     if isinstance(raw.get("heading"), str):
         opts["heading"] = raw["heading"].strip()[:ULTRA_HEADING_MAX]
@@ -684,7 +729,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
 
     # Cover-crop to W x H (W is always TEMPLATE_WIDTH; H follows the admin's chosen ratio) so an arbitrary
     # aspect-ratio upload never letterboxes or stretches oddly.
-    W, H = TEMPLATE_WIDTH, ratio_height(opts["ratio"])
+    ratio_key = nearest_ratio(src_w, src_h) if opts["ratio"] == ULTRA_RATIO_AUTO else opts["ratio"]
+    W, H = TEMPLATE_WIDTH, ratio_height(ratio_key)
     classic = H == TEMPLATE_HEIGHT
     compact = H < 700                      # only the 3:1 strip: the centered layout needs tighter spacing to fit
     target_ratio = W / H
@@ -692,11 +738,17 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     focus = opts["focus"]
     if src_ratio > target_ratio:
         new_w = int(src_h * target_ratio)
-        left = 0 if focus == "left" else (src_w - new_w if focus == "right" else (src_w - new_w) // 2)
+        if focus == "auto":
+            left = _smart_crop_start(bg, 0, new_w)
+        else:
+            left = 0 if focus == "left" else (src_w - new_w if focus == "right" else (src_w - new_w) // 2)
         bg = bg.crop((left, 0, left + new_w, src_h))
     elif src_ratio < target_ratio:
         new_h = int(src_w / target_ratio)
-        top = 0 if focus == "top" else (src_h - new_h if focus == "bottom" else (src_h - new_h) // 2)
+        if focus == "auto":
+            top = _smart_crop_start(bg, 1, new_h)
+        else:
+            top = 0 if focus == "top" else (src_h - new_h if focus == "bottom" else (src_h - new_h) // 2)
         bg = bg.crop((0, top, src_w, top + new_h))
     bg = bg.resize((W, H))
 
