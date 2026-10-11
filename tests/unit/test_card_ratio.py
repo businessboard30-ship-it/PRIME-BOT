@@ -32,7 +32,7 @@ def test_default_ratio_is_the_classic_card():
 
 
 def test_every_ratio_is_validated_labelled_and_has_the_right_height():
-    assert set(wc.ULTRA_RATIOS) == set(cc._RATIO_LABELS)
+    assert set(wc.ULTRA_RATIOS) | {"auto"} == set(cc._RATIO_LABELS)
     for key, (a, b) in wc.ULTRA_RATIOS.items():
         assert wc.parse_ultra_options({"ratio": key})["ratio"] == key
         assert abs(wc.ratio_height(key) - wc.TEMPLATE_WIDTH * b / a) <= 1
@@ -85,7 +85,7 @@ def test_the_wizard_offers_the_ratio_on_the_background_tab_and_saves_it():
     v = cc.build_customize_view(1, None, 5, {"ultra_pack_unlocked": True, "ultra_card_json": '{"ratio": "16:9"}'}, tab="bg")
     sel = [c for c in v.walk_children() if getattr(c, "custom_id", "").startswith("cardwz_ratio:")]
     assert len(sel) == 1 and [o.value for o in sel[0].item.options if o.default] == ["16:9"]
-    assert {o.value for o in sel[0].item.options} == set(wc.ULTRA_RATIOS)
+    assert {o.value for o in sel[0].item.options} == set(wc.ULTRA_RATIOS) | {"auto"}
     assert cc.CardRatioSelect in cc.DYNAMIC_ITEMS and cc.CardRatioSelect.FIELD == "ratio"
 
 
@@ -94,3 +94,73 @@ def test_reset_and_presets_keep_working_with_a_ratio():
         assert "ratio" not in preset["opts"]                          # a style preset never changes the card's shape
     assert wc.parse_ultra_options({"ratio": "3:1"}) != wc.parse_ultra_options(None)
 
+
+
+# ---------- auto: the bot reads the image and picks the shape and the crop ----------
+@pytest.mark.parametrize("size,expected", [
+    ((1500, 1000), "3:2"), ((1920, 1080), "16:9"), ((2000, 1000), "2:1"), ((3000, 1000), "3:1"), ((4000, 1000), "3:1"),
+    ((1600, 1200), "4:3"), ((1000, 1000), "1:1"), ((1080, 1920), "1:1"), ((800, 1200), "1:1"), ((1200, 1100), "1:1"),
+    ((1000, 640), "3:2"), ((1280, 720), "16:9"), ((0, 0), "3:2"),
+])
+def test_nearest_ratio_picks_the_closest_supported_shape(size, expected):
+    assert wc.nearest_ratio(*size) == expected
+
+
+@pytest.mark.parametrize("size", [(1920, 1080), (3000, 1000), (1000, 1000), (1600, 1200), (900, 1600)])
+def test_auto_ratio_gives_the_card_the_images_own_shape(size):
+    bg = _png(size)
+    png, _ = wc.render_welcome_card(AVATAR, "Test Member", "Member #1", guild_name="S", custom_background_bytes=bg,
+                                    ultra_options={"ratio": "auto"})
+    assert Image.open(io.BytesIO(png)).size == (1536, wc.ratio_height(wc.nearest_ratio(*size)))
+
+
+def test_auto_ratio_is_valid_labelled_and_never_the_default():
+    assert wc.parse_ultra_options({"ratio": "auto"})["ratio"] == "auto"
+    assert wc.ULTRA_DEFAULTS["ratio"] == "3:2" and "auto" in cc._RATIO_LABELS and "auto" in cc._FOCUS_LABELS
+    assert wc.parse_ultra_options({"focus": "auto"})["focus"] == "auto"
+
+
+def _two_part_image(detail_side):
+    """A 2400x600 picture: one half flat colour, the other half busy stripes (the 'subject')."""
+    im = Image.new("RGB", (2400, 600), (90, 90, 90))
+    px = im.load()
+    x0 = 1200 if detail_side == "right" else 0
+    for x in range(x0, x0 + 1200):
+        for y in range(600):
+            px[x, y] = (230, 40, 40) if (x // 12 + y // 12) % 2 else (20, 20, 220)
+    b = io.BytesIO()
+    im.save(b, "PNG")
+    return b.getvalue()
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_smart_crop_keeps_the_busy_half_instead_of_the_flat_middle(side):
+    from PIL import ImageStat
+
+    def busy_share(focus):
+        png, _ = wc.render_welcome_card(AVATAR, "Test Member", "Member #1", guild_name="S", custom_background_bytes=_two_part_image(side),
+                                        ultra_options={"ratio": "3:2", "focus": focus, "banner": "none", "show_number": False, "heading": " "})
+        img = Image.open(io.BytesIO(png)).convert("L").crop((0, 0, 1536, 600))
+        return sum(ImageStat.Stat(img).stddev)                    # busy stripes = a big spread of brightness
+    assert busy_share("auto") > busy_share("center") * 1.2
+
+
+def test_smart_crop_start_stays_inside_the_image_and_handles_tiny_or_exact_fits():
+    im = Image.new("RGB", (1000, 300), (10, 10, 10))
+    for window in (1, 300, 999, 1000, 5000):
+        start = wc._smart_crop_start(im, 0, window)
+        assert 0 <= start <= max(0, 1000 - window)
+    assert 0 <= wc._smart_crop_start(Image.new("RGB", (40, 900)), 1, 500) <= 400
+    assert wc._smart_crop_start(Image.new("RGB", (2, 2)), 0, 1) in (0, 1)
+
+
+def test_flat_images_crop_to_the_middle():
+    im = Image.new("RGB", (2000, 400), (50, 50, 50))
+    start = wc._smart_crop_start(im, 0, 1000)
+    assert abs(start - 500) <= 25
+
+
+def test_default_look_is_still_pixel_identical_with_the_new_options_available():
+    a = render(layout="banner").convert("RGB").tobytes()
+    b = render(layout="banner", ratio="3:2", focus="center").convert("RGB").tobytes()
+    assert hashlib.sha256(a).digest() == hashlib.sha256(b).digest() and render().size == (1536, 1024)

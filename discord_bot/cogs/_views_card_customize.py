@@ -185,9 +185,9 @@ _FONT_LABELS = {"classic": "Classic font (default)", "clean": "Clean — Poppins
 _BRACKET_LABELS = {"none": "No brackets (default)", "square": "[ Name ] square", "round": "( Name ) round",
                    "curly": "{ Name } curly", "angle": "< Name > angle", "guillemet": "\u00ab Name \u00bb guillemets",
                    "slashes": "// Name // slashes", "stars": "* Name * stars"}
-_FOCUS_LABELS = {"center": "Crop: center (default)", "top": "Crop: keep the top", "bottom": "Crop: keep the bottom",
+_FOCUS_LABELS = {"auto": "Crop: smart (keeps the busiest part)", "center": "Crop: center (default)", "top": "Crop: keep the top", "bottom": "Crop: keep the bottom",
                  "left": "Crop: keep the left", "right": "Crop: keep the right"}
-_RATIO_LABELS = {"3:2": "Card shape: 3:2 classic (default)", "16:9": "Card shape: 16:9 widescreen", "2:1": "Card shape: 2:1 wide",
+_RATIO_LABELS = {"auto": "Card shape: Auto (match my image)", "3:2": "Card shape: 3:2 classic (default)", "16:9": "Card shape: 16:9 widescreen", "2:1": "Card shape: 2:1 wide",
                  "3:1": "Card shape: 3:1 strip (slim)", "4:3": "Card shape: 4:3 tall", "1:1": "Card shape: 1:1 square"}
 _COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red", "avatar": "Match my avatar (each member differs)"}
 
