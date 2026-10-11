@@ -18,6 +18,7 @@ from typing import List, Optional
 import discord
 
 from modules import cat_adopt as ca
+from modules import cat_log
 from modules import cat_pool
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,21 @@ GIFT_VALUE = "gift"
 
 def _clone_id(client):
     return getattr(client, "clone_id", None)
+
+
+def _event(interaction, cat: ca.Cat, user=None) -> dict:
+    """The facts for one storage-channel log line (see modules/cat_log.py)."""
+    user = user or interaction.user
+    guild = interaction.guild
+    return dict(guild_id=getattr(guild, "id", None), guild_name=getattr(guild, "name", None), user_id=user.id,
+                user_name=str(user), pool_id=cat.pool_id, cat_name=cat.name, rarity=cat.rarity, trait=cat.trait)
+
+
+def _other(user, cat: Optional[ca.Cat]) -> dict:
+    out = dict(other_id=user.id, other_name=str(user))
+    if cat is not None:
+        out.update(other_cat_name=cat.name, other_rarity=cat.rarity, other_trait=cat.trait)
+    return out
 
 
 def cat_line(cat: ca.Cat) -> str:
@@ -89,6 +105,7 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
                                                     else "😿 This cat is no longer available.", ephemeral=True)
             return
         cat = res.cat
+        cat_log.record(interaction.client, "adopt", **_event(interaction, cat))
         embed = (interaction.message.embeds[0] if interaction.message and interaction.message.embeds
                  else discord.Embed(color=PINK))
         embed.description = (f"💖 **{cat.name}** was adopted by {interaction.user.mention}!\n"
@@ -207,7 +224,8 @@ class CollectionView(discord.ui.View):
             await self._show(interaction)
             return
         cat = self.current
-        await ca.release(cat.id, interaction.user.id)
+        if await ca.release(cat.id, interaction.user.id):
+            cat_log.record(interaction.client, "release", **_event(interaction, cat))
         await self.reload(interaction.user.id)
         if not self.cats:
             await interaction.response.edit_message(
@@ -332,6 +350,8 @@ class TradeOfferView(discord.ui.View):
         status = await ca.trade(self.give.id, self.giver.id, self.take.id if self.take else None, self.taker.id,
                                 _clone_id(self.client))
         if status == "ok":
+            cat_log.record(self.client, "trade" if self.take else "gift", **_event(interaction, self.give, self.giver),
+                           **_other(self.taker, self.take))
             what = (f"{self.giver.mention} ↔ {self.taker.mention}: {cat_line(self.give)} for {cat_line(self.take)}"
                     if self.take else f"🎁 {self.giver.mention} gifted {cat_line(self.give)} to {self.taker.mention}")
             await self._finish(interaction, f"✅ **Trade done!** {what}. 💖")

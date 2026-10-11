@@ -13,6 +13,7 @@ message when needed and remembered in memory for a few hours.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import io
 import logging
@@ -23,6 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 import discord
 
+from modules import cat_log
 from modules.cat_quality import Quality
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,9 @@ URL_TTL_SECONDS = 6 * 3600
 # A server is not shown the same pooled picture again within this many days (while it has unseen ones left).
 SEEN_DAYS = int(os.getenv("CAT_SEEN_DAYS", "14") or 14)
 _url_cache: Dict[int, Tuple[float, str]] = {}
+# (guild_id, guild_name) of the server a picture is being fetched for. Set by whoever is posting a cat, read by store()
+# so the stored message names that server, without changing any function signature in between.
+server_hint: contextvars.ContextVar = contextvars.ContextVar("cat_server_hint", default=None)
 
 
 class PooledUrl(str):
@@ -176,7 +181,7 @@ async def store(bot, data: bytes, q: Quality, source: str, source_id: Optional[s
         return None
     try:
         msg = await host.send(
-            content=f"🐱 cat pool · {q.width}x{q.height} · sharpness {q.sharpness:.0f} · {source}",
+            content=cat_log.pool_caption(q.width, q.height, q.sharpness, source, server_hint.get()),
             file=discord.File(io.BytesIO(data), filename=f"cat_{sha[:16]}.{_EXT.get(q.fmt, 'jpg')}"),
             allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException:

@@ -280,7 +280,11 @@ async def send_cat(interaction: discord.Interaction) -> None:
         await interaction.response.send_message(f"😺 Easy there, another cat in {wait:.0f}s.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
-    url = await fetch_cat_url(bot=interaction.client, guild_id=interaction.guild_id)
+    hint = cat_pool.server_hint.set((interaction.guild_id, getattr(getattr(interaction, "guild", None), "name", None)))
+    try:
+        url = await fetch_cat_url(bot=interaction.client, guild_id=interaction.guild_id)
+    finally:
+        cat_pool.server_hint.reset(hint)
     if not url:
         await interaction.followup.send("😿 I couldn't find a cat right now. Try again in a moment.", ephemeral=True)
         return
@@ -298,7 +302,11 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int) -> bool:
     perms = ch.permissions_for(guild.me)
     if not (perms.view_channel and perms.send_messages and perms.embed_links):
         return False
-    url = await fetch_cat_url(bot=bot, guild_id=guild.id)
+    hint = cat_pool.server_hint.set((guild.id, guild.name))      # the stored picture's message will name this server
+    try:
+        url = await fetch_cat_url(bot=bot, guild_id=guild.id)
+    finally:
+        cat_pool.server_hint.reset(hint)
     if not url:
         return False
     pool_id = getattr(url, "pool_id", None)
