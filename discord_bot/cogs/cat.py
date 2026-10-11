@@ -32,7 +32,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
-from modules import cat_pool, cat_quality, cat_reminder, cat_setup, cat_vision
+from modules import cat_perms, cat_pool, cat_quality, cat_reminder, cat_setup, cat_vision
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ REMINDER_TICK_MINUTES = 10
 REMINDER_PER_TICK = 5
 SPAWN_PER_TICK = 60                 # servers handled per tick (Premium servers post as often as every ~7 minutes)
 
+_alerts = cat_perms.AlertTracker()
 _recent = deque(maxlen=50)          # last good URLs, used only if both services fail
 _last_use: dict = {}                # user id -> monotonic time of their last cat
 
@@ -208,6 +209,13 @@ async def _fetch_via_pool(bot, session, guild_id=None):
     2. the cat API (only now, because the server has seen everything we hold), saving every good result to the pool;
     3. if the API gave nothing, a repeat from the pool (the one this server saw longest ago) rather than no cat."""
     n = await cat_pool.pool_count()
+    if n >= POOL_MIN and cat_pool.manual_request.get():
+        # Someone typed /cat or tapped the Cat button: show a stored picture, never the cat API. It is picked without
+        # a server, so it is not counted as "seen" and doesn't use up the pictures the automatic spawns still need
+        # (that is what used to push busy servers onto the API).
+        url = await cat_pool.pick(bot)
+        if url:
+            return url
     if n >= POOL_MIN:
         window = seen_window(n)
         url = await _pick(bot, guild_id, unseen_only=True, seen_days=window)
@@ -284,9 +292,11 @@ async def send_cat(interaction: discord.Interaction) -> None:
         return
     await interaction.response.defer(thinking=True)
     hint = cat_pool.server_hint.set((interaction.guild_id, getattr(getattr(interaction, "guild", None), "name", None)))
+    manual = cat_pool.manual_request.set(True)
     try:
         url = await fetch_cat_url(bot=interaction.client, guild_id=interaction.guild_id)
     finally:
+        cat_pool.manual_request.reset(manual)
         cat_pool.server_hint.reset(hint)
     if not url:
         await interaction.followup.send("😿 I couldn't find a cat right now. Try again in a moment.", ephemeral=True)
@@ -302,8 +312,9 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int) -> bool:
     ch = guild.get_channel(channel_id)
     if not isinstance(ch, discord.TextChannel):
         return False
-    perms = ch.permissions_for(guild.me)
-    if not (perms.view_channel and perms.send_messages and perms.embed_links):
+    missing = cat_perms.missing_names(ch.permissions_for(guild.me))
+    if missing:
+        logger.info("[cat] not posting in %s (guild %s): missing %s", channel_id, guild.id, ", ".join(missing))
         return False
     hint = cat_pool.server_hint.set((guild.id, guild.name))      # the stored picture's message will name this server
     try:
@@ -440,11 +451,35 @@ class CatCog(commands.Cog):
                 continue
             # one cat per turn, rotating through the channels the server picked (the daily amount is per server)
             start = int(time.time() // max(gap, 1)) % len(channels)
+            done = False
             for channel_id in channels[start:] + channels[:start]:
                 if await post_cat(self.bot, guild, channel_id):
                     posted += 1
+                    done = True
                     break
+            if done:
+                _alerts.ok(guild.id, clone_id)
+            else:
+                await self._maybe_alert_owner(guild, clone_id, channels)
         return posted
+
+    async def _maybe_alert_owner(self, guild, clone_id, channels) -> None:
+        """The game is ON but nothing could be posted. If a permission or channel is the reason, and it has been for a
+        few turns in a row, tell the server owner once (then at most weekly) instead of failing silently."""
+        try:
+            problems = cat_perms.diagnose(guild, channels, discord.TextChannel)
+            if len(problems) < len(channels):         # at least one channel is fine: the failure was something else
+                _alerts.ok(guild.id, clone_id)
+                return
+            if not _alerts.failed(guild.id, clone_id):
+                return
+            owner = await self.bot.fetch_user(guild.owner_id)
+            if owner is not None and not owner.bot:
+                await owner.send(cat_perms.owner_message(guild.name, problems))
+        except discord.HTTPException:
+            logger.info("[cat] couldn't tell the owner of guild %s about the permission problem", guild.id)
+        except Exception:
+            logger.warning("[cat] permission alert failed for guild %s", guild.id, exc_info=True)
 
     @app_commands.command(name="cat", description="A random cute cat picture 🐱")
     async def cat(self, interaction: discord.Interaction):
@@ -491,8 +526,7 @@ class CatSetupCog(commands.Cog):
     def _can_post(channel, guild) -> bool:
         if not isinstance(channel, discord.TextChannel):
             return False
-        p = channel.permissions_for(guild.me)
-        return bool(p.view_channel and p.send_messages and p.embed_links)
+        return not cat_perms.missing_names(channel.permissions_for(guild.me))
 
     def _fallback(self, guild):
         for ch in [guild.system_channel, *guild.text_channels]:
