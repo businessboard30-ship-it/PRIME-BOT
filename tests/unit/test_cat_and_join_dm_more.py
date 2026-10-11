@@ -264,6 +264,7 @@ def test_buttons_round_trip_their_custom_id(cls, cid, clone):
 class FakeInteraction:
     def __init__(self):
         self.user = type("U", (), {"id": 42})()
+        self.guild_id = 7
         self.client = type("C", (), {"get_guild": lambda self, gid: object()})()
         self.sent, self.followups, self.edits, self._done = [], [], [], False
         self.response = self
@@ -294,7 +295,7 @@ def test_more_button_edits_the_message_into_the_more_screen():
 
 def test_cat_button_sends_an_embed_then_rate_limits(monkeypatch):
     monkeypatch.setattr(jd, "user_can_manage_guild", lambda *a, **k: _false())
-    async def fake(session=None, bot=None):
+    async def fake(session=None, bot=None, guild_id=None):
         return GOOD
     monkeypatch.setattr(cat, "fetch_cat_url", fake)
     i = FakeInteraction()
@@ -307,7 +308,7 @@ def test_cat_button_sends_an_embed_then_rate_limits(monkeypatch):
 
 def test_cat_button_says_sorry_when_no_cat(monkeypatch):
     monkeypatch.setattr(jd, "user_can_manage_guild", lambda *a, **k: _false())
-    async def none(session=None, bot=None):
+    async def none(session=None, bot=None, guild_id=None):
         return None
     monkeypatch.setattr(cat, "fetch_cat_url", none)
     i = FakeInteraction()

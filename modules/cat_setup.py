@@ -3,8 +3,8 @@
 """
 Per-server Cat setup: which channel(s) get automatic cats. Premium logic lives here.
 
-  Free server:     1 spawn channel,   80 to 90 cats a day.
-  Premium server:  up to 3 channels, 150 to 200 cats a day.
+  Free server:     1 spawn channel,   120 to 140 cats a day.
+  Premium server:  up to 3 channels, 250 to 300 cats a day.
 
 Each server's amount for a given UTC day is picked inside its tier's range (the same number all day, different
 tomorrow, no storage needed) and the cats are spread evenly across the day. With several channels the cats rotate
@@ -37,8 +37,8 @@ class Tier:
     daily_max: int
 
 
-FREE = Tier("free", 1, 80, 90)
-PREMIUM = Tier("premium", 3, 150, 200)
+FREE = Tier("free", 1, 120, 140)
+PREMIUM = Tier("premium", 3, 250, 300)
 SECONDS_PER_DAY = 86400
 GAP_JITTER = 0.15                       # +/-15% on each gap so servers don't all post on the same second
 
