@@ -93,6 +93,61 @@ async def buy_cosmetic(owner_id: int, clone_id, cosmetic_id: int) -> str:
     return "ok"
 
 
+async def wardrobe(owner_id: int, clone_id) -> tuple:
+    """(owned cosmetics, ids of the ones being worn). Never raises: the shop still works without it."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT c.*, (e.cosmetic_id IS NOT NULL) AS worn FROM cat_cosmetic_ownership o "
+                "JOIN cat_cosmetics c ON c.id = o.cosmetic_id "
+                "LEFT JOIN cat_equipped e ON e.owner_id = o.owner_id AND e.clone_key = o.clone_key AND e.cosmetic_id = c.id "
+                "WHERE o.owner_id = $1 AND o.clone_key = $2 ORDER BY c.kind, c.id", owner_id, _key(clone_id))
+    except Exception:
+        return [], set()
+    owned = [Cosmetic(int(r["id"]), r["slug"], r["kind"], r["name"], r["emoji"], int(r["price_coins"]), int(r["price_diamonds"])) for r in rows]
+    return owned, {int(r["id"]) for r in rows if r["worn"]}
+
+
+async def toggle_equip(owner_id: int, clone_id, cosmetic_id: int) -> str:
+    """Wear an owned cosmetic (it replaces what is worn of the same kind), or take it off if it is already worn.
+    Returns equipped | removed | not_owned | missing."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            item = await conn.fetchrow("SELECT id, kind FROM cat_cosmetics WHERE id = $1", cosmetic_id)
+            if item is None:
+                return "missing"
+            if not await conn.fetchval("SELECT 1 FROM cat_cosmetic_ownership WHERE owner_id = $1 AND clone_key = $2 AND cosmetic_id = $3",
+                                       owner_id, _key(clone_id), cosmetic_id):
+                return "not_owned"
+            worn = await conn.fetchval("SELECT cosmetic_id FROM cat_equipped WHERE owner_id = $1 AND clone_key = $2 AND kind = $3 FOR UPDATE",
+                                       owner_id, _key(clone_id), item["kind"])
+            if worn is not None and int(worn) == int(cosmetic_id):
+                await conn.execute("DELETE FROM cat_equipped WHERE owner_id = $1 AND clone_key = $2 AND kind = $3",
+                                   owner_id, _key(clone_id), item["kind"])
+                return "removed"
+            await conn.execute(
+                "INSERT INTO cat_equipped(owner_id, clone_id, kind, cosmetic_id) VALUES($1,$2,$3,$4) "
+                "ON CONFLICT (owner_id, clone_key, kind) DO UPDATE SET cosmetic_id = EXCLUDED.cosmetic_id, equipped_at = NOW()",
+                owner_id, clone_id, item["kind"], cosmetic_id)
+            return "equipped"
+
+
+async def equipped(owner_id: int, clone_id) -> dict:
+    """{kind: {"slug", "name", "emoji"}} of what is worn AND still owned. Never raises."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT c.kind, c.slug, c.name, c.emoji FROM cat_equipped e JOIN cat_cosmetics c ON c.id = e.cosmetic_id "
+                "JOIN cat_cosmetic_ownership o ON o.cosmetic_id = e.cosmetic_id AND o.owner_id = e.owner_id AND o.clone_key = e.clone_key "
+                "WHERE e.owner_id = $1 AND e.clone_key = $2", owner_id, _key(clone_id))
+        return {r["kind"]: {"slug": r["slug"], "name": r["name"], "emoji": r["emoji"]} for r in rows}
+    except Exception:
+        return {}
+
+
 async def public_profile(owner_id: int, clone_id) -> dict:
     pool = await _pool()
     async with pool.acquire() as conn:
@@ -102,7 +157,8 @@ async def public_profile(owner_id: int, clone_id) -> dict:
     rarest = max(cats, key=lambda cat: cat_adopt.RARITY_RANK.get(cat.rarity, 0), default=None)
     pinned_ids = set((profile["pinned_cat_ids"] if profile else [])[:3])
     pinned = [cat for cat in cats if cat.id in pinned_ids]
-    return {"owner_id": owner_id, "bio": profile["bio"] if profile else "", "show_profile": bool(profile["show_profile"]) if profile else True, "collection_size": len(cats), "rarest": rarest, "pinned": pinned}
+    return {"owner_id": owner_id, "bio": profile["bio"] if profile else "", "show_profile": bool(profile["show_profile"]) if profile else True, "collection_size": len(cats), "rarest": rarest, "pinned": pinned,
+            "equipped": await equipped(owner_id, clone_id)}
 
 
 async def save_profile(owner_id: int, clone_id, bio: str, pinned_cat_ids: list[int], show_profile: bool = True) -> None:

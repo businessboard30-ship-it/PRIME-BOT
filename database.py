@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "92"
+SCHEMA_VERSION = "93"
+# "92" -> "93" adds 048_cat_equipped.sql (cat_equipped: the hat / collar / card background a player wears on their cat profile card). CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "91" -> "92" adds 047_cat_care.sql (cat_adoptions hunger/water/bed columns, cat_runaways: cats that wandered off and come back in a spawn). ALTER TABLE ADD COLUMN IF NOT EXISTS + CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "90" -> "91" adds 046_cat_announce_mode.sql (cat_guild_config.announce_mode: a server picks all / milestones / off for public cat posts, default all). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "89" -> "90" adds 045_cat_wishlist.sql (cat_wishlist: "looking for a legendary" posts, 14-day expiry). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5655,6 +5656,11 @@ class Database:
         cat_care_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "047_cat_care.sql"
         if cat_care_migration.exists():
             await conn.execute(cat_care_migration.read_text())
+
+        # Cat cosmetics worn on the profile card. Additive/idempotent.
+        cat_equipped_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "048_cat_equipped.sql"
+        if cat_equipped_migration.exists():
+            await conn.execute(cat_equipped_migration.read_text())
 
         # Cat storage-channel backfill ledger. Additive/idempotent.
         cat_backfill_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "039_cat_log_backfill.sql"

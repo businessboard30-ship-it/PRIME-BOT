@@ -35,6 +35,12 @@ _PINK_TOP, _CREAM = (255, 226, 236), (255, 248, 230)
 _INK, _MUTED, _GOLD, _ROSE, _WHITE = (60, 36, 52), (140, 112, 128), (240, 180, 60), (232, 120, 160), (255, 255, 255)
 _RARITY_TINT = {"common": (150, 150, 160), "uncommon": (90, 170, 120), "rare": (90, 130, 220), "legendary": (240, 180, 60)}
 
+_THEMES = {                                   # card background cosmetics; anything unknown falls back to the default
+    None: dict(top=_PINK_TOP, bottom=_CREAM, ink=_INK, muted=_MUTED, rose=_ROSE, stars=False),
+    "sunset-card": dict(top=(255, 166, 128), bottom=(255, 232, 196), ink=(70, 34, 40), muted=(130, 86, 80), rose=(196, 62, 88), stars=False),
+    "galaxy-card": dict(top=(24, 16, 64), bottom=(88, 48, 132), ink=(250, 244, 255), muted=(200, 188, 228), rose=(255, 168, 216), stars=True),
+}
+
 _gate = None
 
 
@@ -100,15 +106,57 @@ def _open(data: Optional[bytes]) -> Optional[Image.Image]:
         return None
 
 
+def _stars(draw) -> None:
+    """A fixed little sky (same every time) for the galaxy background."""
+    import random
+    rng = random.Random(7)
+    for _ in range(70):
+        x, y, r = rng.randint(14, W - 14), rng.randint(14, H - 14), rng.choice((1, 1, 2, 3))
+        shade = rng.randint(190, 255)
+        draw.ellipse((_s(x - r), _s(y - r), _s(x + r), _s(y + r)), fill=(shade, shade, 255))
+
+
+def _draw_hat(draw, slug: Optional[str]) -> None:
+    """Sits on top of the avatar ring (centre x 124, ring top y 36). Shapes only: the font has no emoji."""
+    if slug == "royal-crown":
+        pts = [(84, 64), (84, 26), (104, 44), (124, 14), (144, 44), (164, 26), (164, 64)]
+        draw.polygon([(_s(x), _s(y)) for x, y in pts], fill=(242, 190, 60), outline=(176, 120, 20), width=_s(2))
+        draw.rectangle((_s(84), _s(54), _s(164), _s(64)), fill=(222, 160, 36), outline=(176, 120, 20), width=_s(2))
+        for x, c in ((96, (220, 50, 80)), (124, (60, 110, 220)), (152, (220, 50, 80))):
+            draw.ellipse((_s(x - 4), _s(59 - 4), _s(x + 4), _s(59 + 4)), fill=c)
+    elif slug == "strawberry-hat":
+        draw.ellipse((_s(88), _s(20), _s(160), _s(72)), fill=(226, 48, 72), outline=(160, 24, 48), width=_s(2))
+        for x, y in ((104, 34), (124, 30), (144, 34), (112, 48), (136, 48), (124, 58), (100, 56), (148, 56)):
+            draw.ellipse((_s(x - 2), _s(y - 3), _s(x + 2), _s(y + 3)), fill=(255, 226, 150))
+        for leaf in (((124, 26), (110, 13), (124, 20)), ((124, 26), (138, 13), (124, 20)), ((124, 26), (118, 11), (130, 11))):
+            draw.polygon([(_s(x), _s(y)) for x, y in leaf], fill=(70, 160, 80), outline=(40, 110, 50))
+
+
+def _draw_collar(draw, slug: Optional[str]) -> None:
+    """A band along the bottom of the avatar ring, with a pendant."""
+    if slug == "moon-collar":
+        band = (150, 170, 230)
+        draw.arc((_s(44), _s(44), _s(36 + 176 - 8), _s(36 + 176 - 8)), 40, 140, fill=band, width=_s(10))
+        draw.ellipse((_s(113), _s(193), _s(135), _s(215)), fill=(255, 236, 160), outline=(214, 176, 80), width=_s(1))
+        draw.ellipse((_s(119), _s(190), _s(139), _s(210)), fill=band)             # carves the crescent
+
+
 def draw_card(name: str, bio: str, collection: int, rarest: Optional[tuple], badge_count: int,
-              showcase: Sequence[tuple], avatar: Optional[bytes], thumbs: Sequence[Optional[bytes]]) -> bytes:
-    """`rarest` = (name, rarity) or None. `showcase` = [(name, trait, rarity)], `thumbs` = their pictures (or None)."""
+              showcase: Sequence[tuple], avatar: Optional[bytes], thumbs: Sequence[Optional[bytes]],
+              equipped: Optional[dict] = None) -> bytes:
+    """`rarest` = (name, rarity) or None. `showcase` = [(name, trait, rarity)], `thumbs` = their pictures (or None).
+    `equipped` = {kind: slug} of the cosmetics worn (hat, collar, background); unknown slugs are ignored."""
+    equipped = equipped or {}
+    theme = _THEMES.get(equipped.get("background")) or _THEMES[None]
+    ink, muted, rose = theme["ink"], theme["muted"], theme["rose"]
     img = Image.new("RGB", (W * SCALE, H * SCALE), _CREAM)
     draw = ImageDraw.Draw(img)
     for y in range(H * SCALE):                                              # soft vertical gradient
-        draw.line((0, y, W * SCALE, y), fill=_mix(_PINK_TOP, _CREAM, y / (H * SCALE)))
+        draw.line((0, y, W * SCALE, y), fill=_mix(theme["top"], theme["bottom"], y / (H * SCALE)))
     img = img.convert("RGBA")
     draw = ImageDraw.Draw(img)
+    if theme["stars"]:
+        _stars(draw)
     draw.rounded_rectangle((_s(8), _s(8), _s(W - 8), _s(H - 8)), radius=_s(28), outline=_GOLD, width=_s(4))
 
     # avatar with a gold ring
@@ -121,19 +169,24 @@ def draw_card(name: str, bio: str, collection: int, rarest: Optional[tuple], bad
         ImageDraw.Draw(face).ellipse((0, 0, _s(size) - 1, _s(size) - 1), fill=_ROSE)
     img.alpha_composite(face, (_s(36 + (ring - size) / 2), _s(36 + (ring - size) / 2)))
     draw = ImageDraw.Draw(img)
+    try:                                                                     # a cosmetic can never break the card
+        _draw_collar(draw, equipped.get("collar"))
+        _draw_hat(draw, equipped.get("hat"))
+    except Exception:
+        logger.warning("[cat-profile-card] couldn't draw a cosmetic", exc_info=True)
 
     # name, caption, bio
     x0 = 242
-    draw.text((_s(x0), _s(44)), "CAT PROFILE", font=_font(18), fill=_ROSE, anchor="lm")
+    draw.text((_s(x0), _s(44)), "CAT PROFILE", font=_font(18), fill=rose, anchor="lm")
     draw.text((_s(x0), _s(86)), clean_text(name, 40) or "Player", font=_fit_font(draw, clean_text(name, 40) or "Player", W - x0 - 40, 44, 24),
-              fill=_INK, anchor="lm")
+              fill=ink, anchor="lm")
     bio_font = _font(22)
     text = clean_text(bio, 240)
     lines = _wrap(draw, text, bio_font, W - x0 - 40, 3) if text else []
     if not lines:
-        lines, color = ["No bio yet. Their cats are waiting for a story."], _MUTED
+        lines, color = ["No bio yet. Their cats are waiting for a story."], muted
     else:
-        color = _INK
+        color = ink
     for i, line in enumerate(lines):
         draw.text((_s(x0), _s(138 + i * 30)), line, font=bio_font, fill=color, anchor="lm")
 
@@ -151,9 +204,9 @@ def draw_card(name: str, bio: str, collection: int, rarest: Optional[tuple], bad
             draw.text((_s(x + 18), _s(ty + 78)), small, font=_font(14), fill=_ROSE, anchor="lm")
 
     # showcase
-    draw.text((_s(36), _s(352)), "SHOWCASE", font=_font(14), fill=_MUTED, anchor="lm")
+    draw.text((_s(36), _s(352)), "SHOWCASE", font=_font(14), fill=muted, anchor="lm")
     if not showcase:
-        draw.text((_s(36), _s(404)), "No cats pinned yet.", font=_font(20), fill=_MUTED, anchor="lm")
+        draw.text((_s(36), _s(404)), "No cats pinned yet.", font=_font(20), fill=muted, anchor="lm")
     for i, (cname, trait, rarity) in enumerate(list(showcase)[:MAX_THUMBS]):
         x, y, cw_, ch_ = 36 + i * (tw + gap), 368, tw, 78
         tint = _RARITY_TINT.get(rarity, _MUTED)
@@ -226,7 +279,8 @@ async def render(client, user, display_name: str, profile: dict, badges) -> Opti
             return await asyncio.to_thread(
                 draw_card, display_name, profile.get("bio") or "", int(profile.get("collection_size") or 0),
                 (rarest.name, rarest.rarity) if rarest else None, len(badges or ()),
-                [(c.name, c.trait, c.rarity) for c in pinned], avatar, pics)
+                [(c.name, c.trait, c.rarity) for c in pinned], avatar, pics,
+                {k: (v or {}).get("slug") for k, v in (profile.get("equipped") or {}).items()})
     except Exception:
         logger.warning("[cat-profile-card] couldn't draw the card", exc_info=True)
         return None

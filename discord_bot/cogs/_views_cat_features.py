@@ -75,6 +75,29 @@ class CosmeticBuySelect(discord.ui.Select):
         await interaction.response.send_message(text, ephemeral=True)
 
 
+class CosmeticEquipSelect(discord.ui.Select):
+    """Wear one of the cosmetics you own on your profile card, or pick a worn one again to take it off."""
+
+    def __init__(self, owned, worn_ids):
+        self.owned = {str(i.id): i for i in owned}
+        super().__init__(placeholder="Wear or remove a cosmetic…", min_values=1, max_values=1, options=[
+            discord.SelectOption(label=i.name[:100], value=str(i.id), emoji=i.emoji,
+                                 description=("Worn now, pick to remove" if i.id in worn_ids else f"Pick to wear ({i.kind})")[:100])
+            for i in owned[:25]])
+
+    async def callback(self, interaction: discord.Interaction):
+        item = self.owned.get(self.values[0])
+        try:
+            status = await cat_features.toggle_equip(interaction.user.id, getattr(interaction.client, "clone_id", None), int(self.values[0]))
+        except Exception:
+            await interaction.response.send_message("Your wardrobe is temporarily unavailable.", ephemeral=True)
+            return
+        text = {"equipped": f"{item.emoji} **{item.name}** is on your profile card now. Open **My profile** to see it.",
+                "removed": f"{item.emoji} **{item.name}** is off your profile card.",
+                "not_owned": "Buy that one in the shop first.", "missing": "That item is no longer in the shop."}.get(status, "Something went wrong.")
+        await interaction.response.send_message(text, ephemeral=True)
+
+
 class CosmeticsButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Cosmetics", emoji="✨", style=discord.ButtonStyle.secondary, custom_id="cat_feature:cosmetics")
@@ -89,10 +112,15 @@ class CosmeticsButton(discord.ui.Button):
         embed.add_field(name="Available", value="\n".join(
             f"{item.emoji} **{item.name}** — {item.price_coins:,} coins" + (f" + {item.price_diamonds} diamonds" if item.price_diamonds else "")
             for item in items) or "Nothing in stock yet.", inline=False)
+        owned, worn_ids = await cat_features.wardrobe(interaction.user.id, getattr(interaction.client, "clone_id", None))
+        if owned:
+            embed.add_field(name="Yours", value="\n".join(f"{i.emoji} **{i.name}**" + (" (worn)" if i.id in worn_ids else "") for i in owned), inline=False)
         embed.set_footer(text="Cosmetics are play-only rewards.")
         view = discord.ui.View(timeout=120)
         if items:
             view.add_item(CosmeticBuySelect(items))
+        if owned:
+            view.add_item(CosmeticEquipSelect(owned, worn_ids))
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
