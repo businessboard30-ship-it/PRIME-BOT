@@ -676,6 +676,27 @@ class LeaderboardPingButton(discord.ui.DynamicItem[discord.ui.Button],
         await interaction.followup.send(_ping_status_text(muted), view=view, ephemeral=True)
 
 
+class LeaderboardCardButton(discord.ui.DynamicItem[discord.ui.Button],
+                            template=r"^lvllb_card:(\d+):(-|\d+)$"):
+    """Opens the private level-card designer (same as /levelcard). Lives in the XP options panel, not on the page
+    itself: the leaderboard page is already at Discord's 40-component limit (see test_leaderboard_xp_options)."""
+    def __init__(self, guild_id: int, clone_id):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="My card", emoji="🎨", style=discord.ButtonStyle.secondary,
+            custom_id=f"lvllb_card:{guild_id}:{_clone_part(clone_id)}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)), _clone_from(match.group(2)))
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_level_card import open_card_wizard
+        await open_card_wizard(interaction)
+
+
 class LeaderboardXPOptionsButton(discord.ui.DynamicItem[discord.ui.Button],
                                  template=r"^lvllb_xpopts:(\d+):(-|\d+)$"):
     """ONE entry for every XP-related control. Opens an ephemeral menu with
@@ -695,7 +716,7 @@ class LeaderboardXPOptionsButton(discord.ui.DynamicItem[discord.ui.Button],
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_message(
-            "⚡ **XP options** — boost your XP, turn level-up pings on or off, or buy a server boost.",
+            "⚡ **XP options** — boost your XP, design your level-up card, turn level-up pings on or off, or buy a server boost.",
             view=build_xp_options_view(self.guild_id, self.clone_id), ephemeral=True,
         )
 
@@ -704,6 +725,7 @@ def build_xp_options_view(guild_id: int, clone_id) -> discord.ui.View:
     view = discord.ui.View(timeout=300)
     view.add_item(BoostXPButton(guild_id, clone_id))
     view.add_item(LeaderboardPingButton(guild_id, clone_id))
+    view.add_item(LeaderboardCardButton(guild_id, clone_id))
     view.add_item(BuyBoostSelect(guild_id, clone_id))
     return view
 
@@ -783,4 +805,4 @@ class _LeaderboardGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
 
 DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton,
                  LeaderboardClansButton, LeaderboardPingButton, _LeaderboardGoPremiumButton,
-                 LeaderboardXPOptionsButton)
+                 LeaderboardXPOptionsButton, LeaderboardCardButton)

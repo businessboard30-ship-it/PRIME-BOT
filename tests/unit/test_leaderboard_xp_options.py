@@ -148,9 +148,9 @@ def test_old_custom_ids_still_registered():
 def test_xp_options_menu_reuses_same_items_and_ids():
     v = lb.build_xp_options_view(99, None)
     kinds = [type(i) for i in v.children]
-    assert kinds == [boost.BoostXPButton, lb.LeaderboardPingButton, wallet.BuyBoostSelect]
+    assert kinds == [boost.BoostXPButton, lb.LeaderboardPingButton, lb.LeaderboardCardButton, wallet.BuyBoostSelect]
     assert [i.item.custom_id for i in v.children] == [
-        "levelboost_xp:99:-", "lvllb_ping:99:-", "buyboost_xp:99:-"]
+        "levelboost_xp:99:-", "lvllb_ping:99:-", "lvllb_card:99:-", "buyboost_xp:99:-"]
 
 
 def test_xp_options_button_opens_ephemeral_menu():
@@ -162,7 +162,7 @@ def test_xp_options_button_opens_ephemeral_menu():
     btn = lb.LeaderboardXPOptionsButton(99, 5)
     assert btn.item.custom_id == "lvllb_xpopts:99:5"
     run(btn.callback(inter))
-    assert sent["ephemeral"] is True and len(sent["view"].children) == 3
+    assert sent["ephemeral"] is True and len(sent["view"].children) == 4
     assert [i.item.custom_id for i in sent["view"].children][0] == "levelboost_xp:99:5"
 
 

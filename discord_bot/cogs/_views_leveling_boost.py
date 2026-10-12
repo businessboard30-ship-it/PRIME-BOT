@@ -48,19 +48,20 @@ class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^level
         return cls(guild_id, clone_id)
 
     async def callback(self, interaction: discord.Interaction):
-        # Bundles are only offered once their Gumroad product link exists
-        # (see config.GUMROAD_PRODUCT_LINKS) — until then this behaves exactly
-        # as before: straight to the single-boost checkout.
+        # The $1 single boost is gone: the Level Pass ($1.99: custom level-up card + one XP boost) and the
+        # multi-boost packs are what is sold. Nothing on sale yet -> say so instead of offering something else.
         bundles = _available_bundles()
-        if not bundles:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            await _start_boost_checkout(interaction, "xp_boost", self.guild_id)
+        offer_pass = await pass_offered(self.clone_id)
+        if not bundles and not offer_pass:
+            await interaction.response.send_message(
+                "⚡ XP boosts aren't on sale right now. Try again in a little while.", ephemeral=True)
             return
-        lines = [
-            "⚡ **Boost XP** — pick a pack. Bundles stack onto any boost time you already have.",
-            "",
-            f"• **1 boost** — ${app_config.XP_BOOST_FEE_USD:g} · {app_config.XP_BOOST_MULTIPLIER:g}x XP for {app_config.XP_BOOST_DURATION_DAYS} days",
-        ]
+        lines = ["⚡ **Boost XP** — pick an option. Boosts stack onto any boost time you already have.", ""]
+        if offer_pass:
+            lines.append(
+                f"• **🎫 Level Pass** — ${app_config.LEVEL_PASS_FEE_USD:g} once · your own level-up card for "
+                f"{app_config.LEVEL_PASS_CARD_DAYS} days **plus** {app_config.XP_BOOST_MULTIPLIER:g}x XP for "
+                f"{app_config.XP_BOOST_DURATION_DAYS} days. One payment, no subscription.")
         for key, b in bundles.items():
             days = b["boosts"] * app_config.XP_BOOST_DURATION_DAYS
             per = b["fee_usd"] / b["boosts"]
@@ -69,8 +70,22 @@ class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^level
                 f"{app_config.XP_BOOST_MULTIPLIER:g}x XP for {days} days (${per:.2f} per boost)"
             )
         await interaction.response.send_message(
-            "\n".join(lines), view=_BoostPackPickerView(self.guild_id, bundles), ephemeral=True,
+            "\n".join(lines), view=_BoostPackPickerView(self.guild_id, bundles, offer_pass), ephemeral=True,
         )
+
+
+async def pass_offered(clone_id) -> bool:
+    """Offer the Level Pass when its Gumroad product is ready, or when this bot's payments don't go through Gumroad
+    (Paystack/manual need no product link). Any problem -> False, so the old single-boost flow keeps working."""
+    try:
+        import gumroad_autocreate as _auto
+        await _auto.load_runtime()
+        if _auto.link_for("level_pass"):
+            return True
+        from database import db
+        return (await db.get_payment_mode(clone_id)) != "gumroad"
+    except Exception:
+        return False
 
 
 def _available_bundles() -> dict:
@@ -82,14 +97,15 @@ def _available_bundles() -> dict:
 
 
 async def _start_boost_checkout(interaction: discord.Interaction, payment_type: str, guild_id: int):
-    """Starts checkout for a single boost (payment_type 'xp_boost') or a bundle
+    """Starts checkout for the Level Pass (payment_type 'level_pass') or a bundle
     key from config.XP_BOOST_BUNDLES. Call after interaction.response.defer."""
     from payments_manual import start_dual_mode_payment
     mult = app_config.XP_BOOST_MULTIPLIER
-    if payment_type == "xp_boost":
-        price = float(app_config.XP_BOOST_FEE_USD)
-        title = "⚡ XP Boost"
-        desc = f"⚡ {mult:g}x XP for you, {app_config.XP_BOOST_DURATION_DAYS} days."
+    if payment_type == "level_pass":
+        price = float(app_config.LEVEL_PASS_FEE_USD)
+        title = "🎫 Level Pass"
+        desc = (f"🎫 Your own level-up card for {app_config.LEVEL_PASS_CARD_DAYS} days + {mult:g}x XP for you, "
+                f"{app_config.XP_BOOST_DURATION_DAYS} days. One payment, no subscription.")
     else:
         b = app_config.XP_BOOST_BUNDLES[payment_type]
         price = float(b["fee_usd"])
@@ -108,15 +124,16 @@ class _BoostPackPickerView(discord.ui.View):
     (not DynamicItems): it lives only in that ephemeral reply, and the durable
     entry point is BoostXPButton itself."""
 
-    def __init__(self, guild_id: int, bundles: dict):
+    def __init__(self, guild_id: int, bundles: dict, offer_pass: bool = False):
         super().__init__(timeout=180)
         self.guild_id = guild_id
-        self._add("xp_boost", f"1 boost — ${app_config.XP_BOOST_FEE_USD:g}", discord.ButtonStyle.secondary)
+        if offer_pass:
+            self._add("level_pass", f"Level Pass — ${app_config.LEVEL_PASS_FEE_USD:g}", discord.ButtonStyle.success, "🎫")
         for key, b in bundles.items():
             self._add(key, f"{b['label']} — ${b['fee_usd']:g}", discord.ButtonStyle.success)
 
-    def _add(self, payment_type: str, label: str, style: discord.ButtonStyle):
-        button = discord.ui.Button(label=label, emoji="⚡", style=style)
+    def _add(self, payment_type: str, label: str, style: discord.ButtonStyle, emoji: str = "⚡"):
+        button = discord.ui.Button(label=label, emoji=emoji, style=style)
 
         async def _cb(interaction: discord.Interaction, _pt=payment_type):
             await interaction.response.defer(ephemeral=True, thinking=True)

@@ -43,6 +43,7 @@ _PRICE_ATTRS = {
     "discord_clone": "DISCORD_CLONE_ACTIVATION_FEE_USD",
     "discord_clone_monetization": "CLONE_MONETIZATION_FEE_USD",
     "xp_boost": "XP_BOOST_FEE_USD",
+    "level_pass": "LEVEL_PASS_FEE_USD",
     "premium": "PREMIUM_FEE_USD",
     "premium_yearly": "PREMIUM_YEARLY_FEE_USD",
     "premium_lifetime": "PREMIUM_LIFETIME_FEE_USD",
