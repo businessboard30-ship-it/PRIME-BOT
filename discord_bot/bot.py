@@ -347,7 +347,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.referrals")
         # botstore dropped: feature retired to free up global slash-command
         # slots. Re-add the line above (discord_bot.cogs.botstore) to restore.
-        await self.load_extension("discord_bot.cogs.bot_manager")
+        # bot_manager (/botmanager, stored pasted bot tokens) is no longer loaded: no command takes a token from users.
         await self.load_extension("discord_bot.cogs.submissions")
         await self.load_extension("discord_bot.cogs.media_connect")
         await self.load_extension("discord_bot.cogs.media_storage")

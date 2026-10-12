@@ -120,7 +120,6 @@ COMMANDS: list[tuple[str, str, str, Optional[str]]] = [
     ("/myclones", "/myclones", "List the Discord bot clones you own", None),
     ("/removeclone", "/removeclone", "Deactivate one of your Discord bot clones", None),
     ("/clonemonetize", "/clonemonetize ...", "Monetization settings for a clone you own", None),
-    ("/botmanager", "/botmanager ...", "Manage Discord bots you own by token", None),
 
     # --- Owner-only (bot owner, not server admin) ---
     ("/admin", "/admin ...", "[Owner] Bot administration — servers, find, monetize, feedback, hostingchannel, scamchannel, payments (approve/reject/assign/pending/mode), broadcast (send/status), bump", "owner_only"),

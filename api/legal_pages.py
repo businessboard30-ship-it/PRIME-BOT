@@ -97,7 +97,7 @@ must comply with Discord's own Terms of Service and Community Guidelines
 while using it.</p>
 
 <h2>Paid features</h2>
-<p>Some features (premium roles, AI Store credits, bot-clone registration)
+<p>Some features (premium roles, AI Store credits)
 involve real payment. See our <a href="/pricing">Pricing</a> page for a
 full list of paid features and current prices. Payments are processed by
 a third-party payment provider; see our <a href="/refund">Refund
@@ -275,9 +275,6 @@ auto-renew.</li>
 <li>Ultra Welcome Pack — ${ULTRA_PACK_FEE_USD:g}</li>
 <li>Custom Role — ${CUSTOM_ROLE_FEE_USD:g}</li>
 <li>Music Pro — {MUSIC_PRO_PRICE_LABEL}</li>
-<li>Discord Clone (deploy your own instance) — ${DISCORD_CLONE_ACTIVATION_FEE_USD:g}</li>
-<li>Discord Clone Monetization (let your clone sell its own unlocks) —
-${CLONE_MONETIZATION_FEE_USD:g}</li>
 </ul>
 
 <h2>XP Boost (personal)</h2>

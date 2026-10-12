@@ -97,7 +97,6 @@ CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
     "🧬 Bot Cloning": [
         (["myclones", "removeclone"], "manage clones you own"),
         (["clonemonetize"], "configure your clone's own pricing"),
-        (["botmanager"], "manage Discord bots you own by token"),
     ],
     "⚙️ Utility & Server Setup": [
         (["dashboard"], "open the web dashboard to configure this server from your browser"),
