@@ -39,7 +39,7 @@ CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
         (["modlog"], "server activity logging (roles, channels, members, moderation, voice, invites)"),
     ],
     "🎮 Leveling & Economy": [
-        (["rank", "leaderboard"], "XP and leveling"),
+        (["rank", "levelcard", "leaderboard"], "XP and leveling"),
         (["levelrole"], "level-up role rewards"),
         (["voicexp"], "voice-channel XP settings"),
         (["economy daily", "economy work", "economy beg", "economy balance", "economy coinflip", "economy rob", "economy buy", "economy vote", "economy watchad"], "server currency, jobs, and games"),

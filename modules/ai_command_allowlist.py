@@ -89,6 +89,7 @@ AI_COMMANDS = (
     AICommandSpec("serveranalytics", "discord_bot.cogs.analytics", False, "Snapshot of this server's size and activity"),
     AICommandSpec("rank", "discord_bot.cogs.leveling", False, "Show a member's level and XP"),
     AICommandSpec("leaderboard", "discord_bot.cogs.leveling", False, "Show this server's XP leaderboard"),
+    AICommandSpec("levelcard", "discord_bot.cogs.leveling", False, "Open the level-up card designer (colours, font, bio, background, logo)"),
     AICommandSpec("help", "discord_bot.cogs.help", False, "See everything the bot can do, by category"),
     AICommandSpec("myclones", "discord_bot.cogs.clone_admin", False, "List the Discord bot clones you own"),
     AICommandSpec("discover", "discord_bot.cogs.discover", False, "Browse anime by category"),

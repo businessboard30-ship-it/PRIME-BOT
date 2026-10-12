@@ -453,6 +453,22 @@ async def _unlock_xp_boost(reference: str, buyer_id: int, guild_id: Optional[int
     await db.activate_xp_boost(guild_id, buyer_id, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS, clone_id=clone_id)
 
 
+async def _unlock_level_pass(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """Level Pass: ONE payment -> the custom level-up card (card_plan access, LEVEL_PASS_CARD_DAYS days, the same
+    entitlement the dashboard and the bot already read) AND one XP boost in the server it was bought from.
+    Idempotent: the card event id is the payment reference, so a gateway retry never extends it twice, and the retry
+    after a failed boost only repeats the boost."""
+    import config
+    from modules import user_billing
+    # card_plan's period (modules.user_subs.PLANS) is 31 days = config.LEVEL_PASS_CARD_DAYS (a test keeps them equal)
+    await user_billing.apply_event(
+        db, event_id=f"levelpass:{reference}", user_id=buyer_id, product="card_plan", kind="charge",
+        provider="level_pass")
+    if guild_id:
+        await db.activate_xp_boost(guild_id, buyer_id, config.XP_BOOST_MULTIPLIER, config.XP_BOOST_DURATION_DAYS,
+                                   clone_id=clone_id)
+
+
 def _make_unlock_xp_boost_bundle(bundle_key: str):
     """One handler per config.XP_BOOST_BUNDLES entry. Same 2x multiplier as a
     single boost, but boosts x XP_BOOST_DURATION_DAYS of time, stacked onto
@@ -584,6 +600,7 @@ UNLOCK_HANDLERS = {
     "premium_yearly": _unlock_premium_yearly,
     "premium_lifetime": _unlock_premium_lifetime,
     "xp_boost": _unlock_xp_boost,
+    "level_pass": _unlock_level_pass,
     "xp_boost_3": _make_unlock_xp_boost_bundle("xp_boost_3"),
     "xp_boost_5": _make_unlock_xp_boost_bundle("xp_boost_5"),
     "xp_server_boost": _make_unlock_xp_server_boost_tier("xp_server_boost"),

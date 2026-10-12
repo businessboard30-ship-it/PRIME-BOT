@@ -730,6 +730,11 @@ class LevelingCog(GuildOnlyCog):
         card = NavCardView(f"{target.display_name} — level {p['level']}", lines, discord.Color.blurple(), buttons)
         await interaction.followup.send(view=card)
 
+    @app_commands.command(name="levelcard", description="Design your level-up card: colours, font, bio, background and logo")
+    async def levelcard(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_level_card import open_card_wizard
+        await open_card_wizard(interaction)
+
     # New command (never previously registered under any shape), so unlike
     # /leaderboard's history below there's no CommandSignatureMismatch risk
     # in making this a Group from day one.

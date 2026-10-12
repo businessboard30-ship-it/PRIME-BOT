@@ -336,6 +336,8 @@ GUMROAD_PRODUCT_LINKS = {
     # dashboard. Empty until set, so checkout refuses to start rather than selling something that
     # can't be matched (see modules/user_subs.py for prices and periods).
     "card_plan": os.getenv("GUMROAD_CARD_PLAN_LINK", ""),
+    # Level Pass ($1.99 one-time): leave empty, the bot auto-creates (or adopts by name) it via gumroad_autocreate.py.
+    "level_pass": os.getenv("GUMROAD_LEVEL_PASS_LINK", ""),
     "dev_monthly": os.getenv("GUMROAD_DEV_MONTHLY_LINK", ""),
     "dev_yearly": os.getenv("GUMROAD_DEV_YEARLY_LINK", ""),
 }
@@ -357,6 +359,7 @@ GUMROAD_PRODUCT_IDS = {
     "hardcore_roast": os.getenv("GUMROAD_HARDCORE_ROAST_ID", ""),
     "ad_placement": os.getenv("GUMROAD_AD_PLACEMENT_ID", ""),
     "card_plan": os.getenv("GUMROAD_CARD_PLAN_ID", ""),
+    "level_pass": os.getenv("GUMROAD_LEVEL_PASS_ID", ""),
     "dev_monthly": os.getenv("GUMROAD_DEV_MONTHLY_ID", ""),
     "dev_yearly": os.getenv("GUMROAD_DEV_YEARLY_ID", ""),
 }
@@ -431,6 +434,12 @@ HARDCORE_ROAST_FEE_USD = 1.00
 HARDCORE_ROAST_FEE_GHS = 15  # ~$1 in GHS
 XP_BOOST_MULTIPLIER = 2.0
 XP_BOOST_DURATION_DAYS = 14
+
+# Level Pass: ONE one-time payment that replaces paying $1 for a boost and $2/month for the card designer.
+# It grants the custom level-up card (colours, background, logo) for LEVEL_PASS_CARD_DAYS days AND one XP boost
+# (XP_BOOST_MULTIPLIER x for XP_BOOST_DURATION_DAYS days, in the server it was bought from).
+LEVEL_PASS_FEE_USD = 1.99
+LEVEL_PASS_CARD_DAYS = 31
 
 # Top.gg vote boost. Every clone shares ONE Top.gg listing (the main bot's), so
 # a vote boosts the voter in every server. Deliberately weaker/shorter than the

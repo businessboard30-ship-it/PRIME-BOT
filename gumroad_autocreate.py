@@ -55,6 +55,12 @@ PRODUCTS = {
         "price": lambda: float(config.PREMIUM_LIFETIME_FEE_USD),
         "description": "Premium for one whole Discord server, forever. One-time payment, every current and future premium feature included.",
     },
+    "level_pass": {
+        "name": "Level Pass", "legacy": [], "kind": "one_time",
+        "price": lambda: float(config.LEVEL_PASS_FEE_USD),
+        "description": "One payment, no subscription: design your own level-up card (colours, font, background, logo) "
+                       "for 31 days, plus a 2x XP boost for 14 days.",
+    },
     "card_plan": {
         "name": "Custom Level-Up Card - Monthly", "legacy": [], "kind": "membership", "period": "monthly",
         "price": lambda: _plan_price("card_plan"),
@@ -118,6 +124,22 @@ async def _list_products(session: aiohttp.ClientSession, token: str) -> Optional
     return data.get("products") or []
 
 
+async def _enable(session: aiohttp.ClientSession, token: str, product_id: str) -> bool:
+    """Gumroad's product create makes a DRAFT; publish it so the link can actually be bought. Best effort."""
+    if not product_id:
+        return False
+    try:
+        async with session.put(f"{API}/{product_id}/enable", data={"access_token": token}) as r:
+            data = await r.json(content_type=None)
+        ok = bool((data or {}).get("success"))
+        if not ok:
+            logger.warning("[gumroad-auto] couldn't publish product %s: %s", product_id, str(data)[:160])
+        return ok
+    except Exception:
+        logger.exception("[gumroad-auto] publish call failed for %s", product_id)
+        return False
+
+
 async def _notify_owner_once(ptype: str, reason: str) -> None:
     key = NOTIFIED_KEY.format(ptype=ptype)
     try:
@@ -176,6 +198,8 @@ async def ensure_products() -> bool:
                         data = await r.json(content_type=None)
                     prod = (data or {}).get("product") if isinstance(data, dict) else None
                     if isinstance(data, dict) and data.get("success") and prod and prod.get("short_url"):
+                        if not prod.get("published", True):
+                            await _enable(s, token, prod.get("id", ""))
                         await _save(ptype, prod.get("id", ""), prod["short_url"])
                         logger.info("[gumroad-auto] created %s: %s", ptype, prod["short_url"])
                         continue
