@@ -1784,90 +1784,16 @@ async def _enable_role_setup_wizard(interaction: discord.Interaction, guild: dis
     return None, None
 
 
-class _BuildBotTokenModal(discord.ui.Modal, title="Paste your bot's token"):
-    """Single-field modal that takes over from clone_admin.py's
-    /registerclone slash command for the button-driven wizard. A modal
-    field is never visible in a channel's history the way a slash
-    command's typed argument briefly can be, so this doesn't need the
-    DM-only restriction /registerclone enforces for that reason — this
-    whole wizard already only runs from a DM anyway (the join DM), so
-    it's moot either way."""
-
-    token = discord.ui.TextInput(
-        label="Bot token (Bot tab → Reset Token)",
-        placeholder="Paste the token here — only I ever see it",
-        style=discord.TextStyle.short, required=True, max_length=100,
-    )
-
-    def __init__(self, guild_id: int, clone_id):
-        super().__init__()
-        self.guild_id = guild_id
-        self.clone_id = clone_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        if interaction.user.id not in DISCORD_CLONE_ADMIN_IDS:
-            from modules import admin_controls as _ac
-            if not await _ac.build_bot_open():
-                await interaction.followup.send(_ac.MSG_BUILD_BOT_LOCKED, ephemeral=True)
-                return
-        # Shared with /registerclone — see clone_admin.py's
-        # register_clone_token, which both entry points call so
-        # validation/payment/creation logic only ever lives in one place.
-        # Wrapped in try/except now — register_clone_token used to be
-        # called bare here, so any unhandled exception inside it (a DB
-        # hiccup, an unexpected Discord API error neither validate_bot_
-        # token nor set_default_install_params' own try/excepts caught)
-        # left the deferred "thinking..." spinner stuck with no follow-up
-        # ever sent, for the owner to stare at until the interaction
-        # token quietly expired ~15 minutes later — exactly the "been
-        # thinking 5 minutes" bug report. Logging + a followup here means
-        # the owner always gets *something* back, and the traceback is
-        # actually findable in the logs.
-        from discord_bot.cogs.clone_admin import register_clone_token
-        try:
-            await register_clone_token(
-                interaction, self.token.value.strip(),
-                owner_id=interaction.user.id, hosting_clone_id=self.clone_id,
-            )
-        except Exception:
-            logger.exception(
-                "join_dm build-bot token registration failed for guild %s (user %s)",
-                self.guild_id, interaction.user.id,
-            )
-            await interaction.followup.send(
-                "Something went wrong registering that token — double check you copied the full "
-                "token from the **Bot** tab (not the application ID or public key), then tap "
-                "**Build Bot** again to retry.",
-                ephemeral=True,
-            )
-
-
 class _BuildBotPasteButton(discord.ui.DynamicItem[discord.ui.Button],
                             template=re.compile(r"^join_dm_buildbot_paste:(\d+):(-|\d+)$").pattern):
-    """Was a plain (non-persistent) discord.ui.Button with a 5-minute
-    View(timeout=300) — the reasoning at the time was that opening a
-    modal has to be the very first response to a fresh interaction, so
-    this button's own click always counts as "fresh" regardless. True,
-    but that reasoning ignored Railway redeploys: a plain View's
-    button-to-interaction routing only lives in that process' memory,
-    so any restart between the instructions being sent and the owner
-    actually tapping "I have my token" (which, per the owner-reported
-    bug, keeps happening — restarts, or just more than 5 minutes passing)
-    left the button pointing at nothing, and Discord shows that to the
-    owner as the interaction simply timing out. DynamicItem fixes this
-    the same way every other button in this file already does: the
-    guild_id/clone_id live in the custom_id itself, so any process
-    (post-restart or not) can reconstruct this button and open the modal
-    — send_modal() is still the first response to whatever fresh
-    interaction the tap produces, so the modal-must-be-first rule is
-    still satisfied either way."""
+    """Retired. Token entry no longer exists for anyone. Kept only so a button left in an OLD join DM still
+    answers ("not available") instead of showing "interaction failed". It never opens a form."""
 
     def __init__(self, guild_id: int, clone_id):
         self.guild_id = guild_id
         self.clone_id = clone_id
         super().__init__(discord.ui.Button(
-            label="I have my token — paste it", style=discord.ButtonStyle.success, emoji="📋",
+            label="Unavailable", style=discord.ButtonStyle.secondary, emoji="🚫", disabled=True,
             custom_id=f"join_dm_buildbot_paste:{guild_id}:{'-' if clone_id is None else clone_id}",
         ))
 
@@ -1879,46 +1805,9 @@ class _BuildBotPasteButton(discord.ui.DynamicItem[discord.ui.Button],
         return cls(guild_id, clone_id)
 
     async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id not in DISCORD_CLONE_ADMIN_IDS:
-            from modules import admin_controls as _ac
-            if not await _ac.build_bot_open():
-                await interaction.response.send_message(_ac.MSG_BUILD_BOT_LOCKED, ephemeral=True)
-                return
-        await interaction.response.send_modal(_BuildBotTokenModal(self.guild_id, self.clone_id))
-
-
-async def _start_build_bot_wizard(interaction: discord.Interaction, guild: discord.Guild, clone_id):
-    """"Build Bot" — a button-driven stand-in for /registerclone, kept as
-    plain as possible on purpose (project owner wants this explained "for
-    a 3-year-old"). This is only ever reached via _FeatureToggleButton,
-    which already called interaction.response.defer(ephemeral=True)
-    before invoking this handler — so a modal can't be opened directly on
-    THIS interaction; instead this sends the instructions plus a fresh
-    button, and that button's own (undeferred) click is what opens the
-    modal. timeout=None now (was 300) since the button itself is a
-    DynamicItem and no longer depends on this View surviving — see
-    _BuildBotPasteButton. Returns None/None: nothing is enabled yet, and
-    this never behaves like a toggle."""
-    view = discord.ui.View(timeout=None)
-    view.add_item(_BuildBotPasteButton(guild.id, clone_id))
-    await interaction.followup.send(
-        "**Let's get your own bot running — 4 quick steps:**\n\n"
-        "1️⃣ Go to the Discord Developer Portal: https://discord.com/developers/applications\n"
-        "2️⃣ Click **New Application**, give it any name.\n"
-        "3️⃣ Open the **Installation** tab on the left. Under **Guild Install → Scopes**, add "
-        "**bot** (it's not there by default — just `applications.commands` is). Then under "
-        "**Permissions**, just add **Administrator** — simplest option, covers everything the "
-        "bot needs so you don't have to hunt through the full permissions list one by one.\n"
-        "4️⃣ Open the **Bot** tab, click **Reset Token** (or **Copy** if you already have one) — "
-        "this copies a long code to your clipboard. That's your bot's token.\n\n"
-        "Once you've copied it, tap the button below and paste it in. I never show it to anyone "
-        "else, and nothing goes live until you've pasted it here.\n\n"
-        "💰 Once it's running, you can start earning from it too — `/clonemonetize` lets you set "
-        "your own prices for premium features and route payments to your own payment link, so you "
-        "keep what your server(s) pay, not just get a free bot.",
-        view=view, ephemeral=True,
-    )
-    return None, None
+        # Token entry was removed for everyone. This class only exists so a button left in an OLD DM answers
+        # politely instead of failing; it never opens a form and never asks for a token.
+        await interaction.response.send_message("This option isn't available any more.", ephemeral=True)
 
 
 async def _open_style_wizard(interaction: discord.Interaction, guild: discord.Guild, clone_id):
@@ -1989,8 +1878,6 @@ FEATURE_TOGGLES = {
                 "Filter spam, invite links, and mass-mention raids."),
     "catch": ("Creature catching", "🐾", _enable_catch, None,
               "Wild creatures appear while your members chat — they catch, collect and trade them with /catch."),
-    "build_bot": ("Build Bot", "🤖", _start_build_bot_wizard, None,
-                  "Run your own copy of this bot under your own name — takes about 2 minutes, no coding needed."),
 }
 
 # How many feature buttons show per page. Each feature is a
@@ -2015,22 +1902,19 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         self.feature_key = feature_key
         self.guild_id = guild_id
         self.clone_id = clone_id
-        label, emoji, _, _, _ = FEATURE_TOGGLES[feature_key]
+        label, emoji, _, _, _ = FEATURE_TOGGLES.get(feature_key, ("Unavailable", "\N{NO ENTRY SIGN}", None, None, ""))
         # Go Premium isn't a "Turn on" toggle — plain label, blue button.
         is_premium = feature_key == "go_premium"
         # Creature catching is limited to the support server for now: dim the button everywhere
         # else (see modules/catch_gate.py; _enable_catch refuses too for stale, older DMs).
         locked = feature_key == "catch" and not _catch_guild_allowed(guild_id)
-        # Build Bot is owner-only unless the bot owner opened it in the admin panel. Dimmed (grey) but not
-        # disabled, so the owner can still use it; everyone else is refused on click.
-        from modules import admin_controls as _ac
-        build_locked = feature_key == "build_bot" and not _ac.build_bot_open_cached()
+        gone = feature_key not in FEATURE_TOGGLES      # a button from an old DM for a removed option
         super().__init__(
             discord.ui.Button(
-                label=(f"{label}: owner only" if build_locked else f"{label}: support server only" if locked else (label if is_premium else f"Turn on: {label}")),
-                style=(discord.ButtonStyle.secondary if (locked or build_locked) else discord.ButtonStyle.primary if is_premium else discord.ButtonStyle.success),
+                label=(f"{label}" if gone else f"{label}: support server only" if locked else (label if is_premium else f"Turn on: {label}")),
+                style=(discord.ButtonStyle.secondary if (locked or gone) else discord.ButtonStyle.primary if is_premium else discord.ButtonStyle.success),
                 emoji=emoji, custom_id=f"join_dm_feat:{feature_key}:{guild_id}:{'-' if clone_id is None else clone_id}",
-                row=row, disabled=locked,
+                row=row, disabled=locked or gone,
             )
         )
 
@@ -2049,6 +1933,9 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        if self.feature_key not in FEATURE_TOGGLES:
+            await interaction.followup.send("This option isn't available any more.", ephemeral=True)
+            return
         # No interaction.guild_id sanity check here on purpose: this button
         # is only ever clicked from a DM, so interaction.guild_id is always
         # None — the real guild binding is self.guild_id from the
@@ -2067,11 +1954,6 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         # Handlers take guild explicitly (interaction.guild is None here —
         # this button is clicked from a DM, and Interaction.guild has no
         # setter, so it can't be patched onto the interaction).
-        if self.feature_key == "build_bot" and interaction.user.id not in DISCORD_CLONE_ADMIN_IDS:
-            from modules import admin_controls as _ac
-            if not await _ac.build_bot_open():
-                await interaction.followup.send(_ac.MSG_BUILD_BOT_LOCKED, ephemeral=True)
-                return
         label, _, handler, options_view_cls, _ = FEATURE_TOGGLES[self.feature_key]
         try:
             success, message = await handler(interaction, guild, self.clone_id)

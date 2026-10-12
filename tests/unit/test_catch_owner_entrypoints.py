@@ -22,10 +22,9 @@ def _all_buttons(view):
     return found
 
 
-def test_join_dm_offers_creature_catching_before_build_bot():
+def test_join_dm_offers_creature_catching():
     keys = list(join_dm.FEATURE_TOGGLES)
     assert "catch" in keys
-    assert keys.index("catch") < keys.index("build_bot")
     label, emoji, handler, options_view, blurb = join_dm.FEATURE_TOGGLES["catch"]
     assert label == "Creature catching" and handler is join_dm._enable_catch and blurb
 

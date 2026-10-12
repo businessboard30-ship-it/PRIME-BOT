@@ -404,7 +404,6 @@ export const MANUAL_SECTIONS: Section[] = [
     id: 'clones',
     title: '9. Owning Your Own Bot (Clones)',
     rows: [
-      { cmd: '/registerclone', syntax: '/registerclone token:<your bot token>', desc: 'Registers your own bot token to run it as a clone of this bot (DM only)', perm: 'Anyone' },
       { cmd: '/myclones', syntax: '/myclones', desc: 'Lists the Discord bot clones you own', perm: 'Anyone' },
       { cmd: '/removeclone', syntax: '/removeclone clone_id:<id>', desc: 'Deactivates one of your clones (doesn\u2019t delete the underlying bot)', perm: 'Anyone' },
     ],

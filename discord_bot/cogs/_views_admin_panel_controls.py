@@ -147,8 +147,7 @@ class ControlsView(PanelView):
 
     def body(self):
         lines = ["Turn a feature's slash commands off instantly (and back on). Owners are never blocked. "
-                 "Takes effect within seconds. **Clone registration** also stops the Build Bot button, "
-                 "so nobody can register a new clone while it's off. **Build Bot button** is owner-only until you open it below."]
+                 "Takes effect within seconds."]
         if self.error:
             lines.append("⚠️ Couldn't read the current state, so the buttons below may be out of date. Press Refresh.")
         for key, (label, _) in ac.FEATURES.items():

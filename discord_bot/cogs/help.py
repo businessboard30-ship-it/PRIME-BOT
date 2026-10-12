@@ -95,7 +95,6 @@ CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
         (["archive"], "Bots Archive — submit, review, and browse"),
     ],
     "🧬 Bot Cloning": [
-        (["registerclone"], "run your own branded clone of this bot (DM only)"),
         (["myclones", "removeclone"], "manage clones you own"),
         (["clonemonetize"], "configure your clone's own pricing"),
         (["botmanager"], "manage Discord bots you own by token"),
