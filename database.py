@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "94"
+SCHEMA_VERSION = "95"
+# "94" -> "95" adds 050_guild_terms.sql (guild_terms_acceptance: which admin accepted the Terms and Privacy Policy for a server). CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "93" -> "94" adds 049_cat_shared_wallet.sql (merges every person's per-bot cat wallets into one shared wallet; per-bot rows zeroed, not deleted). Idempotent. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "92" -> "93" adds 048_cat_equipped.sql (cat_equipped: the hat / collar / card background a player wears on their cat profile card). CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "91" -> "92" adds 047_cat_care.sql (cat_adoptions hunger/water/bed columns, cat_runaways: cats that wandered off and come back in a spawn). ALTER TABLE ADD COLUMN IF NOT EXISTS + CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5667,6 +5668,11 @@ class Database:
         cat_backfill_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "039_cat_log_backfill.sql"
         if cat_backfill_migration.exists():
             await conn.execute(cat_backfill_migration.read_text())
+
+        # Terms & Privacy acceptance per server. Additive/idempotent.
+        guild_terms_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "050_guild_terms.sql"
+        if guild_terms_migration.exists():
+            await conn.execute(guild_terms_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"

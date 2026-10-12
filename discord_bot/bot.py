@@ -83,6 +83,7 @@ from discord_bot.cogs._views_cat_adopt import DYNAMIC_ITEMS as CAT_ADOPT_DYNAMIC
 from discord_bot.cogs._views_invites import DYNAMIC_ITEMS as INVITES_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_wizard import DYNAMIC_ITEMS as AUTOMOD_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_modlog_wizard import DYNAMIC_ITEMS as MODLOG_WIZARD_DYNAMIC_ITEMS
+from discord_bot.cogs._views_terms import DYNAMIC_ITEMS as TERMS_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_reminders import DYNAMIC_ITEMS as AUTOMOD_REMINDER_DYNAMIC_ITEMS
 from discord_bot.cogs._views_ticket_wizard import DYNAMIC_ITEMS as TICKET_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_community_wizard import DYNAMIC_ITEMS as COMMUNITY_WIZARD_DYNAMIC_ITEMS
@@ -242,6 +243,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*INVITES_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*MODLOG_WIZARD_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*TERMS_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_REMINDER_DYNAMIC_ITEMS)
         self.add_dynamic_items(*TICKET_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*HONEYPOT_DYNAMIC_ITEMS)
@@ -667,6 +669,9 @@ class AnimeBotDiscord(commands.Bot):
         # _views_join_dm.py's join_offer handling), so needs_invite_consent
         # just gets threaded straight into _send_combined_owner_join_dm.
         await self._send_combined_owner_join_dm(guild, needs_invite_consent=invite_url is None)
+        # Terms & Privacy wizard first, so it is the first thing the server sees (never raises; nothing is blocked).
+        from modules import terms_accept
+        await terms_accept.post_on_join(self, guild)
         welcome_cog = self.get_cog("WelcomeCog")
         if welcome_cog:
             await welcome_cog.post_setup_wizard_on_join(guild)
