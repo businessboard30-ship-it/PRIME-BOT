@@ -153,7 +153,20 @@ async def count_logs(chat_id: int) -> int:
         return 0
 
 
+def fingerprint(text) -> Optional[str]:
+    """One-way keyed hash of a message, so "same message repeated" can be spotted without keeping the words.
+    The text itself is never stored. Rows are also purged after a few minutes (modules/data_retention.py)."""
+    import hashlib, hmac, os
+    t = " ".join(str(text or "").lower().split())
+    if not t:
+        return None
+    key = (os.getenv("ENCRYPTION_KEY") or "prime-flood-fingerprint").encode()
+    return "h1:" + hmac.new(key, t.encode("utf-8", "ignore"), hashlib.sha256).hexdigest()[:24]
+
+
 async def record_flood_event(chat_id: int, user_id: int, message_text: str = None) -> bool:
+    """Stores only a fingerprint of `message_text`, never the text."""
+    message_text = fingerprint(message_text)
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
