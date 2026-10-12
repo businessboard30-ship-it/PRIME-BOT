@@ -21,3 +21,12 @@ def test_stable_static_pages_match_the_served_pages():
     for name in ("terms", "privacy"):
         html = (root / name / "index.html").read_text()
         assert "token" not in html.lower() and "Welcome Bot" in html
+
+
+def test_website_pages_keep_the_site_theme_and_cover_clones_without_the_word_token():
+    root = Path(__file__).resolve().parents[2] / "website"
+    for name in ("terms", "privacy"):
+        html = (root / name / "index.html").read_text()
+        assert "token" not in html.lower() and "Welcome Bot" in html
+        assert '/assets/site.css' in html and 'content="dark"' in html and "12 October 2026" in html
+    assert "Server Members" in (root / "privacy/index.html").read_text()
