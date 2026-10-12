@@ -42,10 +42,54 @@ def test_scam_hit_and_ai_log_do_not_store_text():
     assert "json.dumps(args or {}, default=str), allowed" not in db
 
 
-def test_migration_wired_and_leaves_managed_bots_alone():
-    sql = (ROOT / "database/migrations/051_privacy_retention.sql").read_text()
-    assert "managed_bots" not in sql
-    assert "051_privacy_retention.sql" in (ROOT / "database.py").read_text()
+def test_startup_no_longer_rewrites_big_tables():
+    """The old 051 migration ran three table-wide UPDATEs/DELETEs during startup, timed out, and kept every bot from
+    finishing its start. The scrub now runs in small batches from modules/data_retention.py instead."""
+    db = (ROOT / "database.py").read_text()
+    assert '"051_privacy_retention.sql"' not in db                         # (the version comments may still mention it)
+    assert not (ROOT / "database/migrations/051_privacy_retention.sql").exists()
+    import modules.data_retention as dr
+    for sql in (dr.SCRUB_FLOOD_TEXT, dr.SCRUB_SCAM_SNIPPETS, dr.SCRUB_AI_ARGS, dr._flood_delete_sql()):
+        assert "LIMIT $1" in sql and "SKIP LOCKED" in sql                  # bounded and never waits on another process
+
+
+class _Conn:
+    """Pretends each batch changed `sizes[i]` rows."""
+    def __init__(self, sizes):
+        self.sizes, self.sql, self.calls = list(sizes), [], 0
+
+    def transaction(self):
+        conn = self
+
+        class T:
+            async def __aenter__(self): return conn
+            async def __aexit__(self, *a): return False
+        return T()
+
+    async def execute(self, sql, *args):
+        if sql.startswith("SET LOCAL"):
+            self.sql.append(sql)
+            return "SET"
+        self.calls += 1
+        return f"UPDATE {self.sizes.pop(0) if self.sizes else 0}"
+
+
+def test_scrub_runs_in_batches_and_stops_when_done():
+    import modules.data_retention as dr
+    c = _Conn([2000, 2000, 700])
+    assert asyncio.run(dr._batched(c, dr.SCRUB_AI_ARGS)) == 4700
+    assert c.calls == 3 and c.sql and "statement_timeout" in c.sql[0]       # stopped at the short batch, with a per-batch timeout
+    full = _Conn([2000] * 100)
+    assert asyncio.run(dr._batched(full, dr.SCRUB_AI_ARGS)) == 2000 * dr.MAX_BATCHES and full.calls == dr.MAX_BATCHES   # one run stays short
+
+
+def test_a_failing_batch_never_raises():
+    import modules.data_retention as dr
+
+    class Bad(_Conn):
+        async def execute(self, sql, *args):
+            raise RuntimeError("lock timeout")
+    assert asyncio.run(dr._batched(Bad([5]), dr.SCRUB_AI_ARGS)) == 0
 
 
 def test_my_data_cog_registered_last_and_cap_safe():
