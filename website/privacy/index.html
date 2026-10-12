@@ -28,7 +28,7 @@
 <a class="btn sm primary hdr-cta" href="/#invite">Add to Discord</a>
 </div></header>
 <main id="main">
-<section class="page-hero"><div class="wrap"><p class="eyebrow">Legal</p><h1>Privacy Policy</h1><p class="updated">PRIME BOT × WELCOME BOT · Last updated 7 October 2026</p></div></section>
+<section class="page-hero"><div class="wrap"><p class="eyebrow">Legal</p><h1>Privacy Policy</h1><p class="updated">PRIME BOT × WELCOME BOT · Last updated 12 October 2026</p></div></section>
 <section><div class="wrap prose">
 <p>This page explains what data PRIME BOT × WELCOME BOT (“the bot”) collects and how it is used. The bot is operated by Maxwell Dumenya, a sole proprietor based in Ghana.</p>
 <h2>What we collect</h2>
@@ -37,8 +37,13 @@
 <li>Message content only where a feature requires it (e.g. auto-moderation’s word/invite/spam filters scan message text to enforce rules you or a server admin configured; AI chat/image features send your prompt to the underlying AI provider to generate a response).</li>
 <li>Payment references (not full card details — payments are handled by a third-party payment processor, Gumroad or Paystack) when you use a paid feature.</li>
 <li>Messages that Scam Shield removes as known scams: a copy (text and attachments, with the server and user IDs) is saved to a private channel run by the operator, so the scam rules can be improved.</li>
-<li>Optional linked-account tokens (media server, cloud folder, your own bot token) only if you choose to connect one, stored so the relevant feature keeps working until you disconnect it.</li>
+<li>Optional linked accounts (media server, cloud folder) only if you choose to connect one, stored so the relevant feature keeps working until you disconnect it.</li>
+<li>Server membership events: when someone joins or leaves a server where the bot is added, the bot sees their Discord ID, username, account creation date and join or leave time, and which invite they used if the invite tracker is turned on. This is used for welcome messages, verification, the join gate, invite tracking and moderation, and is stored with the server’s ID.</li>
 </ul>
+<h2>Why the bot reads members and messages</h2>
+<p>The bot uses two Discord permissions that need Discord’s approval. <strong>Server Members</strong> lets it react when someone joins or leaves and look up members for the features above. <strong>Message Content</strong> lets it read messages as they are sent to award XP, run auto-moderation filters, and answer commands and triggers a server admin configured. Message text is processed as it arrives and is not kept, apart from the Scam Shield copy described above. The bot does not use message content to train AI or machine learning models, and does not store messages outside Discord and the operator’s private review channel.</p>
+<h2>Bots run from this service</h2>
+<p>This policy also covers every bot run from the same service, including white-label bots such as Welcome Bot. For those bots the operator is still Maxwell Dumenya. If a server owner registers their own bot with us, we keep the details needed to run it, encrypted, until they remove it.</p>
 <h2>What we don’t do</h2>
 <p>We don’t sell your data. We don’t read or store messages outside of what a feature you’re actively using needs in order to work.</p>
 <h2>Web dashboard</h2>
@@ -46,14 +51,14 @@
 <ul>
 <li>A record that you signed in, with your Discord display name and avatar. They are used to show you on the global leaderboard unless you switch that off on the Leaderboard page; everyone else sees you as Hidden player. No user ID is shown to other people. We also keep the days you used the dashboard (90 days, visible only to the bot owner).</li>
 <li>Your level-up card design and any uploads, your AI provider keys if you add them (encrypted, never shown again), receipts for exports you save (the files are encrypted), your scheduled jobs, and renewal reminders.</li>
-<li>If you connect GitHub (read-only), an encrypted access token. Disconnecting deletes it and tells GitHub to revoke it.</li>
+<li>If you connect GitHub (read-only), an encrypted access key. Disconnecting deletes it and tells GitHub to revoke it.</li>
 <li>If you use member messaging, your friends list and messages (text only; deleted automatically after 30 days, or when you delete your data).</li>
 </ul>
 <p>AI chats on the website are not stored; only a weekly count is kept. You can delete the dashboard data above yourself under Privacy &amp; data in the dashboard. Payment records, your plans, weekly chat counters and in-server records (XP, coins, moderation) are kept.</p>
 <h2>Third parties</h2>
-<p>Depending on which features you use, data may be sent to: the AI provider powering chat/image features, the payment processor handling paid features (Gumroad or Paystack), and (only if you connect one yourself) a media server, cloud storage provider, or another Discord bot token’s application.</p>
+<p>Depending on which features you use, data may be sent to: the AI provider powering chat/image features, the payment processor handling paid features (Gumroad or Paystack), and (only if you connect one yourself) a media server, cloud storage provider, or another Discord bot’s application.</p>
 <h2>Data retention &amp; deletion</h2>
-<p>Feature-related data (balances, XP, warns, linked accounts) is kept while you continue using the bot in a server. You can disconnect a linked account at any time with its corresponding command. To request full deletion of your data, contact us using the details below.</p>
+<p>Feature-related data (balances, XP, warns, linked accounts, join records) is kept while you continue using the bot in a server. You can disconnect a linked account at any time with its corresponding command, and you can mute level-up pings from the leveling leaderboard. Server admins can turn off leveling, auto-moderation and invite tracking in their own server. To request full deletion of your data, or to opt out of having your activity tracked, email <a href="mailto:maxwelldumenya5@outlook.com">maxwelldumenya5@outlook.com</a> with your Discord user ID; we will delete it or tell you why we cannot (for example payment records we must keep).</p>
 <h2>Children’s privacy</h2>
 <p>The bot is not directed at children under 13, consistent with Discord’s own minimum age requirement.</p>
 <h2>This website</h2>
