@@ -620,6 +620,18 @@ class LeaderboardMyRankButton(discord.ui.DynamicItem[discord.ui.Button],
         if rank_row and rank_row.get("total_xp") is not None:
             target_page = (rank_row["rank"] - 1) // PAGE_SIZE
         await _rerender(interaction, self.guild_id, self.clone_id, self.mode, target_page)
+        # Level Pass holders also get their own designed card (private, best effort).
+        if rank_row and rank_row.get("total_xp") is not None:
+            try:
+                import io as _io
+                from modules import leveling as _lv, level_card_design as _lcd
+                p = _lv.xp_progress(int(rank_row["total_xp"]))
+                png = await _lcd.render_member_card(db, interaction.user, p["level"], p["current_xp_in_level"],
+                                                    p["xp_needed_for_next_level"], rank=rank_row["rank"])
+                if png:
+                    await interaction.followup.send(file=discord.File(_io.BytesIO(png), filename="rank.png"), ephemeral=True)
+            except Exception:
+                logger.warning("[leaderboard] couldn't send the custom rank card", exc_info=True)
 
 
 class LeaderboardClansButton(discord.ui.DynamicItem[discord.ui.Button],

@@ -8,7 +8,9 @@ the default card, the saved design is kept and comes back on renewal).
 """
 import asyncio
 import base64
+import functools
 import io
+import logging
 import os
 import re
 from typing import Optional
@@ -17,6 +19,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 from modules import entitlements as ent
 from modules import level_card as lc
+
+logger = logging.getLogger(__name__)
 
 BIO_MAX = 60
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -83,14 +87,18 @@ def _font(name: str, size: int):
         return lc._load_font(size)
 
 
-def _gradient(top: str, bottom: str) -> Image.Image:
+@functools.lru_cache(maxsize=48)
+def _gradient_raw(top: str, bottom: str, w: int, h: int) -> bytes:
+    """The vertical gradient as raw RGB bytes, built once per (colours, size) and reused for every card after that.
+    One 1-pixel-wide column is computed and stretched, instead of drawing one line per row on every level-up."""
     a, b = lc._hex_to_rgb(top), lc._hex_to_rgb(bottom)
-    img = Image.new("RGB", (lc.CARD_WIDTH, lc.CARD_HEIGHT))
-    px = ImageDraw.Draw(img)
-    for y in range(lc.CARD_HEIGHT):
-        t = y / max(1, lc.CARD_HEIGHT - 1)
-        px.line([(0, y), (lc.CARD_WIDTH, y)], fill=tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3)))
-    return img
+    col = Image.new("RGB", (1, h))
+    col.putdata([tuple(int(a[i] + (b[i] - a[i]) * (y / max(1, h - 1))) for i in range(3)) for y in range(h)])
+    return col.resize((w, h)).tobytes()
+
+
+def _gradient(top: str, bottom: str, w: int = lc.CARD_WIDTH, h: int = lc.CARD_HEIGHT) -> Image.Image:
+    return Image.frombytes("RGB", (w, h), _gradient_raw(top, bottom, w, h))
 
 
 def _shape_mask(shape: str, size: int, pad: int = 0) -> Image.Image:
@@ -116,14 +124,16 @@ def placeholder_avatar(accent: str = "#57F287") -> bytes:
     return out.getvalue()
 
 
-def _darken_text_zone(bg: Image.Image) -> Image.Image:
+def _darken_text_zone(bg: Image.Image, scale: float = 1.0) -> Image.Image:
     """Uploaded backgrounds get a dark panel behind the text so white text stays readable."""
     from PIL import ImageStat
-    x0, y0, x1, y1 = card_assets_zone()
-    mean = ImageStat.Stat(bg.crop((x0, y0, x1, y1)).convert("L")).mean[0]
+    x0, _y0, x1, _y1 = card_assets_zone()
+    x0, x1, h = round(x0 * scale), round(x1 * scale), bg.height
+    mean = ImageStat.Stat(bg.crop((x0, 0, x1, h)).convert("L")).mean[0]
     alpha = int(255 * min(0.85, 0.40 + max(0.0, mean - 90) / 255))
     layer = Image.new("RGBA", bg.size, (0, 0, 0, 0))
-    ImageDraw.Draw(layer).rounded_rectangle((x0, 14, x1, lc.CARD_HEIGHT - 14), radius=18, fill=(0, 0, 0, alpha))
+    ImageDraw.Draw(layer).rounded_rectangle((x0, round(14 * scale), x1, h - round(14 * scale)), radius=round(18 * scale),
+                                            fill=(0, 0, 0, alpha))
     return Image.alpha_composite(bg.convert("RGBA"), layer).convert("RGB")
 
 
@@ -132,64 +142,105 @@ def card_assets_zone():
     return card_assets.TEXT_ZONE
 
 
+def card_scale(bg_png: Optional[bytes]) -> float:
+    """1.0 normally. A large uploaded background makes a larger card (up to 2x, 1800x600)."""
+    if not bg_png:
+        return 1.0
+    try:
+        w = Image.open(io.BytesIO(bg_png)).size[0]
+    except Exception:
+        return 1.0
+    return max(1.0, min(2.0, w / lc.CARD_WIDTH))
+
+
 def render_custom_level_card(avatar_bytes: bytes, username: str, new_level: int, cur_xp: int, need_xp: int,
-                             design: dict, bg_png: Optional[bytes] = None, logo_png: Optional[bytes] = None) -> bytes:
+                             design: dict, bg_png: Optional[bytes] = None, logo_png: Optional[bytes] = None,
+                             title: str = "LEVEL UP!", rank: Optional[int] = None) -> bytes:
+    """Draws the member's card. Everything is laid out at 900x300 and multiplied by `scale`, so a big uploaded
+    background gives a bigger, sharper card. `title`/`rank` let /rank and My Rank reuse the same card."""
     d, _ = validate(design or {})
     d = d or dict(DEFAULT_DESIGN)
     top, bottom, _label = BACKGROUNDS[d["background"]]
+    use_bg = bg_png if (bg_png and d.get("custom_bg")) else None
+    S = card_scale(use_bg)
+    W, H = round(lc.CARD_WIDTH * S), round(lc.CARD_HEIGHT * S)
+
+    def k(v):
+        return int(round(v * S))
+
     bg = None
-    if bg_png and d.get("custom_bg"):
+    if use_bg:
         try:
-            bg = _darken_text_zone(Image.open(io.BytesIO(bg_png)).convert("RGB").resize((lc.CARD_WIDTH, lc.CARD_HEIGHT)))
+            bg = _darken_text_zone(Image.open(io.BytesIO(use_bg)).convert("RGB").resize((W, H)), S)
         except Exception:
             bg = None
     if bg is None:
-        bg = _gradient(top, bottom)
+        bg = _gradient(top, bottom, W, H)
     if logo_png and d.get("logo"):
         try:
             from modules import card_assets
             lg = Image.open(io.BytesIO(logo_png)).convert("RGBA")
-            x0, y0, x1, y1 = card_assets.LOGO_BOX
+            x0, y0, x1, y1 = (k(v) for v in card_assets.LOGO_BOX)
             lg.thumbnail((x1 - x0, y1 - y0), Image.LANCZOS)
             bg.paste(lg, (x0 + (x1 - x0 - lg.width) // 2, y0 + (y1 - y0 - lg.height) // 2), lg)
         except Exception:
             pass
     draw = ImageDraw.Draw(bg)
     accent = lc._hex_to_rgb(d["accent"])
-    draw.rectangle([(0, 0), (14, lc.CARD_HEIGHT)], fill=accent)
+    draw.rectangle([(0, 0), (k(14), H)], fill=accent)
 
-    size = lc.AVATAR_SIZE
+    size = k(lc.AVATAR_SIZE)
     try:
         av = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA").resize((size, size))
     except Exception:
         av = Image.new("RGBA", (size, size), accent)
-    ax, ay, ring = 60, (lc.CARD_HEIGHT - size) // 2, 6
+    ax, ay, ring = k(60), (H - size) // 2, k(6)
     ring_img = Image.new("RGBA", (size + 2 * ring, size + 2 * ring), accent + (255,))
     bg.paste(ring_img, (ax - ring, ay - ring), _shape_mask(d["shape"], size + 2 * ring))
     bg.paste(av, (ax, ay), _shape_mask(d["shape"], size))
 
-    tx = ax + size + 50
-    draw.text((tx, 55), "LEVEL UP!", font=_font(d["font"], 26), fill=accent)
+    tx = ax + size + k(50)
+    head = (f"{title}  #{int(rank)}" if rank else title)
+    draw.text((tx, k(55)), head, font=_font(d["font"], k(26)), fill=accent)
     name = str(username or "")[:40]
     if d["font"] != "classic" and name.isascii() and name.isprintable():
-        draw.text((tx, 90), name, font=_font(d["font"], 44), fill=(255, 255, 255))
+        draw.text((tx, k(90)), name, font=_font(d["font"], k(44)), fill=(255, 255, 255))
     else:
-        lc.draw_text_fallback(draw, (tx, 90), name, 44, (255, 255, 255))
-    draw.text((tx, 148), f"Level {int(new_level)}", font=_font(d["font"], 34), fill=(255, 255, 255))
+        lc.draw_text_fallback(draw, (tx, k(90)), name, k(44), (255, 255, 255))
+    draw.text((tx, k(148)), f"Level {int(new_level)}", font=_font(d["font"], k(34)), fill=(255, 255, 255))
 
-    bx, by, bw, bh = tx, 205, lc.CARD_WIDTH - tx - 60, 26
+    bx, by, bw, bh = tx, k(205), W - tx - k(60), k(26)
     draw.rounded_rectangle((bx, by, bx + bw, by + bh), radius=bh // 2, fill=(60, 63, 68))
     frac = max(0.0, min(1.0, cur_xp / need_xp)) if need_xp > 0 else 1.0
     fw = max(bh, int(bw * frac)) if frac > 0 else 0
     if fw:
         draw.rounded_rectangle((bx, by, bx + fw, by + bh), radius=bh // 2, fill=accent)
-    draw.text((bx, by + bh + 8), f"{int(cur_xp)}/{int(need_xp)} XP", font=_font(d["font"], 20), fill=(200, 200, 200))
+    draw.text((bx, by + bh + k(8)), f"{int(cur_xp)}/{int(need_xp)} XP", font=_font(d["font"], k(20)), fill=(200, 200, 200))
     if d["bio"]:
-        lc.draw_text_fallback(draw, (bx, by + bh + 40), d["bio"], 18, (225, 225, 225))
+        lc.draw_text_fallback(draw, (bx, by + bh + k(40)), d["bio"], k(18), (225, 225, 225))
 
     out = io.BytesIO()
     bg.save(out, format="PNG")
     return out.getvalue()
+
+
+async def render_member_card(db, member, level: int, cur_xp: int, need_xp: int, rank: Optional[int] = None,
+                             title: str = "RANK") -> Optional[bytes]:
+    """The member's own saved card for /rank and My Rank, or None when they have no active Level Pass / no design
+    (the caller then shows the normal plain card). Never raises."""
+    try:
+        card = await card_for_user(db, member.id)
+        if card is None:
+            return None
+        try:
+            avatar = await member.display_avatar.replace(size=256, format="png").read()
+        except Exception:
+            avatar = placeholder_avatar(card[0].get("accent", "#57F287"))
+        return await asyncio.to_thread(render_custom_level_card, avatar, getattr(member, "display_name", ""), level,
+                                       cur_xp, need_xp, *card, title=title, rank=rank)
+    except Exception:
+        logger.warning("[level-card] couldn't draw the member's card", exc_info=True)
+        return None
 
 
 def preview_data_url(design: dict, bg_png: Optional[bytes] = None, logo_png: Optional[bytes] = None) -> str:

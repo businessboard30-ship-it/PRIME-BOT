@@ -178,37 +178,56 @@ def with_db(monkeypatch, fake):
     return fake
 
 
-def test_changes_need_the_pass_and_are_validated(monkeypatch):
-    nopass = with_db(monkeypatch, FakeDB())
-    i = Inter()
-    run(vlc.apply_change(i, accent="#FF0000"))
-    assert not nopass.cards and i.edits and "Level Pass" in i.edits[0]["embed"].title      # sent back to the pitch
-    paid = with_db(monkeypatch, FakeDB(pass_days=10))
-    j = Inter()
-    run(vlc.apply_change(j, accent="#ff0000", font="clean"))
-    saved = json.loads(paid.cards["7"])
-    assert saved["accent"] == "#FF0000" and saved["font"] == "clean" and j.edits and j.edits[0]["attachments"]
-    k = Inter()
-    run(vlc.apply_change(k, background="nope"))
-    assert k.private and "Unknown background" in k.private[0]["args"][0] and json.loads(paid.cards["7"])["accent"] == "#FF0000"
-
-
-def test_open_shows_pitch_without_pass_and_designer_with_it(monkeypatch):
-    with_db(monkeypatch, FakeDB())
+def _offered(monkeypatch):
     async def offered(clone):
         return True
     monkeypatch.setattr(boost, "pass_offered", offered)
+
+
+def test_edits_are_free_and_saving_needs_the_pass(monkeypatch):
+    nopass = with_db(monkeypatch, FakeDB())
+    _offered(monkeypatch)
+    draft = run(vlc.draft_for(7, 1))
+    i = Inter()
+    run(vlc.edit_draft(i, draft, accent="#ff0000", font="clean"))
+    assert draft.design["accent"] == "#FF0000" and draft.design["font"] == "clean" and draft.dirty
+    assert i.edits and i.edits[0]["attachments"] and not nopass.cards                       # previewed, nothing stored
+    j = Inter()
+    run(vlc.save_draft(j, draft))
+    assert not nopass.cards and j.private[0]["embed"].title == "🎫 Level Pass" and j.private[0]["ephemeral"] is True
+    paid = with_db(monkeypatch, FakeDB(pass_days=10))
+    k = Inter()
+    run(vlc.save_draft(k, draft))
+    saved = json.loads(paid.cards["7"])
+    assert saved["accent"] == "#FF0000" and saved["font"] == "clean" and k.edits
+    bad = Inter()
+    run(vlc.edit_draft(bad, draft, background="nope"))
+    assert bad.private and "Unknown background" in bad.private[0]["args"][0] and draft.design["background"] == "slate"
+
+
+def test_the_designer_opens_for_everyone(monkeypatch):
+    with_db(monkeypatch, FakeDB())
     i = Inter()
     run(vlc.open_card_wizard(i))
-    assert i.private[0]["embed"].title == "🎫 Level Pass" and i.private[0]["ephemeral"] is True
+    emb = i.private[0]["embed"]
+    assert emb.title.startswith("🎨") and i.private[0]["file"] and "Preview mode" in emb.description
     with_db(monkeypatch, FakeDB(pass_days=5))
     j = Inter()
     run(vlc.open_card_wizard(j))
-    assert j.private[0]["embed"].title.startswith("🎨") and j.private[0]["file"] and j.private[0]["ephemeral"] is True
+    assert "Level Pass active" in j.private[0]["embed"].description and j.private[0]["ephemeral"] is True
 
 
-def test_upload_rules(monkeypatch):
-    paid = with_db(monkeypatch, FakeDB(pass_days=5))
+def _png(size=(900, 300)):
+    import io
+    from PIL import Image
+    b = io.BytesIO()
+    Image.new("RGB", size, (20, 60, 120)).save(b, format="PNG")
+    return b.getvalue()
+
+
+def test_an_upload_is_only_staged_until_the_pass_holder_saves(monkeypatch):
+    fake = with_db(monkeypatch, FakeDB())
+    _offered(monkeypatch)
     sent, submitted = [], []
 
     async def fake_submit(db, uid, kind, raw):
@@ -219,6 +238,7 @@ def test_upload_rules(monkeypatch):
         sent.append(kind)
     monkeypatch.setattr(card_assets, "submit", fake_submit)
     monkeypatch.setattr(vlc, "_send_to_host", fake_host)
+    draft = run(vlc.draft_for(7, 1))
 
     def upload(kind, content_type="image/png", size=1000, data=b"x"):
         i = Inter()
@@ -227,27 +247,30 @@ def test_upload_rules(monkeypatch):
             pass
         att = Att()
         att.content_type, att.size = content_type, size
+
         async def read(): return data
         att.read = read
 
         async def go():
-            m = vlc.UploadModal(kind)
+            m = vlc.UploadModal(kind, draft)
             m.file._values = [att]
             await m.on_submit(i)
         run(go())
         return i
 
     bad = upload("background", content_type="image/gif")
-    assert not submitted and "PNG or JPEG" in bad.response.sent[0]["args"][0]
+    assert "PNG or JPEG" in bad.response.sent[0]["args"][0] and not draft.staged
     big = upload("logo", size=card_assets.MAX_BYTES["logo"] + 1)
-    assert not submitted and "too big" in big.response.sent[0]["args"][0]
-    ok = upload("background")
-    assert submitted == ["background"] and sent == ["background"]
-    assert json.loads(paid.cards["7"])["custom_bg"] is True and ok.edits
-    submitted.clear()
-    with_db(monkeypatch, FakeDB())                                      # no pass: nothing is uploaded
-    nopass = upload("logo")
-    assert not submitted and nopass.edits
+    assert "too big" in big.response.sent[0]["args"][0] and not draft.staged
+    assert card_assets.MAX_BYTES["background"] == 8 * 1024 * 1024                          # same limit as the welcome card
+    ok = upload("background", data=_png())
+    assert "background" in draft.staged and draft.design["custom_bg"] is True and ok.edits
+    assert not submitted and not fake.cards                                                  # nothing stored yet
+    run(vlc.save_draft(Inter(), draft))                                                      # no pass: pitch only
+    assert not submitted and not fake.cards
+    paid = with_db(monkeypatch, FakeDB(pass_days=5))
+    run(vlc.save_draft(Inter(), draft))
+    assert submitted == ["background"] and sent == ["background"] and json.loads(paid.cards["7"])["custom_bg"] is True
 
 
 def test_wired_in():
