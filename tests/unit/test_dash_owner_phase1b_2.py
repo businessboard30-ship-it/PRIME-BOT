@@ -111,17 +111,16 @@ def test_releasing_maintenance_needs_no_stepup(ctl):
     assert call("POST", token="owner", body={"action": "owner_switch", "switch": "maintenance", "engaged": False})[0] == 200
 
 
-def test_opening_build_bot_needs_stepup(ctl):
+def test_build_bot_can_no_longer_be_opened_to_everyone(ctl):
     body = {"action": "owner_switch", "switch": "build_bot_public", "engaged": True, "confirm": "OPEN"}
-    assert call("POST", token="owner", body=body)[0] == 403
     fresh(ctl)
-    assert call("POST", token="owner", body=body)[0] == 200
+    assert call("POST", token="owner", body=body)[0] >= 400          # the switch no longer exists
 
 
 def test_controls_lists_every_switch(ctl):
     _, p, _ = call("GET", {"action": "owner_controls"}, token="owner")
     keys = {s["key"] for s in p["switches"]}
-    assert {"maintenance", "ai", "build_bot_public"} <= keys
+    assert {"maintenance", "ai"} <= keys and "build_bot_public" not in keys and "clone_registration" not in keys
 
 
 # ---------- fail-closed audit ----------

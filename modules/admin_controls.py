@@ -40,9 +40,6 @@ FEATURES: Dict[str, Tuple[str, Set[str]]] = {
     # Website-only (no slash commands): turns off new friend requests, accepting, sending and the notice DMs.
     # Reading, blocking, reporting, unfriending and deleting stay available so nobody is trapped.
     "messaging": ("Member messaging (website)", set()),
-    # Also enforced inside clone_admin.register_clone_token, so the "Build Bot"
-    # button wizard is stopped too (it isn't a slash command).
-    "clone_registration": ("Clone registration", {"registerclone"}),
     # Website-only (no slash command): stops Developer-mode exports to the storage channel.
     "dev_export": ("Developer export", set()),
     # Website-only (no slash command): stops every Developer-mode scheduled job from running (creating/editing stays possible).
@@ -54,9 +51,7 @@ WEB_ONLY_FEATURES = frozenset({"messaging"})
 
 # Opt-in switches: engaged means ON (the opposite of FEATURES above, where engaged means turned off).
 # Default is not engaged, so the feature stays owner-only until turned on from the owner panel.
-OPT_IN: Dict[str, str] = {
-    "build_bot_public": "Build Bot button open to everyone",
-}
+OPT_IN: Dict[str, str] = {}      # (the "Build Bot open to everyone" opt-in was removed: bot tokens are owner-only, always)
 
 # Switch keys that guard website features only (no slash command to turn off).
 WEBSITE_ONLY = frozenset({"dev_export", "dev_jobs"})
@@ -115,24 +110,6 @@ async def user_blocked(user_id) -> bool:
         return int(user_id) in _snapshot["users"]
     except Exception:
         return False
-
-
-def build_bot_open_cached() -> bool:
-    """Sync read for rendering buttons: True only when the owner turned the Build Bot button on for
-    everyone. Fails closed (no snapshot yet or database down -> owner-only)."""
-    return bool(_snapshot["ok"] and "build_bot_public" in _snapshot["switches"])
-
-
-async def build_bot_open() -> bool:
-    """True when anyone may use the Build Bot button; otherwise only owners (DISCORD_CLONE_ADMIN_IDS)."""
-    try:
-        await _refresh()
-    except Exception:
-        return False
-    return build_bot_open_cached()
-
-
-MSG_BUILD_BOT_LOCKED = "\N{LOCK} Build Bot is limited to the bot owner for now. Ask in the support server if you'd like access."
 
 
 async def block_reason(interaction) -> Optional[str]:

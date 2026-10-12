@@ -117,7 +117,6 @@ COMMANDS: list[tuple[str, str, str, Optional[str]]] = [
     ("/alert", "/alert ...", "Crypto price alerts", None),
 
     # --- Bot clones (owning your own instance) ---
-    ("/registerclone", "/registerclone", "Run your own branded clone of this bot (DM only)", None),
     ("/myclones", "/myclones", "List the Discord bot clones you own", None),
     ("/removeclone", "/removeclone", "Deactivate one of your Discord bot clones", None),
     ("/clonemonetize", "/clonemonetize ...", "Monetization settings for a clone you own", None),

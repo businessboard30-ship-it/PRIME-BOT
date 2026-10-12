@@ -64,9 +64,13 @@ async def _owes_payment(owner_id: int) -> bool:
     return True
 
 
+NOT_AVAILABLE = "This isn't available."
+
+
 async def register_clone_token(interaction: discord.Interaction, token: str, owner_id: int,
                                 hosting_clone_id: Optional[int] = None) -> None:
-    """Shared by /registerclone and the "Build Bot" button wizard
+    """OWNER ONLY (DISCORD_CLONE_ADMIN_IDS). No public command or button reaches this any more. It used to be
+    shared by /registerclone and the "Build Bot" button wizard
     (discord_bot/cogs/_views_join_dm.py's modal) — the only place token
     validation + payment-gating + clone creation happens, so the two entry
     points can never drift apart. Caller must already have called
@@ -91,19 +95,12 @@ async def register_clone_token(interaction: discord.Interaction, token: str, own
     any extra command or know their old clone_id — their economy/
     leveling/referral/premium history carries straight over. No payment
     gate on this path either, same reasoning as relink_clone_token."""
-    # Owner-panel kill switch ("Clone registration"). Checked here, not just on
-    # /registerclone, so the Build Bot button wizard is stopped as well. Owners
-    # are exempt; a failed lookup fails open (current_switches returns what it
-    # last knew, or nothing). A payment already in flight still completes —
-    # that path goes through payments_manual, not this function.
+    # OWNER ONLY, no switch, no setting: a bot token is never taken from anyone but the bot owner(s)
+    # (DISCORD_CLONE_ADMIN_IDS). There is no slash command or button that reaches this for other users, and if
+    # a caller ever did, the token is refused here BEFORE it is read, validated, logged or stored.
     if not _is_clone_admin(owner_id):
-        from modules import admin_controls
-        if "clone_registration" in await admin_controls.current_switches():
-            await interaction.followup.send(
-                admin_controls.MSG_FEATURE.format(label=admin_controls.FEATURES["clone_registration"][0]),
-                ephemeral=True,
-            )
-            return
+        await interaction.followup.send(NOT_AVAILABLE, ephemeral=True)
+        return
 
     existing = await db.get_discord_clones_by_owner(owner_id)
     if existing:
@@ -164,7 +161,7 @@ async def register_clone_token(interaction: discord.Interaction, token: str, own
 
 
 async def relink_clone_token(interaction: discord.Interaction, clone_id: int, token: str, owner_id: int) -> None:
-    """Shared by /relinkclone — re-points an EXISTING clone row at a new
+    """OWNER ONLY. Used to be shared by /relinkclone — re-points an EXISTING clone row at a new
     bot token/application instead of registering a new clone. Use this
     (not /registerclone) when handing an owner a fresh bot link so their
     economy/leveling/referral/premium history — all keyed off clone_id,
@@ -172,6 +169,9 @@ async def relink_clone_token(interaction: discord.Interaction, clone_id: int, to
     No payment gate here: relinking isn't a new purchase, it's swapping
     the key on something already paid for. Caller must already have
     called interaction.response.defer(ephemeral=True, thinking=True)."""
+    if not _is_clone_admin(owner_id):               # owner only; refused before the token is touched
+        await interaction.followup.send(NOT_AVAILABLE, ephemeral=True)
+        return
     result = await validate_bot_token(token)
     if not result["ok"]:
         await interaction.followup.send(f"❌ Couldn't validate that token: {result['error']}", ephemeral=True)
@@ -195,8 +195,7 @@ async def relink_clone_token(interaction: discord.Interaction, clone_id: int, to
     )
     if not ok:
         await interaction.followup.send(
-            f"❌ You don't own a clone with id `#{clone_id}` — check `/myclones` for your clone id, "
-            f"or use `/registerclone` if you want a brand new clone instead.",
+            f"❌ You don't own a clone with id `#{clone_id}` — check `/myclones` for your clone id.",
             ephemeral=True,
         )
         return
@@ -261,55 +260,6 @@ class CloneAdminCog(commands.Cog):
         mount_admin_command(m, self.broadcaststatus, name="status", subgroup="broadcast",
                             description="[Owner] Check whether an /admin broadcast send actually went out")
 
-    # ── /registerclone ───────────────────────────────────────────────────
-    @app_commands.command(
-        name="registerclone",
-        description="Register your own Discord bot token to run it as a clone of this bot",
-    )
-    @app_commands.describe(token="Your bot's token, from the Discord Developer Portal (Bot tab)")
-    async def registerclone(self, interaction: discord.Interaction, token: str):
-        # Force DM-only so a pasted token is never visible in a channel's
-        # history (or to anyone with message-history access) even for a
-        # split second — same reasoning as Telegram's clone flow keeping
-        # token entry in a private chat. The "Build Bot" wizard's modal
-        # doesn't need this (see register_clone_token's docstring), so
-        # this restriction is specific to the slash command's typed
-        # argument.
-        if interaction.guild_id is not None:
-            await interaction.response.send_message(
-                "For your token's safety, please send me this command in a DM instead of a server channel.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        hosting_clone_id = getattr(interaction.client, "clone_id", None)
-        await register_clone_token(
-            interaction, token, owner_id=interaction.user.id, hosting_clone_id=hosting_clone_id,
-        )
-
-    # ── /relinkclone ─────────────────────────────────────────────────────
-    @app_commands.command(
-        name="relinkclone",
-        description="Move one of your existing clones onto a new bot token, keeping all its data",
-    )
-    @app_commands.describe(
-        clone_id="The id shown by /myclones for the clone you want to keep",
-        token="The NEW bot's token, from the Discord Developer Portal (Bot tab)",
-    )
-    async def relinkclone(self, interaction: discord.Interaction, clone_id: int, token: str):
-        # Same DM-only reasoning as /registerclone — a pasted token should
-        # never touch a server channel's history.
-        if interaction.guild_id is not None:
-            await interaction.response.send_message(
-                "For your token's safety, please send me this command in a DM instead of a server channel.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        await relink_clone_token(interaction, clone_id=clone_id, token=token, owner_id=interaction.user.id)
-
     # ── /myclones ─────────────────────────────────────────────────────────
     @app_commands.command(name="myclones", description="List the Discord bot clones you own")
     async def myclones(self, interaction: discord.Interaction):
@@ -317,7 +267,7 @@ class CloneAdminCog(commands.Cog):
         clones = await db.get_discord_clones_by_owner(interaction.user.id)
         if not clones:
             await interaction.followup.send(
-                "You don't have any clones yet — DM me `/registerclone` with a bot token to create one.",
+                "You don't have any clones.",
                 ephemeral=True,
             )
             return
@@ -542,7 +492,7 @@ class CloneAdminCog(commands.Cog):
 
         if not owned:
             await interaction.followup.send(
-                "You don't own any clones yet — DM me `/registerclone` with a bot token first.", ephemeral=True
+                "You don't own any clones.", ephemeral=True
             )
         else:
             await interaction.followup.send(
