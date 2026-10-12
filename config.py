@@ -440,6 +440,7 @@ XP_BOOST_DURATION_DAYS = 14
 # (XP_BOOST_MULTIPLIER x for XP_BOOST_DURATION_DAYS days, in the server it was bought from).
 LEVEL_PASS_FEE_USD = 1.99
 LEVEL_PASS_CARD_DAYS = 31
+LEVEL_CARD_TRIAL_DAYS = 5          # free trial of the custom level-up card, once per member (like the welcome Customize Card trial)
 
 # Top.gg vote boost. Every clone shares ONE Top.gg listing (the main bot's), so
 # a vote boosts the voter in every server. Deliberately weaker/shorter than the

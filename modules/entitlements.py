@@ -9,7 +9,8 @@ Access rules (the browser never decides these):
   * cancelled (cancel at period end) -> access until expires_at, then none.
   * past_due                      -> access for PAST_DUE_GRACE after expires_at (failed renewal), then none.
   * expired / unknown / no row    -> no access.
-Only the payment webhook may write user_entitlements (database.entitlement_upsert).
+Only the payment webhook may write user_entitlements (database.entitlement_upsert), plus the one-time free card trial
+(database.entitlement_start_trial: insert-only, never overwrites a row).
 """
 from datetime import datetime, timedelta, timezone
 
@@ -50,6 +51,21 @@ def effective(row: dict, now=None) -> dict:
 
 def has_access(rows, products, now=None) -> bool:
     return any(r.get("product") in products and effective(r, now)["access"] for r in rows or [])
+
+
+TRIAL_SOURCE = "trial"
+
+
+def trial_available(rows) -> bool:
+    """A member can start the free card trial only if they have never had a card_plan row (trial, pass or plan).
+    A later purchase overwrites `source`, so 'any card_plan row' is the whole rule: no separate flag is needed."""
+    return not any(r.get("product") == "card_plan" for r in rows or [])
+
+
+def on_trial(rows, now=None) -> bool:
+    """True while the member's card_plan access comes from the free trial."""
+    return any(r.get("product") == "card_plan" and r.get("source") == TRIAL_SOURCE and effective(r, now)["access"]
+               for r in rows or [])
 
 
 def latest_expiry(rows, products):

@@ -56,6 +56,15 @@ async def load_state(uid: int):
     return has_pass, design, assets, expires
 
 
+async def trial_state(uid: int) -> tuple:
+    """-> (can start the free trial, is on the trial now). Read fresh; any failure means no trial offer."""
+    try:
+        rows = await db.entitlements_list(str(uid))
+        return ent.trial_available(rows), ent.on_trial(rows)
+    except Exception:
+        return False, False
+
+
 def _approved(assets: dict, kind: str):
     a = assets.get(kind)
     return bytes(a["data"]) if a and a.get("status") == "approved" else None
@@ -83,6 +92,8 @@ class Draft:
     use_real: bool = False
     dirty: bool = False
     guild_id: Optional[int] = None
+    trial_available: bool = False                   # never had a card_plan row: Save offers the free trial
+    on_trial: bool = False                          # the current access is the free trial
 
     def asset(self, kind: str):
         if kind in self.staged:
@@ -97,7 +108,9 @@ class Draft:
 async def draft_for(uid: int, guild_id=None) -> Draft:
     has_pass, design, assets, expires = await load_state(uid)
     saved = {k: _approved(assets, k) for k in card_assets.KINDS if _approved(assets, k)}
-    return Draft(design=dict(design), has_pass=has_pass, expires=expires, saved=saved, guild_id=guild_id)
+    trial_ok, on_trial = await trial_state(uid)
+    return Draft(design=dict(design), has_pass=has_pass, expires=expires, saved=saved, guild_id=guild_id,
+                 trial_available=trial_ok and not has_pass, on_trial=on_trial)
 
 
 async def render_preview(user, draft: Draft) -> discord.File:
@@ -135,8 +148,12 @@ def build_embed(draft: Draft, notice: str = "") -> discord.Embed:
     e = discord.Embed(title="🎨 Your level-up card", color=discord.Color.from_str(design.get("accent", "#57F287")))
     bg = lcd.BACKGROUNDS.get(design.get("background"), ("", "", "Slate"))[2]
     if draft.has_pass:
-        until = f"Level Pass active until <t:{int(draft.expires.timestamp())}:D>" if draft.expires else "Level Pass active"
+        name = "Free trial" if draft.on_trial else "Level Pass"
+        until = f"{name} active until <t:{int(draft.expires.timestamp())}:D>" if draft.expires else f"{name} active"
         status = f"🎫 {until}. Press **Save** to keep your changes." if draft.dirty else f"🎫 {until}. Everything is saved."
+    elif draft.trial_available:
+        status = (f"👀 **Preview mode.** Edit anything you like, then press **Save** to start your "
+                  f"**free {app_config.LEVEL_CARD_TRIAL_DAYS}-day trial** (no payment).")
     else:
         status = (f"👀 **Preview mode.** Edit anything you like. Saving needs the Level Pass "
                   f"(${app_config.LEVEL_PASS_FEE_USD:g}).")
@@ -182,6 +199,58 @@ async def open_card_wizard(interaction: discord.Interaction) -> None:
         await interaction.followup.send("The card designer is temporarily unavailable.", ephemeral=True)
 
 
+def trial_embed() -> discord.Embed:
+    return discord.Embed(
+        title=f"🎁 Free {app_config.LEVEL_CARD_TRIAL_DAYS}-day trial",
+        description=(
+            f"Try your own level-up card **free for {app_config.LEVEL_CARD_TRIAL_DAYS} days**, no payment: colours, font, "
+            "shape, bio, your own background and logo. Your design is saved right now and shows on level-ups, /rank and "
+            "My Rank.\n\nOne trial per member. When it ends your design is kept, and comes back with the "
+            f"**Level Pass** (${app_config.LEVEL_PASS_FEE_USD:g}, one payment)."),
+        color=discord.Color.green())
+
+
+class TrialView(discord.ui.View):
+    """Shown by Save when the member has never had the card plan. Starting the trial saves the draft straight away."""
+
+    def __init__(self, draft: Draft, target: discord.Interaction):
+        super().__init__(timeout=300)
+        self.draft, self.target = draft, target
+        go = discord.ui.Button(label=f"Start free {app_config.LEVEL_CARD_TRIAL_DAYS}-day trial", emoji="🎁",
+                               style=discord.ButtonStyle.success)
+        go.callback = self._start
+        self.add_item(go)
+        buy = discord.ui.Button(label=f"Get the Level Pass — ${app_config.LEVEL_PASS_FEE_USD:g}", emoji="🎫",
+                                style=discord.ButtonStyle.secondary)
+        buy.callback = self._buy
+        self.add_item(buy)
+
+    async def _start(self, interaction: discord.Interaction):
+        try:
+            started = await db.entitlement_start_trial(str(interaction.user.id), app_config.LEVEL_CARD_TRIAL_DAYS)
+        except Exception:
+            logger.exception("[level-card] couldn't start the trial")
+            await interaction.response.send_message("Couldn't start the trial. Try again.", ephemeral=True)
+            return
+        if not started:
+            await interaction.response.edit_message(content="You've already used your free trial.", embed=None, view=None)
+            await _offer_pass(interaction, self.draft, self.target, allow_trial=False)
+            return
+        logger.info("[level-card] free trial started for user %s", interaction.user.id)
+        await interaction.response.edit_message(
+            content=f"🎁 Your free {app_config.LEVEL_CARD_TRIAL_DAYS}-day trial has started. Saving your card…",
+            embed=None, view=None)
+        try:
+            await save_draft(interaction, self.draft, target=self.target)
+        except Exception:
+            logger.exception("[level-card] saved nothing after starting the trial")
+
+    async def _buy(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_leveling_boost import _start_boost_checkout
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await _start_boost_checkout(interaction, "level_pass", interaction.guild_id)
+
+
 class PitchView(discord.ui.View):
     def __init__(self, guild_id):
         super().__init__(timeout=300)
@@ -197,8 +266,16 @@ class PitchView(discord.ui.View):
         await _start_boost_checkout(interaction, "level_pass", self.guild_id)
 
 
-async def _offer_pass(interaction: discord.Interaction) -> None:
-    """Save was pressed without a Level Pass: show the offer (private). The draft stays exactly as it is."""
+async def _offer_pass(interaction: discord.Interaction, draft: Optional[Draft] = None,
+                      target: Optional[discord.Interaction] = None, allow_trial: bool = True) -> None:
+    """Save was pressed without a Level Pass: offer the free trial when the member has never had the plan, otherwise
+    the pass (private). The draft stays exactly as it is."""
+    if allow_trial and draft is not None:
+        trial_ok, _on = await trial_state(interaction.user.id)
+        if trial_ok:
+            draft.trial_available = True
+            await interaction.followup.send(embed=trial_embed(), view=TrialView(draft, target or interaction), ephemeral=True)
+            return
     from discord_bot.cogs._views_leveling_boost import pass_offered
     if await pass_offered(getattr(interaction.client, "clone_id", None)):
         await interaction.followup.send(embed=pitch_embed(), view=PitchView(interaction.guild_id), ephemeral=True)
@@ -234,14 +311,18 @@ async def edit_draft(interaction: discord.Interaction, draft: Draft, **changes) 
             pass
 
 
-async def save_draft(interaction: discord.Interaction, draft: Draft) -> None:
-    """Store the draft. The Level Pass is re-checked on the server right here. Never raises."""
+async def save_draft(interaction: discord.Interaction, draft: Draft, target: Optional[discord.Interaction] = None) -> None:
+    """Store the draft. The Level Pass (or the free trial) is re-checked on the server right here. Never raises.
+    `target` is the interaction whose original response IS the designer message: set when the save is continued from
+    the trial button (the Save press already deferred it), so the designer is redrawn instead of the trial message."""
     try:
-        await interaction.response.defer()
+        if target is None:
+            await interaction.response.defer()
+            target = interaction
         has_pass, _stored, _assets, expires = await load_state(interaction.user.id)
         if not has_pass:
             draft.has_pass = False
-            await _offer_pass(interaction)
+            await _offer_pass(interaction, draft, target)
             return
         draft.has_pass, draft.expires = True, expires
         uid = str(interaction.user.id)
@@ -271,7 +352,7 @@ async def save_draft(interaction: discord.Interaction, draft: Draft) -> None:
         await db.user_card_set(uid, json.dumps(new, separators=(",", ":")))
         fresh = await draft_for(interaction.user.id, interaction.guild_id)
         fresh.use_real, fresh.real = draft.use_real, draft.real
-        await rerender(interaction, fresh, "✅ Saved. It shows on your next level-up, on /rank and on My Rank."
+        await rerender(target, fresh, "✅ Saved. It shows on your next level-up, on /rank and on My Rank."
                        + ("\n" + "\n".join(problems) if problems else ""))
     except Exception:
         logger.exception("[level-card] couldn't save the design")
@@ -339,7 +420,13 @@ class CardWizardView(discord.ui.View):
         add("Reset", "↩️", self._reset, 3)
         add("Share", "📣", self._share, 3)
         # Save, alone
-        save = discord.ui.Button(label="Save" if draft.has_pass else "Save (Level Pass)", emoji="💾" if draft.has_pass else "🔒",
+        if draft.has_pass:
+            label, emoji = "Save", "💾"
+        elif draft.trial_available:
+            label, emoji = "Save (free trial)", "🎁"
+        else:
+            label, emoji = "Save (Level Pass)", "🔒"
+        save = discord.ui.Button(label=label, emoji=emoji,
                                  style=discord.ButtonStyle.success, row=4)
         save.callback = self._save
         self.add_item(save)

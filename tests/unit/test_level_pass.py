@@ -53,6 +53,19 @@ class FakeDB:
     async def entitlements_list(self, uid):
         return list(self.ent.values())
 
+    async def entitlement_start_trial(self, uid, days):
+        if "card_plan" in self.ent:                                     # same rule as the SQL: insert-only, never overwrite
+            return False
+        self.ent["card_plan"] = {"product": "card_plan", "status": "active", "source": "trial",
+                                 "expires_at": datetime.now(timezone.utc) + timedelta(days=days), "cancel_at_period_end": False}
+        return True
+
+    def used_up(self):
+        """A member who already had the plan and whose time ran out: no trial offer, the pass offer instead."""
+        self.ent["card_plan"] = {"product": "card_plan", "status": "expired", "source": "t",
+                                 "expires_at": datetime.now(timezone.utc) - timedelta(days=3), "cancel_at_period_end": False}
+        return self
+
     async def activate_xp_boost(self, guild_id, user_id, mult, days, clone_id=None):
         if self.boost_fail:
             raise RuntimeError("boom")
@@ -185,7 +198,7 @@ def _offered(monkeypatch):
 
 
 def test_edits_are_free_and_saving_needs_the_pass(monkeypatch):
-    nopass = with_db(monkeypatch, FakeDB())
+    nopass = with_db(monkeypatch, FakeDB().used_up())
     _offered(monkeypatch)
     draft = run(vlc.draft_for(7, 1))
     i = Inter()
@@ -266,6 +279,7 @@ def test_an_upload_is_only_staged_until_the_pass_holder_saves(monkeypatch):
     ok = upload("background", data=_png())
     assert "background" in draft.staged and draft.design["custom_bg"] is True and ok.edits
     assert not submitted and not fake.cards                                                  # nothing stored yet
+    fake.used_up()
     run(vlc.save_draft(Inter(), draft))                                                      # no pass: pitch only
     assert not submitted and not fake.cards
     paid = with_db(monkeypatch, FakeDB(pass_days=5))
