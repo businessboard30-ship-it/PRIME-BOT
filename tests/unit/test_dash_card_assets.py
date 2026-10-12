@@ -29,9 +29,9 @@ def b64(raw):
 
 
 # ---------- pure pipeline ----------
-def test_background_is_resized_and_reencoded_to_png():
-    png, err = ca.process("background", img_bytes((1800, 600), fmt="JPEG"))
-    assert err is None and Image.open(io.BytesIO(png)).size == (1800, 600) and Image.open(io.BytesIO(png)).format == "PNG"
+def test_background_keeps_its_size_and_format_is_reencoded():
+    jpg, err = ca.process("background", img_bytes((1800, 600), fmt="JPEG"))
+    assert err is None and Image.open(io.BytesIO(jpg)).size == (1800, 600) and Image.open(io.BytesIO(jpg)).format == "JPEG"
     small, err = ca.process("background", img_bytes((900, 300)))
     assert err is None and Image.open(io.BytesIO(small)).size == (900, 300)
 
@@ -41,12 +41,13 @@ def test_non_images_are_rejected(raw):
     assert ca.process("background", raw)[0] is None
 
 
-def test_any_shape_is_cropped_big_images_make_a_bigger_card_and_limits_hold():
-    sq, err = ca.process("background", img_bytes((900, 900)))                    # cropped to 3:1, not rejected
-    assert err is None and Image.open(io.BytesIO(sq)).size == (900, 300)
-    huge, err = ca.process("background", img_bytes((4000, 1000)))                # capped at 2x
-    assert err is None and Image.open(io.BytesIO(huge)).size == (1800, 600)
+def test_any_shape_keeps_its_own_size_nothing_cropped_or_shrunk_and_limits_hold():
+    for size in ((900, 900), (4000, 1000), (600, 1800), (2400, 300), (5000, 4000)):    # square, wide, tall, strip, big
+        out, err = ca.process("background", img_bytes(size))
+        assert err is None and Image.open(io.BytesIO(out)).size == size, size
     assert ca.process("background", img_bytes((300, 100)))[0] is None            # too small
+    assert ca.process("background", img_bytes((400, 400)))[0] is None            # under the 450x150 floor
+    assert ca.process("background", img_bytes((10_001, 200)))[0] is None         # longest side cap
     assert ca.process("background", b"0" * (8 * 1024 * 1024 + 1))[0] is None    # over the 8 MB cap (same as the welcome card)
     assert ca.process("logo", img_bytes((32, 32)))[0] is None
     assert ca.process("nope", img_bytes())[0] is None
@@ -324,3 +325,12 @@ def test_editor_front_end_has_no_innerhtml():
     js = (Path(__file__).resolve().parents[2] / "dashboard/assets/dash.js").read_text()
     seg = js[js.index("function renderCardEditor"):js.index("function renderMe")]
     assert "innerHTML" not in seg
+
+
+def test_stored_size_is_capped_by_switching_to_jpeg_never_by_resizing():
+    import os
+    noisy = Image.frombytes("RGB", (1500, 1000), os.urandom(1500 * 1000 * 3))        # incompressible: a PNG is ~4.5 MB
+    out, err = ca._encode_background(noisy, prefer_jpeg=False, cap=2_000_000)
+    assert err is None and len(out) <= 2_000_000 and Image.open(io.BytesIO(out)).format == "JPEG"
+    assert Image.open(io.BytesIO(out)).size == (1500, 1000)
+    assert ca._encode_background(noisy, prefer_jpeg=False, cap=1000)[0] is None

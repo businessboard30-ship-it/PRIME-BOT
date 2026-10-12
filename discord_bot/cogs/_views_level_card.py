@@ -104,9 +104,11 @@ async def render_preview(user, draft: Draft) -> discord.File:
     design = draft.design
     avatar = await _avatar_bytes(user, design.get("accent", "#57F287"))
     lvl, cur, need = draft.stats()
-    png = await asyncio.to_thread(
-        lcd.render_custom_level_card, avatar, getattr(user, "display_name", "You"), lvl, cur, need, design,
-        draft.asset("background"), draft.asset("logo"))
+    # The preview is a smaller copy (about 1200 px max) of the same card, so big backgrounds stay quick to edit.
+    # Full size is only drawn for level-up, /rank, My Rank and Share.
+    png = await lcd.render_async(
+        avatar, getattr(user, "display_name", "You"), lvl, cur, need, design,
+        draft.asset("background"), draft.asset("logo"), send=False, fit_box=lcd.PREVIEW_BOX)
     return discord.File(io.BytesIO(png), filename="card.png")
 
 
@@ -121,6 +123,11 @@ def _upload_line(draft: Draft, label: str, kind: str) -> str:
     if kind in draft.staged:
         return f"{label}: 🆕 picked, not saved yet"
     return f"{label}: {'✅ yours' if draft.asset(kind) else 'none'}"
+
+
+def _hidden_line(design: dict) -> str:
+    hidden = [lcd.SHOW_LABELS[k].split(" (")[0] for k in lcd.SHOW_KEYS if not design.get(k, True)]
+    return f"Hidden: {', '.join(hidden)}\n" if hidden else ""
 
 
 def build_embed(draft: Draft, notice: str = "") -> discord.Embed:
@@ -138,12 +145,13 @@ def build_embed(draft: Draft, notice: str = "") -> discord.Embed:
         f"Background **{bg}** · font **{lcd.FONT_LABELS.get(design.get('font'), '')}** · "
         f"shape **{lcd.SHAPES.get(design.get('shape'), '')}** · accent **{design.get('accent')}**\n"
         f"Bio: {design.get('bio') or '—'}\n"
+        f"{_hidden_line(design)}"
         f"{_upload_line(draft, 'Background image', 'background')} · {_upload_line(draft, 'Logo', 'logo')}"
         + (f"\n\n{notice}" if notice else ""))
     e.set_image(url="attachment://card.png")
     shown = "your real level" if (draft.use_real and draft.real) else "a sample level"
-    e.set_footer(text=f"Preview with {shown}. Images up to {card_assets.MAX_BYTES['background'] // (1024 * 1024)} MB; "
-                      "a big background makes a bigger card.")
+    e.set_footer(text=f"Preview with {shown}. Images up to {card_assets.MAX_BYTES['background'] // (1024 * 1024)} MB. "
+                      "Your background image sets the card's size and shape.")
     return e
 
 
@@ -292,32 +300,49 @@ def random_design(rng=random) -> dict:
             "shape": rng.choice(list(lcd.SHAPES)), "accent": "#%02X%02X%02X" % (round(r * 255), round(g * 255), round(b * 255))}
 
 
+SHAPE_SHORT = {"circle": "Circle", "rounded": "Rounded", "square": "Square"}
+
+
+def _next_key(options, current):
+    keys = list(options)
+    return keys[(keys.index(current) + 1) % len(keys)] if current in keys else keys[0]
+
+
 class CardWizardView(discord.ui.View):
+    """Rows: 0 background select · 1 Look · 2 Images and text · 3 Preview · 4 Save (alone)."""
+
     def __init__(self, owner_id: int, draft: Draft):
         super().__init__(timeout=900)
         self.owner_id, self.draft = owner_id, draft
+        d = draft.design
         self.add_item(_Pick(draft, "background", "Background", {k: v[2] for k, v in lcd.BACKGROUNDS.items()}, 0))
-        self.add_item(_Pick(draft, "font", "Font", lcd.FONT_LABELS, 1))
-        self.add_item(_Pick(draft, "shape", "Avatar shape", lcd.SHAPES, 2))
-        for label, emoji, cb in (("Accent colour", "🎨", self._accent), ("Bio", "✏️", self._bio),
-                                 ("Background image", "🖼️", self._bg), ("Logo", "🏷️", self._logo),
-                                 ("Remove uploads", "🗑️", self._remove)):
-            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=3)
+
+        def add(label, emoji, cb, row, disabled=False):
+            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=row, disabled=disabled)
             b.callback = cb
             self.add_item(b)
+
+        # Look
+        add("Accent colour", "🎨", self._accent, 1)
+        add(f"Font: {lcd.FONT_LABELS.get(d.get('font'), '')}", "🔤", self._cycle_font, 1)
+        add(f"Shape: {SHAPE_SHORT.get(d.get('shape'), '')}", "🔷", self._cycle_shape, 1)
+        add("Show on card", "👁️", self._show_menu, 1)
+        # Images and text
+        add("Background image", "🖼️", self._bg, 2)
+        add("Logo", "🏷️", self._logo, 2)
+        add("Bio", "✏️", self._bio, 2)
+        add("Remove uploads", "🗑️", self._remove, 2)
+        # Preview
+        add("My real level" if not draft.use_real else "Sample level", "📈", self._toggle_real, 3,
+            disabled=draft.guild_id is None)
+        add("Randomize", "🎲", self._randomize, 3)
+        add("Reset", "↩️", self._reset, 3)
+        add("Share", "📣", self._share, 3)
+        # Save, alone
         save = discord.ui.Button(label="Save" if draft.has_pass else "Save (Level Pass)", emoji="💾" if draft.has_pass else "🔒",
-                                 style=discord.ButtonStyle.success if draft.dirty or not draft.has_pass else discord.ButtonStyle.secondary,
-                                 row=4)
+                                 style=discord.ButtonStyle.success, row=4)
         save.callback = self._save
         self.add_item(save)
-        real = discord.ui.Button(label="My real level" if not draft.use_real else "Sample level", emoji="📈",
-                                 style=discord.ButtonStyle.secondary, row=4, disabled=draft.guild_id is None)
-        real.callback = self._toggle_real
-        self.add_item(real)
-        for label, emoji, cb in (("Randomize", "🎲", self._randomize), ("Reset", "↩️", self._reset), ("Share", "📣", self._share)):
-            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=4)
-            b.callback = cb
-            self.add_item(b)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -330,6 +355,16 @@ class CardWizardView(discord.ui.View):
 
     async def _bio(self, interaction: discord.Interaction):
         await interaction.response.send_modal(BioModal(self.draft))
+
+    async def _cycle_font(self, interaction: discord.Interaction):
+        await edit_draft(interaction, self.draft, font=_next_key(lcd.FONTS, self.draft.design.get("font")))
+
+    async def _cycle_shape(self, interaction: discord.Interaction):
+        await edit_draft(interaction, self.draft, shape=_next_key(lcd.SHAPES, self.draft.design.get("shape")))
+
+    async def _show_menu(self, interaction: discord.Interaction):
+        """Swap this message's controls for the multi-select (a select needs a whole row, so it gets its own view)."""
+        await interaction.response.edit_message(view=ShowOnCardView(self.owner_id, self.draft))
 
     async def _bg(self, interaction: discord.Interaction):
         await interaction.response.send_modal(UploadModal("background", self.draft))
@@ -374,7 +409,12 @@ class CardWizardView(discord.ui.View):
             if interaction.channel is None or interaction.guild_id is None:
                 await interaction.followup.send("Sharing works inside a server channel.", ephemeral=True)
                 return
-            file = await render_preview(interaction.user, self.draft)
+            d = self.draft
+            lvl, cur, need = d.stats()
+            png = await lcd.render_async(await _avatar_bytes(interaction.user, d.design.get("accent", "#57F287")),
+                                         getattr(interaction.user, "display_name", "You"), lvl, cur, need, d.design,
+                                         d.asset("background"), d.asset("logo"))          # full size + 10 MB fallback
+            file = discord.File(io.BytesIO(png), filename=lcd.file_name("card", png))
             await interaction.followup.send(content=f"🎨 {interaction.user.mention}'s level card", file=file, ephemeral=False)
         except Exception:
             logger.exception("[level-card] couldn't share the card")
@@ -382,6 +422,52 @@ class CardWizardView(discord.ui.View):
                 await interaction.followup.send("Couldn't share that right now.", ephemeral=True)
             except Exception:
                 pass
+
+
+class ShowOnCardView(discord.ui.View):
+    """The "Show on card" menu: one multi-select of the parts of the card that can be hidden. The rest re-flows, so there are no
+    gaps. The avatar and the logo are always shown."""
+
+    def __init__(self, owner_id: int, draft: Draft):
+        super().__init__(timeout=900)
+        self.owner_id, self.draft = owner_id, draft
+        sel = discord.ui.Select(
+            placeholder="Show on card", min_values=0, max_values=len(lcd.SHOW_KEYS), row=0,
+            options=[discord.SelectOption(label=label, value=key, default=bool(draft.design.get(key, True)))
+                     for key, label in lcd.SHOW_LABELS.items()])
+        sel.callback = self._changed
+        self.add_item(sel)
+        done = discord.ui.Button(label="Done", emoji="✅", style=discord.ButtonStyle.success, row=1)
+        done.callback = self._done
+        self.add_item(done)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("This is someone else's card designer. Use /levelcard.", ephemeral=True)
+            return False
+        return True
+
+    async def _changed(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+            chosen = set(interaction.data.get("values") or [])
+            new, err = lcd.validate({**self.draft.design, **{k: (k in chosen) for k in lcd.SHOW_KEYS}})
+            if err:
+                await interaction.followup.send(err, ephemeral=True)
+                return
+            self.draft.design, self.draft.dirty = new, True
+            file = await render_preview(interaction.user, self.draft)
+            await interaction.edit_original_response(embed=build_embed(self.draft), attachments=[file],
+                                                     view=ShowOnCardView(self.owner_id, self.draft))
+        except Exception:
+            logger.exception("[level-card] couldn't update what the card shows")
+            try:
+                await interaction.followup.send("Couldn't update the preview. Try again.", ephemeral=True)
+            except Exception:
+                pass
+
+    async def _done(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(view=CardWizardView(self.owner_id, self.draft))
 
 
 class AccentModal(discord.ui.Modal, title="Accent colour"):
@@ -422,7 +508,7 @@ class UploadModal(discord.ui.Modal):
         self.kind, self.draft = kind, draft
         self.file = discord.ui.FileUpload(required=True, min_values=1, max_values=1)
         mb = card_assets.MAX_BYTES[kind] // (1024 * 1024)
-        hint = (f"Any size up to {mb} MB. Big images make a bigger card. Keep the middle calm, text goes there."
+        hint = (f"Up to {mb} MB, any shape. The card takes your image's size. Keep the middle calm, text goes there."
                 if kind == "background" else f"Up to {mb} MB. Shown on the right side of the card.")
         self.add_item(discord.ui.Label(text="PNG or JPEG", description=hint, component=self.file))
 
