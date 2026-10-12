@@ -347,7 +347,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.referrals")
         # botstore dropped: feature retired to free up global slash-command
         # slots. Re-add the line above (discord_bot.cogs.botstore) to restore.
-        await self.load_extension("discord_bot.cogs.bot_manager")
+        # bot_manager (/botmanager, stored pasted bot tokens) is no longer loaded: no command takes a token from users.
         await self.load_extension("discord_bot.cogs.submissions")
         await self.load_extension("discord_bot.cogs.media_connect")
         await self.load_extension("discord_bot.cogs.media_storage")
@@ -376,6 +376,9 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.admin_panel")
         await self.load_extension("discord_bot.cogs.lookup")
         await self.load_extension("discord_bot.cogs._cleanup_giftboost_mentions")
+        await self.load_extension("discord_bot.cogs.data_retention")
+        # Loaded last: if the 100-command cap is hit, only /mydata is skipped (it catches CommandLimitReached).
+        await self.load_extension("discord_bot.cogs.my_data")
 
         self.join_dm_reminder_loop.start()
         self.payment_reminder_loop.start()

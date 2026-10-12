@@ -102,3 +102,30 @@ def test_a_stale_build_bot_toggle_is_disabled_and_answers_politely():
     inter = SimpleNamespace(response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()))
     run(btn.callback(inter))
     assert "isn't available" in inter.followup.send.await_args.args[0]
+
+
+# ── nothing public mentions clones or taking bot tokens ──────────────────
+def test_bot_manager_is_not_loaded_and_no_command_takes_a_token():
+    bot_src = (ROOT / "discord_bot/bot.py").read_text(encoding="utf-8")
+    assert 'load_extension("discord_bot.cogs.bot_manager")' not in bot_src
+    for path in (ROOT / "discord_bot/cogs").glob("*.py"):
+        if path.name == "bot_manager.py":                           # kept in the repo, never loaded
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        assert not re.search(r"describe\([^)]*\btoken\s*=", text), f"{path.name}: a command asks for a token"
+
+
+def test_public_pages_do_not_mention_clones_or_bot_tokens():
+    pages = ["website/premium/index.html", "website/pricing/index.html", "website/docs/index.html",
+             "website/dashboard/index.html", "website/commands/index.html", "website/features/index.html",
+             "website/terms/index.html", "website/privacy/index.html", "redirector/terms/index.html",
+             "redirector/privacy/index.html", "api/legal_pages.py"]
+    for rel in pages:
+        low = (ROOT / rel).read_text(encoding="utf-8").lower()
+        assert "clone" not in low.replace("clone_", "").replace("_clone", "") or rel == "api/legal_pages.py", rel
+        assert "botmanager" not in low and "bot token" not in low, rel
+    legal = (ROOT / "api/legal_pages.py").read_text(encoding="utf-8")
+    body = legal[legal.index('"""', legal.index("TERMS_HTML")):] if "TERMS_HTML" in legal else legal
+    assert "Discord Clone" not in body and "bot-clone" not in body
+    manual = (ROOT / "app/manual/data.ts").read_text(encoding="utf-8")
+    assert "/botmanager" not in manual and "/registerclone" not in manual and "Owning Your Own Bot" not in manual

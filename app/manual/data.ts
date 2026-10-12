@@ -401,41 +401,6 @@ export const MANUAL_SECTIONS: Section[] = [
     ],
   },
   {
-    id: 'clones',
-    title: '9. Owning Your Own Bot (Clones)',
-    rows: [
-      { cmd: '/myclones', syntax: '/myclones', desc: 'Lists the Discord bot clones you own', perm: 'Anyone' },
-      { cmd: '/removeclone', syntax: '/removeclone clone_id:<id>', desc: 'Deactivates one of your clones (doesn\u2019t delete the underlying bot)', perm: 'Anyone' },
-    ],
-    subs: [
-      {
-        title: 'Clone Monetization \u2014 /clonemonetize',
-        rows: [
-          { cmd: '/clonemonetize status', syntax: '/clonemonetize status clone_id:<id>', desc: 'Checks monetization status for a clone you own', perm: 'Anyone' },
-          { cmd: '/clonemonetize activate', syntax: '/clonemonetize activate clone_id:<optional>', desc: 'Starts or renews monetization on a clone', perm: 'Anyone' },
-          { cmd: '/clonemonetize prices', syntax: '/clonemonetize prices clone_id:<id>', desc: 'Views the clone\u2019s current prices for paid features', perm: 'Anyone' },
-          { cmd: '/clonemonetize setprice', syntax: '/clonemonetize setprice clone_id:<id> feature:<> amount_ghs:<n>', desc: 'Sets a custom price for one of the clone\u2019s paid features', perm: 'Anyone' },
-          { cmd: '/clonemonetize payment', syntax: '/clonemonetize payment clone_id:<id>', desc: 'Checks where the clone\u2019s payments currently go', perm: 'Anyone' },
-          { cmd: '/clonemonetize setpayment', syntax: '/clonemonetize setpayment clone_id:<id> provider:<>', desc: 'Routes the clone\u2019s payments to your own Paystack/Stripe key, or back to the main bot\u2019s', perm: 'Anyone' },
-        ],
-      },
-      {
-        title: 'Managing Bots by Token \u2014 /botmanager',
-        rows: [
-          { cmd: '/botmanager add', syntax: '/botmanager add token:<token>', desc: 'Registers a bot you own by pasting its token', perm: 'Anyone' },
-          { cmd: '/botmanager list', syntax: '/botmanager list', desc: 'Lists your registered bots', perm: 'Anyone' },
-          { cmd: '/botmanager view', syntax: '/botmanager view bot_id:<id>', desc: 'Views details of one registered bot', perm: 'Anyone' },
-          { cmd: '/botmanager manage', syntax: '/botmanager manage', desc: 'Picks a registered bot from a dropdown and manages it', perm: 'Anyone' },
-          { cmd: '/botmanager setname', syntax: '/botmanager setname bot_id:<id> username:<2-32 chars>', desc: 'Changes the bot\u2019s Discord username', perm: 'Anyone' },
-          { cmd: '/botmanager setdescription', syntax: '/botmanager setdescription bot_id:<id> description:<up to 400 chars>', desc: 'Changes the bot\u2019s public description', perm: 'Anyone' },
-          { cmd: '/botmanager setcommands', syntax: '/botmanager setcommands bot_id:<id> ...', desc: 'Overwrites the bot\u2019s global slash commands', perm: 'Anyone' },
-          { cmd: '/botmanager remove', syntax: '/botmanager remove bot_id:<id>', desc: 'Unregisters a bot (doesn\u2019t stop the bot itself)', perm: 'Anyone' },
-        ],
-        footnote: 'All anyone can use, for bots they own.',
-      },
-    ],
-  },
-  {
     id: 'owner-only',
     title: '10. Owner-Only Commands (bot owner, not server admin)',
     intro: 'These only work for whoever owns the main PRIME-BOT deployment \u2014 not server administrators.',
