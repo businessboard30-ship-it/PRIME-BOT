@@ -96,13 +96,13 @@ def test_typical_page_fits_with_headroom(build, monkeypatch):
     assert _count(v) <= CEILING - 1
 
 
-def test_top_level_has_xp_options_clans_dashboard_and_no_wallet_select(build):
+def test_top_level_has_xp_wizard_my_card_dashboard_and_no_wallet_select(build):
     v = build("local")
     ids = [getattr(c, "custom_id", None) or getattr(c, "url", None) for c in v.walk_children()]
     ids = [i for i in ids if i]
     assert any(str(i).startswith("lvllb_xpopts:99:-") for i in ids)
-    assert any(str(i).startswith("lvllb_clans:99:-") for i in ids)
-    for old in ("levelboost_xp:", "lvllb_ping:", "buyboost_xp:"):
+    assert any(str(i).startswith("lvllb_card:99:-") for i in ids)            # My card is on the page now
+    for old in ("lvllb_clans:", "levelboost_xp:", "lvllb_ping:", "buyboost_xp:"):             # Clans moved into the wizard
         assert not any(str(i).startswith(old) for i in ids)
 
 
@@ -145,25 +145,21 @@ def test_old_custom_ids_still_registered():
     assert wallet.BuyBoostSelect in wallet.DYNAMIC_ITEMS
 
 
-def test_xp_options_menu_reuses_same_items_and_ids():
-    v = lb.build_xp_options_view(99, None)
-    kinds = [type(i) for i in v.children]
-    assert kinds == [boost.BoostXPButton, lb.LeaderboardPingButton, lb.LeaderboardCardButton, wallet.BuyBoostSelect]
-    assert [i.item.custom_id for i in v.children] == [
-        "levelboost_xp:99:-", "lvllb_ping:99:-", "lvllb_card:99:-", "buyboost_xp:99:-"]
-
-
-def test_xp_options_button_opens_ephemeral_menu():
-    sent = {}
-
-    async def send_message(content=None, **kw):
-        sent.update(kw, content=content)
-    inter = types.SimpleNamespace(response=types.SimpleNamespace(send_message=send_message))
+def test_xp_button_is_renamed_but_keeps_its_custom_id():
     btn = lb.LeaderboardXPOptionsButton(99, 5)
-    assert btn.item.custom_id == "lvllb_xpopts:99:5"
-    run(btn.callback(inter))
-    assert sent["ephemeral"] is True and len(sent["view"].children) == 4
-    assert [i.item.custom_id for i in sent["view"].children][0] == "levelboost_xp:99:5"
+    assert btn.item.label == "XP & Clans" and btn.item.custom_id == "lvllb_xpopts:99:5"
+
+
+def test_xp_button_opens_the_wizard(monkeypatch):
+    from discord_bot.cogs import _views_xp_wizard as wiz
+    opened = []
+
+    async def fake_open(interaction, guild_id, clone_id, tab="boost"):
+        opened.append((guild_id, clone_id, tab))
+    monkeypatch.setattr(wiz, "open_xp_wizard", fake_open)
+    run(lb.LeaderboardXPOptionsButton(99, 5).callback(object()))
+    run(lb.LeaderboardClansButton(99, 5).callback(object()))                    # an old message's Clans button
+    assert opened == [(99, 5, "boost"), (99, 5, "clans")]
 
 
 def test_xp_options_button_from_custom_id_roundtrip():
