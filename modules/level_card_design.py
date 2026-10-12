@@ -38,13 +38,18 @@ BACKGROUNDS = {
     "forest": ("#0b2a1c", "#1f5a3a", "Forest"),
     "royal": ("#1a1040", "#3d2a8f", "Royal"),
 }
+# Per-element switches (all on by default). The avatar and the logo are not switchable. Old saved designs have no
+# such keys, so they validate to "everything shown".
+SHOW_LABELS = {"show_title": "Heading (LEVEL UP! / RANK)", "show_name": "Name", "show_level": "Level line",
+               "show_bar": "XP bar", "show_xp": "XP numbers", "show_bio": "Bio"}
+SHOW_KEYS = tuple(SHOW_LABELS)
 DEFAULT_DESIGN = {"background": "slate", "accent": "#57F287", "font": "classic", "shape": "circle", "bio": "",
-                  "custom_bg": False, "logo": False}
+                  "custom_bg": False, "logo": False, **{k: True for k in SHOW_KEYS}}
 
 
 def options() -> dict:
     return {"backgrounds": {k: v[2] for k, v in BACKGROUNDS.items()}, "fonts": dict(FONT_LABELS),
-            "shapes": dict(SHAPES), "bio_max": BIO_MAX}
+            "shapes": dict(SHAPES), "bio_max": BIO_MAX, "show": dict(SHOW_LABELS)}
 
 
 def validate(raw) -> tuple:
@@ -58,7 +63,7 @@ def validate(raw) -> tuple:
             if not isinstance(v, str) or v not in allowed:
                 return None, f"Unknown {key}."
             d[key] = v
-    for key in ("custom_bg", "logo"):
+    for key in ("custom_bg", "logo") + SHOW_KEYS:
         if key in raw:
             if not isinstance(raw[key], bool):
                 return None, f"{key} must be true or false."
@@ -124,16 +129,40 @@ def placeholder_avatar(accent: str = "#57F287") -> bytes:
     return out.getvalue()
 
 
-def _darken_text_zone(bg: Image.Image, scale: float = 1.0) -> Image.Image:
+# ── layout ───────────────────────────────────────────────────────────────────
+# The card is as big as the uploaded background (no background: 900x300). Layout rules, one set for every shape:
+#   * S = min(W / 900, H / 300): the 900x300 reference layout is scaled by the smaller ratio, so it always fits.
+#   * That 900S x 300S "band" is centred on the image (horizontally on wide images, vertically on tall/square ones).
+#     Inside the band: avatar on the left, text block to its right, logo box on the right edge.
+#   * The text block is centred vertically on the image, and when elements are hidden the rest re-flows (no gaps).
+#   * The dark text panel sits behind the text zone, inside the band. The accent stripe runs the full height at x=0.
+REF_W, REF_H = lc.CARD_WIDTH, lc.CARD_HEIGHT
+# (switch key, slot height, gap after it) in reference pixels. Gap before the bar is a little larger.
+_SLOTS = (("show_title", 30, 8), ("show_name", 50, 8), ("show_level", 40, 12), ("show_bar", 26, 8),
+          ("show_xp", 20, 8), ("show_bio", 18, 0))
+PREVIEW_BOX = (1200, 1200)             # the designer preview and the website preview are drawn no bigger than this
+
+
+def layout_scale(w: int, h: int) -> float:
+    return min(w / REF_W, h / REF_H)
+
+
+def _band(w: int, h: int) -> tuple:
+    """-> (S, ox, oy): scale and the top-left of the 900Sx300S band."""
+    S = layout_scale(w, h)
+    return S, (w - REF_W * S) / 2, (h - REF_H * S) / 2
+
+
+def _darken_text_zone(bg: Image.Image, S: float, ox: float, oy: float) -> Image.Image:
     """Uploaded backgrounds get a dark panel behind the text so white text stays readable."""
     from PIL import ImageStat
-    x0, _y0, x1, _y1 = card_assets_zone()
-    x0, x1, h = round(x0 * scale), round(x1 * scale), bg.height
-    mean = ImageStat.Stat(bg.crop((x0, 0, x1, h)).convert("L")).mean[0]
+    zx0, _zy0, zx1, _zy1 = card_assets_zone()
+    x0, x1 = round(ox + zx0 * S), round(ox + zx1 * S)
+    y0, y1 = round(oy + 14 * S), round(oy + (REF_H - 14) * S)
+    mean = ImageStat.Stat(bg.crop((x0, y0, x1, y1)).convert("L")).mean[0]
     alpha = int(255 * min(0.85, 0.40 + max(0.0, mean - 90) / 255))
     layer = Image.new("RGBA", bg.size, (0, 0, 0, 0))
-    ImageDraw.Draw(layer).rounded_rectangle((x0, round(14 * scale), x1, h - round(14 * scale)), radius=round(18 * scale),
-                                            fill=(0, 0, 0, alpha))
+    ImageDraw.Draw(layer).rounded_rectangle((x0, y0, x1, y1), radius=round(18 * S), fill=(0, 0, 0, alpha))
     return Image.alpha_composite(bg.convert("RGBA"), layer).convert("RGB")
 
 
@@ -142,47 +171,71 @@ def card_assets_zone():
     return card_assets.TEXT_ZONE
 
 
-def card_scale(bg_png: Optional[bytes]) -> float:
-    """1.0 normally. A large uploaded background makes a larger card (up to 2x, 1800x600)."""
-    if not bg_png:
-        return 1.0
+def card_size(bg_bytes: Optional[bytes]) -> tuple:
+    """(width, height) of the card for this background: the image's own size, or 900x300 with none."""
+    if not bg_bytes:
+        return REF_W, REF_H
     try:
-        w = Image.open(io.BytesIO(bg_png)).size[0]
+        return Image.open(io.BytesIO(bg_bytes)).size
     except Exception:
-        return 1.0
-    return max(1.0, min(2.0, w / lc.CARD_WIDTH))
+        return REF_W, REF_H
+
+
+def _open_background(data: bytes, fit_box: Optional[tuple]) -> Image.Image:
+    """The uploaded background as RGB, downscaled to fit `fit_box` (previews only) without changing its shape.
+    A JPEG is decoded at reduced size straight away, so a big photo is cheap to preview."""
+    im = Image.open(io.BytesIO(data))
+    if fit_box and (im.width > fit_box[0] or im.height > fit_box[1]):
+        ratio = min(fit_box[0] / im.width, fit_box[1] / im.height)
+        size = (max(1, round(im.width * ratio)), max(1, round(im.height * ratio)))
+        if im.format == "JPEG":
+            im.draft("RGB", size)
+        return im.convert("RGB").resize(size, Image.LANCZOS)
+    return im.convert("RGB")
 
 
 def render_custom_level_card(avatar_bytes: bytes, username: str, new_level: int, cur_xp: int, need_xp: int,
                              design: dict, bg_png: Optional[bytes] = None, logo_png: Optional[bytes] = None,
-                             title: str = "LEVEL UP!", rank: Optional[int] = None) -> bytes:
-    """Draws the member's card. Everything is laid out at 900x300 and multiplied by `scale`, so a big uploaded
-    background gives a bigger, sharper card. `title`/`rank` let /rank and My Rank reuse the same card."""
+                             title: str = "LEVEL UP!", rank: Optional[int] = None,
+                             fit_box: Optional[tuple] = None) -> bytes:
+    """Draws the member's card as PNG bytes. The canvas is the uploaded background's size (any shape, 900x300 with no
+    background) and everything is laid out relative to it, see the layout rules above. `fit_box` (previews) draws a
+    smaller copy of the same card. `title`/`rank` let /rank and My Rank reuse the same card. Use render_for_send()
+    for anything that goes to Discord."""
     d, _ = validate(design or {})
     d = d or dict(DEFAULT_DESIGN)
     top, bottom, _label = BACKGROUNDS[d["background"]]
     use_bg = bg_png if (bg_png and d.get("custom_bg")) else None
-    S = card_scale(use_bg)
-    W, H = round(lc.CARD_WIDTH * S), round(lc.CARD_HEIGHT * S)
+    bg = None
+    if use_bg:
+        try:
+            bg = _open_background(use_bg, fit_box)
+        except Exception:
+            bg = None
+    if bg is not None:
+        W, H = bg.size
+        S, ox, oy = _band(W, H)
+        bg = _darken_text_zone(bg, S, ox, oy)
+    else:
+        W, H = REF_W, REF_H
+        S, ox, oy = 1.0, 0.0, 0.0
+        bg = _gradient(top, bottom, W, H)
 
     def k(v):
         return int(round(v * S))
 
-    bg = None
-    if use_bg:
-        try:
-            bg = _darken_text_zone(Image.open(io.BytesIO(use_bg)).convert("RGB").resize((W, H)), S)
-        except Exception:
-            bg = None
-    if bg is None:
-        bg = _gradient(top, bottom, W, H)
+    # logo: right edge of the band
+    logo_x0 = None
     if logo_png and d.get("logo"):
         try:
             from modules import card_assets
             lg = Image.open(io.BytesIO(logo_png)).convert("RGBA")
-            x0, y0, x1, y1 = (k(v) for v in card_assets.LOGO_BOX)
+            lx0, ly0, lx1, ly1 = card_assets.LOGO_BOX
+            x0, x1 = round(ox + lx0 * S), round(ox + lx1 * S)
+            y0, y1 = round(oy + ly0 * S), round(oy + ly1 * S)
             lg.thumbnail((x1 - x0, y1 - y0), Image.LANCZOS)
             bg.paste(lg, (x0 + (x1 - x0 - lg.width) // 2, y0 + (y1 - y0 - lg.height) // 2), lg)
+            logo_x0 = x0
         except Exception:
             pass
     draw = ImageDraw.Draw(bg)
@@ -194,34 +247,100 @@ def render_custom_level_card(avatar_bytes: bytes, username: str, new_level: int,
         av = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA").resize((size, size))
     except Exception:
         av = Image.new("RGBA", (size, size), accent)
-    ax, ay, ring = k(60), (H - size) // 2, k(6)
+    ax, ay, ring = round(ox) + k(60), (H - size) // 2, k(6)
     ring_img = Image.new("RGBA", (size + 2 * ring, size + 2 * ring), accent + (255,))
     bg.paste(ring_img, (ax - ring, ay - ring), _shape_mask(d["shape"], size + 2 * ring))
     bg.paste(av, (ax, ay), _shape_mask(d["shape"], size))
 
+    # text block: only the elements that are switched on (and have something to show), centred vertically
     tx = ax + size + k(50)
     head = (f"{title}  #{int(rank)}" if rank else title)
-    draw.text((tx, k(55)), head, font=_font(d["font"], k(26)), fill=accent)
     name = str(username or "")[:40]
-    if d["font"] != "classic" and name.isascii() and name.isprintable():
-        draw.text((tx, k(90)), name, font=_font(d["font"], k(44)), fill=(255, 255, 255))
-    else:
-        lc.draw_text_fallback(draw, (tx, k(90)), name, k(44), (255, 255, 255))
-    draw.text((tx, k(148)), f"Level {int(new_level)}", font=_font(d["font"], k(34)), fill=(255, 255, 255))
-
-    bx, by, bw, bh = tx, k(205), W - tx - k(60), k(26)
-    draw.rounded_rectangle((bx, by, bx + bw, by + bh), radius=bh // 2, fill=(60, 63, 68))
-    frac = max(0.0, min(1.0, cur_xp / need_xp)) if need_xp > 0 else 1.0
-    fw = max(bh, int(bw * frac)) if frac > 0 else 0
-    if fw:
-        draw.rounded_rectangle((bx, by, bx + fw, by + bh), radius=bh // 2, fill=accent)
-    draw.text((bx, by + bh + k(8)), f"{int(cur_xp)}/{int(need_xp)} XP", font=_font(d["font"], k(20)), fill=(200, 200, 200))
-    if d["bio"]:
-        lc.draw_text_fallback(draw, (bx, by + bh + k(40)), d["bio"], k(18), (225, 225, 225))
+    on = [(key, h, gap) for key, h, gap in _SLOTS
+          if d.get(key, True) and (key != "show_bio" or d["bio"])]
+    total = sum(h + gap for _k, h, gap in on) - (on[-1][2] if on else 0)
+    y = (H - k(total)) / 2
+    bar_right = (logo_x0 - k(20)) if logo_x0 is not None else (round(ox) + k(REF_W - 60))
+    font = d["font"]
+    for key, h, gap in on:
+        yy = int(round(y))
+        if key == "show_title":
+            draw.text((tx, yy), head, font=_font(font, k(26)), fill=accent)
+        elif key == "show_name":
+            if font != "classic" and name.isascii() and name.isprintable():
+                draw.text((tx, yy), name, font=_font(font, k(44)), fill=(255, 255, 255))
+            else:
+                lc.draw_text_fallback(draw, (tx, yy), name, k(44), (255, 255, 255))
+        elif key == "show_level":
+            draw.text((tx, yy), f"Level {int(new_level)}", font=_font(font, k(34)), fill=(255, 255, 255))
+        elif key == "show_bar":
+            bw, bh = max(k(40), bar_right - tx), k(h)
+            draw.rounded_rectangle((tx, yy, tx + bw, yy + bh), radius=bh // 2, fill=(60, 63, 68))
+            frac = max(0.0, min(1.0, cur_xp / need_xp)) if need_xp > 0 else 1.0
+            fw = max(bh, int(bw * frac)) if frac > 0 else 0
+            if fw:
+                draw.rounded_rectangle((tx, yy, tx + fw, yy + bh), radius=bh // 2, fill=accent)
+        elif key == "show_xp":
+            draw.text((tx, yy), f"{int(cur_xp)}/{int(need_xp)} XP", font=_font(font, k(20)), fill=(200, 200, 200))
+        elif key == "show_bio":
+            lc.draw_text_fallback(draw, (tx, yy), d["bio"], k(18), (225, 225, 225))
+        y += k(h + gap)
 
     out = io.BytesIO()
     bg.save(out, format="PNG")
     return out.getvalue()
+
+
+# ── sending ──────────────────────────────────────────────────────────────────
+DISCORD_MAX_BYTES = 9 * 1024 * 1024            # Discord's bot upload limit is about 10 MB; stay under it with margin
+
+
+def fit_for_discord(png: bytes, limit: int = DISCORD_MAX_BYTES) -> bytes:
+    """PNG bytes as they are when small enough; otherwise JPEG q92 of the same card; otherwise a smaller JPEG copy.
+    Only the COPY being sent is changed, never the stored background. Check file_ext() for the file name."""
+    if len(png) <= limit:
+        return png
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=92, optimize=True)
+    if buf.tell() <= limit:
+        return buf.getvalue()
+    scale = 1.0
+    for _ in range(6):
+        scale *= 0.8
+        small = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))), Image.LANCZOS)
+        buf = io.BytesIO()
+        small.save(buf, format="JPEG", quality=85, optimize=True)
+        if buf.tell() <= limit:
+            break
+    return buf.getvalue()
+
+
+def file_ext(data: bytes) -> str:
+    return "jpg" if data[:3] == b"\xff\xd8\xff" else "png"
+
+
+def file_name(base: str, data: bytes) -> str:
+    return f"{base}.{file_ext(data)}"
+
+
+def render_for_send(*args, **kwargs) -> bytes:
+    """render_custom_level_card + the Discord size fallback (a big PNG card becomes a JPEG copy). Synchronous."""
+    return fit_for_discord(render_custom_level_card(*args, **kwargs))
+
+
+# At most two cards are drawn at the same time: a big background is ~100 MB while it is decoded and drawn.
+_RENDER_SEM: Optional[asyncio.Semaphore] = None
+
+
+async def render_async(*args, send: bool = True, **kwargs) -> bytes:
+    """Draw a card off the event loop, two at a time. send=True also applies the Discord size fallback."""
+    global _RENDER_SEM
+    if _RENDER_SEM is None:
+        _RENDER_SEM = asyncio.Semaphore(2)
+    fn = render_for_send if send else render_custom_level_card
+    async with _RENDER_SEM:
+        return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 async def render_member_card(db, member, level: int, cur_xp: int, need_xp: int, rank: Optional[int] = None,
@@ -236,8 +355,8 @@ async def render_member_card(db, member, level: int, cur_xp: int, need_xp: int, 
             avatar = await member.display_avatar.replace(size=256, format="png").read()
         except Exception:
             avatar = placeholder_avatar(card[0].get("accent", "#57F287"))
-        return await asyncio.to_thread(render_custom_level_card, avatar, getattr(member, "display_name", ""), level,
-                                       cur_xp, need_xp, *card, title=title, rank=rank)
+        return await render_async(avatar, getattr(member, "display_name", ""), level, cur_xp, need_xp, *card,
+                                  title=title, rank=rank)
     except Exception:
         logger.warning("[level-card] couldn't draw the member's card", exc_info=True)
         return None
@@ -245,12 +364,16 @@ async def render_member_card(db, member, level: int, cur_xp: int, need_xp: int, 
 
 def preview_data_url(design: dict, bg_png: Optional[bytes] = None, logo_png: Optional[bytes] = None) -> str:
     png = render_custom_level_card(placeholder_avatar(design.get("accent", "#57F287")), "Your name", 7, 40, 100, design,
-                                   bg_png, logo_png)
+                                   bg_png, logo_png, fit_box=PREVIEW_BOX)
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
 async def preview_data_url_async(design: dict, bg_png: Optional[bytes] = None, logo_png: Optional[bytes] = None) -> str:
-    return await asyncio.to_thread(preview_data_url, design, bg_png, logo_png)
+    global _RENDER_SEM
+    if _RENDER_SEM is None:
+        _RENDER_SEM = asyncio.Semaphore(2)
+    async with _RENDER_SEM:
+        return await asyncio.to_thread(preview_data_url, design, bg_png, logo_png)
 
 
 async def design_for_user(db, uid, now=None) -> Optional[dict]:

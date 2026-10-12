@@ -5,8 +5,10 @@ Pipeline: size cap -> decode with PIL (PNG/JPEG only, pixel cap, no animation) -
 (strips metadata and anything appended to the file) -> hash block-list -> OpenAI free image moderation -> approved/pending/rejected.
 Fails safe: any moderation error leaves the asset 'pending' (the bot only ever draws 'approved' assets).
 
-Card zones (900x300 at 1x; everything scales with the card size): avatar x0-280, text x280-660 (darkened automatically),
-logo box x660-880 y20-280. A background of any shape is centre-cropped to 3:1; a large one gives a larger card (up to 2x).
+The uploaded background decides the card size: it is stored with its OWN width and height (any aspect ratio, nothing
+cropped, nothing shrunk), and the card is drawn at that size (see modules/level_card_design.py for the layout rules).
+Zones of the 900x300 reference layout (scaled to the image): avatar x0-280, text x280-660 (darkened automatically),
+logo box x660-880 y20-280.
 """
 import base64
 import hashlib
@@ -23,8 +25,10 @@ KINDS = ("background", "logo")
 MB = 1024 * 1024
 # Same size limit as the welcome-card backgrounds (discord_bot/cogs/welcome.py CUSTOM_BG_MAX_BYTES = 8 MB).
 MAX_BYTES = {"background": 8 * MB, "logo": 8 * MB}
-MAX_PIXELS = 40_000_000                   # decoded size cap (header is checked before the pixels are loaded)
-MAX_SCALE = 2.0                           # a big background makes a BIG card: up to 1800x600 (2x), never more
+MAX_PIXELS = 25_000_000                   # decoded size cap (header is checked before the pixels are loaded); RGBA is ~100 MB
+MAX_SIDE = 10_000                         # longest side, so a 1x20000 strip can't slip under the pixel cap
+MIN_BG = (450, 150)                       # smallest background: the layout scales by min(w/900, h/300), so this keeps text >= 0.5x
+JPEG_QUALITY = 92
 CARD_W, CARD_H = 900, 300
 LOGO_BOX = (660, 20, 880, 280)          # x0, y0, x1, y1
 TEXT_ZONE = (280, 0, 660, 300)
@@ -62,7 +66,7 @@ def process(kind: str, raw: bytes) -> tuple:
         if img.format not in ("PNG", "JPEG"):
             return None, "Only PNG or JPEG files are accepted."
         w, h = img.size
-        if w * h > MAX_PIXELS or w < 1 or h < 1:
+        if w * h > MAX_PIXELS or w < 1 or h < 1 or max(w, h) > MAX_SIDE:
             return None, "Image dimensions are too large."
         if getattr(img, "n_frames", 1) > 1:
             return None, "Animated images are not accepted."
@@ -70,26 +74,35 @@ def process(kind: str, raw: bytes) -> tuple:
     except Exception:
         return None, "That file isn't a valid image."
     if kind == "background":
-        if w < 600 or h < 200:
-            return None, "Background must be at least 600x200 pixels."
+        if w < MIN_BG[0] or h < MIN_BG[1]:
+            return None, f"Background must be at least {MIN_BG[0]}x{MIN_BG[1]} pixels."
+        # Own width and height, any aspect ratio: nothing is cropped or resized. Re-encoded (strips metadata and anything
+        # appended to the file). A JPEG stays a JPEG so a photo doesn't balloon as PNG in the database.
         rgb = img.convert("RGB")
-        # Any shape works: centre-crop to 3:1 so nothing is stretched.
-        if w / h > 3:
-            nw = round(h * 3)
-            rgb = rgb.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
-        elif w / h < 3:
-            nh = round(w / 3)
-            rgb = rgb.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
-        scale = max(1.0, min(MAX_SCALE, rgb.width / CARD_W))
-        out = rgb.resize((round(CARD_W * scale), round(CARD_H * scale)), Image.LANCZOS)
-    else:
-        if w < 64 or h < 64:
-            return None, "Logo must be at least 64x64."
-        out = img.convert("RGBA")
-        out.thumbnail(((LOGO_BOX[2] - LOGO_BOX[0]) * 3, (LOGO_BOX[3] - LOGO_BOX[1]) * 3), Image.LANCZOS)
+        return _encode_background(rgb, prefer_jpeg=(img.format == "JPEG"), cap=MAX_BYTES[kind])
+    if w < 64 or h < 64:
+        return None, "Logo must be at least 64x64."
+    out = img.convert("RGBA")
+    out.thumbnail(((LOGO_BOX[2] - LOGO_BOX[0]) * 3, (LOGO_BOX[3] - LOGO_BOX[1]) * 3), Image.LANCZOS)
     buf = io.BytesIO()
     out.save(buf, format="PNG", optimize=True)
     return buf.getvalue(), None
+
+
+def _encode_background(rgb: Image.Image, prefer_jpeg: bool, cap: int) -> tuple:
+    """-> (bytes, None) or (None, message). Stored size is capped at `cap` (the upload limit) by switching to JPEG,
+    never by changing the image's dimensions."""
+    if not prefer_jpeg:
+        buf = io.BytesIO()
+        rgb.save(buf, format="PNG", optimize=True)
+        if len(buf.getvalue()) <= cap:
+            return buf.getvalue(), None
+    for q in (JPEG_QUALITY, 85, 75):
+        buf = io.BytesIO()
+        rgb.save(buf, format="JPEG", quality=q, optimize=True)
+        if len(buf.getvalue()) <= cap:
+            return buf.getvalue(), None
+    return None, f"That image is too detailed to store ({cap // MB} MB max). Try a smaller file."
 
 
 def moderation_copy(png: bytes) -> bytes:

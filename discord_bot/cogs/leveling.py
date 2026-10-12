@@ -477,8 +477,8 @@ class LevelingCog(GuildOnlyCog):
                 logger.warning(f"[v0] custom level card lookup failed for {member.id}: {e}")
                 custom_card = None
             if custom_card is not None:
-                card_bytes = await asyncio.to_thread(
-                    _lcd.render_custom_level_card,
+                # Full size (the image decides the card size), two at a time, with the Discord size fallback.
+                card_bytes = await _lcd.render_async(
                     avatar_bytes, member.display_name, new_level,
                     p["current_xp_in_level"], p["xp_needed_for_next_level"], *custom_card,
                 )
@@ -504,7 +504,7 @@ class LevelingCog(GuildOnlyCog):
                     avatar_bytes, member.display_name, new_level,
                     p["current_xp_in_level"], p["xp_needed_for_next_level"],
                 )
-            file = discord.File(fp=io.BytesIO(card_bytes), filename="levelup.png")
+            file = discord.File(fp=io.BytesIO(card_bytes), filename="levelup." + ("jpg" if card_bytes[:3] == b"\xff\xd8\xff" else "png"))
             await channel.send(content=f"🎉 {member.mention} leveled up!", file=file, allowed_mentions=am)
         except discord.Forbidden:
             pass
@@ -736,7 +736,7 @@ class LevelingCog(GuildOnlyCog):
             png = await _lcd.render_member_card(db, target, p["level"], p["current_xp_in_level"],
                                                 p["xp_needed_for_next_level"], rank=(rank_row or {}).get("rank"))
             if png:
-                await interaction.followup.send(file=discord.File(io.BytesIO(png), filename="rank.png"))
+                await interaction.followup.send(file=discord.File(io.BytesIO(png), filename=_lcd.file_name("rank", png)))
         except Exception:
             logger.warning("[v0] couldn't send the custom rank card", exc_info=True)
         await interaction.followup.send(view=card)
