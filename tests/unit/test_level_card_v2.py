@@ -221,7 +221,7 @@ def test_share_posts_the_preview_publicly(monkeypatch):
 
 
 def test_save_button_label_shows_the_pass_requirement(monkeypatch):
-    with_db(monkeypatch, FakeDB())
+    with_db(monkeypatch, FakeDB().used_up())                     # had the plan before: no trial left, so the pass label
     free = run(vlc.draft_for(7, 1))
     labels = [getattr(c, "label", "") for c in vlc.CardWizardView(7, free).children]
     assert "Save (Level Pass)" in labels
@@ -265,3 +265,128 @@ def test_font_and_shape_buttons_cycle_and_show_menu_sets_the_switches():
         assert {o.value for o in sel.options if o.default} == set(lcd.SHOW_KEYS) - {"show_bar"}
         assert "Hidden: XP bar" in vlc.build_embed(d).description
     run(go())
+
+
+# ---------- free trial (5 days, once per member; no schema change) ----------
+from datetime import datetime, timedelta, timezone
+
+from modules import entitlements as ent, user_subs
+import config as app_config
+
+
+class TrialInter(Inter):
+    """An interaction whose response can edit the message (the trial button's)."""
+
+    def __init__(self, uid=7):
+        super().__init__(uid)
+        self.response.edited = []
+
+        async def edit_message(**kw):
+            self.response.edited.append(kw)
+        self.response.edit_message = edit_message
+
+
+def _offered_pass(monkeypatch):
+    from discord_bot.cogs import _views_leveling_boost as boost
+
+    async def offered(clone):
+        return True
+    monkeypatch.setattr(boost, "pass_offered", offered)
+
+
+def test_trial_rule_is_any_card_plan_row_means_not_eligible():
+    now = datetime.now(timezone.utc)
+    row = lambda **k: {"product": "card_plan", "status": "active", "source": "trial", "expires_at": now + timedelta(days=5), **k}
+    assert ent.trial_available([]) and ent.trial_available([{"product": "dev_monthly"}])
+    assert not ent.trial_available([row()]) and not ent.trial_available([row(status="expired", source="paystack")])
+    assert ent.on_trial([row()], now) and not ent.on_trial([row(source="paystack")], now)
+    assert not ent.on_trial([row(expires_at=now - timedelta(days=1))], now)           # ended trial: no access any more
+    assert app_config.LEVEL_CARD_TRIAL_DAYS == 5
+
+
+def test_save_without_any_plan_offers_the_trial_and_stores_nothing(monkeypatch):
+    fake = with_db(monkeypatch, FakeDB())
+    draft = run(vlc.draft_for(7, 1))
+    assert draft.trial_available and not draft.has_pass
+    assert "free 5-day trial" in vlc.build_embed(draft).description
+    i = Inter()
+    run(vlc.save_draft(i, draft))
+    sent = i.private[0]
+    assert sent["embed"].title.startswith("🎁") and isinstance(sent["view"], vlc.TrialView) and sent["ephemeral"] is True
+    assert [b.label for b in sent["view"].children][0] == "Start free 5-day trial"
+    assert not fake.cards and "card_plan" not in fake.ent                                # nothing saved, nothing granted yet
+
+
+def test_save_button_label_follows_the_state():
+    async def go():
+        base = dict(design=dict(lcd.DEFAULT_DESIGN), guild_id=1)
+        label = lambda d: next(c.label for c in vlc.CardWizardView(7, d).children if c.row == 4)
+        assert label(vlc.Draft(**base)) == "Save (Level Pass)"
+        assert label(vlc.Draft(**base, trial_available=True)) == "Save (free trial)"
+        assert label(vlc.Draft(**base, has_pass=True)) == "Save"
+    run(go())
+
+
+def test_starting_the_trial_grants_5_days_and_saves_the_draft(monkeypatch):
+    fake = with_db(monkeypatch, FakeDB())
+    draft = run(vlc.draft_for(7, 1))
+    run(vlc.edit_draft(Inter(), draft, accent="#ff0000", bio="trial bio"))
+    designer = Inter()
+    run(vlc.save_draft(designer, draft))                                                  # Save pressed -> trial offer
+    view = designer.private[0]["view"]
+    press = TrialInter()
+    run(view._start(press))
+    row = fake.ent["card_plan"]
+    assert row["source"] == "trial" and row["status"] == "active"
+    days = (row["expires_at"] - datetime.now(timezone.utc)).total_seconds() / 86400
+    assert 4.9 < days <= 5.0
+    saved = json.loads(fake.cards["7"])
+    assert saved["accent"] == "#FF0000" and saved["bio"] == "trial bio"                  # saved straight away
+    assert press.response.edited and "trial has started" in press.response.edited[0]["content"]
+    assert designer.edits and "Saved" in designer.edits[-1]["embed"].description         # the designer message was redrawn
+    assert ent.has_access(run(fake.entitlements_list("7")), ("card_plan",))               # same gate the bot/website use
+    assert not run(vlc.draft_for(7, 1)).trial_available and run(vlc.draft_for(7, 1)).on_trial
+    assert "Free trial active" in vlc.build_embed(run(vlc.draft_for(7, 1))).description
+
+
+def test_the_trial_cannot_be_started_twice_or_by_someone_who_had_the_plan(monkeypatch):
+    fake = with_db(monkeypatch, FakeDB())
+    _offered_pass(monkeypatch)
+    assert run(fake.entitlement_start_trial("7", 5)) is True
+    first = fake.ent["card_plan"]["expires_at"]
+    assert run(fake.entitlement_start_trial("7", 5)) is False and fake.ent["card_plan"]["expires_at"] == first
+    paid = with_db(monkeypatch, FakeDB(pass_days=10))                                     # holder of a pass: no trial row written
+    assert run(paid.entitlement_start_trial("7", 5)) is False and paid.ent["card_plan"]["source"] == "t"
+    # trial already used (ended): Save shows the Level Pass offer, not another trial
+    ended = with_db(monkeypatch, FakeDB().used_up())
+    draft = run(vlc.draft_for(7, 1))
+    assert not draft.trial_available
+    i = Inter()
+    run(vlc.save_draft(i, draft))
+    assert i.private[0]["embed"].title == "🎫 Level Pass" and not ended.cards
+    # pressing Start after the trial was taken elsewhere (two tabs): told so, offered the pass
+    racer = with_db(monkeypatch, FakeDB())
+    draft2 = run(vlc.draft_for(7, 1))
+    d = Inter()
+    run(vlc.save_draft(d, draft2))
+    run(racer.entitlement_start_trial("7", 5))
+    press = TrialInter()
+    run(d.private[0]["view"]._start(press))
+    assert "already used" in press.response.edited[0]["content"] and not racer.cards
+
+
+def test_buying_the_pass_after_the_trial_just_extends_it():
+    now = datetime.now(timezone.utc)
+    trial = {"product": "card_plan", "status": "active", "source": "trial", "expires_at": now + timedelta(days=2),
+             "cancel_at_period_end": False}
+    change = user_subs.transition(trial, "card_plan", "charge", now)
+    assert change["status"] == "active" and change["expires_at"] == trial["expires_at"] + timedelta(days=31)
+
+
+def test_trial_needs_no_schema_change():
+    import inspect
+    import database
+    owner = next(c for c in vars(database).values() if inspect.isclass(c) and hasattr(c, "entitlement_start_trial"))
+    src = inspect.getsource(owner.entitlement_start_trial)
+    assert src and "DO NOTHING" in src and "DO UPDATE" not in src and "'trial'" in src
+    assert "CREATE TABLE" not in src and "ALTER TABLE" not in src

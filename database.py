@@ -15330,6 +15330,19 @@ class Database:
                 str(user_id), str(product)[:40], str(status)[:20], expires_at, str(source)[:40],
                 subscription_id, bool(cancel_at_period_end))
 
+    async def entitlement_start_trial(self, user_id: str, days: int) -> bool:
+        """Free trial of the custom level-up card: ONE card_plan row with source 'trial', only if the member has never
+        had a card_plan row (trial, Level Pass or the monthly plan). True when it started, False when they were not
+        eligible. A single INSERT ... DO NOTHING, so a double click or a race can't start two trials or overwrite a
+        paid row. No schema change: it uses the existing user_entitlements table. The only non-webhook write to it."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            got = await conn.fetchval(
+                """INSERT INTO user_entitlements (user_id, product, status, expires_at, source)
+                   VALUES ($1, 'card_plan', 'active', NOW() + ($2::int * INTERVAL '1 day'), 'trial')
+                   ON CONFLICT (user_id, product) DO NOTHING RETURNING user_id""", str(user_id), int(days))
+        return bool(got)
+
     async def billing_event_claim(self, event_id: str, user_id: str, product: str,
                                   provider: str, kind: str) -> bool:
         """True the first time this gateway event id is seen, False for a duplicate/retry."""
