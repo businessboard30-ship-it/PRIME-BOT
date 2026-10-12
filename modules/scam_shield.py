@@ -405,7 +405,7 @@ async def log_hit(guild_id: int, channel_id: int, user_id: int, kind: str, match
             await conn.execute(
                 "INSERT INTO scam_shield_hits (guild_id, clone_id, channel_id, user_id, kind, matched, rule_id, "
                 "snippet, deleted) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                guild_id, clone_id, channel_id, user_id, kind, matched[:200], rule_id, snippet[:300], deleted)
+                guild_id, clone_id, channel_id, user_id, kind, matched[:200], rule_id, None, deleted)  # message text is not kept (privacy)
     except Exception:
         logger.exception("[scam-shield] couldn't record a hit")
 

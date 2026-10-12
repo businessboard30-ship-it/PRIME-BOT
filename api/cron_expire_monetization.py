@@ -71,6 +71,11 @@ class handler(BaseHTTPRequestHandler):
                 logger.info(f"[v0] cron member reports purged={asyncio.run(db.msg_reports_purge(member_msg.REPORT_RETENTION_DAYS))}")
             except Exception as e:
                 logger.error(f"[v0] cron member messages purge failed: {type(e).__name__}")
+            try:                          # privacy retention (flood rows, AI log, scam hits, IP hashes); backup to the bot loop
+                from modules import data_retention
+                logger.info(f"[v0] cron data retention={asyncio.run(data_retention.purge_daily())}")
+            except Exception as e:
+                logger.error(f"[v0] cron data retention failed: {type(e).__name__}")
             try:                          # renewal / ending reminders, at most one DM per plan per period
                 from modules import renewal_reminders
                 import aiohttp

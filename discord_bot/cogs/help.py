@@ -247,6 +247,8 @@ class HelpView(discord.ui.View):
         self.add_item(CategorySelect())
         self.add_item(SearchButton())
         self.add_item(_HelpGoPremiumButton())
+        from discord_bot.cogs.my_data import MyDataButton
+        self.add_item(MyDataButton(row=1))
         from utils.dash_links import dashboard_link_button
         link = dashboard_link_button(guild_id, clone_id, row=1)
         if link is not None:

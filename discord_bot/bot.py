@@ -376,6 +376,9 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.admin_panel")
         await self.load_extension("discord_bot.cogs.lookup")
         await self.load_extension("discord_bot.cogs._cleanup_giftboost_mentions")
+        await self.load_extension("discord_bot.cogs.data_retention")
+        # Loaded last: if the 100-command cap is hit, only /mydata is skipped (it catches CommandLimitReached).
+        await self.load_extension("discord_bot.cogs.my_data")
 
         self.join_dm_reminder_loop.start()
         self.payment_reminder_loop.start()
