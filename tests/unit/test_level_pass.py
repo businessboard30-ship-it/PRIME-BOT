@@ -262,3 +262,33 @@ def test_wired_in():
 
 async def _children(v):
     return v.children
+
+
+# ── the $1 single boost is no longer sold ────────────────────────────────────
+def test_the_one_dollar_boost_is_gone(monkeypatch):
+    async def never(clone):
+        return False
+    monkeypatch.setattr(boost, "pass_offered", never)
+    monkeypatch.setattr(boost, "_available_bundles", lambda: {})
+    i = Inter()
+    run(boost.BoostXPButton(1, None).callback(i))
+    assert i.response.sent[0]["ephemeral"] is True and "view" not in i.response.sent[0]       # nothing on sale: no $1 fallback
+
+    async def yes(clone):
+        return True
+    monkeypatch.setattr(boost, "pass_offered", yes)
+    monkeypatch.setattr(boost, "_available_bundles", lambda: dict(config.XP_BOOST_BUNDLES))
+    j = Inter()
+    run(boost.BoostXPButton(1, None).callback(j))
+    text = j.response.sent[0]["args"][0]
+    assert "Level Pass" in text and "1 boost" not in text and "$1 " not in text
+
+    async def view():
+        return boost._BoostPackPickerView(1, dict(config.XP_BOOST_BUNDLES), True)
+    labels = [c.label for c in run(view()).children]
+    assert labels[0].startswith("Level Pass") and not any(l.startswith("1 boost") for l in labels)
+
+
+def test_terms_no_longer_list_the_one_dollar_boost():
+    src = (ROOT / "api/legal_pages.py").read_text(encoding="utf-8")
+    assert "XP_BOOST_FEE_USD" not in src and "Level Pass" in src
