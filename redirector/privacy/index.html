@@ -21,26 +21,82 @@ server admin configured; AI chat/image features send your prompt to the
 underlying AI provider to generate a response).</li>
 <li>Payment references (not full card details — payments are handled by a
 third-party payment processor) when you use a paid feature.</li>
-<li>Optional linked-account tokens (media server, cloud folder, your own
-bot token) only if you choose to connect one, stored so the relevant
-feature keeps working until you disconnect it.</li>
+<li>Messages that Scam Shield removes as known scams: a copy (text and attachments, with the server and user IDs) is saved to a private channel run by the operator, so the scam rules can be improved.</li>
+<li>Optional linked accounts (media server, cloud folder) only if you
+choose to connect one, stored so the relevant feature keeps working until you
+disconnect it.</li>
+<li>Server membership events: when someone joins or leaves a server where the
+bot is added, the bot sees their Discord ID, username, account creation date
+and join or leave time, and which invite they used if the invite tracker is
+turned on. This is used for welcome messages, verification, the join gate,
+invite tracking and moderation, and it is stored with the server's ID.</li>
 </ul>
+
+<h2>Why the bot reads members and messages</h2>
+<p>The bot uses two Discord permissions that need Discord's approval. The
+<b>Server Members</b> permission lets it react when someone joins or leaves and
+look up members for the features above. The <b>Message Content</b> permission
+lets it read messages as they are sent to award XP, to run automod filters,
+and to answer commands and triggers a server admin configured. Message text is
+processed as it arrives and is not kept, apart from the Scam Shield copy
+described above. The bot does not use message content to train AI or machine
+learning models, and does not store messages outside Discord and the
+operator's private review channel.</p>
+
+<h2>Bots run from this service</h2>
+<p>This policy also covers every bot run from the same service, including
+white-label bots such as Welcome Bot. For those bots the operator is still
+Maxwell Dumenya. If a server owner registers their own bot with us, we keep the
+details needed to run it, encrypted, until they remove it.</p>
 
 <h2>What we don't do</h2>
 <p>We don't sell your data. We don't read or store messages outside of
 what a feature you're actively using needs in order to work.</p>
 
+<h2>Website dashboard</h2>
+<ul>
+<li>AI chats you have on the website are not stored by us. Only a weekly
+count of how many you used is kept. Closing the page clears the conversation.</li>
+<li>If you add your own AI provider key, it is encrypted, never shown again,
+and used only to answer your own chats. It is deleted 30 days after your
+Developer plan ends, or whenever you remove it.</li>
+<li>Member messages (friends from your servers) are text only. Both people
+can delete a conversation or unfriend at any time, and messages are deleted
+automatically after 30 days. If you report a person, the last messages of
+that conversation (up to 20) are copied to the owner's review queue and are
+deleted 90 days after the report is resolved. Friend requests can be switched
+off, and an optional Discord DM notice is off unless you turn it on.</li>
+</ul>
+
 <h2>Third parties</h2>
 <p>Depending on which features you use, data may be sent to: the AI
 provider powering chat/image features, the payment processor handling paid
 features, and (only if you connect one yourself) a media server, cloud
-storage provider, or another Discord bot token's application.</p>
+storage provider, or another Discord bot's application.</p>
 
 <h2>Data retention & deletion</h2>
-<p>Feature-related data (balances, XP, warns, linked accounts) is kept
-while you continue using the bot in a server. You can disconnect a linked
-account at any time with its corresponding command. To request full
-deletion of your data, contact us using the details below.</p>
+<p>Feature-related data (balances, XP, warns, linked accounts, join records)
+is kept while you continue using the bot in a server. You can disconnect a
+linked account at any time with its corresponding command, and you can mute
+level-up pings from the leveling leaderboard. Server admins can turn off
+leveling, automod and invite tracking in their own server. To request full
+deletion of your data, or to opt out of having your activity tracked,
+email maxwelldumenya5@outlook.com with your Discord user ID; we will delete it or tell you
+why we cannot (for example payment records we must keep).</p>
+
+<h2>Web dashboard</h2>
+<p>If you sign in to the web dashboard with Discord, we store a record that you
+signed in, with your Discord display name and avatar (used to show you on the global
+leaderboard unless you switch that off on the Leaderboard page; everyone else sees
+"Hidden player" and no user ID is shown), the days you used the dashboard (kept 90 days
+and visible only to the bot owner), your level-up card design and uploads, any AI
+provider keys you add (encrypted, never shown again), your scheduled jobs, renewal
+reminders, and receipts for exports you save (the files are encrypted). If you connect
+GitHub (read-only) we keep an encrypted access key until you disconnect, which deletes
+it. If you use member messaging, we store your friends list and messages (deleted after
+30 days, or when you delete your data). AI chats on the dashboard are not stored. You can delete all of this
+yourself under Privacy &amp; data in the dashboard. Payment records, your plans,
+weekly chat counters and in-server records (XP, coins, moderation) are kept.</p>
 
 <h2>Children's privacy</h2>
 <p>The bot is not directed at children under 13, consistent with Discord's
