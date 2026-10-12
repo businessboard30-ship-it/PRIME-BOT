@@ -428,12 +428,12 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
             container.add_item(link_row)
 
         container.add_item(discord.ui.Separator())
-        # XP controls (Boost XP, level-up pings, Buy Boost) now live one click
-        # deeper behind a single "XP options" button, which also drops the
-        # wallet select's own row: 6 components -> 4 (incl. the Dashboard link).
+        # XP controls (Boost XP, level-up pings, Clans, server boost) live in one tabbed wizard behind the "XP & Clans"
+        # button. "My card" sits next to it on the page (it takes the slot the Clans button used to have, so the
+        # component count is unchanged).
         boost_row = discord.ui.ActionRow()
         boost_row.add_item(LeaderboardXPOptionsButton(guild.id, clone_id))
-        boost_row.add_item(LeaderboardClansButton(guild.id, clone_id))
+        boost_row.add_item(LeaderboardCardButton(guild.id, clone_id))
         dash_btn = _dashboard_link_button(clone_id, mode, guild.id)
         if dash_btn is not None:
             boost_row.add_item(dash_btn)
@@ -654,9 +654,9 @@ class LeaderboardClansButton(discord.ui.DynamicItem[discord.ui.Button],
         return cls(int(match.group(1)), _clone_from(match.group(2)))
 
     async def callback(self, interaction: discord.Interaction):
-        view = discord.ui.View(timeout=180)
-        view.add_item(ClanPickSelect(self.guild_id, self.clone_id))
-        await interaction.response.send_message("Pick a clan to view its members:", view=view, ephemeral=True)
+        # Old leaderboard messages still carry this button: it now opens the XP & Clans wizard on its Clans tab.
+        from discord_bot.cogs._views_xp_wizard import open_xp_wizard
+        await open_xp_wizard(interaction, self.guild_id, self.clone_id, tab="clans")
 
 
 class LeaderboardPingButton(discord.ui.DynamicItem[discord.ui.Button],
@@ -690,8 +690,7 @@ class LeaderboardPingButton(discord.ui.DynamicItem[discord.ui.Button],
 
 class LeaderboardCardButton(discord.ui.DynamicItem[discord.ui.Button],
                             template=r"^lvllb_card:(\d+):(-|\d+)$"):
-    """Opens the private level-card designer (same as /levelcard). Lives in the XP options panel, not on the page
-    itself: the leaderboard page is already at Discord's 40-component limit (see test_leaderboard_xp_options)."""
+    """Opens the private level-card designer (same as /levelcard). On the leaderboard page, next to XP & Clans."""
     def __init__(self, guild_id: int, clone_id):
         self.guild_id = guild_id
         self.clone_id = clone_id
@@ -711,14 +710,13 @@ class LeaderboardCardButton(discord.ui.DynamicItem[discord.ui.Button],
 
 class LeaderboardXPOptionsButton(discord.ui.DynamicItem[discord.ui.Button],
                                  template=r"^lvllb_xpopts:(\d+):(-|\d+)$"):
-    """ONE entry for every XP-related control. Opens an ephemeral menu with
-    the existing Boost XP button, Level-up pings button and Buy Boost select
-    (same DynamicItems, so each runs exactly the code it always did)."""
+    """ONE entry for every XP-related control: opens the tabbed XP & Clans wizard (Boost XP, Pings, Clans, Server boost).
+    The custom_id is unchanged, so leaderboard messages posted before the rename keep working."""
     def __init__(self, guild_id: int, clone_id):
         self.guild_id = guild_id
         self.clone_id = clone_id
         super().__init__(discord.ui.Button(
-            label="XP options", emoji="⚡", style=discord.ButtonStyle.primary,
+            label="XP & Clans", emoji="⚡", style=discord.ButtonStyle.primary,
             custom_id=f"lvllb_xpopts:{guild_id}:{_clone_part(clone_id)}",
         ))
 
@@ -727,19 +725,8 @@ class LeaderboardXPOptionsButton(discord.ui.DynamicItem[discord.ui.Button],
         return cls(int(match.group(1)), _clone_from(match.group(2)))
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            "⚡ **XP options** — boost your XP, design your level-up card, turn level-up pings on or off, or buy a server boost.",
-            view=build_xp_options_view(self.guild_id, self.clone_id), ephemeral=True,
-        )
-
-
-def build_xp_options_view(guild_id: int, clone_id) -> discord.ui.View:
-    view = discord.ui.View(timeout=300)
-    view.add_item(BoostXPButton(guild_id, clone_id))
-    view.add_item(LeaderboardPingButton(guild_id, clone_id))
-    view.add_item(LeaderboardCardButton(guild_id, clone_id))
-    view.add_item(BuyBoostSelect(guild_id, clone_id))
-    return view
+        from discord_bot.cogs._views_xp_wizard import open_xp_wizard
+        await open_xp_wizard(interaction, self.guild_id, self.clone_id)
 
 
 def _ping_status_text(muted: bool) -> str:

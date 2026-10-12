@@ -279,8 +279,8 @@ def test_wired_in():
     spec = next(s for s in allow.AI_COMMANDS if s.name == "levelcard")
     assert spec.requires_confirmation is False and spec.cog_module == "discord_bot.cogs.leveling"
     assert 'name="levelcard"' in (ROOT / "discord_bot/cogs/leveling.py").read_text(encoding="utf-8")
-    panel = lb.build_xp_options_view(1, None)
-    assert any(isinstance(c, lb.LeaderboardCardButton) for c in asyncio.run(_children(panel)))
+    page_src = (ROOT / "discord_bot/cogs/_views_leveling_leaderboard.py").read_text(encoding="utf-8")
+    assert "boost_row.add_item(LeaderboardCardButton(guild.id, clone_id))" in page_src            # My card is on the leaderboard page
 
 
 async def _children(v):
