@@ -5,7 +5,8 @@ Pipeline: size cap -> decode with PIL (PNG/JPEG only, pixel cap, no animation) -
 (strips metadata and anything appended to the file) -> hash block-list -> OpenAI free image moderation -> approved/pending/rejected.
 Fails safe: any moderation error leaves the asset 'pending' (the bot only ever draws 'approved' assets).
 
-Card zones (900x300): avatar x0-280, text x280-660 (darkened automatically), logo box x660-880 y20-280.
+Card zones (900x300 at 1x; everything scales with the card size): avatar x0-280, text x280-660 (darkened automatically),
+logo box x660-880 y20-280. A background of any shape is centre-cropped to 3:1; a large one gives a larger card (up to 2x).
 """
 import base64
 import hashlib
@@ -19,8 +20,11 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 KINDS = ("background", "logo")
-MAX_BYTES = {"background": 1_500_000, "logo": 1_000_000}
-MAX_PIXELS = 16_000_000
+MB = 1024 * 1024
+# Same size limit as the welcome-card backgrounds (discord_bot/cogs/welcome.py CUSTOM_BG_MAX_BYTES = 8 MB).
+MAX_BYTES = {"background": 8 * MB, "logo": 8 * MB}
+MAX_PIXELS = 40_000_000                   # decoded size cap (header is checked before the pixels are loaded)
+MAX_SCALE = 2.0                           # a big background makes a BIG card: up to 1800x600 (2x), never more
 CARD_W, CARD_H = 900, 300
 LOGO_BOX = (660, 20, 880, 280)          # x0, y0, x1, y1
 TEXT_ZONE = (280, 0, 660, 300)
@@ -39,7 +43,7 @@ def prompt_template() -> str:
 
 
 def decode_b64(data) -> Optional[bytes]:
-    if not isinstance(data, str) or len(data) > 4_000_000:
+    if not isinstance(data, str) or len(data) > 11_600_000:     # 8 MB of file is about 10.7M of base64
         return None
     try:
         return base64.b64decode(data, validate=True)
@@ -66,17 +70,41 @@ def process(kind: str, raw: bytes) -> tuple:
     except Exception:
         return None, "That file isn't a valid image."
     if kind == "background":
-        if w < 600 or h < 200 or not (2.85 <= w / h <= 3.15):
-            return None, "Background must be about 3:1 (ideally 900x300, at least 600x200)."
-        out = img.convert("RGB").resize((CARD_W, CARD_H), Image.LANCZOS)
+        if w < 600 or h < 200:
+            return None, "Background must be at least 600x200 pixels."
+        rgb = img.convert("RGB")
+        # Any shape works: centre-crop to 3:1 so nothing is stretched.
+        if w / h > 3:
+            nw = round(h * 3)
+            rgb = rgb.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
+        elif w / h < 3:
+            nh = round(w / 3)
+            rgb = rgb.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
+        scale = max(1.0, min(MAX_SCALE, rgb.width / CARD_W))
+        out = rgb.resize((round(CARD_W * scale), round(CARD_H * scale)), Image.LANCZOS)
     else:
         if w < 64 or h < 64:
             return None, "Logo must be at least 64x64."
         out = img.convert("RGBA")
-        out.thumbnail(((LOGO_BOX[2] - LOGO_BOX[0]) * 2, (LOGO_BOX[3] - LOGO_BOX[1]) * 2), Image.LANCZOS)
+        out.thumbnail(((LOGO_BOX[2] - LOGO_BOX[0]) * 3, (LOGO_BOX[3] - LOGO_BOX[1]) * 3), Image.LANCZOS)
     buf = io.BytesIO()
     out.save(buf, format="PNG", optimize=True)
     return buf.getvalue(), None
+
+
+def moderation_copy(png: bytes) -> bytes:
+    """A small copy for the moderation call: a big card image would make the request huge, and the check does not need
+    the full size. Returned as PNG bytes (that is what the endpoint call is built for)."""
+    try:
+        im = Image.open(io.BytesIO(png))
+        if max(im.size) > 1024:
+            im.thumbnail((1024, 1024), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="PNG", optimize=True)
+            return buf.getvalue()
+    except Exception:
+        pass
+    return png
 
 
 def sha(png: bytes) -> str:
@@ -129,7 +157,7 @@ async def submit(db, uid, kind: str, raw: bytes) -> dict:
     if await db.card_asset_blocked(h):
         return {"ok": False, "message": "That image isn't allowed."}
     await db.card_asset_set(str(uid), kind, png, h, "pending", "")
-    verdict = await moderate(png)
+    verdict = await moderate(await asyncio.to_thread(moderation_copy, png))
     await db.card_asset_status_set(str(uid), kind, h, verdict["status"], verdict["reason"])
     if verdict["status"] == "rejected":
         await db.card_asset_block(h, verdict["reason"])

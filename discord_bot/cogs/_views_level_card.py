@@ -3,8 +3,9 @@
 """Level-card designer inside Discord: `/levelcard` and the leaderboard's "🎨 My card" button (the AI can open it
 too, it is on the AI allowlist). Same card, same rules as the website designer.
 
-  * Needs the Level Pass (the `card_plan` entitlement). The check is made on the server on EVERY change, never
-    from the buttons on screen. Without it the member only sees what the pass gives and a button to get it.
+  * Anyone can open the designer and edit freely with a live preview (nothing is stored). SAVING needs the Level Pass
+    (the `card_plan` entitlement): the check is made on the server when Save is pressed, never from the buttons on
+    screen. Without the pass, Save shows the pass offer instead.
   * A design is data only: colours, font, shape, bio are validated by modules.level_card_design.
   * Uploads (background / logo) go through the same pipeline as the website (modules.card_assets.submit: size cap,
     PNG/JPEG only, re-encode, hash block-list, moderation). Only APPROVED images are ever drawn. An approved copy is
@@ -16,7 +17,10 @@ import asyncio
 import io
 import json
 import logging
+import random
 import re
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 import discord
 
@@ -64,11 +68,45 @@ async def _avatar_bytes(user, accent: str) -> bytes:
         return lcd.placeholder_avatar(accent)
 
 
-async def render_preview(user, design: dict, assets: dict) -> discord.File:
+PREVIEW_STATS = (7, 40, 100)             # level, xp in level, xp needed: what the preview shows until "My real level" is on
+
+
+@dataclass
+class Draft:
+    """What the person is editing. Lives only in the designer message (memory), never in the database until Save."""
+    design: dict
+    has_pass: bool = False
+    expires: Any = None
+    saved: dict = field(default_factory=dict)       # kind -> approved bytes already on the account
+    staged: dict = field(default_factory=dict)      # kind -> (raw upload, processed image) picked but not saved yet
+    real: Optional[tuple] = None                    # (level, xp in level, xp needed) from the member's real XP
+    use_real: bool = False
+    dirty: bool = False
+    guild_id: Optional[int] = None
+
+    def asset(self, kind: str):
+        if kind in self.staged:
+            return self.staged[kind][1]
+        flag = "custom_bg" if kind == "background" else "logo"
+        return self.saved.get(kind) if self.design.get(flag) else None
+
+    def stats(self) -> tuple:
+        return self.real if (self.use_real and self.real) else PREVIEW_STATS
+
+
+async def draft_for(uid: int, guild_id=None) -> Draft:
+    has_pass, design, assets, expires = await load_state(uid)
+    saved = {k: _approved(assets, k) for k in card_assets.KINDS if _approved(assets, k)}
+    return Draft(design=dict(design), has_pass=has_pass, expires=expires, saved=saved, guild_id=guild_id)
+
+
+async def render_preview(user, draft: Draft) -> discord.File:
+    design = draft.design
     avatar = await _avatar_bytes(user, design.get("accent", "#57F287"))
+    lvl, cur, need = draft.stats()
     png = await asyncio.to_thread(
-        lcd.render_custom_level_card, avatar, getattr(user, "display_name", "You"), 7, 40, 100, design,
-        _approved(assets, "background"), _approved(assets, "logo"))
+        lcd.render_custom_level_card, avatar, getattr(user, "display_name", "You"), lvl, cur, need, design,
+        draft.asset("background"), draft.asset("logo"))
     return discord.File(io.BytesIO(png), filename="card.png")
 
 
@@ -79,17 +117,33 @@ def _asset_line(label: str, assets: dict, kind: str) -> str:
     return f"{label}: {({'approved': '✅ approved', 'pending': '⏳ waiting for a check', 'rejected': '❌ rejected'}).get(a.get('status'), a.get('status'))}"
 
 
-def build_embed(design: dict, assets: dict, expires) -> discord.Embed:
+def _upload_line(draft: Draft, label: str, kind: str) -> str:
+    if kind in draft.staged:
+        return f"{label}: 🆕 picked, not saved yet"
+    return f"{label}: {'✅ yours' if draft.asset(kind) else 'none'}"
+
+
+def build_embed(draft: Draft, notice: str = "") -> discord.Embed:
+    design = draft.design
     e = discord.Embed(title="🎨 Your level-up card", color=discord.Color.from_str(design.get("accent", "#57F287")))
     bg = lcd.BACKGROUNDS.get(design.get("background"), ("", "", "Slate"))[2]
-    until = f"\nLevel Pass active until <t:{int(expires.timestamp())}:D>" if expires else ""
+    if draft.has_pass:
+        until = f"Level Pass active until <t:{int(draft.expires.timestamp())}:D>" if draft.expires else "Level Pass active"
+        status = f"🎫 {until}. Press **Save** to keep your changes." if draft.dirty else f"🎫 {until}. Everything is saved."
+    else:
+        status = (f"👀 **Preview mode.** Edit anything you like. Saving needs the Level Pass "
+                  f"(${app_config.LEVEL_PASS_FEE_USD:g}).")
     e.description = (
+        f"{status}\n\n"
         f"Background **{bg}** · font **{lcd.FONT_LABELS.get(design.get('font'), '')}** · "
         f"shape **{lcd.SHAPES.get(design.get('shape'), '')}** · accent **{design.get('accent')}**\n"
         f"Bio: {design.get('bio') or '—'}\n"
-        f"{_asset_line('Background image', assets, 'background')} · {_asset_line('Logo', assets, 'logo')}{until}")
+        f"{_upload_line(draft, 'Background image', 'background')} · {_upload_line(draft, 'Logo', 'logo')}"
+        + (f"\n\n{notice}" if notice else ""))
     e.set_image(url="attachment://card.png")
-    e.set_footer(text="Preview. Changes save as you make them and show on your next level-up.")
+    shown = "your real level" if (draft.use_real and draft.real) else "a sample level"
+    e.set_footer(text=f"Preview with {shown}. Images up to {card_assets.MAX_BYTES['background'] // (1024 * 1024)} MB; "
+                      "a big background makes a bigger card.")
     return e
 
 
@@ -107,20 +161,14 @@ def pitch_embed() -> discord.Embed:
 
 # ── entry points ─────────────────────────────────────────────────────────────
 async def open_card_wizard(interaction: discord.Interaction) -> None:
-    """/levelcard, the leaderboard button and the AI all land here. Private to the person who asked."""
+    """/levelcard, the leaderboard button and the AI all land here. Private to the person who asked. Everyone gets the
+    designer; only saving needs the Level Pass."""
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        has_pass, design, assets, expires = await load_state(interaction.user.id)
-        if not has_pass:
-            from discord_bot.cogs._views_leveling_boost import pass_offered
-            if await pass_offered(getattr(interaction.client, "clone_id", None)):
-                await interaction.followup.send(embed=pitch_embed(), view=PitchView(interaction.guild_id), ephemeral=True)
-            else:
-                await interaction.followup.send("🎫 The Level Pass isn't available yet. Try again in a little while.", ephemeral=True)
-            return
-        file = await render_preview(interaction.user, design, assets)
-        await interaction.followup.send(embed=build_embed(design, assets, expires), file=file,
-                                        view=CardWizardView(interaction.user.id, design), ephemeral=True)
+        draft = await draft_for(interaction.user.id, interaction.guild_id)
+        file = await render_preview(interaction.user, draft)
+        await interaction.followup.send(embed=build_embed(draft), file=file,
+                                        view=CardWizardView(interaction.user.id, draft), ephemeral=True)
     except Exception:
         logger.exception("[level-card] couldn't open the designer")
         await interaction.followup.send("The card designer is temporarily unavailable.", ephemeral=True)
@@ -141,33 +189,84 @@ class PitchView(discord.ui.View):
         await _start_boost_checkout(interaction, "level_pass", self.guild_id)
 
 
+async def _offer_pass(interaction: discord.Interaction) -> None:
+    """Save was pressed without a Level Pass: show the offer (private). The draft stays exactly as it is."""
+    from discord_bot.cogs._views_leveling_boost import pass_offered
+    if await pass_offered(getattr(interaction.client, "clone_id", None)):
+        await interaction.followup.send(embed=pitch_embed(), view=PitchView(interaction.guild_id), ephemeral=True)
+    else:
+        await interaction.followup.send("🎫 The Level Pass isn't available yet. Your design is still here, try again "
+                                        "in a little while.", ephemeral=True)
+
+
 # ── the designer ─────────────────────────────────────────────────────────────
-async def _refresh(interaction: discord.Interaction) -> None:
-    has_pass, design, assets, expires = await load_state(interaction.user.id)
-    if not has_pass:
-        await interaction.edit_original_response(embed=pitch_embed(), attachments=[], view=PitchView(interaction.guild_id))
-        return
-    file = await render_preview(interaction.user, design, assets)
-    await interaction.edit_original_response(embed=build_embed(design, assets, expires), attachments=[file],
-                                             view=CardWizardView(interaction.user.id, design))
+async def rerender(interaction: discord.Interaction, draft: Draft, notice: str = "") -> None:
+    """Redraw the designer message from the draft. The interaction must already be deferred."""
+    file = await render_preview(interaction.user, draft)
+    await interaction.edit_original_response(embed=build_embed(draft, notice), attachments=[file],
+                                             view=CardWizardView(interaction.user.id, draft))
 
 
-async def apply_change(interaction: discord.Interaction, **changes) -> None:
-    """Save one change for the person pressing the control, re-checking the pass on the server. Never raises."""
+async def edit_draft(interaction: discord.Interaction, draft: Draft, **changes) -> None:
+    """Change the draft (nothing is stored) and redraw. Never raises."""
     try:
         await interaction.response.defer()
-        has_pass, design, _assets, _exp = await load_state(interaction.user.id)
-        if not has_pass:
-            await _refresh(interaction)
-            return
-        new, err = lcd.validate({**design, **changes})
+        new, err = lcd.validate({**draft.design, **changes})
         if err:
             await interaction.followup.send(err, ephemeral=True)
             return
-        await db.user_card_set(str(interaction.user.id), json.dumps(new, separators=(",", ":")))
-        await _refresh(interaction)
+        draft.design = new
+        draft.dirty = True
+        await rerender(interaction, draft)
     except Exception:
-        logger.exception("[level-card] couldn't apply a change")
+        logger.exception("[level-card] couldn't update the preview")
+        try:
+            await interaction.followup.send("Couldn't update the preview. Try again.", ephemeral=True)
+        except Exception:
+            pass
+
+
+async def save_draft(interaction: discord.Interaction, draft: Draft) -> None:
+    """Store the draft. The Level Pass is re-checked on the server right here. Never raises."""
+    try:
+        await interaction.response.defer()
+        has_pass, _stored, _assets, expires = await load_state(interaction.user.id)
+        if not has_pass:
+            draft.has_pass = False
+            await _offer_pass(interaction)
+            return
+        draft.has_pass, draft.expires = True, expires
+        uid = str(interaction.user.id)
+        design = dict(draft.design)
+        problems = []
+        for kind, flag in (("background", "custom_bg"), ("logo", "logo")):
+            if kind in draft.staged:
+                res = await card_assets.submit(db, interaction.user.id, kind, draft.staged[kind][0])
+                if not res["ok"]:
+                    design[flag] = False
+                    problems.append(res["message"])
+                elif res["status"] == "rejected":
+                    design[flag] = False
+                    problems.append(f"That {kind} can't be used: {res['reason']}")
+                else:
+                    design[flag] = True
+                    if res["status"] == "pending":
+                        problems.append("⏳ Your image shows once it passes the automatic check.")
+                    else:
+                        await _send_to_host(interaction, kind)
+            elif not design.get(flag):
+                await db.card_asset_delete(uid, kind)                 # the member removed it in the designer
+        new, err = lcd.validate(design)
+        if err:
+            await interaction.followup.send(err, ephemeral=True)
+            return
+        await db.user_card_set(uid, json.dumps(new, separators=(",", ":")))
+        fresh = await draft_for(interaction.user.id, interaction.guild_id)
+        fresh.use_real, fresh.real = draft.use_real, draft.real
+        await rerender(interaction, fresh, "✅ Saved. It shows on your next level-up, on /rank and on My Rank."
+                       + ("\n" + "\n".join(problems) if problems else ""))
+    except Exception:
+        logger.exception("[level-card] couldn't save the design")
         try:
             await interaction.followup.send("Couldn't save that. Try again.", ephemeral=True)
         except Exception:
@@ -175,29 +274,50 @@ async def apply_change(interaction: discord.Interaction, **changes) -> None:
 
 
 class _Pick(discord.ui.Select):
-    def __init__(self, field: str, placeholder: str, labels: dict, current: str, row: int):
+    def __init__(self, draft: Draft, field_name: str, placeholder: str, labels: dict, row: int):
         super().__init__(placeholder=placeholder, row=row, options=[
-            discord.SelectOption(label=label, value=key, default=(key == current)) for key, label in labels.items()])
-        self.field = field
+            discord.SelectOption(label=label, value=key, default=(key == draft.design.get(field_name)))
+            for key, label in labels.items()])
+        self.draft, self.field_name = draft, field_name
 
     async def callback(self, interaction: discord.Interaction):
-        await apply_change(interaction, **{self.field: self.values[0]})
+        await edit_draft(interaction, self.draft, **{self.field_name: self.values[0]})
+
+
+def random_design(rng=random) -> dict:
+    """A fresh look from the built-in options (no uploads). Always valid."""
+    import colorsys
+    r, g, b = colorsys.hsv_to_rgb(rng.random(), rng.uniform(0.55, 0.85), rng.uniform(0.85, 1.0))
+    return {"background": rng.choice(list(lcd.BACKGROUNDS)), "font": rng.choice(list(lcd.FONTS)),
+            "shape": rng.choice(list(lcd.SHAPES)), "accent": "#%02X%02X%02X" % (round(r * 255), round(g * 255), round(b * 255))}
 
 
 class CardWizardView(discord.ui.View):
-    def __init__(self, owner_id: int, design: dict):
-        super().__init__(timeout=600)
-        self.owner_id = owner_id
-        self.add_item(_Pick("background", "Background", {k: v[2] for k, v in lcd.BACKGROUNDS.items()}, design["background"], 0))
-        self.add_item(_Pick("font", "Font", lcd.FONT_LABELS, design["font"], 1))
-        self.add_item(_Pick("shape", "Avatar shape", lcd.SHAPES, design["shape"], 2))
+    def __init__(self, owner_id: int, draft: Draft):
+        super().__init__(timeout=900)
+        self.owner_id, self.draft = owner_id, draft
+        self.add_item(_Pick(draft, "background", "Background", {k: v[2] for k, v in lcd.BACKGROUNDS.items()}, 0))
+        self.add_item(_Pick(draft, "font", "Font", lcd.FONT_LABELS, 1))
+        self.add_item(_Pick(draft, "shape", "Avatar shape", lcd.SHAPES, 2))
         for label, emoji, cb in (("Accent colour", "🎨", self._accent), ("Bio", "✏️", self._bio),
                                  ("Background image", "🖼️", self._bg), ("Logo", "🏷️", self._logo),
                                  ("Remove uploads", "🗑️", self._remove)):
             b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=3)
             b.callback = cb
             self.add_item(b)
-        self._design = design
+        save = discord.ui.Button(label="Save" if draft.has_pass else "Save (Level Pass)", emoji="💾" if draft.has_pass else "🔒",
+                                 style=discord.ButtonStyle.success if draft.dirty or not draft.has_pass else discord.ButtonStyle.secondary,
+                                 row=4)
+        save.callback = self._save
+        self.add_item(save)
+        real = discord.ui.Button(label="My real level" if not draft.use_real else "Sample level", emoji="📈",
+                                 style=discord.ButtonStyle.secondary, row=4, disabled=draft.guild_id is None)
+        real.callback = self._toggle_real
+        self.add_item(real)
+        for label, emoji, cb in (("Randomize", "🎲", self._randomize), ("Reset", "↩️", self._reset), ("Share", "📣", self._share)):
+            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=4)
+            b.callback = cb
+            self.add_item(b)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -206,38 +326,71 @@ class CardWizardView(discord.ui.View):
         return True
 
     async def _accent(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(AccentModal(self._design.get("accent", "#57F287")))
+        await interaction.response.send_modal(AccentModal(self.draft))
 
     async def _bio(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(BioModal(self._design.get("bio", "")))
+        await interaction.response.send_modal(BioModal(self.draft))
 
     async def _bg(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(UploadModal("background"))
+        await interaction.response.send_modal(UploadModal("background", self.draft))
 
     async def _logo(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(UploadModal("logo"))
+        await interaction.response.send_modal(UploadModal("logo", self.draft))
 
     async def _remove(self, interaction: discord.Interaction):
+        self.draft.staged.clear()
+        await edit_draft(interaction, self.draft, custom_bg=False, logo=False)
+
+    async def _save(self, interaction: discord.Interaction):
+        await save_draft(interaction, self.draft)
+
+    async def _randomize(self, interaction: discord.Interaction):
+        await edit_draft(interaction, self.draft, **random_design())
+
+    async def _reset(self, interaction: discord.Interaction):
+        self.draft.staged.clear()
+        self.draft.design = dict(lcd.DEFAULT_DESIGN)
+        await edit_draft(interaction, self.draft)
+
+    async def _toggle_real(self, interaction: discord.Interaction):
         try:
             await interaction.response.defer()
-            has_pass, design, _a, _e = await load_state(interaction.user.id)
-            if has_pass:
-                for kind in card_assets.KINDS:
-                    await db.card_asset_delete(str(interaction.user.id), kind)
-                new, _ = lcd.validate({**design, "custom_bg": False, "logo": False})
-                await db.user_card_set(str(interaction.user.id), json.dumps(new, separators=(",", ":")))
-            await _refresh(interaction)
+            d = self.draft
+            if not d.use_real and d.real is None and d.guild_id is not None:
+                row = await db.get_xp(d.guild_id, interaction.user.id, clone_id=getattr(interaction.client, "clone_id", None))
+                from modules import leveling
+                p = leveling.xp_progress(int((row or {}).get("total_xp") or 0))
+                d.real = (p["level"], p["current_xp_in_level"], p["xp_needed_for_next_level"])
+            d.use_real = not d.use_real
+            await rerender(interaction, d)
         except Exception:
-            logger.exception("[level-card] couldn't remove uploads")
-            await interaction.followup.send("Couldn't remove that. Try again.", ephemeral=True)
+            logger.exception("[level-card] couldn't load the real level")
+            await interaction.followup.send("Couldn't load your level right now.", ephemeral=True)
+
+    async def _share(self, interaction: discord.Interaction):
+        """Post the current preview (saved or not) in the channel, so others can see it."""
+        try:
+            await interaction.response.defer()
+            if interaction.channel is None or interaction.guild_id is None:
+                await interaction.followup.send("Sharing works inside a server channel.", ephemeral=True)
+                return
+            file = await render_preview(interaction.user, self.draft)
+            await interaction.followup.send(content=f"🎨 {interaction.user.mention}'s level card", file=file, ephemeral=False)
+        except Exception:
+            logger.exception("[level-card] couldn't share the card")
+            try:
+                await interaction.followup.send("Couldn't share that right now.", ephemeral=True)
+            except Exception:
+                pass
 
 
 class AccentModal(discord.ui.Modal, title="Accent colour"):
     colour = discord.ui.TextInput(label="Hex colour, like #57F287", min_length=6, max_length=7)
 
-    def __init__(self, current: str):
+    def __init__(self, draft: Draft):
         super().__init__()
-        self.colour.default = current
+        self.draft = draft
+        self.colour.default = draft.design.get("accent", "#57F287")
 
     async def on_submit(self, interaction: discord.Interaction):
         v = (self.colour.value or "").strip()
@@ -245,29 +398,32 @@ class AccentModal(discord.ui.Modal, title="Accent colour"):
         if not ACCENT_RE.match(v):
             await interaction.response.send_message("Use a hex colour like #57F287.", ephemeral=True)
             return
-        await apply_change(interaction, accent=v)
+        await edit_draft(interaction, self.draft, accent=v)
 
 
 class BioModal(discord.ui.Modal, title="Card bio"):
     bio = discord.ui.TextInput(label="Short bio (plain text)", required=False, max_length=lcd.BIO_MAX)
 
-    def __init__(self, current: str):
+    def __init__(self, draft: Draft):
         super().__init__()
-        self.bio.default = current or None
+        self.draft = draft
+        self.bio.default = draft.design.get("bio") or None
 
     async def on_submit(self, interaction: discord.Interaction):
-        await apply_change(interaction, bio=self.bio.value or "")
+        await edit_draft(interaction, self.draft, bio=self.bio.value or "")
 
 
 class UploadModal(discord.ui.Modal):
-    """A real file picker (Discord's file-upload modal component). PNG or JPEG only; sized and checked again below."""
+    """A real file picker (Discord's file-upload modal component). PNG or JPEG, up to the same size as the welcome
+    card backgrounds. The image is only checked and previewed here; it is stored and moderated when Save is pressed."""
 
-    def __init__(self, kind: str):
+    def __init__(self, kind: str, draft: Draft):
         super().__init__(title="Background image" if kind == "background" else "Logo")
-        self.kind = kind
+        self.kind, self.draft = kind, draft
         self.file = discord.ui.FileUpload(required=True, min_values=1, max_values=1)
-        hint = ("900x300 looks best. Keep the middle calm, text is drawn there." if kind == "background"
-                else "Shown on the right side of the card.")
+        mb = card_assets.MAX_BYTES[kind] // (1024 * 1024)
+        hint = (f"Any size up to {mb} MB. Big images make a bigger card. Keep the middle calm, text goes there."
+                if kind == "background" else f"Up to {mb} MB. Shown on the right side of the card.")
         self.add_item(discord.ui.Label(text="PNG or JPEG", description=hint, component=self.file))
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -278,32 +434,24 @@ class UploadModal(discord.ui.Modal):
                 await interaction.response.send_message("Only PNG or JPEG images, please.", ephemeral=True)
                 return
             if att.size > cap:
-                await interaction.response.send_message(f"That file is too big (max {cap // 1000} KB).", ephemeral=True)
+                await interaction.response.send_message(f"That file is too big (max {cap // (1024 * 1024)} MB).", ephemeral=True)
                 return
             await interaction.response.defer()
-            has_pass, design, _a, _e = await load_state(interaction.user.id)
-            if not has_pass:
-                await _refresh(interaction)
-                return
             raw = await att.read()
-            res = await card_assets.submit(db, interaction.user.id, self.kind, raw)
-            if not res["ok"]:
-                await interaction.followup.send(res["message"], ephemeral=True)
+            png, err = await asyncio.to_thread(card_assets.process, self.kind, raw)
+            if err:
+                await interaction.followup.send(err, ephemeral=True)
                 return
+            self.draft.staged[self.kind] = (raw, png)
             flag = "custom_bg" if self.kind == "background" else "logo"
-            new, _ = lcd.validate({**design, flag: True})
-            await db.user_card_set(str(interaction.user.id), json.dumps(new, separators=(",", ":")))
-            if res["status"] == "approved":
-                await _send_to_host(interaction, self.kind)
-            elif res["status"] == "rejected":
-                await interaction.followup.send(f"That image can't be used: {res['reason']}", ephemeral=True)
-            else:
-                await interaction.followup.send("⏳ Saved. It shows on your card once it passes the automatic check.", ephemeral=True)
-            await _refresh(interaction)
+            new, _ = lcd.validate({**self.draft.design, flag: True})
+            self.draft.design = new
+            self.draft.dirty = True
+            await rerender(interaction, self.draft)
         except Exception:
             logger.exception("[level-card] upload failed")
             try:
-                await interaction.followup.send("Couldn't upload that. Try again.", ephemeral=True)
+                await interaction.followup.send("Couldn't use that image. Try again.", ephemeral=True)
             except Exception:
                 pass
 

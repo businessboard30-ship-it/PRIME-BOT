@@ -31,7 +31,9 @@ def b64(raw):
 # ---------- pure pipeline ----------
 def test_background_is_resized_and_reencoded_to_png():
     png, err = ca.process("background", img_bytes((1800, 600), fmt="JPEG"))
-    assert err is None and Image.open(io.BytesIO(png)).size == (900, 300) and Image.open(io.BytesIO(png)).format == "PNG"
+    assert err is None and Image.open(io.BytesIO(png)).size == (1800, 600) and Image.open(io.BytesIO(png)).format == "PNG"
+    small, err = ca.process("background", img_bytes((900, 300)))
+    assert err is None and Image.open(io.BytesIO(small)).size == (900, 300)
 
 
 @pytest.mark.parametrize("raw", [b"", b"GIF89a....", b"not an image", b"<svg xmlns='x'/>", b"\x89PNG\r\n\x1a\n" + b"0" * 50])
@@ -39,10 +41,13 @@ def test_non_images_are_rejected(raw):
     assert ca.process("background", raw)[0] is None
 
 
-def test_wrong_shape_too_small_and_too_big_are_rejected():
-    assert ca.process("background", img_bytes((900, 900)))[0] is None            # not 3:1
+def test_any_shape_is_cropped_big_images_make_a_bigger_card_and_limits_hold():
+    sq, err = ca.process("background", img_bytes((900, 900)))                    # cropped to 3:1, not rejected
+    assert err is None and Image.open(io.BytesIO(sq)).size == (900, 300)
+    huge, err = ca.process("background", img_bytes((4000, 1000)))                # capped at 2x
+    assert err is None and Image.open(io.BytesIO(huge)).size == (1800, 600)
     assert ca.process("background", img_bytes((300, 100)))[0] is None            # too small
-    assert ca.process("background", b"0" * 1_600_000)[0] is None                 # over size cap
+    assert ca.process("background", b"0" * (8 * 1024 * 1024 + 1))[0] is None    # over the 8 MB cap (same as the welcome card)
     assert ca.process("logo", img_bytes((32, 32)))[0] is None
     assert ca.process("nope", img_bytes())[0] is None
 
@@ -66,11 +71,11 @@ def test_metadata_and_trailing_data_do_not_survive_reencode():
 def test_logo_keeps_transparency_and_fits_box():
     png, err = ca.process("logo", img_bytes((1000, 800), (255, 0, 0, 0), mode="RGBA"))
     im = Image.open(io.BytesIO(png))
-    assert err is None and im.mode == "RGBA" and im.size[0] <= 440 and im.size[1] <= 520
+    assert err is None and im.mode == "RGBA" and im.size[0] <= 660 and im.size[1] <= 780
 
 
 def test_b64_decode_is_strict():
-    assert ca.decode_b64("!!notb64") is None and ca.decode_b64(5) is None and ca.decode_b64("A" * 4_000_001) is None
+    assert ca.decode_b64("!!notb64") is None and ca.decode_b64(5) is None and ca.decode_b64("A" * 11_600_001) is None
     assert ca.decode_b64(b64(b"hi")) == b"hi"
 
 

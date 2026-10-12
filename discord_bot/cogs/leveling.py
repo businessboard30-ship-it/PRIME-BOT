@@ -728,6 +728,17 @@ class LevelingCog(GuildOnlyCog):
             lines.append(f"👑 Chief of **{chief_seat['clan_slug']}**")
         buttons = [ActionButton("Leaderboard", discord.ButtonStyle.secondary, self, "leaderboard", emoji="🏆")]
         card = NavCardView(f"{target.display_name} — level {p['level']}", lines, discord.Color.blurple(), buttons)
+        # A member with an active Level Pass shows their own designed card here too (best effort; otherwise the
+        # plain card below is all that is sent).
+        try:
+            from modules import level_card_design as _lcd
+            rank_row = await db.get_xp_rank(interaction.guild_id, target.id, clone_id=clone_id)
+            png = await _lcd.render_member_card(db, target, p["level"], p["current_xp_in_level"],
+                                                p["xp_needed_for_next_level"], rank=(rank_row or {}).get("rank"))
+            if png:
+                await interaction.followup.send(file=discord.File(io.BytesIO(png), filename="rank.png"))
+        except Exception:
+            logger.warning("[v0] couldn't send the custom rank card", exc_info=True)
         await interaction.followup.send(view=card)
 
     @app_commands.command(name="levelcard", description="Design your level-up card: colours, font, bio, background and logo")

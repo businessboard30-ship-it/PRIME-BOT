@@ -1107,7 +1107,7 @@
         show(j.assets && j.assets[kind]);
         file.addEventListener("change", function () {
           var f = file.files && file.files[0]; if (!f) return;
-          if (f.size > maxBytes) { msg.textContent = label + " is too big (max " + (maxBytes / 1000000) + " MB)."; file.value = ""; return; }
+          if (f.size > maxBytes) { msg.textContent = label + " is too big (max " + Math.round(maxBytes / 1048576) + " MB)."; file.value = ""; return; }
           status.textContent = " Uploading and checking\u2026"; pay.textContent = "";
           var r = new FileReader();
           r.onload = function () {
@@ -1128,8 +1128,8 @@
           h("p", null, file, " ", del), h("label", null, use, " Use my " + label.toLowerCase()));
       }
       box.appendChild(h("h4", { text: "Your own artwork" }));
-      box.appendChild(upRow("background", "Background", "custom_bg", 1500000, "PNG or JPEG, about 3:1 (900x300 is ideal), up to 1.5 MB. Keep the left 280px calm (avatar) and the middle dark and plain (text)."));
-      box.appendChild(upRow("logo", "Logo or picture", "logo", 1000000, "PNG with transparency works best, up to 1 MB. It is placed in the right-hand box and never covers the text."));
+      box.appendChild(upRow("background", "Background", "custom_bg", 8388608, "PNG or JPEG, any shape (it is cropped to 3:1), up to 8 MB. A bigger image makes a bigger, sharper card. Keep the left side calm (avatar) and the middle dark and plain (text)."));
+      box.appendChild(upRow("logo", "Logo or picture", "logo", 8388608, "PNG with transparency works best, up to 8 MB. It is placed in the right-hand box and never covers the text."));
       var idea = h("input", { type: "text", maxlength: 120, "aria-label": "Your style idea", placeholder: "e.g. neon city at night, purple and gold" });
       var copy = h("button", { class: "btn sm ghost", type: "button", text: "Copy AI prompt" });
       copy.addEventListener("click", function () {
