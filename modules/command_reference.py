@@ -217,11 +217,17 @@ def build_context(user_perms: Optional[set] = None, bot=None, runnable: Optional
     lines = [ln for ln in lines if ln.split(" ", 1)[0] not in _chat_cmds]
     runnable = runnable or set()
     if runnable:
-        lines = [
-            (f"{ln} [I can run this for you — use the matching tool instead of just describing it]"
-             if ln.split(" ", 1)[0].lstrip("/") in runnable else ln)
-            for ln in lines
-        ]
+        def _mark(ln: str) -> str:
+            root = ln.split(" ", 1)[0].lstrip("/")
+            if root not in runnable:
+                return ln
+            # A group line ("/welcome <enable|disable|...>") only has SOME runnable subcommands: say which.
+            subs = sorted(r.split(" ", 1)[1] for r in runnable if r.startswith(root + " "))
+            if " <" in ln and subs:
+                return (f"{ln} [I can run these for you with the matching tool: {', '.join(subs)}; "
+                        "the other subcommands are describe-only]")
+            return f"{ln} [I can run this for you — use the matching tool instead of just describing it]"
+        lines = [_mark(ln) for ln in lines]
     joined = "\n".join(lines)
     can_run_rule = (
         "- Some commands below are marked \"I can run this for you\" — for THOSE, call the matching "

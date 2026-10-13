@@ -26,10 +26,60 @@ from typing import List, Optional, Tuple
 import discord
 
 from database import db, get_pool
-from modules.ai_command_allowlist import is_command_allowed, needs_confirmation, AI_COMMANDS, AICommandSpec
+from modules.ai_command_allowlist import (
+    is_command_allowed, needs_confirmation, module_is_banned, AI_COMMANDS, AICommandSpec,
+)
 from modules.superbot_adapter import get_user_tier
 
 logger = logging.getLogger(__name__)
+
+
+class _AlreadyRespondedResponse:
+    """Stands in for `interaction.response` while the AI runs a command on an interaction whose response is
+    ALREADY used up (the /aichat message was deferred, or the Confirm button click edited its prompt). A command
+    written for a normal slash call does `response.send_message(...)` / `response.defer()`, which Discord rejects
+    a second time. Here those turn into the equivalent followup / no-op, so the command works the same either way.
+    Modals can't be opened any more, so send_modal is refused with a clear error instead of a Discord one."""
+
+    def __init__(self, inner, interaction):
+        self._inner = inner
+        self._i = interaction
+
+    def is_done(self) -> bool:
+        return True
+
+    async def defer(self, **_kw):
+        return None
+
+    async def send_message(self, content=None, **kw):
+        kw.pop("tts", None)
+        return await self._i.followup.send(content, **kw)
+
+    async def edit_message(self, **kw):
+        return await self._i.edit_original_response(**kw)
+
+    async def send_modal(self, *_a, **_kw):
+        raise RuntimeError("A pop-up form can't be opened from an AI-run command.")
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _adapt_used_response(interaction):
+    """If this real interaction's response is already used, swap in the adapter. Returns the original response
+    (to put back afterwards) or None when nothing was changed (not used yet, or a stand-in object)."""
+    resp = getattr(interaction, "response", None)
+    try:
+        used = resp is not None and resp.is_done()
+    except Exception:
+        used = False
+    if not used or isinstance(resp, _AlreadyRespondedResponse) or not isinstance(interaction, discord.Interaction):
+        return None
+    try:
+        interaction.response = _AlreadyRespondedResponse(resp, interaction)
+    except Exception:
+        return None
+    return resp
 
 
 class AICommandDenied(Exception):
@@ -136,23 +186,60 @@ async def check_real_permission(interaction: discord.Interaction, command: disco
     a custom predicate) are exactly what runs here, unmodified."""
     if interaction.guild is None:
         return False, "This can only be used inside a server."
-    for check in command.checks:
-        try:
-            ok = await discord.utils.maybe_coroutine(check, interaction)
-        except discord.app_commands.AppCommandError as e:
-            return False, str(e) or "You don't have permission to do that."
-        except Exception as e:
-            logger.warning(f"[ai_command_guard] check {check!r} raised unexpectedly: {e}")
-            return False, "Couldn't verify your permissions for that."
-        if not ok:
-            return False, "You don't have permission to do that."
+    # The command's own checks AND those of every group above it (a subcommand inherits its group's checks).
+    chain, node = [], command
+    while node is not None:
+        chain.append(node)
+        node = getattr(node, "parent", None)
+    for node in chain:
+        for check in (getattr(node, "checks", None) or []):
+            try:
+                ok = await discord.utils.maybe_coroutine(check, interaction)
+            except discord.app_commands.AppCommandError as e:
+                return False, str(e) or "You don't have permission to do that."
+            except Exception as e:
+                logger.warning(f"[ai_command_guard] check {check!r} raised unexpectedly: {e}")
+                return False, "Couldn't verify your permissions for that."
+            if not ok:
+                return False, "You don't have permission to do that."
+    return True, None
+
+
+def check_spec_permissions(interaction, spec: AICommandSpec) -> Tuple[bool, Optional[str]]:
+    """The Discord permissions the spec itself declares (needs_perms), checked against the asker in this channel.
+    This is in addition to the command's own checks: many commands gate themselves inside their body, which would
+    otherwise leave the AI offering them to people who then just get refused. Administrator always passes."""
+    wanted = tuple(getattr(spec, "needs_perms", ()) or ())
+    if not wanted:
+        return True, None
+    perms = getattr(interaction, "permissions", None)
+    if perms is None:
+        member = getattr(interaction, "user", None)
+        perms = getattr(member, "guild_permissions", None)
+    if perms is None:
+        return False, "Couldn't verify your permissions for that."
+    if getattr(perms, "administrator", False):
+        return True, None
+    missing = [p for p in wanted if not getattr(perms, p, False)]
+    if missing:
+        nice = ", ".join(m.replace("_", " ").title() for m in missing)
+        return False, f"You need the **{nice}** permission to do that."
     return True, None
 
 
 def _resolve_command(bot: discord.Client, name: str) -> Optional[discord.app_commands.Command]:
+    """`name` is a top-level command name, or a space-separated path for a subcommand ("welcome enable").
+    Only real runnable Commands come back; a Group (which has no callback) is never returned."""
+    if " " in name.strip():
+        node = bot.tree.get_command(name.split()[0])
+        for part in name.split()[1:]:
+            node = node.get_command(part) if isinstance(node, discord.app_commands.Group) else None
+            if node is None:
+                return None
+        return node if isinstance(node, discord.app_commands.Command) else None
     cmd = bot.tree.get_command(name)
     if cmd is not None:
-        return cmd
+        return cmd if isinstance(cmd, discord.app_commands.Command) else None
     # Fall back to a full walk for commands nested in a Group, if any ever
     # get added to the allowlist — get_command only finds top-level ones.
     for cmd in bot.tree.walk_commands():
@@ -176,13 +263,22 @@ async def resolve_and_check(interaction: discord.Interaction, command_name: str,
         await db.log_ai_command(interaction.guild_id, interaction.user.id, command_name, args, allowed=False, denial_reason=reason)
         return None, None, reason, False
 
-    command = _resolve_command(interaction.client, command_name)
+    command = _resolve_command(interaction.client, spec.command_path)
     if command is None:
         reason = f"'{command_name}' is allowlisted but I couldn't find the live command — probably a naming drift, tell the bot owner."
         await db.log_ai_command(interaction.guild_id, interaction.user.id, command_name, args, allowed=False, denial_reason=reason)
         return None, None, reason, False
 
+    # Second money/premium guard, against the module the LIVE command is actually bound to.
+    bound_module = type(command.binding).__module__ if getattr(command, "binding", None) is not None else spec.cog_module
+    if module_is_banned(bound_module):
+        reason = f"'{command_name}' isn't something I'm able to run."
+        await db.log_ai_command(interaction.guild_id, interaction.user.id, command_name, args, allowed=False, denial_reason=reason)
+        return None, None, reason, False
+
     ok, reason = await check_real_permission(interaction, command)
+    if ok:
+        ok, reason = check_spec_permissions(interaction, spec)
     if not ok:
         await db.log_ai_command(interaction.guild_id, interaction.user.id, command_name, args, allowed=False, denial_reason=reason)
         return None, None, reason, False
@@ -224,10 +320,15 @@ async def get_qualifying_commands(interaction: discord.Interaction) -> List[AICo
     if not cap_ok:
         return qualifying
     for spec in AI_COMMANDS:
-        command = _resolve_command(interaction.client, spec.name)
+        command = _resolve_command(interaction.client, spec.command_path)
         if command is None:
             continue
+        bound_module = type(command.binding).__module__ if getattr(command, "binding", None) is not None else spec.cog_module
+        if module_is_banned(bound_module):
+            continue
         ok, _reason = await check_real_permission(interaction, command)
+        if ok:
+            ok, _reason = check_spec_permissions(interaction, spec)
         if ok:
             qualifying.append(spec)
     return qualifying
@@ -298,8 +399,14 @@ async def execute_ai_command(interaction: discord.Interaction, command_name: str
         # Binds and calls the command's own callback directly through discord.py's
         # normal invocation path (parameter transformation, cooldowns, the works)
         # rather than hand-rolling argument passing — same machinery a real
-        # interaction uses.
-        await command._do_call(interaction, kwargs)
+        # interaction uses. When the response is already used (deferred /aichat
+        # message, or the Confirm click), the adapter keeps the callback working.
+        original = _adapt_used_response(interaction)
+        try:
+            await command._do_call(interaction, kwargs)
+        finally:
+            if original is not None:
+                interaction.response = original
 
 
 class AIConfirmView(discord.ui.View):

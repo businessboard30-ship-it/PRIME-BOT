@@ -61,10 +61,10 @@ from modules.ai_features import (
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
 from modules.ai_command_guard import (
-    get_qualifying_commands, resolve_and_check, execute_ai_command,
+    get_qualifying_commands, resolve_and_check, execute_ai_command, _resolve_command,
     AICommandDenied, send_cap_reached_prompt, AIConfirmView,
 )
-from modules.ai_command_allowlist import needs_confirmation
+from modules.ai_command_allowlist import needs_confirmation, runnable_labels
 from discord_bot.cogs._ai_interaction_proxy import ProxyInteraction
 from discord_bot.cogs._views_shared import ActionButton, NavView, NavCardView, refresh_button
 from discord_clone_service import build_invite_url
@@ -609,9 +609,7 @@ class AIToolsCog(commands.Cog):
         specs = await get_qualifying_commands(interaction)
         tools = []
         for spec in specs:
-            command = interaction.client.tree.get_command(spec.name) or next(
-                (c for c in interaction.client.tree.walk_commands() if c.name == spec.name), None
-            )
+            command = _resolve_command(interaction.client, spec.command_path)
             if command is not None:
                 tools.append(self._command_tool_schema(spec, command))
         return tools
@@ -742,7 +740,7 @@ class AIToolsCog(commands.Cog):
                 )
 
         if needs_confirmation(spec, resolved_args):
-            prompt = f"I'd run **/{name}** with `{resolved_args}` — confirm?"
+            prompt = f"I'd run **/{spec.command_path}** with `{resolved_args}` — confirm?"
             # A cog can supply a clearer confirm message (and refuse early,
             # before any confirm button) via AI_CONFIRM_PROMPTS = {"cmd": "method"};
             # the method returns (ok, text).
@@ -793,7 +791,7 @@ class AIToolsCog(commands.Cog):
         is_anime = any(kw in message.lower() for kw in anime_keywords)
 
         tools = await self._build_command_tools(interaction) if interaction is not None else None
-        runnable = {t["function"]["name"] for t in tools} if tools else None
+        runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(message, user_id, perms, guild, runnable=runnable)
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
                                   session_id=session_id, command_context=command_context, tools=tools or None,
@@ -1058,7 +1056,7 @@ class AIToolsCog(commands.Cog):
 
         proxy = ProxyInteraction(message, self.bot) if guild else None
         tools = await self._build_command_tools(proxy) if proxy is not None else []
-        runnable = {t["function"]["name"] for t in tools} if tools else None
+        runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(content, user_id, perms, guild, runnable=runnable)
         response = await ai_chat(
             user_id, content, is_anime_question=is_anime, tier="basic", session_id=None,

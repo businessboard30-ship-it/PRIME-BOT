@@ -49,6 +49,24 @@ class AICommandSpec:
     # actually passes one of these args (e.g. /style only mutates anything
     # when `font`/`channel` are given — a bare preview needs no confirm).
     confirm_only_with: tuple = ()
+    # Discord permissions (names from discord.Permissions, e.g. "manage_guild") the asker must have. Enforced by
+    # ai_command_guard on top of the command's own checks, so a command whose only gate lives inside its body can
+    # never be offered to, or run for, someone who lacks the permission. Administrator always passes.
+    needs_perms: tuple = ()
+    # Full command path for a SUBCOMMAND of a group, e.g. "welcome enable" or "automod bannedword add". Empty means
+    # the command is top-level and `name` is its registered name. `name` is always the unique tool name the model
+    # sees (letters, digits, _ and - only), so for a subcommand it is the path with underscores: "welcome_enable".
+    path: str = ""
+
+    @property
+    def command_path(self) -> str:
+        return self.path or self.name
+
+
+def _sub(path: str, module: str, confirm: bool, desc: str, perms: tuple = ()) -> "AICommandSpec":
+    """Spec for a subcommand of a group. `path` is the slash path, e.g. "welcome enable"."""
+    return AICommandSpec(path.replace(" ", "_").replace("-", "_"), module, confirm, desc,
+                         needs_perms=tuple(perms), path=path)
 
 
 AI_COMMANDS = (
@@ -115,6 +133,91 @@ AI_COMMANDS = (
     AICommandSpec("start", "discord_bot.cogs.quickstart", False, "Show the bot's setup quickstart"),
     AICommandSpec("download", "discord_bot.cogs.external_tools", False, "Download audio/video from a supported link"),
     AICommandSpec("removeclone", "discord_bot.cogs.clone_admin", True, "Deactivate one of your Discord bot clones"),
+
+    # ── Fun / small setup commands ──────────────────────────────────────
+    AICommandSpec("cat", "discord_bot.cogs.cat", False, "Show a random cute cat picture"),
+    AICommandSpec("catsetup", "discord_bot.cogs.cat", True,
+                  "Set up automatic cat spawns: pick the channel and how often (Premium raises the limits)",
+                  needs_perms=("manage_guild",)),
+    AICommandSpec("honeypot", "discord_bot.cogs.honeypot", True, "Set up the honeypot channel that catches spam bots",
+                  needs_perms=("manage_guild",)),
+    AICommandSpec("scamshield", "discord_bot.cogs.scam_shield", True,
+                  "Open this server's Scam Shield settings (AI image check, allowed domains)",
+                  needs_perms=("manage_guild",)),
+    AICommandSpec("bumpsetup", "discord_bot.cogs.bump_setup", True, "Set up server bumping",
+                  needs_perms=("manage_guild",)),
+
+    # ── Auto-moderation ─────────────────────────────────────────────────
+    _sub("automod status", "discord_bot.cogs.automod", False, "Show current auto-moderation settings"),
+    _sub("automod toggle", "discord_bot.cogs.automod", True, "Turn an auto-mod filter on or off", ("manage_guild",)),
+    _sub("automod action", "discord_bot.cogs.automod", True, "Set what happens when an auto-mod filter triggers", ("manage_guild",)),
+    _sub("automod mentionthreshold", "discord_bot.cogs.automod", True, "Set how many mentions in one message count as spam", ("manage_guild",)),
+    _sub("automod minaccountage", "discord_bot.cogs.automod", True, "Set the minimum account age for new joiners", ("manage_guild",)),
+    _sub("automod bannedword list", "discord_bot.cogs.automod", False, "List blocked words and phrases"),
+    _sub("automod bannedword add", "discord_bot.cogs.automod", True, "Add a blocked word or phrase", ("manage_guild",)),
+    _sub("automod bannedword remove", "discord_bot.cogs.automod", True, "Remove a blocked word or phrase", ("manage_guild",)),
+
+    # ── Server tools (subcommands of command groups) ────────────────────
+    _sub("autopost status", "discord_bot.cogs.autopost", False, "Check this server's autopost configuration"),
+    _sub("autopost setup", "discord_bot.cogs.autopost", True, "Turn on periodic bot feature posts in a channel", ("manage_guild",)),
+    _sub("autopost disable", "discord_bot.cogs.autopost", True, "Turn off periodic bot feature posts", ("manage_guild",)),
+    _sub("autoresponder list", "discord_bot.cogs.automation", False, "List auto-responses"),
+    _sub("autoresponder add", "discord_bot.cogs.automation", True, "Add an auto-response trigger", ("manage_guild",)),
+    _sub("autoresponder remove", "discord_bot.cogs.automation", True, "Remove an auto-response", ("manage_guild",)),
+    _sub("giveaway start", "discord_bot.cogs.giveaways", True, "Start a giveaway (prize, duration, number of winners)", ("manage_guild",)),
+    _sub("giveaway reroll", "discord_bot.cogs.giveaways", True, "Reroll the winner(s) of an ended giveaway", ("manage_guild",)),
+    _sub("levelrole list", "discord_bot.cogs.leveling", False, "List the level-up role rewards"),
+    _sub("levelrole add", "discord_bot.cogs.leveling", True, "Grant a role automatically at a given level", ("manage_roles",)),
+    _sub("levelrole remove", "discord_bot.cogs.leveling", True, "Remove a level-up role reward", ("manage_roles",)),
+    _sub("linkbutton list", "discord_bot.cogs.link_buttons", False, "List this server's custom link buttons", ("manage_guild",)),
+    _sub("linkbutton add", "discord_bot.cogs.link_buttons", True, "Add a custom link button", ("manage_guild",)),
+    _sub("linkbutton remove", "discord_bot.cogs.link_buttons", True, "Remove a link button by its label", ("manage_guild",)),
+    _sub("linkbutton panel", "discord_bot.cogs.link_buttons", True, "Post the link buttons as a message in this channel", ("manage_guild",)),
+    _sub("reactionrole list", "discord_bot.cogs.reaction_roles", False, "List every reaction-role panel in this server"),
+    _sub("reactionrole create", "discord_bot.cogs.reaction_roles", True, "Post a new reaction-role panel in this channel", ("manage_roles",)),
+    _sub("reactionrole add", "discord_bot.cogs.reaction_roles", True, "Add a role button to a reaction-role panel", ("manage_roles",)),
+    _sub("reactionrole remove", "discord_bot.cogs.reaction_roles", True, "Remove a role button from a panel", ("manage_roles",)),
+    _sub("schedule list", "discord_bot.cogs.schedule", False, "List scheduled messages in this server"),
+    _sub("schedule once", "discord_bot.cogs.schedule", True, "Send a message once, after a delay", ("manage_guild",)),
+    _sub("schedule recurring", "discord_bot.cogs.schedule", True, "Repost a message on a fixed interval", ("manage_guild",)),
+    _sub("schedule daily", "discord_bot.cogs.schedule", True, "Post a message every day at a UTC time", ("manage_guild",)),
+    _sub("schedule cancel", "discord_bot.cogs.schedule", True, "Cancel a scheduled message", ("manage_guild",)),
+    _sub("starboard settings", "discord_bot.cogs.starboard", False, "Show the current starboard settings"),
+    _sub("starboard setup", "discord_bot.cogs.starboard", True, "Set the starboard channel and star threshold", ("manage_guild",)),
+    _sub("starboard emoji", "discord_bot.cogs.starboard", True, "Set which emoji counts toward the starboard", ("manage_guild",)),
+    _sub("starboard disable", "discord_bot.cogs.starboard", True, "Turn off the starboard", ("manage_guild",)),
+    _sub("voicexp settings", "discord_bot.cogs.voice_xp", False, "Show the voice XP settings"),
+    _sub("voicexp toggle", "discord_bot.cogs.voice_xp", True, "Enable or disable voice XP", ("manage_guild",)),
+    _sub("voicexp rate", "discord_bot.cogs.voice_xp", True, "Set how much XP is earned per minute in voice", ("manage_guild",)),
+    _sub("voicexp afk", "discord_bot.cogs.voice_xp", True, "Choose whether time in the AFK channel counts", ("manage_guild",)),
+    _sub("welcome enable", "discord_bot.cogs.welcome", True, "Turn welcome cards on in a channel", ("manage_guild",)),
+    _sub("welcome disable", "discord_bot.cogs.welcome", True, "Turn welcome cards off", ("manage_guild",)),
+    _sub("welcome message", "discord_bot.cogs.welcome", True, "Set the welcome text", ("manage_guild",)),
+    _sub("welcome colors", "discord_bot.cogs.welcome", True, "Set the welcome card's background and accent colours", ("manage_guild",)),
+    _sub("welcome style", "discord_bot.cogs.welcome", True, "Switch the welcome card between animated and static", ("manage_guild",)),
+    _sub("welcome preview", "discord_bot.cogs.welcome", False, "Preview the welcome card"),
+    _sub("roastarena status", "discord_bot.cogs.roast_arena", False, "Show this server's roast-battle status"),
+    _sub("roastarena enable", "discord_bot.cogs.roast_arena", True, "Opt this server into inter-server roast battles", ("manage_guild",)),
+    _sub("roastarena disable", "discord_bot.cogs.roast_arena", True, "Opt this server out of inter-server roast battles", ("manage_guild",)),
+    _sub("suggestions log-channel", "discord_bot.cogs.suggestions", True, "Set the channel approved suggestions are logged to", ("manage_guild",)),
+    _sub("clan view", "discord_bot.cogs.leveling", False, "Show a member's clan and chief status"),
+    _sub("clan members", "discord_bot.cogs.leveling", False, "See who is in a clan, ranked by XP"),
+    _sub("alert list", "discord_bot.cogs.crypto_alerts", False, "Show your active crypto price alerts"),
+    _sub("alert set", "discord_bot.cogs.crypto_alerts", True, "Get notified when a coin crosses a price"),
+    _sub("alert remove", "discord_bot.cogs.crypto_alerts", True, "Remove your alert for one coin"),
+    _sub("alert clear", "discord_bot.cogs.crypto_alerts", True, "Remove all your price alerts"),
+    _sub("botstore browse", "discord_bot.cogs.botstore", False, "Browse bots in the directory"),
+    _sub("botstore trending", "discord_bot.cogs.botstore", False, "Show the most-clicked bots in the directory"),
+    _sub("botstore search", "discord_bot.cogs.botstore", False, "Search the bot directory"),
+    _sub("archive trending", "discord_bot.cogs.archive", False, "See the current top bots in the archive"),
+    _sub("referral mycode", "discord_bot.cogs.referrals", False, "Show your referral code"),
+    _sub("setup channels", "discord_bot.cogs.setup_channels", True, "Suggest and create commonly useful channels", ("manage_channels",)),
+    _sub("setup reportchannel", "discord_bot.cogs.setup_channels", True, "Choose which channel receives server reports", ("manage_guild",)),
+    _sub("invites setup", "discord_bot.cogs.invites", True, "Open the invite tracker setup wizard", ("manage_guild",)),
+    _sub("ticket setup", "discord_bot.cogs.ticket", True, "Set up the ticket system", ("manage_guild",)),
+    _sub("role setup", "discord_bot.cogs.role_setup", True, "Create common self-roles and post a member panel", ("manage_roles",)),
+    _sub("bump now", "discord_bot.cogs.bump", True, "Bump this server to other opted-in servers", ("manage_guild",)),
+    _sub("submissions pending", "discord_bot.cogs.submissions", False, "List submissions awaiting review", ("manage_guild",)),
 )
 
 AI_COMMANDS_BY_NAME = {c.name: c for c in AI_COMMANDS}
@@ -154,6 +257,25 @@ BANNED_OWNER_ONLY_COMMANDS = frozenset({
 })
 
 
+def module_is_banned(module_path: str) -> bool:
+    """True if a cog module path matches a money/premium marker. Checked against the REAL module the live command
+    is bound to (not only what the spec claims), so a mislabelled spec can't slip a payment flow through."""
+    return any(marker in (module_path or "") for marker in BANNED_COG_MODULE_MARKERS)
+
+
+def runnable_labels(names) -> set:
+    """What to put in the command reference's "I can run this" marker for these tool names: a top-level command's
+    own name, plus for group subcommands both the group ("welcome") and the full path ("welcome enable")."""
+    out = set()
+    for n in names or ():
+        spec = AI_COMMANDS_BY_NAME.get(n)
+        if spec is None:
+            continue
+        out.add(spec.command_path)
+        out.add(spec.command_path.split(" ", 1)[0])
+    return out
+
+
 def is_command_allowed(name: str) -> Optional[AICommandSpec]:
     """Returns the AICommandSpec if this command may be run by the AI, else
     None. Callers must treat None as a hard refusal, never a fallback to
@@ -163,6 +285,6 @@ def is_command_allowed(name: str) -> Optional[AICommandSpec]:
     spec = AI_COMMANDS_BY_NAME.get(name)
     if spec is None:
         return None
-    if any(marker in spec.cog_module for marker in BANNED_COG_MODULE_MARKERS):
+    if module_is_banned(spec.cog_module):
         return None
     return spec
