@@ -45,6 +45,37 @@ def test_help_button_round_trips_and_replies_privately():
     assert sent[0]["ephemeral"] is True
     e = sent[0]["embed"]
     assert "Adopt me" in e.description and "Market" in e.description and "no real money" in e.footer.text
+    assert len(e.description) < 400                          # short first screen; the detail is behind the menu
+    assert e.thumbnail.url == cat_help.RING_URL
+    menu = sent[0]["view"].children[0]
+    assert [o.value for o in menu.options] == [k for k, *_ in cat_help.topics()]
+
+
+def test_topics_are_short_use_real_numbers_and_fit_a_menu():
+    ts = cat_help.topics()
+    assert 2 <= len(ts) <= 25 and len({k for k, *_ in ts}) == len(ts)
+    for _key, emoji, label, text in ts:
+        assert emoji and 0 < len(label) <= 100 and 0 < len(text) <= 330
+    joined = " ".join(t for *_, t in ts)
+    assert f"{cat_market.MIN_PRICE:,}" in joined and f"{cat_market.MAX_PRICE:,}" in joined
+    assert f"{cat_wallet.DIAMOND_COINS:,}" in joined and str(cat_adopt.MAX_CATS) in joined
+    assert cat_help.topic_text("nope") == cat_help.overview_text()
+
+
+def test_picking_a_topic_switches_the_card_in_place():
+    edited = []
+
+    async def edit_message(**kw):
+        edited.append(kw)
+
+    async def go():
+        sel = v.HelpTopicSelect()
+        sel._values = ["market"]
+        inter = SimpleNamespace(response=SimpleNamespace(edit_message=edit_message))
+        await sel.callback(inter)
+    run(go())
+    assert edited[0]["embed"].description == cat_help.topic_text("market")
+    assert [o.value for o in edited[0]["view"].children[0].options if o.default] == ["market"]
 
 
 def test_help_text_uses_the_real_numbers():

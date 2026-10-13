@@ -101,9 +101,37 @@ class HelpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_help
         return cls()
 
     async def callback(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="🐱 How the cat game works", description=cat_help.build_text(), color=PINK)
+        view = HelpView()
+        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+
+class HelpView(discord.ui.View):
+    """Short help for the cat game: a few lines per topic, switched with a menu. Private to whoever tapped Help."""
+
+    def __init__(self, key: Optional[str] = None):
+        super().__init__(timeout=300)
+        self.key = key
+        self.add_item(HelpTopicSelect(key))
+
+    def embed(self) -> discord.Embed:
+        rows = {k: (e, label) for k, e, label, _ in cat_help.topics()}
+        title = "🐱 Cat help" if self.key not in rows else f"{rows[self.key][0]} {rows[self.key][1]}"
+        embed = discord.Embed(title=title, description=cat_help.topic_text(self.key), color=PINK)
+        embed.set_thumbnail(url=cat_help.RING_URL)
         embed.set_footer(text=cat_help.FOOTER)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return embed
+
+
+class HelpTopicSelect(discord.ui.Select):
+    def __init__(self, current: Optional[str] = None):
+        super().__init__(
+            placeholder="Pick a topic",
+            options=[discord.SelectOption(label=label, value=key, emoji=emoji, default=key == current)
+                     for key, emoji, label, _ in cat_help.topics()])
+
+    async def callback(self, interaction: discord.Interaction):
+        view = HelpView(self.values[0])
+        await interaction.response.edit_message(embed=view.embed(), view=view)
 
 
 class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_adopt:(\d+)$"):
