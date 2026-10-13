@@ -472,7 +472,7 @@ class LevelingCog(GuildOnlyCog):
             # when it lapses design_for_user() returns None and the normal card comes back (design is kept).
             try:
                 from modules import level_card_design as _lcd
-                custom_card = await _lcd.card_for_user(db, member.id)
+                custom_card = await _lcd.card_for_user(db, member.id, guild_id=member.guild.id, clone_id=clone_id)
             except Exception as e:
                 logger.warning(f"[v0] custom level card lookup failed for {member.id}: {e}")
                 custom_card = None
@@ -734,7 +734,8 @@ class LevelingCog(GuildOnlyCog):
             from modules import level_card_design as _lcd
             rank_row = await db.get_xp_rank(interaction.guild_id, target.id, clone_id=clone_id)
             png = await _lcd.render_member_card(db, target, p["level"], p["current_xp_in_level"],
-                                                p["xp_needed_for_next_level"], rank=(rank_row or {}).get("rank"))
+                                                p["xp_needed_for_next_level"], rank=(rank_row or {}).get("rank"),
+                                                clone_id=clone_id)
             if png:
                 await interaction.followup.send(file=discord.File(io.BytesIO(png), filename=_lcd.file_name("rank", png)))
         except Exception:

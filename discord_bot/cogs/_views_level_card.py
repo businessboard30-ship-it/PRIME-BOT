@@ -35,10 +35,12 @@ ACCEPTED = ("image/png", "image/jpeg")
 
 
 # ── state ────────────────────────────────────────────────────────────────────
-async def load_state(uid: int):
-    """-> (has_pass, design, assets{kind: row}, expires_at|None). Read fresh every time."""
+async def load_state(uid: int, guild_id=None, clone_id=None):
+    """-> (has_pass, design, assets{kind: row}, expires_at|None). Read fresh every time. In a Premium
+    server `has_pass` is True without a Level Pass (see lcd.guild_card_access); the caller can tell the two apart by
+    asking `_own_access(uid)`."""
     rows = await db.entitlements_list(str(uid))
-    has_pass = ent.has_access(rows, ("card_plan",))
+    has_pass = ent.has_access(rows, ("card_plan",)) or await lcd.guild_card_access(db, guild_id, clone_id)
     expires = next((r.get("expires_at") for r in rows if r.get("product") == "card_plan"), None)
     design = dict(lcd.DEFAULT_DESIGN)
     raw = await db.user_card_get(str(uid))
@@ -92,6 +94,7 @@ class Draft:
     use_real: bool = False
     dirty: bool = False
     guild_id: Optional[int] = None
+    free_guild: bool = False                        # access comes from this server (Premium), not from a pass
     trial_available: bool = False                   # never had a card_plan row: Save offers the free trial
     on_trial: bool = False                          # the current access is the free trial
 
@@ -105,12 +108,22 @@ class Draft:
         return self.real if (self.use_real and self.real) else PREVIEW_STATS
 
 
-async def draft_for(uid: int, guild_id=None) -> Draft:
-    has_pass, design, assets, expires = await load_state(uid)
+async def draft_for(uid: int, guild_id=None, clone_id=None) -> Draft:
+    has_pass, design, assets, expires = await load_state(uid, guild_id, clone_id)
     saved = {k: _approved(assets, k) for k in card_assets.KINDS if _approved(assets, k)}
     trial_ok, on_trial = await trial_state(uid)
-    return Draft(design=dict(design), has_pass=has_pass, expires=expires, saved=saved, guild_id=guild_id,
-                 trial_available=trial_ok and not has_pass, on_trial=on_trial)
+    own = await _own_access(uid)
+    return Draft(design=dict(design), has_pass=has_pass, expires=expires if own else None, saved=saved,
+                 guild_id=guild_id, free_guild=has_pass and not own,
+                 trial_available=trial_ok and not has_pass, on_trial=on_trial and own)
+
+
+async def _own_access(uid: int) -> bool:
+    """The member's own Level Pass / trial is active (not just this server's access)."""
+    try:
+        return ent.has_access(await db.entitlements_list(str(uid)), ("card_plan",))
+    except Exception:
+        return False
 
 
 async def render_preview(user, draft: Draft) -> discord.File:
@@ -147,7 +160,10 @@ def build_embed(draft: Draft, notice: str = "") -> discord.Embed:
     design = draft.design
     e = discord.Embed(title="🎨 Your level-up card", color=discord.Color.from_str(design.get("accent", "#57F287")))
     bg = lcd.BACKGROUNDS.get(design.get("background"), ("", "", "Slate"))[2]
-    if draft.has_pass:
+    if draft.free_guild:
+        status = ("🎫 **This server has Premium, so your card is free here.** "
+                  + ("Press **Save** to keep your changes." if draft.dirty else "Everything is saved."))
+    elif draft.has_pass:
         name = "Free trial" if draft.on_trial else "Level Pass"
         until = f"{name} active until <t:{int(draft.expires.timestamp())}:D>" if draft.expires else f"{name} active"
         status = f"🎫 {until}. Press **Save** to keep your changes." if draft.dirty else f"🎫 {until}. Everything is saved."
@@ -190,7 +206,7 @@ async def open_card_wizard(interaction: discord.Interaction) -> None:
     designer; only saving needs the Level Pass."""
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        draft = await draft_for(interaction.user.id, interaction.guild_id)
+        draft = await draft_for(interaction.user.id, interaction.guild_id, getattr(interaction.client, "clone_id", None))
         file = await render_preview(interaction.user, draft)
         await interaction.followup.send(embed=build_embed(draft), file=file,
                                         view=CardWizardView(interaction.user.id, draft), ephemeral=True)
@@ -319,7 +335,8 @@ async def save_draft(interaction: discord.Interaction, draft: Draft, target: Opt
         if target is None:
             await interaction.response.defer()
             target = interaction
-        has_pass, _stored, _assets, expires = await load_state(interaction.user.id)
+        clone = getattr(interaction.client, "clone_id", None)
+        has_pass, _stored, _assets, expires = await load_state(interaction.user.id, interaction.guild_id, clone)
         if not has_pass:
             draft.has_pass = False
             await _offer_pass(interaction, draft, target)
@@ -350,7 +367,7 @@ async def save_draft(interaction: discord.Interaction, draft: Draft, target: Opt
             await interaction.followup.send(err, ephemeral=True)
             return
         await db.user_card_set(uid, json.dumps(new, separators=(",", ":")))
-        fresh = await draft_for(interaction.user.id, interaction.guild_id)
+        fresh = await draft_for(interaction.user.id, interaction.guild_id, clone)
         fresh.use_real, fresh.real = draft.use_real, draft.real
         await rerender(target, fresh, "✅ Saved. It shows on your next level-up, on /rank and on My Rank."
                        + ("\n" + "\n".join(problems) if problems else ""))

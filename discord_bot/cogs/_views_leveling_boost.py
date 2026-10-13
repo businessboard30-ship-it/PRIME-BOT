@@ -67,7 +67,8 @@ class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^level
             per = b["fee_usd"] / b["boosts"]
             lines.append(
                 f"• **{b['label']} ({b['boosts']} boosts)** — ${b['fee_usd']:g} · "
-                f"{app_config.XP_BOOST_MULTIPLIER:g}x XP for {days} days (${per:.2f} per boost)"
+                f"{app_config.XP_BOOST_MULTIPLIER:g}x XP for {days} days (${per:.2f} per boost) · includes your own "
+                f"level-up card for {app_config.LEVEL_PASS_CARD_DAYS} days"
             )
         await interaction.response.send_message(
             "\n".join(lines), view=_BoostPackPickerView(self.guild_id, bundles, offer_pass), ephemeral=True,

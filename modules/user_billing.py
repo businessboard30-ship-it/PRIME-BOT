@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 async def apply_event(db, *, event_id: str, user_id, product: str, kind: str, provider: str,
                       subscription_id: Optional[str] = None, now=None,
-                      cancel_flag: bool = False) -> str:
+                      cancel_flag: bool = False, period_days: Optional[int] = None) -> str:
     """Returns one of: 'applied', 'duplicate', 'ignored'."""
     if not event_id or not user_id or not user_subs.is_plan(product) or kind not in user_subs.KINDS:
         return "ignored"
@@ -25,7 +25,7 @@ async def apply_event(db, *, event_id: str, user_id, product: str, kind: str, pr
         return "duplicate"
     try:
         current = await db.entitlement_get(uid, product)
-        change = user_subs.transition(current, product, kind, now, cancel_flag=cancel_flag)
+        change = user_subs.transition(current, product, kind, now, cancel_flag=cancel_flag, period_days=period_days)
         if change is None:
             return "ignored"
         await db.entitlement_upsert(uid, product, change["status"], change["expires_at"],

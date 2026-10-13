@@ -66,7 +66,7 @@ class FakeDB:
                                  "expires_at": datetime.now(timezone.utc) - timedelta(days=3), "cancel_at_period_end": False}
         return self
 
-    async def activate_xp_boost(self, guild_id, user_id, mult, days, clone_id=None):
+    async def activate_xp_boost(self, guild_id, user_id, mult, days, clone_id=None, stack=False):
         if self.boost_fail:
             raise RuntimeError("boom")
         self.boosts.append((guild_id, user_id, mult, days))
@@ -88,7 +88,7 @@ class FakeDB:
 # ── money ────────────────────────────────────────────────────────────────────
 def test_price_and_periods_line_up():
     assert config.LEVEL_PASS_FEE_USD == 1.99
-    assert config.LEVEL_PASS_CARD_DAYS == user_subs.PLANS["card_plan"]["period_days"]
+    assert config.LEVEL_PASS_CARD_DAYS == 45 and user_subs.PLANS["card_plan"]["period_days"] == 31   # monthly plan unchanged
     assert gp.expected_price_usd("level_pass") == 1.99
     assert auto.PRODUCTS["level_pass"]["kind"] == "one_time" and auto._cents("level_pass") == 199
     assert "level_pass" in config.GUMROAD_PRODUCT_LINKS and "level_pass" in config.GUMROAD_PRODUCT_IDS
@@ -100,7 +100,7 @@ def test_unlock_grants_card_and_one_boost(monkeypatch):
     monkeypatch.setattr(pm, "db", fake)
     run(pm._unlock_level_pass("ref1", 7, 555, None))
     card = fake.ent["card_plan"]
-    assert card["status"] == "active" and timedelta(days=30) < card["expires_at"] - datetime.now(timezone.utc) <= timedelta(days=31, minutes=1)
+    assert card["status"] == "active" and timedelta(days=44) < card["expires_at"] - datetime.now(timezone.utc) <= timedelta(days=45, minutes=1)
     assert fake.boosts == [(555, 7, config.XP_BOOST_MULTIPLIER, config.XP_BOOST_DURATION_DAYS)]
 
 
