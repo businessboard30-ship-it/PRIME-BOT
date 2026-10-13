@@ -40,6 +40,7 @@ i18n: bot-authored strings go through discord_bot.i18n_helpers.tr().
 
 import logging
 import io
+from modules.ai_tool_select import select_tools
 from typing import Optional
 
 import discord
@@ -791,6 +792,7 @@ class AIToolsCog(commands.Cog):
         is_anime = any(kw in message.lower() for kw in anime_keywords)
 
         tools = await self._build_command_tools(interaction) if interaction is not None else None
+        tools = select_tools(tools, message) if tools else None   # only commands that look relevant (Groq token cap)
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(message, user_id, perms, guild, runnable=runnable)
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
@@ -1056,6 +1058,7 @@ class AIToolsCog(commands.Cog):
 
         proxy = ProxyInteraction(message, self.bot) if guild else None
         tools = await self._build_command_tools(proxy) if proxy is not None else []
+        tools = select_tools(tools, content) if tools else []     # only commands that look relevant (Groq token cap)
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(content, user_id, perms, guild, runnable=runnable)
         response = await ai_chat(
