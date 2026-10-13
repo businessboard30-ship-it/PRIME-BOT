@@ -84,3 +84,22 @@ def test_clone_owner_check(monkeypatch):
     assert run(bp.is_clone_owner(1, 78)) is False
     assert run(bp.is_clone_owner(2, 77)) is False
     assert run(bp.is_clone_owner(None, 77)) is False
+
+
+def test_server_panel_home_has_edit_bot_profile_and_keeps_every_other_button():
+    from types import SimpleNamespace
+    from discord_bot.cogs import _views_server_panel as sp
+    v = sp.HomeView.__new__(sp.HomeView)
+    v.inspect = None
+    v.nav = v.nav_p2 = v.nav_p3 = v.nav_p4 = v.nav_p6 = lambda *a: (lambda i: None)
+    labels = [b.label for b in sp.HomeView.controls(v)]
+    assert "Edit bot profile" in labels
+    for keep in ("Setup", "Welcome & verification", "Moderation", "Community", "Tickets", "Channels & logs", "Tools",
+                 "More features", "Stats", "Change history", "Help & tools", "Premium", "Quick enable"):
+        assert keep in labels
+
+
+def test_botprofile_is_one_command_that_opens_the_wizard():
+    from discord_bot.cogs import botprofile as bp
+    cmd = bp.BotProfileCog.botprofile
+    assert cmd.name == "botprofile" and not hasattr(bp.BotProfileCog, "group")
