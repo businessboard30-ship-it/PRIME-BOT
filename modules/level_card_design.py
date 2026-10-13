@@ -378,14 +378,13 @@ async def preview_data_url_async(design: dict, bg_png: Optional[bytes] = None, l
 
 
 async def guild_card_access(db, guild_id, clone_id=None) -> bool:
-    """True while this server has Premium (grace included) or an active server XP boost: members of such a server use
-    their own custom level-up card there with no Level Pass. Any lookup problem means False. Never raises."""
+    """True while this server has a Premium subscription (grace included): members of such a server use their own
+    custom level-up card there with no Level Pass. A server XP boost does NOT count. Any lookup problem means False.
+    Never raises."""
     if not guild_id:
         return False
     try:
-        if await db.is_guild_premium_active(guild_id, clone_id):
-            return True
-        return bool(await db.get_active_guild_xp_boost(guild_id, clone_id=clone_id))
+        return bool(await db.is_guild_premium_active(guild_id, clone_id))
     except Exception:
         logger.warning("[level-card] couldn't check this server's card access", exc_info=True)
         return False
@@ -393,7 +392,7 @@ async def guild_card_access(db, guild_id, clone_id=None) -> bool:
 
 async def design_for_user(db, uid, now=None, guild_id=None, clone_id=None) -> Optional[dict]:
     """The design the bot should draw for this member, or None (no plan, plan expired, nothing saved). With a
-    guild, a Premium / boosted server counts as access too (see guild_card_access)."""
+    guild, a Premium server counts as access too (see guild_card_access)."""
     rows = await db.entitlements_list(str(uid))
     if not ent.has_access(rows, ("card_plan",), now) and not await guild_card_access(db, guild_id, clone_id):
         return None

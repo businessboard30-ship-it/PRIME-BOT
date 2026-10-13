@@ -36,9 +36,9 @@ ACCEPTED = ("image/png", "image/jpeg")
 
 # ── state ────────────────────────────────────────────────────────────────────
 async def load_state(uid: int, guild_id=None, clone_id=None):
-    """-> (has_pass, design, assets{kind: row}, expires_at|None). Read fresh every time. In a Premium or boosted
+    """-> (has_pass, design, assets{kind: row}, expires_at|None). Read fresh every time. In a Premium
     server `has_pass` is True without a Level Pass (see lcd.guild_card_access); the caller can tell the two apart by
-    asking `_own_pass(...)`."""
+    asking `_own_access(uid)`."""
     rows = await db.entitlements_list(str(uid))
     has_pass = ent.has_access(rows, ("card_plan",)) or await lcd.guild_card_access(db, guild_id, clone_id)
     expires = next((r.get("expires_at") for r in rows if r.get("product") == "card_plan"), None)
@@ -94,7 +94,7 @@ class Draft:
     use_real: bool = False
     dirty: bool = False
     guild_id: Optional[int] = None
-    free_guild: bool = False                        # access comes from this server (Premium / boosted), not from a pass
+    free_guild: bool = False                        # access comes from this server (Premium), not from a pass
     trial_available: bool = False                   # never had a card_plan row: Save offers the free trial
     on_trial: bool = False                          # the current access is the free trial
 
@@ -161,7 +161,7 @@ def build_embed(draft: Draft, notice: str = "") -> discord.Embed:
     e = discord.Embed(title="🎨 Your level-up card", color=discord.Color.from_str(design.get("accent", "#57F287")))
     bg = lcd.BACKGROUNDS.get(design.get("background"), ("", "", "Slate"))[2]
     if draft.free_guild:
-        status = ("🎫 **This server has Premium / a server boost, so your card is free here.** "
+        status = ("🎫 **This server has Premium, so your card is free here.** "
                   + ("Press **Save** to keep your changes." if draft.dirty else "Everything is saved."))
     elif draft.has_pass:
         name = "Free trial" if draft.on_trial else "Level Pass"

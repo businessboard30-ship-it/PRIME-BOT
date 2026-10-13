@@ -1,4 +1,4 @@
-"""45-day card, boost packs unlock the card, Premium / boosted servers need no Level Pass."""
+"""45-day card, boost packs unlock the card, Premium servers need no Level Pass (a server boost does not count)."""
 import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -89,7 +89,7 @@ def test_boost_pack_without_server_changes_nothing(monkeypatch):
 # ── Premium / boosted servers ────────────────────────────────────────────────
 def test_guild_access_truth_table():
     assert run(lcd.guild_card_access(GuildDB(premium=True), 1)) is True
-    assert run(lcd.guild_card_access(GuildDB(boost=True), 1)) is True
+    assert run(lcd.guild_card_access(GuildDB(boost=True), 1)) is False                 # a server boost is not Premium
     assert run(lcd.guild_card_access(GuildDB(), 1)) is False
     assert run(lcd.guild_card_access(GuildDB(premium=True), None)) is False            # no server (DM)
 
@@ -99,11 +99,11 @@ def test_guild_access_truth_table():
     assert run(lcd.guild_card_access(Broken(), 1)) is False                            # fails closed
 
 
-def test_design_shows_in_a_premium_server_without_a_pass():
+def test_design_shows_in_a_premium_server_only_without_a_pass():
     fake = GuildDB(premium=True)
     assert run(lcd.design_for_user(fake, 7, guild_id=1)) is not None
     assert run(lcd.design_for_user(fake, 7)) is None                                    # elsewhere: still needs the pass
-    assert run(lcd.design_for_user(GuildDB(boost=True), 7, guild_id=1)) is not None
+    assert run(lcd.design_for_user(GuildDB(boost=True), 7, guild_id=1)) is None         # boosted but not Premium: needs a pass
     assert run(lcd.design_for_user(GuildDB(), 7, guild_id=1)) is None                   # ordinary server: no pass, no card
     assert run(lcd.card_for_user(GuildDB(premium=True), 7, guild_id=1, clone_id=None)) is not None
 
