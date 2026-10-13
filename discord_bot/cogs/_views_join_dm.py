@@ -2098,6 +2098,8 @@ class JoinDMMoreView(discord.ui.LayoutView):
              _PartnershipButton(guild_id, clone_id)),
             ("📣 **Advertise with us**\nPromote your server or business to the servers I'm in.",
              _AdvertiseButton(guild_id, clone_id)),
+            ("🤖 **Bot profile**\nRename me and change my avatar, banner and bio in your server. Free.",
+             _BotProfileButton(guild_id, clone_id)),
         ):
             section = discord.ui.Section(accessory=button)
             section.add_item(text)
@@ -2130,6 +2132,31 @@ class _MoreFeaturesButton(discord.ui.DynamicItem[discord.ui.Button], template=r"
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         await interaction.edit_original_response(view=build_join_dm_more_view(self.guild_id, self.clone_id))
+
+
+class _BotProfileButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_botprof:(\d+):(-|\d+)$"):
+    """Opens the bot-profile wizard (rename, avatar, banner, bio) as its own message. Free. Needs Manage Server in that
+    server; the wizard itself lives in _views_bot_profile.py and follows the welcome-card wizard's patterns."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Edit profile", style=discord.ButtonStyle.primary, emoji="🤖",
+            custom_id=_encode("botprof", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_bot_profile import _check_access, open_profile_wizard
+        if not await _check_access(interaction, self.guild_id):
+            return                                    # it already told the person why
+        await interaction.response.defer(ephemeral=interaction.guild is not None)
+        await open_profile_wizard(interaction, self.guild_id, self.clone_id)
 
 
 class _MoreBackButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_more_back:(\d+):(-|\d+)$"):
@@ -2225,8 +2252,10 @@ DYNAMIC_ITEMS = (
     _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomeCustomizeCardButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton, _ApplyFormButton,
-    _MoreFeaturesButton, _MoreBackButton, _CatButton,
+    _MoreFeaturesButton, _MoreBackButton, _CatButton, _BotProfileButton,
 )
+from discord_bot.cogs._views_bot_profile import DYNAMIC_ITEMS as _BOT_PROFILE_ITEMS  # noqa: E402
+DYNAMIC_ITEMS = DYNAMIC_ITEMS + _BOT_PROFILE_ITEMS
 
 # Compact quick-start message buttons (Open server panel / Full setup guide).
 from discord_bot.cogs._views_quickstart_pointer import DYNAMIC_ITEMS as _POINTER_ITEMS  # noqa: E402
