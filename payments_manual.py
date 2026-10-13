@@ -453,17 +453,23 @@ async def _unlock_xp_boost(reference: str, buyer_id: int, guild_id: Optional[int
     await db.activate_xp_boost(guild_id, buyer_id, XP_BOOST_MULTIPLIER, XP_BOOST_DURATION_DAYS, clone_id=clone_id)
 
 
+async def _grant_card_days(event_id: str, buyer_id: int, provider: str) -> None:
+    """The custom level-up card (card_plan access) for config.LEVEL_PASS_CARD_DAYS days. Idempotent per event id, so a
+    gateway retry never extends it twice. Do this BEFORE anything that is not idempotent (boosts stack)."""
+    import config
+    from modules import user_billing
+    await user_billing.apply_event(
+        db, event_id=event_id, user_id=buyer_id, product="card_plan", kind="charge", provider=provider,
+        period_days=int(config.LEVEL_PASS_CARD_DAYS))
+
+
 async def _unlock_level_pass(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
     """Level Pass: ONE payment -> the custom level-up card (card_plan access, LEVEL_PASS_CARD_DAYS days, the same
     entitlement the dashboard and the bot already read) AND one XP boost in the server it was bought from.
     Idempotent: the card event id is the payment reference, so a gateway retry never extends it twice, and the retry
     after a failed boost only repeats the boost."""
     import config
-    from modules import user_billing
-    # card_plan's period (modules.user_subs.PLANS) is 31 days = config.LEVEL_PASS_CARD_DAYS (a test keeps them equal)
-    await user_billing.apply_event(
-        db, event_id=f"levelpass:{reference}", user_id=buyer_id, product="card_plan", kind="charge",
-        provider="level_pass")
+    await _grant_card_days(f"levelpass:{reference}", buyer_id, "level_pass")
     if guild_id:
         await db.activate_xp_boost(guild_id, buyer_id, config.XP_BOOST_MULTIPLIER, config.XP_BOOST_DURATION_DAYS,
                                    clone_id=clone_id)
@@ -478,6 +484,9 @@ def _make_unlock_xp_boost_bundle(bundle_key: str):
         if not guild_id:
             raise RuntimeError("xp boost bundle payment has no guild_id")
         bundle = XP_BOOST_BUNDLES[bundle_key]
+        # Packs also unlock the custom level-up card (same days as the Level Pass). Card first: it is idempotent,
+        # the stacking boost below is not.
+        await _grant_card_days(f"boostpack:{reference}", buyer_id, bundle_key)
         await db.activate_xp_boost(
             guild_id, buyer_id, XP_BOOST_MULTIPLIER,
             bundle["boosts"] * XP_BOOST_DURATION_DAYS, clone_id=clone_id, stack=True,

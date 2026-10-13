@@ -627,7 +627,8 @@ class LeaderboardMyRankButton(discord.ui.DynamicItem[discord.ui.Button],
                 from modules import leveling as _lv, level_card_design as _lcd
                 p = _lv.xp_progress(int(rank_row["total_xp"]))
                 png = await _lcd.render_member_card(db, interaction.user, p["level"], p["current_xp_in_level"],
-                                                    p["xp_needed_for_next_level"], rank=rank_row["rank"])
+                                                    p["xp_needed_for_next_level"], rank=rank_row["rank"],
+                                                    clone_id=self.clone_id)
                 if png:
                     await interaction.followup.send(file=discord.File(_io.BytesIO(png), filename=_lcd.file_name("rank", png)), ephemeral=True)
             except Exception:

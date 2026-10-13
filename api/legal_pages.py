@@ -57,7 +57,8 @@ def _boost_bundle_items() -> str:
         days = b["boosts"] * XP_BOOST_DURATION_DAYS
         rows.append(
             f"\n<li>${b['fee_usd']:g} — {b['label']}: {b['boosts']} boosts, "
-            f"{XP_BOOST_MULTIPLIER:g}x XP for {days} days, just for you</li>"
+            f"{XP_BOOST_MULTIPLIER:g}x XP for {days} days, just for you, plus the custom level-up card for "
+            f"{LEVEL_PASS_CARD_DAYS} days</li>"
         )
     return "".join(rows)
 

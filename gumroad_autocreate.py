@@ -59,7 +59,7 @@ PRODUCTS = {
         "name": "Level Pass", "legacy": [], "kind": "one_time",
         "price": lambda: float(config.LEVEL_PASS_FEE_USD),
         "description": "One payment, no subscription: design your own level-up card (colours, font, background, logo) "
-                       "for 31 days, plus a 2x XP boost for 14 days.",
+                       f"for {config.LEVEL_PASS_CARD_DAYS} days, plus a 2x XP boost for {config.XP_BOOST_DURATION_DAYS} days.",
     },
     "card_plan": {
         "name": "Custom Level-Up Card - Monthly", "legacy": [], "kind": "membership", "period": "monthly",
