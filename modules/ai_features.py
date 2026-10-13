@@ -22,7 +22,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 # to this one on an error a different key could plausibly fix (auth/rate
 # limit/server error/timeout), never on a normal bad-request-type failure.
 GROQ_API_KEY_BACKUP = os.getenv("GROQ_API_KEY_BACKUP", "")
-GROQ_API_KEYS = [k for k in (GROQ_API_KEY, GROQ_API_KEY_BACKUP) if k]
+GROQ_API_KEY_BACKUP2 = os.getenv("GROQ_API_KEY_BACKUP2", "")      # third failover key (optional)
+GROQ_API_KEYS = list(dict.fromkeys(k for k in (GROQ_API_KEY, GROQ_API_KEY_BACKUP, GROQ_API_KEY_BACKUP2) if k))
 FAL_API_KEY = os.getenv("FAL_API_KEY", "")
 # GEMINI_API_KEY: free Google AI Studio key (aistudio.google.com/apikey) — no
 # credit card, no billing setup. gemini-2.5-flash-image ("Nano Banana") has a

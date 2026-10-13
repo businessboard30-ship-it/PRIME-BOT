@@ -12,7 +12,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # falls through to this one on an error a different key could plausibly
 # fix (auth/rate limit/server error/timeout).
 GROQ_API_KEY_BACKUP = os.getenv("GROQ_API_KEY_BACKUP")
-GROQ_API_KEYS = [k for k in (GROQ_API_KEY, GROQ_API_KEY_BACKUP) if k]
+GROQ_API_KEY_BACKUP2 = os.getenv("GROQ_API_KEY_BACKUP2")          # third failover key (optional)
+GROQ_API_KEYS = list(dict.fromkeys(k for k in (GROQ_API_KEY, GROQ_API_KEY_BACKUP, GROQ_API_KEY_BACKUP2) if k))
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 
 # Status codes worth retrying with the backup key — auth problems (this key
