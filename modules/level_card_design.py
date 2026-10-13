@@ -407,18 +407,48 @@ async def design_for_user(db, uid, now=None, guild_id=None, clone_id=None) -> Op
     return d
 
 
-async def card_for_user(db, uid, now=None, guild_id=None, clone_id=None) -> Optional[tuple]:
-    """(design, background_png|None, logo_png|None) for the bot, or None. Only APPROVED assets are ever returned."""
-    d = await design_for_user(db, uid, now, guild_id, clone_id)
-    if d is None:
+def server_key(guild_id) -> str:
+    """Where a server's card design and uploaded images are stored: the same two tables as members, under a key a
+    Discord user id can never have (user ids are digits only)."""
+    return f"g:{int(guild_id)}"
+
+
+async def server_design(db, guild_id, clone_id=None) -> Optional[dict]:
+    """The design an admin saved for the whole server, or None. Only while the server has Premium (a lapsed server's
+    design is kept and comes back on renewal), and only if what is stored still validates."""
+    if not guild_id or not await guild_card_access(db, guild_id, clone_id):
         return None
+    raw = await db.user_card_get(server_key(guild_id))
+    if not raw:
+        return None
+    import json
+    try:
+        d, _ = validate(json.loads(raw))
+    except Exception:
+        return None
+    return d
+
+
+async def _approved_assets(db, key: str, design: dict) -> tuple:
     bg = logo = None
     for kind, flag in (("background", "custom_bg"), ("logo", "logo")):
-        if d.get(flag):
-            a = await db.card_asset_get(str(uid), kind)
+        if design.get(flag):
+            a = await db.card_asset_get(key, kind)
             if a and a.get("status") == "approved":
                 if kind == "background":
                     bg = bytes(a["data"])
                 else:
                     logo = bytes(a["data"])
+    return bg, logo
+
+
+async def card_for_user(db, uid, now=None, guild_id=None, clone_id=None) -> Optional[tuple]:
+    """(design, background_png|None, logo_png|None) for the bot, or None. Only APPROVED assets are ever returned.
+    The member's own saved card wins; a member with none sees their Premium server's card, if the server has one."""
+    d, key = await design_for_user(db, uid, now, guild_id, clone_id), str(uid)
+    if d is None:
+        d, key = await server_design(db, guild_id, clone_id), (server_key(guild_id) if guild_id else "")
+        if d is None:
+            return None
+    bg, logo = await _approved_assets(db, key, d)
     return d, bg, logo
