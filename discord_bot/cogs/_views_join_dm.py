@@ -314,6 +314,8 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             bottom_children.append(_MoreFeaturesButton(guild_id, clone_id))
             bottom_children.append(_HoneypotButton(guild_id, clone_id))
             bottom_children.append(_CatButton(guild_id, clone_id))
+            # Edit bot profile is also on page 1 (it stays on More features too). Nothing else moved.
+            bottom_children.append(_BotProfileButton(guild_id, clone_id))
             # Open server panel stays LAST on the first page (same button the /start pointer uses).
             from discord_bot.cogs._views_quickstart_pointer import OpenPanelButton
             bottom_children.append(OpenPanelButton(guild_id, clone_id))

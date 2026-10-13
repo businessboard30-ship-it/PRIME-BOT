@@ -174,7 +174,16 @@ def test_care_tick_runs_every_step_even_when_one_fails(monkeypatch):
     c, bot = _cog(monkeypatch, hungry=AsyncMock(side_effect=RuntimeError("db")))
     c.bot = bot
     out = run(c.care_tick())
-    assert out == {"hungry": 0, "warned": 1, "left": 0, "faded": 0}
+    assert out == {"hungry": 0, "warned": 0, "left": 0, "faded": 0}
+
+
+def test_care_tick_never_dms_about_hunger(monkeypatch):
+    warn = AsyncMock(return_value={5: ["Mochi"]})
+    c, bot = _cog(monkeypatch, warn=warn)
+    c.bot = bot
+    out = run(c.care_tick())
+    assert out["warned"] == 0 and warn.await_count == 0
+    bot.fetch_user.return_value.send.assert_not_awaited()
 
 
 def test_runaways_are_logged_and_owners_told_kindly(monkeypatch):
