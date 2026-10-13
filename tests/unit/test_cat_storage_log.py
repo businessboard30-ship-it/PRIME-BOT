@@ -53,7 +53,7 @@ def _store(monkeypatch, hint):
 
     async def resolve(bot):
         return host
-    monkeypatch.setattr(image_host, "resolve_channel", resolve)
+    monkeypatch.setattr(image_host, "resolve_cat_channel", resolve)
 
     class Conn:
         async def fetchval(self, sql, *a):
@@ -130,7 +130,7 @@ def host(monkeypatch):
 
     async def resolve(bot):
         return h
-    monkeypatch.setattr(image_host, "resolve_channel", resolve)
+    monkeypatch.setattr(image_host, "resolve_cat_channel", resolve)
 
     class Conn:
         async def fetchrow(self, sql, *a):
@@ -193,7 +193,7 @@ def test_no_storage_channel_means_the_event_is_silently_dropped(monkeypatch):
 
     async def none(bot):
         return None
-    monkeypatch.setattr(image_host, "resolve_channel", none)
+    monkeypatch.setattr(image_host, "resolve_cat_channel", none)
     monkeypatch.setattr(cat_log, "SEND_GAP_SECONDS", 0)
     cat_log._queue = None; cat_log._worker = None
 

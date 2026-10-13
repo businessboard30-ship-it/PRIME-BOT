@@ -119,7 +119,7 @@ async def run_once(bot, limit: int = BATCH, gap: float = cat_log.SEND_GAP_SECOND
     """One tick: up to `limit` items, adoptions first. Never raises past a single item."""
     from modules import image_host
     out = {"logged": 0, "captions": 0, "skipped": 0, "retry": 0}
-    host = await image_host.resolve_channel(bot)
+    host = await image_host.resolve_cat_channel(bot)
     if host is None:
         return {**out, "error": "no_storage_channel"}               # nothing marked: tried again next tick
     before, left = cutoff(), int(limit)

@@ -284,7 +284,7 @@ def test_system_quick_wins_report_missing_module(vp):
 
 def test_system_view_still_within_discord_limits_with_new_buttons(vp):
     v = vp.SystemView(cog(), OWNER)
-    assert len(buttons(v)) == 11
+    assert len(buttons(v)) == 12
     assert v.to_components()
 
 

@@ -214,6 +214,7 @@ class SystemView(PanelView):
             _btn("AI debug", S, self._aidebug, "🤖"),
             _btn("Test image hosting", S, self._imagetest, "🧪"),
             _btn("Move saved backgrounds", S, self._movebgs, "🔁"),
+            _btn("Hosting wizard", P, self._wizard, "🧙", disabled=not hosting_ok),
             _btn("Confirm hosting channel" if hosting_on else "Set hosting channel",
                  G if hosting_on else S, self._hosting, "✅" if hosting_on else "🖼️", disabled=not hosting_ok),
             _btn("Confirm export" if export_on else "Export users",
@@ -282,6 +283,17 @@ class SystemView(PanelView):
             await i.followup.send("❌ Moving the saved backgrounds crashed. Check the bot logs.", ephemeral=True)
             return
         await i.followup.send(text, ephemeral=True)
+
+    async def _wizard(self, i: discord.Interaction):
+        """Pick where uploads and cat images are stored with a channel picker (see _views_admin_panel_hosting.py)."""
+        from discord_bot.cogs import _views_admin_panel_hosting as hw
+        if not hw.allowed(self.owner_id):
+            await i.response.send_message("Hosting settings are not available to your account.", ephemeral=True)
+            return
+        audit(i, "system.hostingwizard.open")
+        await i.response.defer()
+        view = await hw.HostingWizardView.create(self.cog, self.owner_id)
+        await i.followup.edit_message(i.message.id, view=view)
 
     async def _hosting(self, i: discord.Interaction):
         await self._two_step(i, "hosting", self.cog.welcome, "Welcome module", "hostingchannel",

@@ -44,7 +44,7 @@ async def candidates() -> list:
     out = []
     try:
         from database import db
-        raw = await db.get_global_setting("image_host_channel_id")
+        raw = await db.get_global_setting(HOST_SETTING)
         if raw and str(raw).isdigit() and int(raw) > 0:
             out.append((int(raw), "owner setting (/admin hostingchannel)"))
     except Exception:
@@ -53,6 +53,72 @@ async def candidates() -> list:
     if default and all(default != c for c, _ in out):
         out.append((default, "default (IMAGE_HOST_CHANNEL_ID)"))
     return out
+
+
+HOST_SETTING = "image_host_channel_id"          # welcome backgrounds, ad images (and cat pictures unless CAT_SETTING is set)
+CAT_SETTING = "image_host_cat_channel_id"       # optional: cat pictures and cat event logs get their own channel
+
+
+async def setting_id(key: str) -> int:
+    """The channel id saved under a global setting, or 0 when it is not set."""
+    try:
+        from database import db
+        raw = await db.get_global_setting(key)
+    except Exception:
+        logger.warning("image host: couldn't read the setting %s", key, exc_info=True)
+        return 0
+    return int(raw) if raw and str(raw).isdigit() and int(raw) > 0 else 0
+
+
+async def set_setting(key: str, channel_id: Optional[int]) -> None:
+    """Save a hosting channel id. None clears it (stored as 0, which every reader treats as 'not set')."""
+    from database import db
+    await db.set_global_setting(key, str(int(channel_id)) if channel_id else "0")
+
+
+async def cat_candidates() -> list:
+    """[(channel_id, source), ...] for cat pictures: the owner's cat channel first, then the normal hosting candidates."""
+    out = []
+    cat = await setting_id(CAT_SETTING)
+    if cat:
+        out.append((cat, "owner setting for cat images (owner panel > System > Hosting wizard)"))
+    for cid, src in await candidates():
+        if all(cid != c for c, _ in out):
+            out.append((cid, src))
+    return out
+
+
+async def resolve_cat_channel(bot):
+    """The channel THIS bot saves NEW cat pictures and cat logs to: the cat channel if set and reachable, else the hosting channel.
+    Cats saved earlier are never moved: each one remembers its own channel and message (see modules/cat_pool.py)."""
+    for cid, _src in await cat_candidates():
+        ch, _why = await open_channel(bot, cid)
+        if ch is not None:
+            return ch
+    return None
+
+
+def permission_problem(channel, bot) -> Optional[str]:
+    """Plain-words reason THIS bot can't store pictures in `channel`, or None when it can."""
+    try:
+        perms = channel.permissions_for(_me(channel, bot))
+    except Exception:
+        return "couldn't check this bot's permissions there"
+    missing = [n for n, ok in (("View Channel", perms.view_channel), ("Send Messages", perms.send_messages),
+                               ("Attach Files", perms.attach_files), ("Read Message History", perms.read_message_history)) if not ok]
+    return ("this bot is missing: " + ", ".join(missing)) if missing else None
+
+
+async def saved_cat_pictures(limit: int = 6) -> list:
+    """[(channel_id, pictures, adopted)] for the cat pictures already saved, biggest channel first."""
+    from database import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT p.channel_id, COUNT(*) AS pics, "
+            "COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM cat_adoptions a WHERE a.pool_id = p.id)) AS adopted "
+            "FROM cat_image_pool p GROUP BY p.channel_id ORDER BY pics DESC LIMIT $1", int(limit))
+    return [(int(r["channel_id"]), int(r["pics"]), int(r["adopted"])) for r in rows]
 
 
 async def open_channel(bot, channel_id: int):
