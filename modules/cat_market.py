@@ -89,7 +89,7 @@ def _key(clone_id) -> int:
 
 async def create_listing(cat_id: int, seller_id: int, seller_clone_id, price: int,
                          guild_id: Optional[int], channel_id: Optional[int]) -> tuple:
-    """Returns (status, Listing|None): ok | not_yours | listed | too_many | bad_price."""
+    """Returns (status, Listing|None): ok | not_yours | listed | away | too_many | bad_price."""
     if not MIN_PRICE <= int(price) <= MAX_PRICE:
         return "bad_price", None
     pool = await _pool()
@@ -100,6 +100,8 @@ async def create_listing(cat_id: int, seller_id: int, seller_clone_id, price: in
                 return "not_yours", None
             if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cat_id):
                 return "listed", None
+            if await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cat_id):
+                return "away", None                 # out on a walk or a heist: sell it after it is back
             open_n = await conn.fetchval("SELECT COUNT(*) FROM cat_listings WHERE seller_id = $1 AND status = 'open'",
                                          seller_id)
             if int(open_n or 0) >= MAX_OPEN_PER_SELLER:

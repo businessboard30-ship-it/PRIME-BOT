@@ -231,7 +231,8 @@ async def release(cat_id: int, owner_id: int) -> bool:
     async with pool.acquire() as conn:
         return await conn.fetchval(
             "DELETE FROM cat_adoptions WHERE id = $1 AND owner_id = $2 AND NOT EXISTS "
-            "(SELECT 1 FROM cat_listings l WHERE l.adoption_id = $1 AND l.status = 'open') RETURNING id",
+            "(SELECT 1 FROM cat_listings l WHERE l.adoption_id = $1 AND l.status = 'open') AND NOT EXISTS "
+            "(SELECT 1 FROM cat_outings o WHERE o.adoption_id = $1 AND o.claimed_at IS NULL) RETURNING id",
             cat_id, owner_id) is not None
 
 
@@ -260,6 +261,9 @@ async def trade(give_id: int, giver_id: int, take_id: Optional[int], taker_id: i
             if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = ANY($1::bigint[]) "
                                    "AND status = 'open'", ids):
                 return "gone"                       # a cat that is for sale can't be swapped at the same time
+            if await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = ANY($1::bigint[]) "
+                                   "AND claimed_at IS NULL", ids):
+                return "gone"                       # a cat that is out on a walk or a heist stays with its owner
             if take_id is None:
                 held = await conn.fetchval(
                     "SELECT COUNT(*) FROM cat_adoptions WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2",

@@ -92,12 +92,13 @@ def test_a_free_picture_is_adopted_normally(monkeypatch):
 
 # -- cross-bot trade: cats land in the new owner's bot -------------------------------------------
 class TradeConn:
-    def __init__(self, rows, listed=False, held=0):
-        self.rows, self.listed, self.held, self.updates = rows, listed, held, []
+    def __init__(self, rows, listed=False, held=0, away=False):
+        self.rows, self.listed, self.held, self.away, self.updates = rows, listed, held, away, []
     def transaction(self): return Tx()
     async def fetch(self, sql, ids): return [r for r in self.rows if r["id"] in ids]
     async def fetchval(self, sql, *a):
         if "FROM cat_listings" in sql: return 1 if self.listed else None
+        if "FROM cat_outings" in sql: return 1 if self.away else None
         return self.held
     async def execute(self, sql, cat_id, owner, clone): self.updates.append((cat_id, owner, clone))
 
@@ -117,6 +118,26 @@ def test_trade_refuses_wrong_bot_or_a_cat_that_is_for_sale(monkeypatch):
     assert run(ca.trade(1, 10, None, 20, None)) == "gone"
     use(monkeypatch, ca, TradeConn(rows, held=ca.MAX_CATS))
     assert run(ca.trade(1, 10, None, 20, None)) == "limit"
+
+
+def test_a_cat_out_on_a_walk_or_heist_cannot_be_traded():
+    conn = TradeConn([{"id": 1, "owner_id": 10, "clone_id": None}], away=True)
+    import modules.cat_adopt as mod
+    class M:  # route the pool to the fake connection
+        pass
+    from unittest.mock import patch
+    with patch.object(mod, "_pool", new=lambda: _pool_for(conn)):
+        assert run(ca.trade(1, 10, None, 20, None)) == "gone"
+    assert conn.updates == []
+
+
+async def _pool_for(conn):
+    class Acq:
+        async def __aenter__(self): return conn
+        async def __aexit__(self, *a): return False
+    class P:
+        def acquire(self): return Acq()
+    return P()
 
 
 def test_forty_cats_fit_in_a_collection():

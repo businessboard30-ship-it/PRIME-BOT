@@ -176,6 +176,7 @@ class SellModal(discord.ui.Modal):
                                                   interaction.guild.id, channel.id)
         if status != "ok":
             text = {"not_yours": "That cat isn't yours any more.", "listed": "That cat is already for sale.",
+                    "away": "That cat is out on a walk or a heist 🌸 Sell it after it is back.",
                     "too_many": f"You can have {cm.MAX_OPEN_PER_SELLER} cats for sale at a time. Take one back first.",
                     "bad_price": "That price won't work."}[status]
             await interaction.followup.send(text, ephemeral=True)

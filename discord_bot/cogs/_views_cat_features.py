@@ -6,6 +6,7 @@ import logging
 
 import discord
 
+from discord_bot.cogs._views_cat_life import CatLifeButton
 from modules import cat_adopt
 from modules import cat_announce
 from modules import cat_profile_card
@@ -24,6 +25,7 @@ GOLD = discord.Color.gold()
 
 def feature_button_view() -> discord.ui.View:
     view = discord.ui.View(timeout=300)
+    view.add_item(CatLifeButton())
     view.add_item(CareButton())
     view.add_item(CosmeticsButton())
     view.add_item(QuestsButton())
