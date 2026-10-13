@@ -103,3 +103,18 @@ def test_botprofile_is_one_command_that_opens_the_wizard():
     from discord_bot.cogs import botprofile as bp
     cmd = bp.BotProfileCog.botprofile
     assert cmd.name == "botprofile" and not hasattr(bp.BotProfileCog, "group")
+def test_join_dm_page_one_has_edit_profile_and_keeps_open_panel_last():
+    import discord
+    from discord_bot.cogs import _views_join_dm as j
+    view = j.build_join_dm_view(1, None)
+    ids = []
+    def walk(items):
+        for it in items:
+            if isinstance(it, discord.ui.ActionRow):
+                ids.append([getattr(c, "custom_id", "") for c in it.children])
+            elif hasattr(it, "children"):
+                walk(it.children)
+    walk(view.children)
+    bottom = ids[-1]
+    assert any(c.startswith("join_dm_botprof:") for c in bottom)
+    assert "join_dm_more:1:-" in bottom and "join_dm_cat:1:-" in bottom
