@@ -103,6 +103,7 @@ class WelcomeExtrasView(ServerPanelView):
                  discord.ButtonStyle.danger if on else discord.ButtonStyle.success, self._toggle),
             _btn("Edit message", discord.ButtonStyle.primary, self._edit, "✏️"),
             _btn("Test goodbye", discord.ButtonStyle.primary, self._test, "🧪"),
+            _btn("Customize 💎", discord.ButtonStyle.secondary, self._customize, "🎨"),
         ]
         if x.get("member_role_id"):
             out.append(_btn("Clear member role", discord.ButtonStyle.secondary, self._clear("member_role_id")))
@@ -161,6 +162,14 @@ class WelcomeExtrasView(ServerPanelView):
     async def _edit(self, interaction: discord.Interaction):
         cur = self.data.get("x", {}).get("goodbye_message") or we.DEFAULT_GOODBYE
         await interaction.response.send_modal(GoodbyeMessageModal(cur, interaction.user.id))
+
+    async def _customize(self, interaction: discord.Interaction):
+        """Premium goodbye styling. Free servers get the Premium pitch instead of the editor."""
+        await interaction.response.defer(ephemeral=True)
+        from discord_bot.cogs import _views_goodbye_style as gstyle
+        cid = clone_id_of(interaction)
+        if await gstyle.gate_or_pitch(interaction, interaction.guild_id, cid):
+            await gstyle.open_style_editor(interaction, interaction.guild_id, cid, interaction.user.id)
 
     async def _test(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)

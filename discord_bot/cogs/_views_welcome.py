@@ -1392,6 +1392,7 @@ class GoodbyePanelView(discord.ui.View):
              discord.ButtonStyle.danger if on else discord.ButtonStyle.success, self._toggle, None),
             ("Edit message", discord.ButtonStyle.primary, self._edit, "✏️"),
             ("Test goodbye", discord.ButtonStyle.primary, self._test, "🧪"),
+            ("Customize 💎", discord.ButtonStyle.secondary, self._customize, "🎨"),
         ):
             b = discord.ui.Button(label=label, style=style, emoji=emoji, row=1)
             b.callback = cb
@@ -1482,6 +1483,15 @@ class GoodbyePanelView(discord.ui.View):
         if not await self._allowed(interaction):
             return
         await interaction.response.send_modal(_GoodbyeTextModal(self))
+
+    async def _customize(self, interaction: discord.Interaction):
+        """Premium goodbye styling. Free servers get the Premium pitch instead of the editor."""
+        if not await self._allowed(interaction):
+            return
+        await interaction.response.defer(ephemeral=True)
+        from discord_bot.cogs import _views_goodbye_style as gstyle
+        if await gstyle.gate_or_pitch(interaction, self.guild_id, self.clone_id):
+            await gstyle.open_style_editor(interaction, self.guild_id, self.clone_id, interaction.user.id)
 
     async def _test(self, interaction: discord.Interaction):
         if not await self._allowed(interaction):

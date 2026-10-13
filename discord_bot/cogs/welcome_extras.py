@@ -158,7 +158,8 @@ async def send_test_goodbye(bot, guild: discord.Guild, member: discord.Member) -
         return False, f"Easy — try again in {int(left) + 1}s."
     _mark_test(guild.id, clone_id)
     try:
-        await channel.send(embed=build_goodbye_embed(extras, member, guild, test=True),
+        await channel.send(embed=build_goodbye_embed(extras, member, guild, test=True,
+                                                     premium=await goodbye_premium(guild.id, clone_id)),
                            allowed_mentions=discord.AllowedMentions.none())
         return True, f"Posted a test goodbye in {channel.mention}."
     except discord.Forbidden:
@@ -169,15 +170,35 @@ async def send_test_goodbye(bot, guild: discord.Guild, member: discord.Member) -
         return False, "Discord rejected the post — try again in a moment."
 
 
-def build_goodbye_embed(extras: dict, member: discord.abc.User, guild: discord.Guild, test: bool = False) -> discord.Embed:
+async def goodbye_premium(guild_id: int, clone_id) -> bool:
+    """Whether this server's goodbye may use its Premium styling right now. Never raises (a failed lookup = plain look)."""
+    try:
+        return bool(await db.is_guild_premium_active(guild_id, clone_id))
+    except Exception:
+        return False
+
+
+def build_goodbye_embed(extras: dict, member: discord.abc.User, guild: discord.Guild, test: bool = False,
+                        premium: bool = False) -> discord.Embed:
+    """The goodbye post. `premium` decides whether the server's saved style (title, colour, banner, footer, avatar)
+    is used; without it everyone gets the plain default look, whatever is saved."""
+    from modules import goodbye_style as gs
+    st = gs.effective(extras, premium)
+    title = apply_goodbye(st["title"], member, guild)[:256] if st["title"] else gs.DEFAULT_TITLE
     embed = discord.Embed(
-        title="👋 Goodbye",
+        title=title,
         description=apply_goodbye(extras.get("goodbye_message"), member, guild),
-        color=discord.Color.dark_grey(),
+        color=discord.Color(st["color"]),
     )
-    embed.set_thumbnail(url=member.display_avatar.url)
+    if st["show_avatar"]:
+        embed.set_thumbnail(url=member.display_avatar.url)
+    if st["image_url"]:
+        embed.set_image(url=st["image_url"])
+    footer = apply_goodbye(st["footer"], member, guild) if st["footer"] else None
     if test:
-        embed.set_footer(text="🧪 Test post — nobody actually left.")
+        footer = f"{footer} · 🧪 Test post, nobody actually left." if footer else "🧪 Test post — nobody actually left."
+    if footer:
+        embed.set_footer(text=footer[:2048])
     return embed
 
 
@@ -240,7 +261,8 @@ class WelcomeExtrasCog(commands.Cog):
                             "`/serversetup` → Welcome → Goodbye & roles.")
             return
         try:
-            await channel.send(embed=build_goodbye_embed(extras, member, guild),
+            await channel.send(embed=build_goodbye_embed(extras, member, guild,
+                                                         premium=await goodbye_premium(guild.id, clone_id)),
                                allowed_mentions=discord.AllowedMentions.none())
             perm_check.clear(guild.id, clone_id, "goodbye_post")
         except discord.Forbidden:
