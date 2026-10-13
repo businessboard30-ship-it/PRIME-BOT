@@ -119,7 +119,7 @@ CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
         (["autopost"], "periodic bot feature posts in this server"),
         (["serveranalytics"], "snapshot of this server's size and activity, plus growth suggestions"),
         (["setup channels", "setup reportchannel", "setup servers", "setup roastme", "setup roaststart", "setup roast", "setup shiptrigger", "setup shipconfig", "setup downloadhub"], "misc server setup helpers"),
-        (["cat"], "a random cute cat picture"),
+        (["cat"], "your cat menu: a cat picture, your cats, daily care, market"),
         (["catsetup"], "set up automatic cats in this server (channel, how many a day, spawn hours)"),
         (["invite"], "get this bot's invite link"),
         (["help"], "this menu"),

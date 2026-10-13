@@ -2164,7 +2164,7 @@ class _MoreBackButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^joi
 
 class _CatButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_cat:(\d+):(-|\d+)$"):
     """Cat. For someone with Manage Server it opens the Cat setup wizard in their server (pick the spawn channel and
-    how often cats appear; Premium raises the limits). For anyone else it is a random cute cat picture, same as /cat
+    how often cats appear; Premium raises the limits). For anyone else it opens the cat menu with a cat picture, same as /cat
     (the picture logic lives in cogs/cat.py), with its own per-person cooldown."""
 
     def __init__(self, guild_id: int, clone_id=None):

@@ -128,6 +128,22 @@ async def set_spawn_message(spawn_id: int, message_id: int) -> None:
         await conn.execute("UPDATE cat_spawns SET message_id = $2 WHERE id = $1", spawn_id, message_id)
 
 
+async def open_spawn(guild_id: int, clone_id) -> Optional[dict]:
+    """The newest cat in this server that nobody has adopted yet and hasn't wandered off: {channel_id, message_id}, or None.
+    Never raises (the menu just leaves the line out)."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT channel_id, message_id FROM cat_spawns WHERE guild_id = $1 AND COALESCE(clone_id, -1) = $2 "
+                "AND adopted_by IS NULL AND message_id IS NOT NULL "
+                "AND created_at > NOW() - make_interval(hours => $3) ORDER BY id DESC LIMIT 1",
+                int(guild_id), _key(clone_id), SPAWN_EXPIRE_HOURS)
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
 async def expire_spawns(clone_id, limit: int = 20) -> list:
     """Closes this bot's unadopted spawns that are older than SPAWN_EXPIRE_HOURS (0 = nobody, like a closed duplicate)
     and returns them so their messages can be updated. A returned runaway whose spawn faded goes back in the queue."""

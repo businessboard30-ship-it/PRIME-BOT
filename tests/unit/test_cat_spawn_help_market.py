@@ -14,12 +14,12 @@ def run(coro):
 
 def test_spawn_has_adopt_my_cats_market_and_help():
     ids = [c.custom_id for c in v.spawn_view(7).children]
-    assert ids == ["cat_adopt:7", "cat_mine", "cat_market", "cat_help"]
+    assert ids == ["cat_adopt:7", "cat_mine", "cat_market", "cat_help", "cat_menu"]
 
 
 def test_adopted_spawn_keeps_market_and_help_and_disables_only_adopt():
     kids = v.spawn_view(7, adopted=True).children
-    assert [c.custom_id for c in kids] == ["cat_adopt:7", "cat_mine", "cat_market", "cat_help"]
+    assert [c.custom_id for c in kids] == ["cat_adopt:7", "cat_mine", "cat_market", "cat_help", "cat_menu"]
     inner = [c.item for c in kids]
     assert inner[0].disabled is True and not any(b.disabled for b in inner[1:])
 
@@ -27,7 +27,7 @@ def test_adopted_spawn_keeps_market_and_help_and_disables_only_adopt():
 def test_new_buttons_survive_a_restart():
     """Persistent buttons only work after a restart if their class is registered in DYNAMIC_ITEMS."""
     assert v.HelpButton in v.DYNAMIC_ITEMS and market.MarketButton in v.DYNAMIC_ITEMS
-    for cid in ("cat_adopt:7", "cat_mine", "cat_market", "cat_help", "cat_board"):
+    for cid in ("cat_adopt:7", "cat_mine", "cat_market", "cat_help", "cat_menu", "cat_board"):
         hits = [i for i in v.DYNAMIC_ITEMS if i.__discord_ui_compiled_template__.match(cid)]
         assert len(hits) == 1, f"{cid} must be claimed by exactly one dynamic item, got {hits}"
 

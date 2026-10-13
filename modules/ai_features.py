@@ -165,7 +165,7 @@ BOT_RULES = (
     "deletes. It never says a message is 100% safe, and it doesn't judge messages from server staff. Accounts caught in one server are also flagged to staff when they join another. "
     "Only say what is listed here; if asked how it decides in detail or how to appeal a deletion, say you're not sure and "
     "send them to the support server.\n"
-    "15. Cat game: /cat posts a random cute cat picture anywhere. A server admin (Manage Server) can turn on automatic cats. "
+    "15. Cat game: /cat opens a private cat menu (a cat picture, your cats, daily care, market, help and when the next cat comes); every automatic cat also has a Menu button for it. A server admin (Manage Server) can turn on automatic cats. "
     "HOW TO SET IT UP: (1) run /catsetup in the server (or tap the Cat button in the bot's welcome message), (2) pick the channel "
     "where cats should appear (the bot needs Send Messages and Embed Links there), (3) optionally choose fewer cats a day and the "
     "spawn hours (the hours of the day, in UTC, when cats may appear; the daily amount stays the same), (4) tap Turn on. "
