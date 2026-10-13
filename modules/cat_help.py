@@ -1,11 +1,16 @@
 """Cat game help text. Numbers come from the real rules so this can never drift out of date (pure, no database)."""
 from __future__ import annotations
 
+import os
 from typing import List, Tuple
 
 from modules import cat_adopt, cat_care, cat_life, cat_market, cat_rank, cat_wallet, cat_wishlist
 
 FOOTER = "Just for fun: play coins only, no real money."
+
+# The round PRIME BOT ring from the website, shown as the small picture on the Help card.
+# Served by the site (website/assets/img/bot-ring.png); override with CAT_HELP_RING_URL if the site moves.
+RING_URL = os.getenv("CAT_HELP_RING_URL", "https://prime-bot-site.pages.dev/assets/img/bot-ring.png")
 
 
 def sections() -> List[Tuple[str, str]]:
@@ -61,3 +66,58 @@ def sections() -> List[Tuple[str, str]]:
 
 def build_text() -> str:
     return "\n\n".join(f"**{title}**\n{body}" for title, body in sections())
+
+
+# ── Short version: one small card per topic, switched with a menu ─────────────────────────────────────────────
+# Same real numbers as sections() above, but a few words each so a topic fits on one screen without scrolling.
+
+def topics() -> List[Tuple[str, str, str, str]]:
+    """[(key, emoji, label, short text)], in menu order. Labels are 1-2 words (menu options, max 100 chars)."""
+    return [
+        ("spawns", "⏰", "Spawns",
+         "Cats show up by themselves in the channel(s) picked with **/catsetup**.\n"
+         "Each cat shows a **Next cat** time in your time zone."),
+        ("adopt", "🐾", "Adopt",
+         f"Tap **Adopt me!** First tap wins and gets some coins (sometimes a {cat_wallet.DIAMOND}).\n"
+         f"Keep up to **{cat_adopt.MAX_CATS}** cats. Nobody adopts one in {cat_adopt.SPAWN_EXPIRE_HOURS}h? It wanders off."),
+        ("mine", "🏠", "My cats",
+         f"Rename, release, trade, gift, search, and ⭐ rank up (max {cat_rank.MAX_RANK}).\n"
+         f"{cat_wallet.DIAMOND} 1 diamond = {cat_wallet.DIAMOND_COINS:,} {cat_wallet.COINS} coins."),
+        ("care", "🍖", "Care",
+         f"In **My cats**: {cat_care.FOOD} Feed ({cat_care.FOOD_COST}), {cat_care.DROP} Water ({cat_care.WATER_COST}), "
+         f"{cat_care.BED} Bed ({cat_care.BED_COST}, {cat_care.COMFORT_HOURS}h).\n"
+         f"Hungry for {cat_care.LEAVE_AFTER_HOURS}h? The cat may wander off. It comes back in a spawn."),
+        ("life", "🌸", "Cat Life",
+         f"Tap **Cat Life** on /cat. Fed cats earn {cat_life.COINS} coins by the hour (collect within {cat_life.HOURS_CAP}h).\n"
+         f"A cozy home keeps earnings up. Walks, heists, coin flip and spin live here too."),
+        ("market", "🏷️", "Market",
+         f"Sell a cat for {cat_market.MIN_PRICE:,} to {cat_market.MAX_PRICE:,} coins "
+         f"({cat_market.MAX_OPEN_PER_SELLER} for sale at once). Tap **Market** to browse and buy."),
+        ("trade", "🤝", "Trade",
+         "In **My cats** tap **Trade / gift**. Pick a member or use a trade ID.\n"
+         "Nothing moves until they accept."),
+        ("daily", "🎁", "Daily",
+         f"**/cat** has 💖 daily care, 🎯 quests, 🏅 badges, ✨ cosmetics and a 🔎 wishlist (up to {cat_wishlist.MAX_OPEN})."),
+        ("profile", "📖", "Profile",
+         "Shows your picture, bio, cats and badges. Edit it, 📌 pin up to 3 cats, 📣 share or 🙈 hide it.\n"
+         "Look up anyone with `/cat profile:@player`."),
+        ("board", "🏆", "Leaderboard",
+         "Top collectors and richest players across all servers. Tap **Leaderboard** on /cat."),
+        ("owners", "🛠️", "Server owners",
+         "**/catsetup** (needs Manage Server): pick the channel, pace and spawn hours, then turn it on.\n"
+         "The bot needs Send Messages and Embed Links there."),
+    ]
+
+
+def overview_text() -> str:
+    """The first screen: three lines, then 'pick a topic'."""
+    return ("🐾 Tap **Adopt me!** on a cat to make it yours.\n"
+            "🏠 **My cats** is your collection. 🏷️ **Market** is where cats are bought and sold.\n\n"
+            "Pick a topic below for the short version.")
+
+
+def topic_text(key: str) -> str:
+    for k, _emoji, _label, text in topics():
+        if k == key:
+            return text
+    return overview_text()
