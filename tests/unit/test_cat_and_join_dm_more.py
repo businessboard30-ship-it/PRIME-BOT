@@ -214,9 +214,10 @@ def test_catsetup_says_so_when_it_cannot_post_anywhere(monkeypatch):
 
 
 # ---------- join DM layout ----------
-def test_first_page_row_has_more_honeypot_cat_and_panel_last():
+def test_first_page_row_has_more_honeypot_cat_profile_and_panel_last():
     labels = labels_of_last_row(0)
-    assert labels == ["More features", "Honeypot", "Cat", "Open server panel"]
+    assert labels == ["More features", "Honeypot", "Cat", "Edit profile", "Open server panel"]
+    assert len(labels) <= 5          # Discord allows at most 5 buttons in one row
 
 
 def test_first_page_no_longer_has_the_three_moved_buttons():
