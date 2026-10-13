@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "97"
+SCHEMA_VERSION = "98"
+# "97" -> "98" wires 051_cat_life.sql into startup (cat_life_state, cat_life_daily, cat_outings: Cat Life). It shipped in PR #274 without being run, so cat release/trade/list and the Cat Life screens failed with UndefinedTableError. CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "96" -> "97" removes the 051_privacy_retention.sql step from startup: it rewrote three big tables in one statement, timed out, and kept every bot from finishing its start. The same scrub now runs in small batches in modules/data_retention.py. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "95" -> "96" adds 051_privacy_retention.sql (scrubs stored message text from flood_events/scam_shield_hits clears ai_command_log.args_json). Idempotent. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "94" -> "95" adds 050_guild_terms.sql (guild_terms_acceptance: which admin accepted the Terms and Privacy Policy for a server). CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5680,6 +5681,11 @@ class Database:
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
         if cat_shared_wallet_migration.exists():
             await conn.execute(cat_shared_wallet_migration.read_text())
+
+        # Cat Life: earning cats, home rent, walks, heists, lucky games. Additive/idempotent.
+        cat_life_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "051_cat_life.sql"
+        if cat_life_migration.exists():
+            await conn.execute(cat_life_migration.read_text())
 
         # Cat game reminders (max 2, one week). Additive/idempotent.
         cat_rem_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "038_cat_setup_reminders.sql"
