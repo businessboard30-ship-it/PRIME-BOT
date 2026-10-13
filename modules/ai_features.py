@@ -663,6 +663,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
             system_content += ai_voice.VOICE_RULES_FORCED
         elif voice == "auto":
             system_content += ai_voice.VOICE_RULES_AUTO
+        lean_system = system_content      # without the command list: used by the no-tools retry below
         if command_context:
             # Permission-filtered command list built by the caller (see
             # modules/command_reference.py + discord_bot/cogs/ai_tools.py) —
@@ -728,6 +729,9 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
             )
             plain = {k: v for k, v in payload.items() if k not in ("tools", "tool_choice")}
             plain["max_completion_tokens"] = 900
+            # Lean retry: the long command list and old history are what pushed the first try over Groq's per-minute
+            # token cap, so the retry keeps only the base prompt and the last few turns.
+            plain["messages"] = [{"role": "system", "content": lean_system}] + messages[1:][-5:]
             tools = None
             status, data, error_text = await _groq_post(plain, timeout_seconds=30)
 
