@@ -110,7 +110,7 @@ def _setup(monkeypatch, ledger, host_ok=True, send_ok=True, msgs=None):
     async def fake_send(bot, kind, fields):
         sent.append((kind, fields))
         return send_ok
-    monkeypatch.setattr(image_host, "resolve_channel", resolve)
+    monkeypatch.setattr(image_host, "resolve_cat_channel", resolve)
     monkeypatch.setattr(cat_log, "_send", fake_send)
     for n in ("pending_adoptions", "pending_pictures", "mark"):
         monkeypatch.setattr(bf, n, getattr(ledger, n))

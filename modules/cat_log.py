@@ -131,7 +131,7 @@ async def _run() -> None:
 async def _send(bot, kind: str, fields: Dict[str, Any]) -> bool:
     from database import get_pool
     from modules import image_host
-    host = await image_host.resolve_channel(bot)
+    host = await image_host.resolve_cat_channel(bot)
     if host is None:
         return False
     reference = None

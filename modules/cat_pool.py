@@ -179,7 +179,7 @@ async def store(bot, data: bytes, q: Quality, source: str, source_id: Optional[s
     async with pool.acquire() as conn:
         if await conn.fetchval("SELECT 1 FROM cat_image_pool WHERE sha256 = $1", sha):
             return None
-    host = await image_host.resolve_channel(bot)
+    host = await image_host.resolve_cat_channel(bot)       # the cat channel if the owner picked one, else the hosting channel
     if host is None:
         return None
     try:
