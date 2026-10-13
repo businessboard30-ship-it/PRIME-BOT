@@ -203,3 +203,16 @@ def test_views_build_without_a_database():
         assert len(v.OutingView("heist", rows).place.options) == len(cl.HEISTS)
         assert len(v.GamesView(500).children) == 4
     asyncio.run(build())
+
+
+def test_the_cat_life_migration_is_run_at_startup():
+    """It shipped once without being wired in, so the tables never existed (PR #274). Pin it."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    db = (root / "database.py").read_text()
+    assert "051_cat_life.sql" in db
+    assert int(re.search(r'^SCHEMA_VERSION = "(\d+)"', db, re.M).group(1)) >= 98
+    sql = (root / "database" / "migrations" / "051_cat_life.sql").read_text()
+    for table in ("cat_life_state", "cat_life_daily", "cat_outings"):
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
