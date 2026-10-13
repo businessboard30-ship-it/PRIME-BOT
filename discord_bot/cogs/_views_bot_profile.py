@@ -144,6 +144,52 @@ async def _sync_clone_username(clone_id, username: str) -> None:
         logger.warning(f"[bot-profile] couldn't sync clone username: {e}")
 
 
+# ── copy to the storage channel ───────────────────────────────────────────
+
+async def _storage_channel(client: discord.Client):
+    """The shared storage channel THIS bot can reach (DEV_STORAGE_CHANNEL_ID first, then the image-hosting channel), or None."""
+    from modules import image_host
+    try:
+        import config
+        cid = int(getattr(config, "DEV_STORAGE_CHANNEL_ID", 0) or 0)
+        if cid:
+            ch, _why_not = await image_host.open_channel(client, cid)
+            if ch is not None:
+                return ch
+        return await image_host.resolve_channel(client)
+    except Exception as e:
+        logger.warning(f"[bot-profile] storage channel lookup failed: {e}")
+        return None
+
+
+async def archive_profile_image(interaction: discord.Interaction, guild_id: int, clone_id, kind: str, data_uri: str,
+                                scope: str = "server") -> bool:
+    """Send a copy of a just-applied avatar/banner to the storage channel with who/where/what. Never raises: the profile
+    change already succeeded, so a storage problem is only logged. Returns True when the copy was posted."""
+    try:
+        channel = await _storage_channel(interaction.client)
+        if channel is None:
+            logger.warning("[bot-profile] no reachable storage channel, copy of %s skipped", kind)
+            return False
+        raw = base64.b64decode(data_uri.split(",", 1)[1])
+        guild = interaction.client.get_guild(guild_id)
+        user = interaction.user
+        bot_name = getattr(getattr(interaction.client, "user", None), "name", "bot")
+        info = (
+            f"🖼️ **Bot profile {kind}** ({'global' if scope == 'global' else 'this server only'})\n"
+            f"**Server:** {guild.name if guild else 'unknown'} (`{guild_id}`)\n"
+            f"**Changed by:** {user} (`{user.id}`)\n"
+            f"**Bot:** {bot_name}" + (f" (clone `{clone_id}`)" if clone_id is not None else " (main bot)") + "\n"
+            f"**Time:** <t:{int(discord.utils.utcnow().timestamp())}:F>"
+        )
+        await channel.send(content=info[:1900], file=discord.File(io.BytesIO(raw), filename=f"{kind}_{guild_id}.png"),
+                           allowed_mentions=discord.AllowedMentions.none())
+        return True
+    except Exception as e:
+        logger.warning(f"[bot-profile] couldn't copy {kind} to the storage channel: {e}")
+        return False
+
+
 # ── the panel ─────────────────────────────────────────────────────────────
 
 def _describe(guild: "discord.Guild | None") -> str:
@@ -260,6 +306,7 @@ class _ImageModal(discord.ui.Modal):
         if err:
             await interaction.followup.send(f"⚠️ Couldn't change my {self.kind}: {err}", ephemeral=True)
             return
+        await archive_profile_image(interaction, self.guild_id, self.clone_id, self.kind, uri, "server")
         await _refresh(interaction, self.guild_id, self.clone_id, f"✅ New {self.kind} set for this server.")
 
 
@@ -283,6 +330,7 @@ class _GlobalModal(discord.ui.Modal, title="My global profile (bot owner)"):
             await interaction.followup.send("⚠️ Only this bot's owner can change its global profile.", ephemeral=True)
             return
         changes = {}
+        uris = {}
         name = str(self.username.value or "").strip()
         if name:
             if len(name) < 2:
@@ -296,6 +344,7 @@ class _GlobalModal(discord.ui.Modal, title="My global profile (bot owner)"):
                 return
             if uri:
                 changes[kind] = uri
+                uris[kind] = uri
         if not changes:
             await interaction.followup.send("⚠️ Nothing to change. Fill in at least one field.", ephemeral=True)
             return
@@ -305,6 +354,8 @@ class _GlobalModal(discord.ui.Modal, title="My global profile (bot owner)"):
         except discord.HTTPException as e:
             await interaction.followup.send(f"⚠️ Couldn't change my global profile: {_why(e)}", ephemeral=True)
             return
+        for kind, uri in uris.items():
+            await archive_profile_image(interaction, self.guild_id, self.clone_id, kind, uri, "global")
         if "username" in changes:
             await _sync_clone_username(self.clone_id, changes["username"])
         await _refresh(interaction, self.guild_id, self.clone_id,

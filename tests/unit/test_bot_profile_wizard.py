@@ -118,3 +118,45 @@ def test_join_dm_page_one_has_edit_profile_and_keeps_open_panel_last():
     bottom = ids[-1]
     assert any(c.startswith("join_dm_botprof:") for c in bottom)
     assert "join_dm_more:1:-" in bottom and "join_dm_cat:1:-" in bottom
+
+
+def test_archive_profile_image_posts_copy_with_info_and_never_raises(monkeypatch):
+    import base64
+    sent = {}
+
+    class Chan:
+        async def send(self, **kw):
+            sent.update(kw)
+
+    class Guild:
+        name = "Test Server"
+
+    class Client:
+        user = type("U", (), {"name": "PRIME"})()
+
+        def get_guild(self, gid):
+            return Guild()
+
+    class User:
+        id = 42
+
+        def __str__(self):
+            return "admin#0"
+
+    inter = type("I", (), {"client": Client(), "user": User()})()
+
+    async def fake_channel(client):
+        return Chan()
+
+    monkeypatch.setattr(bp, "_storage_channel", fake_channel)
+    uri = "data:image/png;base64," + base64.b64encode(b"\x89PNGdata").decode()
+    assert run(bp.archive_profile_image(inter, 5, None, "avatar", uri)) is True
+    assert "Test Server" in sent["content"] and "`42`" in sent["content"] and "main bot" in sent["content"]
+    assert sent["file"].filename == "avatar_5.png"
+
+    async def no_channel(client):
+        return None
+
+    monkeypatch.setattr(bp, "_storage_channel", no_channel)
+    assert run(bp.archive_profile_image(inter, 5, None, "banner", uri)) is False
+    assert run(bp.archive_profile_image(inter, 5, None, "banner", "garbage")) is False
