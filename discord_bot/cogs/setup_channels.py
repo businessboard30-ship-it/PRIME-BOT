@@ -29,6 +29,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from discord_bot.cogs._dm_support import GuildOnlyCog
+from discord_bot.cogs import _ai_bulk_ops
+from modules import ai_bulk as _ai_bulk
+from modules import moderation_extra as modx
+from modules.text_styles import STYLES as _STYLES, BRACKETS as _BRACKETS
 from discord_bot.cogs._views_auto_listing_offer import offer_auto_listing
 from discord_bot.cogs._views_download_wizard import (
     build_wizard_view as build_download_wizard_view,
@@ -1138,6 +1142,217 @@ class SetupChannelsCog(GuildOnlyCog):
         await interaction.response.send_message(
             f"✅ Reports will be forwarded to {channel.mention} from now on.", ephemeral=True,
         )
+
+    # ── /setup bulkcreate · /setup bulkdelete (also AI-runnable) ─────────────
+    # One command takes the WHOLE list, is capped (modules/ai_bulk.py), shows the exact plan on the confirm button,
+    # and then runs one Discord call at a time with a pause (discord_bot/cogs/_ai_bulk_ops.py). The AI path calls
+    # the ai_* handlers after its own Confirm click; a person typing the slash command gets a Confirm button too.
+    AI_CONFIRMED_HANDLERS = {"setup_bulk_create": "ai_bulkcreate", "setup_bulk_delete": "ai_bulkdelete"}
+    AI_CONFIRM_PROMPTS = {"setup_bulk_create": "ai_bulkcreate_prompt", "setup_bulk_delete": "ai_bulkdelete_prompt"}
+    AI_TOOL_PARAMS = {
+        "bulk-create": [
+            {"name": "names", "type": "string", "required": True,
+             "description": "Channel names to create, comma-separated (max 15), e.g. 'general, memes, staff-chat'"},
+            {"name": "kind", "type": "string", "enum": list(_ai_bulk_ops.KINDS),
+             "description": "text (default), voice, or category"},
+            {"name": "category", "type": "string",
+             "description": "Existing category to put them in (its name). Omit for no category."},
+            {"name": "font", "type": "string", "enum": list(_STYLES.keys()),
+             "description": "Optional fancy font for the names (e.g. bold, script, kanji)"},
+            {"name": "bracket", "type": "string", "enum": list(_BRACKETS.keys()),
+             "description": "Optional bracket/decoration around each name (e.g. cjk, bar, dot)"},
+        ],
+        "bulk-delete": [
+            {"name": "names", "type": "string", "required": True,
+             "description": "Channels to delete, comma-separated (max 10): names or #mentions. "
+                            "A category is only deleted if everything inside it is listed too."},
+        ],
+    }
+
+    async def _create_plan(self, interaction, names, kind=None, category=None, font=None, bracket=None):
+        """(error_or_None, plan). Every check that could make the job fail happens here, BEFORE the confirm button."""
+        from discord_bot.cogs.style import _normalize_font, _normalize_bracket, _premium_flags, _premium_block_message
+        guild = interaction.guild
+        if guild is None:
+            return "This only works inside a server.", None
+        if not guild.me.guild_permissions.manage_channels:
+            return "I don't have **Manage Channels** in this server.", None
+        if not interaction.user.guild_permissions.manage_channels:
+            return "You need **Manage Channels** to create channels.", None
+        kind = (str(kind).strip().lower() if kind not in (None, "") else "text")
+        if kind not in _ai_bulk_ops.KINDS:
+            return f"Kind must be one of: {', '.join(_ai_bulk_ops.KINDS)}.", None
+        cat, problem = (None, None) if kind == "category" else _ai_bulk_ops.find_category(guild, category)
+        if problem:
+            return problem, None
+        font_key = None
+        if font not in (None, ""):
+            font_key = _normalize_font(font)
+            if font_key is None:
+                return f"I don't know a font called \u201c{font}\u201d.", None
+        bracket_key = _normalize_bracket(bracket)
+        if bracket_key is False:
+            return f"I don't know a bracket style called \u201c{bracket}\u201d.", None
+        active, can = await _premium_flags(interaction.user, guild, _clone_id_of(interaction.client))
+        block = _premium_block_message(font_key, bracket_key, active, can)
+        if block:
+            return block, None
+        plan = _ai_bulk.plan_creation(names, _ai_bulk_ops.existing_names(guild, kind, cat),
+                                      voice=(kind == "voice"), category=(kind == "category"))
+        if not plan["create"]:
+            why = []
+            if plan["duplicates"]:
+                why.append("already exist: " + _ai_bulk.summarize(plan["duplicates"]))
+            if plan["invalid"]:
+                why.append("not usable as names: " + _ai_bulk.summarize(plan["invalid"]))
+            return "Nothing to create" + (" \u2014 " + "; ".join(why) if why else ". Give me some names.") + ".", None
+        if len(guild.channels) + len(plan["create"]) > _ai_bulk_ops.GUILD_CHANNEL_LIMIT:
+            return f"That would pass Discord's {_ai_bulk_ops.GUILD_CHANNEL_LIMIT}-channel limit for a server.", None
+        plan.update(kind=kind, category=cat, font=font_key, bracket=bracket_key,
+                    final=[_ai_bulk_ops.styled_name(n, font_key, bracket_key, kind) for n in plan["create"]])
+        return None, plan
+
+    @staticmethod
+    def _create_summary(plan) -> str:
+        where = f" in **{plan['category'].name}**" if plan.get("category") is not None else ""
+        font = ""
+        if plan.get("font"):
+            from modules.text_styles import STYLES
+            font = f", in the **{STYLES[plan['font']][0]}** font"
+        text = f"Create **{len(plan['final'])}** {plan['kind']} channel(s){where}{font}: {_ai_bulk.summarize(plan['final'])}"
+        notes = []
+        if plan["duplicates"]:
+            notes.append("already exist, skipped: " + _ai_bulk.summarize(plan["duplicates"]))
+        if plan["over_cap"]:
+            notes.append(f"over the {_ai_bulk.MAX_CREATE}-channel limit, skipped: " + _ai_bulk.summarize(plan["over_cap"]))
+        if plan["invalid"]:
+            notes.append("not usable as names: " + _ai_bulk.summarize(plan["invalid"]))
+        return text + ("\n_(" + "; ".join(notes) + ")_" if notes else "")
+
+    async def _finish_create(self, interaction: discord.Interaction, plan: dict):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        busy = _ai_bulk.JOBS.try_start(guild.id)
+        if busy:
+            await interaction.followup.send(f"\u23f3 {busy}", ephemeral=True)
+            return
+        try:
+            made, stop = await _ai_bulk_ops.create_channels(
+                guild, plan["final"], plan["kind"], plan.get("category"),
+                reason=f"Bulk create by {interaction.user} ({interaction.user.id})")
+        finally:
+            _ai_bulk.JOBS.finish(guild.id)
+        if made:
+            await modx.log_action(guild.id, "bulk_create", interaction.user.id,
+                                  reason=f"{len(made)} channel(s): {_ai_bulk.summarize([c.name for c in made], 8)}")
+        msg = (f"\u2705 Created {len(made)}/{len(plan['final'])}: " + " ".join(c.mention for c in made)) if made \
+            else "\u274c Nothing was created."
+        if stop:
+            msg += f"\n\u26a0\ufe0f Stopped early: {stop}"
+        await interaction.followup.send(msg[:1900], ephemeral=True)
+
+    async def ai_bulkcreate_prompt(self, interaction, names=None, kind=None, category=None, font=None,
+                                   bracket=None, **_ignored):
+        err, plan = await self._create_plan(interaction, names, kind, category, font, bracket)
+        return (False, f"\u274c {err}") if err else (True, self._create_summary(plan) + "\nGo ahead?")
+
+    async def ai_bulkcreate(self, interaction, names=None, kind=None, category=None, font=None, bracket=None,
+                            **_ignored):
+        # Re-plan at click time: the server may have changed since the prompt was shown.
+        err, plan = await self._create_plan(interaction, names, kind, category, font, bracket)
+        if err:
+            await interaction.followup.send(f"\u274c {err}", ephemeral=True)
+            return
+        await self._finish_create(interaction, plan)
+
+    @group.command(name="bulk-create", description="Create several channels at once, optionally in a fancy font")
+    @app_commands.describe(names="Channel names, comma-separated (max 15)", kind="text (default), voice or category",
+                           category="Existing category to put them in", font="Fancy font key (e.g. bold, script)",
+                           bracket="Bracket/decoration key (e.g. cjk, bar)")
+    async def bulkcreate_cmd(self, interaction: discord.Interaction, names: str, kind: str = "text",
+                             category: str = "", font: str = "", bracket: str = ""):
+        err, plan = await self._create_plan(interaction, names, kind, category, font, bracket)
+        if err:
+            await interaction.response.send_message(f"\u274c {err}", ephemeral=True)
+            return
+        from discord_bot.cogs._views_moderation import ConfirmActionView
+        view = ConfirmActionView(interaction.user.id, lambda ci: self._finish_create(ci, plan),
+                                 confirm_label="Create", danger=False)
+        await interaction.response.send_message(self._create_summary(plan), view=view, ephemeral=True)
+
+    async def _delete_plan(self, interaction, names):
+        guild = interaction.guild
+        if guild is None:
+            return "This only works inside a server.", None
+        if not guild.me.guild_permissions.manage_channels:
+            return "I don't have **Manage Channels** in this server.", None
+        if not interaction.user.guild_permissions.manage_channels:
+            return "You need **Manage Channels** to delete channels.", None
+        wanted = _ai_bulk.split_names(names)
+        if not wanted:
+            return "Tell me which channels to delete.", None
+        if len(wanted) > _ai_bulk.MAX_DELETE_CHANNELS:
+            return (f"That's {len(wanted)} channels \u2014 I delete at most {_ai_bulk.MAX_DELETE_CHANNELS} at a time. "
+                    "Split it into smaller requests."), None
+        res = _ai_bulk_ops.resolve_channels(guild, wanted, getattr(interaction, "channel", None))
+        # The asker needs Manage Channels on each one too (channel overrides can remove it).
+        res["found"] = [c for c in res["found"] if c.permissions_for(interaction.user).manage_channels]
+        if not res["found"]:
+            extra = _ai_bulk_ops.deletion_problems(res)
+            return "Nothing to delete" + (f" \u2014 {extra}" if extra else ".") , None
+        return None, res
+
+    @staticmethod
+    def _delete_summary(res) -> str:
+        names = [("#" if not isinstance(c, discord.CategoryChannel) else "") + c.name for c in res["found"]]
+        text = f"\u26a0\ufe0f **Permanently delete {len(names)} channel(s):** {_ai_bulk.summarize(names)}. This can't be undone."
+        extra = _ai_bulk_ops.deletion_problems(res)
+        return text + (f"\n_({extra})_" if extra else "")
+
+    async def _finish_delete(self, interaction: discord.Interaction, res: dict):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        busy = _ai_bulk.JOBS.try_start(guild.id)
+        if busy:
+            await interaction.followup.send(f"\u23f3 {busy}", ephemeral=True)
+            return
+        try:
+            gone, stop = await _ai_bulk_ops.delete_channels(
+                res["found"], reason=f"Bulk delete by {interaction.user} ({interaction.user.id})")
+        finally:
+            _ai_bulk.JOBS.finish(guild.id)
+        if gone:
+            await modx.log_action(guild.id, "bulk_delete", interaction.user.id,
+                                  reason=f"{len(gone)} channel(s): {_ai_bulk.summarize(gone, 8)}")
+        msg = (f"\U0001f5d1\ufe0f Deleted {len(gone)}/{len(res['found'])}: " + ", ".join(gone)) if gone \
+            else "\u274c Nothing was deleted."
+        if stop:
+            msg += f"\n\u26a0\ufe0f Stopped early: {stop}"
+        await interaction.followup.send(msg[:1900], ephemeral=True)
+
+    async def ai_bulkdelete_prompt(self, interaction, names=None, **_ignored):
+        err, res = await self._delete_plan(interaction, names)
+        return (False, f"\u274c {err}") if err else (True, self._delete_summary(res) + "\nConfirm?")
+
+    async def ai_bulkdelete(self, interaction, names=None, **_ignored):
+        err, res = await self._delete_plan(interaction, names)      # re-resolved at click time
+        if err:
+            await interaction.followup.send(f"\u274c {err}", ephemeral=True)
+            return
+        await self._finish_delete(interaction, res)
+
+    @group.command(name="bulk-delete", description="Delete several channels at once (asks you to confirm first)")
+    @app_commands.describe(names="Channel names or #mentions, comma-separated (max 10)")
+    async def bulkdelete_cmd(self, interaction: discord.Interaction, names: str):
+        err, res = await self._delete_plan(interaction, names)
+        if err:
+            await interaction.response.send_message(f"\u274c {err}", ephemeral=True)
+            return
+        from discord_bot.cogs._views_moderation import ConfirmActionView
+        view = ConfirmActionView(interaction.user.id, lambda ci: self._finish_delete(ci, res), confirm_label="Delete")
+        await interaction.response.send_message(self._delete_summary(res), view=view, ephemeral=True)
 
     @group.command(name="servers", description="Get your link to list this server in PRIME-BOT's public directory")
     @app_commands.describe(resend="Resend the one-time auto-listing DM offer (Agree/Deny), even if it was declined before")

@@ -212,6 +212,17 @@ AI_COMMANDS = (
     _sub("archive trending", "discord_bot.cogs.archive", False, "See the current top bots in the archive"),
     _sub("referral mycode", "discord_bot.cogs.referrals", False, "Show your referral code"),
     _sub("setup channels", "discord_bot.cogs.setup_channels", True, "Suggest and create commonly useful channels", ("manage_channels",)),
+    _sub("setup bulk-create", "discord_bot.cogs.setup_channels", True,
+         "Bulk create several channels at once from a comma-separated list (max 15): text, voice or category, "
+         "optionally inside a category and in a fancy font/bracket. Args: `names`, `kind`, `category`, `font`, "
+         "`bracket`. ONE call with all the names \u2014 never one call per channel.", ("manage_channels",)),
+    _sub("setup bulk-delete", "discord_bot.cogs.setup_channels", True,
+         "Bulk delete several channels at once from a comma-separated list of names or #mentions (max 10). "
+         "ONE call with all the names \u2014 never one call per channel. Needs Manage Channels.", ("manage_channels",)),
+    _sub("messages user-purge", "discord_bot.cogs.moderation", True,
+         "Delete one member's recent messages in a channel (user purge). Args: `member`, `channel` (default: this "
+         "one), `amount` (max 200). Only looks at the past 13 days; never touches pinned messages.",
+         ("manage_messages",)),
     _sub("setup reportchannel", "discord_bot.cogs.setup_channels", True, "Choose which channel receives server reports", ("manage_guild",)),
     _sub("invites setup", "discord_bot.cogs.invites", True, "Open the invite tracker setup wizard", ("manage_guild",)),
     _sub("ticket setup", "discord_bot.cogs.ticket", True, "Set up the ticket system", ("manage_guild",)),
