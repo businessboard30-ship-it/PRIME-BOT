@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from modules import cat_adopt, cat_care, cat_market, cat_rank, cat_wallet, cat_wishlist
+from modules import cat_adopt, cat_care, cat_life, cat_market, cat_rank, cat_wallet, cat_wishlist
 
 FOOTER = "Just for fun: play coins only, no real money."
 
@@ -26,6 +26,13 @@ def sections() -> List[Tuple[str, str]]:
          f"{cat_care.DROP} **Water** ({cat_care.WATER_COST}) and a {cat_care.BED} **Bed** ({cat_care.BED_COST}, rented for "
          f"{cat_care.COMFORT_HOURS}h) make a cat less likely to get hungry. A cat that stays hungry for "
          f"{cat_care.LEAVE_AFTER_HOURS} hours may wander off. It's safe and comes back in a spawn, so someone can adopt it again."),
+        ("🌸 Cat Life",
+         f"Tap **Cat Life** on /cat. 💰 Fed cats earn coins by the hour (pick them up at least every {cat_life.HOURS_CAP}h). "
+         f"🏡 A cozy home costs {cat_life.COINS} {cat_life.RENT_BASE} + {cat_life.RENT_PER_CAT} per cat a day; without it your cats earn only "
+         f"{cat_life.percent(cat_life.HOME_OFF_FACTOR)}. 🌷 Take a cat for a walk (costs coins, brings some back). "
+         f"🎀 Go on a pretend kitty heist with your cat: win big or lose the fee ({cat_life.HEISTS_PER_DAY} a day). "
+         f"🎰 Coin flip and lucky spin, with a daily loss limit of {cat_life.COINS} {cat_life.DAILY_LOSS_LIMIT:,}. "
+         "Cats that are out can't be sold, traded or released until they're home. Never hurt, never lost."),
         ("🏷️ Market",
          f"Sell a cat for coins ({cat_market.MIN_PRICE:,} to {cat_market.MAX_PRICE:,}, up to "
          f"{cat_market.MAX_OPEN_PER_SELLER} for sale at once). Tap **Market** to browse and buy. "
