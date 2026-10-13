@@ -59,7 +59,7 @@ def _aware(dt):
 
 
 def transition(current: Optional[dict], product: str, kind: str, now=None,
-               cancel_flag: bool = False) -> Optional[dict]:
+               cancel_flag: bool = False, period_days: Optional[int] = None) -> Optional[dict]:
     """Return {'status', 'expires_at', 'cancel_at_period_end'} to write, or None for 'no change'.
 
     `current` is the existing user_entitlements row for (user, product) or None.
@@ -72,7 +72,9 @@ def transition(current: Optional[dict], product: str, kind: str, now=None,
 
     if kind == "charge":
         base = exp if exp and exp > now else now
-        new_exp = base + timedelta(days=plan["period_days"])
+        # period_days lets a one-time purchase (Level Pass, boost packs) grant a different length than the monthly
+        # plan's period; subscriptions never pass it.
+        new_exp = base + timedelta(days=int(period_days) if period_days else plan["period_days"])
         return {"status": "cancelled" if cancel_flag else "active",
                 "expires_at": new_exp, "cancel_at_period_end": bool(cancel_flag)}
 

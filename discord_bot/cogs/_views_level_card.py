@@ -35,10 +35,12 @@ ACCEPTED = ("image/png", "image/jpeg")
 
 
 # ── state ────────────────────────────────────────────────────────────────────
-async def load_state(uid: int):
-    """-> (has_pass, design, assets{kind: row}, expires_at|None). Read fresh every time."""
+async def load_state(uid: int, guild_id=None, clone_id=None):
+    """-> (has_pass, design, assets{kind: row}, expires_at|None). Read fresh every time. In a Premium
+    server `has_pass` is True without a Level Pass (see lcd.guild_card_access); the caller can tell the two apart by
+    asking `_own_access(uid)`."""
     rows = await db.entitlements_list(str(uid))
-    has_pass = ent.has_access(rows, ("card_plan",))
+    has_pass = ent.has_access(rows, ("card_plan",)) or await lcd.guild_card_access(db, guild_id, clone_id)
     expires = next((r.get("expires_at") for r in rows if r.get("product") == "card_plan"), None)
     design = dict(lcd.DEFAULT_DESIGN)
     raw = await db.user_card_get(str(uid))
@@ -92,6 +94,10 @@ class Draft:
     use_real: bool = False
     dirty: bool = False
     guild_id: Optional[int] = None
+    scope: str = "user"                             # "user": the member's own card · "server": the whole server's card
+    key: Optional[str] = None                       # where it is stored: None = the member, "g:<guild id>" = the server
+    can_server: bool = False                        # Manage Server in a Premium server: the Server card switch is shown
+    free_guild: bool = False                        # access comes from this server (Premium), not from a pass
     trial_available: bool = False                   # never had a card_plan row: Save offers the free trial
     on_trial: bool = False                          # the current access is the free trial
 
@@ -105,12 +111,59 @@ class Draft:
         return self.real if (self.use_real and self.real) else PREVIEW_STATS
 
 
-async def draft_for(uid: int, guild_id=None) -> Draft:
-    has_pass, design, assets, expires = await load_state(uid)
+async def draft_for(uid: int, guild_id=None, clone_id=None) -> Draft:
+    has_pass, design, assets, expires = await load_state(uid, guild_id, clone_id)
     saved = {k: _approved(assets, k) for k in card_assets.KINDS if _approved(assets, k)}
     trial_ok, on_trial = await trial_state(uid)
-    return Draft(design=dict(design), has_pass=has_pass, expires=expires, saved=saved, guild_id=guild_id,
-                 trial_available=trial_ok and not has_pass, on_trial=on_trial)
+    own = await _own_access(uid)
+    return Draft(design=dict(design), has_pass=has_pass, expires=expires if own else None, saved=saved,
+                 guild_id=guild_id, free_guild=has_pass and not own,
+                 trial_available=trial_ok and not has_pass, on_trial=on_trial and own)
+
+
+async def _own_access(uid: int) -> bool:
+    """The member's own Level Pass / trial is active (not just this server's access)."""
+    try:
+        return ent.has_access(await db.entitlements_list(str(uid)), ("card_plan",))
+    except Exception:
+        return False
+
+
+async def can_edit_server(interaction: discord.Interaction) -> bool:
+    """Manage Server, in a server that has Premium. Checked when the switch is drawn AND again on every save."""
+    perms = getattr(interaction.user, "guild_permissions", None)
+    if not interaction.guild_id or not perms or not perms.manage_guild:
+        return False
+    return await lcd.guild_card_access(db, interaction.guild_id, getattr(interaction.client, "clone_id", None))
+
+
+async def _server_draft(guild_id: int) -> Draft:
+    key = lcd.server_key(guild_id)
+    design = dict(lcd.DEFAULT_DESIGN)
+    raw = await db.user_card_get(key)
+    if raw:
+        try:
+            parsed, _ = lcd.validate(json.loads(raw))
+            design = parsed or design
+        except Exception:
+            pass
+    saved = {}
+    for kind in card_assets.KINDS:
+        row = await db.card_asset_get(key, kind)
+        if row and row.get("status") == "approved":
+            saved[kind] = bytes(row["data"])
+    return Draft(design=design, has_pass=True, saved=saved, guild_id=guild_id, scope="server", key=key)
+
+
+async def build_draft(interaction: discord.Interaction, scope: str = "user") -> Draft:
+    """The draft for the member's own card, or (for someone who may) the server's card."""
+    can = await can_edit_server(interaction)
+    if scope == "server" and can:
+        draft = await _server_draft(interaction.guild_id)
+    else:
+        draft = await draft_for(interaction.user.id, interaction.guild_id, getattr(interaction.client, "clone_id", None))
+    draft.can_server = can
+    return draft
 
 
 async def render_preview(user, draft: Draft) -> discord.File:
@@ -147,7 +200,14 @@ def build_embed(draft: Draft, notice: str = "") -> discord.Embed:
     design = draft.design
     e = discord.Embed(title="🎨 Your level-up card", color=discord.Color.from_str(design.get("accent", "#57F287")))
     bg = lcd.BACKGROUNDS.get(design.get("background"), ("", "", "Slate"))[2]
-    if draft.has_pass:
+    if draft.scope == "server":
+        e.title = "🏰 Your server's level-up card"
+        status = ("🏰 **Server card.** Members of this server who haven't made their own card see this one. "
+                  + ("Press **Save** to keep your changes." if draft.dirty else "Everything is saved."))
+    elif draft.free_guild:
+        status = ("🎫 **This server has Premium, so your card is free here.** "
+                  + ("Press **Save** to keep your changes." if draft.dirty else "Everything is saved."))
+    elif draft.has_pass:
         name = "Free trial" if draft.on_trial else "Level Pass"
         until = f"{name} active until <t:{int(draft.expires.timestamp())}:D>" if draft.expires else f"{name} active"
         status = f"🎫 {until}. Press **Save** to keep your changes." if draft.dirty else f"🎫 {until}. Everything is saved."
@@ -190,7 +250,7 @@ async def open_card_wizard(interaction: discord.Interaction) -> None:
     designer; only saving needs the Level Pass."""
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        draft = await draft_for(interaction.user.id, interaction.guild_id)
+        draft = await build_draft(interaction)
         file = await render_preview(interaction.user, draft)
         await interaction.followup.send(embed=build_embed(draft), file=file,
                                         view=CardWizardView(interaction.user.id, draft), ephemeral=True)
@@ -319,18 +379,27 @@ async def save_draft(interaction: discord.Interaction, draft: Draft, target: Opt
         if target is None:
             await interaction.response.defer()
             target = interaction
-        has_pass, _stored, _assets, expires = await load_state(interaction.user.id)
-        if not has_pass:
-            draft.has_pass = False
-            await _offer_pass(interaction, draft, target)
-            return
-        draft.has_pass, draft.expires = True, expires
-        uid = str(interaction.user.id)
+        if draft.scope == "server":
+            # The server card: Manage Server in a Premium server, re-checked right here (never from the buttons).
+            if not await can_edit_server(interaction):
+                await interaction.followup.send(
+                    "Saving the server card needs **Manage Server**, in a server that has Premium.", ephemeral=True)
+                return
+            uid = draft.key
+        else:
+            clone = getattr(interaction.client, "clone_id", None)
+            has_pass, _stored, _assets, expires = await load_state(interaction.user.id, interaction.guild_id, clone)
+            if not has_pass:
+                draft.has_pass = False
+                await _offer_pass(interaction, draft, target)
+                return
+            draft.has_pass, draft.expires = True, expires
+            uid = str(interaction.user.id)
         design = dict(draft.design)
         problems = []
         for kind, flag in (("background", "custom_bg"), ("logo", "logo")):
             if kind in draft.staged:
-                res = await card_assets.submit(db, interaction.user.id, kind, draft.staged[kind][0])
+                res = await card_assets.submit(db, uid, kind, draft.staged[kind][0])
                 if not res["ok"]:
                     design[flag] = False
                     problems.append(res["message"])
@@ -342,7 +411,10 @@ async def save_draft(interaction: discord.Interaction, draft: Draft, target: Opt
                     if res["status"] == "pending":
                         problems.append("⏳ Your image shows once it passes the automatic check.")
                     else:
-                        await _send_to_host(interaction, kind)
+                        if draft.scope == "server":
+                            await _send_to_host(interaction, kind, uid)
+                        else:
+                            await _send_to_host(interaction, kind)
             elif not design.get(flag):
                 await db.card_asset_delete(uid, kind)                 # the member removed it in the designer
         new, err = lcd.validate(design)
@@ -350,9 +422,11 @@ async def save_draft(interaction: discord.Interaction, draft: Draft, target: Opt
             await interaction.followup.send(err, ephemeral=True)
             return
         await db.user_card_set(uid, json.dumps(new, separators=(",", ":")))
-        fresh = await draft_for(interaction.user.id, interaction.guild_id)
+        fresh = await build_draft(interaction, draft.scope)
         fresh.use_real, fresh.real = draft.use_real, draft.real
-        await rerender(target, fresh, "✅ Saved. It shows on your next level-up, on /rank and on My Rank."
+        saved_note = ("✅ Saved for the whole server. Members without a card of their own see it."
+                      if draft.scope == "server" else "✅ Saved. It shows on your next level-up, on /rank and on My Rank.")
+        await rerender(target, fresh, saved_note
                        + ("\n" + "\n".join(problems) if problems else ""))
     except Exception:
         logger.exception("[level-card] couldn't save the design")
@@ -430,6 +504,12 @@ class CardWizardView(discord.ui.View):
                                  style=discord.ButtonStyle.success, row=4)
         save.callback = self._save
         self.add_item(save)
+        if draft.can_server:                         # Manage Server in a Premium server
+            to_server = draft.scope != "server"
+            sw = discord.ui.Button(label="Server card" if to_server else "My card", emoji="🏰" if to_server else "🎨",
+                                   style=discord.ButtonStyle.primary, row=4)
+            sw.callback = self._switch_scope
+            self.add_item(sw)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -465,6 +545,20 @@ class CardWizardView(discord.ui.View):
 
     async def _save(self, interaction: discord.Interaction):
         await save_draft(interaction, self.draft)
+
+    async def _switch_scope(self, interaction: discord.Interaction):
+        """Swap between the member's own card and the server's card. Unsaved changes of the one left are dropped."""
+        try:
+            await interaction.response.defer()
+            want = "user" if self.draft.scope == "server" else "server"
+            new = await build_draft(interaction, want)
+            note = "Unsaved changes on the other card were dropped." if self.draft.dirty else ""
+            if want == "server" and new.scope != "server":
+                note = "Saving the server card needs **Manage Server**, in a server that has Premium."
+            await rerender(interaction, new, note)
+        except Exception:
+            logger.exception("[level-card] couldn't switch cards")
+            await interaction.followup.send("Couldn't switch right now.", ephemeral=True)
 
     async def _randomize(self, interaction: discord.Interaction):
         await edit_draft(interaction, self.draft, **random_design())
@@ -502,7 +596,10 @@ class CardWizardView(discord.ui.View):
                                          getattr(interaction.user, "display_name", "You"), lvl, cur, need, d.design,
                                          d.asset("background"), d.asset("logo"))          # full size + 10 MB fallback
             file = discord.File(io.BytesIO(png), filename=lcd.file_name("card", png))
-            await interaction.followup.send(content=f"🎨 {interaction.user.mention}'s level card", file=file, ephemeral=False)
+            who = (f"🏰 Server level card, designed by {interaction.user.mention}" if d.scope == "server"
+                   else f"🎨 {interaction.user.mention}'s level card")
+            await interaction.followup.send(content=who, file=file, ephemeral=False,
+                                            allowed_mentions=discord.AllowedMentions.none())
         except Exception:
             logger.exception("[level-card] couldn't share the card")
             try:
@@ -629,13 +726,14 @@ class UploadModal(discord.ui.Modal):
                 pass
 
 
-async def _send_to_host(interaction: discord.Interaction, kind: str) -> None:
+async def _send_to_host(interaction: discord.Interaction, kind: str, key: Optional[str] = None) -> None:
     """Send the processed, APPROVED image to the same hosting channel the welcome backgrounds use. Best effort."""
     try:
         from modules import image_host
-        row = await db.card_asset_get(str(interaction.user.id), kind)
+        key = key or str(interaction.user.id)
+        row = await db.card_asset_get(key, kind)
         if row and row.get("status") == "approved":
-            await image_host.post_to_host(
-                interaction.client, bytes(row["data"]), f"Level card {kind} · user {interaction.user.id} · approved")
+            who = f"server {key[2:]}" if key.startswith("g:") else f"user {key}"
+            await image_host.post_to_host(interaction.client, bytes(row["data"]), f"Level card {kind} · {who} · approved")
     except Exception:
         logger.warning("[level-card] couldn't copy the image to the hosting channel", exc_info=True)

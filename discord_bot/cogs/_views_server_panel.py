@@ -403,6 +403,7 @@ class HomeView(ServerPanelView):
             _btn("Help & tools", S, self.nav_p3("HelpToolsView"), "🧰"),
             _btn("Premium", S, self.nav(PremiumView), "💎"),
             _btn("Quick enable", S, self._legacy, "⚡"),
+            _btn("Edit bot profile", S, self._bot_profile, "🤖"),
         ]
         if self.inspect is not None:
             out = [b for b in out if b.label != "Help & tools"]
@@ -413,6 +414,14 @@ class HomeView(ServerPanelView):
     async def _exit(self, interaction: discord.Interaction):
         await interaction.response.defer()
         await self.inspect.back(interaction)
+
+    async def _bot_profile(self, interaction: discord.Interaction):
+        """Opens the free Bot profile wizard (same one as the join DM button and /botprofile)."""
+        from discord_bot.cogs._views_bot_profile import _check_access, open_profile_wizard
+        if not await _check_access(interaction, self.guild_id):
+            return
+        await interaction.response.defer(ephemeral=True)
+        await open_profile_wizard(interaction, self.guild_id, self.clone_id)
 
     async def _legacy(self, interaction: discord.Interaction):
         """The original one-tap enable wizard, kept until Phase 2 hubs cover it."""

@@ -415,13 +415,7 @@ class CatCog(commands.Cog):
             out["hungry"] = await cat_care.make_hungry(clone_id)
         except Exception:
             logger.warning("[cat] hunger step failed", exc_info=True)
-        try:
-            for owner_id, names in (await cat_care.due_warnings(clone_id)).items():
-                if await self._dm(owner_id, cat_care.warning_text(names)):
-                    out["warned"] += 1
-                await asyncio.sleep(2)
-        except Exception:
-            logger.warning("[cat] hunger warning step failed", exc_info=True)
+        # No "getting hungry" DM any more: owners see hunger in My cats instead.
         try:
             gone = await cat_care.make_runaways(clone_id)
             out["left"] = len(gone)

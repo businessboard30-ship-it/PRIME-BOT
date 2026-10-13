@@ -60,7 +60,7 @@ from modules.level_card import (
     render_level_card_tiered, get_tier_image_for_level,
 )
 from discord_bot.cogs._views_shared import ActionButton, NavCardView
-from discord_bot.cogs._views_leveling_leaderboard import build_leaderboard_view
+from discord_bot.cogs._views_leveling_leaderboard import build_leaderboard_view, level_up_ping_view
 from config import DISCORD_CLONE_ADMIN_IDS, TOPGG_VOTE_MULTIPLIER
 from discord_bot.cogs._views_leveling_wizard import (
     build_wizard_view as build_leveling_wizard_view,
@@ -141,6 +141,11 @@ async def _deny(interaction: discord.Interaction, perm_name: str):
 def _progress_bar(current: int, needed: int, width: int = 20) -> str:
     filled = int(width * (current / needed)) if needed else 0
     return "█" * filled + "░" * (width - filled)
+
+
+# Chance (0-1) that a level-up message carries the "Pings off" button. 1.0 = every level-up; lower it to show it
+# only now and then.
+LEVELUP_PING_BUTTON_CHANCE = 1.0
 
 
 class LevelingCog(GuildOnlyCog):
@@ -431,6 +436,17 @@ class LevelingCog(GuildOnlyCog):
         except Exception as e:
             logger.error(f"[v0] Failed to announce chief change ({clan_slug}) in guild {guild.id}: {e}")
 
+    async def _ping_button_view(self, member: discord.Member):
+        """The "Pings off" button for a level-up message, or None (random miss, or any lookup problem)."""
+        try:
+            if LEVELUP_PING_BUTTON_CHANCE < 1.0 and random.random() >= LEVELUP_PING_BUTTON_CHANCE:
+                return None
+            muted = member.id in await db.get_level_ping_muted(member.guild.id, [member.id])
+            return level_up_ping_view(member.guild.id, member.id, muted)
+        except Exception:
+            logger.warning("[leveling] couldn't build the level-up ping button", exc_info=True)
+            return None
+
     async def _send_level_up_card(self, channel, member: discord.Member, new_level: int, new_total_xp: int,
                                    card_style: str = "card", clone_id=None, pinged: Optional[set] = None):
         """Renders and sends the level-up announcement. card_style == "text"
@@ -445,9 +461,11 @@ class LevelingCog(GuildOnlyCog):
         discord_xp.boost_pitched bookkeeping/DB write that used to go with
         it — one less write per level-up)."""
         am = await self._mentions_for(member.guild.id, member.id, pinged=pinged)
+        ping_view = await self._ping_button_view(member)
+        vk = {"view": ping_view} if ping_view is not None else {}
         if card_style == "text":
             try:
-                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", allowed_mentions=am)
+                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", allowed_mentions=am, **vk)
             except discord.Forbidden:
                 pass
             return
@@ -472,7 +490,7 @@ class LevelingCog(GuildOnlyCog):
             # when it lapses design_for_user() returns None and the normal card comes back (design is kept).
             try:
                 from modules import level_card_design as _lcd
-                custom_card = await _lcd.card_for_user(db, member.id)
+                custom_card = await _lcd.card_for_user(db, member.id, guild_id=member.guild.id, clone_id=clone_id)
             except Exception as e:
                 logger.warning(f"[v0] custom level card lookup failed for {member.id}: {e}")
                 custom_card = None
@@ -505,13 +523,13 @@ class LevelingCog(GuildOnlyCog):
                     p["current_xp_in_level"], p["xp_needed_for_next_level"],
                 )
             file = discord.File(fp=io.BytesIO(card_bytes), filename="levelup." + ("jpg" if card_bytes[:3] == b"\xff\xd8\xff" else "png"))
-            await channel.send(content=f"🎉 {member.mention} leveled up!", file=file, allowed_mentions=am)
+            await channel.send(content=f"🎉 {member.mention} leveled up!", file=file, allowed_mentions=am, **vk)
         except discord.Forbidden:
             pass
         except Exception as e:
             logger.error(f"[v0] Failed to render/send level-up card for {member.id}: {e}")
             try:
-                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", allowed_mentions=am)
+                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", allowed_mentions=am, **vk)
             except discord.Forbidden:
                 pass
 
@@ -734,7 +752,8 @@ class LevelingCog(GuildOnlyCog):
             from modules import level_card_design as _lcd
             rank_row = await db.get_xp_rank(interaction.guild_id, target.id, clone_id=clone_id)
             png = await _lcd.render_member_card(db, target, p["level"], p["current_xp_in_level"],
-                                                p["xp_needed_for_next_level"], rank=(rank_row or {}).get("rank"))
+                                                p["xp_needed_for_next_level"], rank=(rank_row or {}).get("rank"),
+                                                clone_id=clone_id)
             if png:
                 await interaction.followup.send(file=discord.File(io.BytesIO(png), filename=_lcd.file_name("rank", png)))
         except Exception:
