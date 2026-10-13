@@ -294,30 +294,25 @@ def cat_embed(url: str, next_at: Optional[datetime] = None, title: Optional[str]
 
 
 async def send_cat(interaction: discord.Interaction) -> None:
-    """Shared by /cat and the join DM Cat button. The caller has NOT responded yet."""
+    """Shared by /cat and the join DM Cat button: opens the private cat menu with a fresh cat picture on it.
+    The caller has NOT responded yet. If the person asked for a picture a moment ago, the menu still opens, just without one."""
     wait = cooldown_left(interaction.user.id)
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    url, note = None, None
     if wait > 0:
-        await interaction.response.send_message(f"😺 Easy there, another cat in {wait:.0f}s.", ephemeral=True)
-        return
-    await interaction.response.defer(thinking=True)
-    hint = cat_pool.server_hint.set((interaction.guild_id, getattr(getattr(interaction, "guild", None), "name", None)))
-    manual = cat_pool.manual_request.set(True)
-    try:
-        url = await fetch_cat_url(bot=interaction.client, guild_id=interaction.guild_id)
-    finally:
-        cat_pool.manual_request.reset(manual)
-        cat_pool.server_hint.reset(hint)
-    if not url:
-        await interaction.followup.send("😿 I couldn't find a cat right now. Try again in a moment.", ephemeral=True)
-        return
-    from discord_bot.cogs._views_cat_adopt import MyCatsButton
-    from discord_bot.cogs._views_cat_market import LeaderboardButton, MarketButton
-    from discord_bot.cogs._views_cat_features import feature_button_view
-    view = feature_button_view()
-    view.add_item(MyCatsButton())
-    view.add_item(LeaderboardButton())
-    view.add_item(MarketButton())
-    await interaction.followup.send(embed=cat_embed(url), view=view)
+        note = f"😺 Easy there, another cat picture in {wait:.0f}s."
+    else:
+        hint = cat_pool.server_hint.set((interaction.guild_id, getattr(getattr(interaction, "guild", None), "name", None)))
+        manual = cat_pool.manual_request.set(True)
+        try:
+            url = await fetch_cat_url(bot=interaction.client, guild_id=interaction.guild_id)
+        finally:
+            cat_pool.manual_request.reset(manual)
+            cat_pool.server_hint.reset(hint)
+    if wait <= 0 and not url:
+        note = "😿 I couldn't find a cat picture right now. Try again in a moment."
+    from discord_bot.cogs._views_cat_hub import open_hub
+    await open_hub(interaction, str(url) if url else None, note=note, deferred=True)
 
 
 async def post_cat(bot, guild: discord.Guild, channel_id: int, next_at: Optional[datetime] = None) -> bool:
@@ -600,7 +595,7 @@ class CatCog(commands.Cog):
         except Exception:
             logger.warning("[cat] permission alert failed for guild %s", guild.id, exc_info=True)
 
-    @app_commands.command(name="cat", description="A random cute cat picture 🐱")
+    @app_commands.command(name="cat", description="Your cat menu: a cat picture, your cats, daily care, market and more 🐱")
     @app_commands.describe(profile="Show this player's cat profile instead of a cat picture")
     async def cat(self, interaction: discord.Interaction, profile: Optional[discord.User] = None):
         if profile is not None:

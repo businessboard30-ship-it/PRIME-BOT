@@ -86,7 +86,24 @@ def spawn_view(spawn_id: int, adopted: bool = False, gone: bool = False) -> disc
     view.add_item(MyCatsButton())
     view.add_item(_market.MarketButton())
     view.add_item(HelpButton())
+    view.add_item(MenuButton())
     return view
+
+
+class MenuButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_menu$"):
+    """Opens the same private /cat menu from a spawn, so a cat that just appeared and /cat are one flow."""
+
+    def __init__(self):
+        super().__init__(discord.ui.Button(label="Menu", emoji="🐱", style=discord.ButtonStyle.primary,
+                                           custom_id="cat_menu"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls()
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_cat_hub import open_hub
+        await open_hub(interaction)
 
 
 class HelpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_help$"):
@@ -827,7 +844,7 @@ class TradeOfferView(discord.ui.View):
 
 from discord_bot.cogs import _views_cat_market as _market  # noqa: E402  (needs the names defined above)
 
-DYNAMIC_ITEMS = (AdoptButton, MyCatsButton, HelpButton) + _market.DYNAMIC_ITEMS
+DYNAMIC_ITEMS = (AdoptButton, MyCatsButton, HelpButton, MenuButton) + _market.DYNAMIC_ITEMS
 
 
 # ── My cats: search, filters, sorting ──────────────────────────────────────
