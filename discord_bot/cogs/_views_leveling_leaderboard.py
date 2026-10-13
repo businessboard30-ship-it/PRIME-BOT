@@ -757,6 +757,42 @@ class _PingStatusView(discord.ui.View):
         await interaction.response.edit_message(content=_ping_status_text(muted), view=self)
 
 
+class LevelUpPingButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^lvlup_ping:(\d+):(\d+)$"):
+    """Sits on the level-up message itself. Only the member who levelled up can press it; it flips their level-up
+    ping opt-out (same setting as the leaderboard's 🔔 button) and answers privately, so the card never changes."""
+    def __init__(self, guild_id: int, user_id: int, muted: bool = False):
+        self.guild_id = guild_id
+        self.user_id = user_id
+        super().__init__(discord.ui.Button(
+            label="Pings off" if not muted else "Pings on", emoji="🔕" if not muted else "🔔",
+            style=discord.ButtonStyle.secondary, custom_id=f"lvlup_ping:{guild_id}:{user_id}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)), int(match.group(2)))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                f"This button is for <@{self.user_id}>. You can use the 🔔 Level-up pings button on /leaderboard.",
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            muted = await db.toggle_level_ping_optout(self.guild_id, interaction.user.id)
+        except Exception:
+            logger.exception("[leveling] level-up ping toggle failed")
+            await interaction.followup.send("Couldn't change your ping setting right now. Try again in a moment.", ephemeral=True)
+            return
+        await interaction.followup.send(_ping_status_text(muted) + "\nPress the button again any time to flip it.", ephemeral=True)
+
+
+def level_up_ping_view(guild_id: int, user_id: int, muted: bool = False) -> "discord.ui.View":
+    view = discord.ui.View(timeout=None)
+    view.add_item(LevelUpPingButton(guild_id, user_id, muted))
+    return view
+
+
 class ClanPickSelect(discord.ui.Select):
     """One-off (non-persistent) select backing the Clans button's ephemeral
     picker — see LeaderboardClansButton for why this doesn't need to be a
@@ -805,4 +841,4 @@ class _LeaderboardGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
 
 DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton,
                  LeaderboardClansButton, LeaderboardPingButton, _LeaderboardGoPremiumButton,
-                 LeaderboardXPOptionsButton, LeaderboardCardButton)
+                 LeaderboardXPOptionsButton, LeaderboardCardButton, LevelUpPingButton)
