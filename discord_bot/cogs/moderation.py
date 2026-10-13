@@ -10,6 +10,7 @@ modules/moderation_adapter.py (warns) and modules/moderation_extra.py
 directly with zero changes needed there.
 """
 
+import asyncio
 import io
 import logging
 from datetime import timedelta
@@ -23,6 +24,7 @@ from discord_bot import perm_check
 from database import db
 from modules import moderation_adapter as mod
 from modules import moderation_extra as modx
+from modules import ai_bulk as _ai_bulk
 from discord_bot.cogs._views_moderation import ModActionView, WarnActionView, ModLogsView, ConfirmActionView
 
 logger = logging.getLogger(__name__)
@@ -171,6 +173,7 @@ class ModerationCog(GuildOnlyCog):
         "timeout": "ai_timeout",
         "untimeout": "ai_untimeout",
         "warn": "ai_warn",
+        "messages_user_purge": "ai_userpurge",
     }
 
     # ── /kick ────────────────────────────────────────────────────────────
@@ -577,6 +580,111 @@ class ModerationCog(GuildOnlyCog):
             await _deny(confirm_interaction, "Manage Messages")
             return
         await self._do_clear(confirm_interaction, confirm_interaction.channel, amount)
+
+    # ── /messages userpurge (also AI-runnable) ───────────────────────────
+    # Deletes ONE member's recent messages in ONE channel. Capped and age-limited (modules/ai_bulk.py): it only
+    # looks at the last MAX_SCAN_MESSAGES messages from the last 13 days, so Discord can bulk-delete them in a
+    # handful of calls instead of one call per message. Pinned messages are never touched.
+    AI_CONFIRM_PROMPTS = {"messages_user_purge": "ai_userpurge_prompt"}
+    AI_TOOL_PARAMS = {"user-purge": [
+        {"name": "member", "type": "user", "required": True,
+         "description": "The member whose messages to delete (@mention or ID)"},
+        {"name": "channel", "type": "channel",
+         "description": "Channel to clean (#mention, name, or 'this'). Defaults to the channel we're chatting in."},
+        {"name": "amount", "type": "integer",
+         "description": f"How many of their recent messages to delete (1-{_ai_bulk.MAX_USER_MESSAGES}, default 50)"},
+    ]}
+
+    def _user_purge_plan(self, interaction, member, channel, amount):
+        """(error_or_None, (member, channel, amount)). Checked before the confirm button and again at click time."""
+        if interaction.guild is None:
+            return "This only works inside a server.", None
+        if member is None:
+            return "Which member's messages? Mention them (@name).", None
+        channel = channel or getattr(interaction, "channel", None)
+        if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.Thread)):
+            return "I can only clean text, voice-text and thread channels.", None
+        if not channel.permissions_for(interaction.user).manage_messages:
+            return f"You need **Manage Messages** in {channel.mention}.", None
+        me = channel.permissions_for(interaction.guild.me)
+        if not (me.manage_messages and me.read_message_history):
+            return f"I need **Manage Messages** and **Read Message History** in {channel.mention}.", None
+        return None, (member, channel, _ai_bulk.clamp_messages(amount))
+
+    async def ai_userpurge_prompt(self, interaction, member=None, channel=None, amount=None, **_ignored):
+        err, plan = self._user_purge_plan(interaction, member, channel, amount)
+        if err:
+            return False, f"\u274c {err}"
+        m, ch, n = plan
+        return True, (f"\u26a0\ufe0f Delete up to **{n}** of {m.mention}'s recent messages in {ch.mention}? "
+                      f"I only look at the last {_ai_bulk.MAX_SCAN_MESSAGES} messages from the past "
+                      f"{_ai_bulk.BULK_AGE_DAYS} days, and never touch pinned ones. This can't be undone.")
+
+    async def _finish_user_purge(self, interaction: discord.Interaction, member, channel, amount: int):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        busy = _ai_bulk.JOBS.try_start(guild.id)
+        if busy:
+            await interaction.followup.send(f"\u23f3 {busy}", ephemeral=True)
+            return
+        count = 0
+
+        def check(m: discord.Message) -> bool:
+            nonlocal count
+            if m.author.id != member.id or m.pinned or count >= amount:
+                return False
+            count += 1
+            return True
+
+        try:
+            cutoff = discord.utils.utcnow() - timedelta(days=_ai_bulk.BULK_AGE_DAYS)
+            deleted = await asyncio.wait_for(
+                channel.purge(limit=_ai_bulk.MAX_SCAN_MESSAGES, check=check, after=cutoff, oldest_first=False,
+                              bulk=True, reason=f"Messages from {member} cleared by {interaction.user}"),
+                timeout=120,
+            )
+        except discord.Forbidden:
+            await interaction.followup.send("\u26a0\ufe0f I don't have permission to delete messages in that channel.", ephemeral=True)
+            return
+        except asyncio.TimeoutError:
+            await interaction.followup.send("\u26a0\ufe0f Discord is slow to answer (probably rate-limiting me), so I stopped. Some messages may already be gone.", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"\u26a0\ufe0f Couldn't delete those messages: {e}", ephemeral=True)
+            return
+        finally:
+            _ai_bulk.JOBS.finish(guild.id)
+        await modx.log_action(guild.id, "user_purge", interaction.user.id, target_user_id=member.id,
+                              reason=f"{len(deleted)} message(s) in channel {channel.id}")
+        await _post_clear_log(interaction, channel, deleted)
+        await interaction.followup.send(
+            f"\U0001f9f9 Deleted {len(deleted)} message(s) from {member.mention} in {channel.mention}." if deleted
+            else f"Nothing to delete \u2014 no recent unpinned messages from {member.mention} in {channel.mention}.",
+            ephemeral=True)
+
+    async def ai_userpurge(self, interaction, member=None, channel=None, amount=None, **_ignored):
+        err, plan = self._user_purge_plan(interaction, member, channel, amount)
+        if err:
+            await interaction.followup.send(f"\u274c {err}", ephemeral=True)
+            return
+        await self._finish_user_purge(interaction, *plan)
+
+    @messages_group.command(name="user-purge", description="Delete one member's recent messages in a channel")
+    @app_commands.describe(member="Whose messages to delete", channel="Channel to clean (default: this one)",
+                           amount=f"How many of their recent messages (1-{_ai_bulk.MAX_USER_MESSAGES})")
+    async def userpurge(self, interaction: discord.Interaction, member: discord.Member,
+                        channel: discord.TextChannel = None,
+                        amount: app_commands.Range[int, 1, _ai_bulk.MAX_USER_MESSAGES] = 50):
+        err, plan = self._user_purge_plan(interaction, member, channel, amount)
+        if err:
+            await interaction.response.send_message(f"\u274c {err}", ephemeral=True)
+            return
+        m, ch, n = plan
+        view = ConfirmActionView(interaction.user.id, lambda ci: self._finish_user_purge(ci, m, ch, n), confirm_label="Delete")
+        await interaction.response.send_message(
+            f"\u26a0\ufe0f Delete up to **{n}** of {m.mention}'s recent messages in {ch.mention}? This can't be undone.",
+            view=view, ephemeral=True)
 
     # ── /modlogs ─────────────────────────────────────────────────────────
     async def send_modlogs(self, interaction: discord.Interaction, limit: int = 10, page: int = 0, edit: bool = False):

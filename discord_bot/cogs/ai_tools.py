@@ -40,6 +40,7 @@ i18n: bot-authored strings go through discord_bot.i18n_helpers.tr().
 
 import logging
 import io
+from modules import ai_bulk
 from modules.ai_tool_select import select_tools
 from typing import Optional
 
@@ -688,6 +689,29 @@ class AIToolsCog(commands.Cog):
                 resolved[key] = value
         return resolved
 
+    @staticmethod
+    def _clip_args(args: dict) -> dict:
+        """The model's arguments, with any runaway string cut down (bulk commands take lists, not essays)."""
+        return {k: (v[:1000] if isinstance(v, str) else v) for k, v in (args or {}).items()}
+
+    async def _run_tool_calls(self, ctx, calls: list, *, real_interaction: bool) -> None:
+        """Runs what the model asked for in ONE reply -- at most one command. A mutating command needs its own
+        Confirm click, so a second command in the same reply could never be confirmed alongside it; and sending
+        several at once is how a confused model floods Discord's API. Extra calls are reported, never run."""
+        call, dropped = ai_bulk.pick_tool_call(calls)
+        if call is None:
+            return
+        await self._dispatch_tool_call(ctx, call["name"], self._clip_args(call.get("arguments") or {}),
+                                       real_interaction=real_interaction)
+        if dropped:
+            try:
+                await ctx.followup.send(
+                    f"\u2139\ufe0f I run one command at a time -- I skipped {dropped} other request(s) from that "
+                    "message. Ask for them separately once this one is done (for several channels or members, "
+                    "give me the whole list in one request).", ephemeral=True)
+            except Exception:
+                logger.debug("[ai_command] couldn't send the skipped-calls note", exc_info=True)
+
     async def _dispatch_tool_call(self, ctx, name: str, raw_args: dict, *, real_interaction: bool) -> None:
         """Runs one AI-chosen command end to end, from either a real
         discord.Interaction (/aichat) or a ProxyInteraction (reply/mention
@@ -739,6 +763,13 @@ class AIToolsCog(commands.Cog):
                     "That command was just updated and Discord hasn't finished syncing it yet — "
                     "give it a few minutes and try again.", ephemeral=True,
                 )
+
+        if needs_confirmation(spec, resolved_args) and ai_bulk.DEDUPER.is_duplicate(ctx.user.id, name, resolved_args):
+            # Same confirm-needing command, same arguments, moments ago (model retry / double message): the first
+            # prompt is still waiting, so don't stack a second one.
+            await ctx.followup.send("I already asked you to confirm exactly that -- use the buttons on that message.",
+                                    ephemeral=True)
+            return
 
         if needs_confirmation(spec, resolved_args):
             prompt = f"I'd run **/{spec.command_path}** with `{resolved_args}` — confirm?"
@@ -802,8 +833,7 @@ class AIToolsCog(commands.Cog):
             return "AI service error. Try again later.", warning, session_id
 
         if isinstance(response, dict):
-            call = response["tool_calls"][0]
-            await self._dispatch_tool_call(interaction, call["name"], call.get("arguments") or {}, real_interaction=True)
+            await self._run_tool_calls(interaction, response["tool_calls"], real_interaction=True)
             return "", warning, session_id
 
         prefix = f"⚠️ {warning}\n\n" if warning else ""
@@ -1068,8 +1098,7 @@ class AIToolsCog(commands.Cog):
             voice=await self._voice_setting(user_id, content),
         )
         if isinstance(response, dict):
-            call = response["tool_calls"][0]
-            await self._dispatch_tool_call(proxy, call["name"], call.get("arguments") or {}, real_interaction=False)
+            await self._run_tool_calls(proxy, response["tool_calls"], real_interaction=False)
             return "", None
         return (response or "AI service error. Try again later."), None
 
