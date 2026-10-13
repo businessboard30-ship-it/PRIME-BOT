@@ -23,7 +23,7 @@ from modules.ai_command_allowlist import (
 # (resolve_and_check reports it as "naming drift"), so it is tracked here instead of silently ignored.
 KNOWN_UNRESOLVED = {"announcements"}
 # Group subcommands that only touch the asker's OWN data, so they legitimately declare no server permission.
-USER_SCOPED = {"alert_set", "alert_remove", "alert_clear"}
+USER_SCOPED = {"alert_set", "alert_remove", "alert_clear", "botstore_rate"}
 
 
 def run(coro):

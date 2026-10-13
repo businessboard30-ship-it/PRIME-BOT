@@ -22,6 +22,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 MAX_CREATE = 15                 # channels made by one request
 MAX_DELETE_CHANNELS = 10        # channels deleted by one request
+MAX_CREATE_ROLES = 15           # roles made by one request
+MAX_DELETE_ROLES = 10           # roles deleted by one request
+GUILD_ROLE_LIMIT = 250          # Discord's per-server role cap
 MAX_USER_MESSAGES = 200         # one member's messages deleted by one request
 MAX_SCAN_MESSAGES = 1000        # how far back in the channel we look for them
 BULK_AGE_DAYS = 13              # Discord only bulk-deletes messages under 14 days old; stay safely inside that
@@ -175,3 +178,54 @@ def summarize(items: List[str], limit: int = 12) -> str:
     if len(items) <= limit:
         return ", ".join(items)
     return ", ".join(items[:limit]) + f" and {len(items) - limit} more"
+
+
+# ── roles ────────────────────────────────────────────────────────────────
+
+NAMED_COLORS = {
+    "red": 0xED4245, "orange": 0xE67E22, "yellow": 0xF1C40F, "green": 0x2ECC71, "teal": 0x1ABC9C,
+    "blue": 0x3498DB, "purple": 0x9B59B6, "pink": 0xEB459E, "gold": 0xC9A227, "gray": 0x99AAB5,
+    "grey": 0x99AAB5, "white": 0xFFFFFF, "black": 0x010101, "brown": 0x8B4513, "cyan": 0x11A8CD,
+}
+
+
+def parse_color(raw) -> Optional[int]:
+    """'#ff0000' / 'ff0000' / '0xff0000' / 'red' -> int. None for blank (= no colour). -1 for something unusable."""
+    if raw is None or str(raw).strip() == "":
+        return None
+    text = str(raw).strip().lower()
+    if text in NAMED_COLORS:
+        return NAMED_COLORS[text]
+    text = text.lstrip("#")
+    if text.startswith("0x"):
+        text = text[2:]
+    if re.fullmatch(r"[0-9a-f]{6}", text):
+        return int(text, 16)
+    if re.fullmatch(r"[0-9a-f]{3}", text):
+        return int("".join(c * 2 for c in text), 16)
+    return -1
+
+
+def role_name(name: str) -> str:
+    """A role name Discord accepts: spaces tidied, case kept, 100 chars max, no @ (so a role can't be named to look
+    like a mass-ping)."""
+    return " ".join((name or "").replace("@", "").split())[:100]
+
+
+def plan_role_creation(raw_names, existing: Iterable[str], room: int = GUILD_ROLE_LIMIT) -> Dict[str, list]:
+    """Same shape as plan_creation, for roles. `room` is how many more roles the server can hold."""
+    taken = {(e or "").lower() for e in existing}
+    plan = {"create": [], "duplicates": [], "invalid": [], "over_cap": []}
+    seen = set()
+    for raw in split_names(raw_names):
+        name = role_name(raw)
+        if not name or name.lower() in ("everyone", "here"):
+            plan["invalid"].append(raw)
+        elif name.lower() in taken or name.lower() in seen:
+            plan["duplicates"].append(name)
+        elif len(plan["create"]) >= min(MAX_CREATE_ROLES, max(room, 0)):
+            plan["over_cap"].append(name)
+        else:
+            plan["create"].append(name)
+            seen.add(name.lower())
+    return plan
