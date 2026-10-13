@@ -80,7 +80,7 @@ def test_extras_screen_shows_settings_and_limits(env):
     t = text_of(v)
     assert "Goodbye message" in t and "<#55>" in t and "<@&71>" in t
     assert len(list(v.walk_children())) < 40
-    assert {"Test goodbye", "Edit message", "Clear member role"} <= set(buttons(v))
+    assert {"Test goodbye", "Edit message", "Clear member role", "Customize 💎"} <= set(buttons(v))
 
 
 def test_toggle_requires_channel(env):

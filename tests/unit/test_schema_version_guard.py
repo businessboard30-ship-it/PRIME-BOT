@@ -13,8 +13,8 @@ from pathlib import Path
 
 DB = Path(__file__).resolve().parents[2] / "database.py"
 
-PINNED_VERSION = "97"
-PINNED_HASH = "a76fabc1c24818d0"
+PINNED_VERSION = "98"
+PINNED_HASH = "70736cc6d39d5e70"
 
 
 def _current():

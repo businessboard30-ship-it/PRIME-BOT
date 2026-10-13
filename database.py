@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "97"
+SCHEMA_VERSION = "98"
+# "97" -> "98" adds 052_goodbye_style.sql (discord_welcome_extras.goodbye_title/goodbye_color/goodbye_image_url/goodbye_footer/goodbye_show_avatar: Premium-only goodbye message styling, NULL = default look). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "96" -> "97" removes the 051_privacy_retention.sql step from startup: it rewrote three big tables in one statement, timed out, and kept every bot from finishing its start. The same scrub now runs in small batches in modules/data_retention.py. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "95" -> "96" adds 051_privacy_retention.sql (scrubs stored message text from flood_events/scam_shield_hits clears ai_command_log.args_json). Idempotent. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "94" -> "95" adds 050_guild_terms.sql (guild_terms_acceptance: which admin accepted the Terms and Privacy Policy for a server). CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5676,6 +5677,11 @@ class Database:
         if guild_terms_migration.exists():
             await conn.execute(guild_terms_migration.read_text())
 
+        # Premium goodbye styling (title / colour / banner / footer / avatar). Additive/idempotent.
+        goodbye_style_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "052_goodbye_style.sql"
+        if goodbye_style_migration.exists():
+            await conn.execute(goodbye_style_migration.read_text())
+
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
         if cat_shared_wallet_migration.exists():
@@ -10771,6 +10777,7 @@ class Database:
     _WELCOME_EXTRAS_FIELDS = (
         "goodbye_enabled", "goodbye_channel_id", "goodbye_message",
         "member_role_id", "bot_role_id",
+        "goodbye_title", "goodbye_color", "goodbye_image_url", "goodbye_footer", "goodbye_show_avatar",
     )
     _WELCOME_EXTRAS_DEFAULT_GOODBYE = "{name} has left {guild}. We are now {count} members."
 
@@ -10787,6 +10794,8 @@ class Database:
                 "guild_id": guild_id, "clone_id": clone_id, "goodbye_enabled": False,
                 "goodbye_channel_id": None, "goodbye_message": self._WELCOME_EXTRAS_DEFAULT_GOODBYE,
                 "member_role_id": None, "bot_role_id": None,
+                "goodbye_title": None, "goodbye_color": None, "goodbye_image_url": None,
+                "goodbye_footer": None, "goodbye_show_avatar": True,
             }
 
     async def set_welcome_extras(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
@@ -10800,15 +10809,20 @@ class Database:
                 """
                 INSERT INTO discord_welcome_extras
                     (guild_id, clone_id, goodbye_enabled, goodbye_channel_id, goodbye_message,
-                     member_role_id, bot_role_id, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                     member_role_id, bot_role_id, goodbye_title, goodbye_color, goodbye_image_url,
+                     goodbye_footer, goodbye_show_avatar, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
                     SET goodbye_enabled = $3, goodbye_channel_id = $4, goodbye_message = $5,
-                        member_role_id = $6, bot_role_id = $7, updated_at = NOW()
+                        member_role_id = $6, bot_role_id = $7, goodbye_title = $8, goodbye_color = $9,
+                        goodbye_image_url = $10, goodbye_footer = $11, goodbye_show_avatar = $12,
+                        updated_at = NOW()
                 RETURNING *
                 """,
                 guild_id, clone_id, merged["goodbye_enabled"], merged["goodbye_channel_id"],
                 merged["goodbye_message"], merged["member_role_id"], merged["bot_role_id"],
+                merged["goodbye_title"], merged["goodbye_color"], merged["goodbye_image_url"],
+                merged["goodbye_footer"], merged["goodbye_show_avatar"],
             )
             return dict(row)
 
