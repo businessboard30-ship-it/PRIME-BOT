@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "99"
+SCHEMA_VERSION = "100"
+# "99" -> "100" adds 053_guild_plus.sql (discord_guild_subscriptions.plus_expires_at / plus_subscription_id: Premium Plus tier). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "98" -> "99" adds 052_goodbye_style.sql (discord_welcome_extras.goodbye_title/goodbye_color/goodbye_image_url/goodbye_footer/goodbye_show_avatar: Premium-only goodbye message styling, NULL = default look). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "97" -> "98" wires 051_cat_life.sql into startup (cat_life_state, cat_life_daily, cat_outings: Cat Life). It shipped in PR #274 without being run, so cat release/trade/list and the Cat Life screens failed with UndefinedTableError. CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "96" -> "97" removes the 051_privacy_retention.sql step from startup: it rewrote three big tables in one statement, timed out, and kept every bot from finishing its start. The same scrub now runs in small batches in modules/data_retention.py. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5683,6 +5684,11 @@ class Database:
         if goodbye_style_migration.exists():
             await conn.execute(goodbye_style_migration.read_text())
 
+        # Premium Plus tier (plus_expires_at / plus_subscription_id on discord_guild_subscriptions). Additive/idempotent.
+        guild_plus_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "053_guild_plus.sql"
+        if guild_plus_migration.exists():
+            await conn.execute(guild_plus_migration.read_text())
+
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
         if cat_shared_wallet_migration.exists():
@@ -8534,6 +8540,92 @@ class Database:
                     expires_at = GREATEST(expires_at, NOW() + make_interval(days => $2)),
                     reminded_for = NULL, updated_at = NOW()
                 WHERE subscription_id = $1 RETURNING *
+                """,
+                subscription_id, days,
+            )
+            return dict(row) if row else None
+
+    # --- Premium Plus (upper tier, per server) ------------------------------
+    # Same row as Premium (discord_guild_subscriptions). Plus never replaces Premium: buying or renewing Plus
+    # also pushes expires_at (Premium) out to at least the Plus expiry, so every existing Premium check
+    # (is_guild_premium_active) stays true for as long as Plus is. See database/migrations/053_guild_plus.sql.
+
+    async def is_guild_plus_active(self, guild_id: int, clone_id: Optional[int] = None) -> bool:
+        """True until config.PREMIUM_GRACE_DAYS after plus_expires_at."""
+        if not guild_id:
+            return False
+        from config import PREMIUM_GRACE_DAYS
+        try:
+            row = await self.get_guild_premium(guild_id, clone_id)
+        except Exception:
+            logger.exception("[plus] status lookup failed for guild %s", guild_id)
+            return False
+        if not row or not row.get("plus_expires_at"):
+            return False
+        return row["plus_expires_at"] + timedelta(days=PREMIUM_GRACE_DAYS) > datetime.now(timezone.utc)
+
+    async def activate_guild_plus(self, guild_id: int, activated_by: int, days: int,
+                                  clone_id: Optional[int] = None) -> datetime:
+        """One-time (Paystack) or first (Gumroad) Plus payment. Adds `days` on top of any Plus time left (or from
+        now if lapsed) and makes sure Premium runs at least that long (not stacked: Plus never gives extra
+        Premium days beyond its own window). Returns the new plus_expires_at."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                """
+                INSERT INTO discord_guild_subscriptions (guild_id, clone_id, expires_at, plus_expires_at, activated_by)
+                VALUES ($1, $2, NOW() + make_interval(days => $4), NOW() + make_interval(days => $4), $3)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
+                    plus_expires_at = GREATEST(COALESCE(discord_guild_subscriptions.plus_expires_at, NOW()), NOW())
+                                      + make_interval(days => $4),
+                    expires_at = GREATEST(
+                        discord_guild_subscriptions.expires_at,
+                        GREATEST(COALESCE(discord_guild_subscriptions.plus_expires_at, NOW()), NOW())
+                            + make_interval(days => $4)),
+                    activated_by = $3, reminded_for = NULL, updated_at = NOW()
+                RETURNING plus_expires_at
+                """,
+                guild_id, clone_id, activated_by, days,
+            )
+
+    async def set_plus_subscription_id(self, guild_id: int, clone_id: Optional[int], subscription_id: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_guild_subscriptions SET plus_subscription_id = $3, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id, subscription_id,
+            )
+
+    async def set_guild_subscription_for_type(self, payment_type: str, guild_id: int, clone_id: Optional[int],
+                                              subscription_id: str) -> None:
+        """Store a Gumroad membership's subscription id on the right column: 'premium' -> Premium, 'premium_plus' ->
+        Plus. Any other payment type is ignored (only these two are recurring server memberships)."""
+        if payment_type == "premium":
+            await self.set_premium_subscription_id(guild_id, clone_id, subscription_id)
+        elif payment_type == "premium_plus":
+            await self.set_plus_subscription_id(guild_id, clone_id, subscription_id)
+
+    async def get_guild_plus_by_subscription(self, subscription_id: str) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_guild_subscriptions WHERE plus_subscription_id = $1", subscription_id,
+            )
+            return dict(row) if row else None
+
+    async def renew_guild_plus_subscription(self, subscription_id: str, days: int) -> Optional[Dict]:
+        """Gumroad Plus renewal charge: Plus (and Premium with it) runs `days` from now, not stacked. Returns the
+        row, or None if the subscription id is unknown."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE discord_guild_subscriptions SET
+                    plus_expires_at = GREATEST(COALESCE(plus_expires_at, NOW()), NOW() + make_interval(days => $2)),
+                    expires_at = GREATEST(expires_at, NOW() + make_interval(days => $2)),
+                    reminded_for = NULL, updated_at = NOW()
+                WHERE plus_subscription_id = $1 RETURNING *
                 """,
                 subscription_id, days,
             )

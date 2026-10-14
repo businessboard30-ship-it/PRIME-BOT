@@ -323,6 +323,10 @@ GUMROAD_PRODUCT_LINKS = {
     # vars only to force a specific product.
     "premium_yearly": os.getenv("GUMROAD_PREMIUM_YEARLY_LINK", ""),
     "premium_lifetime": os.getenv("GUMROAD_PREMIUM_LIFETIME_LINK", ""),
+    # Premium Plus: leave empty. The bot adopts them by name, creates the yearly one-time product itself, and DMs
+    # the owner once with the exact name/price when Gumroad won't let it create the monthly membership.
+    "premium_plus": os.getenv("GUMROAD_PREMIUM_PLUS_LINK", ""),
+    "premium_plus_yearly": os.getenv("GUMROAD_PREMIUM_PLUS_YEARLY_LINK", ""),
     # Hardcore roast — per-battle activation ($1). Create this product in
     # the Gumroad dashboard (one-time, $1) and paste its link/id here or
     # set GUMROAD_HARDCORE_ROAST_LINK / GUMROAD_HARDCORE_ROAST_ID env vars.
@@ -356,6 +360,8 @@ GUMROAD_PRODUCT_IDS = {
     "premium": os.getenv("GUMROAD_PREMIUM_PRODUCT_ID", ""),
     "premium_yearly": os.getenv("GUMROAD_PREMIUM_YEARLY_ID", ""),
     "premium_lifetime": os.getenv("GUMROAD_PREMIUM_LIFETIME_ID", ""),
+    "premium_plus": os.getenv("GUMROAD_PREMIUM_PLUS_ID", ""),
+    "premium_plus_yearly": os.getenv("GUMROAD_PREMIUM_PLUS_YEARLY_ID", ""),
     "hardcore_roast": os.getenv("GUMROAD_HARDCORE_ROAST_ID", ""),
     "ad_placement": os.getenv("GUMROAD_AD_PLACEMENT_ID", ""),
     "card_plan": os.getenv("GUMROAD_CARD_PLAN_ID", ""),
@@ -408,6 +414,18 @@ PREMIUM_YEARLY_DAYS = 365
 PREMIUM_LIFETIME_FEE_USD = 99.99
 PREMIUM_LIFETIME_DAYS = 36500
 PREMIUM_LIFETIME_THRESHOLD_DAYS = 365 * 50  # expiry further out than this == lifetime
+
+# Premium Plus: the upper per-server tier. Everything in Premium, plus the features that cost real money to run
+# (AI chat, AI image scam checks). Monthly (Gumroad membership / Paystack 30 days per payment) and Yearly
+# (one-time). No lifetime on purpose: it carries ongoing AI costs. Buying Plus also keeps Premium active for the
+# same period (database.activate_guild_plus), so nothing that checks Premium needs to know about Plus.
+PREMIUM_PLUS_FEE_USD = 6.99
+PREMIUM_PLUS_YEARLY_FEE_USD = 59
+PREMIUM_PLUS_YEARLY_DAYS = 365
+# Plus limits (Premium / free values live next to the features: ai_features.REPLY_CAP_*, scam_vision.*_DAILY).
+PREMIUM_PLUS_REPLY_CAP = 100                 # AI chats per person per day in the server (Premium 30, free 6)
+PREMIUM_PLUS_SCAM_VISION_DAILY = 100         # Scam Shield AI image checks per server per day (Premium 20, free 5)
+PREMIUM_PLUS_SCAM_OPENAI_DAILY = 10          # backup-scan checks per server per day (Premium 3, free 1)
 
 
 # Custom Role perk (discord_bot/cogs/custom_role.py's /customrole wizard):

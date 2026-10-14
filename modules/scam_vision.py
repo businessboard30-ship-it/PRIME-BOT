@@ -81,6 +81,7 @@ class _State:
     user_calls: Dict[Tuple[int, int], Deque[float]] = {}
     guild_used: Dict[Tuple[int, Optional[int]], Tuple[str, int]] = {}   # (guild, clone) -> (UTC day, checks used)
     premium: Dict[Tuple[int, Optional[int]], Tuple[float, bool]] = {}   # 60s cache of "is this server Premium"
+    plus: Dict[Tuple[int, Optional[int]], Tuple[float, bool]] = {}      # 60s cache of "is this server Premium Plus"
     last_ok: Optional[bool] = None                              # result of the most recent Gemini call
     last_detail: str = ""
     last_at: float = 0.0                                        # wall-clock time (time.time())
@@ -116,10 +117,31 @@ async def _is_premium(guild_id: int, clone_id: Optional[int]) -> bool:
     return value
 
 
+async def _is_plus(guild_id: int, clone_id: Optional[int]) -> bool:
+    """Premium Plus lookup, cached for 60s. Any problem means not Plus (the smaller cap), never an error."""
+    key = (guild_id, clone_id)
+    hit = _s.plus.get(key)
+    now = time.monotonic()
+    if hit and hit[0] > now:
+        return hit[1]
+    try:
+        from database import db
+        value = bool(await db.is_guild_plus_active(guild_id, clone_id))
+    except Exception:
+        return False
+    if len(_s.plus) > 3000:
+        _s.plus.clear()
+    _s.plus[key] = (now + 60, value)
+    return value
+
+
 async def guild_cap(guild_id: int, clone_id: Optional[int] = None) -> Tuple[int, bool]:
     """(daily AI-check cap for this server, is it Premium). Env vars SCAM_VISION_FREE_DAILY and
     SCAM_VISION_PREMIUM_DAILY change the numbers without a code change."""
     premium = await _is_premium(guild_id, clone_id)
+    if premium and await _is_plus(guild_id, clone_id):
+        import config
+        return _int_env("SCAM_VISION_PLUS_DAILY", config.PREMIUM_PLUS_SCAM_VISION_DAILY), premium
     cap = _int_env("SCAM_VISION_PREMIUM_DAILY", PREMIUM_GUILD_DAILY) if premium \
         else _int_env("SCAM_VISION_FREE_DAILY", FREE_GUILD_DAILY)
     return cap, premium
@@ -129,6 +151,9 @@ async def openai_cap(guild_id: int, clone_id: Optional[int] = None) -> Tuple[int
     """(daily backup-check cap for this server, is it Premium). Env vars SCAM_VISION_OPENAI_FREE_DAILY and
     SCAM_VISION_OPENAI_PREMIUM_DAILY change the numbers without a code change."""
     premium = await _is_premium(guild_id, clone_id)
+    if premium and await _is_plus(guild_id, clone_id):
+        import config
+        return _int_env("SCAM_VISION_OPENAI_PLUS_DAILY", config.PREMIUM_PLUS_SCAM_OPENAI_DAILY), premium
     cap = _int_env("SCAM_VISION_OPENAI_PREMIUM_DAILY", OPENAI_PREMIUM_DAILY) if premium \
         else _int_env("SCAM_VISION_OPENAI_FREE_DAILY", OPENAI_FREE_DAILY)
     return cap, premium

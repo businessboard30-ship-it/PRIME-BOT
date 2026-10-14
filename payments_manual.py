@@ -528,6 +528,25 @@ async def _unlock_premium_lifetime(reference: str, buyer_id: int, guild_id: Opti
     await db.activate_guild_premium(guild_id, buyer_id, PREMIUM_LIFETIME_DAYS, clone_id=clone_id)
 
 
+async def _unlock_premium_plus(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """Monthly per-server Premium Plus (see config.PREMIUM_PLUS_* and db.activate_guild_plus). Also keeps Premium
+    itself active for the same window. guild_id is required. Fires for a Paystack payment (30 days each time,
+    renewed by paying again) and for the FIRST Gumroad membership charge; Gumroad's later renewal charges are handled
+    in gumroad_payments._process_premium_renewal (they carry no reference)."""
+    from config import PREMIUM_DAYS
+    if not guild_id:
+        raise RuntimeError("premium plus payment has no guild_id")
+    await db.activate_guild_plus(guild_id, buyer_id, PREMIUM_DAYS, clone_id=clone_id)
+
+
+async def _unlock_premium_plus_yearly(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """One-time yearly Premium Plus: PREMIUM_PLUS_YEARLY_DAYS stacked on any Plus time left."""
+    from config import PREMIUM_PLUS_YEARLY_DAYS
+    if not guild_id:
+        raise RuntimeError("yearly premium plus payment has no guild_id")
+    await db.activate_guild_plus(guild_id, buyer_id, PREMIUM_PLUS_YEARLY_DAYS, clone_id=clone_id)
+
+
 def _make_unlock_xp_server_boost_tier(tier_key: str):
     """One handler per config.XP_SERVER_BOOST_TIERS entry — each tier is
     its own product/payment_type, but they all just activate a
@@ -608,6 +627,8 @@ UNLOCK_HANDLERS = {
     "premium": _unlock_premium,
     "premium_yearly": _unlock_premium_yearly,
     "premium_lifetime": _unlock_premium_lifetime,
+    "premium_plus": _unlock_premium_plus,
+    "premium_plus_yearly": _unlock_premium_plus_yearly,
     "xp_boost": _unlock_xp_boost,
     "level_pass": _unlock_level_pass,
     "xp_boost_3": _make_unlock_xp_boost_bundle("xp_boost_3"),

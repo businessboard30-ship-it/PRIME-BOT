@@ -55,6 +55,18 @@ PRODUCTS = {
         "price": lambda: float(config.PREMIUM_LIFETIME_FEE_USD),
         "description": "Premium for one whole Discord server, forever. One-time payment, every current and future premium feature included.",
     },
+    "premium_plus": {
+        "name": "Server Premium Plus - Monthly", "legacy": [], "kind": "membership", "period": "monthly",
+        "price": lambda: float(config.PREMIUM_PLUS_FEE_USD),
+        "description": "Premium Plus for one whole Discord server: everything in Premium plus much higher AI chat and "
+                       "AI scam-check limits. Renews monthly, cancel any time.",
+    },
+    "premium_plus_yearly": {
+        "name": "Server Premium Plus - Yearly", "legacy": [], "kind": "one_time",
+        "price": lambda: float(config.PREMIUM_PLUS_YEARLY_FEE_USD),
+        "description": "Premium Plus for one whole Discord server, 365 days. One-time payment: everything in Premium "
+                       "plus much higher AI chat and AI scam-check limits.",
+    },
     "level_pass": {
         "name": "Level Pass", "legacy": [], "kind": "one_time",
         "price": lambda: float(config.LEVEL_PASS_FEE_USD),
