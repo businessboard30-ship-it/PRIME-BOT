@@ -303,6 +303,7 @@ class AdminCog(commands.Cog):
             "GROQ_API_KEY": bool(os.getenv("GROQ_API_KEY")),
             "GROQ_API_KEY_BACKUP (optional)": bool(os.getenv("GROQ_API_KEY_BACKUP")),
             "GROQ_API_KEY_BACKUP2 (optional)": bool(os.getenv("GROQ_API_KEY_BACKUP2")),
+            "GROQ_API_KEYS extra, comma-separated (optional)": bool(os.getenv("GROQ_API_KEYS")),
             "FAL_API_KEY or OPENAI_API_KEY": bool(os.getenv("FAL_API_KEY") or os.getenv("OPENAI_API_KEY")),
             "ENCRYPTION_KEY": bool(os.getenv("ENCRYPTION_KEY")),
         }

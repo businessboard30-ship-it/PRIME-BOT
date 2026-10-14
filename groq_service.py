@@ -13,7 +13,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # fix (auth/rate limit/server error/timeout).
 GROQ_API_KEY_BACKUP = os.getenv("GROQ_API_KEY_BACKUP")
 GROQ_API_KEY_BACKUP2 = os.getenv("GROQ_API_KEY_BACKUP2")          # third failover key (optional)
-GROQ_API_KEYS = list(dict.fromkeys(k for k in (GROQ_API_KEY, GROQ_API_KEY_BACKUP, GROQ_API_KEY_BACKUP2) if k))
+from modules import groq_keys as _groq_keys
+GROQ_API_KEYS = _groq_keys.load_keys()   # also reads GROQ_API_KEYS="a,b,c" for extra keys
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 
 # Status codes worth retrying with the backup key — auth problems (this key
@@ -31,7 +32,7 @@ async def _groq_post(payload: dict, timeout_seconds: int = 10):
     modules.ai_features._groq_post."""
     last_status = None
     last_error = None
-    for key in GROQ_API_KEYS:
+    for key in _groq_keys.ordered_keys(GROQ_API_KEYS):
         headers = {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
@@ -43,13 +44,16 @@ async def _groq_post(payload: dict, timeout_seconds: int = 10):
                     timeout=aiohttp.ClientTimeout(total=timeout_seconds),
                 ) as resp:
                     if resp.status == 200:
+                        _groq_keys.mark_ok(key)
                         return 200, await resp.json(), None
                     error_text = await resp.text()
                     last_status, last_error = resp.status, error_text
                     if resp.status not in _GROQ_RETRYABLE_STATUSES:
                         return resp.status, None, error_text
+                    _groq_keys.mark_failed(key, resp.status)
         except Exception as e:
             last_status, last_error = None, f"{type(e).__name__}: {e}"
+            _groq_keys.mark_failed(key, None)
     return last_status, None, last_error
 
 class GroqService:
