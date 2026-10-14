@@ -279,6 +279,14 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             )
             container.add_item(raid_section)
 
+        if page == 0:
+            # Tells new owners the AI can do server setup from plain words (mention / reply / DM). The AI commands are
+            # not slash commands -- some are AI-only (AICommandSpec.ai_only) -- so this line is how people find them.
+            container.add_item(discord.ui.TextDisplay(
+                "🤖 **Just ask me:** @mention me (or reply to me, or DM me) and say what you want in plain words, "
+                "like *\"make a channel for every day of the week\"* or *\"add a gold VIP role\"*. I'll show you "
+                "exactly what I'll do and wait for your Confirm."
+            ))
         footer = "Run /help anytime for the full command list."
         if total_pages > 1:
             footer = f"Page {page + 1}/{total_pages} — {footer}"
