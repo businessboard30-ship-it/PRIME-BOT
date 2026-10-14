@@ -13,10 +13,11 @@ from discord.ext import commands
 from modules import ai_command_guard as guard
 from modules.ai_command_allowlist import AI_COMMANDS
 
-AI_ONLY_PATHS = {"setup bulk-create", "setup bulk-delete", "messages user-purge"}
+AI_ONLY_PATHS = {"setup bulk-create", "setup bulk-delete", "messages user-purge",
+                 "role create", "role bulk-create", "role bulk-delete"}
 
 
-def test_exactly_the_three_expected_specs_are_ai_only():
+def test_exactly_the_six_expected_specs_are_ai_only():
     assert {s.command_path for s in AI_COMMANDS if s.ai_only} == AI_ONLY_PATHS
 
 
@@ -25,8 +26,8 @@ def tree_bot(monkeypatch):
     """A real command tree holding the real cogs' groups, as the bot has right before it syncs."""
     monkeypatch.setattr(guard, "_AI_ONLY_COMMANDS", {})
     bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
-    from discord_bot.cogs import setup_channels, moderation
-    for mod, cog_name in ((setup_channels, "SetupChannelsCog"), (moderation, "ModerationCog")):
+    from discord_bot.cogs import setup_channels, moderation, role_setup
+    for mod, cog_name in ((setup_channels, "SetupChannelsCog"), (moderation, "ModerationCog"), (role_setup, "RoleSetupCog")):
         cls = getattr(mod, cog_name, None) or next(
             c for n, c in vars(mod).items() if isinstance(c, type) and issubclass(c, commands.Cog) and c.__module__ == mod.__name__
             and any(g for g in getattr(c, "__cog_app_commands__", [])))
@@ -40,23 +41,25 @@ def _paths(bot):
 
 def test_detach_removes_them_from_what_discord_would_see_but_not_the_rest(tree_bot):
     assert AI_ONLY_PATHS <= _paths(tree_bot)
-    assert guard.detach_ai_only_commands(tree_bot) == 3
+    assert guard.detach_ai_only_commands(tree_bot) == 6
     after = _paths(tree_bot)
     assert not (AI_ONLY_PATHS & after)
     # siblings in the same groups are untouched
-    assert "messages purge" in after and "setup channels" in after
+    assert "messages purge" in after and "setup channels" in after and "role setup" in after
     # and the synced payload is genuinely free of them
     def names(opts):                      # every command/subcommand NAME in the payload, recursively
         for o in opts or []:
             yield o["name"]
             yield from names(o.get("options"))
     payload_names = set(names([c.to_dict(tree_bot.tree) for c in tree_bot.tree.get_commands()]))
+    role_group = next(c for c in tree_bot.tree.get_commands() if c.name == "role")
+    assert not ({"create", "bulk-create", "bulk-delete"} & {c.name for c in role_group.commands})
     assert not ({"bulk-create", "bulk-delete", "user-purge"} & payload_names)
-    assert {"purge", "channels"} <= payload_names
+    assert {"purge", "channels", "role", "setup"} <= payload_names
 
 
 def test_detach_is_idempotent(tree_bot):
-    assert guard.detach_ai_only_commands(tree_bot) == 3
+    assert guard.detach_ai_only_commands(tree_bot) == 6
     assert guard.detach_ai_only_commands(tree_bot) == 0
 
 

@@ -398,7 +398,7 @@ class RoleSetupCog(GuildOnlyCog):
         await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
 
 
-    # ── /role create · /role bulk-create · /role bulk-delete (also AI-runnable) ──────────────────────────────
+    # ── /role create · /role bulk-create · /role bulk-delete (AI-ONLY: hidden from Discord, see the note on each command) ──────────────────────────────
     # Same shape as /setup bulk-create: one command takes the WHOLE list, it is capped (modules/ai_bulk.py), the
     # confirm text is the exact plan, and the work runs one Discord call at a time (discord_bot/cogs/_ai_bulk_ops.py).
     # Roles are made with NO permissions (cosmetic: name, colour, hoist, mentionable) -- granting permissions stays a
@@ -531,6 +531,12 @@ class RoleSetupCog(GuildOnlyCog):
                                  confirm_label="Create", danger=False)
         await interaction.response.send_message(self._role_create_summary(plan), view=view, ephemeral=True)
 
+    # AI-ONLY: not a slash command people can see in Discord -- hidden before sync (AICommandSpec.ai_only in
+    # modules/ai_command_allowlist.py, detach_ai_only_commands in modules/ai_command_guard.py); only the AI runs it.
+    # WHY (owner's decision): typed by hand this is clunky and rarely used, and every slash command costs a slot of
+    # Discord's 100-command cap the project is trying to free up. It is worth having only when someone describes
+    # the job in plain words ("add a gold VIP role"). Keep the @command decorator --
+    # the AI builds its tool schema and permission checks from it -- and do NOT re-expose this to Discord without asking.
     @group.command(name="create", description="Create one role (no permissions) with an optional colour")
     @app_commands.describe(name="Role name", color="Colour name (red, blue...) or hex like #ff8800",
                            hoist="Show members separately in the member list", mentionable="Let anyone @mention it")
@@ -543,6 +549,12 @@ class RoleSetupCog(GuildOnlyCog):
             return
         await self._send_role_confirm(interaction, plan)
 
+    # AI-ONLY: not a slash command people can see in Discord -- hidden before sync (AICommandSpec.ai_only in
+    # modules/ai_command_allowlist.py, detach_ai_only_commands in modules/ai_command_guard.py); only the AI runs it.
+    # WHY (owner's decision): typed by hand this is clunky and rarely used, and every slash command costs a slot of
+    # Discord's 100-command cap the project is trying to free up. It is worth having only when someone describes
+    # the job in plain words ("make a role for each team, in different colours"). Keep the @command decorator --
+    # the AI builds its tool schema and permission checks from it -- and do NOT re-expose this to Discord without asking.
     @group.command(name="bulk-create", description="Create several roles at once (no permissions)")
     @app_commands.describe(names="Role names, comma-separated (max 15)", color="Colour for all of them (name or hex)",
                            hoist="Show members separately in the member list", mentionable="Let anyone @mention them")
@@ -616,6 +628,12 @@ class RoleSetupCog(GuildOnlyCog):
             return
         await self._finish_role_delete(interaction, res)
 
+    # AI-ONLY: not a slash command people can see in Discord -- hidden before sync (AICommandSpec.ai_only in
+    # modules/ai_command_allowlist.py, detach_ai_only_commands in modules/ai_command_guard.py); only the AI runs it.
+    # WHY (owner's decision): typed by hand this is clunky and rarely used, and every slash command costs a slot of
+    # Discord's 100-command cap the project is trying to free up. It is worth having only when someone describes
+    # the job in plain words ("remove the old event roles"). Keep the @command decorator --
+    # the AI builds its tool schema and permission checks from it -- and do NOT re-expose this to Discord without asking.
     @group.command(name="bulk-delete", description="Delete several roles at once (asks to confirm)")
     @app_commands.describe(names="Role names, comma-separated (max 10)")
     @app_commands.default_permissions(manage_roles=True)
