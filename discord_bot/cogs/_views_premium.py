@@ -1,8 +1,10 @@
 # path: discord_bot/cogs/_views_premium.py
 
-"""Premium (config.PREMIUM_FEE_USD per month, per server): the "Go Premium" pitch and its Subscribe
-button. Used by the join-DM's Go Premium button (_views_join_dm.py) and by
-the renewal reminder DM (guild_premium.py).
+"""Premium (config.PREMIUM_FEE_USD per month, per server): the entry points ("Go Premium" buttons,
+send_premium_pitch, the renewal DM's Subscribe button) and the checkout hand-off. What the buyer actually
+sees -- the plan picker, the perk list, the compare table -- is the Components V2 wizard in
+_views_premium_v2.py; this module opens it. Used by the join-DM's Go Premium button
+(_views_join_dm.py) and by the renewal reminder DM (guild_premium.py).
 
 The Subscribe button is a DynamicItem (guild_id/clone_id live in the
 custom_id) so it keeps working across restarts, same as every other button
@@ -20,6 +22,7 @@ import discord
 
 import config
 from database import db
+from modules import premium_perks as pp
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +45,8 @@ _PERKS = (
     "📝 **Application Forms** — 10 live forms, 5 questions, 10 colours & auto-role on accept\n"
     "🆕 **Every future feature** — free, automatically"
 )
-_PERKS_PLUS = (
-    "✨ **Everything in Premium**, plus:\n"
-    f"🤖 **AI Chat** — {config.PREMIUM_PLUS_REPLY_CAP}/day per person (Premium 30, free 6)\n"
-    f"🔍 **Scam Shield AI** — {config.PREMIUM_PLUS_SCAM_VISION_DAILY} AI image scam checks a day (Premium 20, free 5), "
-    f"{config.PREMIUM_PLUS_SCAM_OPENAI_DAILY} backup checks\n"
-    "-# Switching from Premium? Cancel the old Premium membership on Gumroad after you subscribe to Plus, "
-    "so you aren't billed for both."
-)
+_PLUS_SWITCH_NOTE = ("-# Switching from Premium? Cancel the old Premium membership on Gumroad after you subscribe to Plus, "
+                     "so you aren't billed for both.")
 
 
 def _yearly_savings_pct() -> int:
@@ -115,66 +112,6 @@ class PremiumSubscribeButton(discord.ui.DynamicItem[discord.ui.Button], template
         await _start_checkout(interaction, guild, self.clone_id)
 
 
-class _PlanView(discord.ui.View):
-    """Monthly / Yearly / Lifetime picker. Ephemeral and short-lived: each button
-    starts the normal dual-mode checkout for that plan's payment_type, so the
-    Gumroad/Paystack routing, verify and unlock paths are exactly the existing ones."""
-
-    def __init__(self, guild, clone_id, buyer_id: int):
-        super().__init__(timeout=600)
-        self.guild = guild
-        self.clone_id = clone_id
-        self.buyer_id = buyer_id
-        pct = _yearly_savings_pct()
-        self.add_item(self._plan_button(
-            "premium", f"Monthly — ${config.PREMIUM_FEE_USD:g}", discord.ButtonStyle.secondary, "🗓️"))
-        self.add_item(self._plan_button(
-            "premium_yearly", f"Yearly — ${config.PREMIUM_YEARLY_FEE_USD:g} (save {pct}%)", discord.ButtonStyle.primary, "💎"))
-        self.add_item(self._plan_button(
-            "premium_lifetime", f"Lifetime — ${config.PREMIUM_LIFETIME_FEE_USD:g}", discord.ButtonStyle.success, "♾️"))
-        self.add_item(self._discount_button())
-        self.add_item(self._plan_button(
-            "premium_plus", f"Plus Monthly — ${config.PREMIUM_PLUS_FEE_USD:g}", discord.ButtonStyle.secondary, "✨", row=2))
-        self.add_item(self._plan_button(
-            "premium_plus_yearly", f"Plus Yearly — ${config.PREMIUM_PLUS_YEARLY_FEE_USD:g}",
-            discord.ButtonStyle.primary, "✨", row=2))
-
-    def _discount_button(self) -> discord.ui.Button:
-        """50% off Yearly, first payment only. Shown to everyone; eligibility is checked on click
-        (premium_discount.py), so a person who already paid sees why instead of a missing button."""
-        import premium_discount as pd
-        btn = discord.ui.Button(
-            label=f"First-time offer — Yearly ${pd.discounted_usd():g} (50% off)",
-            style=discord.ButtonStyle.success, emoji="🎟️", row=1)
-
-        async def _cb(interaction: discord.Interaction):
-            if interaction.user.id != self.buyer_id:
-                await interaction.response.send_message("This menu isn't for you.", ephemeral=True)
-                return
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            row = await db.get_guild_premium(self.guild.id, clone_id=self.clone_id)
-            if row and await db.is_guild_premium_active(self.guild.id, self.clone_id) and _is_lifetime_expiry(row["expires_at"]):
-                await interaction.followup.send("♾️ This server already has **Lifetime Premium**.", ephemeral=True)
-                return
-            await pd.start_discount_checkout(interaction, self.guild, self.clone_id)
-
-        btn.callback = _cb
-        return btn
-
-    def _plan_button(self, plan: str, label: str, style, emoji: str, row=None) -> discord.ui.Button:
-        btn = discord.ui.Button(label=label, style=style, emoji=emoji, row=row)
-
-        async def _cb(interaction: discord.Interaction, _plan=plan):
-            if interaction.user.id != self.buyer_id:
-                await interaction.response.send_message("This menu isn't for you.", ephemeral=True)
-                return
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            await _start_plan_checkout(interaction, self.guild, self.clone_id, _plan)
-
-        btn.callback = _cb
-        return btn
-
-
 _PLAN_INFO = {
     "premium": ("monthly", lambda: config.PREMIUM_FEE_USD,
                 lambda f: f"${f:g}/month for the whole server"),
@@ -208,28 +145,27 @@ async def _start_plan_checkout(interaction: discord.Interaction, guild, clone_id
         else:
             ts = int(row["expires_at"].timestamp())
             status = f"✅ **Active** until <t:{ts}:D> — this plan adds its time on top.\n\n"
-    perks = _PERKS_PLUS if is_plus else _PERKS
     title = f"✨ Premium Plus ({name.title()})" if is_plus else f"💎 Go Premium ({name.title()})"
+    # Short on purpose: this text sits above the pay buttons, and a screen of perks (which the buyer has just
+    # seen in the wizard) pushed the buttons below the fold. The perk list lives in the wizard.
+    if is_plus:
+        unlocks = (f"Everything in Premium, plus {pp.plus_extras()}.\n{_PLUS_SWITCH_NOTE}")
+    else:
+        unlocks = f"Unlocks all {len(pp.perks())} Premium perks for the whole server."
     await start_dual_mode_payment(
         interaction, payment_type=plan, price_usd=fee,
         product_title=f"{title} — {guild.name}",
-        product_description=f"{status}{perks}\n\n{_FOOTER}",
+        product_description=f"{status}{unlocks}\n{_FOOTER}",
         amount_display_manual=display_fn(fee), guild_id=guild.id,
     )
 
 
 async def _start_checkout(interaction: discord.Interaction, guild, clone_id) -> None:
-    """Plan picker (monthly / yearly / lifetime) — one tap more than before,
-    then straight to the pay buttons. Anyone in the server can pay for it."""
-    row = await db.get_guild_premium(guild.id, clone_id=clone_id)
-    if row and await db.is_guild_premium_active(guild.id, clone_id) and _is_lifetime_expiry(row["expires_at"]):
-        await interaction.followup.send(
-            "♾️ This server already has **Lifetime Premium** — nothing more to buy.", ephemeral=True)
-        return
-    await interaction.followup.send(
-        await build_pitch(guild.id, clone_id) + "\n\n**Pick a plan:**",
-        view=_PlanView(guild, clone_id, interaction.user.id), ephemeral=True,
-    )
+    """Opens the Premium wizard (plans, perks, compare). Anyone in the server can pay for it. A server
+    that already has Lifetime Premium still gets the wizard: it hides the Premium plans and offers Plus
+    (the unlock path already supports Plus on top of Lifetime)."""
+    from discord_bot.cogs._views_premium_v2 import open_premium_wizard
+    await open_premium_wizard(interaction, guild, clone_id)
 
 
 async def send_premium_pitch(interaction: discord.Interaction, guild_id: int, clone_id) -> None:
