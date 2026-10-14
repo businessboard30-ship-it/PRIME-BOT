@@ -305,7 +305,7 @@ def test_cat_button_sends_an_embed_then_rate_limits(monkeypatch):
     j = FakeInteraction()
     run(jd._CatButton(7, None).callback(j))                   # same user, straight away
     e = j.followups[0][1]["embed"]                           # the menu still opens, just without a new picture
-    assert "another cat picture" in e.description and e.image.url is None and j.followups[0][1]["ephemeral"] is True
+    assert "another cat picture" in e.description and e.image.url is None and j.followups[0][1]["ephemeral"] is False
 
 
 def test_cat_button_says_sorry_when_no_cat(monkeypatch):
@@ -316,4 +316,4 @@ def test_cat_button_says_sorry_when_no_cat(monkeypatch):
     i = FakeInteraction()
     run(jd._CatButton(7, None).callback(i))
     e = i.followups[0][1]["embed"]                           # the menu opens with a note instead of a picture
-    assert "couldn't find a cat" in e.description and e.image.url is None and i.followups[0][1]["ephemeral"] is True
+    assert "couldn't find a cat" in e.description and e.image.url is None and i.followups[0][1]["ephemeral"] is False

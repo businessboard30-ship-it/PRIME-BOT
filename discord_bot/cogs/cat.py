@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 import discord
+from discord_bot.cogs import _cat_visibility as vis
 from discord import app_commands
 from discord.ext import commands, tasks
 
@@ -295,7 +296,7 @@ async def send_cat(interaction: discord.Interaction) -> None:
     """Shared by /cat and the join DM Cat button: opens the private cat menu with a fresh cat picture on it.
     The caller has NOT responded yet. If the person asked for a picture a moment ago, the menu still opens, just without one."""
     wait = cooldown_left(interaction.user.id)
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    await interaction.response.defer(ephemeral=not vis.is_public(interaction), thinking=True)   # public in a server
     url, note = None, None
     if wait > 0:
         note = f"😺 Easy there, another cat picture in {wait:.0f}s."

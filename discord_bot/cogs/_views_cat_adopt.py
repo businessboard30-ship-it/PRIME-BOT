@@ -16,6 +16,7 @@ import re
 from typing import List, Optional
 
 import discord
+from discord_bot.cogs import _cat_visibility as vis
 
 from modules import cat_care
 from modules import cat_filter
@@ -119,7 +120,7 @@ class HelpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_help
 
     async def callback(self, interaction: discord.Interaction):
         view = HelpView()
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await vis.send(interaction, embed=view.embed(), view=view)
 
 
 class HelpView(discord.ui.View):
@@ -232,7 +233,7 @@ async def open_collection(interaction: discord.Interaction) -> None:
     view = CollectionView(interaction.client, interaction.user, cats)
     await view.refresh_wallet()
     view._build()
-    await interaction.response.send_message(embed=await view.embed(), view=view, ephemeral=True)
+    await vis.send(interaction, embed=await view.embed(), view=view)
 
 
 class RenameModal(discord.ui.Modal, title="Rename your cat"):

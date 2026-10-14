@@ -5,6 +5,7 @@ import io
 import logging
 
 import discord
+from discord_bot.cogs import _cat_visibility as vis
 
 from discord_bot.cogs._views_cat_life import CatLifeButton
 from modules import cat_adopt
@@ -48,10 +49,10 @@ class CareButton(discord.ui.Button):
         share = discord.ui.View(timeout=120)
         share.add_item(ShareButton("care", streak=result.streak))
         if result.status == "already":
-            await interaction.response.send_message(f"You already cared for your cats today. Streak: **{result.streak} days**.", view=share, ephemeral=True)
+            await vis.send(interaction, content=f"You already cared for your cats today. Streak: **{result.streak} days**.", view=share)
             return
         diamond = f" and 💎 **{result.diamonds} diamond**" if result.diamonds else ""
-        await interaction.response.send_message(f"💖 Care complete! Streak: **{result.streak} days**. You earned 🪙 **{result.coins} coins**{diamond}.", view=share, ephemeral=True)
+        await vis.send(interaction, content=f"💖 Care complete! {interaction.user.mention} is on a **{result.streak} day** streak and earned 🪙 **{result.coins} coins**{diamond}.", view=share)
         if result.streak in cat_announce.MILESTONE_STREAKS:
             await cat_announce.announce(interaction, cat_announce.streak_text(interaction.user.mention, result.streak), kind="milestone")
 
@@ -74,7 +75,7 @@ class CosmeticBuySelect(discord.ui.Select):
         text = {"ok": f"{item.emoji} You bought **{item.name}**! It stays yours even if you sell or release cats.",
                 "owned": "You already own that one.", "poor": "You don't have enough coins/diamonds for that yet.",
                 "missing": "That item is no longer in the shop."}.get(status, "Something went wrong.")
-        await interaction.response.send_message(text, ephemeral=True)
+        await vis.send(interaction, content=text, public=(status == "ok"))
 
 
 class CosmeticEquipSelect(discord.ui.Select):
@@ -97,7 +98,7 @@ class CosmeticEquipSelect(discord.ui.Select):
         text = {"equipped": f"{item.emoji} **{item.name}** is on your profile card now. Open **My profile** to see it.",
                 "removed": f"{item.emoji} **{item.name}** is off your profile card.",
                 "not_owned": "Buy that one in the shop first.", "missing": "That item is no longer in the shop."}.get(status, "Something went wrong.")
-        await interaction.response.send_message(text, ephemeral=True)
+        await vis.send(interaction, content=text, public=(status in ("equipped", "removed")))
 
 
 class CosmeticsButton(discord.ui.Button):
@@ -123,7 +124,7 @@ class CosmeticsButton(discord.ui.Button):
             view.add_item(CosmeticBuySelect(items))
         if owned:
             view.add_item(CosmeticEquipSelect(owned, worn_ids))
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await vis.send(interaction, embed=embed, view=view)
 
 
 class ProfileButton(discord.ui.Button):
@@ -140,7 +141,7 @@ class ProfileButton(discord.ui.Button):
         embed = cat_share.profile_embed(interaction.user.display_name, profile, badges, _avatar(interaction.user))
         if not profile["show_profile"]:
             embed.set_footer(text="Hidden: only you can see this. Tap Show profile to let others see it.")
-        await interaction.response.send_message(embed=embed, view=ProfileView(profile), ephemeral=True)
+        await vis.send(interaction, embed=embed, view=ProfileView(profile), public=bool(profile["show_profile"]))
         await upgrade_to_card(interaction, interaction.user, profile, badges,
                               footer=embed.footer.text if not profile["show_profile"] else None)
 
@@ -343,7 +344,7 @@ class QuestClaimSelect(discord.ui.Select):
             return
         text = {"ok": "🎁 Quest claimed! Your 💎 were added to your wallet.",
                 "not_ready": "That quest isn't ready, or you already claimed it."}.get(status, "Something went wrong.")
-        await interaction.response.send_message(text, ephemeral=True)
+        await vis.send(interaction, content=text, public=(status == "ok"))
         if status == "ok":
             try:
                 done = all(q.claimed for q in await cat_quests.quests(interaction.user.id, _clone(interaction)))
@@ -371,7 +372,7 @@ class QuestsButton(discord.ui.Button):
         ready = [q for q in items if q.ready]
         if ready:
             view.add_item(QuestClaimSelect(ready))
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await vis.send(interaction, embed=embed, view=view)
 
 
 class BadgesButton(discord.ui.Button):
@@ -393,7 +394,7 @@ class BadgesButton(discord.ui.Button):
         view = discord.ui.View(timeout=120)
         if have or new:
             view.add_item(ShareButton("badges"))
-        await interaction.response.send_message(embed=discord.Embed(title="🏅 Collection badges", description=text, color=GOLD), view=view, ephemeral=True)
+        await vis.send(interaction, embed=discord.Embed(title="🏅 Collection badges", description=text, color=GOLD), view=view)
         await cat_announce.announce_badges(interaction, new)
 
 
@@ -438,7 +439,7 @@ class WishlistBoardView(discord.ui.View):
         if edit:
             await interaction.response.edit_message(embed=embed, view=view)
         else:
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            await vis.send(interaction, embed=embed, view=view)
 
     def _turn(self, delta):
         async def cb(interaction: discord.Interaction):
@@ -566,5 +567,4 @@ class WishlistButton(discord.ui.Button):
         except Exception:
             await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
             return
-        await interaction.response.send_message(embed=_board_embed(wants, total, 0, None),
-                                                view=WishlistBoardView(0, total, None), ephemeral=True)
+        await vis.send(interaction, embed=_board_embed(wants, total, 0, None), view=WishlistBoardView(0, total, None))
