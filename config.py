@@ -8,7 +8,14 @@ load_dotenv()
 # Public URL of the API/web service (api_server.py). Set PUBLIC_BASE_URL in the
 # environment of BOTH the API service and the bot worker. Deliberately not
 # hardcoded: blank means "not configured" and dependent features fail loudly.
-_PUBLIC_BASE = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+# Defaults to the production Railway API service so the main bot, the clone
+# service and the web service all get the same URL from code. Setting the
+# PUBLIC_BASE_URL env var still overrides it (e.g. after moving hosts).
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL",
+    "https://api-service-production-df63.up.railway.app",
+).strip().rstrip("/")
+_PUBLIC_BASE = PUBLIC_BASE_URL
 
 # Stable, host-independent address = the GitHub Pages redirector (redirector/).
 # Set STABLE_BASE_URL (e.g. https://<user>.github.io/PRIME-BOT) once you've registered
@@ -736,11 +743,9 @@ PRICE_REGISTRY = {
 # the multi-tenant router ever needs an emergency rollback.
 CLONE_BOT_REAL_ENABLED = True
 
-# The public HTTPS base URL this app is deployed at (e.g. your Vercel domain,
-# no trailing slash). Required to register per-clone webhooks
-# (https://<PUBLIC_BASE_URL>/api/bot?clone_id=N). Clone creation fails loudly
-# if this isn't set, rather than silently registering a broken webhook URL.
-PUBLIC_BASE_URL = api-service-production-df63.up.railway.app
+# PUBLIC_BASE_URL (the public HTTPS base URL of this app, no trailing slash) is
+# defined once near the top of this file. It is used to register per-clone
+# webhooks (<PUBLIC_BASE_URL>/api/bot?clone_id=N).
 
 # Max number of per-clone Application instances kept warm in memory at once
 # (Part 3.1 "Per-clone Application instances" — bounded LRU, not unbounded).
