@@ -1,4 +1,6 @@
-"""Bot profile wizard, opened from the join DM's "More features" screen. Free for everyone.
+"""Bot profile wizard, opened from the join DM's "More features" screen. Premium: anyone can set things up, the
+Premium pitch (pay buttons) appears when they tap Save, and their draft waits 30 minutes so one tap applies it
+after paying. Reset stays free, and so does a clone owner's global profile (their own bot).
 
 Same building blocks as the welcome-card wizard (_views_card_customize.py / _views_join_dm.py):
   * DynamicItem buttons whose custom_id carries guild_id + clone_id, so they survive restarts and never time out
@@ -17,6 +19,7 @@ import base64
 import io
 import logging
 import re
+import time
 
 import aiohttp
 import discord
@@ -192,6 +195,81 @@ async def archive_profile_image(interaction: discord.Interaction, guild_id: int,
 
 # ── the panel ─────────────────────────────────────────────────────────────
 
+# ── premium gate: set it up first, pay when you tap Save ───────────────────
+DRAFT_TTL = 30 * 60
+_drafts: dict = {}            # (guild_id, user_id) -> {"fields": {...}, "exp": monotonic seconds}
+
+
+def _draft_key(guild_id: int, user_id: int):
+    return (int(guild_id), int(user_id))
+
+
+def save_draft(guild_id: int, user_id: int, fields: dict) -> dict:
+    """Merge `fields` (nick / bio / avatar / banner) into this admin's waiting draft and restart its 30 minutes."""
+    now = time.monotonic()
+    for k in [k for k, v in _drafts.items() if v["exp"] <= now]:
+        _drafts.pop(k, None)
+    cur = dict((_drafts.get(_draft_key(guild_id, user_id)) or {}).get("fields", {}))
+    cur.update(fields)
+    _drafts[_draft_key(guild_id, user_id)] = {"fields": cur, "exp": now + DRAFT_TTL}
+    return cur
+
+
+def get_draft(guild_id: int, user_id: int) -> dict:
+    d = _drafts.get(_draft_key(guild_id, user_id))
+    if not d or d["exp"] <= time.monotonic():
+        _drafts.pop(_draft_key(guild_id, user_id), None)
+        return {}
+    return d["fields"]
+
+
+def clear_draft(guild_id: int, user_id: int) -> None:
+    _drafts.pop(_draft_key(guild_id, user_id), None)
+
+
+def clear_draft_field(guild_id: int, user_id: int, key: str) -> None:
+    d = _drafts.get(_draft_key(guild_id, user_id))
+    if d:
+        d["fields"].pop(key, None)
+        if not d["fields"]:
+            _drafts.pop(_draft_key(guild_id, user_id), None)
+
+
+def _draft_summary(fields: dict) -> str:
+    names = {"nick": "name", "bio": "about me", "avatar": "avatar", "banner": "banner"}
+    return ", ".join(names[k] for k in ("nick", "avatar", "banner", "bio") if k in fields)
+
+
+async def is_premium(guild_id: int, clone_id) -> bool:
+    try:
+        return bool(await db.is_guild_premium_active(guild_id, clone_id))
+    except Exception:
+        return False
+
+
+async def _pitch(interaction: discord.Interaction, guild_id: int, clone_id) -> None:
+    try:
+        from discord_bot.cogs._views_premium import send_premium_pitch
+        await send_premium_pitch(interaction, guild_id, clone_id)
+    except Exception:
+        logger.exception("[bot-profile] couldn't show the Premium pitch for guild %s", guild_id)
+        await interaction.followup.send("💎 Changing my look is a **Premium** feature. Run `/premium` to see the plans.",
+                                        ephemeral=True)
+
+
+async def _save_or_pitch(interaction: discord.Interaction, guild_id: int, clone_id, fields: dict) -> bool:
+    """Call after interaction.response.defer(). True = Premium, go ahead and write. False = not Premium: the draft is
+    kept for 30 minutes, the wizard shows it, and the Premium pitch with the pay buttons is sent."""
+    if await is_premium(guild_id, clone_id):
+        return True
+    draft = save_draft(guild_id, interaction.user.id, fields)
+    await _refresh(interaction, guild_id, clone_id,
+                   f"💎 **Premium needed to save.** Your changes ({_draft_summary(draft)}) are kept for 30 minutes. "
+                   "Pay below, then tap **✨ Apply my changes**.")
+    await _pitch(interaction, guild_id, clone_id)
+    return False
+
+
 def _describe(guild: "discord.Guild | None") -> str:
     me = guild.me if guild else None
     if me is None:
@@ -201,11 +279,14 @@ def _describe(guild: "discord.Guild | None") -> str:
     return f"**Nickname:** {nick}\n**Server avatar:** {avatar}"
 
 
-def build_profile_view(guild: "discord.Guild | None", guild_id: int, clone_id, owner: bool, note: str | None = None):
+def build_profile_view(guild: "discord.Guild | None", guild_id: int, clone_id, owner: bool, note: str | None = None,
+                       draft: dict | None = None, premium: bool | None = None):
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
+    tag = "💎 Premium" if premium else "🔒 Premium feature"
     container.add_item(discord.ui.TextDisplay(
-        "## 🤖 Bot profile\nMake me look the way you want in your server. Free, and it only changes how I look "
-        "here" + (", plus my global profile below since this is your bot." if owner else ".")))
+        f"## 🤖 Bot profile · {tag}\nMake me look the way you want in your server: change my name, avatar, banner and "
+        "about me. " + ("" if premium else "Set it all up first; you only pay when you tap Save. ") +
+        "It only changes how I look here" + (", plus my global profile below since this is your bot." if owner else ".")))
     container.add_item(discord.ui.TextDisplay(_describe(guild)))
     if note:
         container.add_item(discord.ui.TextDisplay(note))
@@ -215,6 +296,9 @@ def build_profile_view(guild: "discord.Guild | None", guild_id: int, clone_id, o
         _BannerButton(guild_id, clone_id), _BioButton(guild_id, clone_id),
     ))
     row2 = [_ResetButton(guild_id, clone_id)]
+    if draft:
+        container.add_item(discord.ui.TextDisplay(f"📝 Waiting to apply: {_draft_summary(draft)}"))
+        row2.insert(0, _ApplyButton(guild_id, clone_id))
     if owner:
         row2.insert(0, _GlobalButton(guild_id, clone_id))
     row2.append(_DoneButton(guild_id, clone_id))
@@ -228,7 +312,8 @@ async def open_profile_wizard(interaction: discord.Interaction, guild_id: int, c
     """Called by the More-features button (already deferred). Sends the wizard as its own message, like Card options."""
     guild = interaction.client.get_guild(guild_id)
     owner = await is_clone_owner(clone_id, interaction.user.id)
-    view = build_profile_view(guild, guild_id, clone_id, owner)
+    view = build_profile_view(guild, guild_id, clone_id, owner, draft=get_draft(guild_id, interaction.user.id),
+                              premium=await is_premium(guild_id, clone_id))
     await interaction.followup.send(view=view, ephemeral=interaction.guild is not None)
 
 
@@ -236,7 +321,8 @@ async def _refresh(interaction: discord.Interaction, guild_id: int, clone_id, no
     """Edit the wizard message in place after a modal submit (modal submits that came from a button can edit it)."""
     guild = interaction.client.get_guild(guild_id)
     owner = await is_clone_owner(clone_id, interaction.user.id)
-    view = build_profile_view(guild, guild_id, clone_id, owner, note=note)
+    view = build_profile_view(guild, guild_id, clone_id, owner, note=note, draft=get_draft(guild_id, interaction.user.id),
+                              premium=await is_premium(guild_id, clone_id))
     try:
         await interaction.edit_original_response(view=view)
     except discord.HTTPException:
@@ -255,6 +341,9 @@ class _NickModal(discord.ui.Modal, title="Rename me in this server"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
         value = str(self.nick.value or "").strip()
+        if not await _save_or_pitch(interaction, self.guild_id, self.clone_id, {"nick": value or None}):
+            return
+        clear_draft_field(self.guild_id, interaction.user.id, "nick")
         err = await _patch_server_profile(interaction.client, self.guild_id, {"nick": value or None})
         if err:
             await interaction.followup.send(f"⚠️ Couldn't rename me: {err}", ephemeral=True)
@@ -274,6 +363,9 @@ class _BioModal(discord.ui.Modal, title="My 'about me' in this server"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer()
         value = str(self.bio.value or "").strip()
+        if not await _save_or_pitch(interaction, self.guild_id, self.clone_id, {"bio": value or None}):
+            return
+        clear_draft_field(self.guild_id, interaction.user.id, "bio")
         err = await _patch_server_profile(interaction.client, self.guild_id, {"bio": value or None})
         if err:
             await interaction.followup.send(f"⚠️ Couldn't update my bio: {err}", ephemeral=True)
@@ -302,6 +394,9 @@ class _ImageModal(discord.ui.Modal):
                 f"⚠️ {('Couldn' + chr(39) + 't use that image: ' + reason) if reason else 'Upload an image or paste a link first.'}",
                 ephemeral=True)
             return
+        if not await _save_or_pitch(interaction, self.guild_id, self.clone_id, {self.kind: uri}):
+            return
+        clear_draft_field(self.guild_id, interaction.user.id, self.kind)
         err = await _patch_server_profile(interaction.client, self.guild_id, {self.kind: uri})
         if err:
             await interaction.followup.send(f"⚠️ Couldn't change my {self.kind}: {err}", ephemeral=True)
@@ -390,7 +485,7 @@ class _Btn:
 
 
 class _RenameButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat("name")):
-    action, label, emoji = "name", "Rename", "✏️"
+    action, label, emoji = "name", "Change name", "✏️"
     style = discord.ButtonStyle.primary
 
     async def act(self, interaction):
@@ -429,6 +524,33 @@ class _GlobalButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_p
         await interaction.response.send_modal(_GlobalModal(self.guild_id, self.clone_id))
 
 
+class _ApplyButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat("apply")):
+    action, label, emoji = "apply", "Apply my changes", "✨"
+    style = discord.ButtonStyle.success
+
+    async def act(self, interaction):
+        await interaction.response.defer()
+        fields = dict(get_draft(self.guild_id, interaction.user.id))
+        if not fields:
+            await interaction.followup.send("Nothing is waiting any more (drafts last 30 minutes). Make your changes again.",
+                                            ephemeral=True)
+            return
+        if not await is_premium(self.guild_id, self.clone_id):        # re-checked here: a stale button can't write
+            await _refresh(interaction, self.guild_id, self.clone_id,
+                           "💎 Still waiting for Premium. Your draft is kept for 30 minutes.")
+            await _pitch(interaction, self.guild_id, self.clone_id)
+            return
+        err = await _patch_server_profile(interaction.client, self.guild_id, fields)
+        if err:
+            await interaction.followup.send(f"⚠️ Couldn't apply your changes: {err}", ephemeral=True)
+            return
+        for kind in ("avatar", "banner"):
+            if fields.get(kind):
+                await archive_profile_image(interaction, self.guild_id, self.clone_id, kind, fields[kind], "server")
+        clear_draft(self.guild_id, interaction.user.id)
+        await _refresh(interaction, self.guild_id, self.clone_id, f"✅ Applied: {_draft_summary(fields)}.")
+
+
 class _ResetButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat("reset")):
     action, label, emoji = "reset", "Reset to default", "♻️"
     style = discord.ButtonStyle.danger
@@ -456,4 +578,5 @@ class _DoneButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat
         await interaction.edit_original_response(view=view)
 
 
-DYNAMIC_ITEMS = (_RenameButton, _AvatarButton, _BannerButton, _BioButton, _GlobalButton, _ResetButton, _DoneButton)
+DYNAMIC_ITEMS = (_RenameButton, _AvatarButton, _BannerButton, _BioButton, _GlobalButton, _ApplyButton, _ResetButton,
+                 _DoneButton)
