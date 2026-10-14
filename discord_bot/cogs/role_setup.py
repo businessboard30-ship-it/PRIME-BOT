@@ -31,6 +31,9 @@ from discord import app_commands
 from discord.ext import commands
 
 from discord_bot.cogs._dm_support import GuildOnlyCog
+from discord_bot.cogs import _ai_bulk_ops
+from modules import ai_bulk as _ai_bulk
+from modules import moderation_extra as modx
 from discord_bot.cogs.reaction_roles import ReactionRoleView, MAX_ROLES_PER_PANEL
 from database import db
 
@@ -393,6 +396,238 @@ class RoleSetupCog(GuildOnlyCog):
             return
         wizard = RoleSetupWizard(interaction.user.id, guild=interaction.guild)
         await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+
+
+    # ── /role create · /role bulk-create · /role bulk-delete (also AI-runnable) ──────────────────────────────
+    # Same shape as /setup bulk-create: one command takes the WHOLE list, it is capped (modules/ai_bulk.py), the
+    # confirm text is the exact plan, and the work runs one Discord call at a time (discord_bot/cogs/_ai_bulk_ops.py).
+    # Roles are made with NO permissions (cosmetic: name, colour, hoist, mentionable) -- granting permissions stays a
+    # deliberate human action. Deleting only touches roles below both the bot's and the asker's top role.
+    AI_CONFIRMED_HANDLERS = {"role_create": "ai_rolecreate", "role_bulk_create": "ai_rolecreate",
+                             "role_bulk_delete": "ai_roledelete"}
+    AI_CONFIRM_PROMPTS = {"role_create": "ai_rolecreate_prompt", "role_bulk_create": "ai_rolecreate_prompt",
+                          "role_bulk_delete": "ai_roledelete_prompt"}
+    _COLOR_HELP = "Optional colour: a name (red, blue, purple...) or hex like #ff8800"
+    AI_TOOL_PARAMS = {
+        "create": [
+            {"name": "name", "type": "string", "required": True, "description": "Name of the role to create"},
+            {"name": "color", "type": "string", "description": _COLOR_HELP},
+            {"name": "hoist", "type": "boolean", "description": "Show the role's members separately in the member list"},
+            {"name": "mentionable", "type": "boolean", "description": "Let anyone @mention the role"},
+        ],
+        "bulk-create": [
+            {"name": "names", "type": "string", "required": True,
+             "description": f"Role names to create, comma-separated (max {_ai_bulk.MAX_CREATE_ROLES}), e.g. 'Member, VIP, Staff'. "
+                            "ONE call with all the names \u2014 never one call per role."},
+            {"name": "color", "type": "string", "description": _COLOR_HELP + " (applied to every role)"},
+            {"name": "hoist", "type": "boolean", "description": "Show these roles' members separately in the member list"},
+            {"name": "mentionable", "type": "boolean", "description": "Let anyone @mention these roles"},
+        ],
+        "bulk-delete": [
+            {"name": "names", "type": "string", "required": True,
+             "description": f"Roles to delete, comma-separated (max {_ai_bulk.MAX_DELETE_ROLES}), exact names. "
+                            "ONE call with all the names \u2014 never one call per role."},
+        ],
+    }
+
+    @staticmethod
+    def _truthy(v) -> bool:
+        return v is True or str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+    async def _role_create_plan(self, interaction, names, color=None, hoist=None, mentionable=None):
+        """(error_or_None, plan). Every check that could make the job fail happens here, BEFORE the confirm button."""
+        guild = interaction.guild
+        if guild is None:
+            return "This only works inside a server.", None
+        if not guild.me.guild_permissions.manage_roles:
+            return "I don't have **Manage Roles** in this server.", None
+        if not interaction.user.guild_permissions.manage_roles:
+            return "You need **Manage Roles** to create roles.", None
+        colour = _ai_bulk.parse_color(color)
+        if colour == -1:
+            return f"I don't know the colour \u201c{color}\u201d \u2014 use a name like red/blue or hex like #ff8800.", None
+        room = _ai_bulk.GUILD_ROLE_LIMIT - len(guild.roles)
+        plan = _ai_bulk.plan_role_creation(names, [r.name for r in guild.roles], room)
+        if not plan["create"]:
+            why = []
+            if plan["duplicates"]:
+                why.append("already exist: " + _ai_bulk.summarize(plan["duplicates"]))
+            if plan["invalid"]:
+                why.append("not usable as names: " + _ai_bulk.summarize(plan["invalid"]))
+            if room <= 0:
+                why.append(f"the server is at Discord's {_ai_bulk.GUILD_ROLE_LIMIT}-role limit")
+            return "Nothing to create" + (" \u2014 " + "; ".join(why) if why else ". Give me some names.") + ".", None
+        plan.update(colour=colour, hoist=self._truthy(hoist), mentionable=self._truthy(mentionable))
+        return None, plan
+
+    @staticmethod
+    def _role_create_summary(plan) -> str:
+        bits = []
+        if plan["colour"] is not None:
+            bits.append(f"colour #{plan['colour']:06x}")
+        if plan["hoist"]:
+            bits.append("shown separately")
+        if plan["mentionable"]:
+            bits.append("mentionable")
+        extra = f" ({', '.join(bits)})" if bits else ""
+        text = (f"Create **{len(plan['create'])}** role(s){extra}, with no permissions: "
+                f"{_ai_bulk.summarize(plan['create'])}")
+        notes = []
+        if plan["duplicates"]:
+            notes.append("already exist, skipped: " + _ai_bulk.summarize(plan["duplicates"]))
+        if plan["over_cap"]:
+            notes.append(f"over the {_ai_bulk.MAX_CREATE_ROLES}-role limit, skipped: " + _ai_bulk.summarize(plan["over_cap"]))
+        if plan["invalid"]:
+            notes.append("not usable as names: " + _ai_bulk.summarize(plan["invalid"]))
+        return text + ("\n_(" + "; ".join(notes) + ")_" if notes else "")
+
+    async def _finish_role_create(self, interaction: discord.Interaction, plan: dict):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        busy = _ai_bulk.JOBS.try_start(guild.id)
+        if busy:
+            await interaction.followup.send(f"\u23f3 {busy}", ephemeral=True)
+            return
+        try:
+            made, stop = await _ai_bulk_ops.create_roles(
+                guild, plan["create"], plan["colour"], plan["hoist"], plan["mentionable"],
+                reason=f"Role create by {interaction.user} ({interaction.user.id})")
+        finally:
+            _ai_bulk.JOBS.finish(guild.id)
+        if made:
+            await modx.log_action(guild.id, "role_create", interaction.user.id,
+                                  reason=f"{len(made)} role(s): {_ai_bulk.summarize([r.name for r in made], 8)}")
+        msg = (f"\u2705 Created {len(made)}/{len(plan['create'])}: " + " ".join(r.mention for r in made)) if made \
+            else "\u274c Nothing was created."
+        if stop:
+            msg += f"\n\u26a0\ufe0f Stopped early: {stop}"
+        await interaction.followup.send(msg[:1900], ephemeral=True,
+                                        allowed_mentions=discord.AllowedMentions.none())
+
+    @staticmethod
+    def _names_arg(names, name):
+        # /role create passes one `name`; the bulk commands pass `names`. A single role name may contain a comma,
+        # so for `name` it is kept whole.
+        return [name] if name not in (None, "") else names
+
+    async def ai_rolecreate_prompt(self, interaction, names=None, name=None, color=None, hoist=None,
+                                   mentionable=None, **_ignored):
+        err, plan = await self._role_create_plan(interaction, self._names_arg(names, name), color, hoist, mentionable)
+        return (False, f"\u274c {err}") if err else (True, self._role_create_summary(plan) + "\nGo ahead?")
+
+    async def ai_rolecreate(self, interaction, names=None, name=None, color=None, hoist=None,
+                            mentionable=None, **_ignored):
+        # Re-plan at click time: the server may have changed since the prompt was shown.
+        err, plan = await self._role_create_plan(interaction, self._names_arg(names, name), color, hoist, mentionable)
+        if err:
+            await interaction.followup.send(f"\u274c {err}", ephemeral=True)
+            return
+        await self._finish_role_create(interaction, plan)
+
+    async def _send_role_confirm(self, interaction, plan):
+        from discord_bot.cogs._views_moderation import ConfirmActionView
+        view = ConfirmActionView(interaction.user.id, lambda ci: self._finish_role_create(ci, plan),
+                                 confirm_label="Create", danger=False)
+        await interaction.response.send_message(self._role_create_summary(plan), view=view, ephemeral=True)
+
+    @group.command(name="create", description="Create one role (no permissions) with an optional colour")
+    @app_commands.describe(name="Role name", color="Colour name (red, blue...) or hex like #ff8800",
+                           hoist="Show members separately in the member list", mentionable="Let anyone @mention it")
+    @app_commands.default_permissions(manage_roles=True)
+    async def create_cmd(self, interaction: discord.Interaction, name: str, color: str = "",
+                         hoist: bool = False, mentionable: bool = False):
+        err, plan = await self._role_create_plan(interaction, [name], color, hoist, mentionable)
+        if err:
+            await interaction.response.send_message(f"\u274c {err}", ephemeral=True)
+            return
+        await self._send_role_confirm(interaction, plan)
+
+    @group.command(name="bulk-create", description="Create several roles at once (no permissions)")
+    @app_commands.describe(names="Role names, comma-separated (max 15)", color="Colour for all of them (name or hex)",
+                           hoist="Show members separately in the member list", mentionable="Let anyone @mention them")
+    @app_commands.default_permissions(manage_roles=True)
+    async def bulkcreate_cmd(self, interaction: discord.Interaction, names: str, color: str = "",
+                             hoist: bool = False, mentionable: bool = False):
+        err, plan = await self._role_create_plan(interaction, names, color, hoist, mentionable)
+        if err:
+            await interaction.response.send_message(f"\u274c {err}", ephemeral=True)
+            return
+        await self._send_role_confirm(interaction, plan)
+
+    async def _role_delete_plan(self, interaction, names):
+        guild = interaction.guild
+        if guild is None:
+            return "This only works inside a server.", None
+        if not guild.me.guild_permissions.manage_roles:
+            return "I don't have **Manage Roles** in this server.", None
+        if not interaction.user.guild_permissions.manage_roles:
+            return "You need **Manage Roles** to delete roles.", None
+        wanted = _ai_bulk.split_names(names)
+        if not wanted:
+            return "Tell me which roles to delete.", None
+        if len(wanted) > _ai_bulk.MAX_DELETE_ROLES:
+            return (f"That's {len(wanted)} roles \u2014 I delete at most {_ai_bulk.MAX_DELETE_ROLES} at a time. "
+                    "Split it into smaller requests."), None
+        res = _ai_bulk_ops.resolve_roles(guild, wanted, interaction.user)
+        if not res["found"]:
+            extra = _ai_bulk_ops.role_problems(res)
+            return "Nothing to delete" + (f" \u2014 {extra}" if extra else "."), None
+        return None, res
+
+    @staticmethod
+    def _role_delete_summary(res) -> str:
+        names = [r.name for r in res["found"]]
+        text = f"\u26a0\ufe0f **Permanently delete {len(names)} role(s):** {_ai_bulk.summarize(names)}. This can't be undone."
+        extra = _ai_bulk_ops.role_problems(res)
+        return text + (f"\n_({extra})_" if extra else "")
+
+    async def _finish_role_delete(self, interaction: discord.Interaction, res: dict):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        busy = _ai_bulk.JOBS.try_start(guild.id)
+        if busy:
+            await interaction.followup.send(f"\u23f3 {busy}", ephemeral=True)
+            return
+        try:
+            gone, stop = await _ai_bulk_ops.delete_roles(
+                res["found"], reason=f"Bulk role delete by {interaction.user} ({interaction.user.id})")
+        finally:
+            _ai_bulk.JOBS.finish(guild.id)
+        if gone:
+            await modx.log_action(guild.id, "role_delete", interaction.user.id,
+                                  reason=f"{len(gone)} role(s): {_ai_bulk.summarize(gone, 8)}")
+        msg = (f"\U0001f5d1\ufe0f Deleted {len(gone)}/{len(res['found'])}: " + ", ".join(gone)) if gone \
+            else "\u274c Nothing was deleted."
+        if stop:
+            msg += f"\n\u26a0\ufe0f Stopped early: {stop}"
+        await interaction.followup.send(msg[:1900], ephemeral=True,
+                                        allowed_mentions=discord.AllowedMentions.none())
+
+    async def ai_roledelete_prompt(self, interaction, names=None, **_ignored):
+        err, res = await self._role_delete_plan(interaction, names)
+        return (False, f"\u274c {err}") if err else (True, self._role_delete_summary(res) + "\nConfirm?")
+
+    async def ai_roledelete(self, interaction, names=None, **_ignored):
+        err, res = await self._role_delete_plan(interaction, names)     # re-resolved at click time
+        if err:
+            await interaction.followup.send(f"\u274c {err}", ephemeral=True)
+            return
+        await self._finish_role_delete(interaction, res)
+
+    @group.command(name="bulk-delete", description="Delete several roles at once (asks to confirm)")
+    @app_commands.describe(names="Role names, comma-separated (max 10)")
+    @app_commands.default_permissions(manage_roles=True)
+    async def bulkdelete_cmd(self, interaction: discord.Interaction, names: str):
+        err, res = await self._role_delete_plan(interaction, names)
+        if err:
+            await interaction.response.send_message(f"\u274c {err}", ephemeral=True)
+            return
+        from discord_bot.cogs._views_moderation import ConfirmActionView
+        view = ConfirmActionView(interaction.user.id, lambda ci: self._finish_role_delete(ci, res),
+                                 confirm_label="Delete", danger=True)
+        await interaction.response.send_message(self._role_delete_summary(res), view=view, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
