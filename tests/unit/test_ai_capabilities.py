@@ -14,6 +14,8 @@ from modules.ai_command_allowlist import AI_COMMANDS, AICommandSpec
 @pytest.mark.parametrize("text", [
     "what can you do", "What can you do?", "show me your commands", "list the commands", "what are the AI commands",
     "how do i use ai", "what features do you have", "what can I ask you",
+    "what are the commands u can perform", "what commands can u run", "wat can ya do", "show ur cmds", "your commands",
+    "what can you perform?", "what are all the ai commands you have", "list all commands", "what can the bot do",
 ])
 def test_capability_questions_are_detected(text):
     assert caps.is_capabilities_question(text), text
@@ -21,6 +23,8 @@ def test_capability_questions_are_detected(text):
 
 @pytest.mark.parametrize("text", [
     "how do i ban someone", "make a role for each team", "what can i do about spam", "hello", "recommend an anime", "",
+    "what command makes a role", "can you ban him", "what do you think of naruto", "what is the best anime", "run the purge command",
+    "what do you do for fun",
 ])
 def test_ordinary_messages_are_not(text):
     assert not caps.is_capabilities_question(text), text
