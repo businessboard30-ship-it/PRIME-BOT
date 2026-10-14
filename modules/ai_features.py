@@ -23,7 +23,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 # limit/server error/timeout), never on a normal bad-request-type failure.
 GROQ_API_KEY_BACKUP = os.getenv("GROQ_API_KEY_BACKUP", "")
 GROQ_API_KEY_BACKUP2 = os.getenv("GROQ_API_KEY_BACKUP2", "")      # third failover key (optional)
-GROQ_API_KEYS = list(dict.fromkeys(k for k in (GROQ_API_KEY, GROQ_API_KEY_BACKUP, GROQ_API_KEY_BACKUP2) if k))
+# Any number of extra keys: GROQ_API_KEYS="key1,key2,..." (see modules/groq_keys.py).
+from modules import groq_keys as _groq_keys
+GROQ_API_KEYS = _groq_keys.load_keys()
 FAL_API_KEY = os.getenv("FAL_API_KEY", "")
 # GEMINI_API_KEY: free Google AI Studio key (aistudio.google.com/apikey) — no
 # credit card, no billing setup. gemini-2.5-flash-image ("Nano Banana") has a
@@ -39,7 +41,7 @@ _GROQ_RETRYABLE_STATUSES = {401, 403, 429, 500, 502, 503, 504}
 
 async def _groq_post(payload: dict, timeout_seconds: int = 30):
     """POSTs payload to Groq's chat/completions endpoint, trying each key in
-    GROQ_API_KEYS in order. Moves on to the next key only on a retryable
+    GROQ_API_KEYS (rotated round-robin, recently failed keys last). Moves on to the next key only on a retryable
     status (see _GROQ_RETRYABLE_STATUSES) or a network-level exception —
     a normal 200 or a non-retryable error status is returned immediately.
 
@@ -50,7 +52,7 @@ async def _groq_post(payload: dict, timeout_seconds: int = 30):
     """
     last_status = None
     last_error = None
-    for key in GROQ_API_KEYS:
+    for key in _groq_keys.ordered_keys(GROQ_API_KEYS):
         headers = {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
@@ -64,16 +66,19 @@ async def _groq_post(payload: dict, timeout_seconds: int = 30):
                     timeout=aiohttp.ClientTimeout(total=timeout_seconds),
                 ) as resp:
                     if resp.status == 200:
+                        _groq_keys.mark_ok(key)
                         return 200, await resp.json(), None
                     error_text = await resp.text()
                     last_status, last_error = resp.status, error_text
                     if resp.status not in _GROQ_RETRYABLE_STATUSES:
                         return resp.status, None, error_text
+                    _groq_keys.mark_failed(key, resp.status)
                     logger.warning(
                         f"[v0] Groq key failed with HTTP {resp.status}, trying next key if available"
                     )
         except Exception as e:
             last_status, last_error = None, f"{type(e).__name__}: {e}"
+            _groq_keys.mark_failed(key, None)
             logger.warning(f"[v0] Groq request errored ({last_error}), trying next key if available")
     return last_status, None, last_error
 

@@ -210,6 +210,7 @@ def join_wavs(parts: List[bytes]) -> Optional[bytes]:
 async def synthesize(text: str, voice: str) -> Optional[bytes]:
     """WAV bytes for `text` (already cleaned), or None on any failure."""
     from modules.ai_features import GROQ_API_KEYS  # lazy: ai_features imports this module
+    from modules import groq_keys
     if not GROQ_API_KEYS:
         return None
     chunks = split_chunks(text)
@@ -217,7 +218,7 @@ async def synthesize(text: str, voice: str) -> Optional[bytes]:
         return None
     timeout = aiohttp.ClientTimeout(total=25)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        parts = await asyncio.gather(*(_tts_chunk(session, GROQ_API_KEYS, c, voice) for c in chunks))
+        parts = await asyncio.gather(*(_tts_chunk(session, groq_keys.ordered_keys(GROQ_API_KEYS), c, voice) for c in chunks))
     if any(p is None for p in parts):
         return None
     return join_wavs(list(parts))
