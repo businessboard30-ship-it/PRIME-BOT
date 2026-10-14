@@ -28,16 +28,36 @@ CATEGORIES = (            # (key, emoji, label) in display order
 )
 _LABEL = {k: (e, l) for k, e, l in CATEGORIES}
 
+_SLANG = (("wat", "what"), ("wut", "what"), ("ur", "your"), ("u", "you"), ("ya", "you"), ("cmds", "commands"), ("cmd", "command"), ("abilities", "abilities"))
+_YOU = r"(you|your|yourself|the ai|ai|the bot|bot|primebot|available|there)"
+_THINGS = r"(commands|features|abilities|capabilities|powers|skills|tools|functions)"
 _ASK = re.compile(
-    r"(what (can|could|do) (you|u) do|what (are )?(you|u) (can|able)|what can i (ask|do with) (you|u|this)|"
-    r"(show|list|display|see) (me )?(all )?(your |the )?(ai )?(commands|abilities|features|capabilities|powers)|"
-    r"what (commands|features) (do you|can you|does the ai)|how do i use (the )?ai|what (is|are) (the )?ai commands|"
-    r"your (commands|abilities|capabilities)|^help me with (the )?ai\b)", re.I)
+    r"\bwhat (can|could|do|are|is|will|would)( (you|the ai|the bot|ai|bot))? (be )?"
+    r"(able to )?(do|perform|run|handle|execute|help( me)? with|offer|support|automate)\b(?! (for fun|for a living|at work|all day))"
+    r"|\bwhat (are|is) (all )?(the )?" + _THINGS + r"\b"
+    r"|\bwhat " + _THINGS + r" (do|can|does|are|is|have|has)\b"
+    r"|\b(show|list|display|see|give|tell)( me)?( all)?( of)?( the| your| ur| all)* " + _THINGS + r"\b"
+    r"|\b" + _YOU + r" " + _THINGS + r"\b"
+    r"|\b" + _THINGS + r" (you|u|the ai|ai|the bot) (can|could|have|got|support|know)\b"
+    r"|\bwhat can i (ask|do with|use|tell) (you|the ai|the bot|this|it)\b"
+    r"|\bhow (do|can) i use (the )?(ai|you|this bot)\b", re.I)
+
+
+def _normalise(text: str) -> str:
+    """Lower-case, strip punctuation, and expand chat shorthand ("u", "ur", "cmds") so phrasing variants all match."""
+    t = re.sub(r"[^a-z0-9' ]+", " ", (text or "").lower())
+    words = [dict(_SLANG).get(w, w) for w in t.split()]
+    return " ".join(words)
 
 
 def is_capabilities_question(text: str) -> bool:
-    """True for 'what can you do', 'show me your commands', 'what are the AI commands' style asks."""
-    return bool(_ASK.search((text or "").strip()))
+    """True for 'what can you do', 'what are the commands u can perform', 'show me your commands' style asks.
+    A question about ONE thing ('how do i ban someone', 'what command makes a role') is not a match: that goes to
+    the normal AI, which answers it specifically."""
+    t = _normalise(text)
+    if not t or len(t) > 120:
+        return False
+    return bool(_ASK.search(t))
 
 
 def category_of(spec) -> str:
