@@ -105,11 +105,11 @@ def test_open_hub_is_private_and_uses_followup_only_after_a_defer(monkeypatch):
     a = _inter(done=False)
     run(hub.open_hub(a))
     kw = a.response.send_message.await_args.kwargs
-    assert kw["ephemeral"] is True and isinstance(kw["view"], hub.HubView) and not a.followup.send.await_count
+    assert kw["ephemeral"] is False and isinstance(kw["view"], hub.HubView) and not a.followup.send.await_count
     b = _inter(done=True)
     run(hub.open_hub(b, "https://x/y.jpg", note="😺 Easy there"))
     kw = b.followup.send.await_args.kwargs
-    assert kw["ephemeral"] is True and kw["embed"].description.startswith("😺 Easy there")
+    assert kw["ephemeral"] is False and kw["embed"].description.startswith("😺 Easy there")
     assert kw["view"].picture_url == "https://x/y.jpg"
     c = _inter(done=False)
     run(hub.open_hub(c, deferred=True))                     # send_cat has already deferred
@@ -162,7 +162,7 @@ def test_the_cat_command_opens_the_menu_not_a_bare_picture():
     import inspect
     from discord_bot.cogs import cat
     src = inspect.getsource(cat.send_cat)
-    assert "open_hub" in src and "defer(ephemeral=True" in src
+    assert "open_hub" in src and "defer(ephemeral=not vis.is_public" in src
     assert discord.ui.View  # imported for the type checks above
 
 

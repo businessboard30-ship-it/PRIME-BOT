@@ -16,6 +16,7 @@ import re
 from typing import List, Optional
 
 import discord
+from discord_bot.cogs import _cat_visibility as vis
 
 from modules import cat_adopt as ca
 from modules import cat_announce
@@ -209,7 +210,7 @@ class MarketButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ma
     async def callback(self, interaction: discord.Interaction):
         view = MarketView(interaction.client, interaction.user)
         await view.load()
-        await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+        await vis.send(interaction, embed=view.embed(), view=view)
 
 
 class MarketView(discord.ui.View):
@@ -334,7 +335,7 @@ class LeaderboardButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^c
 
     async def callback(self, interaction: discord.Interaction):
         view = BoardView(interaction.user)
-        await interaction.response.send_message(embed=await view.embed(), view=view, ephemeral=True)
+        await vis.send(interaction, embed=await view.embed(), view=view)
 
 
 class BoardView(discord.ui.View):

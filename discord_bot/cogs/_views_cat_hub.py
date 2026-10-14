@@ -17,6 +17,7 @@ from modules import cat_help
 from modules import cat_hub
 from modules import cat_perms
 from modules import cat_setup as cs
+from discord_bot.cogs import _cat_visibility as vis
 
 logger = logging.getLogger(__name__)
 PINK = discord.Color.from_rgb(255, 182, 193)
@@ -166,10 +167,7 @@ async def open_hub(interaction: discord.Interaction, picture_url: Optional[str] 
     if note:
         lines.insert(0, note)
     view = HubView(picture_url, can_setup=await _can_setup(interaction))
-    kwargs = dict(embed=card(lines, picture_url), view=view, ephemeral=True)
+    # Public in a server (locked to whoever opened it); the interaction was deferred with the same visibility.
     if deferred is None:
         deferred = interaction.response.is_done()
-    if deferred:
-        await interaction.followup.send(**kwargs)
-    else:
-        await interaction.response.send_message(**kwargs)
+    await vis.send(interaction, embed=card(lines, picture_url), view=view, deferred=deferred)

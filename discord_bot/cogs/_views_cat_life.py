@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 
 import discord
+from discord_bot.cogs import _cat_visibility as vis
 
 from modules import cat_adopt, cat_life, cat_wallet
 
@@ -152,6 +153,7 @@ async def _reply(interaction: discord.Interaction, text: str) -> None:
 
 
 async def _edit(interaction: discord.Interaction, embed: discord.Embed, view: discord.ui.View) -> None:
+    vis.lock_to_owner(view, interaction.user.id)       # every redraw of a public Cat Life screen stays owner-only
     if interaction.response.is_done():
         await interaction.edit_original_response(embed=embed, view=view)
     else:
@@ -171,7 +173,7 @@ class CatLifeButton(discord.ui.Button):
             logger.exception("[cat-life] hub failed")
             await interaction.response.send_message(OOPS, ephemeral=True)
             return
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await vis.send(interaction, embed=embed, view=view)
 
 
 class HubView(discord.ui.View):
