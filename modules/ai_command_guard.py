@@ -341,7 +341,7 @@ async def resolve_and_check(interaction: discord.Interaction, command_name: str,
     return spec, command, None, False
 
 
-async def get_qualifying_commands(interaction: discord.Interaction) -> List[AICommandSpec]:
+async def get_qualifying_commands(interaction: discord.Interaction, ignore_cap: bool = False) -> List[AICommandSpec]:
     """Pre-filter, run BEFORE the user ever asks for anything and BEFORE
     the AI's tool schema for this turn is built. Walks the full
     allowlist and keeps only the specs whose real command this user
@@ -366,7 +366,9 @@ async def get_qualifying_commands(interaction: discord.Interaction) -> List[AICo
     qualifying: List[AICommandSpec] = []
     if interaction.guild is None:
         return qualifying
-    cap_ok, _reason = await check_ai_command_cap(interaction.user.id)
+    # ignore_cap is for DISPLAY only (the "what can you do?" panel): the list of what someone may use should not
+    # vanish just because they used up today's runs. Running a command still goes through the cap.
+    cap_ok, _reason = (True, None) if ignore_cap else await check_ai_command_cap(interaction.user.id)
     if not cap_ok:
         return qualifying
     for spec in AI_COMMANDS:
