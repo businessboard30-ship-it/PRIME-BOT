@@ -42,6 +42,16 @@ _PERKS = (
     "📝 **Application Forms** — 10 live forms, 5 questions, 10 colours & auto-role on accept\n"
     "🆕 **Every future feature** — free, automatically"
 )
+_PERKS_PLUS = (
+    "✨ **Everything in Premium**, plus:\n"
+    f"🤖 **AI Chat** — {config.PREMIUM_PLUS_REPLY_CAP}/day per person (Premium 30, free 6)\n"
+    f"🔍 **Scam Shield AI** — {config.PREMIUM_PLUS_SCAM_VISION_DAILY} AI image scam checks a day (Premium 20, free 5), "
+    f"{config.PREMIUM_PLUS_SCAM_OPENAI_DAILY} backup checks\n"
+    "-# Switching from Premium? Cancel the old Premium membership on Gumroad after you subscribe to Plus, "
+    "so you aren't billed for both."
+)
+
+
 def _yearly_savings_pct() -> int:
     full = config.PREMIUM_FEE_USD * 12
     return round((1 - config.PREMIUM_YEARLY_FEE_USD / full) * 100) if full else 0
@@ -61,6 +71,8 @@ def _pitch_text(fee: float, status_line: str) -> str:
         f"-# Or ${config.PREMIUM_YEARLY_FEE_USD:g}/year (save {_yearly_savings_pct()}%) · "
         f"${config.PREMIUM_LIFETIME_FEE_USD:g} lifetime, one-time\n"
         f"{status_line}\n\n{_PERKS}\n\n"
+        f"✨ **Premium Plus** — ${config.PREMIUM_PLUS_FEE_USD:g}/month or ${config.PREMIUM_PLUS_YEARLY_FEE_USD:g}/year: "
+        f"AI chat {config.PREMIUM_PLUS_REPLY_CAP}/day and {config.PREMIUM_PLUS_SCAM_VISION_DAILY} AI scam checks a day\n\n"
         "🌍 Global: Gumroad, cancel anytime · 🇬🇭 Ghana: Paystack, 30 days per payment\n"
         + _FOOTER
     )
@@ -75,6 +87,9 @@ async def build_pitch(guild_id: int, clone_id) -> str:
         else:
             ts = int(row["expires_at"].timestamp())
             status = f"✅ **Premium is active** on this server until <t:{ts}:D> (<t:{ts}:R>). Renew below to add more time."
+            if row.get("plus_expires_at") and await db.is_guild_plus_active(guild_id, clone_id):
+                pts = int(row["plus_expires_at"].timestamp())
+                status += f"\n✨ **Premium Plus is active** until <t:{pts}:D> (<t:{pts}:R>)."
     return _pitch_text(config.PREMIUM_FEE_USD, status)
 
 
@@ -118,6 +133,11 @@ class _PlanView(discord.ui.View):
         self.add_item(self._plan_button(
             "premium_lifetime", f"Lifetime — ${config.PREMIUM_LIFETIME_FEE_USD:g}", discord.ButtonStyle.success, "♾️"))
         self.add_item(self._discount_button())
+        self.add_item(self._plan_button(
+            "premium_plus", f"Plus Monthly — ${config.PREMIUM_PLUS_FEE_USD:g}", discord.ButtonStyle.secondary, "✨", row=2))
+        self.add_item(self._plan_button(
+            "premium_plus_yearly", f"Plus Yearly — ${config.PREMIUM_PLUS_YEARLY_FEE_USD:g}",
+            discord.ButtonStyle.primary, "✨", row=2))
 
     def _discount_button(self) -> discord.ui.Button:
         """50% off Yearly, first payment only. Shown to everyone; eligibility is checked on click
@@ -141,8 +161,8 @@ class _PlanView(discord.ui.View):
         btn.callback = _cb
         return btn
 
-    def _plan_button(self, plan: str, label: str, style, emoji: str) -> discord.ui.Button:
-        btn = discord.ui.Button(label=label, style=style, emoji=emoji)
+    def _plan_button(self, plan: str, label: str, style, emoji: str, row=None) -> discord.ui.Button:
+        btn = discord.ui.Button(label=label, style=style, emoji=emoji, row=row)
 
         async def _cb(interaction: discord.Interaction, _plan=plan):
             if interaction.user.id != self.buyer_id:
@@ -162,6 +182,10 @@ _PLAN_INFO = {
                        lambda f: f"${f:g}/year for the whole server"),
     "premium_lifetime": ("lifetime", lambda: config.PREMIUM_LIFETIME_FEE_USD,
                          lambda f: f"${f:g} one-time, lifetime, for the whole server"),
+    "premium_plus": ("plus monthly", lambda: config.PREMIUM_PLUS_FEE_USD,
+                     lambda f: f"${f:g}/month for the whole server (Premium Plus)"),
+    "premium_plus_yearly": ("plus yearly", lambda: config.PREMIUM_PLUS_YEARLY_FEE_USD,
+                            lambda f: f"${f:g}/year for the whole server (Premium Plus)"),
 }
 
 
@@ -170,18 +194,26 @@ async def _start_plan_checkout(interaction: discord.Interaction, guild, clone_id
     name, fee_fn, display_fn = _PLAN_INFO[plan]
     fee = fee_fn()
     row = await db.get_guild_premium(guild.id, clone_id=clone_id)
+    is_plus = plan in ("premium_plus", "premium_plus_yearly")
     status = ""
     if row and await db.is_guild_premium_active(guild.id, clone_id):
-        if _is_lifetime_expiry(row["expires_at"]):
+        if _is_lifetime_expiry(row["expires_at"]) and not is_plus:
             await interaction.followup.send(
                 "♾️ This server already has **Lifetime Premium** — nothing more to buy.", ephemeral=True)
             return
-        ts = int(row["expires_at"].timestamp())
-        status = f"✅ **Active** until <t:{ts}:D> — this plan adds its time on top.\n\n"
+        if is_plus:
+            if row.get("plus_expires_at") and await db.is_guild_plus_active(guild.id, clone_id):
+                ts = int(row["plus_expires_at"].timestamp())
+                status = f"✅ **Plus active** until <t:{ts}:D> — this plan adds its time on top.\n\n"
+        else:
+            ts = int(row["expires_at"].timestamp())
+            status = f"✅ **Active** until <t:{ts}:D> — this plan adds its time on top.\n\n"
+    perks = _PERKS_PLUS if is_plus else _PERKS
+    title = f"✨ Premium Plus ({name.title()})" if is_plus else f"💎 Go Premium ({name.title()})"
     await start_dual_mode_payment(
         interaction, payment_type=plan, price_usd=fee,
-        product_title=f"💎 Go Premium ({name.title()}) — {guild.name}",
-        product_description=f"{status}{_PERKS}\n\n{_FOOTER}",
+        product_title=f"{title} — {guild.name}",
+        product_description=f"{status}{perks}\n\n{_FOOTER}",
         amount_display_manual=display_fn(fee), guild_id=guild.id,
     )
 

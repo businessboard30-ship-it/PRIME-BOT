@@ -536,6 +536,8 @@ PLANS = [
     {"id": "premium", "label": "Premium: Monthly", "period": "per month", "kind": "premium"},
     {"id": "premium_yearly", "label": "Premium: Yearly", "period": "per year", "kind": "premium"},
     {"id": "premium_lifetime", "label": "Premium: Lifetime", "period": "one time", "kind": "premium"},
+    {"id": "premium_plus", "label": "Premium Plus: Monthly", "period": "per month", "kind": "premium"},
+    {"id": "premium_plus_yearly", "label": "Premium Plus: Yearly", "period": "per year", "kind": "premium"},
     {"id": "welcome_card_pack", "label": "Welcome card pack", "period": "one time", "kind": "card_pack"},
 ]
 PLAN_BY_ID = {p["id"]: p for p in PLANS}
@@ -591,7 +593,8 @@ async def _billing(gid: int) -> dict:
         if price is None:
             continue
         if clone:
-            plans.append({**p, "price_usd": price, "owned": lifetime, "included": False})
+            plans.append({**p, "price_usd": price, "owned": lifetime and not p["id"].startswith("premium_plus"),
+                          "included": False})
             continue
         owned = (p["kind"] == "card_pack" and bool(cfg.get("card_pack_unlocked")))
         plans.append({**p, "price_usd": price, "owned": owned,

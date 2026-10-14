@@ -46,6 +46,8 @@ _PRODUCT_LABELS = {
     "premium": "Premium",
     "premium_yearly": "Premium (Yearly)",
     "premium_lifetime": "Premium (Lifetime)",
+    "premium_plus": "Premium Plus",
+    "premium_plus_yearly": "Premium Plus (Yearly)",
 }
 
 
@@ -227,8 +229,8 @@ class _ServerSelect(discord.ui.Select):
                     "UPDATE payment_logs SET chat_id = $2 WHERE paystack_reference = $1",
                     self.reference, guild_id,
                 )
-            if payment_type == "premium" and record.get("subscription_id"):
-                await db.set_premium_subscription_id(guild_id, clone_id, record["subscription_id"])
+            if payment_type in ("premium", "premium_plus") and record.get("subscription_id"):
+                await db.set_guild_subscription_for_type(payment_type, guild_id, clone_id, record["subscription_id"])
         except Exception:
             logger.exception(f"[gumroad-claim] unlock failed for {self.reference} in guild {guild_id}")
             await _put_claim_back(self.reference, record)

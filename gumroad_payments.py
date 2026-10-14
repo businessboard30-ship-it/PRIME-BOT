@@ -47,6 +47,8 @@ _PRICE_ATTRS = {
     "premium": "PREMIUM_FEE_USD",
     "premium_yearly": "PREMIUM_YEARLY_FEE_USD",
     "premium_lifetime": "PREMIUM_LIFETIME_FEE_USD",
+    "premium_plus": "PREMIUM_PLUS_FEE_USD",
+    "premium_plus_yearly": "PREMIUM_PLUS_YEARLY_FEE_USD",
     "hardcore_roast": "HARDCORE_ROAST_FEE_USD",
     "ad_placement": "AD_PLACEMENT_FEE_USD",
 }
@@ -54,7 +56,7 @@ _PRICE_ATTRS = {
 
 # Products that unlock something for one specific server; their unlock handler
 # needs the guild id stored in payment_logs.chat_id.
-_GUILD_SCOPED_TYPES = {"welcome_card_pack", "ultra_welcome_pack", "custom_role", "music_pro", "premium", "premium_yearly", "premium_lifetime"}
+_GUILD_SCOPED_TYPES = {"welcome_card_pack", "ultra_welcome_pack", "custom_role", "music_pro", "premium", "premium_yearly", "premium_lifetime", "premium_plus", "premium_plus_yearly"}
 
 
 def expected_price_usd(payment_type: str) -> Optional[float]:
@@ -275,8 +277,8 @@ async def _try_auto_apply(row: dict, reference: str, subscription_id) -> Optiona
         try:
             await handler(reference, int(row["user_id"]), guild_id, clone_id)
             await db.set_payment_chat_id(reference, guild_id)
-            if payment_type == "premium" and subscription_id:
-                await db.set_premium_subscription_id(guild_id, clone_id, subscription_id)
+            if payment_type in ("premium", "premium_plus") and subscription_id:
+                await db.set_guild_subscription_for_type(payment_type, guild_id, clone_id, subscription_id)
         except Exception:
             logger.exception(f"[gumroad] auto-apply failed for {reference}; falling back to the picker")
             await _put_claim_back(reference, record)
@@ -364,27 +366,35 @@ async def _hold_for_server_choice(row: dict, reference: str, paid_cents: int,
 
 
 async def _process_premium_renewal(fields: dict, subscription_id: str, accept_test: bool) -> tuple:
-    """A recurring Premium charge. Same safety layers as a first purchase
-    (product match, price >= $5, sale re-verified via the API), plus
-    idempotency keyed on the sale id so a retried ping can't double-extend."""
+    """A recurring Premium or Premium Plus charge. Same safety layers as a first purchase
+    (product match, price >= the plan's price, sale re-verified via the API), plus
+    idempotency keyed on the sale id so a retried ping can't double-extend.
+    The subscription id tells us which plan it is: a Plus membership id is stored on
+    plus_subscription_id, a Premium one on subscription_id."""
     import config
+    plan = "premium"
     sub = await db.get_guild_premium_by_subscription(subscription_id)
+    if not sub:
+        sub = await db.get_guild_plus_by_subscription(subscription_id)
+        plan = "premium_plus"
     if not sub:
         logger.warning(f"[gumroad] renewal for unknown subscription {subscription_id!r}")
         return 200, "unknown subscription"
-    if not _matches_product("premium", fields):
+    if not _matches_product(plan, fields):
         logger.warning(f"[gumroad] renewal product mismatch for subscription {subscription_id!r}")
         return 200, "product mismatch"
+    fee = config.PREMIUM_PLUS_FEE_USD if plan == "premium_plus" else config.PREMIUM_FEE_USD
+    label = "Premium Plus" if plan == "premium_plus" else "Premium"
     try:
         paid_cents = int(float(fields.get("price", 0)))
     except (TypeError, ValueError):
         paid_cents = 0
-    if paid_cents < round(config.PREMIUM_FEE_USD * 100):
-        logger.warning(f"[gumroad] premium renewal underpaid: {paid_cents}c")
+    if paid_cents < round(fee * 100):
+        logger.warning(f"[gumroad] {plan} renewal underpaid: {paid_cents}c")
         return 200, "underpaid"
     sale_id = fields.get("sale_id", "")
-    if not accept_test and not await _sale_is_valid(sale_id, "premium"):
-        logger.warning(f"[gumroad] premium renewal sale verification failed ({sale_id})")
+    if not accept_test and not await _sale_is_valid(sale_id, plan):
+        logger.warning(f"[gumroad] {plan} renewal sale verification failed ({sale_id})")
         return 200, "sale not verified"
 
     reference = f"gum_renew_{sale_id}" if sale_id else f"gum_renew_{subscription_id}_{secrets.token_hex(4)}"
@@ -392,17 +402,20 @@ async def _process_premium_renewal(fields: dict, subscription_id: str, accept_te
     async with pool.acquire() as conn:
         claimed = await conn.fetchval(
             "INSERT INTO payment_logs (user_id, amount, status, paystack_reference, payment_type, chat_id, provider, clone_id) "
-            "VALUES ($1, $2, 'completed', $3, 'premium', $4, $5, $6) "
+            "VALUES ($1, $2, 'completed', $3, $7, $4, $5, $6) "
             "ON CONFLICT (paystack_reference) DO NOTHING RETURNING paystack_reference",
-            sub["activated_by"], paid_cents / 100.0, reference, sub["guild_id"], PROVIDER, sub["clone_id"],
+            sub["activated_by"], paid_cents / 100.0, reference, sub["guild_id"], PROVIDER, sub["clone_id"], plan,
         )
     if not claimed:
         return 200, "already processed"
-    row = await db.renew_guild_premium_subscription(subscription_id, config.PREMIUM_SUB_DAYS)
-    logger.info(f"[gumroad] premium renewed for guild {sub['guild_id']} (subscription {subscription_id})")
+    if plan == "premium_plus":
+        row = await db.renew_guild_plus_subscription(subscription_id, config.PREMIUM_SUB_DAYS)
+    else:
+        row = await db.renew_guild_premium_subscription(subscription_id, config.PREMIUM_SUB_DAYS)
+    logger.info(f"[gumroad] {plan} renewed for guild {sub['guild_id']} (subscription {subscription_id})")
     if row and row.get("activated_by"):
         await _dm(row["activated_by"], row.get("clone_id"),
-                  "✅ Your **Premium** subscription just renewed — thanks for supporting the bot!")
+                  f"✅ Your **{label}** subscription just renewed — thanks for supporting the bot!")
     return 200, "ok"
 
 
@@ -564,9 +577,9 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
         except Exception:
             logger.exception(f"[gumroad] couldn't mark discount redeemed for {reference}")
 
-    if payment_type == "premium" and subscription_id and row.get("chat_id"):
+    if payment_type in ("premium", "premium_plus") and subscription_id and row.get("chat_id"):
         try:
-            await db.set_premium_subscription_id(int(row["chat_id"]), row.get("clone_id"), subscription_id)
+            await db.set_guild_subscription_for_type(payment_type, int(row["chat_id"]), row.get("clone_id"), subscription_id)
         except Exception:
             logger.exception(f"[gumroad] couldn't store subscription id for {reference}")
 

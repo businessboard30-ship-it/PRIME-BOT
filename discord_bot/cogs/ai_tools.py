@@ -970,6 +970,18 @@ class AIToolsCog(commands.Cog):
             logger.debug("[aichat] premium lookup failed", exc_info=True)
         return False
 
+    async def _is_plus(self, guild_id: int) -> bool:
+        """Premium Plus, same rule as _is_premium: this bot OR the main bot has it active for the server."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        try:
+            if await db.is_guild_plus_active(guild_id, clone_id):
+                return True
+            if clone_id is not None:
+                return await db.is_guild_plus_active(guild_id, None)
+        except Exception:
+            logger.debug("[aichat] plus lookup failed", exc_info=True)
+        return False
+
     async def _roast_active_in(self, channel: discord.abc.GuildChannel) -> bool:
         """True while a roast battle is live in THIS channel — the roast cog
         answers there, so the AI stays silent to avoid answering twice."""
@@ -1093,7 +1105,8 @@ class AIToolsCog(commands.Cog):
         guild = message.guild
         guild_id = guild.id if guild else None
         premium = await self._is_premium(guild_id) if guild_id else False
-        allowed, cap_msg = await check_reply_limit(user_id, guild_id, premium)
+        plus = await self._is_plus(guild_id) if (guild_id and premium) else False
+        allowed, cap_msg = await check_reply_limit(user_id, guild_id, premium, plus)
         if not allowed:
             return cap_msg, None
 
@@ -1312,7 +1325,8 @@ class AIToolsCog(commands.Cog):
 
         gid = interaction.guild.id if interaction.guild else None
         reply_used = await get_reply_usage(user_id, gid)
-        reply_cap = reply_cap_for(gid, await self._is_premium(gid) if gid else False)
+        _prem = await self._is_premium(gid) if gid else False
+        reply_cap = reply_cap_for(gid, _prem, await self._is_plus(gid) if (gid and _prem) else False)
         where = "in this server" if gid else "in DMs"
         line = (
             f"Tier: {tier.upper()}\n"

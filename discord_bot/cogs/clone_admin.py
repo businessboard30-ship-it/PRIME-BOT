@@ -924,8 +924,8 @@ class CloneAdminCog(commands.Cog):
             await handler(row["paystack_reference"], row["user_id"], guild_id, row.get("clone_id"))
             await db.set_payment_chat_id(row["paystack_reference"], guild_id)
             sub_id = (claim_record or {}).get("subscription_id")
-            if ptype == "premium" and sub_id:
-                await db.set_premium_subscription_id(guild_id, row.get("clone_id"), sub_id)
+            if ptype in ("premium", "premium_plus") and sub_id:
+                await db.set_guild_subscription_for_type(ptype, guild_id, row.get("clone_id"), sub_id)
         except Exception:
             logger.exception(f"[assignpayment] unlock failed for {reference} on guild {guild_id}")
             if claim_record:

@@ -1067,20 +1067,24 @@ async def get_reply_usage(user_id: int, guild_id: Optional[int]) -> int:
         return 0
 
 
-def reply_cap_for(guild_id: Optional[int], is_premium: bool) -> int:
+def reply_cap_for(guild_id: Optional[int], is_premium: bool, is_plus: bool = False) -> int:
     if guild_id is None:
         return DM_CAP
+    if is_plus:
+        from config import PREMIUM_PLUS_REPLY_CAP
+        return PREMIUM_PLUS_REPLY_CAP
     return REPLY_CAP_PREMIUM if is_premium else REPLY_CAP_NORMAL
 
 
-async def check_reply_limit(user_id: int, guild_id: Optional[int], is_premium: bool) -> tuple[bool, str]:
+async def check_reply_limit(user_id: int, guild_id: Optional[int], is_premium: bool,
+                            is_plus: bool = False) -> tuple[bool, str]:
     """(allowed, cap-hit message). The message states plainly that Premium is a
     server subscription and nobody is paying for AI credits."""
     try:
         from config import DISCORD_CLONE_ADMIN_IDS
         if user_id in DISCORD_CLONE_ADMIN_IDS:
             return (True, "")
-        cap = reply_cap_for(guild_id, is_premium)
+        cap = reply_cap_for(guild_id, is_premium, is_plus)
         if await get_reply_usage(user_id, guild_id) < cap:
             return (True, "")
         reset = until_reset_text()
@@ -1090,8 +1094,13 @@ async def check_reply_limit(user_id: int, guild_id: Optional[int], is_premium: b
                 f"Chatting in a Premium server gives 30/day. Premium is a server subscription — "
                 f"nobody is paying for AI credits."
             ))
-        if is_premium:
+        if is_plus:
             return (False, f"You've used your {cap} AI chats for today in this server (resets in {reset}).")
+        if is_premium:
+            from config import PREMIUM_PLUS_REPLY_CAP
+            return (False, (
+                f"You've used your {cap} AI chats for today in this server (resets in {reset}). "
+                f"Premium Plus raises it to {PREMIUM_PLUS_REPLY_CAP}/day."))
         return (False, (
             f"You've used your {cap} free AI chats for today in this server (resets in {reset}). "
             f"Server Premium raises it to {REPLY_CAP_PREMIUM}/day — it's a server subscription, not AI credits "
