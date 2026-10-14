@@ -62,6 +62,7 @@ from modules.ai_features import (
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
+from modules.ai_capabilities import is_capabilities_question
 from modules.ai_command_guard import (
     get_qualifying_commands, resolve_and_check, execute_ai_command, _resolve_command,
     AICommandDenied, send_cap_reached_prompt, AIConfirmView,
@@ -857,6 +858,11 @@ class AIToolsCog(commands.Cog):
             await interaction.response.send_message(quick_text, suppress_embeds=True, **kwargs)
             return
 
+        if is_capabilities_question(message) and not mentions_other_bot(message):
+            panel = await self._capabilities_view(interaction.user, interaction.guild, interaction)
+            await interaction.response.send_message(view=panel, ephemeral=True)
+            return
+
         pref = await self._prefs_quick_answer(message, interaction.user.id)
         if pref:
             pref_text, pref_view = pref
@@ -1065,6 +1071,14 @@ class AIToolsCog(commands.Cog):
         out.reverse()
         return out
 
+    async def _capabilities_view(self, user, guild, source):
+        """The "what can you do?" panel (Components V2) for THIS asker. `source` is the interaction (/aichat) or the
+        ProxyInteraction (mention/reply chat). Only commands the asker can really run are listed -- same permission
+        filter the AI's tool list uses -- and the panel only answers to the person who asked."""
+        from discord_bot.cogs._views_ai_capabilities import CapabilitiesView
+        specs = await get_qualifying_commands(source, ignore_cap=True) if guild is not None else []
+        return CapabilitiesView(specs, asker_id=user.id, in_server=guild is not None)
+
     async def _run_reply_turn(self, message: discord.Message, content: str, history: list):
         """Returns (text, view_or_None)."""
         if mentions_other_bot(content):
@@ -1153,6 +1167,13 @@ class AIToolsCog(commands.Cog):
                     content = re.sub(rf"<@!?{self.bot.user.id}>", "", content).strip()
                     if not content:
                         return
+
+            if is_capabilities_question(content) and not mentions_other_bot(content):
+                # "what can you do / show your commands": a fixed component panel, no AI call, costs no daily cap.
+                src = ProxyInteraction(message, self.bot) if message.guild is not None else None
+                panel = await self._capabilities_view(message.author, message.guild, src)
+                await message.reply(view=panel, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+                return
 
             voice_file = None
             async with message.channel.typing():
