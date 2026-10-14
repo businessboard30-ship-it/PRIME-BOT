@@ -10,10 +10,10 @@ Deployed by `.github/workflows/deploy-dashboard.yml` to the Pages project `prime
 
 ## One-time setup
 1. Discord Developer Portal -> PRIME BOT application -> OAuth2 -> Redirects: add
-   `https://web-production-74667a.up.railway.app/api/dash`
+   `https://api-service-production-df63.up.railway.app/api/dash`
 2. Railway, `web` service variables:
    - `DASH_PAGES_URL` = `https://prime-bot-dash.pages.dev`
-   - `DASH_OAUTH_REDIRECT_URI` = `https://web-production-74667a.up.railway.app/api/dash`
+   - `DASH_OAUTH_REDIRECT_URI` = `https://api-service-production-df63.up.railway.app/api/dash`
    - `DISCORD_OAUTH_CLIENT_SECRET` and `DISCORD_BOT_TOKEN` (already present)
 3. Merge to `main`; the Action publishes the site and Railway redeploys the backend.
 

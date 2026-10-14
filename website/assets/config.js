@@ -13,5 +13,5 @@ window.SITE_CONFIG = {
   // DiscordThings (dsc.sh) listing page. Paste your bot's dsc.sh page URL here; empty hides its links.
   DTHINGS_URL: "",
   // Public JSON endpoint (api/public_stats.py): {"servers":123}. Feeds the stats strip and the status page.
-  STATS_API_URL: "https://web-production-74667a.up.railway.app/api/public_stats"
+  STATS_API_URL: "https://api-service-production-df63.up.railway.app/api/public_stats"
 };

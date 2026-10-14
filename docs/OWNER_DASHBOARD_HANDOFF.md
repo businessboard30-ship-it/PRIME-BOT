@@ -13,7 +13,7 @@ Written 8 Oct 2026. Read this first, then `OWNER_DASHBOARD_PLAN.md` (the plan th
 | PR links | `.../pull/new/feat/owner-dashboard-phase0` and `.../pull/new/feat/owner-phase1-readonly` |
 | Status | Both pushed, **no PRs opened, nothing merged, nothing deployed** |
 | Services | Railway `web` (`api_server.py`, serves `/api/dash`) and `worker` (`discord_bot/bot.py`). Dashboard front end is Cloudflare Pages (`dashboard/`). |
-| Dashboard backend URL | `https://web-production-74667a.up.railway.app/api/dash` |
+| Dashboard backend URL | `https://api-service-production-df63.up.railway.app/api/dash` |
 | Dashboard front end | `https://prime-bot-dash.pages.dev` |
 
 ### Credentials (IMPORTANT)
