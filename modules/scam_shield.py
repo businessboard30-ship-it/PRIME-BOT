@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import logging
+import random
 import re
 import time
 from typing import Dict, List, Optional, Set, Tuple
@@ -35,6 +36,8 @@ IMAGE_MAX_BYTES = 2_000_000
 IMAGE_MAX_DISTANCE = 8          # of 64 bits. Re-compressed / resized copies stay well under this
 MIN_SQUASH_LEN = 6              # shorter words are never matched on the squashed text (false positives)
 HIT_THROTTLE_SECONDS = 30       # one logged flag per user per window, so a raid can't flood the log
+CLAIM_GRACE_SECONDS = 4.0       # a bot that can't delete waits this long so one that can goes first (see claim())
+CLAIM_KEEP_DAYS = 3             # claims are only needed for the seconds a message is being handled
 MAX_RULES = 500
 
 _ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff\u00ad]")
@@ -408,6 +411,44 @@ async def log_hit(guild_id: int, channel_id: int, user_id: int, kind: str, match
                 guild_id, clone_id, channel_id, user_id, kind, matched[:200], rule_id, None, deleted)  # message text is not kept (privacy)
     except Exception:
         logger.exception("[scam-shield] couldn't record a hit")
+
+
+# ── one bot acts per scam message ────────────────────────────────────────
+# The main bot, every clone, or two copies of one bot (e.g. while a deploy is being moved) can all be in the
+# same server, and each one receives the same message event and runs the same shield. Without coordination every
+# one of them tried to delete the message (the losers got "not found" and reported "couldn't delete"), archived
+# it, logged it and posted its own warning: the bots looked like they were fighting. The in-process throttles
+# above can't help, they live in one process. The same fix media_storage uses: a unique key in the shared
+# database; whoever inserts it first acts, everyone else skips.
+
+_claims_ready = False
+
+
+async def claim(key: str, guild_id: int, clone_id: Optional[int] = None) -> bool:
+    """True: this bot should act. False: another bot already claimed it, so skip.
+    Fails OPEN: if the database can't be reached this returns True. A duplicate warning is better than a scam
+    message left up because the claim table was down."""
+    global _claims_ready
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            if not _claims_ready:
+                await conn.execute(
+                    "CREATE TABLE IF NOT EXISTS scam_shield_claims ("
+                    "claim_key TEXT PRIMARY KEY, guild_id BIGINT NOT NULL, clone_id INTEGER, "
+                    "claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+                _claims_ready = True
+            row = await conn.fetchrow(
+                "INSERT INTO scam_shield_claims (claim_key, guild_id, clone_id) VALUES ($1, $2, $3) "
+                "ON CONFLICT (claim_key) DO NOTHING RETURNING claim_key", key, guild_id, clone_id)
+            if random.random() < 0.02:          # housekeeping: rows are only useful for a few seconds
+                await conn.execute(
+                    "DELETE FROM scam_shield_claims WHERE claimed_at < NOW() - make_interval(days => $1)",
+                    CLAIM_KEEP_DAYS)
+            return row is not None
+    except Exception:
+        logger.exception("[scam-shield] couldn't claim %s; acting anyway", key)
+        return True
 
 
 async def recent_hits(limit: int = 10) -> List[dict]:

@@ -141,6 +141,7 @@ def cog(monkeypatch):
     log = AsyncMock()
     monkeypatch.setattr(cog_mod.ss, "log_hit", log)
     monkeypatch.setattr(cog_mod.ss, "load", AsyncMock())
+    monkeypatch.setattr(cog_mod.ss, "claim", AsyncMock(return_value=True))   # the cross-bot claim has its own tests
     monkeypatch.setattr(c, "_flag", AsyncMock(), raising=False)
     c.log = log
     return c
