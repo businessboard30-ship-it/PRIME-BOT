@@ -13,11 +13,11 @@ from discord.ext import commands
 from modules import ai_command_guard as guard
 from modules.ai_command_allowlist import AI_COMMANDS
 
-AI_ONLY_PATHS = {"setup bulk-create", "setup bulk-delete", "messages user-purge",
+AI_ONLY_PATHS = {"setup bulk-create", "setup bulk-delete", "setup dedupe-channels", "messages user-purge",
                  "role create", "role bulk-create", "role bulk-delete"}
 
 
-def test_exactly_the_six_expected_specs_are_ai_only():
+def test_exactly_the_seven_expected_specs_are_ai_only():
     assert {s.command_path for s in AI_COMMANDS if s.ai_only} == AI_ONLY_PATHS
 
 
@@ -41,7 +41,7 @@ def _paths(bot):
 
 def test_detach_removes_them_from_what_discord_would_see_but_not_the_rest(tree_bot):
     assert AI_ONLY_PATHS <= _paths(tree_bot)
-    assert guard.detach_ai_only_commands(tree_bot) == 6
+    assert guard.detach_ai_only_commands(tree_bot) == 7
     after = _paths(tree_bot)
     assert not (AI_ONLY_PATHS & after)
     # siblings in the same groups are untouched
@@ -59,7 +59,7 @@ def test_detach_removes_them_from_what_discord_would_see_but_not_the_rest(tree_b
 
 
 def test_detach_is_idempotent(tree_bot):
-    assert guard.detach_ai_only_commands(tree_bot) == 6
+    assert guard.detach_ai_only_commands(tree_bot) == 7
     assert guard.detach_ai_only_commands(tree_bot) == 0
 
 
