@@ -56,6 +56,58 @@ def split_names(raw) -> List[str]:
     return out
 
 
+def plan_dedupe(items: List[dict], only_keys: Optional[Iterable[str]] = None,
+                limit: int = MAX_DELETE_CHANNELS) -> dict:
+    """Which copies of same-named channels to delete, keeping ONE of each.
+
+    `items` are plain dicts (so this stays testable without Discord), one per channel:
+      id, kind ('text'|'voice'|'stage'|'forum'|'category'), key (the name with fancy fonts/brackets folded to plain
+      letters, lowercased), protected (True for the rules/system/updates/AFK channel and the one we're chatting in),
+      has_children (categories only: it still holds channels).
+    Channels are the same when kind AND key match. Within a group the kept channel is a protected one if there is one
+    (several protected ones are all kept), otherwise the OLDEST (lowest id). A category copy that still has channels
+    in it is never deleted (it is reported in `skipped`). `only_keys` limits the check to those names.
+    At most `limit` deletions are planned; `more` counts what was left for a next round.
+    Returns {"groups": [{"key","kind","keep":[ids],"delete":[ids]}], "delete": [ids, in order],
+             "skipped": [(id, reason)], "more": int}."""
+    only = {k.strip().lower() for k in only_keys} if only_keys else None
+    buckets: Dict[Tuple[str, str], List[dict]] = {}
+    for it in items:
+        key = (it.get("key") or "").strip()
+        if not key:
+            continue
+        if only is not None and key not in only:
+            continue
+        buckets.setdefault((it["kind"], key), []).append(it)
+    groups, delete, skipped = [], [], []
+    for (kind, key), members in buckets.items():
+        if len(members) < 2:
+            continue
+        members = sorted(members, key=lambda m: int(m["id"]))
+        keep = [m for m in members if m.get("protected")] or [members[0]]
+        keep_ids = {m["id"] for m in keep}
+        doomed = []
+        for m in members:
+            if m["id"] in keep_ids:
+                continue
+            if kind == "category" and m.get("has_children"):
+                skipped.append((m["id"], "it still has channels in it"))
+                continue
+            doomed.append(m["id"])
+        if doomed:
+            groups.append({"key": key, "kind": kind, "keep": [m["id"] for m in keep], "delete": doomed})
+    groups.sort(key=lambda g: int(g["keep"][0]))
+    for g in groups:
+        delete.extend(g["delete"])
+    more = max(0, len(delete) - limit)
+    delete = delete[:limit]
+    allowed = set(delete)
+    for g in groups:
+        g["delete"] = [i for i in g["delete"] if i in allowed]
+    groups = [g for g in groups if g["delete"]]
+    return {"groups": groups, "delete": delete, "skipped": skipped, "more": more}
+
+
 def slug(name: str, *, voice: bool = False, category: bool = False) -> str:
     """The plain (unstyled) channel name Discord would accept. Text channels: lowercase, hyphens, no punctuation.
     Voice channels keep spaces; categories keep their case and spaces."""

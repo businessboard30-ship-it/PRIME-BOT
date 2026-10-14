@@ -61,6 +61,76 @@ def find_category(guild: discord.Guild, value) -> Tuple[Optional[discord.Categor
     return None, f"More than one category matches \u201c{raw}\u201d -- use its exact name."
 
 
+def guarded_channel_ids(guild: discord.Guild, current=None) -> dict:
+    """{channel id: why it must not be deleted} for the channels Discord or the server depends on."""
+    guarded = {}
+    for attr, why in (("rules_channel", "it's the community rules channel"),
+                      ("public_updates_channel", "it's the community updates channel"),
+                      ("system_channel", "it's the server's system messages channel"),
+                      ("afk_channel", "it's the AFK voice channel")):
+        ch = getattr(guild, attr, None)
+        if ch is not None:
+            guarded[ch.id] = why
+    if current is not None:
+        guarded[current.id] = "it's the channel we're chatting in"
+    return guarded
+
+
+def _kind_of(ch) -> str:
+    if isinstance(ch, discord.CategoryChannel):
+        return "category"
+    if isinstance(ch, discord.VoiceChannel):
+        return "voice"
+    if isinstance(ch, discord.StageChannel):
+        return "stage"
+    if isinstance(ch, discord.ForumChannel):
+        return "forum"
+    return "text"
+
+
+def name_key(ch) -> str:
+    """Same-name test key: fancy fonts, brackets and emoji folded away. Falls back to the raw name when nothing
+    readable is left (an emoji-only name), so unrelated channels never collapse into one."""
+    plain = plain_name(ch.name).strip(" -")
+    return plain or ch.name.lower()
+
+
+def dedupe_plan(guild: discord.Guild, only_names: List[str], asker, current=None) -> dict:
+    """plan_dedupe over the server's real channels. Adds the channel objects: {"keep": [(kept, [deleted...])...],
+    "delete": [channels], "skipped": [(channel, why)], "more": int}. Copies the asker can't manage are skipped."""
+    guarded = guarded_channel_ids(guild, current)
+    pool = [c for c in guild.channels if isinstance(c, _DELETABLE)]
+    by_id = {c.id: c for c in pool}
+    items = [{"id": c.id, "kind": _kind_of(c), "key": name_key(c), "protected": c.id in guarded,
+              "has_children": bool(getattr(c, "channels", None)) if isinstance(c, discord.CategoryChannel) else False}
+             for c in pool]
+    only_keys = [plain_name(n).strip(" -") or n.lower() for n in only_names] if only_names else None
+    plan = ai_bulk.plan_dedupe(items, only_keys, limit=10 ** 6)       # permission filter first, then the cap
+    skipped = [(by_id[i], why) for i, why in plan["skipped"] if i in by_id]
+    groups, delete = [], []
+    for g in plan["groups"]:
+        keepers = [by_id[i] for i in g["keep"] if i in by_id]
+        doomed = []
+        for i in g["delete"]:
+            ch = by_id.get(i)
+            if ch is None:
+                continue
+            if not ch.permissions_for(asker).manage_channels:
+                skipped.append((ch, "you don't have Manage Channels on it"))
+                continue
+            doomed.append(ch)
+        if doomed and keepers:
+            groups.append((keepers, doomed))
+            delete.extend(doomed)
+    more = max(0, len(delete) - ai_bulk.MAX_DELETE_CHANNELS)
+    if more:
+        delete = delete[:ai_bulk.MAX_DELETE_CHANNELS]
+        allowed = {c.id for c in delete}
+        groups = [(k, [c for c in d if c.id in allowed]) for k, d in groups]
+        groups = [(k, d) for k, d in groups if d]
+    return {"groups": groups, "delete": delete, "skipped": skipped, "more": more}
+
+
 def resolve_channels(guild: discord.Guild, names: List[str], current=None) -> dict:
     """Matches each asked-for name to ONE real channel. Anything unclear is reported, never guessed.
     Returns {"found": [...], "missing": [...], "ambiguous": [...], "protected": [(channel, why)]}."""

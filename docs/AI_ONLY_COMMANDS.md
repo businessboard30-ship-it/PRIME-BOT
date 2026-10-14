@@ -8,6 +8,7 @@ These operations are only worth having when someone can describe the job in plai
 
 - "make a channel for every day of the week, in a fancy font" -> `setup bulk-create`
 - "remove the old event channels" -> `setup bulk-delete`
+- "delete the duplicate channels, keep one" -> `setup dedupe-channels` (bulk-delete can't: it refuses a name that matches several channels)
 - "clear out that spammer's messages" -> `messages user-purge`
 - "make a role for each team" -> `role bulk-create`
 - "remove the old event roles" -> `role bulk-delete`

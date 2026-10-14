@@ -234,7 +234,14 @@ AI_COMMANDS = (
          "`bracket`. ONE call with all the names \u2014 never one call per channel.", ("manage_channels",), ai_only=True),
     _sub("setup bulk-delete", "discord_bot.cogs.setup_channels", True,
          "Bulk delete several channels at once from a comma-separated list of names or #mentions (max 10). "
-         "ONE call with all the names \u2014 never one call per channel. Needs Manage Channels.", ("manage_channels",), ai_only=True),
+         "ONE call with all the names \u2014 never one call per channel. Needs Manage Channels. Cannot target channels "
+         "that share a name: for duplicates use `setup dedupe-channels` instead.", ("manage_channels",), ai_only=True),
+    _sub("setup dedupe-channels", "discord_bot.cogs.setup_channels", True,
+         "Delete DUPLICATE channels: channels with the same name, keeping one of each (the oldest). Use this whenever "
+         "someone asks to remove duplicate / repeated / same-named channels or 'keep one'. Finds the copies itself "
+         "(max 10 deleted per run, never the rules/system channel or a category that still has channels). Optional "
+         "arg `names` limits it to certain channel names; leave empty for the whole server. Do NOT ask the person to "
+         "list the duplicates. Needs Manage Channels.", ("manage_channels",), ai_only=True),
     _sub("messages user-purge", "discord_bot.cogs.moderation", True,
          "Delete one member's recent messages in a channel (user purge). Args: `member`, `channel` (default: this "
          "one), `amount` (max 200). Only looks at the past 13 days; never touches pinned messages.",

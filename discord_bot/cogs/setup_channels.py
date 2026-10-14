@@ -1147,8 +1147,10 @@ class SetupChannelsCog(GuildOnlyCog):
     # One command takes the WHOLE list, is capped (modules/ai_bulk.py), shows the exact plan on the confirm button,
     # and then runs one Discord call at a time with a pause (discord_bot/cogs/_ai_bulk_ops.py). The AI path calls
     # the ai_* handlers after its own Confirm click; a person typing the slash command gets a Confirm button too.
-    AI_CONFIRMED_HANDLERS = {"setup_bulk_create": "ai_bulkcreate", "setup_bulk_delete": "ai_bulkdelete"}
-    AI_CONFIRM_PROMPTS = {"setup_bulk_create": "ai_bulkcreate_prompt", "setup_bulk_delete": "ai_bulkdelete_prompt"}
+    AI_CONFIRMED_HANDLERS = {"setup_bulk_create": "ai_bulkcreate", "setup_bulk_delete": "ai_bulkdelete",
+                             "setup_dedupe_channels": "ai_dedupe"}
+    AI_CONFIRM_PROMPTS = {"setup_bulk_create": "ai_bulkcreate_prompt", "setup_bulk_delete": "ai_bulkdelete_prompt",
+                          "setup_dedupe_channels": "ai_dedupe_prompt"}
     AI_TOOL_PARAMS = {
         "bulk-create": [
             {"name": "names", "type": "string", "required": True,
@@ -1166,6 +1168,11 @@ class SetupChannelsCog(GuildOnlyCog):
             {"name": "names", "type": "string", "required": True,
              "description": "Channels to delete, comma-separated (max 10): names or #mentions. "
                             "A category is only deleted if everything inside it is listed too."},
+        ],
+        "dedupe-channels": [
+            {"name": "names", "type": "string",
+             "description": "Optional: only clean up these channel names (comma-separated, e.g. 'general, memes'). "
+                            "Leave empty to check the whole server for same-named channels."},
         ],
     }
 
@@ -1365,6 +1372,71 @@ class SetupChannelsCog(GuildOnlyCog):
         from discord_bot.cogs._views_moderation import ConfirmActionView
         view = ConfirmActionView(interaction.user.id, lambda ci: self._finish_delete(ci, res), confirm_label="Delete")
         await interaction.response.send_message(self._delete_summary(res), view=view, ephemeral=True)
+
+    # ── duplicate channels: keep ONE of each same-named channel ────────────────────────────────────────────────────────
+    # WHY a separate command: /setup bulk-delete finds channels BY NAME and (rightly) refuses a name that matches more
+    # than one channel -- but duplicates are exactly that, so "delete the duplicate channels, keep one" could never
+    # work (the AI would just ask the person to list them). This one finds the copies itself and keeps the oldest.
+    async def _dedupe_plan(self, interaction, names=None):
+        guild = interaction.guild
+        if guild is None:
+            return "This only works inside a server.", None
+        if not guild.me.guild_permissions.manage_channels:
+            return "I don't have **Manage Channels** in this server.", None
+        if not interaction.user.guild_permissions.manage_channels:
+            return "You need **Manage Channels** to delete channels.", None
+        plan = _ai_bulk_ops.dedupe_plan(guild, _ai_bulk.split_names(names), interaction.user,
+                                        getattr(interaction, "channel", None))
+        if not plan["delete"]:
+            extra = "; ".join(f"{c.name} ({why})" for c, why in plan["skipped"][:5])
+            return "I didn't find any duplicate channels to remove" + (f" \u2014 left alone: {extra}" if extra else ".") , None
+        return None, plan
+
+    @staticmethod
+    def _dedupe_summary(plan) -> str:
+        def label(c):
+            return c.name if isinstance(c, discord.CategoryChannel) else "#" + c.name
+        lines = [f"\u2022 keep **{label(keepers[0])}**, delete {len(doomed)} copy/copies" for keepers, doomed in plan["groups"][:12]]
+        if len(plan["groups"]) > 12:
+            lines.append(f"\u2022 \u2026and {len(plan['groups']) - 12} more names")
+        text = (f"\u26a0\ufe0f **Permanently delete {len(plan['delete'])} duplicate channel(s)** \u2014 I keep the oldest of each "
+                f"(or the server's rules/system channel if it's one of them). This can't be undone.\n" + "\n".join(lines))
+        notes = []
+        if plan["more"]:
+            notes.append(f"{plan['more']} more duplicate(s) won't fit in one round (max {_ai_bulk.MAX_DELETE_CHANNELS}) \u2014 run it again after")
+        if plan["skipped"]:
+            notes.append("left alone: " + _ai_bulk.summarize(f"{c.name} ({why})" for c, why in plan["skipped"]))
+        return text + (("\n_(" + "; ".join(notes) + ")_") if notes else "")
+
+    async def ai_dedupe_prompt(self, interaction, names=None, **_ignored):
+        err, plan = await self._dedupe_plan(interaction, names)
+        return (False, f"\u274c {err}") if err else (True, self._dedupe_summary(plan) + "\nConfirm?")
+
+    async def ai_dedupe(self, interaction, names=None, **_ignored):
+        err, plan = await self._dedupe_plan(interaction, names)         # re-planned at click time
+        if err:
+            await interaction.followup.send(f"\u274c {err}", ephemeral=True)
+            return
+        await self._finish_delete(interaction, {"found": plan["delete"], "missing": [], "ambiguous": [],
+                                                "protected": []})
+
+    # AI-ONLY: not a slash command people can see in Discord -- hidden before sync (AICommandSpec.ai_only in
+    # modules/ai_command_allowlist.py, detach_ai_only_commands in modules/ai_command_guard.py); only the AI runs it.
+    # Same owner decision as the bulk commands above: it only makes sense when someone says it in plain words, and
+    # every slash command costs a slot of Discord's 100-command cap. Keep the @command decorator; do NOT re-expose it.
+    @group.command(name="dedupe-channels", description="Delete duplicate same-named channels, keeping one of each")
+    @app_commands.describe(names="Only these channel names (comma-separated); empty = whole server")
+    async def dedupechannels_cmd(self, interaction: discord.Interaction, names: str = ""):
+        err, plan = await self._dedupe_plan(interaction, names)
+        if err:
+            await interaction.response.send_message(f"\u274c {err}", ephemeral=True)
+            return
+        from discord_bot.cogs._views_moderation import ConfirmActionView
+        view = ConfirmActionView(interaction.user.id,
+                                 lambda ci: self._finish_delete(ci, {"found": plan["delete"], "missing": [],
+                                                                      "ambiguous": [], "protected": []}),
+                                 confirm_label="Delete")
+        await interaction.response.send_message(self._dedupe_summary(plan), view=view, ephemeral=True)
 
     @group.command(name="servers", description="Get your link to list this server in PRIME-BOT's public directory")
     @app_commands.describe(resend="Resend the one-time auto-listing DM offer (Agree/Deny), even if it was declined before")
