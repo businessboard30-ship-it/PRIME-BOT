@@ -165,3 +165,96 @@ async def delete_channels(channels: list, reason: str) -> Tuple[list, Optional[s
         except discord.HTTPException as e:
             return gone, f"Discord wouldn't delete **{name}**: {getattr(e, 'text', e)}"
     return gone, None
+
+
+# ── roles ────────────────────────────────────────────────────────────────
+
+def resolve_roles(guild: discord.Guild, names: List[str], asker: discord.Member) -> dict:
+    """Matches each asked-for name to ONE real role the asker is allowed to delete. Anything unclear is reported,
+    never guessed. Returns {"found": [...], "missing": [...], "ambiguous": [...], "protected": [(role, why)]}."""
+    out = {"found": [], "missing": [], "ambiguous": [], "protected": []}
+    me = guild.me
+    chosen = set()
+    for raw in names:
+        m = re.fullmatch(r"<@&(\d+)>|(\d{15,25})", raw.strip())
+        if m:
+            r = guild.get_role(int(m.group(1) or m.group(2)))
+            hits = [r] if r is not None else []
+        else:
+            low = raw.strip().lstrip("@").lower()
+            if low in ("everyone", "here"):
+                out["protected"].append((guild.default_role, "it's @everyone"))
+                continue
+            hits = [r for r in guild.roles if r.name.lower() == low]
+        if not hits:
+            out["missing"].append(raw)
+            continue
+        if len(hits) > 1:
+            out["ambiguous"].append(raw)
+            continue
+        r = hits[0]
+        if r.is_default():
+            out["protected"].append((r, "it's @everyone"))
+        elif r.managed:
+            out["protected"].append((r, "it belongs to a bot or integration"))
+        elif r >= me.top_role:
+            out["protected"].append((r, "it's above my own top role"))
+        elif asker.id != guild.owner_id and r >= asker.top_role:
+            out["protected"].append((r, "it's at or above your own top role"))
+        elif r.id not in chosen:
+            chosen.add(r.id)
+            out["found"].append(r)
+    return out
+
+
+def role_problems(res: dict) -> str:
+    bits = []
+    if res["missing"]:
+        bits.append("not found: " + ai_bulk.summarize(res["missing"]))
+    if res["ambiguous"]:
+        bits.append("matches more than one role (use the exact name): " + ai_bulk.summarize(res["ambiguous"]))
+    if res["protected"]:
+        bits.append("left alone: " + ai_bulk.summarize(f"{r.name} ({why})" for r, why in res["protected"]))
+    return "; ".join(bits)
+
+
+async def create_roles(guild: discord.Guild, names: List[str], colour: Optional[int], hoist: bool,
+                       mentionable: bool, reason: str) -> Tuple[list, Optional[str]]:
+    """Makes the roles one by one with NO permissions (cosmetic only -- never Administrator). Returns
+    (created_roles, stop_reason_or_None)."""
+    made: list = []
+    kwargs = dict(permissions=discord.Permissions.none(), hoist=bool(hoist), mentionable=bool(mentionable),
+                  reason=reason)
+    if colour is not None:
+        kwargs["colour"] = discord.Colour(colour)
+    for i, name in enumerate(names):
+        if i:
+            await asyncio.sleep(ai_bulk.PAUSE_SECONDS)
+        try:
+            made.append(await asyncio.wait_for(guild.create_role(name=name, **kwargs), timeout=ai_bulk.CALL_TIMEOUT))
+        except discord.Forbidden:
+            return made, "I don't have **Manage Roles** here."
+        except asyncio.TimeoutError:
+            return made, "Discord is slow to answer (probably rate-limiting me), so I stopped."
+        except discord.HTTPException as e:
+            return made, f"Discord refused one of the names: {getattr(e, 'text', e)}"
+    return made, None
+
+
+async def delete_roles(roles: list, reason: str) -> Tuple[list, Optional[str]]:
+    """Deletes the roles one by one. Returns (deleted_names, stop_reason_or_None)."""
+    gone: list = []
+    for i, role in enumerate(roles):
+        if i:
+            await asyncio.sleep(ai_bulk.PAUSE_SECONDS)
+        name = role.name
+        try:
+            await asyncio.wait_for(role.delete(reason=reason), timeout=ai_bulk.CALL_TIMEOUT)
+            gone.append(name)
+        except discord.Forbidden:
+            return gone, f"I'm not allowed to delete **{name}**."
+        except asyncio.TimeoutError:
+            return gone, "Discord is slow to answer (probably rate-limiting me), so I stopped."
+        except discord.HTTPException as e:
+            return gone, f"Discord wouldn't delete **{name}**: {getattr(e, 'text', e)}"
+    return gone, None
