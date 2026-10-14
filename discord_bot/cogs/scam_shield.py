@@ -234,6 +234,10 @@ class ScamShieldCog(commands.Cog):
         if len(_warned) > 5000:
             _warned.clear()
         _warned[key] = now + JOIN_WARN_TTL
+        # One staff warning per join, not one per bot in the server (same reason as _claim_message).
+        joined = int(member.joined_at.timestamp()) if getattr(member, "joined_at", None) else int(time.time() // JOIN_WARN_TTL)
+        if not await ss.claim(f"join:{guild.id}:{member.id}:{joined}", guild.id, clone_id):
+            return False
         who = discord.utils.escape_markdown(str(member))[:40]
         since = f" Most recent: {discord.utils.format_dt(found['last_at'], 'R')}." if found["last_at"] else ""
         body = (f"**{who}** (`{member.id}`) just joined. Scam Shield caught scam messages from this account in "
@@ -412,11 +416,28 @@ class ScamShieldCog(commands.Cog):
                     hit = await self._match_pictures(message)
                 if hit is None:
                     return False
+            if not await self._claim_message(message):
+                return False                     # another bot in this server is already handling it
             await self._act(message, *hit)
             return True
         except Exception:
             logger.exception("[scam-shield] failed while checking a message")
             return False
+
+    async def _claim_message(self, message: discord.Message) -> bool:
+        """Several bots can share a server (the main bot, clones, or two copies of one bot), and each sees this
+        message. Exactly one should delete / archive / log / warn. A bot that can't delete here waits a moment,
+        so one that can is chosen first; if nobody can, the first one still flags it ("couldn't delete")."""
+        if not self._can_delete(message):
+            await asyncio.sleep(ss.CLAIM_GRACE_SECONDS)
+        return await ss.claim(f"msg:{message.id}", message.guild.id, getattr(self.bot, "clone_id", None))
+
+    @staticmethod
+    def _can_delete(message: discord.Message) -> bool:
+        try:
+            return bool(message.channel.permissions_for(message.guild.me).manage_messages)
+        except Exception:
+            return True                          # can't tell: don't hold it back
 
     async def _strict_hit(self, message: discord.Message, text: str):
         """Strict mode (premium, per server). Costs nothing for servers that never switched it on: the first
