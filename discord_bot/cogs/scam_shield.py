@@ -66,6 +66,26 @@ EVIDENCE_MAX_FILES = 4                      # attachments kept per caught messag
 EVIDENCE_MAX_BYTES = 8 * 1024 * 1024        # same cap as welcome backgrounds / ad images
 
 
+_STORAGE_TTL = 60
+_storage_cache: Tuple[float, frozenset] = (0.0, frozenset())
+
+
+async def _storage_channel_ids() -> frozenset:
+    """Channels PRIME bots store pictures/logs in (hosting + cat channel). Cached a minute. Never inspected:
+    every bot and clone posts there, and their cat logs/pictures must not be deleted as 'scam caught'."""
+    global _storage_cache
+    ts, ids = _storage_cache
+    if time.monotonic() - ts < _STORAGE_TTL:
+        return ids
+    try:
+        from modules import image_host
+        ids = frozenset(int(cid) for cid, _src in await image_host.cat_candidates())
+    except Exception:
+        logger.debug("[scam-shield] couldn't read the storage channel ids", exc_info=True)
+    _storage_cache = (time.monotonic(), ids)
+    return ids
+
+
 def _is_trusted(message: discord.Message) -> bool:
     a = message.author
     if not isinstance(a, discord.Member):
@@ -391,6 +411,8 @@ class ScamShieldCog(commands.Cog):
             # Shield notices and staff flags quote the scam they caught, so inspecting them made the bots delete
             # each other's alerts in a loop. Webhooks stay inspected (scammers use them).
             return False
+        if getattr(message.channel, "id", None) in await _storage_channel_ids():
+            return False                      # the bots' own picture/log storage channel: never a scam, never touched
         if ss.stale():
             await ss.load()
         if not ss.is_enabled():
