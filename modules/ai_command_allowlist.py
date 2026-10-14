@@ -246,15 +246,17 @@ AI_COMMANDS = (
     _sub("bump now", "discord_bot.cogs.bump", True, "Bump this server to other opted-in servers", ("manage_guild",)),
     _sub("submissions pending", "discord_bot.cogs.submissions", False, "List submissions awaiting review", ("manage_guild",)),
     # ── Roles (cosmetic only: roles are created with NO permissions) ─────
+    # These three are AI-ONLY too (ai_only=True): hidden from Discord's slash-command list, only the AI runs them.
+    # See the long comment on AICommandSpec.ai_only for the owner's reasoning; same full guard as the three above.
     _sub("role create", "discord_bot.cogs.role_setup", True,
          "Create ONE role with no permissions. Args: `name`, `color` (name like red/blue or hex #ff8800), `hoist` "
-         "(show members separately), `mentionable`. Needs Manage Roles.", ("manage_roles",)),
+         "(show members separately), `mentionable`. Needs Manage Roles.", ("manage_roles",), ai_only=True),
     _sub("role bulk-create", "discord_bot.cogs.role_setup", True,
          "Create several roles at once from a comma-separated list (max 15), all with no permissions. Args: `names`, "
-         "`color`, `hoist`, `mentionable`. ONE call with all the names \u2014 never one call per role.", ("manage_roles",)),
+         "`color`, `hoist`, `mentionable`. ONE call with all the names \u2014 never one call per role.", ("manage_roles",), ai_only=True),
     _sub("role bulk-delete", "discord_bot.cogs.role_setup", True,
          "Delete several roles at once from a comma-separated list of exact names (max 10). Only roles below both "
-         "the bot's and the asker's top role. ONE call with all the names. Needs Manage Roles.", ("manage_roles",)),
+         "the bot's and the asker's top role. ONE call with all the names. Needs Manage Roles.", ("manage_roles",), ai_only=True),
 
     # ── More server setup (each keeps its own Discord-permission gate) ────
     _sub("messages purge", "discord_bot.cogs.moderation", True, "Bulk-delete recent messages in the current channel", ("manage_messages",)),

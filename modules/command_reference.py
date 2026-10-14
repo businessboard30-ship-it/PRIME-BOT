@@ -28,9 +28,6 @@ COMMANDS: list[tuple[str, str, str, Optional[str]]] = [
     ("/unwarn", "/unwarn member:@user", "Clear all warns for a member", "moderate_members"),
     ("/warns", "/warns [member:@user]", "Check a member's warn count (defaults to yourself)", None),
     ("/modlogs", "/modlogs", "Show recent moderation actions in this server", "moderate_members"),
-    ("/role create", "/role create name:<text> [color:<name|#hex>] [hoist:<true|false>] [mentionable:<true|false>]", "Create one role with no permissions", "manage_roles"),
-    ("/role bulk-create", "/role bulk-create names:<a, b, c> [color:<name|#hex>] [hoist] [mentionable]", "Create several roles at once (max 15), no permissions", "manage_roles"),
-    ("/role bulk-delete", "/role bulk-delete names:<a, b, c>", "Delete several roles at once (max 10, asks to confirm)", "manage_roles"),
 
     # --- Server configuration (admin) ---
     ("/automod", "/automod ...", "Configure auto-moderation for this server", "manage_guild"),

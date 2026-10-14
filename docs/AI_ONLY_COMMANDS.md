@@ -9,6 +9,9 @@ These operations are only worth having when someone can describe the job in plai
 - "make a channel for every day of the week, in a fancy font" -> `setup bulk-create`
 - "remove the old event channels" -> `setup bulk-delete`
 - "clear out that spammer's messages" -> `messages user-purge`
+- "make a role for each team" -> `role bulk-create`
+- "remove the old event roles" -> `role bulk-delete`
+- "add a gold VIP role" -> `role create`
 
 Typed by hand as slash commands they are clunky and rarely used, and every slash command costs a slot of Discord's hard
 **100-command cap**, which this project is actively trying to free up (see the `/tools` and `/economy` merges).
