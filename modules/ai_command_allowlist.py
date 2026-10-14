@@ -124,11 +124,11 @@ AI_COMMANDS = (
     AICommandSpec("myclones", "discord_bot.cogs.clone_admin", False, "List the Discord bot clones you own"),
     AICommandSpec("discover", "discord_bot.cogs.discover", False, "Browse anime by category"),
     AICommandSpec("search", "discord_bot.cogs.discover", False, "Search for an anime by name"),
-    AICommandSpec("imagesearch", "discord_bot.cogs.image_search", False, "Reverse image search"),
-    AICommandSpec("news", "discord_bot.cogs.external_tools", False, "Get top headlines about a topic"),
-    AICommandSpec("convert", "discord_bot.cogs.external_tools", False, "Convert an amount between currencies"),
-    AICommandSpec("stock", "discord_bot.cogs.external_tools", False, "Get a stock's current price"),
-    AICommandSpec("crypto", "discord_bot.cogs.external_tools", False, "Get a cryptocurrency's current price"),
+    _sub("tools imagesearch", "discord_bot.cogs.external_tools", False, "Reverse image search"),
+    _sub("tools news", "discord_bot.cogs.external_tools", False, "Get top headlines about a topic"),
+    _sub("tools convert", "discord_bot.cogs.external_tools", False, "Convert an amount between currencies"),
+    _sub("tools stock", "discord_bot.cogs.external_tools", False, "Get a stock's current price"),
+    _sub("tools crypto", "discord_bot.cogs.external_tools", False, "Get a cryptocurrency's current price"),
 
     # ── AI ───────────────────────────────────────────────────────────────
     AICommandSpec("aichat", "discord_bot.cogs.ai_tools", False, "Chat with the AI"),
@@ -143,7 +143,7 @@ AI_COMMANDS = (
     AICommandSpec("submit", "discord_bot.cogs.submissions", True, "Submit an anime/movie for the catalog"),
     AICommandSpec("suggest", "discord_bot.cogs.suggestions", True, "Submit a suggestion for staff/members to vote on"),
     AICommandSpec("start", "discord_bot.cogs.quickstart", False, "Show the bot's setup quickstart"),
-    AICommandSpec("download", "discord_bot.cogs.external_tools", False, "Download audio/video from a supported link"),
+    _sub("tools download", "discord_bot.cogs.external_tools", False, "Download audio/video from a supported link"),
     AICommandSpec("removeclone", "discord_bot.cogs.clone_admin", True, "Deactivate one of your Discord bot clones"),
 
     # ── Fun / small setup commands ──────────────────────────────────────
@@ -214,10 +214,10 @@ AI_COMMANDS = (
     _sub("suggestions log-channel", "discord_bot.cogs.suggestions", True, "Set the channel approved suggestions are logged to", ("manage_guild",)),
     _sub("clan view", "discord_bot.cogs.leveling", False, "Show a member's clan and chief status"),
     _sub("clan members", "discord_bot.cogs.leveling", False, "See who is in a clan, ranked by XP"),
-    _sub("alert list", "discord_bot.cogs.crypto_alerts", False, "Show your active crypto price alerts"),
-    _sub("alert set", "discord_bot.cogs.crypto_alerts", True, "Get notified when a coin crosses a price"),
-    _sub("alert remove", "discord_bot.cogs.crypto_alerts", True, "Remove your alert for one coin"),
-    _sub("alert clear", "discord_bot.cogs.crypto_alerts", True, "Remove all your price alerts"),
+    _sub("tools alert list", "discord_bot.cogs.external_tools", False, "Show your active crypto price alerts"),
+    _sub("tools alert set", "discord_bot.cogs.external_tools", True, "Get notified when a coin crosses a price"),
+    _sub("tools alert remove", "discord_bot.cogs.external_tools", True, "Remove your alert for one coin"),
+    _sub("tools alert clear", "discord_bot.cogs.external_tools", True, "Remove all your price alerts"),
     _sub("botstore browse", "discord_bot.cogs.botstore", False, "Browse bots in the directory"),
     _sub("botstore trending", "discord_bot.cogs.botstore", False, "Show the most-clicked bots in the directory"),
     _sub("botstore search", "discord_bot.cogs.botstore", False, "Search the bot directory"),
@@ -245,6 +245,42 @@ AI_COMMANDS = (
     _sub("role setup", "discord_bot.cogs.role_setup", True, "Create common self-roles and post a member panel", ("manage_roles",)),
     _sub("bump now", "discord_bot.cogs.bump", True, "Bump this server to other opted-in servers", ("manage_guild",)),
     _sub("submissions pending", "discord_bot.cogs.submissions", False, "List submissions awaiting review", ("manage_guild",)),
+    # ── Roles (cosmetic only: roles are created with NO permissions) ─────
+    _sub("role create", "discord_bot.cogs.role_setup", True,
+         "Create ONE role with no permissions. Args: `name`, `color` (name like red/blue or hex #ff8800), `hoist` "
+         "(show members separately), `mentionable`. Needs Manage Roles.", ("manage_roles",)),
+    _sub("role bulk-create", "discord_bot.cogs.role_setup", True,
+         "Create several roles at once from a comma-separated list (max 15), all with no permissions. Args: `names`, "
+         "`color`, `hoist`, `mentionable`. ONE call with all the names \u2014 never one call per role.", ("manage_roles",)),
+    _sub("role bulk-delete", "discord_bot.cogs.role_setup", True,
+         "Delete several roles at once from a comma-separated list of exact names (max 10). Only roles below both "
+         "the bot's and the asker's top role. ONE call with all the names. Needs Manage Roles.", ("manage_roles",)),
+
+    # ── More server setup (each keeps its own Discord-permission gate) ────
+    _sub("messages purge", "discord_bot.cogs.moderation", True, "Bulk-delete recent messages in the current channel", ("manage_messages",)),
+    _sub("automod setup", "discord_bot.cogs.automod", True, "Open the auto-moderation setup wizard", ("manage_guild",)),
+    _sub("automod panel", "discord_bot.cogs.automod", False, "Open the auto-moderation control panel", ("manage_guild",)),
+    _sub("automod dashboard", "discord_bot.cogs.automod", False, "Show the auto-moderation overview", ("manage_guild",)),
+    _sub("automod setlogchannel", "discord_bot.cogs.automod", True, "Set the channel auto-mod actions are logged to", ("manage_guild",)),
+    _sub("automod bannedword preset", "discord_bot.cogs.automod", True, "Load a preset list of blocked words", ("manage_guild",)),
+    _sub("welcome setup", "discord_bot.cogs.welcome", True, "Open the welcome-card setup wizard", ("manage_guild",)),
+    _sub("giveaway setup", "discord_bot.cogs.giveaways", True, "Open the guided giveaway wizard", ("manage_guild",)),
+    _sub("levelrole setup", "discord_bot.cogs.leveling", True, "Open the leveling setup wizard", ("manage_roles",)),
+    _sub("starboard community", "discord_bot.cogs.starboard", True, "Open the community-starboard settings", ("manage_guild",)),
+    _sub("setup servers", "discord_bot.cogs.setup_channels", True, "Open the server-listing setup", ("manage_guild",)),
+    _sub("setup downloadhub", "discord_bot.cogs.setup_channels", True, "Set up the download hub channel", ("manage_channels",)),
+    _sub("setup roast", "discord_bot.cogs.setup_channels", True, "Set up the roast channel", ("manage_channels",)),
+    _sub("setup shiptrigger", "discord_bot.cogs.setup_channels", True, "Set the ship-game trigger channel", ("manage_channels",)),
+    _sub("setup shipconfig", "discord_bot.cogs.setup_channels", True, "Configure the ship game", ("manage_channels",)),
+    _sub("botstore mine", "discord_bot.cogs.botstore", False, "List the bots you've submitted to the directory"),
+    _sub("botstore rate", "discord_bot.cogs.botstore", True, "Rate a bot in the directory"),
+    _sub("referral stats", "discord_bot.cogs.referrals", False, "See your referral count"),
+    AICommandSpec("dashboard", "discord_bot.cogs.dashboard", False, "Get the link to this server's web dashboard",
+                  needs_perms=("manage_guild",)),
+    AICommandSpec("application", "discord_bot.cogs.applications", True, "Create an application form (role, staff, anything)",
+                  needs_perms=("manage_guild",)),
+    AICommandSpec("antiraid", "discord_bot.cogs.antiraid", True, "Set up raid protection: spike detection, lockdown, staff alerts",
+                  needs_perms=("manage_guild",)),
 )
 
 AI_COMMANDS_BY_NAME = {c.name: c for c in AI_COMMANDS}
