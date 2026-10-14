@@ -234,6 +234,22 @@ async def _wait_for_clone_ready(
     return False
 
 
+
+def _excluded_clone_ids() -> set:
+    """Clone ids this supervisor must NOT run, from CLONE_MANAGER_EXCLUDE_IDS
+    (comma/space separated, e.g. "3,7"). Use it for clones hosted on another
+    machine with `python -m discord_bot.bot --clone-id N`: two processes logged
+    in with the same token fight each other, so exactly one place may run it."""
+    raw = os.environ.get("CLONE_MANAGER_EXCLUDE_IDS", "")
+    ids = set()
+    for part in raw.replace(",", " ").split():
+        try:
+            ids.add(int(part))
+        except ValueError:
+            logger.warning(f"CLONE_MANAGER_EXCLUDE_IDS: ignoring non-numeric entry {part!r}")
+    return ids
+
+
 async def _reconcile(managed: Dict[int, ManagedClone]):
     try:
         dupes = await db.get_duplicate_active_clone_tokens()
@@ -259,6 +275,13 @@ async def _reconcile(managed: Dict[int, ManagedClone]):
     except Exception as e:
         logger.error(f"Failed to fetch active clones from the database: {e}")
         return
+
+    excluded = _excluded_clone_ids()
+    if excluded:
+        skipped = sorted(c["clone_id"] for c in active if c["clone_id"] in excluded)
+        if skipped:
+            logger.info(f"Not running clone(s) {skipped} here: listed in CLONE_MANAGER_EXCLUDE_IDS (hosted separately).")
+        active = [c for c in active if c["clone_id"] not in excluded]
 
     active_ids = {c["clone_id"] for c in active}
 
