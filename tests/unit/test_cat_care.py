@@ -186,7 +186,7 @@ def test_care_tick_never_dms_about_hunger(monkeypatch):
     bot.fetch_user.return_value.send.assert_not_awaited()
 
 
-def test_runaways_are_logged_and_owners_told_kindly(monkeypatch):
+def test_runaways_are_logged_and_owners_are_not_dmed(monkeypatch):
     gone = [dict(owner_id=5, pool_id=9, cat_name="Mochi", rarity="rare", trait="Sleepy", guild_id=77)]
     c, bot = _cog(monkeypatch, left=AsyncMock(return_value=gone), warn=AsyncMock(return_value={}))
     c.bot = bot
@@ -194,8 +194,7 @@ def test_runaways_are_logged_and_owners_told_kindly(monkeypatch):
     monkeypatch.setattr(cat.cat_log, "record", lambda b, kind, **f: rec.append((kind, f)))
     out = run(c.care_tick())
     assert out["left"] == 1 and rec[0][0] == "runaway" and rec[0][1]["cat_name"] == "Mochi"
-    sent = bot.fetch_user.return_value.send.await_args.args[0]
-    assert "Mochi" in sent and "wandered off" in sent
+    bot.fetch_user.return_value.send.assert_not_awaited()          # the Cat game never DMs
 
 
 def test_a_runaway_cat_comes_back_in_a_spawn_with_a_kind_message(monkeypatch):

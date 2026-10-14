@@ -87,53 +87,13 @@ def test_migration_and_wiring():
     assert int(re.search(r'^SCHEMA_VERSION = "(\d+)"', db, re.M).group(1)) >= 83
 
 
-# ── the cog tick ─────────────────────────────────────────────────────────
-def _cog(guilds, send):
-    bot = SimpleNamespace(clone_id=None, guilds=guilds,
-                          fetch_user=AsyncMock(return_value=SimpleNamespace(bot=False, send=send)))
-    return cat.CatCog(bot)
+# ── the Cat game never DMs and never runs the reminder loop ──────────────
+def test_cat_cog_has_no_reminder_loop_and_no_dms():
+    src = (ROOT / "discord_bot/cogs/cat.py").read_text()
+    assert "_reminders" not in src and "remind_due" not in src
+    assert "owner.send(" not in src and "user.send(" not in src and "_dm(" not in src
 
 
-def _patch(monkeypatch, on=(), known=None, claim=True):
-    monkeypatch.setattr(cr, "enabled_guilds", AsyncMock(return_value=set(on)))
-    monkeypatch.setattr(cr, "states", AsyncMock(return_value=known or {}))
-    monkeypatch.setattr(cr, "claim", AsyncMock(return_value=claim))
-    monkeypatch.setattr(cr, "finish", AsyncMock())
-    monkeypatch.setattr(cat, "fetch_cat_url", AsyncMock(return_value="https://x/y.jpg"))
-    monkeypatch.setattr(cat.asyncio, "sleep", AsyncMock())
-
-
-def test_tick_reminds_only_servers_with_the_game_off(monkeypatch):
-    send = AsyncMock()
-    _patch(monkeypatch, on={2})
-    assert run(_cog([_g(1), _g(2)], send).remind_due()) == 1
-    assert cr.claim.await_count == 1 and cr.claim.await_args.args[0] == 1
-    assert "/catsetup" in send.await_args.args[0] and send.await_args.kwargs["embed"] is not None
-
-
-def test_tick_does_not_send_when_another_worker_claimed_it(monkeypatch):
-    send = AsyncMock()
-    _patch(monkeypatch, claim=False)
-    assert run(_cog([_g(1)], send).remind_due()) == 0
-    send.assert_not_called()
-
-
-def test_closed_dms_are_finished_and_never_retried(monkeypatch):
-    send = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=403), "closed"))
-    _patch(monkeypatch)
-    assert run(_cog([_g(1)], send).remind_due()) == 0
-    cr.finish.assert_awaited_once()
-
-
-def test_tick_still_sends_without_a_picture(monkeypatch):
-    send = AsyncMock()
-    _patch(monkeypatch)
-    monkeypatch.setattr(cat, "fetch_cat_url", AsyncMock(side_effect=RuntimeError("api down")))
-    assert run(_cog([_g(1)], send).remind_due()) == 1
-    assert send.await_args.kwargs["embed"] is None
-
-
-# ── AI chat: the AI never produces or attaches a cat ─────────────────────
 def test_cat_token_is_deleted_and_nothing_is_attached():
     out = af.render_cat_image("Set it up with /catsetup. [[CAT]]")
     assert out == "Set it up with /catsetup."

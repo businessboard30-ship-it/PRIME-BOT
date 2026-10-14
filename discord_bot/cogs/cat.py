@@ -34,7 +34,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
-from modules import cat_care, cat_log, cat_perms, cat_pool, cat_quality, cat_reminder, cat_setup, cat_vision
+from modules import cat_care, cat_log, cat_perms, cat_pool, cat_quality, cat_setup, cat_vision
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,6 @@ GROW_ONE_IN = 8
 DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(total=12)
 SPAWN_TICK_SECONDS = 30
 BACKFILL_TICK_MINUTES = 5            # old-cat backfill: 15 items a tick, so even a big backlog drains in hours, gently
-REMINDER_TICK_MINUTES = 10
-REMINDER_PER_TICK = 5
 SPAWN_EXPIRE_PER_TICK = 20          # old spawns tidied per care tick (every 30 min)
 SPAWN_PER_TICK = 60                 # servers handled per tick (Premium servers post as often as every ~7 minutes)
 
@@ -384,7 +382,6 @@ class CatCog(commands.Cog):
     async def cog_load(self):
         self._care.start()
         self._spawner.start()
-        self._reminders.start()
         # Writing up old cats in the storage channel: main bot only (the pool and channel are shared by every bot).
         if getattr(self.bot, "clone_id", None) is None:
             self._backfill.start()
@@ -392,7 +389,6 @@ class CatCog(commands.Cog):
     async def cog_unload(self):
         self._care.cancel()
         self._spawner.cancel()
-        self._reminders.cancel()
         self._backfill.cancel()
 
     @tasks.loop(seconds=cat_care.HUNGER_TICK_SECONDS)
@@ -426,9 +422,7 @@ class CatCog(commands.Cog):
                                user_id=c["owner_id"], pool_id=c["pool_id"], cat_name=c["cat_name"], rarity=c["rarity"],
                                trait=c["trait"])
                 by_owner.setdefault(c["owner_id"], []).append(c["cat_name"])
-            for owner_id, names in by_owner.items():
-                await self._dm(owner_id, cat_care.runaway_owner_text(names))
-                await asyncio.sleep(2)
+            # No runaway DM any more: owners see it in My cats.
         except Exception:
             logger.warning("[cat] runaway step failed", exc_info=True)
         try:
@@ -460,16 +454,6 @@ class CatCog(commands.Cog):
             await asyncio.sleep(1)
         return len(rows)
 
-    async def _dm(self, user_id: int, text: str) -> bool:
-        try:
-            user = await self.bot.fetch_user(user_id)
-            if user is None or user.bot:
-                return False
-            await user.send(text)
-            return True
-        except discord.HTTPException:
-            return False                    # closed DMs: skip, never retried
-
     @tasks.loop(minutes=BACKFILL_TICK_MINUTES)
     async def _backfill(self):
         try:
@@ -484,49 +468,6 @@ class CatCog(commands.Cog):
     @_backfill.before_loop
     async def _before_backfill(self):
         await self.bot.wait_until_ready()
-
-    @tasks.loop(minutes=REMINDER_TICK_MINUTES)
-    async def _reminders(self):
-        try:
-            await self.remind_due()
-        except Exception:
-            logger.exception("[cat] reminder tick failed")
-
-    @_reminders.before_loop
-    async def _before_reminders(self):
-        await self.bot.wait_until_ready()
-
-    async def remind_due(self) -> int:
-        """Reminds a few servers (of THIS bot) whose Cat game is off. Each server gets at most 2 reminders inside one
-        week, then never again (modules/cat_reminder.py). A few per tick so a big rollout never floods Discord."""
-        clone_id = getattr(self.bot, "clone_id", None)
-        on = await cat_reminder.enabled_guilds(clone_id)
-        known = await cat_reminder.states(clone_id)
-        off = {g.id: g.id not in on for g in self.bot.guilds}
-        sent = 0
-        for guild in cat_reminder.pick_candidates(self.bot.guilds, off, known, limit=REMINDER_PER_TICK):
-            if not await cat_reminder.claim(guild.id, clone_id):
-                continue
-            try:
-                owner = await self.bot.fetch_user(guild.owner_id)
-            except discord.HTTPException:
-                owner = None
-            if owner is None or owner.bot:
-                await cat_reminder.finish(guild.id, clone_id)
-                continue
-            embed = None
-            try:
-                url = await fetch_cat_url(bot=self.bot, guild_id=guild.id)
-                embed = cat_embed(url) if url else None
-            except Exception:
-                logger.warning("[cat] no cat picture for the reminder of guild %s", guild.id, exc_info=True)
-            try:
-                await owner.send(cat_reminder.reminder_text(guild.name), embed=embed)
-                sent += 1
-            except discord.HTTPException:
-                await cat_reminder.finish(guild.id, clone_id)          # closed DMs: never retried
-            await asyncio.sleep(2)
-        return sent
 
     @tasks.loop(seconds=SPAWN_TICK_SECONDS)
     async def _spawner(self):
@@ -573,7 +514,7 @@ class CatCog(commands.Cog):
 
     async def _maybe_alert_owner(self, guild, clone_id, channels) -> None:
         """The game is ON but nothing could be posted. If a permission or channel is the reason, and it has been for a
-        few turns in a row, tell the server owner once (then at most weekly) instead of failing silently."""
+        few turns in a row, tell the server owner once (then at most weekly) in the log instead of failing silently. The Cat game never DMs anyone."""
         try:
             problems = cat_perms.diagnose(guild, channels, discord.TextChannel)
             if len(problems) < len(channels):         # at least one channel is fine: the failure was something else
@@ -581,11 +522,7 @@ class CatCog(commands.Cog):
                 return
             if not _alerts.failed(guild.id, clone_id):
                 return
-            owner = await self.bot.fetch_user(guild.owner_id)
-            if owner is not None and not owner.bot:
-                await owner.send(cat_perms.owner_message(guild.name, problems))
-        except discord.HTTPException:
-            logger.info("[cat] couldn't tell the owner of guild %s about the permission problem", guild.id)
+            logger.info("[cat] guild %s: nothing could be posted (permission/channel problem); not DMing the owner", guild.id)
         except Exception:
             logger.warning("[cat] permission alert failed for guild %s", guild.id, exc_info=True)
 
