@@ -829,7 +829,7 @@ TURNSTILE_ENABLED = bool(TURNSTILE_SECRET_KEY and TURNSTILE_PAGES_URL and VERIFY
 # an env var still overrides (e.g. if Cloudflare gave the project a different pages.dev name).
 DASH_PAGES_URL = os.getenv("DASH_PAGES_URL", "https://prime-bot-dash.pages.dev").strip().rstrip("/")
 DASH_OAUTH_REDIRECT_URI = os.getenv(
-    "DASH_OAUTH_REDIRECT_URI", "https://web-production-74667a.up.railway.app/api/dash").strip()
+    "DASH_OAUTH_REDIRECT_URI", f"{PUBLIC_BASE_URL}/api/dash").strip()
 DASH_SESSION_MINUTES = int(os.getenv("DASH_SESSION_MINUTES", "720"))
 # Owner area (Phase 0): shorter sessions, step-up window, and an env-driven owner list.
 DASH_OWNER_SESSION_MINUTES = int(os.getenv("DASH_OWNER_SESSION_MINUTES", "120"))
