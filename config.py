@@ -740,7 +740,7 @@ CLONE_BOT_REAL_ENABLED = True
 # no trailing slash). Required to register per-clone webhooks
 # (https://<PUBLIC_BASE_URL>/api/bot?clone_id=N). Clone creation fails loudly
 # if this isn't set, rather than silently registering a broken webhook URL.
-PUBLIC_BASE_URL = _PUBLIC_BASE
+PUBLIC_BASE_URL = api-service-production-df63.up.railway.app
 
 # Max number of per-clone Application instances kept warm in memory at once
 # (Part 3.1 "Per-clone Application instances" — bounded LRU, not unbounded).
