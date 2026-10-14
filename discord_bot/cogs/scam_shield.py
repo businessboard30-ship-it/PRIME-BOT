@@ -386,6 +386,11 @@ class ScamShieldCog(commands.Cog):
             return False
         if self.bot.user and message.author.id == self.bot.user.id:
             return False
+        if getattr(message.author, "bot", False) is True and getattr(message, "webhook_id", None) is None:
+            # Never inspect another bot's messages (the main bot and every clone can share a server). Their Scam
+            # Shield notices and staff flags quote the scam they caught, so inspecting them made the bots delete
+            # each other's alerts in a loop. Webhooks stay inspected (scammers use them).
+            return False
         if ss.stale():
             await ss.load()
         if not ss.is_enabled():

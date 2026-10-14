@@ -175,6 +175,14 @@ def test_webhook_posts_get_no_free_pass(cog):
     m.delete.assert_awaited_once()
 
 
+def test_other_bots_messages_are_never_inspected(cog):
+    m = _msg("fatowin.com")
+    m.author.bot = True                       # another PRIME bot's Scam Shield notice quoting the scam
+    m.webhook_id = None
+    run(cog._inspect(m))
+    m.delete.assert_not_awaited()
+
+
 def test_switched_off_does_nothing(cog):
     ss._c.enabled = False
     m = _msg("fatowin.com")

@@ -85,18 +85,11 @@ def _broken(monkeypatch, perms, premium=False, fetch_user=None):
     return c, owner, g, chans
 
 
-def test_owner_is_told_once_after_three_failed_turns(monkeypatch):
+def test_owner_is_never_dmed_about_permission_problems(monkeypatch):
     c, owner, *_ = _broken(monkeypatch, P(embed=False))
-    for _ in range(2):
-        assert run(c.spawn_due()) == 0
-    owner.send.assert_not_called()
-    run(c.spawn_due())
-    owner.send.assert_awaited_once()
-    text = owner.send.call_args.args[0]
-    assert "<#1>" in text and "Embed Links" in text and "Cat Club" in text
-    for _ in range(5):
+    for _ in range(8):
         run(c.spawn_due())
-    owner.send.assert_awaited_once()                              # not again
+    owner.send.assert_not_called()
 
 
 def test_working_server_is_never_messaged_and_recovery_resets(monkeypatch):
