@@ -384,6 +384,11 @@ class AnimeBotDiscord(commands.Bot):
         self.payment_reminder_loop.start()
         self.status_rotation_loop.start()  # main bot and all clones
 
+        # AI-only commands (allowlist ai_only=True) must leave the tree BEFORE syncing so Discord never lists them.
+        # They stay runnable by the AI. Why: modules/ai_command_allowlist.py, AICommandSpec.ai_only.
+        from modules.ai_command_guard import detach_ai_only_commands
+        logger.info(f"Detached {detach_ai_only_commands(self)} AI-only commands from the slash tree")
+
         # Slash command sync: to a single dev guild (near-instant propagation)
         # if DISCORD_DEV_GUILD_ID is set, otherwise global (works everywhere
         # this bot is installed, but can take up to ~1hr to show up).
