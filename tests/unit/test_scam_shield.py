@@ -184,6 +184,16 @@ def test_other_bots_messages_are_never_inspected(cog):
     m.delete.assert_not_awaited()
 
 
+def test_storage_channel_is_never_inspected(cog, monkeypatch):
+    from discord_bot.cogs import scam_shield as cs
+    m = _msg("fatowin.com")
+    m.webhook_id = 123                        # even a webhook post there is left alone
+    m.channel.id = 555
+    monkeypatch.setattr(cs, "_storage_cache", (cs.time.monotonic(), frozenset({555})))
+    run(cog._inspect(m))
+    m.delete.assert_not_awaited()
+
+
 def test_switched_off_does_nothing(cog):
     ss._c.enabled = False
     m = _msg("fatowin.com")
