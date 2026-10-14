@@ -57,16 +57,28 @@ class AICommandSpec:
     # the command is top-level and `name` is its registered name. `name` is always the unique tool name the model
     # sees (letters, digits, _ and - only), so for a subcommand it is the path with underscores: "welcome_enable".
     path: str = ""
+    # AI-ONLY command. True means: the command exists in the code (so the AI can build its tool schema and run the
+    # real permission checks from it) but it is DETACHED from the bot's command tree before slash commands are
+    # synced, so it never appears in Discord's command list and a person cannot type it.
+    #
+    # WHY THIS EXISTS (the owner's reasoning -- read before "fixing" it): some operations are only worth having
+    # when a person can describe the job in plain words ("make a channel for every day of the week, in a fancy
+    # font", "remove the old event channels", "clear out that spammer's messages"). Typed by hand as a slash
+    # command they are clunky, rarely used, and each one burns a slot of Discord's hard 100-command cap, which
+    # this project is actively trying to free up (see the /tools and /economy merges). So they live here as
+    # AI-callable operations ONLY. Do not "restore" them as slash commands, and do not count them against
+    # command-cap budgeting -- they are not registered with Discord at all.
+    ai_only: bool = False
 
     @property
     def command_path(self) -> str:
         return self.path or self.name
 
 
-def _sub(path: str, module: str, confirm: bool, desc: str, perms: tuple = ()) -> "AICommandSpec":
+def _sub(path: str, module: str, confirm: bool, desc: str, perms: tuple = (), ai_only: bool = False) -> "AICommandSpec":
     """Spec for a subcommand of a group. `path` is the slash path, e.g. "welcome enable"."""
     return AICommandSpec(path.replace(" ", "_").replace("-", "_"), module, confirm, desc,
-                         needs_perms=tuple(perms), path=path)
+                         needs_perms=tuple(perms), path=path, ai_only=ai_only)
 
 
 AI_COMMANDS = (
@@ -212,17 +224,21 @@ AI_COMMANDS = (
     _sub("archive trending", "discord_bot.cogs.archive", False, "See the current top bots in the archive"),
     _sub("referral mycode", "discord_bot.cogs.referrals", False, "Show your referral code"),
     _sub("setup channels", "discord_bot.cogs.setup_channels", True, "Suggest and create commonly useful channels", ("manage_channels",)),
+    # ── AI-ONLY operations (ai_only=True) ───────────────────────────────────
+    # These three are hidden from Discord's slash-command list on purpose; only the AI can run them. See the long
+    # comment on AICommandSpec.ai_only for the owner's reasoning. They still go through the full guard: allowlist,
+    # the asker's real permissions (needs_perms), the daily cap, and an explicit Confirm click before anything runs.
     _sub("setup bulk-create", "discord_bot.cogs.setup_channels", True,
          "Bulk create several channels at once from a comma-separated list (max 15): text, voice or category, "
          "optionally inside a category and in a fancy font/bracket. Args: `names`, `kind`, `category`, `font`, "
-         "`bracket`. ONE call with all the names \u2014 never one call per channel.", ("manage_channels",)),
+         "`bracket`. ONE call with all the names \u2014 never one call per channel.", ("manage_channels",), ai_only=True),
     _sub("setup bulk-delete", "discord_bot.cogs.setup_channels", True,
          "Bulk delete several channels at once from a comma-separated list of names or #mentions (max 10). "
-         "ONE call with all the names \u2014 never one call per channel. Needs Manage Channels.", ("manage_channels",)),
+         "ONE call with all the names \u2014 never one call per channel. Needs Manage Channels.", ("manage_channels",), ai_only=True),
     _sub("messages user-purge", "discord_bot.cogs.moderation", True,
          "Delete one member's recent messages in a channel (user purge). Args: `member`, `channel` (default: this "
          "one), `amount` (max 200). Only looks at the past 13 days; never touches pinned messages.",
-         ("manage_messages",)),
+         ("manage_messages",), ai_only=True),
     _sub("setup reportchannel", "discord_bot.cogs.setup_channels", True, "Choose which channel receives server reports", ("manage_guild",)),
     _sub("invites setup", "discord_bot.cogs.invites", True, "Open the invite tracker setup wizard", ("manage_guild",)),
     _sub("ticket setup", "discord_bot.cogs.ticket", True, "Set up the ticket system", ("manage_guild",)),

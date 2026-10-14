@@ -1143,7 +1143,7 @@ class SetupChannelsCog(GuildOnlyCog):
             f"✅ Reports will be forwarded to {channel.mention} from now on.", ephemeral=True,
         )
 
-    # ── /setup bulkcreate · /setup bulkdelete (also AI-runnable) ─────────────
+    # ── /setup bulk-create · /setup bulk-delete (AI-ONLY: hidden from Discord, see the notes on each command) ─────────────
     # One command takes the WHOLE list, is capped (modules/ai_bulk.py), shows the exact plan on the confirm button,
     # and then runs one Discord call at a time with a pause (discord_bot/cogs/_ai_bulk_ops.py). The AI path calls
     # the ai_* handlers after its own Confirm click; a person typing the slash command gets a Confirm button too.
@@ -1266,6 +1266,12 @@ class SetupChannelsCog(GuildOnlyCog):
             return
         await self._finish_create(interaction, plan)
 
+    # AI-ONLY: not a slash command people can see in Discord -- hidden before sync (AICommandSpec.ai_only in
+    # modules/ai_command_allowlist.py, detach_ai_only_commands in modules/ai_command_guard.py); only the AI runs it.
+    # WHY (owner's decision): typed by hand a bulk channel job is clunky and rarely used, and every slash command costs
+    # a slot of Discord's 100-command cap the project is trying to free up. It is worth having only when someone
+    # describes the job in plain words ("a channel per weekday, in a fancy font"). Keep the @command decorator -- the
+    # AI builds its tool schema and permission checks from it -- and do NOT re-expose this to Discord without asking.
     @group.command(name="bulk-create", description="Create several channels at once, optionally in a fancy font")
     @app_commands.describe(names="Channel names, comma-separated (max 15)", kind="text (default), voice or category",
                            category="Existing category to put them in", font="Fancy font key (e.g. bold, script)",
@@ -1343,6 +1349,12 @@ class SetupChannelsCog(GuildOnlyCog):
             return
         await self._finish_delete(interaction, res)
 
+    # AI-ONLY: not a slash command people can see in Discord -- hidden before sync (AICommandSpec.ai_only in
+    # modules/ai_command_allowlist.py, detach_ai_only_commands in modules/ai_command_guard.py); only the AI runs it.
+    # WHY (owner's decision): typed by hand a bulk channel job is clunky and rarely used, and every slash command costs
+    # a slot of Discord's 100-command cap the project is trying to free up. It is worth having only when someone
+    # describes the job in plain words ("a channel per weekday, in a fancy font"). Keep the @command decorator -- the
+    # AI builds its tool schema and permission checks from it -- and do NOT re-expose this to Discord without asking.
     @group.command(name="bulk-delete", description="Delete several channels at once (asks you to confirm first)")
     @app_commands.describe(names="Channel names or #mentions, comma-separated (max 10)")
     async def bulkdelete_cmd(self, interaction: discord.Interaction, names: str):

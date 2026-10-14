@@ -581,7 +581,7 @@ class ModerationCog(GuildOnlyCog):
             return
         await self._do_clear(confirm_interaction, confirm_interaction.channel, amount)
 
-    # ── /messages userpurge (also AI-runnable) ───────────────────────────
+    # ── /messages user-purge (AI-ONLY: hidden from Discord, see the note on the command) ───────────────────────────
     # Deletes ONE member's recent messages in ONE channel. Capped and age-limited (modules/ai_bulk.py): it only
     # looks at the last MAX_SCAN_MESSAGES messages from the last 13 days, so Discord can bulk-delete them in a
     # handful of calls instead of one call per message. Pinned messages are never touched.
@@ -670,6 +670,12 @@ class ModerationCog(GuildOnlyCog):
             return
         await self._finish_user_purge(interaction, *plan)
 
+    # AI-ONLY: not a slash command people can see in Discord -- hidden before sync (AICommandSpec.ai_only in
+    # modules/ai_command_allowlist.py, detach_ai_only_commands in modules/ai_command_guard.py); only the AI runs it.
+    # WHY (owner's decision): typed by hand a per-member message clean-up is clunky and rarely used, and every slash command costs
+    # a slot of Discord's 100-command cap the project is trying to free up. It is worth having only when someone
+    # describes the job in plain words ("clear out that spammer's messages"). Keep the @command decorator -- the
+    # AI builds its tool schema and permission checks from it -- and do NOT re-expose this to Discord without asking.
     @messages_group.command(name="user-purge", description="Delete one member's recent messages in a channel")
     @app_commands.describe(member="Whose messages to delete", channel="Channel to clean (default: this one)",
                            amount=f"How many of their recent messages (1-{_ai_bulk.MAX_USER_MESSAGES})")

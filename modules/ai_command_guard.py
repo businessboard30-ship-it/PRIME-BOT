@@ -227,9 +227,59 @@ def check_spec_permissions(interaction, spec: AICommandSpec) -> Tuple[bool, Opti
     return True, None
 
 
+# ── AI-only commands ────────────────────────────────────────────────────────
+# Commands whose allowlist spec has ai_only=True. They are real discord.app_commands.Command objects (the AI reads
+# their parameters, bindings and checks exactly like any other command) but they are pulled OUT of the bot's command
+# tree before slash commands are synced to Discord, so people never see or type them. They live here instead,
+# keyed by full path ("setup bulk-create").
+#
+# WHY (owner's decision): these are operations that only make sense when someone describes the job in plain words
+# to the AI. As typed slash commands they are clunky, rarely used, and each costs a slot of Discord's hard 100-command
+# cap -- which this project is actively trying to free up. See AICommandSpec.ai_only for the full note.
+# If you are an AI/agent editing this: do not re-register these on the tree and do not delete the command objects.
+_AI_ONLY_COMMANDS: dict = {}
+
+
+def detach_ai_only_commands(bot: discord.Client) -> int:
+    """Move every ai_only command out of `bot.tree` into the AI-only registry. Call ONCE after all cogs are loaded and
+    BEFORE `tree.sync()` / `tree.copy_global_to()`. Safe to call twice (already-detached commands are skipped).
+    Returns how many were detached this call. The command keeps its .binding (the cog) and .parent (its group), so the
+    group's own checks still apply when the AI runs it."""
+    detached = 0
+    for spec in AI_COMMANDS:
+        if not getattr(spec, "ai_only", False):
+            continue
+        path = spec.command_path
+        if path in _AI_ONLY_COMMANDS:
+            continue
+        parts = path.split()
+        node = bot.tree.get_command(parts[0])
+        for part in parts[1:-1]:
+            node = node.get_command(part) if isinstance(node, discord.app_commands.Group) else None
+        if not isinstance(node, discord.app_commands.Group) and len(parts) > 1:
+            logger.warning(f"[ai_command_guard] ai_only spec {path!r}: parent group not found, nothing to detach")
+            continue
+        # Look it up BEFORE removing: Group.remove_command is documented to return the removed command but in
+        # discord.py 2.7 it returns None, so its return value can't be relied on.
+        owner = bot.tree if len(parts) == 1 else node
+        cmd = owner.get_command(parts[-1])
+        if isinstance(cmd, discord.app_commands.Command):
+            owner.remove_command(parts[-1])
+        if not isinstance(cmd, discord.app_commands.Command):
+            logger.warning(f"[ai_command_guard] ai_only spec {path!r}: live command not found, nothing to detach")
+            continue
+        _AI_ONLY_COMMANDS[path] = cmd
+        detached += 1
+    return detached
+
+
 def _resolve_command(bot: discord.Client, name: str) -> Optional[discord.app_commands.Command]:
     """`name` is a top-level command name, or a space-separated path for a subcommand ("welcome enable").
-    Only real runnable Commands come back; a Group (which has no callback) is never returned."""
+    Only real runnable Commands come back; a Group (which has no callback) is never returned.
+    AI-only commands (detached from the tree, see detach_ai_only_commands) are found in their own registry first."""
+    hidden = _AI_ONLY_COMMANDS.get(name.strip())
+    if hidden is not None:
+        return hidden
     if " " in name.strip():
         node = bot.tree.get_command(name.split()[0])
         for part in name.split()[1:]:
