@@ -1,4 +1,4 @@
-"""Join DM > More features > Bot profile wizard (rename / avatar / banner / bio, free)."""
+"""Join DM > More features > Bot profile wizard (change name / avatar / banner / bio, Premium)."""
 import asyncio
 import io
 
@@ -160,3 +160,104 @@ def test_archive_profile_image_posts_copy_with_info_and_never_raises(monkeypatch
     monkeypatch.setattr(bp, "_storage_channel", no_channel)
     assert run(bp.archive_profile_image(inter, 5, None, "banner", uri)) is False
     assert run(bp.archive_profile_image(inter, 5, None, "banner", "garbage")) is False
+
+
+# ── Premium gate: set it up first, pay when you tap Save ──────────────────
+
+class _Inter:
+    def __init__(self):
+        self.user = type("U", (), {"id": 42})()
+        self.sent = []
+        self.client = object()
+        outer = self
+
+        class _FU:
+            async def send(self, *a, **kw):
+                outer.sent.append((a, kw))
+        self.followup = _FU()
+
+    async def edit_original_response(self, **kw):
+        self.sent.append(("edit", kw))
+
+
+def test_not_premium_keeps_a_draft_shows_pitch_and_never_writes(monkeypatch):
+    bp._drafts.clear()
+    pitched = []
+
+    async def no(guild_id, clone_id):
+        return False
+
+    async def fake_pitch(inter, guild_id, clone_id):
+        pitched.append(guild_id)
+
+    async def fake_refresh(*a, **kw):
+        pass
+
+    monkeypatch.setattr(bp, "is_premium", no)
+    monkeypatch.setattr(bp, "_pitch", fake_pitch)
+    monkeypatch.setattr(bp, "_refresh", fake_refresh)
+    inter = _Inter()
+    assert run(bp._save_or_pitch(inter, 5, None, {"nick": "Aria"})) is False
+    assert run(bp._save_or_pitch(inter, 5, None, {"avatar": "data:image/png;base64,AAA"})) is False
+    assert pitched == [5, 5]
+    assert bp.get_draft(5, 42) == {"nick": "Aria", "avatar": "data:image/png;base64,AAA"}   # merged, kept for apply
+
+
+def test_premium_writes_straight_away_without_a_draft(monkeypatch):
+    bp._drafts.clear()
+
+    async def yes(guild_id, clone_id):
+        return True
+
+    monkeypatch.setattr(bp, "is_premium", yes)
+    assert run(bp._save_or_pitch(_Inter(), 5, None, {"nick": "Aria"})) is True
+    assert bp.get_draft(5, 42) == {}
+
+
+def test_draft_expires_after_thirty_minutes():
+    bp._drafts.clear()
+    bp.save_draft(5, 42, {"nick": "Aria"})
+    bp._drafts[(5, 42)]["exp"] = 0
+    assert bp.get_draft(5, 42) == {}
+
+
+def test_apply_button_repitches_when_still_free_and_writes_when_premium(monkeypatch):
+    bp._drafts.clear()
+    bp.save_draft(5, 42, {"nick": "Aria"})
+    state = {"premium": False, "patched": [], "pitched": 0}
+
+    async def prem(guild_id, clone_id):
+        return state["premium"]
+
+    async def patch(client, guild_id, payload):
+        state["patched"].append(payload)
+
+    async def pitch(*a):
+        state["pitched"] += 1
+
+    async def refresh(*a, **kw):
+        pass
+
+    class _Resp:
+        async def defer(self, **kw):
+            pass
+
+    monkeypatch.setattr(bp, "is_premium", prem)
+    monkeypatch.setattr(bp, "_patch_server_profile", patch)
+    monkeypatch.setattr(bp, "_pitch", pitch)
+    monkeypatch.setattr(bp, "_refresh", refresh)
+    inter = _Inter()
+    inter.response = _Resp()
+    btn = bp._ApplyButton(5, None)
+    run(btn.act(inter))
+    assert state["patched"] == [] and state["pitched"] == 1 and bp.get_draft(5, 42)
+    state["premium"] = True
+    run(btn.act(inter))
+    assert state["patched"] == [{"nick": "Aria"}] and bp.get_draft(5, 42) == {}
+
+
+def test_view_shows_apply_button_only_with_a_draft_and_name_button_is_clear():
+    plain = _ids(bp.build_profile_view(None, 5, None, owner=False, premium=False))
+    waiting = _ids(bp.build_profile_view(None, 5, None, owner=False, draft={"nick": "x"}, premium=False))
+    assert "botprof_apply:5:-" not in plain and "botprof_apply:5:-" in waiting
+    assert bp._RenameButton.label == "Change name"
