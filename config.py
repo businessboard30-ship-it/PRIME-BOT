@@ -5,16 +5,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Public URL of the API/web service (api_server.py). Set PUBLIC_BASE_URL in the
-# environment of BOTH the API service and the bot worker. Deliberately not
-# hardcoded: blank means "not configured" and dependent features fail loudly.
-# Defaults to the production Railway API service so the main bot, the clone
-# service and the web service all get the same URL from code. Setting the
-# PUBLIC_BASE_URL env var still overrides it (e.g. after moving hosts).
-PUBLIC_BASE_URL = os.getenv(
-    "PUBLIC_BASE_URL",
-    "https://api-service-production-df63.up.railway.app",
-).strip().rstrip("/")
+# Public URL of the API/web service (api_server.py). Read from this file ONLY: the
+# PUBLIC_BASE_URL environment variable on Railway is deliberately ignored, so the main
+# bot, the clone service and the web service always get the same URL from code.
+# To move hosts, change the value here.
+PUBLIC_BASE_URL = "https://api-service-production-df63.up.railway.app"
 _PUBLIC_BASE = PUBLIC_BASE_URL
 
 # Stable, host-independent address = the GitHub Pages redirector (redirector/).
