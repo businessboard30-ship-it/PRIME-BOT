@@ -1,7 +1,7 @@
 # path: discord_bot/cogs/_views_economy_wizard.py
 
 """
-Bumper-style setup wizard for /ecoconfig setup. Same DynamicItem/
+Bumper-style setup wizard for /economy config setup. Same DynamicItem/
 restart-proof pattern as the other three wizards.
 
 Deliberately does NOT include a "shop tax" step: the ecoconfig_wizard.html
@@ -13,8 +13,8 @@ scoped to fields _ECONOMY_CONFIG_DEFAULTS actually has: currency name/
 symbol, daily amount, work range, rob success odds. Step 4 is the
 server's sponsor ad (the /watchad bonus): an edit modal that holds all five
 ad_* fields plus an Activate/Deactivate button, so nothing has to be typed
-as a slash command. /ecoconfig ads still works and writes the same columns.
-(Vote-bonus config keeps its own command, /ecoconfig vote — it needs 3-4
+as a slash command. /economy config ads still works and writes the same columns.
+(Vote-bonus config keeps its own command, /economy config vote — it needs 3-4
 free-text fields a modal can't comfortably hold alongside everything else.)
 """
 

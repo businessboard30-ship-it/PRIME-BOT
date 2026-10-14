@@ -122,8 +122,8 @@ class ServerSetupView(discord.ui.View):
     @discord.ui.button(label="Enable Economy", style=discord.ButtonStyle.primary, emoji="💰", row=0)
     async def enable_economy(self, interaction: discord.Interaction, button: discord.ui.Button):
         msg = await tr(
-            "💰 The economy game is already active — try `/economy daily`, `/economy work`, `/shop list`. "
-            "Configure currency name/bonuses with `/ecoconfig`.", self.lang
+            "💰 The economy game is already active — try `/economy daily`, `/economy work`, `/economy shop list`. "
+            "Configure currency name/bonuses with `/economy config`.", self.lang
         )
         await interaction.response.send_message(msg, ephemeral=True)
 
