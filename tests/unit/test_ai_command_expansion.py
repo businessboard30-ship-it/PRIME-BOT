@@ -23,7 +23,7 @@ from modules.ai_command_allowlist import (
 # (resolve_and_check reports it as "naming drift"), so it is tracked here instead of silently ignored.
 KNOWN_UNRESOLVED = {"announcements"}
 # Group subcommands that only touch the asker's OWN data, so they legitimately declare no server permission.
-USER_SCOPED = {"alert_set", "alert_remove", "alert_clear"}
+USER_SCOPED = {"tools_alert_set", "tools_alert_remove", "tools_alert_clear"}
 
 
 def run(coro):
@@ -103,12 +103,15 @@ def test_money_and_owner_commands_stay_out(name):
 
 
 NEW_PLAIN = {"cat", "catsetup", "honeypot", "scamshield", "bumpsetup"}
+# Pre-existing allowlist entry that was already attachment-based when it was the top-level /imagesearch;
+# it became a subcommand of /tools without changing behaviour, so it is not a "new" command.
+LEGACY_ATTACHMENT = {"tools_imagesearch"}
 
 
 def test_new_commands_need_no_attachment_or_modal(bot):
     for s in AI_COMMANDS:
         c = live(bot, s)
-        if c is None or not (s.path or s.name in NEW_PLAIN):
+        if c is None or s.name in LEGACY_ATTACHMENT or not (s.path or s.name in NEW_PLAIN):
             continue
         assert all(getattr(p.type, "name", "") != "attachment" for p in c.parameters), s.name
         src = inspect.getsource(c.callback)

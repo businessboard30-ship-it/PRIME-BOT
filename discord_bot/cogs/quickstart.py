@@ -44,7 +44,7 @@ QUICKSTART_ITEMS = [
     ("🛡️", "Auto-moderation", "/automod setup", "Filter spam, invite links, and mass-mention raids."),
     ("🎭", "Self-roles", "/role setup", "Bulk-create popular roles (Announcements, Giveaways, etc.) and post a self-assign panel in one wizard."),
     ("📈", "Leveling / XP", "/leveling setup", "Reward active members with levels and roles over time."),
-    ("⬇️", "Media downloads", "/download", "Works right away, no setup — grab audio/video from a link."),
+    ("⬇️", "Media downloads", "/tools download", "Works right away, no setup — grab audio/video from a link."),
     ("📥", "Downloadhub", "/setup downloadhub", "Auto-creates a channel where members submit/upload music & video and play it in voice."),
     ("📊", "Server analytics", "/serveranalytics", "See member/activity stats and where to find more members."),
     ("💎", "Go Premium", "/start", f"Premium fonts, welcome cards, Music Pro and every future feature \u2014 ${config.PREMIUM_FEE_USD:g}/month for the whole server."),

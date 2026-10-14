@@ -23,13 +23,10 @@ warning is logged.
 import logging
 
 import discord
-from discord import app_commands
 from discord.ext import commands, tasks
 
 from database import get_pool
-from modules.superbot_adapter import set_alert, get_user_alerts, remove_alert, clear_alerts
 from modules.external_apis import get_crypto_price
-from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 
 logger = logging.getLogger(__name__)
 
@@ -100,53 +97,6 @@ class CryptoAlertsCog(commands.Cog):
     @_check_alerts.before_loop
     async def _before_check(self):
         await self.bot.wait_until_ready()
-
-    alert = app_commands.Group(name="alert", description="Crypto price alerts")
-
-    @alert.command(name="set", description="Get notified when a coin crosses a price")
-    @app_commands.describe(coin="Coin id, e.g. bitcoin", price="Target price in USD", direction="above or below")
-    @app_commands.choices(direction=[
-        app_commands.Choice(name="above", value="above"),
-        app_commands.Choice(name="below", value="below"),
-    ])
-    async def alert_set(self, interaction: discord.Interaction, coin: str, price: float, direction: app_commands.Choice[str]):
-        coin = coin.strip().lower()
-        if price <= 0:
-            await interaction.response.send_message("Price must be positive.", ephemeral=True)
-            return
-        ok = await set_alert(interaction.user.id, coin, price, direction.value)
-        if not ok:
-            await interaction.response.send_message("❌ Couldn't create that alert. Try again.", ephemeral=True)
-            return
-        buttons = [ActionButton("My alerts", discord.ButtonStyle.secondary, self, "alert_list", emoji="🔔")]
-        card = NavCardView("🔔 Alert set", [f"I'll DM you when **{coin}** goes {direction.value} **${price:,.2f}**."],
-                            discord.Color.blurple(), buttons)
-        await interaction.response.send_message(view=card, ephemeral=True)
-
-    @alert.command(name="list", description="Show your active price alerts")
-    async def alert_list(self, interaction: discord.Interaction):
-        alerts = await get_user_alerts(interaction.user.id)
-        if not alerts:
-            await interaction.response.send_message("You have no active alerts. Use `/alert set` to create one.", ephemeral=True)
-            return
-        lines = [f"• **{a['coin']}** {a['alert_type']} ${a['price_threshold']:,.2f}" for a in alerts]
-        buttons = [
-            refresh_button(self, "alert_list"),
-            ActionButton("Clear all", discord.ButtonStyle.danger, self, "alert_clear", emoji="🗑️"),
-        ]
-        card = NavCardView("🔔 Your crypto alerts", lines, discord.Color.blurple(), buttons)
-        await interaction.response.send_message(view=card, ephemeral=True)
-
-    @alert.command(name="remove", description="Remove your alert for a specific coin")
-    @app_commands.describe(coin="Coin id to stop tracking")
-    async def alert_remove(self, interaction: discord.Interaction, coin: str):
-        await remove_alert(interaction.user.id, coin.strip().lower())
-        await interaction.response.send_message(f"Removed alert(s) for **{coin}**.", ephemeral=True)
-
-    @alert.command(name="clear", description="Remove all your alerts")
-    async def alert_clear(self, interaction: discord.Interaction):
-        await clear_alerts(interaction.user.id)
-        await interaction.response.send_message("Cleared all your alerts.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

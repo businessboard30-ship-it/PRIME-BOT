@@ -69,7 +69,7 @@ Set these in Railway (or your host)'s environment settings — there's no
 - `DISCORD_DEV_GUILD_ID` — set during development for near-instant slash-command sync to one guild; leave unset for global sync (~1hr propagation)
 - `DISCORD_OAUTH_CLIENT_ID` / `DISCORD_OAUTH_CLIENT_SECRET` — only needed for the Discord-login/dashboard OAuth flow (`api/discord_login_oauth.py`), separate from bot-invite OAuth
 - `OWNER_GUILD_ID` / `OWNER_BROADCAST_CHANNEL_ID` — main bot's own support server broadcast target
-- `YTDLP_COOKIES_B64` (or `YTDLP_COOKIES_FILE`) — base64-encoded `cookies.txt` for `/download` on sites that need a logged-in session. Must be valid base64 (a bad value logs `Failed to decode YTDLP_COOKIES_B64` at startup and downloads fall back to no cookies)
+- `YTDLP_COOKIES_B64` (or `YTDLP_COOKIES_FILE`) — base64-encoded `cookies.txt` for `/tools download` on sites that need a logged-in session. Must be valid base64 (a bad value logs `Failed to decode YTDLP_COOKIES_B64` at startup and downloads fall back to no cookies)
 - `DISCORD_SUPPORT_SERVER_ID` — the support server's guild ID. While the creature-catching game is limited to the support server (the default, see [Catch game](#catch-game)), this is the only server where it works
 - `CATCH_SUPPORT_SERVER_ONLY` (default `1`) — set to `0` / `false` / `no` / `off` to open the creature-catching game to every server. No code change or migration needed, just redeploy
 
@@ -196,7 +196,7 @@ Creature catching (`/catch`) is a hub with six categories; see [Catch game](#cat
 ### Leveling, economy & games
 - **Leveling** (`/rank`, `/leaderboard`) with **illustrated level-up cards** across
   many tiers, level-role rewards, **clans** and chiefs, **voice XP**
-- **Economy** (`/economy`, `/shop`), **trading cards** (`/card`, `/daily`),
+- **Economy** (`/economy`, incl. `/economy shop` and `/economy config`), **trading cards** (`/card`, `/daily`),
   **Heist Wars** (`/heist`), **giveaways** (`/giveaway`), roast battles and ship
 
 ### AI & tools
@@ -212,7 +212,7 @@ Creature catching (`/catch`) is a hub with six categories; see [Catch game](#cat
   - **Links** — http(s) links in a message are read and used in the answer
     (`modules/ai_web.py`; public sites only, SSRF-guarded). The AI never advertises the XP boost.
 - **AI Store** (`/aistore`) — paid AI personas; sellers can connect their own key
-- **Music**, `/download`, `/news`, `/convert`, `/stock`, `/crypto`, **price alerts**,
+- **Music**, `/tools` (`download`, `news`, `convert`, `stock`, `crypto`, `imagesearch`, `alert`), **price alerts**,
   **reverse image search**, **Media Connect** (your own Jellyfin / Plex library)
 - **Anime discovery** (`/discover`, `/animecategory`) and community submissions
 

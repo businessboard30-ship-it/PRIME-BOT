@@ -24,8 +24,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from modules.superbot_adapter import set_alert, get_user_alerts, remove_alert, clear_alerts
 from modules.external_apis import fetch_news, convert_currency, get_stock_chart, download_media, get_crypto_price
-from discord_bot.cogs._views_shared import NavCardView, refresh_button
+from discord_bot.cogs._views_shared import ActionButton, NavCardView, refresh_button
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,13 @@ class ExternalToolsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="news", description="Get top headlines about a topic")
+    # One top-level /tools command instead of eight (convert, crypto, stock,
+    # news, download, imagesearch, alert ...) — frees command slots under
+    # Discord's 100 global limit.
+    tools = app_commands.Group(name="tools", description="News, currency, stocks, crypto, downloads, image search, alerts")
+    alert = app_commands.Group(name="alert", description="Crypto price alerts", parent=tools)
+
+    @tools.command(name="news", description="Get top headlines about a topic")
     @app_commands.describe(topic="Topic to search news for")
     async def news(self, interaction: discord.Interaction, topic: str):
         topic = topic.strip()[:100]
@@ -70,7 +77,7 @@ class ExternalToolsCog(commands.Cog):
         card = NavCardView(f"📰 Top news: {topic}", lines, discord.Color.dark_teal(), buttons)
         await interaction.followup.send(view=card)
 
-    @app_commands.command(name="convert", description="Convert an amount between currencies")
+    @tools.command(name="convert", description="Convert an amount between currencies")
     @app_commands.describe(amount="Amount to convert", from_currency="e.g. USD", to_currency="e.g. GHS")
     async def convert(self, interaction: discord.Interaction, amount: float, from_currency: str, to_currency: str):
         if amount <= 0:
@@ -89,7 +96,7 @@ class ExternalToolsCog(commands.Cog):
         )
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="stock", description="Get a stock's current price and recent change")
+    @tools.command(name="stock", description="Get a stock's current price and recent change")
     @app_commands.describe(ticker="Stock ticker, e.g. AAPL")
     async def stock(self, interaction: discord.Interaction, ticker: str):
         ticker = ticker.strip().upper()[:10]
@@ -112,7 +119,7 @@ class ExternalToolsCog(commands.Cog):
                             discord.Color.green() if change >= 0 else discord.Color.red(), buttons)
         await interaction.followup.send(view=card)
 
-    @app_commands.command(name="crypto", description="Get a cryptocurrency's current price")
+    @tools.command(name="crypto", description="Get a cryptocurrency's current price")
     @app_commands.describe(coin="Coin id, e.g. bitcoin, ethereum")
     async def crypto(self, interaction: discord.Interaction, coin: str):
         coin = coin.strip().lower()
@@ -134,7 +141,7 @@ class ExternalToolsCog(commands.Cog):
                             discord.Color.green() if change >= 0 else discord.Color.red(), buttons)
         await interaction.followup.send(view=card)
 
-    @app_commands.command(name="download", description="Download audio or video from a supported link (YouTube, etc.)")
+    @tools.command(name="download", description="Download audio or video from a supported link (YouTube, etc.)")
     @app_commands.describe(url="Link to the media", media_type="audio or video")
     @app_commands.choices(media_type=[
         app_commands.Choice(name="audio", value="audio"),
@@ -176,6 +183,60 @@ class ExternalToolsCog(commands.Cog):
         finally:
             if filepath and os.path.exists(filepath):
                 os.remove(filepath)
+
+    @tools.command(name="imagesearch", description="Reverse image search — find where an image is from")
+    @app_commands.describe(image="The image to search for")
+    async def imagesearch(self, interaction: discord.Interaction, image: discord.Attachment):
+        cog = self.bot.get_cog("ImageSearchCog")
+        if cog is None:
+            await interaction.response.send_message("Image search isn't available right now.", ephemeral=True)
+            return
+        await cog.imagesearch(interaction, image)
+
+    @alert.command(name="set", description="Get notified when a coin crosses a price")
+    @app_commands.describe(coin="Coin id, e.g. bitcoin", price="Target price in USD", direction="above or below")
+    @app_commands.choices(direction=[
+        app_commands.Choice(name="above", value="above"),
+        app_commands.Choice(name="below", value="below"),
+    ])
+    async def alert_set(self, interaction: discord.Interaction, coin: str, price: float, direction: app_commands.Choice[str]):
+        coin = coin.strip().lower()
+        if price <= 0:
+            await interaction.response.send_message("Price must be positive.", ephemeral=True)
+            return
+        ok = await set_alert(interaction.user.id, coin, price, direction.value)
+        if not ok:
+            await interaction.response.send_message("❌ Couldn't create that alert. Try again.", ephemeral=True)
+            return
+        buttons = [ActionButton("My alerts", discord.ButtonStyle.secondary, self, "alert_list", emoji="🔔")]
+        card = NavCardView("🔔 Alert set", [f"I'll DM you when **{coin}** goes {direction.value} **${price:,.2f}**."],
+                            discord.Color.blurple(), buttons)
+        await interaction.response.send_message(view=card, ephemeral=True)
+
+    @alert.command(name="list", description="Show your active price alerts")
+    async def alert_list(self, interaction: discord.Interaction):
+        alerts = await get_user_alerts(interaction.user.id)
+        if not alerts:
+            await interaction.response.send_message("You have no active alerts. Use `/tools alert set` to create one.", ephemeral=True)
+            return
+        lines = [f"• **{a['coin']}** {a['alert_type']} ${a['price_threshold']:,.2f}" for a in alerts]
+        buttons = [
+            refresh_button(self, "alert_list"),
+            ActionButton("Clear all", discord.ButtonStyle.danger, self, "alert_clear", emoji="🗑️"),
+        ]
+        card = NavCardView("🔔 Your crypto alerts", lines, discord.Color.blurple(), buttons)
+        await interaction.response.send_message(view=card, ephemeral=True)
+
+    @alert.command(name="remove", description="Remove your alert for a specific coin")
+    @app_commands.describe(coin="Coin id to stop tracking")
+    async def alert_remove(self, interaction: discord.Interaction, coin: str):
+        await remove_alert(interaction.user.id, coin.strip().lower())
+        await interaction.response.send_message(f"Removed alert(s) for **{coin}**.", ephemeral=True)
+
+    @alert.command(name="clear", description="Remove all your alerts")
+    async def alert_clear(self, interaction: discord.Interaction):
+        await clear_alerts(interaction.user.id)
+        await interaction.response.send_message("Cleared all your alerts.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

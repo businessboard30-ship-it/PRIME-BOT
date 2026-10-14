@@ -10,7 +10,7 @@ means every currency exploit becomes a leveling exploit too.
 Monetization (spec §4, open question #1) — the owner explicitly rejected a
 "buy currency with real money" flow, full stop. This cog supports all three
 of the interpretations that were on the table, each independently toggled
-per guild via /ecoconfig, none of them a real-money path:
+per guild via /economy config, none of them a real-money path:
 
   - Vote-gated bonus (/vote): posts the guild's configured voting-site link
     and, on a cooldown, grants a bonus. The slash command itself stays
@@ -63,7 +63,7 @@ from discord_bot.cogs._views_economy import EconomyCardView
 logger = logging.getLogger(__name__)
 
 # Coin-for-coin sends: tax is a pure sink (funds nothing), the cap is a
-# multiple of the guild's own /ecoconfig daily_amount so it scales with
+# multiple of the guild's own /economy config daily_amount so it scales with
 # each guild's economy instead of being one hardcoded number. Both exist to
 # blunt alt-account funneling and real-money coin sales — see the plan
 # discussion in the economy cog's module docstring neighbor, _views_economy.py.
@@ -364,7 +364,7 @@ class EconomyCog(GuildOnlyCog):
     # ── shop buy → now grants an inventory row, not just the role ─────────
 
     # ── shop ────────────────────────────────────────────────────────────
-    shop_group = app_commands.guild_only()(app_commands.Group(name="shop", description="Browse and manage the server shop"))
+    shop_group = app_commands.Group(name="shop", description="Browse and manage the server shop", parent=economy_group)
 
     async def send_shop_list(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -425,7 +425,7 @@ class EconomyCog(GuildOnlyCog):
         await interaction.followup.send(view=card)
 
     @economy_group.command(name="buy", description="Buy an item from the shop")
-    @app_commands.describe(item_id="The item's # from /shop list")
+    @app_commands.describe(item_id="The item's # from /economy shop list")
     async def buy(self, interaction: discord.Interaction, item_id: int):
         await self.buy_item(interaction, item_id)
 
@@ -450,7 +450,7 @@ class EconomyCog(GuildOnlyCog):
         await interaction.followup.send(msg, ephemeral=True)
 
     async def _read_shop_image(self, interaction: discord.Interaction, image, lang: str):
-        """Shared by the /shop add command and the button-driven admin
+        """Shared by the /economy shop add command and the button-driven admin
         wizard in _views_economy.py. Returns (None, None) for no image, or
         sends a rejection and returns (None, None) too — callers check
         `image is not None` themselves to tell "no image given" apart from
@@ -655,7 +655,7 @@ class EconomyCog(GuildOnlyCog):
             await interaction.followup.send(msg, ephemeral=True)
             return
         # Note: ad_embed_title/description are guild-admin-authored (set via
-        # /ecoconfig ads), not part of the bot's own UI copy, so they're
+        # /economy config ads), not part of the bot's own UI copy, so they're
         # sent as-is — translating another admin's freeform sponsor text
         # without their say-so isn't this cog's call to make.
         default_title = await tr("Sponsored", lang)
@@ -676,7 +676,7 @@ class EconomyCog(GuildOnlyCog):
         await interaction.followup.send(view=card)
 
     # ── admin config ─────────────────────────────────────────────────────
-    eco_group = app_commands.guild_only()(app_commands.Group(name="ecoconfig", description="Configure this server's economy"))
+    eco_group = app_commands.Group(name="config", description="Configure this server's economy", parent=economy_group)
 
     @eco_group.command(name="setup", description="Set up the economy with a guided step-by-step wizard")
     async def eco_setup_wizard(self, interaction: discord.Interaction):

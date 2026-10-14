@@ -38,8 +38,7 @@ COMMANDS: list[tuple[str, str, str, Optional[str]]] = [
     ("/welcome", "/welcome ...", "Configure welcome cards for new members", "manage_guild"),
     ("/reactionrole", "/reactionrole ...", "Self-assignable role panels", "manage_roles"),
     ("/levelrole", "/levelrole ...", "Configure level-up role rewards", "manage_roles"),
-    ("/ecoconfig", "/ecoconfig ...", "Configure this server's economy", "manage_guild"),
-    ("/shop", "/shop ...", "Browse and manage the server shop", "manage_guild"),
+    ("/economy", "/economy ...", "Earn, bet, spend, shop, and configure your server's economy", None),
     ("/starboard", "/starboard ...", "Configure the starboard", "manage_guild"),
     ("/ticket", "/ticket ...", "Configure the ticket system", "manage_channels"),
     ("/giveaway", "/giveaway ...", "Run giveaways", "manage_guild"),
@@ -93,12 +92,7 @@ COMMANDS: list[tuple[str, str, str, Optional[str]]] = [
     # --- Discovery / search / utility ---
     ("/discover", "/discover", "Browse anime by category", None),
     ("/search", "/search query:<name>", "Search for an anime by name", None),
-    ("/imagesearch", "/imagesearch", "Reverse image search — find where an image is from", None),
-    ("/news", "/news topic:<text>", "Get top headlines about a topic", None),
-    ("/convert", "/convert amount:<n> from:<cur> to:<cur>", "Convert an amount between currencies", None),
-    ("/stock", "/stock symbol:<ticker>", "Get a stock's current price and recent change", None),
-    ("/crypto", "/crypto symbol:<coin>", "Get a cryptocurrency's current price", None),
-    ("/download", "/download url:<link>", "Download audio or video from a supported link", None),
+    ("/tools", "/tools ...", "News, currency, stocks, crypto, downloads, image search, price alerts", None),
     ("/currency", "/currency", "Set your preferred currency for paid features", None),
     ("/connect", "/connect ...", "Connect a media server or cloud folder you own", None),
     ("/movie", "/movie ...", "Search and play from your connected library", None),
@@ -117,7 +111,6 @@ COMMANDS: list[tuple[str, str, str, Optional[str]]] = [
     ("/botstore", "/botstore ...", "Directory of member-submitted bots", None),
     ("/archive", "/archive ...", "Bots Archive — submit, review, and browse", None),
     ("/discoverplayers", "/discoverplayers ...", "Find and connect with other players/devs", None),
-    ("/alert", "/alert ...", "Crypto price alerts", None),
 
     # --- Bot clones (owning your own instance) ---
     ("/myclones", "/myclones", "List the Discord bot clones you own", None),

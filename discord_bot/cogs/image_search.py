@@ -4,7 +4,7 @@ which is reused as-is — no changes needed there, it's already
 platform-agnostic).
 
 Flow, same shape as Telegram's:
-  /imagesearch image:<attachment> -> reverse image search via Yandex ->
+  /tools imagesearch image:<attachment> -> reverse image search via Yandex ->
   preview thumbnails posted immediately, unblurred, in full -> only the
   *source links* are gated: 1 free reveal per user (tracked in the same
   users.free_image_search_used column Telegram uses, so a user's free
@@ -142,8 +142,7 @@ class ImageSearchCog(commands.Cog):
         # buttons (which don't carry results) know what to link to.
         self._last_image_url: dict[int, str] = {}
 
-    @app_commands.command(name="imagesearch", description="Reverse image search — find where an image is from")
-    @app_commands.describe(image="The image to search for")
+    # Registered as /tools imagesearch by ExternalToolsCog, which delegates here.
     async def imagesearch(self, interaction: discord.Interaction, image: discord.Attachment):
         if not (image.content_type or "").startswith("image/"):
             await interaction.response.send_message("That attachment isn't an image.", ephemeral=True)
@@ -397,7 +396,7 @@ class ImageSearchCog(commands.Cog):
         if image_url:
             buttons.append(discord.ui.Button(label="🔎 Open in Yandex", style=discord.ButtonStyle.link, url=_yandex_url(image_url)))
         renew_note = (
-            "It'll auto-renew from the same card each month — use `/imagesearch` again and tap cancel from there anytime to stop that."
+            "It'll auto-renew from the same card each month — use `/tools imagesearch` again and tap cancel from there anytime to stop that."
             if result.get("authorization_code") else
             f"Heads up: your card couldn't be saved for auto-renewal, so you'll need to resubscribe manually after {IMAGE_SEARCH_YANDEX_DAYS} days."
         )
