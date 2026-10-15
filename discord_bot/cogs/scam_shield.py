@@ -356,8 +356,7 @@ class ScamShieldCog(commands.Cog):
         if hit is None:
             hit = await self._match_pictures(target)
         if hit is not None:
-            view = _ReportView(self, message.author.id, target, hit[0], clone_id)
-            await self._answer(message, sc.match_text(hit[0]), view=view, color=discord.Color.red())
+            await self._remove_checked(message, target, hit, clone_id)
             return
         pictures_unchecked = False
         if has_pictures:
@@ -367,6 +366,48 @@ class ScamShieldCog(commands.Cog):
             except Exception:
                 pictures_unchecked = True
         await self._answer(message, sc.clean_text(pictures_unchecked), color=discord.Color.green())
+
+    async def _remove_checked(self, message: discord.Message, target: discord.Message, hit, clone_id) -> None:
+        """A manual check matched (known scam text/link/picture, or the AI scan said scam): delete the scam if we can.
+        If we can't, say exactly why and keep the "Tell server staff" button."""
+        kind, matched, rule_id = hit
+        guild = message.guild
+        reason = None
+        try:
+            can_delete = target.channel.permissions_for(guild.me).manage_messages
+        except Exception:
+            can_delete = True                        # can't tell: try, and report the real error
+        if not can_delete:
+            reason = sc.NO_PERMS_TEXT.format(channel=getattr(target.channel, "mention", "that channel"))
+        elif not await ss.claim(f"msg:{target.id}", guild.id, clone_id):
+            await self._answer(message, sc.OTHER_BOT_TEXT, color=discord.Color.red())
+            return
+        deleted = False
+        if reason is None:
+            host, files = await self._evidence(target)       # must run BEFORE the delete: CDN links die with the message
+            try:
+                await target.delete()
+                deleted = True
+            except discord.NotFound:
+                deleted = True                       # already gone (another bot or the author got there first)
+            except discord.Forbidden:
+                reason = sc.FORBIDDEN_TEXT
+            except discord.HTTPException as e:
+                logger.warning("[scam-shield] manual check couldn't delete in guild %s (%s)", guild.id, e)
+                reason = sc.ERROR_TEXT.format(code=getattr(e, "status", "?"))
+            if host is not None:
+                await self._archive(host, files, target, kind, matched, rule_id, deleted)
+        try:
+            snippet = discord.utils.escape_mentions((target.content or "")[:300]) or "(image / embed only)"
+            await ss.log_hit(guild.id, target.channel.id, target.author.id, kind, matched, rule_id,
+                             snippet, deleted, clone_id)
+        except Exception:
+            logger.debug("[scam-shield] couldn't record the manual-check hit", exc_info=True)
+        if deleted:
+            await self._answer(message, sc.deleted_text(kind), color=discord.Color.red())
+            return
+        view = _ReportView(self, message.author.id, target, kind, clone_id)
+        await self._answer(message, sc.not_deleted_text(kind, reason), view=view, color=discord.Color.red())
 
     async def _report_to_staff(self, reporter: discord.abc.User, target: discord.Message, kind: str, clone_id) -> bool:
         """Tell the server's staff (mod-log channel first, else a self-deleting flag). Never deletes anything."""

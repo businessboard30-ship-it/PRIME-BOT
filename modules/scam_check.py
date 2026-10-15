@@ -7,7 +7,8 @@ Pure helpers only (trigger parsing, cooldowns, the wording of the answers) so th
 side lives in discord_bot/cogs/scam_shield.py.
 
 Rules the answers follow:
-  * the check only JUDGES, it never deletes (the automatic shield already deletes known scams);
+  * a confident match (known scam rule, or the AI scan said scam) is DELETED when the bot can; when it can't, the
+    answer says why;
   * "nothing found" never says "safe": no match is not proof;
   * messages from server staff are not judged;
   * the answer says what kind of match it was, never the exact rule (that would help scammers dodge it).
@@ -80,6 +81,25 @@ def match_text(kind: str) -> str:
     return (f"⚠️ **This looks like a scam.** It matches {kind_word(kind)}.\n"
             "Don't click links or scan codes in it, and never share your login or send crypto to claim a prize. "
             "Tap the button to tell the server staff.")
+
+
+NO_PERMS_TEXT = "I'm missing the **Manage Messages** permission in {channel}."
+FORBIDDEN_TEXT = ("Discord refused the delete (I'm missing **Manage Messages** there, or a channel permission override "
+                  "is blocking me).")
+ERROR_TEXT = "Discord returned an error while I tried to delete it (code {code}). Try again in a moment."
+OTHER_BOT_TEXT = ("⚠️ **This looks like a scam**, and another bot in this server is already removing it. "
+                  "If it's still there in a minute, tell a moderator.")
+
+
+def deleted_text(kind: str) -> str:
+    return (f"⚠️ **That was a scam, and I deleted it.** It matched {kind_word(kind)}.\n"
+            "If you clicked a link or scanned a code from it, change your passwords and tell a moderator.")
+
+
+def not_deleted_text(kind: str, reason: str) -> str:
+    return (f"⚠️ **This looks like a scam** (it matches {kind_word(kind)}), but **I could not delete it.**\n"
+            f"Reason: {reason}\n"
+            "Don't click links or scan codes in it. Tap the button to tell the server staff.")
 
 
 def clean_text(pictures_unchecked: bool) -> str:
