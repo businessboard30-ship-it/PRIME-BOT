@@ -665,6 +665,11 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
         from modules import ai_prefs, ai_voice
         character, _ = await ai_prefs.get_prefs(user_id)
         system_content = f"{ai_prefs.style_prompt(character)}\n\n{system_content}"
+        if guild_id:                      # the server's own name for the AI (Bot profile wizard); default stays Maxwell
+            from modules import ai_name
+            server_ai_name = await ai_name.get_name(guild_id)
+            if server_ai_name:
+                system_content += ai_name.prompt_line(server_ai_name)
         if voice == "forced":
             system_content += ai_voice.VOICE_RULES_FORCED
         elif voice == "auto":
