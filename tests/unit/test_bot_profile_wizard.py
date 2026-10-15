@@ -180,7 +180,17 @@ class _Inter:
         self.sent.append(("edit", kw))
 
 
+def test_free_mode_writes_straight_away_for_everyone(monkeypatch):
+    bp._drafts.clear()
+    assert bp.PREMIUM_GATE is False                    # the editor is free for now
+    assert run(bp._save_or_pitch(_Inter(), 5, None, {"nick": "Aria"})) is True
+    assert bp.get_draft(5, 42) == {}
+    ids = _ids(bp.build_profile_view(None, 5, None, owner=False, premium=False))
+    assert not any(i.startswith("botprof_apply") for i in ids)
+
+
 def test_not_premium_keeps_a_draft_shows_pitch_and_never_writes(monkeypatch):
+    monkeypatch.setattr(bp, "PREMIUM_GATE", True)
     bp._drafts.clear()
     pitched = []
 
@@ -204,6 +214,7 @@ def test_not_premium_keeps_a_draft_shows_pitch_and_never_writes(monkeypatch):
 
 
 def test_premium_writes_straight_away_without_a_draft(monkeypatch):
+    monkeypatch.setattr(bp, "PREMIUM_GATE", True)
     bp._drafts.clear()
 
     async def yes(guild_id, clone_id):
@@ -222,6 +233,7 @@ def test_draft_expires_after_thirty_minutes():
 
 
 def test_apply_button_repitches_when_still_free_and_writes_when_premium(monkeypatch):
+    monkeypatch.setattr(bp, "PREMIUM_GATE", True)
     bp._drafts.clear()
     bp.save_draft(5, 42, {"nick": "Aria"})
     state = {"premium": False, "patched": [], "pitched": 0}
