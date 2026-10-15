@@ -196,6 +196,9 @@ async def archive_profile_image(interaction: discord.Interaction, guild_id: int,
 # ── the panel ─────────────────────────────────────────────────────────────
 
 # ── premium gate: set it up first, pay when you tap Save ───────────────────
+# The editor is FREE for everyone right now. Flip this to True to bring back "set it up, pay when you tap Save"
+# (everything below, the 30-minute draft, the Apply button and the pitch, is kept and tested for that).
+PREMIUM_GATE = False
 DRAFT_TTL = 30 * 60
 _drafts: dict = {}            # (guild_id, user_id) -> {"fields": {...}, "exp": monotonic seconds}
 
@@ -260,7 +263,7 @@ async def _pitch(interaction: discord.Interaction, guild_id: int, clone_id) -> N
 async def _save_or_pitch(interaction: discord.Interaction, guild_id: int, clone_id, fields: dict) -> bool:
     """Call after interaction.response.defer(). True = Premium, go ahead and write. False = not Premium: the draft is
     kept for 30 minutes, the wizard shows it, and the Premium pitch with the pay buttons is sent."""
-    if await is_premium(guild_id, clone_id):
+    if not PREMIUM_GATE or await is_premium(guild_id, clone_id):
         return True
     draft = save_draft(guild_id, interaction.user.id, fields)
     await _refresh(interaction, guild_id, clone_id,
@@ -282,10 +285,10 @@ def _describe(guild: "discord.Guild | None") -> str:
 def build_profile_view(guild: "discord.Guild | None", guild_id: int, clone_id, owner: bool, note: str | None = None,
                        draft: dict | None = None, premium: bool | None = None):
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
-    tag = "💎 Premium" if premium else "🔒 Premium feature"
+    tag = ("Free" if not PREMIUM_GATE else "💎 Premium" if premium else "🔒 Premium feature")
     container.add_item(discord.ui.TextDisplay(
         f"## 🤖 Bot profile · {tag}\nMake me look the way you want in your server: change my name, avatar, banner and "
-        "about me. " + ("" if premium else "Set it all up first; you only pay when you tap Save. ") +
+        "about me. " + ("" if premium or not PREMIUM_GATE else "Set it all up first; you only pay when you tap Save. ") +
         "It only changes how I look here" + (", plus my global profile below since this is your bot." if owner else ".")))
     container.add_item(discord.ui.TextDisplay(_describe(guild)))
     if note:
@@ -535,7 +538,7 @@ class _ApplyButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pa
             await interaction.followup.send("Nothing is waiting any more (drafts last 30 minutes). Make your changes again.",
                                             ephemeral=True)
             return
-        if not await is_premium(self.guild_id, self.clone_id):        # re-checked here: a stale button can't write
+        if PREMIUM_GATE and not await is_premium(self.guild_id, self.clone_id):   # re-checked: a stale button can't write
             await _refresh(interaction, self.guild_id, self.clone_id,
                            "💎 Still waiting for Premium. Your draft is kept for 30 minutes.")
             await _pitch(interaction, self.guild_id, self.clone_id)
