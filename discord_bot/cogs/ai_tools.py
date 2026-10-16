@@ -661,6 +661,13 @@ class AIToolsCog(commands.Cog):
                 if allowed_user_ids is not None and uid not in allowed_user_ids:
                     continue
                 obj = interaction.guild.get_member(uid) if (uid and interaction.guild) else None
+                if obj is None and uid is None and allowed_user_ids is None and interaction.guild is not None:
+                    # The model usually can't see user IDs, so accept a plain
+                    # name/nickname too (only when it matches exactly one member).
+                    label = str(value).strip().lstrip("@").lower()
+                    hits = [m for m in interaction.guild.members
+                            if label in (m.name.lower(), m.display_name.lower(), (m.global_name or "").lower())]
+                    obj = hits[0] if len(hits) == 1 else None
                 if obj is not None:
                     resolved[key] = obj
             elif type_name == "channel":
@@ -686,6 +693,10 @@ class AIToolsCog(commands.Cog):
             elif type_name == "role":
                 rid = self._extract_id(value)
                 obj = interaction.guild.get_role(rid) if (rid and interaction.guild) else None
+                if obj is None and rid is None and interaction.guild is not None:
+                    label = str(value).strip().lstrip("@").lower()
+                    hits = [r for r in interaction.guild.roles if r.name.lower() == label]
+                    obj = hits[0] if len(hits) == 1 else None
                 if obj is not None:
                     resolved[key] = obj
             else:

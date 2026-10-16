@@ -169,6 +169,11 @@ class ModerationCog(GuildOnlyCog):
         "ban": "ai_ban",
         "unwarn": "ai_unwarn",
         "purge": "ai_purge",
+        # The AI calls the grouped command by its qualified name
+        # ("messages purge" -> "messages_purge"). Without this key it fell
+        # through to the slash callback, which shows a 2nd confirm and
+        # crashed with InteractionResponded.
+        "messages_purge": "ai_purge",
         "unban": "ai_unban",
         "timeout": "ai_timeout",
         "untimeout": "ai_untimeout",
