@@ -70,26 +70,107 @@ class AddRuleModal(discord.ui.Modal, title="Add scam word or domain"):
         await interaction.response.edit_message(view=self.panel)
 
 
+# Same rules as the welcome-card background uploads (discord_bot/cogs/welcome.py), plus webp/gif because scam
+# screenshots often come in those formats. The dHash only needs the picture, not a particular container.
+_UPLOAD_TYPES = ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif")
+_UPLOAD_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+_UPLOAD_MAX_BYTES = 8 * 1024 * 1024
+_MAX_FILES = 4
+
+
+def _is_image_name(name: str, content_type: str | None) -> bool:
+    ct = (content_type or "").split(";")[0].strip().lower()
+    return ct in _UPLOAD_TYPES or (not ct and (name or "").lower().endswith(_UPLOAD_EXTS))
+
+
+async def _add_image_bytes(interaction: discord.Interaction, data: bytes, source: str) -> str:
+    """Hash one image and save it as a scam-image rule. Returns "added", "duplicate" or "unreadable".
+
+    Like the welcome backgrounds, the original is also re-posted to the image-hosting channel (best effort) so there
+    is a permanent copy of what each rule came from. The channel/message ids go in the rule note."""
+    h = ss.dhash(data)
+    if h is None:
+        return "unreadable"
+    pattern = format(h, "016x")
+    note = source
+    try:
+        from modules import image_host
+        hosted = await image_host.post_to_host(
+            interaction.client, data, f"Scam Shield image rule {pattern} · added by user {interaction.user.id}")
+        if hosted:
+            note = f"{source}; hosted {hosted[0]}/{hosted[1]}"
+    except Exception:
+        logger.warning("[admin-panel] couldn't copy the scam image to the hosting channel", exc_info=True)
+    rid = await ss.add_rule("image", pattern, interaction.user.id, note)
+    audit(interaction, "scamshield.add", kind="image", pattern=pattern)
+    return "added" if rid else "duplicate"
+
+
 class AddImageModal(discord.ui.Modal, title="Add a scam image"):
     def __init__(self, view: "ScamShieldView"):
         super().__init__(timeout=PANEL_TIMEOUT)
         self.panel = view
-        self.link = discord.ui.TextInput(label="Link to a message with the scam image", max_length=200,
+        self.files = discord.ui.FileUpload(required=False, min_values=0, max_values=_MAX_FILES)
+        self.add_item(discord.ui.Label(
+            text="Upload the scam image",
+            description=f"PNG, JPG, WEBP or GIF, up to {_UPLOAD_MAX_BYTES // (1024 * 1024)}MB each, {_MAX_FILES} at most",
+            component=self.files))
+        self.link = discord.ui.TextInput(label="Link to a message with the scam image", max_length=200, required=False,
                                          placeholder="Right-click the message -> Copy Message Link")
-        self.add_item(self.link)
+        self.add_item(discord.ui.Label(text="...or use a message link", description="Fill in only if you are not uploading",
+                                       component=self.link))
 
     async def on_submit(self, interaction: discord.Interaction):
         if SECTION not in allowed_sections(interaction.user.id):
             await _denied(interaction)
             return
         await interaction.response.defer()
-        m = _MSG_LINK.search(self.link.value or "")
-        notice = "⚠️ That doesn't look like a message link. Right-click the message -> Copy Message Link."
-        if m:
-            notice = await self._add_from_message(interaction, int(m.group(2)), int(m.group(3)))
+        uploads = list(self.files.values or [])
+        link = (self.link.value or "").strip()
+        if uploads and link:
+            notice = "⚠️ Use either an upload or a message link, not both."
+        elif uploads:
+            notice = await self._add_from_uploads(interaction, uploads)
+        elif link:
+            m = _MSG_LINK.search(link)
+            notice = ("⚠️ That doesn't look like a message link. Right-click the message -> Copy Message Link."
+                      if not m else await self._add_from_message(interaction, int(m.group(2)), int(m.group(3))))
+        else:
+            notice = "⚠️ Nothing to add. Upload an image or paste a message link."
         self.panel.notice = notice
         await self.panel.load()
         await interaction.edit_original_response(view=self.panel)
+
+    @staticmethod
+    def _summary(added: int, dup: int, bad: int, skipped: int) -> str:
+        if added:
+            tail = "".join((f" {dup} already existed." if dup else "", f" {bad} couldn't be read." if bad else "",
+                            f" {skipped} skipped (wrong type or over 8MB)." if skipped else ""))
+            return f"✅ Added {added} scam image rule(s). Live in every server within seconds.{tail}"
+        if bad and not (dup or skipped):
+            return "⚠️ I couldn't read that image."
+        if skipped and not (dup or bad):
+            return "⚠️ Skipped: use a PNG, JPG, WEBP or GIF under 8MB."
+        return "Nothing added: it was already a rule, unreadable or the wrong type."
+
+    async def _add_from_uploads(self, interaction, uploads) -> str:
+        added = dup = bad = skipped = 0
+        for att in uploads[:_MAX_FILES]:
+            if att.size > _UPLOAD_MAX_BYTES or not _is_image_name(att.filename, att.content_type):
+                skipped += 1
+                continue
+            try:
+                data = await att.read()
+                result = await _add_image_bytes(interaction, data, "uploaded in owner panel")
+            except discord.HTTPException:
+                result = "unreadable"
+            except Exception:
+                logger.exception("[admin-panel] couldn't add scam image rule")
+                return NOTHING_CHANGED
+            added += result == "added"
+            dup += result == "duplicate"
+            bad += result == "unreadable"
+        return self._summary(added, dup, bad, skipped)
 
     async def _add_from_message(self, interaction, channel_id: int, message_id: int) -> str:
         try:
@@ -97,25 +178,24 @@ class AddImageModal(discord.ui.Modal, title="Add a scam image"):
             msg = await ch.fetch_message(message_id)
         except discord.HTTPException:
             return "⚠️ I can't see that message. The bot must be in that server and able to read the channel."
-        added, bad = 0, 0
-        for att in msg.attachments[:4]:
-            if att.size > 8_000_000 or not ((att.content_type or "").startswith("image/")
-                                            or att.filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))):
+        added = dup = bad = skipped = 0
+        for att in msg.attachments[:_MAX_FILES]:
+            if att.size > _UPLOAD_MAX_BYTES or not _is_image_name(att.filename, att.content_type):
+                skipped += 1
                 continue
             try:
-                h = ss.dhash(await att.read())
+                result = await _add_image_bytes(interaction, await att.read(), "added from message link")
             except discord.HTTPException:
-                h = None
-            if h is None:
-                bad += 1
-                continue
-            rid = await ss.add_rule("image", format(h, "016x"), interaction.user.id, "added from message link")
-            audit(interaction, "scamshield.add", kind="image", pattern=format(h, "016x"))
-            added += 1 if rid else 0
-        if added:
-            return f"✅ Added {added} scam image rule(s). Live in every server within seconds."
-        return "Nothing added: no new image found on that message (or it was already a rule)." if not bad else \
-            "⚠️ I couldn't read that image."
+                result = "unreadable"
+            except Exception:
+                logger.exception("[admin-panel] couldn't add scam image rule")
+                return NOTHING_CHANGED
+            added += result == "added"
+            dup += result == "duplicate"
+            bad += result == "unreadable"
+        if not (added or dup or bad or skipped):
+            return "Nothing added: no image found on that message."
+        return self._summary(added, dup, bad, skipped)
 
 
 class RemoveRuleModal(discord.ui.Modal, title="Remove a rule"):
