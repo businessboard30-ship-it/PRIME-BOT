@@ -1280,3 +1280,96 @@ def test_server_panel_shows_main_and_backup_limits_and_premium_perk_is_listed():
     perks = (root / "discord_bot/cogs/_views_premium.py").read_text(encoding="utf-8").split("_PERKS = (")[1].split("def _yearly")[0]
     assert "Scam Shield AI" in perks and "20 AI image scam checks" in perks
     assert "Scam Shield AI" in (root / "website/premium/index.html").read_text(encoding="utf-8")
+
+
+# ── image upload in the Add image modal ──────────────────────────────────
+
+def _up_png(seed=0):
+    from PIL import Image
+    im = Image.new("RGB", (64, 64))
+    im.putdata([((x * 4 + seed) % 256, (y * 4) % 256, 90) for y in range(64) for x in range(64)])
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
+
+
+def _up_att(data, name="scam.png", ctype="image/png", size=None):
+    return SimpleNamespace(filename=name, content_type=ctype, size=size if size is not None else len(data),
+                           read=AsyncMock(return_value=data))
+
+
+def _upload_setup(monkeypatch, add_result=7):
+    pv, v = _panel(monkeypatch)
+    add = AsyncMock(return_value=add_result)
+    monkeypatch.setattr(pv.ss, "add_rule", add)
+    monkeypatch.setattr(pv, "audit", MagicMock())
+    monkeypatch.setattr(pv, "allowed_sections", lambda uid: {pv.SECTION})
+    from modules import image_host
+    host = AsyncMock(return_value=(11, 22, "https://cdn/x.png"))
+    monkeypatch.setattr(image_host, "post_to_host", host)
+    i = MagicMock()
+    i.user.id = 1
+    i.response.defer = AsyncMock()
+    i.edit_original_response = AsyncMock()
+    return pv, v, add, host, i
+
+
+def test_upload_creates_an_image_rule_and_copies_it_to_the_hosting_channel(monkeypatch):
+    pv, v, add, host, i = _upload_setup(monkeypatch)
+    m = pv.AddImageModal(v)
+    m.files = SimpleNamespace(values=[_up_att(_up_png())])
+    run(m.on_submit(i))
+    add.assert_awaited_once()
+    kind, pattern, uid, note = add.await_args.args
+    assert kind == "image" and re.fullmatch(r"[0-9a-f]{16}", pattern) and uid == 1
+    assert "hosted 11/22" in note
+    host.assert_awaited_once()
+    assert "Added 1 scam image rule" in v.notice
+
+
+def test_upload_rejects_wrong_type_oversize_and_unreadable(monkeypatch):
+    pv, v, add, host, i = _upload_setup(monkeypatch)
+    m = pv.AddImageModal(v)
+    m.files = SimpleNamespace(values=[_up_att(b"x", "a.pdf", "application/pdf"),
+                                      _up_att(b"x", size=pv._UPLOAD_MAX_BYTES + 1)])
+    run(m.on_submit(i))
+    add.assert_not_awaited()
+    assert "Skipped" in v.notice
+    m.files = SimpleNamespace(values=[_up_att(b"not an image")])
+    run(m.on_submit(i))
+    add.assert_not_awaited()
+    host.assert_not_awaited()
+    assert "couldn't read" in v.notice
+
+
+def test_upload_and_link_together_or_neither_add_nothing(monkeypatch):
+    pv, v, add, host, i = _upload_setup(monkeypatch)
+    m = pv.AddImageModal(v)
+    m.files = SimpleNamespace(values=[_up_att(_up_png())])
+    m.link._value = "https://discord.com/channels/1/2/3"
+    run(m.on_submit(i))
+    assert "not both" in v.notice
+    m.files = SimpleNamespace(values=[])
+    m.link._value = ""
+    run(m.on_submit(i))
+    assert "Nothing to add" in v.notice
+    add.assert_not_awaited()
+
+
+def test_upload_is_refused_for_users_without_the_scamshield_section(monkeypatch):
+    pv, v, add, host, i = _upload_setup(monkeypatch)
+    monkeypatch.setattr(pv, "allowed_sections", lambda uid: set())
+    pv._denied = AsyncMock()
+    m = pv.AddImageModal(v)
+    m.files = SimpleNamespace(values=[_up_att(_up_png())])
+    run(m.on_submit(i))
+    add.assert_not_awaited()
+    host.assert_not_awaited()
+
+
+def test_hosted_copy_keeps_the_right_file_extension():
+    from modules import image_host as ih
+    assert ih._sniff_ext(b"\x89PNG\r\n\x1a\n....") == "png"
+    assert ih._sniff_ext(b"GIF89a....") == "gif"
+    assert ih._sniff_ext(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "webp"
+    assert ih._sniff_ext(b"\xff\xd8\xff") == "jpg"

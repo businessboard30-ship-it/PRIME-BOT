@@ -351,7 +351,13 @@ class MoveResult:
 
 
 def _sniff_ext(data: bytes) -> str:
-    return "png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return "jpg"
 
 
 async def post_to_host(bot, data: bytes, label: str):
