@@ -38,6 +38,7 @@ from modules import scam_reputation as rep
 from modules import scam_shield as ss
 from modules import scam_vision as sv
 from discord_bot.cogs import _views_scamshield_wizard as wiz
+from discord_bot.cogs import _views_scam_submit as submit
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ _warned: dict = {}                            # (guild_id, user_id) -> monotonic
 
 _IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 _download_slots = asyncio.Semaphore(3)
-NOTICE_SECONDS = 15                         # how long the in-channel "scam caught" notice stays
+NOTICE_SECONDS = 60                         # how long the in-channel "scam caught" notice (with its Submit button) stays
 JOIN_FALLBACK_SECONDS = 300                 # a "flagged member joined" heads-up with no mod-log channel stays this long
 JOIN_WARN_TTL = 6 * 3600                    # stay quiet about the same member in the same server this long (rejoin spam)
 FALLBACK_SECONDS = 60                       # how long the flag stays when there is no usable mod-log channel (long enough for a mod to read it)
@@ -118,6 +119,7 @@ class ScamShieldCog(commands.Cog):
             self.bot, self.scamchannel, name="scamchannel",
             description="[Bot owner] Use THIS channel to keep copies of caught scam images (Scam Shield)",
         )
+        self.bot.add_view(submit.ReviewView())      # Approve / Deny on submissions keep working after a restart
         await ss.load(force=True)
 
     # Mounted as /admin scamchannel (see cog_load). Same rules as /admin hostingchannel, but only for Scam Shield.
@@ -676,9 +678,10 @@ class ScamShieldCog(commands.Cog):
                 description=(f"A scam message from **{who}** was caught here"
                              f"{' and removed' if deleted else ''}. Don't click links or scan codes from it, "
                              "and never share your login or send crypto to claim a prize.\n"
-                             f"-# This notice will be deleted in a short time ({NOTICE_SECONDS} seconds)."),
+                             f"-# This notice will be deleted in a short time ({NOTICE_SECONDS} seconds). "
+                             "Saw another scam? Press the button to send it to us."),
                 color=discord.Color.red())
-            await message.channel.send(embed=embed, delete_after=NOTICE_SECONDS,
+            await message.channel.send(embed=embed, delete_after=NOTICE_SECONDS, view=submit.SubmitScamView(NOTICE_SECONDS),
                                        allowed_mentions=discord.AllowedMentions.none())
         except Exception:
             logger.debug("[scam-shield] couldn't post the in-channel notice", exc_info=True)
@@ -742,7 +745,7 @@ class ScamShieldCog(commands.Cog):
                              "Set one with `/modlog` to keep a permanent record.\n"
                              f"-# This message will be deleted in a short time ({FALLBACK_SECONDS} seconds)."),
                 color=discord.Color.red())
-            await target.send(embed=embed, delete_after=FALLBACK_SECONDS, allowed_mentions=discord.AllowedMentions.none())
+            await target.send(embed=embed, delete_after=FALLBACK_SECONDS, view=submit.SubmitScamView(FALLBACK_SECONDS), allowed_mentions=discord.AllowedMentions.none())
             return target
         except Exception:
             logger.debug("[scam-shield] couldn't post the flag", exc_info=True)
