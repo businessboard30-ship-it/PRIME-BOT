@@ -58,7 +58,7 @@ from modules.ai_features import (
     check_reply_limit, get_reply_usage, reply_cap_for,
     is_reply_chat_enabled, is_premium_question, premium_answer,
     is_bot_invite_question, is_support_invite_question, SUPPORT_BUTTON_MARKER,
-    is_levelup_question, levelup_answer,
+    is_levelup_question, levelup_answer, is_date_request, date_answer,
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
@@ -247,6 +247,8 @@ class AIToolsCog(commands.Cog):
         bot's own generated invite link, "support server link" -> the support
         link, "how do I level up / get XP" -> short explanation (the AI never
         advertises the XP boost). Returns (text, view_or_None) or None."""
+        if is_date_request(text):
+            return date_answer(), None
         if is_premium_question(text):
             return premium_answer(in_server), (premium_view() if in_server else None)
         if is_levelup_question(text):
