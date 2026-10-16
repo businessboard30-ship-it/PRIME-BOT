@@ -265,3 +265,41 @@ def test_a_rejoin_later_is_a_new_join_and_warns_again(shared_db, monkeypatch):
         assert await main._warn_staff_about_join(member) is True
         assert sent.await_count == 2
     run(go())
+
+
+# ── owner Force scan (admin panel button) ────────────────────────────────
+
+def test_force_scan_keys_are_per_bot():
+    assert ss.force_scan_done_key(None) == "force_scan_done:main"
+    assert ss.force_scan_done_key(7) == "force_scan_done:7"
+
+
+def test_force_scan_pending_until_this_bot_marks_it_done(monkeypatch):
+    rows = {ss.FORCE_SCAN_REQUEST_KEY: "123"}
+
+    class Conn:
+        async def fetch(self, sql, keys):
+            return [{"key": k, "value": rows[k]} for k in keys if k in rows]
+
+    class Pool:
+        def acquire(self):
+            conn = Conn()
+
+            class Ctx:
+                async def __aenter__(self_):
+                    return conn
+
+                async def __aexit__(self_, *a):
+                    return False
+            return Ctx()
+
+    async def fake_pool():
+        return Pool()
+
+    monkeypatch.setattr(ss, "_pool", fake_pool)
+    assert run(ss.pending_force_scan(None)) == "123"          # asked, not handled yet
+    rows[ss.force_scan_done_key(None)] = "123"
+    assert run(ss.pending_force_scan(None)) is None           # main bot handled it
+    assert run(ss.pending_force_scan(5)) == "123"             # a clone still has to
+    rows[ss.FORCE_SCAN_REQUEST_KEY] = "456"                   # tapped again
+    assert run(ss.pending_force_scan(None)) == "456"

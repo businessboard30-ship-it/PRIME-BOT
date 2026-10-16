@@ -265,6 +265,7 @@ class ScamShieldView(PanelView):
         self.rules: List[dict] = []
         self.hits: List[dict] = []
         self.hit_total = 0
+        self.force_status = None
         self.enabled = True
         self.notice = None
         self.error = False
@@ -277,6 +278,11 @@ class ScamShieldView(PanelView):
             self.rules = await ss.list_rules()
             self.hits = await ss.recent_hits(8)
             self.hit_total = await ss.hit_total()
+            try:
+                self.force_status = await ss.force_scan_status()
+            except Exception:
+                logger.debug("[admin-panel] couldn't read the force-scan status", exc_info=True)
+                self.force_status = None
             self.error = False
         except Exception:
             logger.exception("[admin-panel] couldn't load Scam Shield")
@@ -295,6 +301,7 @@ class ScamShieldView(PanelView):
             "-# Staff (Manage Messages / Manage Server / Admin) are never checked. Rules refresh by themselves.",
             self._vision_line(),
             self._evidence_line(),
+            self._force_scan_line(),
         ]
         if self.notice:
             lines.insert(0, self.notice)
@@ -316,6 +323,14 @@ class ScamShieldView(PanelView):
         return (f"🤖 **AI image scan:** 🟢 ON ({sv.model()}). Catches new scam pictures the rules don't know yet.\n"
                 f"Status: {sv.status_text()}")
 
+    def _force_scan_line(self) -> str:
+        st = self.force_status
+        if not st:
+            return "🔎 **Force scan:** never run. The button re-checks the last 14 days in every server, on every bot."
+        from datetime import datetime, timezone
+        when = _age(datetime.fromtimestamp(st["requested_ms"] / 1000, tz=timezone.utc))
+        return (f"🔎 **Last force scan:** {when}, finished by **{st['finished']}** bot(s) so far (Refresh to update).")
+
     def _evidence_line(self) -> str:
         cid = ss.evidence_channel_id()
         if cid:
@@ -333,6 +348,7 @@ class ScamShieldView(PanelView):
             _btn("AI scan OFF" if ss.vision_enabled() else "AI scan ON", S, self._toggle_vision, "🤖",
                  disabled=not sv.has_key()),
             _btn("Test AI scan", S, self._test_vision, "🧪", disabled=not sv.api_key()),
+            _btn("Force scan all bots", P, self._force_scan, "🔎", disabled=not self.enabled),
             _btn("Evidence: this channel", S, self._evidence_here, "📁"),
             _btn("Evidence: reset", S, self._evidence_reset, "↩️", disabled=not ss.evidence_channel_id()),
             _btn("Refresh", S, self._refresh, "🔄"),
@@ -348,6 +364,20 @@ class ScamShieldView(PanelView):
         else:
             audit(i, "scamshield.toggle", enabled=not self.enabled)
             self.notice = "▶️ Scam Shield is ON." if not self.enabled else "⏸️ Scam Shield is OFF."
+        await self.load()
+        await i.response.edit_message(view=self)
+
+    async def _force_scan(self, i):
+        """Tell the main bot and every clone to re-run the history sweep now (they poll for it every ~15 seconds)."""
+        try:
+            await ss.request_force_scan()
+        except Exception:
+            logger.exception("[admin-panel] couldn't request a force scan")
+            self.notice = NOTHING_CHANGED
+        else:
+            audit(i, "scamshield.forcescan")
+            self.notice = ("🔎 Force scan requested. The main bot and every clone start within about 15 seconds and "
+                           "re-check the last 14 days in all their servers. Tap Refresh to see how many finished.")
         await self.load()
         await i.response.edit_message(view=self)
 

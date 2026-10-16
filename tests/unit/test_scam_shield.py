@@ -138,6 +138,7 @@ def cog(monkeypatch):
     bot.user = SimpleNamespace(id=999)
     c = cog_mod.ScamShieldCog.__new__(cog_mod.ScamShieldCog)
     c.bot = bot
+    c._sweep_lock = asyncio.Lock()
     log = AsyncMock()
     monkeypatch.setattr(cog_mod.ss, "log_hit", log)
     monkeypatch.setattr(cog_mod.ss, "load", AsyncMock())
@@ -1485,3 +1486,24 @@ def test_approve_adds_image_rules_and_deny_adds_nothing(monkeypatch):
     v2 = sub.ReviewView()
     run(v2.deny.callback(_review_interaction(99, _up_png())))
     add.assert_not_awaited()
+
+
+def test_forced_sweep_runs_again_even_after_the_one_time_marker(monkeypatch):
+    """Owner's Force scan: the sweep ignores the 'already done' marker and doesn't touch it."""
+    from unittest.mock import AsyncMock
+    from discord_bot.cogs import scam_shield as cog_mod
+    c = cog_mod.ScamShieldCog.__new__(cog_mod.ScamShieldCog)
+    c._sweep_lock = asyncio.Lock()
+    c.bot = SimpleNamespace(clone_id=None, guilds=[], is_closed=lambda: False, user=None)
+    monkeypatch.setattr(cog_mod.ss, "backfill_done", AsyncMock(return_value=True))
+    monkeypatch.setattr(cog_mod.ss, "load", AsyncMock())
+    monkeypatch.setattr(cog_mod.ss, "is_enabled", lambda: True)
+    marked = AsyncMock()
+    monkeypatch.setattr(cog_mod.ss, "mark_backfill_done", marked)
+    summary = AsyncMock()
+    monkeypatch.setattr(c, "_sweep_summary", summary, raising=False)
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(c._sweep_history())            # normal: skipped
+    summary.assert_not_called()
+    asyncio.get_event_loop_policy().new_event_loop().run_until_complete(c._sweep_history(force=True))  # forced: runs
+    summary.assert_called_once()
+    marked.assert_not_called()
