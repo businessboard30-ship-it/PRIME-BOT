@@ -1373,3 +1373,101 @@ def test_hosted_copy_keeps_the_right_file_extension():
     assert ih._sniff_ext(b"GIF89a....") == "gif"
     assert ih._sniff_ext(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "webp"
     assert ih._sniff_ext(b"\xff\xd8\xff") == "jpg"
+
+
+# ── user scam submissions (button on the caught notice -> storage channel -> Approve / Deny) ──
+
+def _sub_setup(monkeypatch):
+    from discord_bot.cogs import _views_scam_submit as sub
+    sub._last.clear()
+    host = SimpleNamespace(send=AsyncMock())
+    monkeypatch.setattr(sub, "_storage_channel", AsyncMock(return_value=host))
+    monkeypatch.setattr(sub, "_owner_ids", lambda: frozenset({99}))
+    i = MagicMock()
+    i.user.id = 5
+    i.user.bot = False
+    i.guild.id = 77
+    i.response.defer = AsyncMock()
+    i.response.send_message = AsyncMock()
+    i.followup.send = AsyncMock()
+    return sub, host, i
+
+
+def test_notice_has_a_submit_button(cog, monkeypatch):
+    monkeypatch.setattr("discord_bot.ad_images._host_channel", AsyncMock(return_value=None))
+    m = _msg("free $3500 at fatowin.com use GIFT")
+    m.channel = SimpleNamespace(id=7, mention="#c", send=AsyncMock())
+    run(cog._inspect(m))
+    view = m.channel.send.await_args.kwargs["view"]
+    assert [c.label for c in view.children] == ["Submit a scam"]
+
+
+def test_submission_goes_to_storage_with_approve_and_deny(monkeypatch):
+    sub, host, i = _sub_setup(monkeypatch)
+    m = sub.SubmitScamModal()
+    m.files = SimpleNamespace(values=[_up_att(_up_png())])
+    m.details._value = "fake giveaway"
+    run(m.on_submit(i))
+    host.send.assert_awaited_once()
+    kw = host.send.await_args.kwargs
+    assert [b.label for b in kw["view"].children] == ["Approve", "Deny"]
+    assert len(kw["files"]) == 1 and "5" in kw["embed"].footer.text
+    assert "sent for review" in i.followup.send.await_args.args[0]
+
+
+def test_submission_needs_something_and_is_rate_limited(monkeypatch):
+    sub, host, i = _sub_setup(monkeypatch)
+    m = sub.SubmitScamModal()
+    m.files = SimpleNamespace(values=[])
+    run(m.on_submit(i))
+    host.send.assert_not_awaited()
+    m.details._value = "a scam"
+    run(m.on_submit(i))
+    run(m.on_submit(i))
+    host.send.assert_awaited_once()
+
+
+def test_submission_rejects_wrong_files(monkeypatch):
+    sub, host, i = _sub_setup(monkeypatch)
+    m = sub.SubmitScamModal()
+    m.files = SimpleNamespace(values=[_up_att(b"x", "a.pdf", "application/pdf")])
+    run(m.on_submit(i))
+    host.send.assert_not_awaited()
+
+
+def _review_interaction(uid, data):
+    i = MagicMock()
+    i.user.id = uid
+    i.response.defer = AsyncMock()
+    i.response.send_message = AsyncMock()
+    i.response.edit_message = AsyncMock()
+    i.edit_original_response = AsyncMock()
+    i.followup.send = AsyncMock()
+    i.message.id = 123
+    i.message.embeds = [discord.Embed(title="t")]
+    i.message.attachments = [_up_att(data)]
+    return i
+
+
+def test_only_owners_can_review(monkeypatch):
+    sub, host, _ = _sub_setup(monkeypatch)
+    v = sub.ReviewView()
+    i = _review_interaction(5, _up_png())
+    assert run(v.interaction_check(i)) is False
+    assert run(v.interaction_check(_review_interaction(99, _up_png()))) is True
+
+
+def test_approve_adds_image_rules_and_deny_adds_nothing(monkeypatch):
+    sub, host, _ = _sub_setup(monkeypatch)
+    add = AsyncMock(return_value=3)
+    monkeypatch.setattr(sub.ss, "add_rule", add)
+    v = sub.ReviewView()
+    i = _review_interaction(99, _up_png())
+    run(v.approve.callback(i))
+    add.assert_awaited_once()
+    assert add.await_args.args[0] == "image"
+    assert all(c.disabled for c in v.children)
+    add.reset_mock()
+    v2 = sub.ReviewView()
+    run(v2.deny.callback(_review_interaction(99, _up_png())))
+    add.assert_not_awaited()
