@@ -1302,6 +1302,7 @@ def _upload_setup(monkeypatch, add_result=7):
     pv, v = _panel(monkeypatch)
     add = AsyncMock(return_value=add_result)
     monkeypatch.setattr(pv.ss, "add_rule", add)
+    monkeypatch.setattr(pv.ss, "list_rules", AsyncMock(return_value=[]))
     monkeypatch.setattr(pv, "audit", MagicMock())
     monkeypatch.setattr(pv, "allowed_sections", lambda uid: {pv.SECTION})
     from modules import image_host
@@ -1325,6 +1326,19 @@ def test_upload_creates_an_image_rule_and_copies_it_to_the_hosting_channel(monke
     assert "hosted 11/22" in note
     host.assert_awaited_once()
     assert "Added 1 scam image rule" in v.notice
+
+
+def test_reuploading_an_existing_image_rule_does_not_post_another_hosted_copy(monkeypatch):
+    pv, v, add, host, i = _upload_setup(monkeypatch)
+    data = _up_png()
+    pattern = format(pv.ss.dhash(data), "016x")
+    monkeypatch.setattr(pv.ss, "list_rules", AsyncMock(return_value=[{"id": 5, "kind": "image", "pattern": pattern, "note": None, "created_at": None}]))
+    m = pv.AddImageModal(v)
+    m.files = SimpleNamespace(values=[_up_att(data)])
+    run(m.on_submit(i))
+    host.assert_not_awaited()
+    add.assert_not_awaited()
+    assert "Nothing added" in v.notice
 
 
 def test_upload_rejects_wrong_type_oversize_and_unreadable(monkeypatch):

@@ -92,6 +92,12 @@ async def _add_image_bytes(interaction: discord.Interaction, data: bytes, source
     if h is None:
         return "unreadable"
     pattern = format(h, "016x")
+    # Skip the hosting-channel copy when this image is already a rule, so re-uploads don't pile up duplicates.
+    try:
+        if any(r.get("kind") == "image" and r.get("pattern") == pattern for r in await ss.list_rules()):
+            return "duplicate"
+    except Exception:
+        logger.warning("[admin-panel] couldn't check for an existing scam image rule", exc_info=True)
     note = source
     try:
         from modules import image_host
