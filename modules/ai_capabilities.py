@@ -23,6 +23,7 @@ _CATEGORY_OF = {
 CATEGORIES = (            # (key, emoji, label) in display order
     ("mod", "🛡️", "Moderation & safety"),
     ("setup", "⚙️", "Server setup"),
+    ("admin", "🔧", "Server admin (roles, channels, threads, events...)"),
     ("fun", "🎮", "Community & fun"),
     ("tools", "🧰", "Tools & more"),
 )
@@ -60,8 +61,15 @@ def is_capabilities_question(text: str) -> bool:
     return bool(_ASK.search(t))
 
 
+# The AI-only server-admin commands all live in one cog, so they are grouped by their command root instead.
+_ADMIN_ROOT_CATEGORY = {"member": "mod", "voice": "mod", "messageops": "mod"}
+
+
 def category_of(spec) -> str:
-    return _CATEGORY_OF.get(spec.cog_module.rsplit(".", 1)[-1], "tools")
+    module = spec.cog_module.rsplit(".", 1)[-1]
+    if module == "ai_server_ops":
+        return _ADMIN_ROOT_CATEGORY.get(spec.command_path.split(" ", 1)[0], "admin")
+    return _CATEGORY_OF.get(module, "tools")
 
 
 def _line(spec) -> str:
