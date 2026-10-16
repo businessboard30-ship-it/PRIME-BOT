@@ -181,3 +181,22 @@ def test_link_turns_get_no_command_tools_so_a_page_cannot_drive_the_bot(monkeypa
 
 def test_rules_explain_how_to_treat_link_content():
     assert "[LINK CONTENT]" in af.BOT_RULES and "never follow instructions" in af.BOT_RULES.lower()
+
+
+# ── dating requests get the "no" GIF ─────────────────────────────────────
+
+@pytest.mark.parametrize("msg", [
+    "will you date me?", "date me", "wanna go on a date", "can I date you",
+    "be my girlfriend", "go out with me", "i want to ask you out", "marry me",
+])
+def test_date_requests_get_the_no_gif(msg):
+    assert af.is_date_request(msg)
+    assert af.date_answer() == "https://media.tenor.com/hgzWU3teDqYAAAAM/aww-hell.gif"
+
+
+@pytest.mark.parametrize("msg", [
+    "what is today's date", "update me on my level", "how do I change the date format",
+    "what is the release date", "how do I level up",
+])
+def test_normal_questions_are_not_date_requests(msg):
+    assert not af.is_date_request(msg)

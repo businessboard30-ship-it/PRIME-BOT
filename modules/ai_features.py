@@ -439,6 +439,27 @@ def levelup_answer(in_server: bool) -> str:
     )
 
 
+# "Will you date me / be my girlfriend / go out with me" -> a fixed "no" GIF (not left to the model, costs no daily cap).
+NO_DATE_GIF = "https://media.tenor.com/hgzWU3teDqYAAAAM/aww-hell.gif"
+_DATE_Q = re.compile(
+    r"\b(?:date|dating|go\s+out\s+with|going\s+out\s+with)\s+(?:with\s+)?(?:me|us)\b|"
+    r"\b(?:can|could|may|will|would|do|wanna|want\s+to|wanna)\s+(?:i\s+|you\s+)?(?:date|go\s+on\s+a\s+date)\b.*\b(?:me|you)\b|"
+    r"\b(?:date|ask|asking)\s+you(?:\s+out)?\b|\bgo\s+on\s+a\s+date\b|"
+    r"\b(?:be|become)\s+my\s+(?:girlfriend|boyfriend|gf|bf|partner|lover|wife|husband|valentine)\b|"
+    r"\bmarry\s+me\b",
+    re.IGNORECASE,
+)
+
+
+def is_date_request(text: str) -> bool:
+    return bool(text and _DATE_Q.search(text))
+
+
+def date_answer() -> str:
+    """Fixed reply when someone asks the AI on a date: the 'no' GIF link (Discord shows it as the GIF)."""
+    return NO_DATE_GIF
+
+
 def premium_answer(in_server: bool) -> str:
     """Fixed reply to premium/credits questions. In a server it goes with the
     Go Premium button (added by the caller)."""
