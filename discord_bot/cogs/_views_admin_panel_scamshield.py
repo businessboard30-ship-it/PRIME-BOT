@@ -11,6 +11,7 @@ lesson from the Pending payments screen.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import List
@@ -76,6 +77,7 @@ _UPLOAD_TYPES = ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gi
 _UPLOAD_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 _UPLOAD_MAX_BYTES = 8 * 1024 * 1024
 _MAX_FILES = 4
+_HOST_COPY_TIMEOUT = 10   # seconds: the hosting-channel copy is best effort and must never stall the add
 
 
 def _is_image_name(name: str, content_type: str | None) -> bool:
@@ -88,7 +90,8 @@ async def _add_image_bytes(interaction: discord.Interaction, data: bytes, source
 
     Like the welcome backgrounds, the original is also re-posted to the image-hosting channel (best effort) so there
     is a permanent copy of what each rule came from. The channel/message ids go in the rule note."""
-    h = ss.dhash(data)
+    # Hashing decodes the whole picture (PIL). Run it off the event loop so a big screenshot can't freeze the bot.
+    h = await asyncio.to_thread(ss.dhash, data)
     if h is None:
         return "unreadable"
     pattern = format(h, "016x")
@@ -101,10 +104,14 @@ async def _add_image_bytes(interaction: discord.Interaction, data: bytes, source
     note = source
     try:
         from modules import image_host
-        hosted = await image_host.post_to_host(
-            interaction.client, data, f"Scam Shield image rule {pattern} · added by user {interaction.user.id}")
+        hosted = await asyncio.wait_for(
+            image_host.post_to_host(
+                interaction.client, data, f"Scam Shield image rule {pattern} · added by user {interaction.user.id}"),
+            timeout=_HOST_COPY_TIMEOUT)
         if hosted:
             note = f"{source}; hosted {hosted[0]}/{hosted[1]}"
+    except asyncio.TimeoutError:
+        logger.warning("[admin-panel] copying the scam image to the hosting channel timed out; adding the rule anyway")
     except Exception:
         logger.warning("[admin-panel] couldn't copy the scam image to the hosting channel", exc_info=True)
     rid = await ss.add_rule("image", pattern, interaction.user.id, note)
@@ -127,25 +134,44 @@ class AddImageModal(discord.ui.Modal, title="Add a scam image"):
                                        component=self.link))
 
     async def on_submit(self, interaction: discord.Interaction):
-        if SECTION not in allowed_sections(interaction.user.id):
-            await _denied(interaction)
+        # Acknowledge within Discord's 3 second limit BEFORE anything else (reads, hashing, uploads).
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException:
+            logger.warning("[admin-panel] couldn't acknowledge the Add image form", exc_info=True)
             return
-        await interaction.response.defer()
-        uploads = list(self.files.values or [])
-        link = (self.link.value or "").strip()
-        if uploads and link:
-            notice = "⚠️ Use either an upload or a message link, not both."
-        elif uploads:
-            notice = await self._add_from_uploads(interaction, uploads)
-        elif link:
-            m = _MSG_LINK.search(link)
-            notice = ("⚠️ That doesn't look like a message link. Right-click the message -> Copy Message Link."
-                      if not m else await self._add_from_message(interaction, int(m.group(2)), int(m.group(3))))
-        else:
-            notice = "⚠️ Nothing to add. Upload an image or paste a message link."
+        if SECTION not in allowed_sections(interaction.user.id):
+            await interaction.followup.send("You're no longer authorized for this.", ephemeral=True)
+            return
+        try:
+            uploads = list(self.files.values or [])
+            link = (self.link.value or "").strip()
+            if uploads and link:
+                notice = "⚠️ Use either an upload or a message link, not both."
+            elif uploads:
+                notice = await self._add_from_uploads(interaction, uploads)
+            elif link:
+                m = _MSG_LINK.search(link)
+                notice = ("⚠️ That doesn't look like a message link. Right-click the message -> Copy Message Link."
+                          if not m else await self._add_from_message(interaction, int(m.group(2)), int(m.group(3))))
+            else:
+                notice = "⚠️ Nothing to add. Upload an image or paste a message link."
+        except Exception:
+            logger.exception("[admin-panel] Add image failed")
+            notice = NOTHING_CHANGED
         self.panel.notice = notice
-        await self.panel.load()
-        await interaction.edit_original_response(view=self.panel)
+        try:
+            await self.panel.load()
+            await interaction.edit_original_response(view=self.panel)
+        except discord.HTTPException:
+            logger.warning("[admin-panel] couldn't refresh the Scam Shield screen after Add image", exc_info=True)
+            try:
+                await interaction.followup.send(notice, ephemeral=True)
+            except discord.HTTPException:
+                pass
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logger.exception("[admin-panel] Add image form error", exc_info=error)
 
     @staticmethod
     def _summary(added: int, dup: int, bad: int, skipped: int) -> str:
