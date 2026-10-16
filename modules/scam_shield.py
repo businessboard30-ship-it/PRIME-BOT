@@ -643,6 +643,75 @@ async def mark_backfill_done(clone_id: Optional[int] = None) -> None:
         logger.exception("[scam-shield] couldn't save the sweep marker (it may run again on the next start)")
 
 
+# ── owner "force scan" (admin panel button) ───────────────────────────────
+# The main bot and every clone are separate processes, so the panel can't call them directly. Instead the button
+# writes a new request token to the database; each bot polls for it every few seconds and, when it sees a token it
+# hasn't handled yet, re-runs the history sweep over its own servers (ignoring the one-time marker) and then records
+# that it finished. That is how one tap reaches all bots, and how the panel can show how many have finished.
+
+FORCE_SCAN_REQUEST_KEY = "force_scan_request"
+FORCE_SCAN_DONE_PREFIX = "force_scan_done:"
+
+
+def force_scan_done_key(clone_id: Optional[int] = None) -> str:
+    return f"{FORCE_SCAN_DONE_PREFIX}{clone_id if clone_id is not None else 'main'}"
+
+
+async def request_force_scan() -> str:
+    """Ask every bot to re-run the history sweep now. Returns the request token."""
+    token = str(time.time_ns() // 1_000_000)          # milliseconds since the epoch: unique per tap, and doubles as the time
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO scam_shield_settings (key, value) VALUES ($1, $2) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", FORCE_SCAN_REQUEST_KEY, token)
+    return token
+
+
+async def pending_force_scan(clone_id: Optional[int] = None) -> Optional[str]:
+    """The request token this bot hasn't handled yet, or None. Any database problem reads as 'nothing pending'."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT key, value FROM scam_shield_settings WHERE key = ANY($1::text[])",
+                                    [FORCE_SCAN_REQUEST_KEY, force_scan_done_key(clone_id)])
+        got = {r["key"]: r["value"] for r in rows}
+        token = got.get(FORCE_SCAN_REQUEST_KEY)
+        if token and got.get(force_scan_done_key(clone_id)) != token:
+            return token
+    except Exception:
+        logger.debug("[scam-shield] couldn't check for a force-scan request", exc_info=True)
+    return None
+
+
+async def mark_force_scan_done(token: str, clone_id: Optional[int] = None) -> None:
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO scam_shield_settings (key, value) VALUES ($1, $2) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", force_scan_done_key(clone_id), token)
+    except Exception:
+        logger.exception("[scam-shield] couldn't save the force-scan marker (this bot may scan again)")
+
+
+async def force_scan_status() -> Optional[dict]:
+    """{'requested_ms': int, 'finished': int} for the latest request, or None if there was never one."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        token = await conn.fetchval("SELECT value FROM scam_shield_settings WHERE key = $1", FORCE_SCAN_REQUEST_KEY)
+        if not token:
+            return None
+        finished = await conn.fetchval(
+            "SELECT COUNT(*) FROM scam_shield_settings WHERE key LIKE $1 AND value = $2",
+            FORCE_SCAN_DONE_PREFIX + "%", token)
+    try:
+        requested_ms = int(token)
+    except ValueError:
+        requested_ms = 0
+    return {"requested_ms": requested_ms, "finished": int(finished or 0)}
+
+
 # ── per-server settings (server panel phase 9) ───────────────────────────
 # Each server can switch Scam Shield off for itself and allow specific domains. Read only AFTER a
 # message already matched (the rare path), and cached, so a clean message still costs no database call.

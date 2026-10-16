@@ -107,12 +107,15 @@ def _text_of(message: discord.Message) -> str:
 class ScamShieldCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._sweep_lock = asyncio.Lock()      # the startup sweep and a forced one never run at the same time
         self._reload.start()
         self._backfill.start()
+        self._force_poll.start()
 
     def cog_unload(self):
         self._reload.cancel()
         self._backfill.cancel()
+        self._force_poll.cancel()
 
     async def cog_load(self):
         mount_admin_command(
@@ -166,54 +169,82 @@ class ScamShieldCog(commands.Cog):
     async def _before_backfill(self):
         await self.bot.wait_until_ready()
 
-    async def _sweep_history(self) -> None:
-        """Runs once per bot after the dwinble rules exist: looks through the last few days of every readable
-        channel and removes copies of the scam that were posted before the bot knew about it. Goes through the
-        same _inspect as live messages (trusted staff skipped, server settings respected, evidence archived,
-        hit logged). The 'done' marker is written only when the sweep reaches the end, so a restart halfway
-        through just starts it again."""
+    # ── owner "force scan" from the admin panel ──────────────────────────
+    # The panel button writes a request token to the database (ss.request_force_scan). Every bot, the main one and
+    # each clone (separate processes), polls for it here and re-runs the sweep over its own servers right away.
+    @tasks.loop(seconds=15)
+    async def _force_poll(self):
         clone_id = getattr(self.bot, "clone_id", None)
-        if await ss.backfill_done(clone_id):
+        token = await ss.pending_force_scan(clone_id)
+        if token is None:
             return
-        await ss.load(force=True)                 # makes sure the new rules are in memory (and seeded)
-        if not ss.is_enabled() or not await ss.seed_done(ss.SEED_DWINBLE_KEY):
-            return                                # switched off, or new rules not stored yet: try next start
-        cutoff = discord.utils.utcnow() - timedelta(days=ss.BACKFILL_DAYS)
-        scanned = caught = channels = guilds = 0
-        for guild in list(self.bot.guilds):
-            if self.bot.is_closed():
-                return                            # shutting down: no marker, so it resumes next start
-            gs = await ss.guild_settings(guild.id, clone_id)
-            me = guild.me
-            if not gs["enabled"] or me is None:
-                continue
-            guilds += 1
-            for ch in guild.text_channels:
-                perms = ch.permissions_for(me)
-                if not (perms.view_channel and perms.read_message_history):
-                    continue
-                channels += 1
-                try:
-                    async for msg in ch.history(limit=ss.BACKFILL_PER_CHANNEL, after=cutoff):
-                        scanned += 1
-                        if await self._inspect(msg):
-                            caught += 1
-                except discord.HTTPException as e:
-                    logger.debug("[scam-shield] sweep couldn't read #%s in %s (%s)", ch.id, guild.id, e)
-                await asyncio.sleep(ss.BACKFILL_CHANNEL_PAUSE)
-        await ss.mark_backfill_done(clone_id)
-        logger.info("[scam-shield] history sweep done: %s messages in %s channels across %s servers, %s caught",
-                    scanned, channels, guilds, caught)
-        await self._sweep_summary(scanned, caught, channels, guilds)
+        try:
+            await self._sweep_history(force=True)
+        except Exception:
+            logger.exception("[scam-shield] forced scan failed")
+        finally:
+            await ss.mark_force_scan_done(token, clone_id)    # even on failure: one tap must not loop forever
 
-    async def _sweep_summary(self, scanned: int, caught: int, channels: int, guilds: int) -> None:
+    @_force_poll.before_loop
+    async def _before_force_poll(self):
+        await self.bot.wait_until_ready()
+
+    async def _sweep_history(self, *, force: bool = False) -> None:
+        """Looks through the last few days of every readable channel and removes copies of the scam that were posted
+        before the bot knew about it. Goes through the same _inspect as live messages (trusted staff skipped, server
+        settings respected, evidence archived, hit logged).
+
+        Normal run (startup): happens once per bot, after the dwinble rules exist; the 'done' marker is written only
+        when the sweep reaches the end, so a restart halfway through just starts it again.
+        force=True (owner's Force scan button): ignores that marker and runs again now."""
+        clone_id = getattr(self.bot, "clone_id", None)
+        if not force and await ss.backfill_done(clone_id):
+            return
+        async with self._sweep_lock:
+            await ss.load(force=True)                 # makes sure the new rules are in memory (and seeded)
+            if not ss.is_enabled():
+                return                                # switched off: nothing to scan with
+            if not force and not await ss.seed_done(ss.SEED_DWINBLE_KEY):
+                return                                # new rules not stored yet: try next start
+            cutoff = discord.utils.utcnow() - timedelta(days=ss.BACKFILL_DAYS)
+            scanned = caught = channels = guilds = 0
+            for guild in list(self.bot.guilds):
+                if self.bot.is_closed():
+                    return                            # shutting down: no marker, so it resumes next start
+                gs = await ss.guild_settings(guild.id, clone_id)
+                me = guild.me
+                if not gs["enabled"] or me is None:
+                    continue
+                guilds += 1
+                for ch in guild.text_channels:
+                    perms = ch.permissions_for(me)
+                    if not (perms.view_channel and perms.read_message_history):
+                        continue
+                    channels += 1
+                    try:
+                        async for msg in ch.history(limit=ss.BACKFILL_PER_CHANNEL, after=cutoff):
+                            scanned += 1
+                            if await self._inspect(msg):
+                                caught += 1
+                    except discord.HTTPException as e:
+                        logger.debug("[scam-shield] sweep couldn't read #%s in %s (%s)", ch.id, guild.id, e)
+                    await asyncio.sleep(ss.BACKFILL_CHANNEL_PAUSE)
+            if not force:
+                await ss.mark_backfill_done(clone_id)
+            logger.info("[scam-shield] %s sweep done: %s messages in %s channels across %s servers, %s caught",
+                        "forced" if force else "history", scanned, channels, guilds, caught)
+            await self._sweep_summary(scanned, caught, channels, guilds, forced=force)
+
+    async def _sweep_summary(self, scanned: int, caught: int, channels: int, guilds: int, forced: bool = False) -> None:
         """Best effort: tell the owner what the sweep found, in the evidence channel if one is set."""
         try:
             host = await self._evidence_channel()
             if host is None:
                 return
+            who = f" ({self.bot.user})" if forced and self.bot.user else ""
+            what = "forced scan" if forced else "history sweep"
             await host.send(
-                f"\U0001F6E1\ufe0f **Scam Shield history sweep finished** | looked at {scanned} recent messages in "
+                f"\U0001F6E1\ufe0f **Scam Shield {what} finished**{who} | looked at {scanned} recent messages in "
                 f"{channels} channels across {guilds} servers | **{caught} scam message(s) removed**",
                 allowed_mentions=discord.AllowedMentions.none())
         except Exception:
