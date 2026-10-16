@@ -74,7 +74,10 @@ def mem(env, monkeypatch):
     fake, _ = env
     fake.sessions["sid"]["iat"] = 1
     fake.sessions["other"] = {"kind": "dash", "user": {"id": "7777777777", "username": "o", "avatar_url": ""}, "guilds": []}
-    data = {"6": [row("card_plan")], "7777777777": [row("dev_monthly")]}
+    # The route code checks entitlements against the REAL clock, so these rows must expire relative to it. (They used to be
+    # NOW + 5 days with NOW fixed at 2026-10-08, which silently expired on 2026-10-13 and turned ~65 tests red on main.)
+    live = datetime.now(timezone.utc) + 5 * D
+    data = {"6": [row("card_plan", exp=live)], "7777777777": [row("dev_monthly", exp=live)]}
     seen = []
 
     async def entitlements_list(uid):

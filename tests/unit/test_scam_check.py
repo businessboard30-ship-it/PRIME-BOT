@@ -99,13 +99,24 @@ def answer(req):
     return kw["embed"].description, kw
 
 
-def test_scam_gets_a_warning_and_a_report_button_and_nothing_is_deleted(cog):
+def test_a_confident_scam_is_deleted_and_the_answer_says_so(cog):
     req, tgt = make("free $3500 at fatowin.com use GIFT")
     run(cog._check_request(req))
     text, kw = answer(req)
-    assert "looks like a scam" in text and kw["view"] is not None and kw["delete_after"] == sc.ANSWER_SECONDS
+    tgt.delete.assert_awaited_once()
+    assert "I deleted it" in text and kw["delete_after"] == sc.ANSWER_SECONDS
+    assert kw.get("view") is None                                    # nothing left to report once it is gone
+    assert "fatowin" not in text                                     # the matched rule is not revealed
+
+
+def test_when_the_bot_cannot_delete_it_says_exactly_why_and_keeps_the_report_button(cog):
+    req, tgt = make("free $3500 at fatowin.com use GIFT")
+    tgt.channel.permissions_for = lambda member: SimpleNamespace(manage_messages=False)
+    run(cog._check_request(req))
+    text, kw = answer(req)
     tgt.delete.assert_not_called()
-    assert "fatowin" not in text                                   # the matched rule is not revealed
+    assert "could not delete it" in text and "Manage Messages" in text and kw["view"] is not None
+    assert "fatowin" not in text
 
 
 def test_clean_message_is_not_called_safe(cog):
