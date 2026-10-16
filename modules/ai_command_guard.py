@@ -273,6 +273,24 @@ def detach_ai_only_commands(bot: discord.Client) -> int:
     return detached
 
 
+def register_hidden_cog(cog) -> int:
+    """Put every command of a cog that is NOT on the bot's command tree straight into the AI-only registry.
+
+    For cogs made only of AI-only commands (discord_bot/cogs/ai_server_ops.py). Such a cog is instantiated but never
+    passed to bot.add_cog, so its groups never touch the tree: nothing for Discord to list, nothing to sync, and no
+    slot used against the 100-command cap (a group added to the tree and detached afterwards would still have
+    counted while loading, and would leave an empty group behind). Each command keeps its .binding (the cog) and
+    .parent (its group), exactly like the ones detach_ai_only_commands moves, so the guard treats them the same.
+    Returns how many commands were registered."""
+    n = 0
+    for root in getattr(cog, "__cog_app_commands__", []):
+        for cmd in ([root] if isinstance(root, discord.app_commands.Command) else root.walk_commands()):
+            if isinstance(cmd, discord.app_commands.Command):
+                _AI_ONLY_COMMANDS[cmd.qualified_name] = cmd
+                n += 1
+    return n
+
+
 def _resolve_command(bot: discord.Client, name: str) -> Optional[discord.app_commands.Command]:
     """`name` is a top-level command name, or a space-separated path for a subcommand ("welcome enable").
     Only real runnable Commands come back; a Group (which has no callback) is never returned.

@@ -81,6 +81,15 @@ def _sub(path: str, module: str, confirm: bool, desc: str, perms: tuple = (), ai
                          needs_perms=tuple(perms), path=path, ai_only=ai_only)
 
 
+_OPS = "discord_bot.cogs.ai_server_ops"
+
+
+def _adm(path: str, confirm: bool, perms: tuple, desc: str) -> "AICommandSpec":
+    """An AI-ONLY server-admin operation from discord_bot/cogs/ai_server_ops.py. That cog is never added to the
+    slash tree (see its docstring), so none of these count against Discord's 100-command cap."""
+    return _sub(path, _OPS, confirm, desc, perms, ai_only=True)
+
+
 AI_COMMANDS = (
     # ── Moderation ──────────────────────────────────────────────────────
     AICommandSpec("kick", "discord_bot.cogs.moderation", True, "Kick a member from this server"),
@@ -264,6 +273,102 @@ AI_COMMANDS = (
     _sub("role bulk-delete", "discord_bot.cogs.role_setup", True,
          "Delete several roles at once from a comma-separated list of exact names (max 10). Only roles below both "
          "the bot's and the asker's top role. ONE call with all the names. Needs Manage Roles.", ("manage_roles",), ai_only=True),
+
+    # ── Server administration (AI-ONLY, discord_bot/cogs/ai_server_ops.py) ──────────────────────────────
+    # Everything the AI could not do before. Hidden from Discord like the other ai_only entries. Each one needs the
+    # asker's real Discord permission (needs_perms), shows a plan and waits for a Confirm click (re-planned at click
+    # time), and obeys the role hierarchy. Reads that could leak into a public channel also need the click, because
+    # that is what makes the answer an ephemeral reply; only the three PUBLIC_READS in the cog run without it.
+    _adm("member role-add", True, ("manage_roles",),
+         "Give / add / assign a role to a member. Args: `member` (@mention), `role` (name, @mention or ID). "
+         "Never hands out managed roles or roles at/above the asker's top role."),
+    _adm("member role-remove", True, ("manage_roles",),
+         "Take away / remove a role from a member. Args: `member` (@mention), `role` (name, @mention or ID)."),
+    _adm("member nickname", True, ("manage_nicknames",),
+         "Change or reset a member's server nickname. Args: `member` (@mention), `nickname` (empty = reset)."),
+    _adm("roleedit edit", True, ("manage_roles",),
+         "Edit an EXISTING role: rename, change colour, hoist (show separately), mentionable, or add/remove "
+         "permissions. Args: `role`, `name`, `color`, `hoist`, `mentionable`, `grant` / `revoke` (comma-separated "
+         "permission names like send_messages). Never grants Administrator; dangerous permissions only for the "
+         "owner/admins."),
+    _adm("roleedit move", True, ("manage_roles",),
+         "Reorder a role in the hierarchy. Args: `role`, and either `above` (put it directly above this role) or "
+         "`position` (1 = lowest)."),
+    _adm("channeledit lock", True, ("manage_channels", "manage_roles"),
+         "Lock a channel so a role (default @everyone) can't send messages / connect to voice. Args: `channel`, "
+         "`role` (optional)."),
+    _adm("channeledit unlock", True, ("manage_channels", "manage_roles"),
+         "Unlock a channel that was locked. Args: `channel`, `role` (optional, default @everyone)."),
+    _adm("channeledit slowmode", True, ("manage_channels",),
+         "Set a channel's slowmode (seconds between messages, 0 = off, max 21600). Args: `channel`, `seconds`."),
+    _adm("channeledit topic", True, ("manage_channels",),
+         "Set or clear a text/forum channel's topic (description). Args: `channel`, `topic` (empty = clear)."),
+    _adm("channeledit move", True, ("manage_channels",),
+         "Move a channel to another category and/or reorder it. Args: `channel`, `category` (name, or 'none'), "
+         "`position` (1 = top of the category)."),
+    _adm("channeledit permissions", True, ("manage_roles",),
+         "Channel permission overrides: allow/deny/reset permissions for a role or member in one channel, or clear "
+         "their override. Args: `channel`, `target` (role name/@mention or member @mention), `allow`, `deny`, "
+         "`reset` (comma-separated permission names), `clear`."),
+    _adm("thread create", True, ("manage_threads",),
+         "Create a thread in a text channel. Args: `name`, `channel`, `message` (optional message ID/link to start "
+         "from), `private`."),
+    _adm("thread state", True, ("manage_threads",),
+         "Archive/unarchive or lock/unlock a thread. Args: `thread` (name, #mention or ID), `archived`, `locked`."),
+    _adm("thread rename", True, ("manage_threads",), "Rename a thread. Args: `thread`, `name`."),
+    _adm("thread delete", True, ("manage_threads",), "Permanently delete a thread. Args: `thread`."),
+    _adm("thread member-add", True, ("manage_threads",), "Add a member to a thread. Args: `thread`, `member`."),
+    _adm("thread member-remove", True, ("manage_threads",), "Remove a member from a thread. Args: `thread`, `member`."),
+    _adm("voice move", True, ("move_members",),
+         "Move a member to another voice channel. Args: `member` (must be in voice), `channel` (destination)."),
+    _adm("voice disconnect", True, ("move_members",), "Disconnect / kick a member from voice. Args: `member`."),
+    _adm("voice mute", True, ("mute_members",),
+         "Server-mute or unmute a member in voice. Args: `member`, `muted` (default true; false = unmute)."),
+    _adm("voice deafen", True, ("deafen_members",),
+         "Server-deafen or undeafen a member in voice. Args: `member`, `deafened` (default true)."),
+    _adm("serverinvite create", True, ("create_instant_invite",),
+         "Create an invite link. Args: `channel`, `max_age_hours` (0 = never, default 24), `max_uses` (0 = unlimited), "
+         "`temporary`."),
+    _adm("serverinvite delete", True, ("manage_guild",), "Delete / revoke an invite. Args: `invite` (code or link)."),
+    _adm("serverinvite list", True, ("manage_guild",), "List the server's active invites (shown only to the asker)."),
+    _adm("messageops delete", True, ("manage_messages",),
+         "Delete ONE specific message. Args: `message` (ID or link), `channel` (not needed for a link). For many "
+         "messages use purge / user-purge instead."),
+    _adm("messageops pin", True, ("manage_messages",), "Pin a message. Args: `message` (ID or link), `channel`."),
+    _adm("messageops unpin", True, ("manage_messages",), "Unpin a message. Args: `message` (ID or link), `channel`."),
+    _adm("messageops pins", True, ("read_message_history",),
+         "List a channel's pinned messages (shown only to the asker). Args: `channel`."),
+    _adm("emojiops list", False, (), "List the server's custom emojis."),
+    _adm("emojiops add", True, ("manage_expressions",),
+         "Add a custom emoji. Args: `name`, `image_url` (a cdn.discordapp.com / media.discordapp.net image link, "
+         "max 256 KB — the person uploads the image in a message and copies its link)."),
+    _adm("emojiops rename", True, ("manage_expressions",), "Rename a custom emoji. Args: `emoji`, `name`."),
+    _adm("emojiops delete", True, ("manage_expressions",), "Delete a custom emoji. Args: `emoji`."),
+    _adm("stickerops list", False, (), "List the server's custom stickers."),
+    _adm("stickerops edit", True, ("manage_expressions",),
+         "Rename a sticker or change its description. Args: `sticker`, `name`, `description`."),
+    _adm("stickerops delete", True, ("manage_expressions",), "Delete a custom sticker. Args: `sticker`."),
+    _adm("webhookops list", True, ("manage_webhooks",),
+         "List the server's webhooks (names/channels only; shown only to the asker)."),
+    _adm("webhookops create", True, ("manage_webhooks",),
+         "Create a webhook in a channel; its link is shown only to the asker. Args: `name`, `channel`."),
+    _adm("webhookops delete", True, ("manage_webhooks",), "Delete a webhook. Args: `webhook` (name or ID)."),
+    _adm("eventops list", False, (), "List upcoming scheduled server events."),
+    _adm("eventops create", True, ("manage_events",),
+         "Schedule a server event. Args: `name`, `start` (UTC: 'in 2 hours' or '2026-10-20 18:00'), `channel` "
+         "(voice/stage) or `location` (+ `end` required), `description`."),
+    _adm("eventops cancel", True, ("manage_events",), "Cancel / delete a scheduled event. Args: `event` (name or ID)."),
+    _adm("serveredit edit", True, ("manage_guild",),
+         "Change server settings: `name`, `verification_level` (none/low/medium/high/highest), `notifications` "
+         "(all_messages/only_mentions)."),
+    _adm("serveredit icon", True, ("manage_guild",),
+         "Change or remove the server icon. Args: `image_url` (cdn.discordapp.com / media.discordapp.net link) or "
+         "'remove'."),
+    _adm("serveredit auditlog", True, ("view_audit_log",),
+         "Show recent audit log entries (only to the asker). Args: `limit` (1-20), `action` (e.g. ban, kick, "
+         "role_update), `member` (who did it)."),
+    _adm("serveredit integrations", True, ("manage_guild",), "List the server's integrations (shown only to the asker)."),
+    _adm("serveredit integration-remove", True, ("manage_guild",), "Remove an integration. Args: `name`."),
 
     # ── More server setup (each keeps its own Discord-permission gate) ────
     _sub("messages purge", "discord_bot.cogs.moderation", True, "Bulk-delete recent messages in the current channel", ("manage_messages",)),

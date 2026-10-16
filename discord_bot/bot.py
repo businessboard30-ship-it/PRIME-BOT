@@ -322,6 +322,9 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.invites")
         await self.load_extension("discord_bot.cogs.quickstart")
         await self.load_extension("discord_bot.cogs.setup_channels")
+        # AI-only server administration. This extension never calls add_cog: its commands go straight into the AI-only
+        # registry and never touch the slash tree, so they use no Discord command slots (see the module docstring).
+        await self.load_extension("discord_bot.cogs.ai_server_ops")
         await self.load_extension("discord_bot.cogs.bump_setup")
         await self.load_extension("discord_bot.cogs.analytics")
         await self.load_extension("discord_bot.cogs.cat")
