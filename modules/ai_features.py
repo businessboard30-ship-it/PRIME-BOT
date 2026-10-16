@@ -674,6 +674,13 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
             system_content += ai_voice.VOICE_RULES_FORCED
         elif voice == "auto":
             system_content += ai_voice.VOICE_RULES_AUTO
+        try:                              # GuildAtlas site questions get the site's own public knowledge (never other questions)
+            from modules import guildatlas as _ga
+            _site_ctx = await _ga.knowledge_cache.context_for(message)
+            if _site_ctx:
+                system_content += "\n\n" + _site_ctx
+        except Exception:
+            logger.exception("guildatlas knowledge context failed")
         lean_system = system_content      # without the command list: used by the no-tools retry below
         if command_context:
             # Permission-filtered command list built by the caller (see

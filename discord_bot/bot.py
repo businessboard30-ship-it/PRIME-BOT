@@ -343,6 +343,8 @@ class AnimeBotDiscord(commands.Bot):
         # await self.load_extension("discord_bot.cogs.roast_arena")
         await self.load_extension("discord_bot.cogs.ship")
         await self.load_extension("discord_bot.cogs.ai_store")
+        # GuildAtlas directory site: review buttons, health polling, AI knowledge. Stays off without its env vars.
+        await self.load_extension("discord_bot.cogs.guildatlas")
         await self.load_extension("discord_bot.cogs.external_tools")
         await self.load_extension("discord_bot.cogs.crypto_alerts")
         await self.load_extension("discord_bot.cogs.ads_marketplace")
