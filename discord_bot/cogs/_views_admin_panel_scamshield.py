@@ -128,7 +128,7 @@ class AddImageModal(discord.ui.Modal, title="Add a scam image"):
             text="Upload the scam image",
             description=f"PNG, JPG, WEBP or GIF, up to {_UPLOAD_MAX_BYTES // (1024 * 1024)}MB each, {_MAX_FILES} at most",
             component=self.files))
-        self.link = discord.ui.TextInput(label="Link to a message with the scam image", max_length=200, required=False,
+        self.link = discord.ui.TextInput(max_length=200, required=False,
                                          placeholder="Right-click the message -> Copy Message Link")
         self.add_item(discord.ui.Label(text="...or use a message link", description="Fill in only if you are not uploading",
                                        component=self.link))
