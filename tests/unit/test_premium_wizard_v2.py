@@ -154,22 +154,20 @@ def test_every_page_fits_discord_limits():
     run(go())
 
 
-def test_home_groups_plans_and_shows_the_prices():
+def test_home_is_compact_and_shows_the_prices():
     async def go():
         v = make()
         labels = [b.label for b in buttons(v)]
-        for needle in (f"Monthly — ${config.PREMIUM_FEE_USD:g}", f"Yearly — ${config.PREMIUM_YEARLY_FEE_USD:g}",
-                       f"Lifetime — ${config.PREMIUM_LIFETIME_FEE_USD:g}", "First-time offer",
-                       f"Plus Monthly — ${config.PREMIUM_PLUS_FEE_USD:g}",
-                       f"Plus Yearly — ${config.PREMIUM_PLUS_YEARLY_FEE_USD:g}",
-                       "What's included", "Compare plans"):
+        for needle in (f"Monthly ${config.PREMIUM_FEE_USD:g}", f"Yearly ${config.PREMIUM_YEARLY_FEE_USD:g}",
+                       f"Lifetime ${config.PREMIUM_LIFETIME_FEE_USD:g}", "50% off first year",
+                       f"Plus ${config.PREMIUM_PLUS_FEE_USD:g}/mo", f"Plus ${config.PREMIUM_PLUS_YEARLY_FEE_USD:g}/yr",
+                       "What's included", "Compare"):
             assert any(needle in l for l in labels), needle
         text = all_text(v)
-        assert "💎 Premium" in text and "✨ Premium Plus" in text
-        # the two tiers are separate groups: no plan button shares an ActionRow with a Plus one
-        for row in (c for c in v.walk_children() if isinstance(c, discord.ui.ActionRow)):
-            ls = [b.label for b in row.children if isinstance(b, discord.ui.Button)]
-            assert not (any(l.startswith("Plus") for l in ls) and any(not l.startswith("Plus") for l in ls))
+        assert "PrimeBot Premium" in text and "✨ Plus" in text
+        # compact: three rows of buttons for plans and info, no more
+        rows = [c for c in v.walk_children() if isinstance(c, discord.ui.ActionRow)]
+        assert len(rows) == 3, len(rows)
     run(go())
 
 
@@ -186,7 +184,7 @@ def test_home_says_which_checkout_the_buyer_will_get():
         for mode in ("split", "auto", "gumroad"):
             v = make(mode=mode)
             note = next(c.content for c in v.walk_children()
-                        if isinstance(c, discord.ui.TextDisplay) and "first Premium payment only" in c.content)
+                        if isinstance(c, discord.ui.TextDisplay) and "First-time offer: Gumroad only" in c.content)
             assert "Gumroad" in note and "PayPal" in note
     run(go())
 
@@ -195,10 +193,10 @@ def test_lifetime_server_sees_plus_but_not_premium_plans():
     async def go():
         v = make(v2.PremiumStatus(active=True, lifetime=True, expires_ts=1))
         labels = " | ".join(b.label for b in buttons(v))
-        assert "Plus Monthly" in labels and "Plus Yearly" in labels
-        assert "Monthly — $" not in labels.replace("Plus Monthly — $", "") and "Lifetime —" not in labels
-        assert "First-time offer" not in labels
-        assert "already have every Premium perk" in all_text(v)
+        assert "/mo" in labels and "/yr" in labels
+        assert "Monthly $" not in labels and "Yearly $" not in labels and "Lifetime $" not in labels
+        assert "50% off" not in labels
+        assert "Lifetime Premium is active" in all_text(v)
     run(go())
 
 
@@ -223,7 +221,7 @@ def test_navigation_between_pages_edits_in_place():
         assert v.page == "compare" and "Free vs Premium vs Plus" in all_text(v)
 
         await by_label(v, "Back to plans").callback(inter())
-        assert v.page == "home" and "First-time offer" in " ".join(b.label for b in buttons(v))
+        assert v.page == "home" and "50% off first year" in " ".join(b.label for b in buttons(v))
     run(go())
 
 
@@ -259,11 +257,11 @@ def test_only_the_buyer_can_press_buttons():
 # ── paying: the right plan reaches the right checkout ────────────────────
 
 PLANS = [
-    ("Monthly — $", "premium"),
-    ("Yearly — $", "premium_yearly"),
-    ("Lifetime — $", "premium_lifetime"),
-    ("Plus Monthly", "premium_plus"),
-    ("Plus Yearly", "premium_plus_yearly"),
+    ("Monthly $", "premium"),
+    ("Yearly $", "premium_yearly"),
+    ("Lifetime $", "premium_lifetime"),
+    ("/mo", "premium_plus"),
+    ("/yr", "premium_plus_yearly"),
 ]
 
 
@@ -273,7 +271,7 @@ def test_each_plan_button_starts_its_own_checkout(monkeypatch, fragment, plan):
         start = AsyncMock()
         monkeypatch.setattr(vp, "_start_plan_checkout", start)
         v = make()
-        btn = next(b for b in buttons(v) if b.label.startswith(fragment))   # startswith: "Plus Monthly" != "Monthly"
+        btn = next(b for b in buttons(v) if fragment in b.label)
         i = inter()
         await btn.callback(i)
         i.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
@@ -288,7 +286,7 @@ def test_the_offer_button_starts_the_discount_checkout(monkeypatch):
         monkeypatch.setattr(pd, "start_discount_checkout", start)
         monkeypatch.setattr(v2, "load_status", AsyncMock(return_value=v2.PremiumStatus()))
         i = inter()
-        await by_label(make(), "First-time offer").callback(i)
+        await by_label(make(), "50% off first year").callback(i)
         start.assert_awaited_once_with(i, GUILD, None)
     run(go())
 
@@ -300,7 +298,7 @@ def test_the_offer_is_refused_on_a_lifetime_server(monkeypatch):
         monkeypatch.setattr(pd, "start_discount_checkout", start)
         monkeypatch.setattr(v2, "load_status", AsyncMock(return_value=v2.PremiumStatus(active=True, lifetime=True)))
         i = inter()
-        await by_label(make(), "First-time offer").callback(i)
+        await by_label(make(), "50% off first year").callback(i)
         start.assert_not_awaited()
         assert "Lifetime" in i.followup.send.await_args.args[0]
     run(go())

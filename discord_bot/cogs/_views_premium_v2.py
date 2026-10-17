@@ -128,18 +128,16 @@ def perk_lines(perk: pp.Perk) -> list:
 def _premium_plans():
     pct = pp.yearly_savings_pct()
     return (
-        ("premium", f"Monthly — ${config.PREMIUM_FEE_USD:g}", discord.ButtonStyle.secondary, "🗓️"),
-        ("premium_yearly", f"Yearly — ${config.PREMIUM_YEARLY_FEE_USD:g} (save {pct}%)",
-         discord.ButtonStyle.primary, "💎"),
-        ("premium_lifetime", f"Lifetime — ${config.PREMIUM_LIFETIME_FEE_USD:g}", discord.ButtonStyle.success, "♾️"),
+        ("premium", f"Monthly ${config.PREMIUM_FEE_USD:g}", discord.ButtonStyle.secondary, "🗓️"),
+        ("premium_yearly", f"Yearly ${config.PREMIUM_YEARLY_FEE_USD:g} · -{pct}%", discord.ButtonStyle.primary, "💎"),
+        ("premium_lifetime", f"Lifetime ${config.PREMIUM_LIFETIME_FEE_USD:g}", discord.ButtonStyle.success, "♾️"),
     )
 
 
 def _plus_plans():
     return (
-        ("premium_plus", f"Plus Monthly — ${config.PREMIUM_PLUS_FEE_USD:g}", discord.ButtonStyle.secondary, "✨"),
-        ("premium_plus_yearly", f"Plus Yearly — ${config.PREMIUM_PLUS_YEARLY_FEE_USD:g}",
-         discord.ButtonStyle.primary, "✨"),
+        ("premium_plus", f"Plus ${config.PREMIUM_PLUS_FEE_USD:g}/mo", discord.ButtonStyle.secondary, "✨"),
+        ("premium_plus_yearly", f"Plus ${config.PREMIUM_PLUS_YEARLY_FEE_USD:g}/yr", discord.ButtonStyle.secondary, "✨"),
     )
 
 
@@ -202,39 +200,27 @@ class PremiumWizardView(discord.ui.LayoutView):
     def _home(self):
         import premium_discount as pd
         s = self.status
-        T, S = discord.ui.TextDisplay, discord.ui.Separator
-        kids = [
-            T("\n".join([
-                "## 💎 PrimeBot Premium",
-                status_text(s),
-                "-# One plan covers your whole server — anyone in it can pay.",
-                "",
-                f"💎 **Premium** — all {len(pp.perks())} perks, for everyone in the server.",
-                f"✨ **Premium Plus** — everything in Premium, plus {pp.plus_extras()}.",
-            ])),
-            S(),
-        ]
+        T = discord.ui.TextDisplay
+        kids = [T("\n".join([
+            "## 💎 PrimeBot Premium",
+            status_text(s),
+            f"-# One plan covers the whole server · {len(pp.perks())} perks · ✨ Plus adds {pp.plus_extras()}",
+        ]))]
         if s.lifetime:
-            kids.append(T("♾️ **Lifetime Premium** — you already have every Premium perk, forever."))
+            kids.append(self._row(*(self._plan_button(*p) for p in _plus_plans())))
         else:
-            kids.append(T("**💎 Premium** — pick how you'd like to pay"))
             kids.append(self._row(*(self._plan_button(*p) for p in _premium_plans())))
-            kids.append(self._row(self._plan_button(
-                OFFER, f"First-time offer — Yearly ${pd.discounted_usd():g} (50% off)",
-                discord.ButtonStyle.success, "🎟️")))
-            kids.append(T("-# 🎟️ The first-time offer is for a first Premium payment only, "
-                          "and checks out on Gumroad (card / PayPal)."))
-        kids += [
-            S(),
-            T("**✨ Premium Plus** — Premium and higher AI limits"),
-            self._row(*(self._plan_button(*p) for p in _plus_plans())),
-            S(),
-            self._row(
-                self._button("What's included", discord.ButtonStyle.secondary, "📋", self._to("perks")),
-                self._button("Compare plans", discord.ButtonStyle.secondary, "⚖️", self._to("compare"))),
-            T("\n".join([payment_hint(self.mode),
-                         "-# Not included: clones & temporary XP boosts. Anything you bought separately stays yours."])),
-        ]
+            kids.append(self._row(
+                *(self._plan_button(*p) for p in _plus_plans()),
+                self._plan_button(OFFER, f"50% off first year ${pd.discounted_usd():g}",
+                                  discord.ButtonStyle.success, "🎟️")))
+        kids.append(self._row(
+            self._button("What's included", discord.ButtonStyle.secondary, "📋", self._to("perks")),
+            self._button("Compare", discord.ButtonStyle.secondary, "⚖️", self._to("compare"))))
+        hint = payment_hint(self.mode)
+        if not s.lifetime:
+            hint = "-# 🎟️ First-time offer: Gumroad only (card / PayPal).\n" + hint
+        kids.append(T(hint))
         return kids, discord.Color.gold()
 
     def _perks(self):
@@ -275,6 +261,7 @@ class PremiumWizardView(discord.ui.LayoutView):
             render_compare_table(pp.limit_rows()),
             f"✅ **Premium & Plus only:** {only}",
             f"✨ **Plus adds:** {pp.plus_extras()}. Everything else is the same as Premium.",
+            "-# Not included: clones & temporary XP boosts. The 🎟️ first-time offer is Gumroad only.",
             f"-# 💎 ${config.PREMIUM_FEE_USD:g}/month · ${config.PREMIUM_YEARLY_FEE_USD:g}/year · "
             f"${config.PREMIUM_LIFETIME_FEE_USD:g} lifetime   ✨ ${config.PREMIUM_PLUS_FEE_USD:g}/month · "
             f"${config.PREMIUM_PLUS_YEARLY_FEE_USD:g}/year",
