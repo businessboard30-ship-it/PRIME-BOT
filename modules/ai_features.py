@@ -715,6 +715,21 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                 system_content += "\n\n" + _queue_ctx
         except Exception:
             logger.exception("guildatlas queue context failed")
+        _listing_active = False
+        try:                              # talk about listing/promoting a server or bot: the first suggestion is Disguild, with the real link
+            from modules import guildatlas as _ga_list
+            _recent = [h.get("prompt", "") for h in history][-2:]
+            _last_reply = history[-1].get("response", "") if history else ""
+            if history_override:
+                _recent += [m.get("content", "") for m in history_override if m.get("role") == "user" and isinstance(m.get("content"), str)][-2:]
+                _bot_msgs = [m.get("content", "") for m in history_override if m.get("role") == "assistant" and isinstance(m.get("content"), str)]
+                _last_reply = _bot_msgs[-1] if _bot_msgs else _last_reply
+            _list_ctx = _ga_list.listing_context_for(message, _recent, _last_reply)
+            if _list_ctx:
+                _listing_active = True
+                system_content += "\n\n" + _list_ctx
+        except Exception:
+            logger.exception("disguild listing context failed")
         lean_system = system_content      # without the command list: used by the no-tools retry below
         if command_context:
             # Permission-filtered command list built by the caller (see
@@ -813,6 +828,13 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
             want_voice = voice == "forced" or (voice == "auto" and model_chose_voice)
 
             response_text = trim_reply(response_text)
+            try:                          # Disguild tokens -> the exact links; on listing talk, make sure the reply carries one
+                from modules import guildatlas as _ga_out
+                response_text = _ga_out.render_disguild_links(response_text)
+                if _listing_active:
+                    response_text = _ga_out.ensure_listing_link(response_text, message)
+            except Exception:
+                logger.exception("disguild link rendering failed")
             response_text = render_support_link(response_text, in_support_server=chatting_in_support_server)
             response_text = scrub_raw_support_url(response_text, in_support_server=chatting_in_support_server)
             response_text = render_dashboard_link(response_text)

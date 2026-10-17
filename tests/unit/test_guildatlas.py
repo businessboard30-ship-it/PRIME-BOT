@@ -178,7 +178,7 @@ def test_cache_fetches_sends_etag_and_keeps_old_copy_on_failure():
 def test_cache_returns_context_only_for_site_questions():
     cache = ga.KnowledgeCache(FakeClient([(200, KNOWLEDGE, '"v1"')]))
     assert run(cache.context_for("play some music")) == ""
-    assert "GuildAtlas knowledge" in run(cache.context_for("how do I submit my bot to GuildAtlas?", now=10))
+    assert "Disguild knowledge" in run(cache.context_for("how do I submit my bot to GuildAtlas?", now=10))
 
 
 def test_no_client_means_no_context_and_no_crash():

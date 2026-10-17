@@ -198,6 +198,19 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             section.add_item(f"{emoji} **{label}**\n{blurb}")
             container.add_item(section)
 
+        # One-time "list your server on Disguild" reminder: a link button (no custom_id, so it needs no
+        # registration and keeps working across restarts). Only present when bot.py's
+        # _send_combined_owner_join_dm won the one-time DB claim (db.claim_disguild_list_reminder) for this
+        # guild. Drawn on every page of THIS message so paging back and forth never loses it, and
+        # _offer_state_from_message reads it back off the live message the same way as the other offers.
+        disguild_url = join_offer.get("disguild_url") if (join_offer and join_offer.get("show_disguild")) else None
+        if disguild_url:
+            reminder = discord.ui.Section(accessory=discord.ui.Button(
+                label="List your server on Disguild", style=discord.ButtonStyle.link, url=disguild_url, emoji="🌐",
+            ))
+            reminder.add_item("🌐 **Get your server found**\nList it on Disguild, our free server and bot directory. It only takes a few minutes.")
+            container.add_item(reminder)
+
         # Informational-only notices (word filter status, Ship, etc.) —
         # no accessory button on purpose, grouped separately with a
         # divider so they read as "FYI" rather than "toggle missing its
@@ -440,7 +453,9 @@ def _offer_state_from_message(message) -> dict:
     click that lands on the last page shows the offer buttons again only
     if they hadn't been answered yet, and never resurrects a half the
     owner already agreed/declined."""
+    from modules.guildatlas import is_join_dm_list_url
     show_listing = show_invite = False
+    disguild_url = None
     for row in getattr(message, "components", []) or []:
         for child in _iter_components(row):
             cid = getattr(child, "custom_id", None) or ""
@@ -448,7 +463,11 @@ def _offer_state_from_message(message) -> dict:
                 show_listing = True
             elif cid.startswith("join_dm_offer:invite:"):
                 show_invite = True
-    return {"show_listing": show_listing, "show_invite": show_invite}
+            elif is_join_dm_list_url(getattr(child, "url", None)):
+                # The Disguild reminder's link button: keep it exactly as it was sent (never re-claimed, never re-derived).
+                disguild_url = child.url
+    return {"show_listing": show_listing, "show_invite": show_invite,
+            "show_disguild": bool(disguild_url), "disguild_url": disguild_url}
 
 
 def _iter_components(component):
@@ -459,6 +478,9 @@ def _iter_components(component):
     yield component
     for child in getattr(component, "children", []) or []:
         yield from _iter_components(child)
+    accessory = getattr(component, "accessory", None)
+    if accessory is not None:
+        yield from _iter_components(accessory)
 
 
 def _disabled_view(interaction: discord.Interaction) -> discord.ui.LayoutView:
