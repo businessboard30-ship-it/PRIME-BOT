@@ -260,3 +260,110 @@ def test_push_stats_posts_to_the_bot_stats_path():
             return 0, {}, {}
 
     assert run(Down(ga.Settings("https://x", "s" * 32, 0)).push_stats([entry])) is False
+
+
+# ── Disguild payments forwarding (this bot owns the single Gumroad Ping URL) ─
+ENABLED = ga.Settings(site_url="https://site.example", secret="s" * 32, alert_channel_id=0)
+DISABLED = ga.Settings(site_url="", secret="", alert_channel_id=0)
+
+
+class PingClient:
+    def __init__(self, status=200, data=None):
+        self.status, self.data, self.sent = status, data if data is not None else {"ok": True, "code": 200, "msg": "ok"}, []
+
+    async def gumroad_ping(self, fields):
+        self.sent.append(fields)
+        return self.status, self.data
+
+
+def verifier(result=True):
+    calls = []
+
+    async def verify(sale_id):
+        calls.append(sale_id)
+        return result
+    verify.calls = calls
+    return verify
+
+
+def route(fields, settings=ENABLED, client=None, verify=None):
+    return run(ga.route_gumroad_ping(fields, settings, verify or verifier(), client or PingClient()))
+
+
+def test_only_disguild_references_are_recognised():
+    assert ga.is_disguild_reference("ga_" + "ab" * 16)
+    for bad in (None, "", "ga_", "prime_123", "GA_abcdef", 42, "ga_" + "x" * 90):
+        assert not ga.is_disguild_reference(bad)
+
+
+def test_payload_keeps_only_the_fields_the_site_reads():
+    p = ga.ping_payload({"sale_id": "s1", "price": 500, "email": "a@b.c", "url_params[reference]": "ga_abc1", "card_bin": "4242", "test": None})
+    assert p == {"fields": {"sale_id": "s1", "price": "500", "url_params[reference]": "ga_abc1"}}
+    assert len(ga.ping_payload({"sale_id": "x" * 1000})["fields"]["sale_id"]) == 300
+
+
+def test_refund_detection():
+    assert ga.is_refund_ping({"refunded": "true"}) and ga.is_refund_ping({"disputed": "True"}) and ga.is_refund_ping({"chargebacked": "true"})
+    assert ga.is_refund_ping({"resource_name": "refund"})
+    assert not ga.is_refund_ping({"refunded": "false", "sale_id": "s"})
+
+
+def test_reply_interpretation_retries_on_anything_unclean():
+    assert ga.interpret_ping_reply(200, {"ok": True, "code": 200, "msg": "ok"}) == (200, "ok")
+    assert ga.interpret_ping_reply(200, {"ok": True, "code": 503, "msg": "try again"}) == (503, "try again")
+    for status, data in ((0, {}), (401, {"ok": False}), (500, {}), (200, {}), (200, {"ok": True, "code": "200", "msg": "ok"}), (400, {"ok": False, "error": "bad_body"})):
+        assert ga.interpret_ping_reply(status, data) == (503, "disguild unavailable")
+
+
+def test_bots_own_pings_are_left_alone():
+    client = PingClient()
+    assert route({"sale_id": "s", "url_params[reference]": "prime_99"}, client=client) is None
+    assert route({"sale_id": "s"}, client=client) is None
+    assert client.sent == []
+
+
+def test_disguild_sale_is_verified_then_forwarded():
+    client, verify = PingClient(), verifier(True)
+    assert route({"sale_id": "s1", "price": "500", "url_params[reference]": "ga_abc1"}, client=client, verify=verify) == (200, "ok")
+    assert verify.calls == ["s1"] and client.sent[0]["sale_id"] == "s1"
+
+
+def test_unverified_disguild_sale_is_not_forwarded():
+    client = PingClient()
+    assert route({"sale_id": "s1", "url_params[reference]": "ga_abc1"}, client=client, verify=verifier(False)) == (200, "sale not verified")
+    assert client.sent == []
+
+
+def test_test_purchases_skip_verification_and_the_site_decides():
+    client, verify = PingClient(data={"ok": True, "code": 200, "msg": "test ping ignored"}), verifier(False)
+    assert route({"sale_id": "s1", "test": "true", "url_params[reference]": "ga_abc1"}, client=client, verify=verify) == (200, "test ping ignored")
+    assert verify.calls == [] and len(client.sent) == 1
+
+
+def test_site_outage_makes_gumroad_retry_a_disguild_sale():
+    assert route({"sale_id": "s1", "url_params[reference]": "ga_abc1"}, client=PingClient(status=0, data={})) == (503, "disguild unavailable")
+    assert route({"sale_id": "s1", "url_params[reference]": "ga_abc1"}, settings=DISABLED) == (503, "disguild unavailable")
+
+
+def test_refund_for_a_disguild_order_is_forwarded_without_api_verification():
+    client, verify = PingClient(data={"ok": True, "code": 200, "msg": "refund applied"}), verifier(False)
+    assert route({"sale_id": "s1", "refunded": "true", "url_params[reference]": "ga_abc1"}, client=client, verify=verify) == (200, "refund applied")
+    assert verify.calls == []
+
+
+def test_refund_without_reference_is_forwarded_best_effort_and_the_bot_still_handles_it():
+    client = PingClient(status=0, data={})
+    assert route({"sale_id": "s1", "refunded": "true"}, client=client) is None   # the bot's own refund handling carries on
+    assert len(client.sent) == 1
+    assert route({"sale_id": "s1", "refunded": "true"}, settings=DISABLED) is None
+
+
+def test_the_client_uses_the_signed_payments_endpoint():
+    seen = {}
+
+    class Spy(ga.SiteClient):
+        async def _send(self, method, path, body="", signed=True, extra=None, timeout=15):
+            seen.update(method=method, path=path, body=json.loads(body), signed=signed)
+            return 200, {"ok": True, "code": 200, "msg": "ok"}, {}
+    assert run(Spy(ENABLED).gumroad_ping({"sale_id": "s1", "email": "x@y.z"})) == (200, {"ok": True, "code": 200, "msg": "ok"})
+    assert seen == {"method": "POST", "path": "/api/internal/payments/ping", "body": {"fields": {"sale_id": "s1"}}, "signed": True}

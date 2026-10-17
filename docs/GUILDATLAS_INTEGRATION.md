@@ -37,3 +37,13 @@ Without the URL and a 32+ character secret the integration is OFF (one log line 
 
 ## Verified / not verified
 Verified: signature identical to the site's reference signer; the bot's client against the real site code running locally (signed health/drain/review calls, wrong secret rejected, ETag 304, non-reviewer 403). Not verified: any live Discord interaction (button click, modal), alert delivery to a real channel, the AI answering well with the context, behavior on Railway.
+
+## Disguild payments (boosts and donations)
+Gumroad allows one Ping URL per account, and this bot owns it (`/api/gumroad_webhook`). Disguild sales therefore arrive here and are handed to the site:
+
+- A ping whose order reference starts with `ga_` is not a bot order. `_process_gumroad_ping_inner` calls `modules.guildatlas.route_gumroad_ping` first. For a real (non-test) sale it checks the sale with Gumroad's API using this bot's `GUMROAD_ACCESS_TOKEN`, then POSTs the ping fields to the site's signed endpoint `/api/internal/payments/ping` (same `GUILDATLAS_SITE_URL` and `GUILDATLAS_INTERNAL_SECRET` as the rest of the integration). The site does the order, product, amount, claim and boost checks.
+- The site's answer is returned to Gumroad. If the site is unreachable or answers badly, the ping gets a 503 so Gumroad retries, and the owner is DM'd ("disguild unavailable").
+- Refunds and disputes are forwarded too (the site matches them by sale id). A refund with no Disguild reference is forwarded best effort and then handled by the bot as before.
+- Test purchases: the bot skips its API check and the site decides (`GUMROAD_ACCEPT_TEST=true` on the site). The bot's own `GUMROAD_ACCEPT_TEST_PINGS` only affects bot orders.
+- Nothing changes for the bot's own orders: pings without a `ga_` reference take the old path.
+- Disguild products must be separate Gumroad products from this bot's. The site keeps their links in its own `GUMROAD_BOOST_7D_URL`, `GUMROAD_BOOST_30D_URL` and `GUMROAD_DONATE_URL`.

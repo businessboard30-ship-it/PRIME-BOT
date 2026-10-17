@@ -33,6 +33,11 @@ SNOWFLAKE = re.compile(r"^\d{17,20}$")
 INVITE_CODE = re.compile(r"^[A-Za-z0-9-]{2,32}$")
 DISGUILD_NAME = "Disguild"
 PRESENCE_CHUNK = 300  # the site accepts at most 300 ids per call
+
+# Payments (Disguild Phase 33): this bot owns the Gumroad account's single Ping URL, so pings for Disguild orders are forwarded to the site.
+DISGUILD_REF_PREFIX = "ga_"
+PING_FIELDS = ("sale_id", "test", "refunded", "disputed", "dispute_won", "chargebacked", "resource_name",
+               "url_params[reference]", "reference", "permalink", "product_permalink", "price")
 MAX_SERVERS, MAX_SHARDS = 10_000_000, 10_000  # the site rejects anything outside these
 INVITE_REASON = "Permanent invite for the Disguild listing (requested by a server manager)"
 
@@ -146,6 +151,53 @@ def describe_review_result(status: int, data: dict, action: str) -> str:
 
 
 # ── HTTP client ─────────────────────────────────────────────────────────────
+def is_disguild_reference(reference) -> bool:
+    return isinstance(reference, str) and reference.startswith(DISGUILD_REF_PREFIX) and 4 <= len(reference) <= 80
+
+
+def ping_payload(fields: dict) -> dict:
+    """Only the fields the site reads, as strings (the site ignores everything else anyway)."""
+    return {"fields": {k: str(fields[k])[:300] for k in PING_FIELDS if fields.get(k) is not None}}
+
+
+def is_refund_ping(fields: dict) -> bool:
+    flag = lambda k: str(fields.get(k, "")).lower() == "true"
+    return flag("refunded") or flag("disputed") or flag("chargebacked") or fields.get("resource_name") == "refund"
+
+
+def interpret_ping_reply(status: int, data: dict) -> tuple[int, str]:
+    """(code, message) for Gumroad. Anything but a clean answer from the site becomes 503 so Gumroad retries the ping."""
+    if status == 200 and data.get("ok") is True and isinstance(data.get("code"), int) and isinstance(data.get("msg"), str):
+        return data["code"], data["msg"][:100]
+    return 503, "disguild unavailable"
+
+
+async def route_gumroad_ping(fields: dict, settings: "Settings", verify_sale, client=None) -> Optional[tuple[int, str]]:
+    """Decide what to do with a Gumroad ping for Disguild.
+
+    Returns None when the ping is not Disguild's (the caller carries on with the bot's own handling). Otherwise forwards it to the site and
+    returns (code, message). A refund/dispute without a Disguild reference is forwarded best effort (the site matches it by sale id) and
+    still returns None so the bot's own refund handling runs. `verify_sale(sale_id)` is awaited for real, paid, non-test sales first.
+    """
+    reference = fields.get("url_params[reference]") or fields.get("reference")
+    ours = is_disguild_reference(reference)
+    refund = is_refund_ping(fields)
+    if not ours and not refund:
+        return None
+    if not settings.enabled:
+        return (503, "disguild unavailable") if ours else None
+    client = client or SiteClient(settings)
+    is_test = str(fields.get("test", "")).lower() == "true"
+    if ours and not refund and not is_test and not await verify_sale(str(fields.get("sale_id", ""))):
+        return 200, "sale not verified"
+    status, data = await client.gumroad_ping(fields)
+    code, msg = interpret_ping_reply(status, data)
+    if ours:
+        return code, msg
+    logger.info("gumroad refund forwarded to the site for sale %s: %s", fields.get("sale_id", "?"), msg)
+    return None
+
+
 class SiteClient:
     def __init__(self, settings: Settings):
         self.s = settings
@@ -169,6 +221,10 @@ class SiteClient:
 
     async def review_action(self, payload: dict) -> tuple[int, dict]:
         status, data, _ = await self._send("POST", "/api/internal/review-action", json.dumps(payload, separators=(",", ":")))
+        return status, data
+
+    async def gumroad_ping(self, fields: dict) -> tuple[int, dict]:
+        status, data, _ = await self._send("POST", "/api/internal/payments/ping", json.dumps(ping_payload(fields), separators=(",", ":")))
         return status, data
 
     async def drain_outbox(self) -> tuple[int, dict]:
