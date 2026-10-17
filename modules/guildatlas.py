@@ -33,6 +33,7 @@ SNOWFLAKE = re.compile(r"^\d{17,20}$")
 INVITE_CODE = re.compile(r"^[A-Za-z0-9-]{2,32}$")
 DISGUILD_NAME = "Disguild"
 PRESENCE_CHUNK = 300  # the site accepts at most 300 ids per call
+MAX_SERVERS, MAX_SHARDS = 10_000_000, 10_000  # the site rejects anything outside these
 INVITE_REASON = "Permanent invite for the Disguild listing (requested by a server manager)"
 
 
@@ -40,6 +41,22 @@ def chunked(items, size: int = PRESENCE_CHUNK):
     items = list(items)
     for i in range(0, len(items), size):
         yield items[i:i + size]
+
+
+def stats_entry(application_id, server_count, shard_count=None) -> Optional[dict]:
+    """-> one entry for POST /api/internal/bot-stats, or None when a value is not something the site would accept.
+    Counts only; a bot that is not sharded (shard_count None) sends no shard count."""
+    app = str(application_id) if application_id is not None else ""
+    if not SNOWFLAKE.match(app):
+        return None
+    if isinstance(server_count, bool) or not isinstance(server_count, int) or not 0 <= server_count <= MAX_SERVERS:
+        return None
+    entry = {"applicationId": app, "serverCount": server_count}
+    if shard_count is not None:
+        if isinstance(shard_count, bool) or not isinstance(shard_count, int) or not 1 <= shard_count <= MAX_SHARDS:
+            return None
+        entry["shardCount"] = shard_count
+    return entry
 
 
 def presence_delta(previous: set, current: set) -> tuple[list, list]:
@@ -165,6 +182,11 @@ class SiteClient:
     async def push_presence(self, added: list, removed: list) -> bool:
         body = json.dumps({"added": [str(i) for i in added], "removed": [str(i) for i in removed]}, separators=(",", ":"))
         status, data, _ = await self._send("POST", "/api/internal/guild-presence", body)
+        return status == 200 and bool(data.get("ok"))
+
+    async def push_stats(self, entries: list) -> bool:
+        body = json.dumps({"bots": entries}, separators=(",", ":"))
+        status, data, _ = await self._send("POST", "/api/internal/bot-stats", body)
         return status == 200 and bool(data.get("ok"))
 
     async def pending_invites(self) -> list:

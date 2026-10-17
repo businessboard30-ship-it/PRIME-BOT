@@ -69,6 +69,7 @@ class GuildAtlasCog(commands.Cog):
             return
         # Every process (main bot and each clone) creates the permanent Disguild invites for servers it is itself in.
         self.invite_loop.start()
+        self.stats_loop.start()
         if not self._main:
             return  # clones do not own the review messages and must not poll the rest
         ga.knowledge_cache.client = self.client
@@ -82,6 +83,7 @@ class GuildAtlasCog(commands.Cog):
         self.knowledge_loop.cancel()
         self.presence_loop.cancel()
         self.invite_loop.cancel()
+        self.stats_loop.cancel()
         if ga.knowledge_cache.client is self.client:
             ga.knowledge_cache.client = None
 
@@ -173,6 +175,20 @@ class GuildAtlasCog(commands.Cog):
                 logger.warning("guildatlas presence report was not accepted; will retry")
         except Exception:
             logger.exception("guildatlas presence loop error")
+
+    @tasks.loop(minutes=10)
+    async def stats_loop(self):
+        """Every process (main bot and each clone): report this bot's own server and shard count for its Disguild listing. Counts only."""
+        try:
+            if not self.bot.is_ready():
+                return
+            entry = ga.stats_entry(self.bot.application_id, len(self.bot.guilds), getattr(self.bot, "shard_count", None))
+            if entry is None:
+                return
+            if not await self.client.push_stats([entry]):
+                logger.warning("guildatlas stats report was not accepted; will retry")
+        except Exception:
+            logger.exception("guildatlas stats loop error")
 
     @tasks.loop(seconds=60)
     async def invite_loop(self):
