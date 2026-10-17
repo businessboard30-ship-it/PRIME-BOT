@@ -27,7 +27,7 @@ except Exception:  # pragma: no cover
 # results such as "ok", "already processed" or "test ping ignored" are not here.
 _FAILURE_RESULTS = frozenset({
     "unlock failed", "product mismatch", "underpaid", "sale not verified",
-    "unknown reference", "unknown subscription", "no reference",
+    "unknown reference", "unknown subscription", "no reference", "disguild unavailable",
 })
 
 

@@ -487,6 +487,17 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
     500 = unlock failed after claim (claim reverted, Gumroad may retry)."""
     import os
     await _auto.load_runtime()
+    # Disguild (the directory site) shares this Gumroad account, and an account has only one Ping URL: its sales and refunds are forwarded
+    # to the site, which runs its own checks. Anything else carries on below unchanged.
+    from modules import guildatlas as _ga
+    try:
+        forwarded = await _ga.route_gumroad_ping(fields, _ga.load_settings(), lambda sale_id: _sale_is_valid(sale_id, "disguild"))
+    except Exception:
+        # Never let the Disguild hand-off break the bot's own payments: only a Disguild sale is answered with a retry.
+        logger.exception("[gumroad] Disguild forwarding crashed")
+        forwarded = (503, "disguild unavailable") if _ga.is_disguild_reference(fields.get("url_params[reference]") or fields.get("reference")) else None
+    if forwarded is not None:
+        return forwarded
     is_test = str(fields.get("test", "")).lower() == "true"
     accept_test = os.getenv("GUMROAD_ACCEPT_TEST_PINGS", "").strip().lower() in ("1", "true", "yes")
     if is_test and not accept_test:
@@ -601,6 +612,7 @@ _ALERT_MESSAGES = {
     "no guild": "The order has no server (guild) attached, so a per-server unlock can't be applied. It was NOT unlocked and NOT retried. Find the server ID and unlock it by hand.",
     "unlock failed": "Payment was valid but the unlock handler crashed. Gumroad will retry; check the api logs.",
     "unknown subscription": "A recurring Premium charge arrived for a subscription the bot has no record of.",
+    "disguild unavailable": "A Disguild sale could not be handed to the site (site down, or GUILDATLAS_SITE_URL / GUILDATLAS_INTERNAL_SECRET wrong). Gumroad will retry the ping; if it keeps failing, unlock the boost by hand on the site.",
     "refund/dispute noted": "A refund or dispute ping arrived. Review manually.",
 }
 
