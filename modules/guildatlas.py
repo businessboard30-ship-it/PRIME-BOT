@@ -43,6 +43,99 @@ MAX_MEMBERS = 100_000_000  # the site rejects anything above this
 GUILD_STATS_CHUNK = 100  # entries per call (the site accepts at most 100)
 INVITE_REASON = "Permanent invite for the Disguild listing (requested by a server manager)"
 
+# Web log (Disguild Phase 38): the site records activity in web_events; this bot posts it to a private channel in the support server.
+WEBLOG_CHANNEL_NAME = "web-logs"
+WEBLOG_CURSOR_KEY = "disguild_weblog_cursor"
+WEBLOG_CHANNEL_KEY = "disguild_weblog_channel"
+WEBLOG_EMBEDS_PER_MESSAGE = 10
+_COLORS = {"good": 0x57A773, "bad": 0xC0504D, "warn": 0xD9A441, "info": 0x7289DA}
+_RATING = {1: "1/5", 2: "2/5", 3: "3/5", 4: "4/5", 5: "5/5"}
+
+
+def _clip(text, n: int) -> str:
+    return str(text or "")[:n]
+
+
+def format_web_event(event: dict, site_url: str = "") -> Optional[dict]:
+    """One feed event -> {"title", "description", "color"} for an embed, or None for something this bot does not know.
+    Counts and names only; the site never sends voter, reporter or review-author identity, and neither do we invent any."""
+    if not isinstance(event, dict):
+        return None
+    kind = event.get("kind")
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    listing = data.get("listing") if isinstance(data.get("listing"), dict) else {}
+    lt = "Server" if listing.get("type") == "server" else "Bot"
+    name = _clip(listing.get("name"), 80) or "unknown listing"
+    owner = _clip(listing.get("owner"), 40)
+    slug = listing.get("slug") if isinstance(listing.get("slug"), str) and re.match(r"^[a-z0-9-]{1,80}$", listing.get("slug", "")) else None
+    path = f"{'servers' if lt == 'Server' else 'bots'}/{slug}" if slug else None
+    link = f"\n{site_url.rstrip('/')}/{path}" if site_url and path else ""
+    who = f" by {owner}" if owner else ""
+    q = data.get("queue") if isinstance(data.get("queue"), dict) else {}
+    pos, waiting = q.get("position"), q.get("waiting")
+    queue_line = f"\nQueue number **#{pos}** ({waiting} waiting for review)" if isinstance(pos, int) and isinstance(waiting, int) else ""
+
+    if kind == "listing.submitted":
+        return {"title": f"{lt} added", "description": f"**{name}**{who} was added and is waiting for review.{queue_line}{link}", "color": _COLORS["info"]}
+    if kind == "listing.resubmitted":
+        return {"title": f"{lt} resubmitted", "description": f"**{name}**{who} was sent back for review.{queue_line}{link}", "color": _COLORS["info"]}
+    simple = {
+        "listing.approved": (f"{lt} approved", "good"), "listing.rejected": (f"{lt} rejected", "bad"),
+        "listing.changes_requested": (f"Changes requested on a {lt.lower()}", "warn"), "listing.suspended": (f"{lt} suspended", "bad"),
+        "listing.restored": (f"{lt} restored", "good"), "edit.submitted": (f"Edit sent for review ({lt.lower()})", "info"),
+        "edit.approved": (f"Edit approved ({lt.lower()})", "good"), "edit.rejected": (f"Edit rejected ({lt.lower()})", "bad"),
+        "appeal.submitted": ("Appeal sent", "warn"), "appeal.upheld": ("Appeal accepted", "good"), "appeal.denied": ("Appeal denied", "bad"),
+    }
+    if kind in simple:
+        title, color = simple[kind]
+        extra = queue_line if kind == "appeal.upheld" else ""
+        return {"title": title, "description": f"**{name}**{who}{extra}{link}", "color": _COLORS[color]}
+    if kind == "vote":
+        n = data.get("vote_count")
+        return {"title": "New vote", "description": f"**{name}** now has **{n}** vote(s).{link}" if isinstance(n, int) else f"**{name}** got a vote.{link}", "color": _COLORS["info"]}
+    if kind == "review":
+        r = _RATING.get(data.get("rating"))
+        return {"title": "New review", "description": f"**{name}** got a review{f' ({r})' if r else ''}.{link}", "color": _COLORS["info"]}
+    if kind == "report":
+        what = "review" if data.get("onReview") else lt.lower()
+        return {"title": "New report", "description": f"A {what} on **{name}** was reported (reason: {_clip(data.get('reason'), 40) or 'not given'}). Open the site's admin reports.", "color": _COLORS["warn"]}
+    if kind == "boost":
+        d = data.get("days")
+        return {"title": "Boost started", "description": f"**{name}** was boosted{f' for {d} days' if isinstance(d, int) else ''}.{link}", "color": _COLORS["good"]}
+    return None
+
+
+# Queue questions: only these get the asker's own queue numbers added to the AI prompt.
+QUEUE_QUESTION = re.compile(r"\bqueue\b|\b(my|the)\s+(bot|server|listing|submission)\b.{0,40}\b(position|line|turn|status|waiting|pending|review)\b|\b(position|place)\s+in\s+(the\s+)?(line|queue)\b|\bhow\s+long\b.{0,40}\b(review|approv)", re.I | re.S)
+
+
+def is_queue_question(text: str) -> bool:
+    return bool(text) and bool(QUEUE_QUESTION.search(text))
+
+
+def queue_context(data: dict, site_url: str = "") -> str:
+    """Prompt text with the ASKER's own queue numbers (from GET /api/internal/queue). Statuses and places only."""
+    if not isinstance(data, dict) or not data.get("ok"):
+        return ""
+    waiting = data.get("waiting") if isinstance(data.get("waiting"), int) else 0
+    lines = [f"Disguild review queue right now: {waiting} listing(s) waiting. Place 1 is reviewed next. "
+             "Below are ONLY the listings of the person asking, as the site reports them. Quote these exactly; never guess a number."]
+    items = data.get("listings") if isinstance(data.get("listings"), list) else []
+    if not items:
+        lines.append("This person has no listing waiting, needing changes, rejected or suspended. If they expect one, tell them to check their dashboard "
+                     "(they may not have signed in with the same Discord account, or it is already approved).")
+    for it in items[:10]:
+        if not isinstance(it, dict):
+            continue
+        nm, st, pos = _clip(it.get("name"), 80), it.get("status"), it.get("position")
+        if st == "pending" and isinstance(pos, int):
+            lines.append(f"- {nm} ({it.get('type')}): waiting for review, queue number {pos} of {waiting}.")
+        else:
+            lines.append(f"- {nm} ({it.get('type')}): status {st} (not in the review line; the owner sees the reason on their dashboard).")
+    if site_url:
+        lines.append(f"Dashboard: {site_url.rstrip('/')}/dashboard")
+    return "\n".join(lines)
+
 
 def chunked(items, size: int = PRESENCE_CHUNK):
     items = list(items)
@@ -287,6 +380,24 @@ class SiteClient:
         status, data, _ = await self._send("POST", "/api/internal/invite-requests/complete", json.dumps(payload, separators=(",", ":")))
         return status == 200 and bool(data.get("applied"))
 
+    async def web_events(self, after: Optional[int]) -> tuple[bool, list, int]:
+        """-> (ok, events, latest). after=None is the first call of a new reader: no events, only the newest id."""
+        path = "/api/internal/web-events" + (f"?after={int(after)}" if after is not None else "")
+        status, data, _ = await self._send("GET", path)
+        events = data.get("events") if status == 200 else None
+        latest = data.get("latest")
+        if status != 200 or not data.get("ok") or not isinstance(events, list) or isinstance(latest, bool) or not isinstance(latest, int):
+            return False, [], 0
+        return True, [e for e in events if isinstance(e, dict) and isinstance(e.get("id"), int)], latest
+
+    async def queue_for(self, discord_id) -> dict:
+        """The asker's own queue numbers, or {} on any failure (the AI then simply has no queue facts and must say so)."""
+        did = str(discord_id)
+        if not SNOWFLAKE.match(did):
+            return {}
+        status, data, _ = await self._send("GET", f"/api/internal/queue?discord_id={did}")
+        return data if status == 200 and data.get("ok") else {}
+
     async def public_health(self) -> bool:
         status, data, _ = await self._send("GET", "/api/health", signed=False, timeout=10)
         return status == 200 and bool(data.get("ok"))
@@ -351,7 +462,7 @@ SITE_QUESTION = re.compile(r"guild\s?atlas|(submit|listing|listed|directory|appr
 AI_POLICY = (
     "Answer GuildAtlas facts ONLY from the knowledge below. If it is not there, say you do not know or that it is not available yet. "
     "Never invent features, prices, payment status, approval decisions, analytics or account data. "
-    "You cannot see any person's listing status, reviewer identities or private reviewer notes: send them to their GuildAtlas dashboard. "
+    "You cannot see reviewer identities or private reviewer notes. You only know a person's listing status or queue number when it is given to you below as their own queue facts; otherwise send them to their GuildAtlas dashboard. "
     "Never discuss tokens, secrets or infrastructure."
 )
 MAX_CONTEXT_CHARS = 9000
@@ -407,6 +518,18 @@ class KnowledgeCache:
         if not self.data or now - self.fetched_at > self.ttl:
             await self.refresh(now)
         return build_context(self.data, self.client.s.site_url) if self.data else ""
+
+
+async def queue_context_for(text: str, discord_id) -> str:
+    """Prompt addition when a person asks about the review queue: THEIR OWN numbers, fetched live. '' when it is not a queue question."""
+    client = knowledge_cache.client
+    if not client or not is_queue_question(text):
+        return ""
+    data = await client.queue_for(discord_id)
+    if not data:
+        return ("The person is asking about the Disguild review queue, but the site could not be reached just now. "
+                "Do not guess a number: say you cannot see it right now and point them to their dashboard.")
+    return queue_context(data, client.s.site_url)
 
 
 # Shared instance. The cog sets .client when the integration is configured; ai_features reads it.

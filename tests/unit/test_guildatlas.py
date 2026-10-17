@@ -407,3 +407,58 @@ def test_listed_servers_and_push_guild_stats_use_the_site_paths():
 
     d = Down(ga.Settings("https://x", "s" * 32, 0))
     assert run(d.listed_servers()) == [] and run(d.push_guild_stats([entry])) is False
+
+
+# ── web log and queue numbers (Disguild Phase 38) ───────────────────────────
+def test_added_event_shows_the_queue_number():
+    ev = {"id": 1, "kind": "listing.submitted", "at": "2026-10-17T10:00:00.000Z",
+          "data": {"listing": {"id": 7, "type": "bot", "slug": "my-bot", "name": "My Bot", "owner": "sam"}, "queue": {"position": 3, "waiting": 5}}}
+    e = ga.format_web_event(ev, "https://disguild.pages.dev/")
+    assert e["title"] == "Bot added"
+    assert "**#3**" in e["description"] and "5 waiting" in e["description"] and "My Bot" in e["description"]
+    assert "https://disguild.pages.dev/bots/my-bot" in e["description"]
+
+
+def test_events_without_identity_and_unknown_kinds():
+    vote = ga.format_web_event({"id": 2, "kind": "vote", "data": {"listing": {"type": "server", "name": "Cool", "slug": "cool"}, "vote_count": 12}})
+    assert vote["title"] == "New vote" and "12" in vote["description"]
+    assert ga.format_web_event({"id": 3, "kind": "something.new", "data": {}}) is None
+    assert ga.format_web_event("junk") is None
+    bad_slug = ga.format_web_event({"id": 4, "kind": "listing.approved", "data": {"listing": {"type": "bot", "name": "X", "slug": "../x"}}}, "https://s")
+    assert "https://s/" not in bad_slug["description"]
+
+
+def test_queue_question_detection():
+    for q in ("what is my bot's queue number?", "where am I in the queue", "what's my position in line", "how long until my bot is reviewed"):
+        assert ga.is_queue_question(q), q
+    for q in ("hello", "play some music", "tell me a joke"):
+        assert not ga.is_queue_question(q), q
+
+
+def test_queue_context_quotes_only_the_askers_numbers():
+    ctx = ga.queue_context({"ok": True, "waiting": 9, "listings": [{"name": "My Bot", "type": "bot", "status": "pending", "position": 4},
+                                                                       {"name": "Old", "type": "server", "status": "rejected", "position": None}]}, "https://s")
+    assert "queue number 4 of 9" in ctx and "Old" in ctx and "rejected" in ctx and "https://s/dashboard" in ctx
+    empty = ga.queue_context({"ok": True, "waiting": 2, "listings": []})
+    assert "no listing waiting" in empty
+    assert ga.queue_context({"ok": False}) == ""
+
+
+def test_queue_context_for_is_off_without_the_integration_and_for_other_questions():
+    old0 = ga.knowledge_cache.client
+    ga.knowledge_cache.client = None
+    try:
+        assert run(ga.queue_context_for("what is my queue number", 123456789012345678)) == ""
+    finally:
+        ga.knowledge_cache.client = old0
+    class Fake:
+        s = ga.Settings("https://s", "x" * 32, 0)
+        async def queue_for(self, did):
+            return {"ok": True, "waiting": 1, "listings": [{"name": "B", "type": "bot", "status": "pending", "position": 1}]}
+    old = ga.knowledge_cache.client
+    ga.knowledge_cache.client = Fake()
+    try:
+        assert "queue number 1 of 1" in run(ga.queue_context_for("what is my bot's queue number?", 123456789012345678))
+        assert run(ga.queue_context_for("tell me a joke", 123456789012345678)) == ""
+    finally:
+        ga.knowledge_cache.client = old
