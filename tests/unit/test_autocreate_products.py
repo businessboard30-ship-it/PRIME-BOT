@@ -132,3 +132,17 @@ def test_disguild_links_are_dm_d_to_the_owner_once(monkeypatch):
 
 def test_disguild_boost_prices_match_the_owner_decision():
     assert ga._cents("disguild_boost_7d") == 299 and ga._cents("disguild_boost_30d") == 700
+
+
+def test_deleted_disguild_product_is_forgotten_so_it_is_recreated(monkeypatch):
+    fake = FakeDB()
+    monkeypatch.setattr(ga, "db", fake)
+    monkeypatch.setattr(config, "GUMROAD_ACCESS_TOKEN", "tok", raising=False)
+    monkeypatch.setattr(ga, "RUNTIME", {"disguild_boost_7d": {"id": "old", "url": "u1"}, "disguild_donate": {"id": "keep", "url": "u3"}})
+
+    async def fake_list(session, token):
+        return [{"id": "keep", "name": "Disguild Donation"}, {"id": "old", "deleted": True}]
+    monkeypatch.setattr(ga, "_list_products", fake_list)
+    asyncio.run(ga._drop_deleted_disguild())
+    assert "disguild_boost_7d" not in ga.RUNTIME and "disguild_donate" in ga.RUNTIME
+    assert fake.s["gumroad_auto:disguild_boost_7d"] == ""
