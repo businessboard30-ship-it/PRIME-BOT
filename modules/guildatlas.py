@@ -453,17 +453,18 @@ class HealthMonitor:
         if last.get("key") == key and now - last.get("at", 0) < self.cooldown_seconds * 4:
             return None
         self._last_internal = {"key": key, "at": now}
-        return "GuildAtlas needs attention:\n- " + "\n- ".join(problems)
+        return "Disguild needs attention:\n- " + "\n- ".join(problems)
 
 
 # ── AI knowledge cache ──────────────────────────────────────────────────────
-SITE_QUESTION = re.compile(r"guild\s?atlas|(submit|listing|listed|directory|approved|pending|rejected|reviewer|moderation)\b.*\b(bot|server)\b|\b(bot|server)\b.*\b(submit|listing|listed|directory|approved|pending|rejected|reviewer|moderation)\b", re.I | re.S)
+SITE_QUESTION = re.compile(r"guild\s?atlas|dis\s?guild|(submit|listing|listed|directory|approved|pending|rejected|reviewer|moderation)\b.*\b(bot|server)\b|\b(bot|server)\b.*\b(submit|listing|listed|directory|approved|pending|rejected|reviewer|moderation)\b", re.I | re.S)
 
 AI_POLICY = (
-    "Answer GuildAtlas facts ONLY from the knowledge below. If it is not there, say you do not know or that it is not available yet. "
+    "Answer Disguild facts ONLY from the knowledge below. If it is not there, say you do not know or that it is not available yet. "
     "Never invent features, prices, payment status, approval decisions, analytics or account data. "
-    "You cannot see reviewer identities or private reviewer notes. You only know a person's listing status or queue number when it is given to you below as their own queue facts; otherwise send them to their GuildAtlas dashboard. "
-    "Never discuss tokens, secrets or infrastructure."
+    "You cannot see reviewer identities or private reviewer notes. You only know a person's listing status or queue number when it is given to you below as their own queue facts; otherwise send them to their Disguild dashboard. "
+    "Never discuss tokens, secrets or infrastructure. "
+    "To link Disguild write [[DISGUILD]] (site), [[DISGUILD_SERVER]] (list a server), [[DISGUILD_BOT]] (list a bot) or [[DISGUILD_DASHBOARD]]; never type a web address."
 )
 MAX_CONTEXT_CHARS = 9000
 
@@ -474,13 +475,121 @@ def is_site_question(text: str) -> bool:
 
 def build_context(knowledge: dict, site_url: str = "") -> str:
     """Whole public knowledge as prompt text (it is small, so no fragile retrieval), capped."""
-    parts = [f"{AI_POLICY}\n\nGuildAtlas knowledge (version {knowledge.get('version', '?')}):"]
+    parts = [f"{AI_POLICY}\n\nDisguild knowledge (version {knowledge.get('version', '?')}):"]
     for s in knowledge.get("sections", []):
         if isinstance(s, dict) and isinstance(s.get("title"), str) and isinstance(s.get("body"), str):
             parts.append(f"## {s['title']}\n{s['body']}")
     if site_url:
         parts.append(f"Dashboard: {site_url}/dashboard")
     return "\n\n".join(parts)[:MAX_CONTEXT_CHARS]
+
+
+# ── Listing: where to send people, and when the AI should bring it up ────────
+DISGUILD_PUBLIC_URL = "https://disguild.pages.dev"  # used only when GUILDATLAS_SITE_URL is not set on this process
+JOIN_DM_SOURCE = "utm_source=join-dm"  # marks the join-DM link button so a rebuilt DM can tell it is already there
+
+
+def site_url_for_links() -> str:
+    """The site's address for links people will click: the configured site, else the env var, else the public address. Never has a trailing slash."""
+    client = knowledge_cache.client
+    configured = getattr(getattr(client, "s", None), "site_url", "") if client else ""
+    return (configured or os.environ.get("GUILDATLAS_SITE_URL", "") or DISGUILD_PUBLIC_URL).strip().rstrip("/")
+
+
+def submit_url(kind: str, site_url: str = "", source: str = "") -> str:
+    """Full link to the listing form: kind 'bot' or 'server'. `source` is an optional ready-made query string such as JOIN_DM_SOURCE."""
+    base = (site_url or site_url_for_links()).rstrip("/")
+    return f"{base}/submit/{'bot' if kind == 'bot' else 'server'}" + (f"?{source}" if source else "")
+
+
+def join_dm_list_url(site_url: str = "") -> str:
+    return submit_url("server", site_url, JOIN_DM_SOURCE)
+
+
+def is_join_dm_list_url(url) -> bool:
+    return isinstance(url, str) and "/submit/server" in url and JOIN_DM_SOURCE in url
+
+
+# People talking about getting a Discord server or bot listed, promoted or discovered. "list" alone is deliberately not enough
+# (\"list the roles in my server\" must not trigger it): a listing/promotion word AND a bot/server word, or an explicit "list my server".
+_TARGET = r"(?:bots?|servers?|communit(?:y|ies)|guilds?)"
+_LISTING_WORD = (r"(?:listings?|listed|director(?:y|ies)|server\s*lists?|bot\s*lists?|submit(?:ting)?|top\.?gg|disboard|discord\.me|discadia|"
+                 r"promot\w+|advertis\w+|publici[sz]\w+|more\s+(?:members|users|servers|visibility|exposure|invites)|new\s+members|get\s+discovered|get\s+noticed|get\s+found)")
+LISTING_INTENT = re.compile(
+    rf"\blist\s+(?:my|our)\s+(?:discord\s+)?{_TARGET}\b(?!\s*['’]s\b)(?!\s+(?:roles?|channels?|members?|commands?|emojis?|bans?))"
+    rf"|\b{_LISTING_WORD}\b.{{0,60}}\b{_TARGET}\b|\b{_TARGET}\b.{{0,60}}\b{_LISTING_WORD}\b"
+    rf"|\bget(?:ting)?\b.{{0,30}}\b{_TARGET}\b.{{0,30}}\b(?:discovered|noticed|found|known|seen)\b"
+    r"|\bdis\s?guild\b"
+    r"|\bhow\s+(?:do\s+i|can\s+i|to)\s+(?:grow|promote|advertise)\b",
+    re.I | re.S)
+_NOT_LISTING = re.compile(r"\blist(?:ing)?\s+(?:all\s+|every\s+|the\s+|my\s+)?(?:channels?|roles?|members?|commands?|emojis?|bans?|users?)\b", re.I)
+
+
+def is_listing_question(text: str) -> bool:
+    return bool(text) and bool(LISTING_INTENT.search(text)) and not _NOT_LISTING.search(text)
+
+
+_TOKEN_RE = re.compile(r"\[\[\s*DISGUILD(?:_(SERVER|BOT|DASHBOARD))?\s*\]\]", re.I)
+_TOKEN_PATH = {None: "", "SERVER": "/submit/server", "BOT": "/submit/bot", "DASHBOARD": "/dashboard"}
+TOKEN_HELP = ("To link Disguild write a token, never an address: [[DISGUILD_SERVER]] is the form to list a server, [[DISGUILD_BOT]] the form to list a bot, "
+              "[[DISGUILD_DASHBOARD]] the person's dashboard, [[DISGUILD]] the site. The system replaces the token with the real link.")
+
+
+def render_disguild_links(text: str, site_url: str = "") -> str:
+    """Swaps the model's Disguild tokens for the exact links, so the address is always right and never typed (or guessed) by the model."""
+    if not text or "[[" not in text:
+        return text
+    base = (site_url or site_url_for_links()).rstrip("/")
+    return _TOKEN_RE.sub(lambda m: base + _TOKEN_PATH[(m.group(1) or "").upper() or None], text)
+
+
+def has_disguild_link(text: str, site_url: str = "") -> bool:
+    base = (site_url or site_url_for_links()).rstrip("/")
+    host = base.split("://", 1)[-1].lower()
+    return bool(text) and host in text.lower()
+
+
+def ensure_listing_link(reply: str, question: str = "", site_url: str = "") -> str:
+    """Safety net for listing talk: if the reply has no Disguild link (the model forgot the token), add the right one. A reply that already has it is untouched."""
+    if not reply or has_disguild_link(reply, site_url):
+        return reply
+    q = (question or "").lower()
+    wants_bot, wants_server = bool(re.search(r"\bbots?\b", q)), bool(re.search(r"\b(servers?|communit(?:y|ies)|guilds?)\b", q))
+    if wants_bot and not wants_server:
+        tail = f"🌐 List your bot on Disguild (free): {submit_url('bot', site_url)}"
+    elif wants_server and not wants_bot:
+        tail = f"🌐 List your server on Disguild (free): {submit_url('server', site_url)}"
+    else:
+        tail = f"🌐 List it on Disguild (free): servers {submit_url('server', site_url)}  ·  bots {submit_url('bot', site_url)}"
+    return f"{reply.rstrip()}\n\n{tail}"
+
+
+def listing_instruction(site_url: str = "", followup: bool = False) -> str:
+    """Extra system-prompt text for conversations about listing/promoting a Discord server or bot."""
+    first = ("Your FIRST suggestion must be Disguild, our own free directory: write [[DISGUILD_SERVER]] for servers and [[DISGUILD_BOT]] for bots. "
+             if not followup else
+             "You already pointed them to Disguild; keep helping with their next question (the steps, what is needed, the avatar rule) and write [[DISGUILD_SERVER]] or [[DISGUILD_BOT]] again only when it helps. ")
+    return (
+        "LISTING TOPIC: the person is talking about listing, promoting or getting more members/users for a Discord server or bot. " + first + TOKEN_HELP + " "
+        "How it works (say it briefly, in your own words): sign in with Discord, fill a short 4-step form, a reviewer approves it, then it appears in the directory. "
+        "A listing needs an avatar (a server icon, or a bot app icon) or it is rejected automatically. "
+        "Only after Disguild may you add general growth tips. Never put another listing site ahead of Disguild, and never invent features, prices, approval times or promises of members. "
+        "Do not state any person's listing status; send them to [[DISGUILD_DASHBOARD]]. "
+        "End with ONE short question that moves them forward, for example whether they want to list a bot or a server, or whether they want the steps."
+    )
+
+
+def listing_context_for(text: str, recent_prompts=(), last_response: str = "", site_url: str = "") -> str:
+    """Prompt addition for listing talk, or ''. Also kicks in for a follow-up ('what do I need?') when the conversation just covered listing."""
+    if is_listing_question(text):
+        return listing_instruction(site_url)
+    for earlier in list(recent_prompts)[-2:]:
+        if is_listing_question(earlier or ""):
+            return listing_instruction(site_url, followup=True)
+    if last_response and "/submit/" in last_response:
+        return listing_instruction(site_url, followup=True)
+    return ""
+
 
 
 class KnowledgeCache:

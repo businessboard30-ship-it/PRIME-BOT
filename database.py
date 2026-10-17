@@ -157,7 +157,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "100"
+SCHEMA_VERSION = "101"
 # "99" -> "100" adds 053_guild_plus.sql (discord_guild_subscriptions.plus_expires_at / plus_subscription_id: Premium Plus tier). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "98" -> "99" adds 052_goodbye_style.sql (discord_welcome_extras.goodbye_title/goodbye_color/goodbye_image_url/goodbye_footer/goodbye_show_avatar: Premium-only goodbye message styling, NULL = default look). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "97" -> "98" wires 051_cat_life.sql into startup (cat_life_state, cat_life_daily, cat_outings: Cat Life). It shipped in PR #274 without being run, so cat release/trade/list and the Cat Life screens failed with UndefinedTableError. CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -3953,6 +3953,17 @@ class Database:
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS auto_listing_offer_guild_clone_key
             ON auto_listing_offer (guild_id, COALESCE(clone_id, -1))
+        """)
+
+        # One-time "list your server on Disguild" reminder shown on the join DM (see
+        # discord_bot/cogs/_views_join_dm.py and bot.py's _send_combined_owner_join_dm). The row's mere existence
+        # IS the "already reminded" flag, so it survives restarts and redeploys (Postgres, not memory). Keyed by
+        # guild only: a server with the main bot AND a clone is still reminded once.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS disguild_list_reminder (
+                guild_id BIGINT PRIMARY KEY,
+                sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
         """)
 
         # The actual public listing, one row per (guild, clone). invite_url
@@ -14183,6 +14194,18 @@ class Database:
                 RETURNING guild_id
                 """,
                 guild_id, clone_id,
+            )
+            return row is not None
+
+    async def claim_disguild_list_reminder(self, guild_id: int) -> bool:
+        """Atomically claims 'this process shows the one-time Disguild listing reminder for this guild'.
+        True only the very first time it is ever called for the guild; every later call (a restart, a redeploy,
+        a duplicate join event, another process, a clone) gets False because the row already exists."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO disguild_list_reminder (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING RETURNING guild_id",
+                guild_id,
             )
             return row is not None
 
