@@ -27,6 +27,11 @@ Without the URL and a 32+ character secret the integration is OFF (one log line 
 - Needs the Disguild site PR (businessboard30-ship-it/disguild #39) merged, migration 0016 applied, and a redeploy of both.
 - Not verified against real Discord.
 
+## Server and shard counts (Disguild Phase 25)
+- **Every process (main bot and each clone), every 10 min:** sends its own application id, server count (`len(bot.guilds)`) and shard count (`bot.shard_count`, left out when the bot is not sharded) to `POST /api/internal/bot-stats`. Counts only. The site shows them as Servers / Shards on that bot's Disguild listing while the report is under 7 days old, and ignores application ids that have no listing (so unlisted clones are harmless).
+- A clone only shows counts if its owner listed it on Disguild; the main bot cannot report for a clone because it only knows the clone's server ids, not its counts.
+- Needs the Disguild site PR (businessboard30-ship-it/disguild #50) merged, migration 0020 applied, and a redeploy of both. Not verified against the live site.
+
 ## Tests
 `python -m pytest tests/unit/test_guildatlas.py` (39 tests). `tests/fixtures/guildatlas_knowledge.json` is generated from the site's code; regenerate it when the site's knowledge changes. The "evals" test checks the facts are present in the prompt; it does not run the language model.
 

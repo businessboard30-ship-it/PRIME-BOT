@@ -232,3 +232,31 @@ def test_site_client_calls_use_the_right_paths_and_payloads():
     assert calls[1][:2] == ("GET", "/api/internal/invite-requests")
     assert calls[3] == ("POST", "/api/internal/invite-requests/complete", {"guildId": "123456789012345678", "code": "abcDEF12"})
     assert len(calls[4][2]["error"]) == 200
+
+
+def test_stats_entry_accepts_only_what_the_site_accepts():
+    assert ga.stats_entry(123456789012345678, 42) == {"applicationId": "123456789012345678", "serverCount": 42}
+    assert ga.stats_entry("123456789012345678", 0, 3) == {"applicationId": "123456789012345678", "serverCount": 0, "shardCount": 3}
+    for bad in [(None, 1), ("abc", 1), (123456789012345678, -1), (123456789012345678, 1.5), (123456789012345678, True),
+                (123456789012345678, ga.MAX_SERVERS + 1), (123456789012345678, 1, 0), (123456789012345678, 1, ga.MAX_SHARDS + 1)]:
+        assert ga.stats_entry(*bad) is None
+
+
+def test_push_stats_posts_to_the_bot_stats_path():
+    calls = []
+
+    class C(ga.SiteClient):
+        async def _send(self, method, path, body="", signed=True, extra=None, timeout=15):
+            calls.append((method, path, json.loads(body)))
+            return 200, {"ok": True, "stored": 1}, {}
+
+    c = C(ga.Settings("https://x", "s" * 32, 0))
+    entry = ga.stats_entry(123456789012345678, 7, 2)
+    assert run(c.push_stats([entry])) is True
+    assert calls == [("POST", "/api/internal/bot-stats", {"bots": [entry]})]
+
+    class Down(ga.SiteClient):
+        async def _send(self, *a, **k):
+            return 0, {}, {}
+
+    assert run(Down(ga.Settings("https://x", "s" * 32, 0)).push_stats([entry])) is False
