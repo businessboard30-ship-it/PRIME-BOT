@@ -30,6 +30,27 @@ REVIEW_CUSTOM_ID = re.compile(r"^ga:r:(approve|request_changes|reject):(\d{1,12}
 NEEDS_REASON = {"request_changes", "reject"}
 REASON_MIN, REASON_MAX = 5, 500
 SNOWFLAKE = re.compile(r"^\d{17,20}$")
+INVITE_CODE = re.compile(r"^[A-Za-z0-9-]{2,32}$")
+DISGUILD_NAME = "Disguild"
+PRESENCE_CHUNK = 300  # the site accepts at most 300 ids per call
+INVITE_REASON = "Permanent invite for the Disguild listing (requested by a server manager)"
+
+
+def chunked(items, size: int = PRESENCE_CHUNK):
+    items = list(items)
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def presence_delta(previous: set, current: set) -> tuple[list, list]:
+    """-> (ids to report as present, ids that disappeared since the last report). Everything current is re-sent each time
+    (the site treats a report as fresh for 3 hours), so a missed call heals itself."""
+    return sorted(current), sorted(previous - current)
+
+
+def invite_code_from(value) -> Optional[str]:
+    code = str(value or "").strip()
+    return code if INVITE_CODE.match(code) else None
 
 
 # ── configuration ───────────────────────────────────────────────────────────
@@ -140,6 +161,25 @@ class SiteClient:
     async def internal_health(self) -> tuple[int, dict]:
         status, data, _ = await self._send("GET", "/api/internal/health")
         return status, data
+
+    async def push_presence(self, added: list, removed: list) -> bool:
+        body = json.dumps({"added": [str(i) for i in added], "removed": [str(i) for i in removed]}, separators=(",", ":"))
+        status, data, _ = await self._send("POST", "/api/internal/guild-presence", body)
+        return status == 200 and bool(data.get("ok"))
+
+    async def pending_invites(self) -> list:
+        status, data, _ = await self._send("GET", "/api/internal/invite-requests")
+        pending = data.get("pending") if status == 200 else None
+        return [int(x) for x in pending if isinstance(x, str) and SNOWFLAKE.match(x)] if isinstance(pending, list) else []
+
+    async def claim_invite(self, guild_id: int) -> bool:
+        status, data, _ = await self._send("POST", "/api/internal/invite-requests/claim", json.dumps({"guildId": str(guild_id)}, separators=(",", ":")))
+        return status == 200 and data.get("claimed") is True
+
+    async def complete_invite(self, guild_id: int, code: Optional[str] = None, error: Optional[str] = None) -> bool:
+        payload = {"guildId": str(guild_id), **({"code": code} if code else {"error": (error or "unknown")[:200]})}
+        status, data, _ = await self._send("POST", "/api/internal/invite-requests/complete", json.dumps(payload, separators=(",", ":")))
+        return status == 200 and bool(data.get("applied"))
 
     async def public_health(self) -> bool:
         status, data, _ = await self._send("GET", "/api/health", signed=False, timeout=10)

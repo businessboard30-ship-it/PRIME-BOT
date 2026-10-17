@@ -19,6 +19,7 @@ import time
 import discord
 from discord.ext import commands, tasks
 
+from database import db
 from modules import guildatlas as ga
 
 logger = logging.getLogger(__name__)
@@ -60,21 +61,27 @@ class GuildAtlasCog(commands.Cog):
         self.monitor = ga.HealthMonitor()
         self._tick = 0
         self._main = getattr(bot, "clone_id", None) is None
+        self._reported: set = set()  # server ids last reported to the site (main bot only)
 
     async def cog_load(self):
         if not self.client:
             logger.info("GuildAtlas integration is OFF (set GUILDATLAS_SITE_URL and a 32+ char GUILDATLAS_INTERNAL_SECRET).")
             return
+        # Every process (main bot and each clone) creates the permanent Disguild invites for servers it is itself in.
+        self.invite_loop.start()
         if not self._main:
-            return  # clones do not own the review messages and must not poll
+            return  # clones do not own the review messages and must not poll the rest
         ga.knowledge_cache.client = self.client
         self.minute_loop.start()
         self.knowledge_loop.start()
+        self.presence_loop.start()
         logger.info("GuildAtlas integration is ON (site %s).", self.settings.site_url)
 
     async def cog_unload(self):
         self.minute_loop.cancel()
         self.knowledge_loop.cancel()
+        self.presence_loop.cancel()
+        self.invite_loop.cancel()
         if ga.knowledge_cache.client is self.client:
             ga.knowledge_cache.client = None
 
@@ -148,8 +155,81 @@ class GuildAtlasCog(commands.Cog):
         except Exception:
             logger.exception("guildatlas knowledge refresh error")
 
+    # ── clones and server invites ──────────────────────────────────────────
+    @tasks.loop(minutes=10)
+    async def presence_loop(self):
+        """Main bot only: tell the site which servers any bot (main or clone) is in, so clone servers can be listed. Ids only."""
+        try:
+            ids = set(await db.list_active_guild_ids()) | {g.id for g in self.bot.guilds}
+            added, removed = ga.presence_delta(self._reported, ids)
+            ok = True
+            for part in ga.chunked(added):
+                ok = await self.client.push_presence(part, []) and ok
+            for part in ga.chunked(removed):
+                ok = await self.client.push_presence([], part) and ok
+            if ok:
+                self._reported = ids
+            else:
+                logger.warning("guildatlas presence report was not accepted; will retry")
+        except Exception:
+            logger.exception("guildatlas presence loop error")
+
+    @tasks.loop(seconds=60)
+    async def invite_loop(self):
+        """Every process: create the permanent invite for server listings whose manager asked for one, in servers this bot is in."""
+        try:
+            for gid in (await self.client.pending_invites())[:20]:
+                if self.bot.get_guild(gid) is not None:
+                    await self._handle_invite_request(gid)
+        except Exception:
+            logger.exception("guildatlas invite loop error")
+
+    async def _make_invite(self, guild: discord.Guild):
+        """-> (code, error). Never expires, unlimited uses, its own code (so joins through it can be recognised)."""
+        me = guild.me
+        if me is None:
+            return None, "bot member not available in the server"
+        order, seen, last_err = [], set(), None
+        for ch in [guild.system_channel, guild.rules_channel, *sorted(guild.text_channels, key=lambda c: c.position)]:
+            if ch is not None and ch.id not in seen:
+                seen.add(ch.id)
+                order.append(ch)
+        for ch in order[:10]:
+            if not ch.permissions_for(me).create_instant_invite:
+                continue
+            try:
+                inv = await ch.create_invite(max_age=0, max_uses=0, unique=True, reason=ga.INVITE_REASON)
+                return inv.code, None
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                last_err = type(exc).__name__
+        return None, last_err or "the bot has no channel with the Create Invite permission"
+
+    async def _handle_invite_request(self, guild_id: int):
+        guild = self.bot.get_guild(guild_id)
+        if guild is None or not await self.client.claim_invite(guild_id):
+            return  # another process won the claim (or the bot is not in the server)
+        code, err = await self._make_invite(guild)
+        code = ga.invite_code_from(code)
+        if not code:
+            await self.client.complete_invite(guild_id, error=err)
+            logger.info("guildatlas invite for guild %s failed: %s", guild_id, err)
+            return
+        clone_id = getattr(self.bot, "clone_id", None)
+        try:
+            await db.record_disguild_invite(guild_id, clone_id, code)
+            # Seed the join-tracking baseline so the very first join through this invite is attributed to it.
+            cache = await db.get_invite_cache(guild_id, clone_id=clone_id)
+            cache[code] = {"uses": 0, "inviter_id": getattr(self.bot.user, "id", None), "is_vanity": False}
+            await db.replace_invite_cache(guild_id, clone_id, cache)
+        except Exception:
+            logger.exception("guildatlas could not record the new invite for guild %s (invite still reported to the site)", guild_id)
+        await self.client.complete_invite(guild_id, code=code)
+        logger.info("guildatlas permanent invite created for guild %s", guild_id)
+
     @minute_loop.before_loop
     @knowledge_loop.before_loop
+    @presence_loop.before_loop
+    @invite_loop.before_loop
     async def _wait(self):
         await self.bot.wait_until_ready()
 

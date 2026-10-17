@@ -19,8 +19,16 @@ Without the URL and a 32+ character secret the integration is OFF (one log line 
 - **AI**: for questions that look like GuildAtlas questions only, the site's public knowledge (`GET /api/knowledge`, ETag-cached, refreshed every 3 h) is added to the AI prompt with rules: answer only from it, never invent features/prices/status, never reveal reviewer identities or private notes, send people to their dashboard.
 - `!ga_refresh` (owner only, no slash-command slot used) forces a knowledge refresh.
 
+## Clones and server invites (Disguild Phase 17)
+- **Presence (main bot, every 10 min):** sends the ids of every server any bot (main or clone, from `discord_guilds`) is in to `POST /api/internal/guild-presence`, in chunks of 300. Ids only. This is what lets servers that only have a clone be listed.
+- **Permanent invites (main bot and every clone, every minute):** `GET /api/internal/invite-requests` lists servers whose manager submitted a listing without an invite. A process that is in that server claims it (atomic, one winner), creates an invite that never expires with unlimited uses (its own code, reason mentions Disguild; tries the system/rules channel first, then text channels the bot can create invites in), stores the code in `disguild_invites`, and reports it back. If no channel allows it, the failure is reported and the manager can resubmit. Submitting the listing is the manager's consent; nothing is created for servers nobody asked about.
+- **"Via Disguild":** joins through that invite are recognised by the existing invite tracking (`InvitesCog`), and the join log says "joined via **Disguild**". This only appears in servers that turned invite tracking on and set its channel (Discord invites cannot carry custom text). The new invite is added to the tracking baseline so even the first join is attributed.
+- Clones inherit `GUILDATLAS_SITE_URL` / `GUILDATLAS_INTERNAL_SECRET` from the environment of the process that starts them; if those are not set for clones, only the main bot creates invites (for servers it is in).
+- Needs the Disguild site PR (businessboard30-ship-it/disguild #39) merged, migration 0016 applied, and a redeploy of both.
+- Not verified against real Discord.
+
 ## Tests
-`python -m pytest tests/unit/test_guildatlas.py` (35 tests). `tests/fixtures/guildatlas_knowledge.json` is generated from the site's code; regenerate it when the site's knowledge changes. The "evals" test checks the facts are present in the prompt; it does not run the language model.
+`python -m pytest tests/unit/test_guildatlas.py` (39 tests). `tests/fixtures/guildatlas_knowledge.json` is generated from the site's code; regenerate it when the site's knowledge changes. The "evals" test checks the facts are present in the prompt; it does not run the language model.
 
 ## Verified / not verified
 Verified: signature identical to the site's reference signer; the bot's client against the real site code running locally (signed health/drain/review calls, wrong secret rejected, ETag 304, non-reviewer 403). Not verified: any live Discord interaction (button click, modal), alert delivery to a real channel, the AI answering well with the context, behavior on Railway.
