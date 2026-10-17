@@ -128,3 +128,7 @@ def test_disguild_links_are_dm_d_to_the_owner_once(monkeypatch):
     for var in ga.DISGUILD_ENV.values():
         assert var in sent[0]
     assert "https://x.gumroad.com/l/a" in sent[0] and "https://x.gumroad.com/l/c" in sent[0]
+
+
+def test_disguild_boost_prices_match_the_owner_decision():
+    assert ga._cents("disguild_boost_7d") == 299 and ga._cents("disguild_boost_30d") == 700
