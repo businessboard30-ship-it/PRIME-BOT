@@ -141,6 +141,8 @@ async def load_runtime(force: bool = False) -> None:
             raw = await db.get_global_setting(SETTING_KEY.format(ptype=ptype))
             if raw:
                 RUNTIME[ptype] = json.loads(raw)
+            else:
+                RUNTIME.pop(ptype, None)
         except Exception:
             logger.exception("[gumroad-auto] couldn't load saved product for %s", ptype)
 
@@ -196,6 +198,28 @@ async def _notify_owner_once(ptype: str, reason: str) -> None:
         logger.exception("[gumroad-auto] owner notice failed for %s", ptype)
 
 
+async def _drop_deleted_disguild() -> None:
+    """If a saved Disguild product was deleted (or edited away) in Gumroad, forget it so the next step recreates it."""
+    saved = [p for p in DISGUILD_ENV if RUNTIME.get(p, {}).get("id") and not config.GUMROAD_PRODUCT_LINKS.get(p)]
+    token = config.GUMROAD_ACCESS_TOKEN
+    if not saved or not token:
+        return
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+            existing = await _list_products(s, token)
+        if existing is None:
+            return                                     # can't tell: keep what we have
+        alive = {p.get("id") for p in existing if not p.get("deleted")}
+        for ptype in saved:
+            if RUNTIME[ptype]["id"] not in alive:
+                logger.info("[gumroad-auto] %s was deleted in Gumroad; will recreate", ptype)
+                RUNTIME.pop(ptype, None)
+                await db.set_global_setting(SETTING_KEY.format(ptype=ptype), "")
+                await db.set_global_setting(NOTIFIED_KEY.format(ptype=ptype), "")
+    except Exception:
+        logger.exception("[gumroad-auto] deleted-product check failed")
+
+
 async def _send_disguild_links_once() -> None:
     """When all three Disguild products have links, DM the owner the details to give the site developer (once per link set)."""
     try:
@@ -220,6 +244,7 @@ async def _send_disguild_links_once() -> None:
 async def ensure_products() -> bool:
     """One pass. Returns True when every plan has a usable link."""
     await load_runtime(force=True)
+    await _drop_deleted_disguild()
     missing = [p for p in PRODUCTS if not link_for(p)]
     if not missing:
         await _send_disguild_links_once()
