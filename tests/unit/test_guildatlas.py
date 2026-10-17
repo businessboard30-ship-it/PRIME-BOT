@@ -185,3 +185,50 @@ def test_no_client_means_no_context_and_no_crash():
     cache = ga.KnowledgeCache(None)
     assert run(cache.context_for("how do I submit my bot to GuildAtlas?")) == ""
     assert run(cache.refresh()) is False
+
+
+# ── clones and server invites ───────────────────────────────────────────────
+def test_chunking_respects_the_sites_limit_of_300_ids():
+    parts = list(ga.chunked(range(650)))
+    assert [len(p) for p in parts] == [300, 300, 50]
+    assert list(ga.chunked([])) == []
+
+
+def test_presence_resends_everything_and_reports_what_disappeared():
+    added, removed = ga.presence_delta({1, 2, 3}, {2, 3, 4})
+    assert added == [2, 3, 4]  # everything current is refreshed so the site's 3-hour freshness never lapses
+    assert removed == [1]
+
+
+def test_invite_codes_are_validated_before_being_sent_to_the_site():
+    assert ga.invite_code_from("abcDEF12") == "abcDEF12"
+    assert ga.invite_code_from(" ab-12 ") == "ab-12"
+    assert ga.invite_code_from("bad code!") is None
+    assert ga.invite_code_from(None) is None
+    assert ga.invite_code_from("x" * 40) is None
+
+
+def test_site_client_calls_use_the_right_paths_and_payloads():
+    calls = []
+
+    class C(ga.SiteClient):
+        async def _send(self, method, path, body="", signed=True, extra=None, timeout=15):
+            calls.append((method, path, json.loads(body) if body else None))
+            if path.endswith("guild-presence"):
+                return 200, {"ok": True}, {}
+            if path.endswith("invite-requests") and method == "GET":
+                return 200, {"ok": True, "pending": ["123456789012345678", "bad", 5]}, {}
+            if path.endswith("claim"):
+                return 200, {"ok": True, "claimed": True}, {}
+            return 200, {"ok": True, "applied": True}, {}
+
+    c = C(ga.Settings("https://x", "s" * 32, 0))
+    assert run(c.push_presence([111111111111111111], [])) is True
+    assert run(c.pending_invites()) == [123456789012345678]
+    assert run(c.claim_invite(123456789012345678)) is True
+    assert run(c.complete_invite(123456789012345678, code="abcDEF12")) is True
+    assert run(c.complete_invite(123456789012345678, error="x" * 500)) is True
+    assert calls[0] == ("POST", "/api/internal/guild-presence", {"added": ["111111111111111111"], "removed": []})
+    assert calls[1][:2] == ("GET", "/api/internal/invite-requests")
+    assert calls[3] == ("POST", "/api/internal/invite-requests/complete", {"guildId": "123456789012345678", "code": "abcDEF12"})
+    assert len(calls[4][2]["error"]) == 200

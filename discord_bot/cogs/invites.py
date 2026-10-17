@@ -343,6 +343,7 @@ class InvitesCog(GuildOnlyCog):
         # non-vanity invite_code match counts — the vanity branch below is
         # a separate, mutually exclusive case.
         via_site = False
+        site_label = SITE_NAME
         if invite_code and not is_vanity:
             try:
                 listing = await db.get_server_listing(guild.id, clone_id=clone_id)
@@ -350,6 +351,13 @@ class InvitesCog(GuildOnlyCog):
                 listing = None
             if listing and listing.get("invite_code") == invite_code:
                 via_site = True
+            else:
+                # The permanent invite the bot made for this server's Disguild listing.
+                try:
+                    if await db.is_disguild_invite(guild.id, invite_code):
+                        via_site, site_label = True, "Disguild"
+                except Exception:
+                    pass
 
         if inviter_id:
             _, net = await db.get_inviter_stats(guild.id, clone_id, inviter_id)
@@ -358,9 +366,9 @@ class InvitesCog(GuildOnlyCog):
                 f"(**{net}** invite{'s' if net != 1 else ''})"
             )
             if via_site:
-                content += f", via **{SITE_NAME}**"
+                content += f", via **{site_label}**"
         elif via_site:
-            content = f"📥 {member.mention} joined via **{SITE_NAME}**."
+            content = f"📥 {member.mention} joined via **{site_label}**."
         elif is_vanity:
             content = f"📥 {member.mention} joined via the server's **vanity invite**."
         elif no_permission:

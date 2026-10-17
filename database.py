@@ -2587,6 +2587,18 @@ class Database:
             ON discord_invite_joins (guild_id, COALESCE(clone_id, -1), inviter_id)
         """)
 
+        # Permanent invites the bot created for a Disguild server listing (the
+        # server manager asked for it by submitting the listing). Kept so a
+        # join through one of these codes can be announced as "via Disguild".
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS disguild_invites (
+                invite_code TEXT PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
         # --- Discord port: music panel (feature expansion) ---------------------
         # Queue/playback state itself is in-memory only (per-guild, lives inside
         # music.py's GuildMusicState) — not persisted here, since it wouldn't
@@ -12727,6 +12739,29 @@ class Database:
                 """,
                 guild_id, clone_id, member_id, inviter_id, invite_code,
             )
+
+    async def record_disguild_invite(self, guild_id: int, clone_id: Optional[int], invite_code: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO disguild_invites (invite_code, guild_id, clone_id) VALUES ($1, $2, $3) ON CONFLICT (invite_code) DO NOTHING",
+                invite_code, guild_id, clone_id,
+            )
+
+    async def is_disguild_invite(self, guild_id: int, invite_code: str) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT 1 FROM disguild_invites WHERE invite_code = $1 AND guild_id = $2", invite_code, guild_id,
+            )
+        return row is not None
+
+    async def list_active_guild_ids(self) -> list:
+        """Every server any bot (main or clone) is currently in. Only ids; used to tell the Disguild site where our bots are."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT DISTINCT guild_id FROM discord_guilds WHERE left_at IS NULL")
+        return [int(r["guild_id"]) for r in rows]
 
     async def record_invite_leave(self, guild_id: int, clone_id: Optional[int], member_id: int) -> None:
         """Closes the most recent still-open join row for this member —
