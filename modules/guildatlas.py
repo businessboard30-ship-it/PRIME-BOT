@@ -39,6 +39,8 @@ DISGUILD_REF_PREFIX = "ga_"
 PING_FIELDS = ("sale_id", "test", "refunded", "disputed", "dispute_won", "chargebacked", "resource_name",
                "url_params[reference]", "reference", "permalink", "product_permalink", "price")
 MAX_SERVERS, MAX_SHARDS = 10_000_000, 10_000  # the site rejects anything outside these
+MAX_MEMBERS = 100_000_000  # the site rejects anything above this
+GUILD_STATS_CHUNK = 100  # entries per call (the site accepts at most 100)
 INVITE_REASON = "Permanent invite for the Disguild listing (requested by a server manager)"
 
 
@@ -62,6 +64,21 @@ def stats_entry(application_id, server_count, shard_count=None) -> Optional[dict
             return None
         entry["shardCount"] = shard_count
     return entry
+
+
+def guild_stats_entries(guilds, listed_ids) -> list:
+    """-> entries for POST /api/internal/guild-stats: one per LISTED server that this process is itself in (``guilds`` are the
+    guild objects this bot process can see, so a clone only ever reports its own servers). Counts only. A guild whose member
+    count is unknown or out of range is skipped rather than sent wrong."""
+    wanted = {int(i) for i in listed_ids if isinstance(i, (int, str)) and SNOWFLAKE.match(str(i))}
+    out = []
+    for g in guilds:
+        gid = getattr(g, "id", None)
+        n = getattr(g, "member_count", None)
+        if gid not in wanted or isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= MAX_MEMBERS:
+            continue
+        out.append({"guildId": str(gid), "memberCount": n})
+    return out
 
 
 def presence_delta(previous: set, current: set) -> tuple[list, list]:
@@ -243,6 +260,17 @@ class SiteClient:
     async def push_stats(self, entries: list) -> bool:
         body = json.dumps({"bots": entries}, separators=(",", ":"))
         status, data, _ = await self._send("POST", "/api/internal/bot-stats", body)
+        return status == 200 and bool(data.get("ok"))
+
+    async def listed_servers(self) -> list:
+        """Ids of approved server listings (the site's answer to: which servers do you want member counts for)."""
+        status, data, _ = await self._send("GET", "/api/internal/listed-servers")
+        servers = data.get("servers") if status == 200 else None
+        return [int(x) for x in servers if isinstance(x, str) and SNOWFLAKE.match(x)] if isinstance(servers, list) else []
+
+    async def push_guild_stats(self, entries: list) -> bool:
+        body = json.dumps({"servers": entries}, separators=(",", ":"))
+        status, data, _ = await self._send("POST", "/api/internal/guild-stats", body)
         return status == 200 and bool(data.get("ok"))
 
     async def pending_invites(self) -> list:

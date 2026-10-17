@@ -5,6 +5,8 @@
 * Every minute: poll the public site health (alert after 3 failures, with cooldown and a recovery message) and
   nudge the site to retry queued notifications. Every 5 minutes: read the signed internal health for dead or stuck
   notifications.
+* Every 10 minutes, in every process (main bot AND clones): member counts of the listed servers that process is in, so a
+  server with only a clone still gets its numbers. Invites and bot server counts work the same way.
 * Every 3 hours (ETag-conditional): refresh the public knowledge used by the AI for GuildAtlas questions.
 
 No slash command is registered (global slot budget). ``!ga_refresh`` (owner only, prefix command) forces a
@@ -70,6 +72,7 @@ class GuildAtlasCog(commands.Cog):
         # Every process (main bot and each clone) creates the permanent Disguild invites for servers it is itself in.
         self.invite_loop.start()
         self.stats_loop.start()
+        self.members_loop.start()  # a server that only has a clone still gets its member count
         if not self._main:
             return  # clones do not own the review messages and must not poll the rest
         ga.knowledge_cache.client = self.client
@@ -84,6 +87,7 @@ class GuildAtlasCog(commands.Cog):
         self.presence_loop.cancel()
         self.invite_loop.cancel()
         self.stats_loop.cancel()
+        self.members_loop.cancel()
         if ga.knowledge_cache.client is self.client:
             ga.knowledge_cache.client = None
 
@@ -190,6 +194,24 @@ class GuildAtlasCog(commands.Cog):
         except Exception:
             logger.exception("guildatlas stats loop error")
 
+    @tasks.loop(minutes=10)
+    async def members_loop(self):
+        """Every process (main bot and each clone): report the member count of each LISTED server this process is in.
+        Whichever bot is in the server does it, so a server where only a clone is present is covered. Counts only."""
+        try:
+            if not self.bot.is_ready():
+                return
+            listed = await self.client.listed_servers()
+            if not listed:
+                return
+            entries = ga.guild_stats_entries(self.bot.guilds, listed)
+            for part in ga.chunked(entries, ga.GUILD_STATS_CHUNK):
+                if not await self.client.push_guild_stats(part):
+                    logger.warning("guildatlas member counts were not accepted; will retry")
+                    break
+        except Exception:
+            logger.exception("guildatlas members loop error")
+
     @tasks.loop(seconds=60)
     async def invite_loop(self):
         """Every process: create the permanent invite for server listings whose manager asked for one, in servers this bot is in."""
@@ -246,6 +268,7 @@ class GuildAtlasCog(commands.Cog):
     @knowledge_loop.before_loop
     @presence_loop.before_loop
     @invite_loop.before_loop
+    @members_loop.before_loop
     async def _wait(self):
         await self.bot.wait_until_ready()
 

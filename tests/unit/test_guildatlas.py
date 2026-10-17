@@ -367,3 +367,43 @@ def test_the_client_uses_the_signed_payments_endpoint():
             return 200, {"ok": True, "code": 200, "msg": "ok"}, {}
     assert run(Spy(ENABLED).gumroad_ping({"sale_id": "s1", "email": "x@y.z"})) == (200, {"ok": True, "code": 200, "msg": "ok"})
     assert seen == {"method": "POST", "path": "/api/internal/payments/ping", "body": {"fields": {"sale_id": "s1"}}, "signed": True}
+
+
+# ── member counts for listed servers (main bot and clones both report the servers they are in) ─
+class _G:
+    def __init__(self, id, member_count):
+        self.id, self.member_count = id, member_count
+
+
+def test_guild_stats_entries_only_listed_servers_this_process_is_in():
+    guilds = [_G(300000000000000001, 120), _G(300000000000000002, 5), _G(300000000000000003, None), _G(300000000000000004, -1),
+              _G(300000000000000005, True), _G(300000000000000006, ga.MAX_MEMBERS + 1)]
+    listed = [300000000000000001, 300000000000000003, 300000000000000004, 300000000000000005, 300000000000000006, 300000000000000099]
+    assert ga.guild_stats_entries(guilds, listed) == [{"guildId": "300000000000000001", "memberCount": 120}]
+    assert ga.guild_stats_entries([], listed) == []
+    assert ga.guild_stats_entries(guilds, []) == []
+    assert ga.guild_stats_entries(guilds, ["300000000000000002", "junk", None]) == [{"guildId": "300000000000000002", "memberCount": 5}]
+
+
+def test_listed_servers_and_push_guild_stats_use_the_site_paths():
+    calls = []
+
+    class C(ga.SiteClient):
+        async def _send(self, method, path, body="", signed=True, extra=None, timeout=15):
+            calls.append((method, path, json.loads(body) if body else None))
+            if path.endswith("listed-servers"):
+                return 200, {"ok": True, "servers": ["300000000000000001", "x", 5]}, {}
+            return 200, {"ok": True, "stored": 1}, {}
+
+    c = C(ga.Settings("https://x", "s" * 32, 0))
+    assert run(c.listed_servers()) == [300000000000000001]
+    entry = {"guildId": "300000000000000001", "memberCount": 7}
+    assert run(c.push_guild_stats([entry])) is True
+    assert calls == [("GET", "/api/internal/listed-servers", None), ("POST", "/api/internal/guild-stats", {"servers": [entry]})]
+
+    class Down(ga.SiteClient):
+        async def _send(self, *a, **k):
+            return 0, {}, {}
+
+    d = Down(ga.Settings("https://x", "s" * 32, 0))
+    assert run(d.listed_servers()) == [] and run(d.push_guild_stats([entry])) is False

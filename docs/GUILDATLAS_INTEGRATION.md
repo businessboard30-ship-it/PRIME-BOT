@@ -29,6 +29,7 @@ Without the URL and a 32+ character secret the integration is OFF (one log line 
 
 ## Server and shard counts (Disguild Phase 25)
 - **Every process (main bot and each clone), every 10 min:** sends its own application id, server count (`len(bot.guilds)`) and shard count (`bot.shard_count`, left out when the bot is not sharded) to `POST /api/internal/bot-stats`. Counts only. The site shows them as Servers / Shards on that bot's Disguild listing while the report is under 7 days old, and ignores application ids that have no listing (so unlisted clones are harmless).
+- **Every process (main bot and each clone), every 10 min:** asks the site which server listings exist (`GET /api/internal/listed-servers`), then sends `{guildId, memberCount}` for each of those servers THIS process is in to `POST /api/internal/guild-stats` (max 100 per call). Because every process does it, a server that only has a clone still gets its member count; if both are in the server they send the same number. Counts only. The site shows Members on the server's card, listing page and embed card while the report is under 7 days old.
 - A clone only shows counts if its owner listed it on Disguild; the main bot cannot report for a clone because it only knows the clone's server ids, not its counts.
 - Needs the Disguild site PR (businessboard30-ship-it/disguild #50) merged, migration 0020 applied, and a redeploy of both. Not verified against the live site.
 
