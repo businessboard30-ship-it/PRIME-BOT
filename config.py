@@ -459,6 +459,10 @@ XP_BOOST_DURATION_DAYS = 14
 # It grants the custom level-up card (colours, background, logo) for LEVEL_PASS_CARD_DAYS days AND one XP boost
 # (XP_BOOST_MULTIPLIER x for XP_BOOST_DURATION_DAYS days, in the server it was bought from).
 LEVEL_PASS_FEE_USD = 1.99
+# Disguild (the listing site) products, auto-created/adopted by gumroad_autocreate.py. Prices in USD; override with env vars before the bot first runs.
+DISGUILD_BOOST_7D_FEE_USD = float(os.getenv("DISGUILD_BOOST_7D_FEE_USD", "2"))
+DISGUILD_BOOST_30D_FEE_USD = float(os.getenv("DISGUILD_BOOST_30D_FEE_USD", "6"))
+DISGUILD_DONATE_FEE_USD = float(os.getenv("DISGUILD_DONATE_FEE_USD", "3"))
 LEVEL_PASS_CARD_DAYS = 45
 LEVEL_CARD_TRIAL_DAYS = 5          # free trial of the custom level-up card, once per member (like the welcome Customize Card trial)
 

@@ -88,7 +88,30 @@ PRODUCTS = {
         "price": lambda: _plan_price("dev_yearly"),
         "description": "Developer tools with a weekly AI chat allowance. Renews yearly, cancel any time.",
     },
+    "disguild_boost_7d": {
+        "name": "Disguild Boost - 7 days", "legacy": [], "kind": "one_time",
+        "price": lambda: float(config.DISGUILD_BOOST_7D_FEE_USD),
+        "description": "Boost one approved listing to the top of its category on Disguild for 7 days. One-time payment, no subscription.",
+    },
+    "disguild_boost_30d": {
+        "name": "Disguild Boost - 30 days", "legacy": [], "kind": "one_time",
+        "price": lambda: float(config.DISGUILD_BOOST_30D_FEE_USD),
+        "description": "Boost one approved listing to the top of its category on Disguild for 30 days. One-time payment, no subscription.",
+    },
+    "disguild_donate": {
+        "name": "Disguild Donation", "legacy": [], "kind": "one_time",
+        "price": lambda: float(config.DISGUILD_DONATE_FEE_USD),
+        "description": "A voluntary donation to support Disguild. It does not unlock anything.",
+    },
 }
+
+# payment_type -> the Cloudflare Pages variable the site needs for it (Disguild Phase 7/33).
+DISGUILD_ENV = {
+    "disguild_boost_7d": "GUMROAD_BOOST_7D_URL",
+    "disguild_boost_30d": "GUMROAD_BOOST_30D_URL",
+    "disguild_donate": "GUMROAD_DONATE_URL",
+}
+DISGUILD_SENT_KEY = "gumroad_auto_disguild_links_sent"
 
 # payment_type -> {"id": str, "url": str}; filled by load_runtime()/ensure_products()
 RUNTIME: Dict[str, dict] = {}
@@ -173,11 +196,33 @@ async def _notify_owner_once(ptype: str, reason: str) -> None:
         logger.exception("[gumroad-auto] owner notice failed for %s", ptype)
 
 
+async def _send_disguild_links_once() -> None:
+    """When all three Disguild products have links, DM the owner the details to give the site developer (once per link set)."""
+    try:
+        links = {p: link_for(p) for p in DISGUILD_ENV}
+        if not all(links.values()):
+            return
+        sig = json.dumps(links, sort_keys=True)
+        if await db.get_global_setting(DISGUILD_SENT_KEY) == sig:
+            return
+        from gumroad_payments import _alert_owner
+        lines = [f"\u2022 `{DISGUILD_ENV[p]}` = {links[p]}  ({PRODUCTS[p]['name']}, ${PRODUCTS[p]['price']():g})" for p in DISGUILD_ENV]
+        await _alert_owner(
+            "\u2705 **Disguild Gumroad products are ready.** Send these three lines to the site developer "
+            "(product links are public, not secrets):\n" + "\n".join(lines) +
+            "\nIf a product shows as a draft in Gumroad, publish it. For the donation, you can turn on 'Pay what you want' in its settings."
+        )
+        await db.set_global_setting(DISGUILD_SENT_KEY, sig)
+    except Exception:
+        logger.exception("[gumroad-auto] couldn't send Disguild links")
+
+
 async def ensure_products() -> bool:
     """One pass. Returns True when every plan has a usable link."""
     await load_runtime(force=True)
     missing = [p for p in PRODUCTS if not link_for(p)]
     if not missing:
+        await _send_disguild_links_once()
         return True
     token = config.GUMROAD_ACCESS_TOKEN
     if not token:
@@ -220,6 +265,7 @@ async def ensure_products() -> bool:
                     await _notify_owner_once(ptype, "couldn't read the Gumroad product list (check GUMROAD_ACCESS_TOKEN)")
     except Exception:
         logger.exception("[gumroad-auto] provisioning pass failed")
+    await _send_disguild_links_once()
     return all(link_for(p) for p in PRODUCTS)
 
 

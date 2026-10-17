@@ -99,3 +99,32 @@ def test_env_codes_still_win(pdb, monkeypatch):
     monkeypatch.setitem(config.USER_PLAN_PAYSTACK_CODES, "card_plan", "PLN_env")
     pa.RUNTIME["card_plan"] = "PLN_auto"
     assert pa.plan_code_for("card_plan") == "PLN_env"
+
+
+def test_disguild_products_are_defined_and_neutral():
+    for p in ("disguild_boost_7d", "disguild_boost_30d", "disguild_donate"):
+        assert ga.PRODUCTS[p]["kind"] == "one_time" and p in ga.DISGUILD_ENV
+    assert ga._cents("disguild_boost_7d") == round(config.DISGUILD_BOOST_7D_FEE_USD * 100)
+    assert set(ga.DISGUILD_ENV.values()) == {"GUMROAD_BOOST_7D_URL", "GUMROAD_BOOST_30D_URL", "GUMROAD_DONATE_URL"}
+
+
+def test_disguild_links_are_dm_d_to_the_owner_once(monkeypatch):
+    fake = FakeDB()
+    sent = []
+    import gumroad_payments as gp
+
+    async def alert(text):
+        sent.append(text)
+    monkeypatch.setattr(ga, "db", fake)
+    monkeypatch.setattr(gp, "_alert_owner", alert)
+    monkeypatch.setattr(ga, "RUNTIME", {"disguild_boost_7d": {"id": "a", "url": "https://x.gumroad.com/l/a"}})
+    asyncio.run(ga._send_disguild_links_once())
+    assert sent == []                      # not all three exist yet: nothing is sent
+    ga.RUNTIME.update({"disguild_boost_30d": {"id": "b", "url": "https://x.gumroad.com/l/b"},
+                       "disguild_donate": {"id": "c", "url": "https://x.gumroad.com/l/c"}})
+    asyncio.run(ga._send_disguild_links_once())
+    asyncio.run(ga._send_disguild_links_once())
+    assert len(sent) == 1                  # sent once, not on every pass
+    for var in ga.DISGUILD_ENV.values():
+        assert var in sent[0]
+    assert "https://x.gumroad.com/l/a" in sent[0] and "https://x.gumroad.com/l/c" in sent[0]
