@@ -709,6 +709,12 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                 system_content += "\n\n" + _site_ctx
         except Exception:
             logger.exception("guildatlas knowledge context failed")
+        try:                              # "what is my bot's queue number?": THEIR OWN live numbers from the site (only for queue questions)
+            _queue_ctx = await _ga.queue_context_for(message, user_id)
+            if _queue_ctx:
+                system_content += "\n\n" + _queue_ctx
+        except Exception:
+            logger.exception("guildatlas queue context failed")
         lean_system = system_content      # without the command list: used by the no-tools retry below
         if command_context:
             # Permission-filtered command list built by the caller (see

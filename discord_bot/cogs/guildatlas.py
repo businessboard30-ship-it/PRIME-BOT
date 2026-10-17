@@ -7,6 +7,8 @@
   notifications.
 * Every 10 minutes, in every process (main bot AND clones): member counts of the listed servers that process is in, so a
   server with only a clone still gets its numbers. Invites and bot server counts work the same way.
+* Every 30 seconds (main bot): post the site's activity feed (bots/servers added with queue numbers, votes, edits, reviews,
+  reports, boosts) to a private #web-logs channel it creates in the support server (needs Manage Channels).
 * Every 3 hours (ETag-conditional): refresh the public knowledge used by the AI for GuildAtlas questions.
 
 No slash command is registered (global slot budget). ``!ga_refresh`` (owner only, prefix command) forces a
@@ -64,6 +66,7 @@ class GuildAtlasCog(commands.Cog):
         self._tick = 0
         self._main = getattr(bot, "clone_id", None) is None
         self._reported: set = set()  # server ids last reported to the site (main bot only)
+        self._weblog_channel_id: int = 0
 
     async def cog_load(self):
         if not self.client:
@@ -79,12 +82,14 @@ class GuildAtlasCog(commands.Cog):
         self.minute_loop.start()
         self.knowledge_loop.start()
         self.presence_loop.start()
+        self.weblog_loop.start()
         logger.info("GuildAtlas integration is ON (site %s).", self.settings.site_url)
 
     async def cog_unload(self):
         self.minute_loop.cancel()
         self.knowledge_loop.cancel()
         self.presence_loop.cancel()
+        self.weblog_loop.cancel()
         self.invite_loop.cancel()
         self.stats_loop.cancel()
         self.members_loop.cancel()
@@ -264,7 +269,78 @@ class GuildAtlasCog(commands.Cog):
         await self.client.complete_invite(guild_id, code=code)
         logger.info("guildatlas permanent invite created for guild %s", guild_id)
 
+    # ── web log (support server) ───────────────────────────────────────────
+    async def _weblog_channel(self):
+        """The private web-logs channel in the support server; found by its saved id, then by name, else created. None when not possible."""
+        from config import DISCORD_SUPPORT_SERVER_ID
+        guild = self.bot.get_guild(DISCORD_SUPPORT_SERVER_ID) if DISCORD_SUPPORT_SERVER_ID else None
+        if guild is None:
+            return None
+        saved = self._weblog_channel_id or int(await db.get_global_setting(ga.WEBLOG_CHANNEL_KEY) or 0)
+        ch = guild.get_channel(saved) if saved else None
+        if ch is None:
+            ch = discord.utils.get(guild.text_channels, name=ga.WEBLOG_CHANNEL_NAME)
+        if ch is None:
+            me = guild.me
+            if me is None or not guild.me.guild_permissions.manage_channels:
+                logger.warning("guildatlas web log: no Manage Channels permission in the support server, cannot create #%s", ga.WEBLOG_CHANNEL_NAME)
+                return None
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                me: discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, read_message_history=True),
+            }
+            ch = await guild.create_text_channel(ga.WEBLOG_CHANNEL_NAME, overwrites=overwrites, reason="Disguild web log (activity feed from the site)",
+                                                 topic="Live activity from the Disguild site: bots and servers added with queue numbers, votes, edits, reviews, reports, boosts.")
+            logger.info("guildatlas web log channel created in the support server")
+        if ch.id != saved:
+            await db.set_global_setting(ga.WEBLOG_CHANNEL_KEY, str(ch.id))
+        self._weblog_channel_id = ch.id
+        return ch
+
+    @tasks.loop(seconds=30)
+    async def weblog_loop(self):
+        """Main bot only: post new site events to #web-logs. The cursor only moves after Discord accepted the message, so nothing is lost
+        or doubled; a brand-new reader starts at the newest event (no history replay)."""
+        try:
+            raw = await db.get_global_setting(ga.WEBLOG_CURSOR_KEY)
+            cursor = int(raw) if raw and raw.isdigit() else None
+            ok, events, latest = await self.client.web_events(cursor)
+            if not ok:
+                return
+            if cursor is None:
+                await db.set_global_setting(ga.WEBLOG_CURSOR_KEY, str(latest))
+                await self._weblog_channel()  # create the channel right away so it exists before the first event
+                return
+            if not events:
+                return
+            ch = await self._weblog_channel()
+            if ch is None:
+                return  # keep the cursor: events wait until the channel can exist
+            batch, last_id = [], cursor
+            for ev in events:
+                emb = ga.format_web_event(ev, self.settings.site_url)
+                last_id = ev["id"]
+                if emb:
+                    e = discord.Embed(title=emb["title"][:250], description=emb["description"][:3900], color=emb["color"])
+                    at = ev.get("at")
+                    if isinstance(at, str):
+                        try:
+                            from datetime import datetime
+                            e.timestamp = datetime.fromisoformat(at.replace("Z", "+00:00"))
+                        except ValueError:
+                            pass
+                    batch.append(e)
+            for i in range(0, len(batch), ga.WEBLOG_EMBEDS_PER_MESSAGE):
+                await ch.send(embeds=batch[i:i + ga.WEBLOG_EMBEDS_PER_MESSAGE], allowed_mentions=NO_MENTIONS)
+            await db.set_global_setting(ga.WEBLOG_CURSOR_KEY, str(last_id))
+        except discord.HTTPException as exc:
+            logger.warning("guildatlas web log post failed (%s); will retry", type(exc).__name__)
+            self._weblog_channel_id = 0
+        except Exception:
+            logger.exception("guildatlas web log loop error")
+
     @minute_loop.before_loop
+    @weblog_loop.before_loop
     @knowledge_loop.before_loop
     @presence_loop.before_loop
     @invite_loop.before_loop
