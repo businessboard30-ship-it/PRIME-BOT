@@ -191,7 +191,7 @@ def test_rules_explain_how_to_treat_link_content():
 ])
 def test_date_requests_get_the_no_gif(msg):
     assert af.is_date_request(msg)
-    assert af.date_answer() == "https://media.tenor.com/hgzWU3teDqYAAAAM/aww-hell.gif"
+    assert af.date_answer() == "https://media.tenor.com/DgQ_vQpye88AAAAM/hell-no-alexis.gif"
 
 
 @pytest.mark.parametrize("msg", [
