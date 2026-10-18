@@ -116,3 +116,14 @@ async def set_allowed_domains(guild_id, clone_id, actor_id, domains: list) -> No
     ss.invalidate_guild(guild_id, clone_id)
     await record_change(guild_id, clone_id, actor_id, "scam_shield.allowed_domains",
                         ", ".join(old.get("allowed_domains") or []) or None, ", ".join(domains) or None)
+
+
+async def set_scam_action(guild_id, clone_id, actor_id, action: str) -> None:
+    """What happens to the person who posted a caught scam: delete / timeout / quarantine / kick / ban."""
+    from database import db
+    if action not in ss.PUNISH_ACTIONS:
+        raise ValueError(f"unknown scam action {action!r}")
+    old = await db.get_scam_shield_guild(guild_id, clone_id=clone_id)
+    await db.set_scam_shield_guild(guild_id, clone_id=clone_id, punish_action=action)
+    ss.invalidate_guild(guild_id, clone_id)
+    await record_change(guild_id, clone_id, actor_id, "scam_shield.action", old.get("punish_action") or "delete", action)
