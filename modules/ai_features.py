@@ -447,7 +447,7 @@ def levelup_answer(in_server: bool) -> str:
 
 
 # "Will you date me / be my girlfriend / go out with me" -> a fixed "no" GIF (not left to the model, costs no daily cap).
-NO_DATE_GIF = "https://media.tenor.com/hgzWU3teDqYAAAAM/aww-hell.gif"
+NO_DATE_GIF = "https://media.tenor.com/DgQ_vQpye88AAAAM/hell-no-alexis.gif"
 _DATE_Q = re.compile(
     r"\b(?:date|dating|go\s+out\s+with|going\s+out\s+with)\s+(?:with\s+)?(?:me|us)\b|"
     r"\b(?:can|could|may|will|would|do|wanna|want\s+to|wanna)\s+(?:i\s+|you\s+)?(?:date|go\s+on\s+a\s+date)\b.*\b(?:me|you)\b|"

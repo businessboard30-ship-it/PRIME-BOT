@@ -58,8 +58,9 @@ from modules.ai_features import (
     check_reply_limit, get_reply_usage, reply_cap_for,
     is_reply_chat_enabled, is_premium_question, premium_answer,
     is_bot_invite_question, is_support_invite_question, SUPPORT_BUTTON_MARKER,
-    is_levelup_question, levelup_answer, is_date_request, date_answer, NO_DATE_GIF,
+    is_levelup_question, levelup_answer,
 )
+from modules.gif_replies import gif_for, is_gif_url, is_view_link
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
 from modules.ai_capabilities import is_capabilities_question
@@ -234,11 +235,17 @@ class CharacterPickView(discord.ui.View):
 
 
 def _gif_embed(text) -> Optional[discord.Embed]:
-    """The fixed "no" GIF must be sent as an embed image: every AI reply goes out
-    with suppress_embeds=True, so a bare tenor link only ever showed up as text."""
-    if text and str(text).strip() == NO_DATE_GIF:
-        return discord.Embed(color=discord.Color.dark_grey()).set_image(url=NO_DATE_GIF)
+    """Fixed GIF replies must go out as an embed image: every AI reply is sent
+    with suppress_embeds=True, so a bare media link only ever showed as text.
+    tenor.com/view page links can't be embedded; those are sent as a plain link
+    (see _gif_is_link) and Discord unfurls them."""
+    if is_gif_url(text) and not is_view_link(text):
+        return discord.Embed(color=discord.Color.dark_grey()).set_image(url=str(text).strip())
     return None
+
+
+def _gif_is_link(text) -> bool:
+    return is_gif_url(text) and is_view_link(text)
 
 
 class AIToolsCog(commands.Cog):
@@ -255,8 +262,9 @@ class AIToolsCog(commands.Cog):
         bot's own generated invite link, "support server link" -> the support
         link, "how do I level up / get XP" -> short explanation (the AI never
         advertises the XP boost). Returns (text, view_or_None) or None."""
-        if is_date_request(text):
-            return date_answer(), None
+        gif = gif_for(text)
+        if gif:
+            return gif, None
         if is_premium_question(text):
             return premium_answer(in_server), (premium_view() if in_server else None)
         if is_levelup_question(text):
@@ -880,6 +888,9 @@ class AIToolsCog(commands.Cog):
             if gif is not None:
                 await interaction.response.send_message(embed=gif, **kwargs)
                 return
+            if _gif_is_link(quick_text):
+                await interaction.response.send_message(quick_text, **kwargs)
+                return
             await interaction.response.send_message(quick_text, suppress_embeds=True, **kwargs)
             return
 
@@ -1236,6 +1247,10 @@ class AIToolsCog(commands.Cog):
 
             async def _send(**kw):
                 async def _go(embed=None):
+                    if _gif_is_link(text):
+                        if message.guild is None:
+                            return await message.channel.send(text, allowed_mentions=none, **kw)
+                        return await message.reply(text, mention_author=False, allowed_mentions=none, **kw)
                     gif = _gif_embed(text)
                     if gif is not None:
                         if message.guild is None:
