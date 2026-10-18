@@ -242,10 +242,10 @@ def test_designer_button_layout():
         rows = {}
         for c in v.children:
             rows.setdefault(c.row, []).append(c)
-        assert sorted(rows) == [0, 1, 2, 3, 4] and len(v.children) == 14
+        assert sorted(rows) == [0, 1, 2, 3, 4] and len(v.children) == 16
         assert [type(c) for c in rows[0]] == [vlc._Pick] and rows[0][0].field_name == "background"
-        assert [c.label.split(":")[0] for c in rows[1]] == ["Accent colour", "Font", "Shape", "Show on card"]
-        assert [c.label for c in rows[2]] == ["Background image", "Logo", "Bio", "Remove uploads"]
+        assert [c.label.split(":")[0] for c in rows[1]] == ["Accent colour", "Font", "Shape", "Avatar", "Fade"]
+        assert [c.label for c in rows[2]] == ["Background image", "Logo", "Bio", "Show on card", "Remove uploads"]
         assert [c.label for c in rows[3]] == ["My real level", "Randomize", "Reset", "Share"]
         assert [c.label for c in rows[4]] == ["Save"] and rows[4][0].style == discord.ButtonStyle.success
         nopass = vlc.CardWizardView(1, vlc.Draft(design=dict(lcd.DEFAULT_DESIGN), guild_id=1))
@@ -390,3 +390,46 @@ def test_trial_needs_no_schema_change():
     src = inspect.getsource(owner.entitlement_start_trial)
     assert src and "DO NOTHING" in src and "DO UPDATE" not in src and "'trial'" in src
     assert "CREATE TABLE" not in src and "ALTER TABLE" not in src
+
+
+def test_avatar_position_and_fade_validate_and_old_designs_default_to_left_no_fade():
+    old, err = lcd.validate({"background": "ocean", "accent": "#57F287", "font": "classic", "shape": "circle"})
+    assert err is None and old["avatar_pos"] == "left" and old["avatar_fade"] == "off"
+    ok, err = lcd.validate({"avatar_pos": "center", "avatar_fade": "strong"})
+    assert err is None and ok["avatar_pos"] == "center" and ok["avatar_fade"] == "strong"
+    assert lcd.validate({"avatar_pos": "right"})[0] is None and lcd.validate({"avatar_fade": "max"})[0] is None
+    assert lcd.validate({"avatar_pos": 1})[0] is None
+    opts = lcd.options()
+    assert set(opts["avatar_positions"]) == {"left", "center"} and "soft" in opts["avatar_fades"]
+
+
+def test_middle_avatar_and_fade_change_the_picture_but_keep_the_size():
+    av = lcd.placeholder_avatar()
+    base = lcd.render_custom_level_card(av, "Ama", 7, 40, 100, {"bio": "hi"})
+    seen = {base}
+    for change in ({"avatar_pos": "center"}, {"avatar_fade": "soft"}, {"avatar_pos": "center", "avatar_fade": "medium"},
+                   {"avatar_pos": "center", "avatar_fade": "strong", "shape": "rounded"}):
+        out = lcd.render_custom_level_card(av, "Ama", 7, 40, 100, {"bio": "hi", **change})
+        assert size_of(out) == (900, 300) and out not in seen
+        seen.add(out)
+
+
+def test_middle_avatar_with_everything_on_never_crashes_on_any_card_shape():
+    long_name = "W" * 40
+    for size in ((3000, 1000), (1200, 1200), (600, 1800), (2400, 300)):
+        bg, err = card_assets.process("background", png(size))
+        assert err is None
+        out = card(bg, {"avatar_pos": "center", "avatar_fade": "soft", "bio": "x" * 60, "logo": True}, rank=12)
+        assert size_of(out) == size
+    out = lcd.render_custom_level_card(lcd.placeholder_avatar(), long_name, 7, 40, 100, {"avatar_pos": "center", "bio": "ñ" * 60})
+    assert size_of(out) == (900, 300)
+
+
+def test_avatar_buttons_cycle_position_and_fade():
+    async def go():
+        d = vlc.Draft(design=dict(lcd.DEFAULT_DESIGN), has_pass=True)
+        assert vlc._next_key(lcd.AVATAR_POSITIONS, "left") == "center" and vlc._next_key(lcd.AVATAR_POSITIONS, "center") == "left"
+        assert [vlc._next_key(lcd.AVATAR_FADES, k) for k in ("off", "soft", "medium", "strong")] == ["soft", "medium", "strong", "off"]
+        d.design["avatar_pos"], d.design["avatar_fade"] = "center", "soft"
+        assert "Avatar **Middle** · fade **Soft**" in vlc.build_embed(d).description
+    run(go())

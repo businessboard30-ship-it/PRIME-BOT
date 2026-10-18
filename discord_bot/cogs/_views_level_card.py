@@ -221,6 +221,8 @@ def build_embed(draft: Draft, notice: str = "") -> discord.Embed:
         f"{status}\n\n"
         f"Background **{bg}** · font **{lcd.FONT_LABELS.get(design.get('font'), '')}** · "
         f"shape **{lcd.SHAPES.get(design.get('shape'), '')}** · accent **{design.get('accent')}**\n"
+        f"Avatar **{lcd.AVATAR_POSITIONS.get(design.get('avatar_pos'), '')}** · "
+        f"fade **{lcd.AVATAR_FADES.get(design.get('avatar_fade'), ('',))[0]}**\n"
         f"Bio: {design.get('bio') or '—'}\n"
         f"{_hidden_line(design)}"
         f"{_upload_line(draft, 'Background image', 'background')} · {_upload_line(draft, 'Logo', 'logo')}"
@@ -464,7 +466,7 @@ def _next_key(options, current):
 
 
 class CardWizardView(discord.ui.View):
-    """Rows: 0 background select · 1 Look · 2 Images and text · 3 Preview · 4 Save (alone)."""
+    """Rows: 0 background select · 1 Look (incl. avatar position + fade) · 2 Images and text · 3 Preview · 4 Save (alone)."""
 
     def __init__(self, owner_id: int, draft: Draft):
         super().__init__(timeout=900)
@@ -481,11 +483,13 @@ class CardWizardView(discord.ui.View):
         add("Accent colour", "🎨", self._accent, 1)
         add(f"Font: {lcd.FONT_LABELS.get(d.get('font'), '')}", "🔤", self._cycle_font, 1)
         add(f"Shape: {SHAPE_SHORT.get(d.get('shape'), '')}", "🔷", self._cycle_shape, 1)
-        add("Show on card", "👁️", self._show_menu, 1)
+        add(f"Avatar: {lcd.AVATAR_POSITIONS.get(d.get('avatar_pos'), '')}", "🧑", self._cycle_avatar_pos, 1)
+        add(f"Fade: {lcd.AVATAR_FADES.get(d.get('avatar_fade'), ('',))[0]}", "🌫️", self._cycle_avatar_fade, 1)
         # Images and text
         add("Background image", "🖼️", self._bg, 2)
         add("Logo", "🏷️", self._logo, 2)
         add("Bio", "✏️", self._bio, 2)
+        add("Show on card", "👁️", self._show_menu, 2)
         add("Remove uploads", "🗑️", self._remove, 2)
         # Preview
         add("My real level" if not draft.use_real else "Sample level", "📈", self._toggle_real, 3,
@@ -528,6 +532,12 @@ class CardWizardView(discord.ui.View):
 
     async def _cycle_shape(self, interaction: discord.Interaction):
         await edit_draft(interaction, self.draft, shape=_next_key(lcd.SHAPES, self.draft.design.get("shape")))
+
+    async def _cycle_avatar_pos(self, interaction: discord.Interaction):
+        await edit_draft(interaction, self.draft, avatar_pos=_next_key(lcd.AVATAR_POSITIONS, self.draft.design.get("avatar_pos")))
+
+    async def _cycle_avatar_fade(self, interaction: discord.Interaction):
+        await edit_draft(interaction, self.draft, avatar_fade=_next_key(lcd.AVATAR_FADES, self.draft.design.get("avatar_fade")))
 
     async def _show_menu(self, interaction: discord.Interaction):
         """Swap this message's controls for the multi-select (a select needs a whole row, so it gets its own view)."""
