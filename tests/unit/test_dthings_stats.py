@@ -60,3 +60,33 @@ def test_cog_posts_to_dthings(monkeypatch):
     assert stats[3]["server_count"] == 7 and stats[3]["user_count"] == 21
     assert cmds[1] == "/api/bots/555/commands"
     assert [c["name"] for c in cmds[3]["commands"]] == ["ping"]
+
+
+def test_dthings_modal_token_is_tested_before_it_is_kept(monkeypatch):
+    async def handler(request):
+        ok = request.headers.get("Authorization") == "good"
+        return web.json_response({"success": ok}, status=200 if ok else 401)
+
+    async def run():
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        monkeypatch.setattr(dthings_stats, "DTHINGS_API", f"http://127.0.0.1:{port}/api")
+        monkeypatch.setattr(config, "DTHINGS_API_KEY", "")
+        monkeypatch.setattr(config, "DTHINGS_BOT_ID", "555")
+        monkeypatch.setattr(commands.Bot, "guilds", property(lambda self: [type("G", (), {"member_count": 3})()] * 2))
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
+        cog = DthingsStatsCog(bot)
+        cog._stats_loop.cancel()
+        assert not cog.enabled
+        ok, _ = await cog.try_token("bad")
+        assert not ok and not cog.enabled
+        ok, _ = await cog.try_token("good")
+        assert ok and cog.token == "good"
+        await runner.cleanup()
+
+    asyncio.run(run())

@@ -17,9 +17,13 @@ Only the bot that IS the Top.gg listing posts: the process whose Discord
 application id equals TOPGG_BOT_ID. That may be the main bot or a clone —
 whichever account the listing was created for. Every other process (main bot or
 clones) stays silent, otherwise it would overwrite the listing's server count
-with its own guild count. Needs TOPGG_TOKEN (the project token from the Top.gg
-dashboard) and TOPGG_BOT_ID in that bot's environment; with no token the cog
-loads and does nothing.
+with its own guild count.
+
+The token (the project token from the Top.gg dashboard) comes from TOPGG_TOKEN
+if set, otherwise from the encrypted listing_api_tokens table. When the listed
+bot has neither, it DMs its owner a button + modal to paste the token once
+(discord_bot/listing_tokens.py) — no Railway variable needed on a clone's
+service.
 
 Every request is best-effort: failures are logged and retried on the next
 tick, never raised.
@@ -33,6 +37,7 @@ import aiohttp
 from discord.ext import commands, tasks
 
 import config
+from discord_bot import listing_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -61,15 +66,37 @@ class TopggStatsCog(commands.Cog):
         self._token_checked = False
         self._skip_logged = False
         self._event_post_task = None
+        self._db_token = ""  # token entered via the DM modal (see listing_tokens.py)
         # Whether this process is the listed bot can only be known once the
         # gateway is ready (bot.user / application_id), so the loop always
         # starts and _is_listed_bot() gates every post.
-        self.enabled = bool(config.TOPGG_TOKEN)
-        if self.enabled:
-            self._stats_loop.change_interval(minutes=config.TOPGG_POST_INTERVAL_MINUTES)
-            self._stats_loop.start()
-        else:
-            logger.info("[topgg] TOPGG_TOKEN not set — server count / command sync disabled")
+        self._stats_loop.change_interval(minutes=config.TOPGG_POST_INTERVAL_MINUTES)
+        self._stats_loop.start()
+
+    @property
+    def token(self) -> str:
+        return config.TOPGG_TOKEN or self._db_token
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token)
+
+    async def cog_load(self):
+        # Keeps the DM's "Add token" button working across restarts.
+        self.bot.add_view(listing_tokens.TokenPromptView("topgg"))
+
+    async def try_token(self, token: str):
+        """Used by the token modal: test-posts with `token`; keeps it on
+        success. Returns (ok, detail) — detail never contains the token."""
+        previous = self._db_token
+        self._db_token = token
+        status, text = await self._request("PATCH", "/projects/@me/metrics",
+                                           build_metrics_payload(len(self.bot.guilds), self.bot.shard_count))
+        if 200 <= status < 300:
+            logger.info("[topgg] token accepted via DM modal")
+            return True, "ok"
+        self._db_token = previous
+        return False, f"HTTP {status}"
 
     def _is_listed_bot(self) -> bool:
         listed = str(config.TOPGG_BOT_ID or "").strip()
@@ -83,7 +110,9 @@ class TopggStatsCog(commands.Cog):
 
     async def _request(self, method: str, path: str, body=None):
         """Returns (status, text). Never raises."""
-        headers = {"Authorization": f"Bearer {config.TOPGG_TOKEN}"}
+        if not self.token:
+            return 0, "no token"
+        headers = {"Authorization": f"Bearer {self.token}"}
         try:
             timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
@@ -171,6 +200,13 @@ class TopggStatsCog(commands.Cog):
                                 "not posting, so it cannot overwrite the listing's server count",
                                 getattr(self.bot.user, "id", "?"), getattr(self.bot, "clone_id", None),
                                 config.TOPGG_BOT_ID)
+                return
+            if not self.token:
+                app_id = listing_tokens.bot_app_id(self.bot)
+                self._db_token = await listing_tokens.load_token("topgg", app_id) if app_id else ""
+            if not self.token:
+                if await listing_tokens.prompt_owner_for_token(self.bot, "topgg"):
+                    logger.info("[topgg] no token — DM'd the owner a token prompt")
                 return
             if not self._token_checked:
                 self._token_checked = True
