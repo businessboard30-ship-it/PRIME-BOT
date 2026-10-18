@@ -61,6 +61,7 @@ from modules.ai_features import (
     is_levelup_question, levelup_answer,
 )
 from modules.gif_replies import gif_for, is_gif_url, is_view_link
+from modules import ai_attachments
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
 from modules.ai_capabilities import is_capabilities_question
@@ -246,6 +247,49 @@ def _gif_embed(text) -> Optional[discord.Embed]:
 
 def _gif_is_link(text) -> bool:
     return is_gif_url(text) and is_view_link(text)
+
+
+PUBLIC_REPLY_MAX = 900     # longer AI answers are not posted in the channel; the asker opens them privately
+
+
+class _ReadFullButton(discord.ui.Button):
+    def __init__(self, full_text: str, owner_id: int):
+        super().__init__(label="Read answer", style=discord.ButtonStyle.primary, emoji="🔒")
+        self._full = full_text
+        self._owner = owner_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self._owner:
+            await interaction.response.send_message("This answer is only for the person who asked.", ephemeral=True)
+            return
+        chunks = [self._full[i:i + 1900] for i in range(0, len(self._full), 1900)] or ["(empty)"]
+        await interaction.response.send_message(chunks[0], ephemeral=True, suppress_embeds=True)
+        for extra in chunks[1:3]:
+            await interaction.followup.send(extra, ephemeral=True, suppress_embeds=True)
+
+
+def hide_long_reply(text, owner_id: int, view):
+    """A long answer would make the channel messy: post a one-line note with a button and show the
+    full text only to the asker (ephemeral). Short answers and DMs are returned unchanged.
+    Returns (text, view). Link-style buttons already on `view` (support, dashboard) are kept."""
+    if not text or len(str(text)) <= PUBLIC_REPLY_MAX:
+        return text, view
+    new_view = discord.ui.View(timeout=3600)
+    new_view.add_item(_ReadFullButton(str(text), owner_id))
+    for child in list(getattr(view, "children", []) or []):
+        if getattr(child, "style", None) == discord.ButtonStyle.link:
+            new_view.add_item(child)
+    note = "📨 That's a long one, so I'm keeping the channel tidy. Tap below and I'll show it just to you."
+    return note, new_view
+
+
+async def _message_attachments(message: discord.Message) -> list:
+    """Files on the message itself, plus files on the message it replies to (so 'reply to a file and ask' works)."""
+    atts = list(message.attachments or [])
+    ref = message.reference
+    if ref is not None and isinstance(ref.resolved, discord.Message):
+        atts += list(ref.resolved.attachments or [])
+    return atts[:ai_attachments.MAX_FILES]
 
 
 class AIToolsCog(commands.Cog):
@@ -830,7 +874,8 @@ class AIToolsCog(commands.Cog):
                               perms: Optional[discord.Permissions] = None,
                               guild: Optional[discord.Guild] = None,
                               interaction: Optional[discord.Interaction] = None,
-                              voice: Optional[str] = None) -> tuple[str, str, Optional[int]]:
+                              voice: Optional[str] = None,
+                              attachments: Optional[list] = None) -> tuple[str, str, Optional[int]]:
         """Shared by /aichat and the reply-to-continue listener. Returns
         (reply_text, warning, session_id). session_id is None only if
         usage was denied (caller should stop before sending anything).
@@ -852,13 +897,14 @@ class AIToolsCog(commands.Cog):
         anime_keywords = ("anime", "manga", "character", "episode", "series", "watch", "recommend")
         is_anime = any(kw in message.lower() for kw in anime_keywords)
 
-        tools = await self._build_command_tools(interaction) if interaction is not None else None
+        file_block, image_urls = await ai_attachments.build_attachment_context(attachments) if attachments else (None, [])
+        tools = await self._build_command_tools(interaction) if (interaction is not None and not attachments) else None
         tools = select_tools(tools, message) if tools else None   # only commands that look relevant (Groq token cap)
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(message, user_id, perms, guild, runnable=runnable)
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
                                   session_id=session_id, command_context=command_context, tools=tools or None,
-                                  voice=voice)
+                                  voice=voice, file_block=file_block, image_urls=image_urls or None)
         if not response:
             return "AI service error. Try again later.", warning, session_id
 
@@ -873,8 +919,9 @@ class AIToolsCog(commands.Cog):
         return out, warning, session_id
 
     @app_commands.command(name="aichat", description="Chat with the AI (anime questions, recommendations, or anything)")
-    @app_commands.describe(message="What do you want to ask or say?")
-    async def aichat(self, interaction: discord.Interaction, message: str):
+    @app_commands.describe(message="What do you want to ask or say?",
+                           file="Optional: an image, PDF, Word (.docx) or text/code file for me to read")
+    async def aichat(self, interaction: discord.Interaction, message: str, file: Optional[discord.Attachment] = None):
         message = message.strip()
         if not message or len(message) > 1000:
             await interaction.response.send_message("Message must be 1-1000 characters.", ephemeral=True)
@@ -938,6 +985,7 @@ class AIToolsCog(commands.Cog):
         text, _warning, session_id = await self._run_chat_turn(
             user_id, message, perms=perms, guild=interaction.guild, interaction=interaction,
             voice=await self._voice_setting(user_id, message),
+            attachments=[file] if file is not None else None,
         )
         if not text:
             # A tool call was made instead of a text reply — _run_chat_turn
@@ -957,6 +1005,9 @@ class AIToolsCog(commands.Cog):
         voice_file = None
         if is_voice:
             voice_file = await self._voice_file(user_id, text, explicit=ai_voice.wants_voice(message))
+
+        if interaction.guild is not None:
+            text, view = hide_long_reply(text, user_id, view)
 
         async def _send(**kw):
             async def _go(embed=None):
@@ -1154,11 +1205,14 @@ class AIToolsCog(commands.Cog):
         tools = select_tools(tools, content) if tools else []     # only commands that look relevant (Groq token cap)
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(content, user_id, perms, guild, runnable=runnable)
+        atts = await _message_attachments(message)
+        file_block, image_urls = await ai_attachments.build_attachment_context(atts) if atts else (None, [])
         response = await ai_chat(
             user_id, content, is_anime_question=is_anime, tier="basic", session_id=None,
             command_context=command_context, history_override=history,
-            guild_id=guild_id, kind="reply", tools=tools or None,
+            guild_id=guild_id, kind="reply", tools=None if atts else (tools or None),
             voice=await self._voice_setting(user_id, content),
+            file_block=file_block, image_urls=image_urls or None,
         )
         if isinstance(response, dict):
             await self._run_tool_calls(proxy, response["tool_calls"], real_interaction=False)
@@ -1175,7 +1229,7 @@ class AIToolsCog(commands.Cog):
         if message.author.bot:
             return
         content = (message.content or "").strip()
-        if not content or len(content) > 1000 or content.startswith(("!", "/")):
+        if (not content and not message.attachments) or len(content) > 1000 or content.startswith(("!", "/")):
             return
         # "reply to a message + @mention + scam shield" belongs to Scam Shield (discord_bot/cogs/scam_shield.py), always:
         # even if the replied-to message can't be loaded, this must never fall through to AI chat.
@@ -1214,9 +1268,11 @@ class AIToolsCog(commands.Cog):
                     # the AI only sees the actual question, not raw mention
                     # markup.
                     content = re.sub(rf"<@!?{self.bot.user.id}>", "", content).strip()
-                    if not content:
+                    if not content and not message.attachments:
                         return
 
+            if not content:
+                content = "Look at what I attached and tell me what it is, or summarise it."
             if is_capabilities_question(content) and not mentions_other_bot(content):
                 # "what can you do / show your commands": a fixed component panel, no AI call, costs no daily cap.
                 src = ProxyInteraction(message, self.bot) if message.guild is not None else None
@@ -1244,6 +1300,8 @@ class AIToolsCog(commands.Cog):
                     view = view or discord.ui.View()
                     view.add_item(dash_btn)
             none = discord.AllowedMentions.none()
+            if message.guild is not None:
+                text, view = hide_long_reply(text, message.author.id, view)
 
             async def _send(**kw):
                 async def _go(embed=None):

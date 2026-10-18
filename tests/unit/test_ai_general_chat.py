@@ -31,5 +31,5 @@ def test_link_reader_limits_raised_but_bounded():
 
 
 def test_prompt_allows_full_answers_and_search():
-    assert "complete, well-organised answer" in af.BOT_RULES
-    assert "web search tool" in af.BOT_RULES
+    assert "under about 900 characters" in af.BOT_RULES and "complete answer of up to about 1800" in af.BOT_RULES
+    assert "web search tool" in af.BOT_RULES and "[FILE CONTENT]" in af.BOT_RULES
