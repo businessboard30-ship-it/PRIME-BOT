@@ -41,14 +41,23 @@ Usage inside a @tasks.loop function:
 
 
 class AdaptiveSkip:
-    def __init__(self, idle_threshold: int = 5, idle_skip: int = 5):
+    def __init__(self, idle_threshold: int = 5, idle_skip: int = 5, max_skip: int | None = None):
         """idle_threshold: how many consecutive empty ticks before we
         start skipping. idle_skip: how many ticks to skip once idle,
-        before checking again."""
+        before checking again. max_skip (optional): when set, every
+        further empty check doubles the skip (idle_skip, 2x, 4x ...) up
+        to this many ticks, so a feature nobody uses keeps sleeping
+        deeper; any real work resets it to full speed."""
         self._idle_threshold = idle_threshold
         self._idle_skip = idle_skip
+        self._max_skip = max_skip if max_skip and max_skip > idle_skip else None
         self._empty_streak = 0
         self._skip_remaining = 0
+        self._next_skip = idle_skip
+
+    @property
+    def sleeping(self) -> bool:
+        return self._skip_remaining > 0
 
     def should_run(self) -> bool:
         if self._skip_remaining > 0:
@@ -56,11 +65,18 @@ class AdaptiveSkip:
             return False
         return True
 
+    def wake(self) -> None:
+        """Back to full speed right away (e.g. a command just created work)."""
+        self._empty_streak = 0
+        self._skip_remaining = 0
+        self._next_skip = self._idle_skip
+
     def record(self, found_something: bool) -> None:
         if found_something:
-            self._empty_streak = 0
-            self._skip_remaining = 0
+            self.wake()
             return
         self._empty_streak += 1
         if self._empty_streak >= self._idle_threshold:
-            self._skip_remaining = self._idle_skip
+            self._skip_remaining = self._next_skip
+            if self._max_skip:
+                self._next_skip = min(self._next_skip * 2, self._max_skip)

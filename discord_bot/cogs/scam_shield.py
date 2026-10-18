@@ -31,6 +31,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+
 from database import db
 from discord_bot.cogs._admin_mount import mount_admin_command
 from modules import scam_check as sc
@@ -115,6 +117,7 @@ class ScamShieldCog(commands.Cog):
         self._sweep_lock = asyncio.Lock()      # the startup sweep and a forced one never run at the same time
         self._reload.start()
         self._backfill.start()
+        self._force_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=3)  # 15 s ticks, sleeps up to ~60 s
         self._force_poll.start()
 
     def cog_unload(self):
@@ -179,8 +182,11 @@ class ScamShieldCog(commands.Cog):
     # each clone (separate processes), polls for it here and re-runs the sweep over its own servers right away.
     @tasks.loop(seconds=15)
     async def _force_poll(self):
+        if not self._force_gate.should_run():
+            return
         clone_id = getattr(self.bot, "clone_id", None)
         token = await ss.pending_force_scan(clone_id)
+        self._force_gate.record(found_something=token is not None)
         if token is None:
             return
         try:
