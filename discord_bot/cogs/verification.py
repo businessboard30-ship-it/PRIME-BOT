@@ -590,8 +590,8 @@ class VerificationCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # Awake for 10 minutes (= how long a captcha link is valid) after startup and after every link handed out
-        # (wake_poll, called by the captcha button); after that it sleeps up to ~1 min between checks.
-        self._gate = AdaptiveSkip(idle_threshold=120, idle_skip=3, max_skip=11, name="verification_poll")
+        # (wake_poll, called by the captcha button); after that it checks every 10 s instead of every 5 s, never slower.
+        self._gate = AdaptiveSkip(idle_threshold=120, idle_skip=1, name="verification_poll")
 
     def wake_poll(self) -> None:
         self._gate.wake()

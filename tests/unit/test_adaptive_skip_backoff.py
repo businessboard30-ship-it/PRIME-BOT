@@ -50,3 +50,23 @@ def test_verification_poll_sleeps_only_after_link_window_and_wakes_on_link():
     assert cog._gate.sleeping or cog._gate._next_skip > 3
     cog.wake_poll()
     assert not cog._gate.sleeping and cog._gate.should_run()
+
+
+def test_verification_idle_check_is_never_slower_than_10_seconds():
+    from discord_bot.cogs.verification import VerificationCog
+
+    cog = VerificationCog.__new__(VerificationCog)
+    VerificationCog.__init__(cog, bot=object())
+    _run(cog._gate, 120)                       # burn the 10-minute link window
+    ran = _run(cog._gate, 200)                 # 5 s ticks afterwards
+    gaps = {b - a for a, b in zip(ran, ran[1:])}
+    assert gaps == {2}                         # every other tick = every 10 s, forever (no escalation)
+
+
+def test_captcha_button_wakes_the_cog_by_its_real_name():
+    import inspect
+    from discord_bot.cogs import _views_verification
+    from discord_bot.cogs.verification import VerificationCog
+
+    assert VerificationCog.__cog_name__ == "VerificationCog"
+    assert 'get_cog("VerificationCog").wake_poll()' in inspect.getsource(_views_verification)
