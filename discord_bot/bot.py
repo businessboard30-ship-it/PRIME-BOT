@@ -129,6 +129,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("discord_bot")
+from modules.log_throttle import install as _install_log_throttle
+_install_log_throttle()  # repeated identical WARNING/ERROR lines print once a minute
 # Keep the latest WARNING+ records in memory for the owner panel's Log tail
 # screen (modules/admin_ops.py). Idempotent; costs one deque append per record.
 from modules.admin_ops import install_log_buffer

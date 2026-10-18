@@ -41,6 +41,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("discord_bot.clone_manager")
+from modules.log_throttle import install as _install_log_throttle
+_install_log_throttle()
 
 POLL_INTERVAL_SECONDS = 30
 INITIAL_RESTART_BACKOFF_SECONDS = 15
