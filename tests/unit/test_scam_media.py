@@ -43,6 +43,9 @@ def blank(size=(300, 300), color="white"):
 
 @pytest.fixture(autouse=True)
 def rules(monkeypatch):
+    from modules import scam_risk
+    scam_risk._user_last.clear()
+    scam_risk._window.clear()
     monkeypatch.setattr(ss._c, "domains", [(1, "hubowin.com")])
     monkeypatch.setattr(ss._c, "words", [])
     monkeypatch.setattr(ss._c, "images", [])
@@ -122,8 +125,13 @@ def gif_attachment(data, name="funny.gif"):
                            read=AsyncMock(return_value=data))
 
 
-def message(attachments=(), embeds=()):
-    return SimpleNamespace(guild=SimpleNamespace(id=5), attachments=list(attachments), embeds=list(embeds))
+def message(attachments=(), embeds=(), risky=True):
+    # a brand-new account is "risky", so the expensive stage runs; risky=False is an established member
+    from datetime import datetime, timedelta, timezone
+    created = datetime.now(timezone.utc) - timedelta(days=(2 if risky else 900))
+    author = SimpleNamespace(id=77, created_at=created, joined_at=created, avatar=object())
+    return SimpleNamespace(guild=SimpleNamespace(id=5), attachments=list(attachments), embeds=list(embeds),
+                           author=author, mention_everyone=False)
 
 
 @needs_zbar
@@ -188,3 +196,79 @@ def test_edit_inspects_on_new_text_embed_or_attachment(before, after, expect):
     cog._inspect = AsyncMock()
     run(cog.on_message_edit(SimpleNamespace(**before), SimpleNamespace(**after)))
     assert cog._inspect.await_count == (1 if expect else 0)
+
+
+# ── the risk gate / throttle ─────────────────────────────────────────────
+@needs_zbar
+def test_established_members_cost_nothing_in_the_expensive_stage(monkeypatch):
+    cog = make_cog(monkeypatch)
+    monkeypatch.setattr(sm, "fetch", AsyncMock(side_effect=AssertionError("must not download")))
+    data = animated("GIF", [blank(), blank(color="red")])
+    att = gif_attachment(data)
+    assert run(cog._match_extra(message([att], [emb(image=CDN)], risky=False), {})) is None
+    assert att.read.await_count == 0
+
+
+@needs_zbar
+def test_one_expensive_check_per_user_per_10_seconds(monkeypatch):
+    cog = make_cog(monkeypatch)
+    monkeypatch.setattr(sm, "fetch", AsyncMock(return_value=png(qr_img("https://hubowin.com/x"))))
+    assert run(cog._match_extra(message(embeds=[emb(image=CDN)]), {}))[0] == "qr"
+    assert run(cog._match_extra(message(embeds=[emb(image=CDN + "2")]), {})) is None     # same user, too soon
+
+
+@needs_zbar
+def test_a_message_with_nothing_to_check_does_not_use_up_the_quota(monkeypatch):
+    cog = make_cog(monkeypatch)
+    monkeypatch.setattr(sm, "fetch", AsyncMock(return_value=png(qr_img("https://hubowin.com/x"))))
+    run(cog._match_extra(message(), {}))
+    assert run(cog._match_extra(message(embeds=[emb(image=CDN)]), {}))[0] == "qr"
+
+
+def test_embeds_can_be_switched_off(monkeypatch):
+    cog = make_cog(monkeypatch)
+    monkeypatch.setenv("SCAM_EMBEDS", "0")
+    monkeypatch.setattr(sm, "fetch", AsyncMock(side_effect=AssertionError("off")))
+    assert run(cog._match_extra(message(embeds=[emb(image=CDN)]), {})) is None
+
+
+@needs_zbar
+def test_clean_preview_urls_are_not_downloaded_twice(monkeypatch):
+    cog = make_cog(monkeypatch)
+    fetch = AsyncMock(return_value=png(blank()))
+    monkeypatch.setattr(sm, "fetch", fetch)
+    monkeypatch.setattr(cog_mod.sco, "available", lambda: False)
+    sm._clean.clear()
+    assert run(cog._match_extra(message(embeds=[emb(image=CDN)]), {})) is None
+    from modules import scam_risk
+    scam_risk._user_last.clear()
+    assert run(cog._match_extra(message(embeds=[emb(image=CDN)]), {})) is None
+    assert fetch.await_count == 1
+
+
+def test_risk_signals():
+    from datetime import datetime, timedelta, timezone
+    from modules import scam_risk as r
+    now = datetime.now(timezone.utc)
+    mk = lambda **k: SimpleNamespace(mention_everyone=k.get("ping", False), author=SimpleNamespace(
+        created_at=now - timedelta(days=k.get("acct", 900)), joined_at=now - timedelta(days=k.get("join", 900)),
+        avatar=None if k.get("noav") else object()))
+    assert not r.risky(mk())
+    assert r.risky(mk(acct=3)) and r.risky(mk(join=1)) and r.risky(mk(noav=True)) and r.risky(mk(ping=True))
+    assert r.risky(SimpleNamespace()) is False                 # missing data is never "risky"
+
+
+def test_global_cap_and_bounded_memory(monkeypatch):
+    from modules import scam_risk as r
+    r._user_last.clear(); r._window.clear()
+    monkeypatch.setattr(r, "GLOBAL_PER_MINUTE", 3)
+    assert [r.allow(i) for i in range(5)] == [True, True, True, False, False]
+
+
+def test_cheap_ocr_mode_skips_the_extra_passes(monkeypatch):
+    from modules import scam_ocr as sco
+    async def first(d): return ""
+    async def more(d, only_urlbar=False): raise AssertionError("deep=False must not run extra passes")
+    monkeypatch.setattr(sco, "read_text", first)
+    monkeypatch.setattr(sco, "read_more", more)
+    assert run(sco.scan(b"x", (), deep=False)) is None

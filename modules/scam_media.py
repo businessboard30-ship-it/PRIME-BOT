@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+from collections import OrderedDict
 from typing import List, Tuple
 from urllib.parse import urlparse
 
@@ -28,6 +30,25 @@ MAX_BYTES = 2_000_000
 FETCH_TIMEOUT = 6.0
 PROXY_HOSTS = ("cdn.discordapp.com", "media.discordapp.net", "images-ext-1.discordapp.net",
                "images-ext-2.discordapp.net")
+
+
+def enabled() -> bool:
+    """Embed-picture checks on/off. SCAM_EMBEDS=0 turns them off completely."""
+    return os.environ.get("SCAM_EMBEDS", "1").strip().lower() not in ("0", "off", "false", "no")
+
+
+_clean: "OrderedDict[str, bool]" = OrderedDict()
+
+
+def seen_clean(url: str) -> bool:
+    """True if this exact picture URL was already downloaded and found clean (never download it twice)."""
+    return url in _clean
+
+
+def mark_clean(url: str) -> None:
+    _clean[url] = True
+    if len(_clean) > 1000:
+        _clean.popitem(last=False)
 
 
 def frames(data: bytes, n: int = MAX_FRAMES) -> List[bytes]:
