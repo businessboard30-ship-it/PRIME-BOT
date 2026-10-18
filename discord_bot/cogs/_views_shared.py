@@ -38,7 +38,7 @@ async def user_can_manage_guild(guild, user_id: int, permission: str = "manage_g
         except discord.HTTPException:
             return False
     perms = member.guild_permissions
-    return bool(perms.administrator or getattr(perms, permission, False))
+    return bool(getattr(perms, "administrator", False) or getattr(perms, permission, False))
 
 
 
