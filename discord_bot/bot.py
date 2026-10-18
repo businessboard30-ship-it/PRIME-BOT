@@ -282,6 +282,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*GUMROAD_CLAIM_DYNAMIC_ITEMS)
         self.add_dynamic_items(*PAYMENT_CARD_DYNAMIC_ITEMS)
 
+        await self.load_extension("discord_bot.cogs.guild_activity")
         await self.load_extension("discord_bot.cogs.catch")
         await self.load_extension("discord_bot.cogs.help")
         await self.load_extension("discord_bot.cogs.dashboard")
