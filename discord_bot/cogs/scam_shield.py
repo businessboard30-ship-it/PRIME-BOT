@@ -36,6 +36,7 @@ from discord_bot.cogs._admin_mount import mount_admin_command
 from modules import scam_check as sc
 from modules import scam_reputation as rep
 from modules import scam_shield as ss
+from modules import scam_ocr as sco
 from modules import scam_shield_actions as sa
 from modules import scam_vision as sv
 from discord_bot.cogs import _views_scamshield_wizard as wiz
@@ -580,9 +581,41 @@ class ScamShieldCog(commands.Cog):
         hit = None
         if ss.has_image_rules():
             hit = await self._match_images(message, cache)
+        if hit is None and sco.available():
+            hit = await self._match_ocr(message, cache)          # free: read the words in the picture first
         if hit is None and sv.available():
-            hit = await self._match_vision(message, cache)
+            hit = await self._match_vision(message, cache)       # budgeted AI check last
         return hit
+
+    async def _match_ocr(self, message: discord.Message, cache: dict):
+        """Read the text out of up to 2 image attachments and run it through the normal text rules (words, scam
+        domains, giveaway/promo-code bait). Catches a caption-less scam picture. Animated GIFs and tiny images skip."""
+        for att in message.attachments[:2]:
+            ctype = (att.content_type or "").split(";")[0].lower()
+            name = att.filename.lower()
+            is_img = ctype.startswith("image/") or name.endswith(_IMG_EXT)
+            if not is_img or ctype == "image/gif" or name.endswith(".gif") or att.size > ss.IMAGE_MAX_BYTES:
+                continue
+            w = att.width if isinstance(att.width, int) else None
+            h = att.height if isinstance(att.height, int) else None
+            if not sv.worth_checking(att.size, w, h):
+                continue
+            data = cache.get(att.id)
+            if data is None:
+                try:
+                    async with _download_slots:
+                        data = await asyncio.wait_for(att.read(), timeout=8)
+                except Exception:
+                    continue
+                cache[att.id] = data
+            text = await sco.read_text(data)
+            if not text:
+                continue
+            gs = await ss.guild_settings(message.guild.id, getattr(self.bot, "clone_id", None))
+            hit = sco.match(text, gs["allowed_domains"])
+            if hit:
+                return hit
+        return None
 
     async def _match_images(self, message: discord.Message, cache: Optional[dict] = None):
         for att in message.attachments[:4]:

@@ -2,6 +2,6 @@
   "$schema": "https://schema.railpack.com",
   "provider": "python",
   "deploy": {
-    "aptPackages": ["ffmpeg", "libopus0", "libatomic1"]
+    "aptPackages": ["ffmpeg", "libopus0", "libatomic1", "tesseract-ocr"]
   }
 }
