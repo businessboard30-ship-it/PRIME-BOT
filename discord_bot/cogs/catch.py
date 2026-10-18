@@ -18,6 +18,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+
 from discord_bot.cogs._views_catch_collection import open_collection, open_dex
 from discord_bot.cogs._views_catch_items import open_daily, open_inventory
 from discord_bot.cogs._views_catch_guide import open_guide
@@ -818,6 +820,7 @@ class CatchCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._trigger_states: dict[tuple[int, int | None], ChannelTriggerState] = {}
+        self._gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=3)  # nothing expiring/due: sleeps up to ~2 min
         self._scheduler.start()
 
     def cog_unload(self) -> None:
@@ -867,8 +870,10 @@ class CatchCog(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def _scheduler(self) -> None:
+        if not self._gate.should_run():
+            return
         try:
-            await self._process_scheduler_batch()
+            self._gate.record(found_something=bool(await self._process_scheduler_batch()))
         except Exception:
             logger.exception("Catch scheduler tick failed")
 
@@ -929,14 +934,16 @@ class CatchCog(commands.Cog):
             logger.exception("Catch reminder delivery failed reminder=%s user=%s", reminder.id, reminder.user_id)
             return False
 
-    async def _process_scheduler_batch(self) -> None:
+    async def _process_scheduler_batch(self) -> int:
+        """Returns how much work it found (expired spawns + delivered reminders)."""
         batch = await run_scheduler_batch()
         for row in batch.expired_rows:
             try:
                 await self._mark_spawn_expired(row)
             except Exception:
                 logger.exception("Catch spawn expiry handling failed spawn=%s", row.get("id"))
-        await dispatch_due_reminders(self._deliver_reminder)
+        delivered = await dispatch_due_reminders(self._deliver_reminder)
+        return len(batch.expired_rows) + len(delivered or ())
 
     @app_commands.command(name="catch", description=text("command.description"))
     async def catch(self, interaction: discord.Interaction) -> None:

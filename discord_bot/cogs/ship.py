@@ -33,6 +33,8 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord.ext import commands, tasks
 
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+
 from config import DISCORD_CLONE_ADMIN_IDS
 from database import db
 from discord_bot.cogs._dm_support import GuildOnlyCog
@@ -129,6 +131,7 @@ class ShipCog(GuildOnlyCog):
         # trimmed lazily on read — this is a short rolling window, not a
         # durable log, so it doesn't need a table.
         self._recent_text_activity: dict[int, dict[int, datetime]] = {}
+        self._gate = AdaptiveSkip(idle_threshold=3, idle_skip=1, max_skip=4)  # nobody enabled Ship: sleeps up to ~5 min
         self._poller.start()
 
     def cog_unload(self):
@@ -269,6 +272,8 @@ class ShipCog(GuildOnlyCog):
 
     @tasks.loop(seconds=POLL_INTERVAL_SECONDS)
     async def _poller(self):
+        if not self._gate.should_run():
+            return
         clone_id = _clone_id_of(self.bot)
         # Batch-fetch config for every guild in one query instead of one
         # SELECT per guild per tick — this loop runs every
@@ -280,6 +285,7 @@ class ShipCog(GuildOnlyCog):
             clone_id,
         )
         configs_by_guild = {row["guild_id"]: row for row in config_rows}
+        self._gate.record(found_something=any(r["enabled"] and r["channel_id"] for r in config_rows))
 
         for guild in list(self.bot.guilds):
             try:
