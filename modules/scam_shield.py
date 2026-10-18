@@ -718,7 +718,9 @@ async def force_scan_status() -> Optional[dict]:
 
 GUILD_CACHE_SECONDS = 300
 MAX_ALLOWED_DOMAINS = 50
-_DEFAULT_GUILD = {"enabled": True, "allowed_domains": ()}
+PUNISH_ACTIONS = ("delete", "timeout", "quarantine", "kick", "ban")
+TIMEOUT_HOURS = 24
+_DEFAULT_GUILD = {"enabled": True, "allowed_domains": (), "punish_action": "delete"}
 _guild_cache: Dict[Tuple[int, Optional[int]], Tuple[float, dict]] = {}
 
 
@@ -727,7 +729,7 @@ def invalidate_guild(guild_id: int, clone_id: Optional[int] = None) -> None:
 
 
 async def guild_settings(guild_id: int, clone_id: Optional[int] = None) -> dict:
-    """{'enabled': bool, 'allowed_domains': tuple}. Falls back to the defaults (on, nothing allowed)
+    """{'enabled': bool, 'allowed_domains': tuple, 'punish_action': str}. Falls back to the defaults (on, nothing allowed, delete only)
     if the database can't be read, so a failure never switches protection off."""
     key = (guild_id, clone_id)
     now = time.monotonic()
@@ -738,10 +740,11 @@ async def guild_settings(guild_id: int, clone_id: Optional[int] = None) -> dict:
         pool = await _pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT enabled, allowed_domains FROM discord_scam_shield_guild "
+                "SELECT enabled, allowed_domains, punish_action FROM discord_scam_shield_guild "
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", guild_id, clone_id)
         value = ({"enabled": bool(row["enabled"]),
-                  "allowed_domains": tuple(d.lower() for d in (row["allowed_domains"] or []))}
+                  "allowed_domains": tuple(d.lower() for d in (row["allowed_domains"] or [])),
+                  "punish_action": row["punish_action"] if row["punish_action"] in PUNISH_ACTIONS else "delete"}
                  if row else dict(_DEFAULT_GUILD))
         ttl = GUILD_CACHE_SECONDS
     except Exception:

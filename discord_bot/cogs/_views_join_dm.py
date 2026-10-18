@@ -198,18 +198,8 @@ class JoinDMLayoutView(discord.ui.LayoutView):
             section.add_item(f"{emoji} **{label}**\n{blurb}")
             container.add_item(section)
 
-        # One-time "list your server on Disguild" reminder: a link button (no custom_id, so it needs no
-        # registration and keeps working across restarts). Only present when bot.py's
-        # _send_combined_owner_join_dm won the one-time DB claim (db.claim_disguild_list_reminder) for this
-        # guild. Drawn on every page of THIS message so paging back and forth never loses it, and
-        # _offer_state_from_message reads it back off the live message the same way as the other offers.
-        disguild_url = join_offer.get("disguild_url") if (join_offer and join_offer.get("show_disguild")) else None
-        if disguild_url:
-            reminder = discord.ui.Section(accessory=discord.ui.Button(
-                label="List your server on Disguild", style=discord.ButtonStyle.link, url=disguild_url, emoji="🌐",
-            ))
-            reminder.add_item("🌐 **Get your server found**\nList it on Disguild, our free server and bot directory. It only takes a few minutes.")
-            container.add_item(reminder)
+        # (The one-time "List your server on Disguild" link button used to sit here. The directory isn't ready, so
+        # Scam Shield took its place on page 1, see below. join_offer["show_disguild"] is accepted but no longer drawn.)
 
         # Informational-only notices (word filter status, Ship, etc.) —
         # no accessory button on purpose, grouped separately with a
@@ -291,6 +281,14 @@ class JoinDMLayoutView(discord.ui.LayoutView):
                 "🛡️ **Protect your server from raids**\nSpike detection, one-tap lockdown and staff alerts."
             )
             container.add_item(raid_section)
+            # Replaced the "List your server" button: opens the Scam Shield screen (example scam picture, auto-ban /
+            # quarantine / more, premium upgrades) by editing this same message. See _views_join_dm_scamshield.py.
+            from discord_bot.cogs._views_join_dm_scamshield import OpenScamShieldButton
+            scam_section = discord.ui.Section(accessory=OpenScamShieldButton(guild_id, clone_id))
+            scam_section.add_item(
+                "🚨 **Block scams**\nDelete fake giveaways and crypto scams, and auto-ban or quarantine whoever posts them."
+            )
+            container.add_item(scam_section)
 
         if page == 0:
             # Tells new owners the AI can do server setup from plain words (mention / reply / DM). The AI commands are
@@ -2288,6 +2286,10 @@ DYNAMIC_ITEMS = (
 )
 from discord_bot.cogs._views_bot_profile import DYNAMIC_ITEMS as _BOT_PROFILE_ITEMS  # noqa: E402
 DYNAMIC_ITEMS = DYNAMIC_ITEMS + _BOT_PROFILE_ITEMS
+
+# Scam Shield button + its sub-screen controls (replaced the "List your server" button).
+from discord_bot.cogs._views_join_dm_scamshield import DYNAMIC_ITEMS as _SCAM_ITEMS  # noqa: E402
+DYNAMIC_ITEMS = DYNAMIC_ITEMS + _SCAM_ITEMS
 
 # Compact quick-start message buttons (Open server panel / Full setup guide).
 from discord_bot.cogs._views_quickstart_pointer import DYNAMIC_ITEMS as _POINTER_ITEMS  # noqa: E402

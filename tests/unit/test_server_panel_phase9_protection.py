@@ -193,7 +193,7 @@ def test_allowed_domains_never_unblock_words_or_heuristics(env):
 
 
 def test_guild_settings_default_on_when_database_fails_and_cached(env):
-    assert run(env.ss.guild_settings(GUILD_ID, None)) == {"enabled": True, "allowed_domains": ()}
+    assert run(env.ss.guild_settings(GUILD_ID, None)) == {"enabled": True, "allowed_domains": (), "punish_action": "delete"}
     assert (GUILD_ID, None) in env.ss._guild_cache
 
 

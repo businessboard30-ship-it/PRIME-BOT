@@ -838,22 +838,11 @@ class AnimeBotDiscord(commands.Bot):
             except Exception:
                 logger.exception(f"[join-dm] listing-offer claim failed for guild {guild.id}")
         show_invite = is_initial_send and bool(needs_invite_consent)
-        # One-time "list your server on Disguild" reminder (a link button on the join DM). Claimed in Postgres
-        # (db.claim_disguild_list_reminder), so it is shown once per server EVER: not on reminder-loop resends,
-        # not after a restart or redeploy, not for a second bot (clone) in the same server. It is claimed only
-        # here, after the early exits above (owner opted out, no human owner), so a DM that is skipped for
-        # those reasons never burns it.
-        disguild_url = None
-        if is_initial_send:
-            try:
-                from modules import guildatlas as _ga
-                if await db.claim_disguild_list_reminder(guild.id):
-                    disguild_url = _ga.join_dm_list_url()
-            except Exception:
-                logger.exception(f"[join-dm] Disguild reminder claim failed for guild {guild.id}")
-        owner_join_offer = ({"show_listing": show_listing, "show_invite": show_invite,
-                             "show_disguild": bool(disguild_url), "disguild_url": disguild_url}
-                            if (show_listing or show_invite or disguild_url) else None)
+        # (The one-time "list your server on Disguild" reminder is not sent any more: the directory isn't ready, and the
+        # join DM's Scam Shield button took that slot. db.claim_disguild_list_reminder is kept for when it comes back, and
+        # it is NOT claimed here, so no server burns its one-time reminder for a button that is never drawn.)
+        owner_join_offer = ({"show_listing": show_listing, "show_invite": show_invite}
+                            if (show_listing or show_invite) else None)
         # Registry-invite consent stays owner-DM-only (same as the old
         # standalone _views_registry_invite_consent.py never had a channel
         # fallback) — the in-server backup copy below only ever offers the
@@ -900,10 +889,6 @@ class AnimeBotDiscord(commands.Bot):
                 from discord_bot.cogs._views_join_dm import _default_text_channel
                 channel = _default_text_channel(guild)
                 if channel is not None:
-                    # The Disguild reminder goes in the server copy only when the DM did not go out, so an owner is never shown it twice.
-                    if disguild_url and not dm_sent:
-                        backup_join_offer = {**(backup_join_offer or {"show_listing": False, "show_invite": False}),
-                                             "show_disguild": True, "disguild_url": disguild_url}
                     backup_view = await self._build_join_dm_view(guild, clone_id, content, join_offer=backup_join_offer)
                     await channel.send(view=backup_view)
             except (discord.HTTPException, discord.Forbidden, discord.NotFound):

@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "102"
+SCHEMA_VERSION = "103"
+# "102" -> "103" adds 054_scam_shield_action.sql (discord_scam_shield_guild.punish_action: delete / timeout / quarantine / kick / ban for the person who posted a caught scam). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "101" -> "102" adds the listing_api_tokens table (Top.gg / DiscordThings tokens entered by the bot owner via DM modal). CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "99" -> "100" adds 053_guild_plus.sql (discord_guild_subscriptions.plus_expires_at / plus_subscription_id: Premium Plus tier). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "98" -> "99" adds 052_goodbye_style.sql (discord_welcome_extras.goodbye_title/goodbye_color/goodbye_image_url/goodbye_footer/goodbye_show_avatar: Premium-only goodbye message styling, NULL = default look). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5714,6 +5715,11 @@ class Database:
         if guild_plus_migration.exists():
             await conn.execute(guild_plus_migration.read_text())
 
+        # Scam Shield punishment per server (punish_action on discord_scam_shield_guild). Additive/idempotent.
+        scam_action_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "054_scam_shield_action.sql"
+        if scam_action_migration.exists():
+            await conn.execute(scam_action_migration.read_text())
+
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
         if cat_shared_wallet_migration.exists():
@@ -11160,24 +11166,25 @@ class Database:
                 d = dict(row)
                 d["allowed_domains"] = list(d.get("allowed_domains") or [])
                 return d
-            return {"guild_id": guild_id, "clone_id": clone_id, "enabled": True, "allowed_domains": []}
+            return {"guild_id": guild_id, "clone_id": clone_id, "enabled": True, "allowed_domains": [], "punish_action": "delete"}
 
     async def set_scam_shield_guild(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
-        """Upsert-merge of this server's Scam Shield switch and allowed-domain list."""
+        """Upsert-merge of this server's Scam Shield switch, allowed-domain list and punishment."""
         current = await self.get_scam_shield_guild(guild_id, clone_id=clone_id)
         enabled = fields.get("enabled", current["enabled"])
         allowed = list(fields.get("allowed_domains", current["allowed_domains"]))
+        action = fields.get("punish_action", current.get("punish_action") or "delete")
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO discord_scam_shield_guild (guild_id, clone_id, enabled, allowed_domains, updated_at)
-                VALUES ($1, $2, $3, $4, NOW())
+                INSERT INTO discord_scam_shield_guild (guild_id, clone_id, enabled, allowed_domains, punish_action, updated_at)
+                VALUES ($1, $2, $3, $4, $5, NOW())
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
-                    SET enabled = $3, allowed_domains = $4, updated_at = NOW()
+                    SET enabled = $3, allowed_domains = $4, punish_action = $5, updated_at = NOW()
                 RETURNING *
                 """,
-                guild_id, clone_id, enabled, allowed,
+                guild_id, clone_id, enabled, allowed, action,
             )
             d = dict(row)
             d["allowed_domains"] = list(d.get("allowed_domains") or [])

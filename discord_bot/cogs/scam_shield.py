@@ -36,6 +36,7 @@ from discord_bot.cogs._admin_mount import mount_admin_command
 from modules import scam_check as sc
 from modules import scam_reputation as rep
 from modules import scam_shield as ss
+from modules import scam_shield_actions as sa
 from modules import scam_vision as sv
 from discord_bot.cogs import _views_scamshield_wizard as wiz
 from discord_bot.cogs import _views_scam_submit as submit
@@ -519,7 +520,7 @@ class ScamShieldCog(commands.Cog):
                     return False
             if not await self._claim_message(message):
                 return False                     # another bot in this server is already handling it
-            await self._act(message, *hit)
+            await self._act(message, *hit, action=gs.get("punish_action") or "delete")
             return True
         except Exception:
             logger.exception("[scam-shield] failed while checking a message")
@@ -678,7 +679,8 @@ class ScamShieldCog(commands.Cog):
         except Exception:
             logger.debug("[scam-shield] couldn't archive the catch", exc_info=True)
 
-    async def _act(self, message: discord.Message, kind: str, matched: str, rule_id: Optional[int]) -> None:
+    async def _act(self, message: discord.Message, kind: str, matched: str, rule_id: Optional[int],
+                   action: str = "delete") -> None:
         host, files = await self._evidence(message)
         deleted = False
         try:
@@ -688,13 +690,18 @@ class ScamShieldCog(commands.Cog):
             logger.warning("[scam-shield] couldn't delete in guild %s (%s)", message.guild.id, e)
         if host is not None:
             await self._archive(host, files, message, kind, matched, rule_id, deleted)
+        clone_id = getattr(self.bot, "clone_id", None)
+        action_note = ""
+        if action != "delete":
+            # The server chose what happens to the sender (join DM / /scamshield > Scam Shield settings). Done before the
+            # throttle below so a repeat offender is still actioned, and never raises (see modules/scam_shield_actions).
+            _done, action_note = await sa.punish(message.guild, clone_id, message.author, action, f"{kind}: {matched}"[:200])
         if ss.throttled(message.guild.id, message.author.id):
             return                                    # already flagged this user a moment ago
-        clone_id = getattr(self.bot, "clone_id", None)
         snippet = discord.utils.escape_mentions((message.content or "")[:300]) or "(image / embed only)"
         await ss.log_hit(message.guild.id, message.channel.id, message.author.id, kind, matched, rule_id,
                          snippet, deleted, clone_id)
-        fallback = await self._flag(message, kind, matched, deleted, snippet, clone_id)
+        fallback = await self._flag(message, kind, matched, deleted, snippet, clone_id, action_note)
         if fallback is not message.channel:           # the fallback flag already warns the channel it landed in
             await self._notice(message, deleted)
 
@@ -743,7 +750,7 @@ class ScamShieldCog(commands.Cog):
                 return ch
         return None
 
-    async def _flag(self, message, kind, matched, deleted, snippet, clone_id):
+    async def _flag(self, message, kind, matched, deleted, snippet, clone_id, action_note: str = ""):
         """Tell the staff about the catch. Mod-log channel first (full details, permanent). If the server has none, or it
         was deleted, or the bot can't write there, post a short self-deleting flag in another channel instead.
         Returns the fallback channel it posted into, else None (mod-log used, or nowhere to post)."""
@@ -758,6 +765,8 @@ class ScamShieldCog(commands.Cog):
                 embed.add_field(name="Channel", value=message.channel.mention)
                 embed.add_field(name="Matched", value=f"{kind}: {discord.utils.escape_markdown(matched)}"[:200])
                 embed.add_field(name="Message", value="🗑️ deleted" if deleted else "⚠️ couldn't delete (missing permission)")
+                if action_note:
+                    embed.add_field(name="Sender", value=action_note[:200], inline=False)
                 await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                 return None
             target = self._fallback_channel(message.guild, message.channel)
@@ -771,7 +780,8 @@ class ScamShieldCog(commands.Cog):
                 description=(f"A scam message from **{who}** (`{message.author.id}`) was caught in {where}"
                              f"{' and removed' if deleted else ', but I could not remove it (I need Manage Messages)'}.\n"
                              f"Type: `{discord.utils.escape_markdown(str(kind))[:30]}`. "
-                             "Don't click links or scan codes from it, and never share your login or send crypto to claim a prize.\n\n"
+                             "Don't click links or scan codes from it, and never share your login or send crypto to claim a prize.\n"
+                             + (f"{action_note}\n" if action_note else "") + "\n"
                              "This server has no mod-log channel I can post in, so I'm flagging it here. "
                              "Set one with `/modlog` to keep a permanent record.\n"
                              f"-# This message will be deleted in a short time ({FALLBACK_SECONDS} seconds)."),
