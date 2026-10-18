@@ -32,6 +32,12 @@ PAUSE_SECONDS = 1.2             # between two channel create/delete calls
 CALL_TIMEOUT = 15               # seconds a single Discord call may take before the job stops
 JOB_COOLDOWN_SECONDS = 20       # after a job, the same server waits this long before the next one
 MAX_RUNNING_JOBS = 3            # across the whole bot
+MAX_BULK_ASSIGN = 3000          # members one 'give/remove a role to many' request may touch
+ASSIGN_PAUSE_SECONDS = 0.6      # between two role changes (discord.py also honours Discord's own rate limits)
+# A role holding any of these is never handed out in bulk (give it to people one at a time, on purpose).
+RISKY_BULK_PERMS = ("administrator", "manage_guild", "manage_roles", "manage_channels", "manage_webhooks", "manage_messages",
+                    "manage_nicknames", "manage_expressions", "ban_members", "kick_members", "moderate_members", "mention_everyone",
+                    "view_audit_log", "manage_events", "manage_threads")
 DEDUPE_SECONDS = 15             # an identical AI command inside this window is ignored
 
 _SPLIT = re.compile(r"[,;\n|]+")

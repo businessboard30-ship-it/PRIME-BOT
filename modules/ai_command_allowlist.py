@@ -284,6 +284,15 @@ AI_COMMANDS = (
          "Never hands out managed roles or roles at/above the asker's top role."),
     _adm("member role-remove", True, ("manage_roles",),
          "Take away / remove a role from a member. Args: `member` (@mention), `role` (name, @mention or ID)."),
+    _adm("member role-add-all", True, ("manage_roles",),
+         "Give / assign / add a role to MANY members in ONE call (everyone, or only humans, or only bots, or only people who already "
+         "have another role). Args: `role` (name, @mention or ID), `who` (`everyone` default, `humans`, `bots`), `has_role` (optional: "
+         "only members who already have this role). Skips members who already have it. Refuses managed roles, roles at/above the "
+         "asker's top role, and roles with powerful permissions (admin, manage server/roles/channels, kick/ban, ...). The Confirm "
+         "click shows the exact number of members; the work then runs in the background and I post when it is done. Never one call per member."),
+    _adm("member role-remove-all", True, ("manage_roles",),
+         "Take away / remove a role from MANY members in ONE call. Args: `role`, `who` (`everyone` default, `humans`, `bots`), "
+         "`has_role` (optional). Same safety rules and background run as role-add-all."),
     _adm("member nickname", True, ("manage_nicknames",),
          "Change or reset a member's server nickname. Args: `member` (@mention), `nickname` (empty = reset)."),
     _adm("roleedit edit", True, ("manage_roles",),
