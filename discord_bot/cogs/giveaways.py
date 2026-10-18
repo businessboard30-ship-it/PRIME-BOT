@@ -19,6 +19,8 @@ import discord
 from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands, tasks
+
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 from discord_bot.cogs._dm_support import GuildOnlyCog
 
 from database import db
@@ -84,6 +86,7 @@ class GiveawayEntryView(discord.ui.View):
 class GiveawayCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._gate = AdaptiveSkip(idle_threshold=3, idle_skip=1, max_skip=2)  # no active giveaway: sleeps up to ~3 min
         self._poller.start()
 
     def cog_unload(self):
@@ -181,11 +184,14 @@ class GiveawayCog(GuildOnlyCog):
 
     @tasks.loop(seconds=60)
     async def _poller(self):
+        if not self._gate.should_run():
+            return
         try:
             active = await db.get_active_giveaways(getattr(self.bot, "clone_id", None))
         except Exception:
             logger.exception("[v0] Failed to poll active giveaways")
             return
+        self._gate.record(found_something=bool(active))
         now = datetime.now(timezone.utc)
         for giveaway in active:
             ends_at = giveaway["ends_at"]
