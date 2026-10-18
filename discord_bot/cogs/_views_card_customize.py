@@ -437,7 +437,8 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
     config = await db.get_welcome_config(guild_id, clone_id=clone_id)
     trial_started = False
     if not config.get("ultra_pack_unlocked"):
-        # First open on a server that never had the trial: start 5 free days.
+        # New trials are switched off (ULTRA_TRIAL_ENABLED in database.py), so this is a no-op for servers that never had one;
+        # a server whose trial already started is handled by the config overlay, not here.
         trial_started = await db.start_ultra_trial(guild_id, interaction.user.id, clone_id=clone_id)
         if trial_started:
             config = await db.get_welcome_config(guild_id, clone_id=clone_id)

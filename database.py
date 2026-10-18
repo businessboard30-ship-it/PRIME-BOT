@@ -187,6 +187,7 @@ SCHEMA_VERSION = "101"
 # "73" -> "74" adds ultra_trial_started_at, ultra_trial_admin_id and ultra_trial_notified to discord_welcome_config for the one-time 5-day Customize Card trial. ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "72" -> "73" adds auto_bump_enabled, auto_bump_by and auto_bump_checked_at (+ partial index) to bump_listings for Premium Auto Bump (4 bumps a day). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 ULTRA_TRIAL_DAYS = 5  # free Customize Card trial length per server
+ULTRA_TRIAL_ENABLED = False  # owner decision 2026-10-18: no NEW trials. Servers that already started one keep it until it ends (the overlay and expiry notice still read ultra_trial_started_at).
 # "71" -> "72" creates dash_visits (one row per web-dashboard user per UTC day, written at most every ~10 minutes per person; kept 90 days; only the owner area reads it). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "70" -> "71" creates dev_jobs (Developer-mode scheduled jobs: reminder / note / AI prompt on allowlisted presets, claimed by the cron worker). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "69" -> "70" adds display_name, avatar_url and show_on_board to dash_web_users (web leaderboard: signed-in members appear by name unless they opt out). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -11790,7 +11791,9 @@ class Database:
 
     async def start_ultra_trial(self, guild_id: int, admin_id: int, clone_id: Optional[int] = None) -> bool:
         """Starts this server's one-time 5-day Customize Card trial. Returns
-        True only if it was started now (False = already used/owned)."""
+        True only if it was started now (False = already used/owned, or new trials are switched off)."""
+        if not ULTRA_TRIAL_ENABLED:
+            return False
         await self.set_welcome_config(guild_id, clone_id)  # ensure a row exists
         pool = await get_pool()
         async with pool.acquire() as conn:
