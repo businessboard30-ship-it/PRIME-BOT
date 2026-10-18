@@ -58,7 +58,7 @@ from modules.ai_features import (
     check_reply_limit, get_reply_usage, reply_cap_for,
     is_reply_chat_enabled, is_premium_question, premium_answer,
     is_bot_invite_question, is_support_invite_question, SUPPORT_BUTTON_MARKER,
-    is_levelup_question, levelup_answer, is_date_request, date_answer,
+    is_levelup_question, levelup_answer, is_date_request, date_answer, NO_DATE_GIF,
 )
 from modules.superbot_adapter import get_user_tier
 from modules.command_reference import build_context, is_command_question
@@ -231,6 +231,14 @@ class CharacterPickView(discord.ui.View):
     async def on_timeout(self) -> None:
         for child in self.children:
             child.disabled = True
+
+
+def _gif_embed(text) -> Optional[discord.Embed]:
+    """The fixed "no" GIF must be sent as an embed image: every AI reply goes out
+    with suppress_embeds=True, so a bare tenor link only ever showed up as text."""
+    if text and str(text).strip() == NO_DATE_GIF:
+        return discord.Embed(color=discord.Color.dark_grey()).set_image(url=NO_DATE_GIF)
+    return None
 
 
 class AIToolsCog(commands.Cog):
@@ -868,6 +876,10 @@ class AIToolsCog(commands.Cog):
         if quick:
             quick_text, quick_view = quick
             kwargs = {"view": quick_view} if quick_view else {}
+            gif = _gif_embed(quick_text)
+            if gif is not None:
+                await interaction.response.send_message(embed=gif, **kwargs)
+                return
             await interaction.response.send_message(quick_text, suppress_embeds=True, **kwargs)
             return
 
@@ -1224,6 +1236,11 @@ class AIToolsCog(commands.Cog):
 
             async def _send(**kw):
                 async def _go(embed=None):
+                    gif = _gif_embed(text)
+                    if gif is not None:
+                        if message.guild is None:
+                            return await message.channel.send(embed=gif, allowed_mentions=none, **kw)
+                        return await message.reply(embed=gif, mention_author=False, allowed_mentions=none, **kw)
                     extra = {"embed": embed} if embed is not None else {"suppress_embeds": True}
                     if message.guild is None:
                         return await message.channel.send(text, allowed_mentions=none, **extra, **kw)
