@@ -31,6 +31,7 @@ Safety model (all of it applies on top of the guard's allowlist + daily cap)
 * Every Discord call carries an audit-log reason naming the asker, and every change is written to the mod log.
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -365,6 +366,121 @@ class AIServerOpsCog(commands.Cog):
             await member.remove_roles(r, reason=reason_for(i.user))
             return f"✅ Took **{r.name}** from {member.mention}."
         return Plan(None, f"Take the **{safe_text(r.name, 60)}** role from {member.mention}?", run, member.id)
+
+    # ── bulk: one role to many members ──
+    # Same rules as the single-member commands (role hierarchy, no managed roles), plus: no powerful permissions in bulk, a hard cap,
+    # the exact head-count in the Confirm text, one job per server (modules/ai_bulk.JOBS), and a paced background run with a summary.
+
+    _BULK_TASKS: set = set()
+
+    async def _bulk_role_plan(self, i, role, who, has_role, adding: bool) -> Plan:
+        if err := _need(i, "manage_roles"):
+            return _fail(err)
+        g = i.guild
+        r, err = _find_role(g, role)
+        if err:
+            return _fail(err)
+        if r.is_default():
+            return _fail("Everyone already has @everyone.")
+        if err := role_problem(g, i.user, r, assigning=True):
+            return _fail(err)
+        if adding:
+            bad = [p.replace("_", " ") for p in _ai_bulk.RISKY_BULK_PERMS if getattr(r.permissions, p, False)]
+            if bad:
+                return _fail(f"**{safe_text(r.name, 60)}** carries powerful permissions ({', '.join(bad[:4])}), so I won't hand it to many "
+                             "people at once. Give it to specific members one by one instead.")
+        scope = str(who or "everyone").strip().lower()
+        if scope not in ("everyone", "all", "humans", "people", "members", "bots"):
+            return _fail("`who` must be everyone, humans or bots.")
+        hr = None
+        if str(has_role or "").strip():
+            hr, err = _find_role(g, has_role)
+            if err:
+                return _fail(err)
+        if not getattr(g, "chunked", True):
+            try:
+                await g.chunk()
+            except Exception:
+                logger.warning("[ai_server_ops] member chunk failed", exc_info=True)
+        pool = list(g.members)
+        if scope == "bots":
+            pool = [m for m in pool if m.bot]
+        elif scope != "everyone" and scope != "all":
+            pool = [m for m in pool if not m.bot]
+        if hr is not None:
+            pool = [m for m in pool if hr in m.roles]
+        targets = [m for m in pool if (r not in m.roles) == adding and m.id != g.me.id]
+        if not targets:
+            return _fail(f"Nobody in that group {'is missing' if adding else 'has'} **{safe_text(r.name, 60)}** — nothing to do.")
+        if len(targets) > _ai_bulk.MAX_BULK_ASSIGN:
+            return _fail(f"That is {len(targets)} members; I do at most {_ai_bulk.MAX_BULK_ASSIGN} per request. Narrow it with `who` or `has_role`.")
+        group = {"everyone": "everyone", "all": "everyone", "bots": "bots only"}.get(scope, "humans only")
+        if hr is not None:
+            group += f", who already have **{safe_text(hr.name, 60)}**"
+        mins = max(1, int(len(targets) * _ai_bulk.ASSIGN_PAUSE_SECONDS / 60 + 0.5))
+        verb, prep = ("Give", "to") if adding else ("Take", "from")
+        text = (f"{verb} the **{safe_text(r.name, 60)}** role {prep} **{len(targets)}** member{'s' if len(targets) != 1 else ''} ({group})? "
+                f"It runs in the background (about {mins} min) and I post here when it is done.")
+        ids = [m.id for m in targets]
+        who_id, channel = i.user, i.channel
+
+        async def job():
+            done = failed = 0
+            stopped = None
+            try:
+                for mid in ids:
+                    m = g.get_member(mid)
+                    if m is None or (r in m.roles) == adding:
+                        continue
+                    try:
+                        if adding:
+                            await m.add_roles(r, reason=reason_for(who_id), atomic=True)
+                        else:
+                            await m.remove_roles(r, reason=reason_for(who_id), atomic=True)
+                        done += 1
+                    except discord.Forbidden:
+                        stopped = "Discord refused (my role is probably too low now)."
+                        break
+                    except discord.HTTPException:
+                        failed += 1
+                    await asyncio.sleep(_ai_bulk.ASSIGN_PAUSE_SECONDS)
+            finally:
+                _ai_bulk.JOBS.finish(g.id)
+            msg = f"✅ {'Gave' if adding else 'Took'} **{safe_text(r.name, 60)}** {prep} **{done}** of {len(ids)} members."
+            if failed:
+                msg += f" {failed} could not be changed."
+            if stopped:
+                msg += f" Stopped early: {stopped}"
+            try:
+                await channel.send(f"{who_id.mention} {msg}", allowed_mentions=discord.AllowedMentions(users=[who_id], roles=False, everyone=False))
+            except Exception:
+                logger.debug("[ai_server_ops] bulk role summary not sent", exc_info=True)
+
+        async def run():
+            busy = _ai_bulk.JOBS.try_start(g.id)
+            if busy:
+                return f"❌ {busy}"
+            task = asyncio.create_task(job())
+            AIServerOpsCog._BULK_TASKS.add(task)
+            task.add_done_callback(AIServerOpsCog._BULK_TASKS.discard)
+            return f"⏳ Started: {verb.lower()}ing **{safe_text(r.name, 60)}** {prep} {len(ids)} members. I'll post here when it is done."
+        return Plan(None, text, run, None)
+
+    @member_g.command(name="role-add-all", description="Give a role to many members at once")
+    @app_commands.describe(role="Role name, @mention or ID", who="everyone, humans or bots", has_role="Only members who already have this role")
+    async def member_role_add_all(self, interaction: discord.Interaction, role: str, who: str = "everyone", has_role: str = ""):
+        await self._slash(interaction, "member_role_add_all", role=role, who=who, has_role=has_role)
+
+    async def plan_member_role_add_all(self, i, role=None, who="everyone", has_role="", **_):
+        return await self._bulk_role_plan(i, role, who, has_role, True)
+
+    @member_g.command(name="role-remove-all", description="Take a role away from many members at once")
+    @app_commands.describe(role="Role name, @mention or ID", who="everyone, humans or bots", has_role="Only members who also have this role")
+    async def member_role_remove_all(self, interaction: discord.Interaction, role: str, who: str = "everyone", has_role: str = ""):
+        await self._slash(interaction, "member_role_remove_all", role=role, who=who, has_role=has_role)
+
+    async def plan_member_role_remove_all(self, i, role=None, who="everyone", has_role="", **_):
+        return await self._bulk_role_plan(i, role, who, has_role, False)
 
     @member_g.command(name="nickname", description="Change or reset a member's server nickname")
     @app_commands.describe(member="The member (@mention)", nickname="New nickname (max 32 chars); leave empty to reset")
