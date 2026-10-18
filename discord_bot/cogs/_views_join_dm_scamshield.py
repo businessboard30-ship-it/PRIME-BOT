@@ -60,7 +60,7 @@ def _action_line(current: str) -> str:
     return f"Right now: {emoji} **{label}**. {blurb}"
 
 
-def build_container(guild: discord.Guild, clone_id, st: dict, note: str = "") -> discord.ui.Container:
+def build_container(guild: discord.Guild, clone_id, st: dict, note: str = "", back: bool = True) -> discord.ui.Container:
     cfg = st["scam"].get("cfg", {})
     on = bool(cfg.get("enabled", True))
     premium = st["premium"]
@@ -104,7 +104,8 @@ def build_container(guild: discord.Guild, clone_id, st: dict, note: str = "") ->
     extra.add_item(ScamSubButton("deep", guild.id, clone_id, premium=premium))
     if not premium:
         extra.add_item(ScamSubButton("upgrade", guild.id, clone_id))
-    extra.add_item(ScamSubButton("back", guild.id, clone_id))
+    if back:      # opened from a mod-log flag there is no join DM to go back to
+        extra.add_item(ScamSubButton("back", guild.id, clone_id))
     container.add_item(extra)
     return container
 
@@ -119,16 +120,26 @@ def image_file() -> discord.File:
     return discord.File(str(IMAGE_PATH), filename=IMAGE_NAME)
 
 
-async def render(guild: discord.Guild, clone_id, note: str = "") -> tuple:
+async def render(guild: discord.Guild, clone_id, note: str = "", back: bool = True) -> tuple:
     """-> (view, file). Pass both to edit_original_response(view=..., attachments=[file])."""
     st = await wiz.load_state(guild, clone_id)
-    return build_view(build_container(guild, clone_id, st, note)), image_file()
+    return build_view(build_container(guild, clone_id, st, note, back)), image_file()
+
+
+def _has_back(interaction: discord.Interaction) -> bool:
+    """True when the message being edited carries our Back button (join DM); False for the copy opened from a flag."""
+    from discord_bot.cogs._views_join_dm import _iter_components
+    for row in getattr(interaction.message, "components", None) or []:
+        for c in _iter_components(row):
+            if (getattr(c, "custom_id", None) or "").startswith("joindm_scam:back:"):
+                return True
+    return False
 
 
 async def _rerender(interaction: discord.Interaction, guild: discord.Guild, clone_id, note: str = "") -> None:
     if not interaction.response.is_done():
         await interaction.response.defer()
-    view, file = await render(guild, clone_id, note)
+    view, file = await render(guild, clone_id, note, back=_has_back(interaction))
     await interaction.edit_original_response(view=view, attachments=[file])
 
 
@@ -155,7 +166,7 @@ class _AllowModal(wiz.AllowModal):
         added, rejected, final = spp.clean_domains(str(self.domains.value), current)
         if added:
             await spp.set_allowed_domains(guild.id, self.clone_id, interaction.user.id, final)
-        view, file = await render(guild, self.clone_id)
+        view, file = await render(guild, self.clone_id, back=_has_back(interaction))
         await interaction.edit_original_response(view=view, attachments=[file])
         note = []
         if added:
@@ -331,4 +342,31 @@ class OpenScamShieldButton(discord.ui.DynamicItem[discord.ui.Button], template=_
                 "⚠️ Couldn't open Scam Shield right now. Try again, or run `/scamshield` in your server.", ephemeral=True)
 
 
-DYNAMIC_ITEMS = (ScamSubButton, OpenScamShieldButton)
+class FlagSettingsButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^scam_flag_settings:(?P<guild>\d+):(?P<clone>-|\d+)$"):
+    """Under the "Scam Shield caught a scam message" mod-log flag: opens the Scam Shield settings (ephemeral, only the
+    person who tapped sees it). Needs Manage Server."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id, self.clone_id = guild_id, clone_id
+        super().__init__(discord.ui.Button(
+            label="Scam settings", style=discord.ButtonStyle.primary, emoji="🛡️",
+            custom_id=f"scam_flag_settings:{guild_id}:{_clone_part(clone_id)}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(int(match.group("guild")), _clone_from(match.group("clone")))
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = await wiz._auth(interaction, self.guild_id)
+        if guild is None:
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            view, file = await render(guild, self.clone_id, back=False)
+            await interaction.followup.send(view=view, file=file, ephemeral=True)
+        except Exception:
+            logger.exception("[scam-flag-settings] couldn't open settings for guild %s", self.guild_id)
+            await interaction.followup.send("⚠️ Couldn't open the settings. Try `/scamshield`.", ephemeral=True)
+
+
+DYNAMIC_ITEMS = (ScamSubButton, OpenScamShieldButton, FlagSettingsButton)
