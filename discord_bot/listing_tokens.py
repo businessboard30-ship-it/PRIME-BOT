@@ -77,7 +77,7 @@ class TokenModal(discord.ui.Modal):
         super().__init__(title=f"{info['label']} API token", custom_id=f"listing_token:modal:{service}")
         self.service = service
         self.token_input = discord.ui.TextInput(
-            placeholder="Paste the token here", min_length=10, max_length=2000,
+            placeholder="Paste the API key here", min_length=10, max_length=2000,
             style=discord.TextStyle.short,
         )
         self.add_item(discord.ui.Label(text=f"{info['label']} token", component=self.token_input))
