@@ -20,9 +20,11 @@ import hashlib
 import io
 import logging
 import os
+import re
 import shutil
+import unicodedata
 from collections import OrderedDict
-from typing import Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
 from modules import scam_shield as ss
 
@@ -35,9 +37,13 @@ READ_TIMEOUT = 10.0
 MIN_TEXT_CHARS = 30             # shorter output is noise (a meme with 3 words), never matched
 MAX_TEXT_CHARS = 4000
 CACHE_MAX = 500
+EXTRA_BUDGET = 14.0             # seconds for ALL extra passes on one picture (each pass still has READ_TIMEOUT)
+EXTRA_MAX_SIDE = 2400           # px, longest side of an enlarged extra pass
+MIN_FUZZY_LABEL = 6             # a name shorter than this must match exactly (edit distance 1 is too loose there)
 
 _slots = asyncio.Semaphore(2)
 _cache: "OrderedDict[str, str]" = OrderedDict()
+_cache_more: "OrderedDict[str, str]" = OrderedDict()
 _which: Optional[str] = None
 _checked = False
 
@@ -78,6 +84,92 @@ def prepare(data: bytes) -> Optional[bytes]:
         return None
 
 
+async def _tess(exe: str, png: bytes, psm: str) -> str:
+    """One tesseract run ('' on any failure or timeout). Holds one of the two read slots."""
+    text = ""
+    async with _slots:
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                exe, "stdin", "stdout", "--psm", psm, "-l", "eng",
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await asyncio.wait_for(proc.communicate(png), timeout=READ_TIMEOUT)
+            text = out.decode("utf-8", "ignore")[:MAX_TEXT_CHARS]
+        except Exception:
+            logger.debug("[scam-ocr] read failed", exc_info=True)
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+    return text
+
+
+def _png(im) -> bytes:
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    return out.getvalue()
+
+
+def _enlarge(im, factor: int):
+    from PIL import Image
+    w, h = im.size
+    f = min(factor, EXTRA_MAX_SIDE / max(w, h))
+    if f <= 1:
+        return im
+    return im.resize((max(1, round(w * f)), max(1, round(h * f))), Image.LANCZOS)
+
+
+def variants(data: bytes, only_urlbar: bool = False) -> List[Tuple[bytes, str]]:
+    """Extra reading attempts for a picture the first pass couldn't use: [(png, psm)]. The top strip (browser tab /
+    address bar) comes first. Light-on-dark text gets an inverted copy, small text an enlarged one, and the middle
+    (the post body) is read on its own. [] if it isn't a readable picture."""
+    try:
+        from PIL import Image, ImageOps
+        im = Image.open(io.BytesIO(data))
+        if im.width * im.height > MAX_PIXELS:
+            return []
+        g = ImageOps.autocontrast(ImageOps.exif_transpose(im).convert("L"))
+        w, h = g.size
+        out: List[Tuple[bytes, str]] = []
+        if h >= 60:
+            out.append((_png(_enlarge(g.crop((0, 0, w, max(30, round(h * 0.18)))), 3)), "11"))
+        if only_urlbar:
+            return out
+        out.append((_png(ImageOps.invert(_enlarge(g, 2 if max(w, h) < MAX_SIDE else 1))), "11"))
+        out.append((_png(_enlarge(g, 2)), "4"))
+        if h >= 200:
+            out.append((_png(_enlarge(g.crop((0, round(h * 0.2), w, round(h * 0.85))), 2)), "6"))
+        return out
+    except Exception:
+        logger.debug("[scam-ocr] couldn't build extra passes", exc_info=True)
+        return []
+
+
+async def read_more(data: bytes, only_urlbar: bool = False) -> str:
+    """The words from the extra passes, joined ('' on failure). Cached by file hash. Bounded by EXTRA_BUDGET."""
+    exe = tesseract_path()
+    if exe is None:
+        return ""
+    key = hashlib.sha256(data).hexdigest() + (":u" if only_urlbar else ":a")
+    if key in _cache_more:
+        _cache_more.move_to_end(key)
+        return _cache_more[key]
+    loop = asyncio.get_running_loop()
+    passes = await loop.run_in_executor(None, variants, data, only_urlbar)
+    deadline = loop.time() + EXTRA_BUDGET
+    parts: List[str] = []
+    for png, psm in passes:
+        if loop.time() >= deadline:
+            break
+        parts.append(await _tess(exe, png, psm))
+    text = "\n".join(p for p in parts if p)[:MAX_TEXT_CHARS * 2]
+    _cache_more[key] = text
+    if len(_cache_more) > CACHE_MAX:
+        _cache_more.popitem(last=False)
+    return text
+
+
 async def read_text(data: bytes) -> str:
     """The words in the picture ('' when none, or on any failure)."""
     exe = tesseract_path()
@@ -90,26 +182,106 @@ async def read_text(data: bytes) -> str:
     png = await asyncio.get_running_loop().run_in_executor(None, prepare, data)
     if png is None:
         return ""
-    text = ""
-    async with _slots:
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                exe, "stdin", "stdout", "--psm", "6", "-l", "eng",
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-            out, _ = await asyncio.wait_for(proc.communicate(png), timeout=READ_TIMEOUT)
-            text = out.decode("utf-8", "ignore")[:MAX_TEXT_CHARS]
-        except Exception:
-            logger.debug("[scam-ocr] read failed", exc_info=True)
-            if proc is not None and proc.returncode is None:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
+    text = await _tess(exe, png, "6")
     _cache[key] = text
     if len(_cache) > CACHE_MAX:
         _cache.popitem(last=False)
     return text
+
+
+# ── domains in picture text ──────────────────────────────────────────────
+
+_TLDS = "com|net|org|io|gg|xyz|top|club|online|site|vip|bet|casino|info|app|fun"
+_DOT_WORD = re.compile(r"\s*(?:\[\s*\.\s*\]|\(\s*\.\s*\)|\{\s*\.\s*\}|[\[({]\s*dot\s*[\])}])\s*", re.I)
+_SPACED_DOT = re.compile(r"(?<=[a-z0-9])\s*(?:\.|,|\s+dot\s+)\s*(?=(?:" + _TLDS + r")\b)", re.I)
+_CONFUSABLE = str.maketrans({"\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0440": "p", "\u0441": "c", "\u0445": "x",
+                             "\u0443": "y", "\u0456": "i", "\u0455": "s", "\u03bf": "o", "\u03b1": "a", "\u03c1": "p",
+                             "\u0131": "i"})
+
+
+def clean_urls(text: str) -> str:
+    """Undo how scam pictures and OCR mangle a link: 'hubowin [.] com', 'hubowin (dot) com', 'hubowin . com',
+    'hubowin,com'. Only touches a dot-like gap in front of a common TLD, so normal sentences are left alone."""
+    t = _DOT_WORD.sub(".", text or "")
+    return _SPACED_DOT.sub(".", t)
+
+
+def skeleton(s: str) -> str:
+    """A name with the usual OCR / look-alike confusions folded together, so 'hub0win', 'hubovvin' and 'rnail'
+    compare equal to 'hubowin' and 'mail'. Used for BOTH sides of a comparison."""
+    s = unicodedata.normalize("NFKD", (s or "").lower()).translate(_CONFUSABLE)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.replace("rn", "m").replace("vv", "w")
+    return s.translate(str.maketrans({"0": "o", "1": "l", "i": "l", "|": "l"}))
+
+
+def registrable(host: str) -> str:
+    """'login.www.hubowin.com' -> 'hubowin.com'; 'x.hubowin.co.uk' -> 'hubowin.co.uk' (the usual 2-letter-TLD pattern)."""
+    parts = [p for p in (host or "").lower().strip(".").split(".") if p]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    if len(parts[-1]) == 2 and parts[-2] in ("co", "com", "org", "net", "gov", "ac", "ne", "or"):
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _within_one(a: str, b: str) -> bool:
+    """Edit distance <= 1 (rapidfuzz when installed, a tiny exact check otherwise)."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    try:
+        from rapidfuzz.distance import Levenshtein
+        return Levenshtein.distance(a, b, score_cutoff=1) <= 1
+    except ImportError:
+        pass
+    if len(a) > len(b):
+        a, b = b, a
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    return a[i:] == b[i + 1:] if len(a) < len(b) else a[i + 1:] == b[i + 1:]
+
+
+def _decode_puny(host: str) -> str:
+    if "xn--" not in host:
+        return host
+    try:
+        return host.encode("ascii").decode("idna")
+    except Exception:
+        return host
+
+
+def match_domains(text: str, allowed=()) -> Optional[Tuple[str, str, Optional[int]]]:
+    """Find a scam domain in picture text even when OCR garbled it: obfuscated dots, spaces inside the link,
+    0/o 1/l/i rn/m vv/w mix-ups, one wrong or missing letter, or a punycode/look-alike spelling. The server's allowed
+    domains and Discord's real hosts are never matched. -> ('domain', 'fatowin.com (read as fatow1n.com)', rule id)."""
+    rules = ss._c.domains
+    if not rules or not text:
+        return None
+    cleaned = clean_urls(text)
+    t = ss.normalize(cleaned)
+    scam = [(rid, d, skeleton(registrable(d))) for rid, d in rules]
+    hosts: Set[str] = set()
+    for h in ss.hosts_in(cleaned):
+        hosts.add(h)
+        dec = _decode_puny(h)
+        if dec != h:
+            hosts.add(dec)
+    for h in sorted(hosts):
+        if ss.is_allowed_domain(h, allowed) or ss.is_official_host(h, t):
+            continue
+        reg = skeleton(registrable(h))
+        label = reg.split(".")[0]
+        for rid, d, sk in scam:
+            if h == d or h.endswith("." + d):
+                return "domain", d, rid
+            if reg == sk and len(label) >= 4:
+                return "domain", f"{d} (read as {h})", rid
+            if len(label) >= MIN_FUZZY_LABEL and len(sk.split(".")[0]) >= MIN_FUZZY_LABEL and _within_one(reg, sk):
+                return "domain", f"{d} (read as {h})", rid
+    return None
 
 
 def match(text: str, allowed=()) -> Optional[Tuple[str, str, Optional[int]]]:
@@ -118,5 +290,33 @@ def match(text: str, allowed=()) -> Optional[Tuple[str, str, Optional[int]]]:
         return None
     hit = ss.match_text(text, allowed)
     if hit is None:
+        hit = match_domains(text, allowed)
+    if hit is None:
         return None
     return "image_text", f"{hit[0]}: {hit[1]}", hit[2]
+
+
+def _has_host(text: str) -> bool:
+    return bool(ss.hosts_in(clean_urls(text)))
+
+
+async def scan(data: bytes, allowed=()) -> Optional[Tuple[str, str, Optional[int]]]:
+    """Read the picture and run the text rules. Extra passes (address-bar crop, inverted, enlarged, middle crop) only
+    run when the first read found nothing: all of them if it got almost no text, just the top strip if it got text
+    but no link. Fails open: any problem means None."""
+    try:
+        first = await read_text(data)
+        hit = match(first, allowed)
+        if hit or not available():
+            return hit
+        short = len((first or "").strip()) < MIN_TEXT_CHARS
+        if not short and _has_host(first):
+            return None
+        more = await read_more(data, only_urlbar=not short)
+        if not more:
+            return None
+        # extra text is matched on its own too, so a short first read can't hide a good second one
+        return match(first + "\n" + more, allowed) or match(more, allowed)
+    except Exception:
+        logger.debug("[scam-ocr] scan failed", exc_info=True)
+        return None

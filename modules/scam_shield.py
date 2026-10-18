@@ -39,6 +39,8 @@ HIT_THROTTLE_SECONDS = 30       # one logged flag per user per window, so a raid
 CLAIM_GRACE_SECONDS = 4.0       # a bot that can't delete waits this long so one that can goes first (see claim())
 CLAIM_KEEP_DAYS = 3             # claims are only needed for the seconds a message is being handled
 MAX_RULES = 500
+LEARNED_MAX = 150               # picture hashes the bot may add by itself (note starts with LEARN_NOTE); owner can remove them
+LEARN_NOTE = "learned: "
 
 _ZERO_WIDTH = re.compile("[\u200b-\u200f\u2060\ufeff\u00ad]")
 _URL_HOST = re.compile(r"(?:https?://|www\.)([a-z0-9][a-z0-9.\-]*\.[a-z]{2,})", re.I)
@@ -359,6 +361,31 @@ async def add_rule(kind: str, pattern: str, added_by: int, note: Optional[str] =
             "ON CONFLICT (kind, pattern) DO NOTHING RETURNING id", kind, pattern, added_by, (note or "")[:200] or None)
     invalidate()
     return rid
+
+
+async def learn_image(data: bytes, why: str, added_by: int = 0) -> Optional[int]:
+    """A picture a free detector (OCR rule hit) or the AI just confirmed as a scam: remember its hash so the next
+    copy is caught by the free hash check. Skips near-duplicates of known pictures and almost-flat hashes (they'd
+    match unrelated images), and stops at LEARNED_MAX. Never raises. Returns the new rule id or None."""
+    try:
+        h = dhash(data)
+        if h is None or not (8 <= bin(h).count("1") <= 56):
+            return None
+        if any(hamming(h, ref) <= IMAGE_MAX_DISTANCE for _, ref in _c.images):
+            return None
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            n = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM scam_shield_rules WHERE kind = 'image' AND note LIKE $1", LEARN_NOTE + "%") or 0)
+        if n >= LEARNED_MAX:
+            return None
+        rid = await add_rule("image", f"{h:016x}", added_by, LEARN_NOTE + (why or "confirmed scam picture"))
+        if rid:
+            logger.info("[scam-shield] learned a scam picture (rule %s): %s", rid, why)
+        return rid
+    except Exception:
+        logger.debug("[scam-shield] couldn't learn the picture", exc_info=True)
+        return None
 
 
 async def remove_rule(rule_id: int) -> bool:
