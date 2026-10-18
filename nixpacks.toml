@@ -15,4 +15,4 @@
 # fails to start at all with "libatomic.so.1: cannot open shared object
 # file", since this base image doesn't ship it by default.
 # tesseract reads the text out of scam pictures (modules/scam_ocr.py); without it that stage is skipped.
-nixPkgs = ["ffmpeg", "libopus", "libatomic", "tesseract"]
+nixPkgs = ["ffmpeg", "libopus", "libatomic", "tesseract", "zbar"]
