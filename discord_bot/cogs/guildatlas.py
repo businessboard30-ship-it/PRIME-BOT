@@ -75,8 +75,8 @@ class GuildAtlasCog(commands.Cog):
             logger.info("GuildAtlas integration is OFF (set GUILDATLAS_SITE_URL and a 32+ char GUILDATLAS_INTERNAL_SECRET).")
             return
         # Every process (main bot and each clone) creates the permanent Disguild invites for servers it is itself in.
-        self._invite_gate = AdaptiveSkip(idle_threshold=3, idle_skip=1, max_skip=2)  # no invite requests: sleeps up to ~3 min
-        self._weblog_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=4)  # quiet site: sleeps up to ~2.5 min
+        self._invite_gate = AdaptiveSkip(idle_threshold=3, idle_skip=1, max_skip=2, name="guildatlas_invites")  # no invite requests: sleeps up to ~3 min
+        self._weblog_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=4, name="guildatlas_weblog")  # quiet site: sleeps up to ~2.5 min
         self.invite_loop.start()
         self.stats_loop.start()
         self.members_loop.start()  # a server that only has a clone still gets its member count

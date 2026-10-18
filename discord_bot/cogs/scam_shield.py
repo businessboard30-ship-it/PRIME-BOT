@@ -117,7 +117,7 @@ class ScamShieldCog(commands.Cog):
         self._sweep_lock = asyncio.Lock()      # the startup sweep and a forced one never run at the same time
         self._reload.start()
         self._backfill.start()
-        self._force_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=3)  # 15 s ticks, sleeps up to ~60 s
+        self._force_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=3, name="scam_force_poll")  # 15 s ticks, sleeps up to ~60 s
         self._force_poll.start()
 
     def cog_unload(self):

@@ -1101,8 +1101,8 @@ class BumpCog(commands.Cog):
         self.bot = bot
         # A clone with an empty bump queue / no reminders due shouldn't
         # keep hitting the DB every tick forever — see _adaptive_skip.py.
-        self._worker_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
-        self._reminder_gate = AdaptiveSkip(idle_threshold=5, idle_skip=8)
+        self._worker_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5, name="bump_worker")
+        self._reminder_gate = AdaptiveSkip(idle_threshold=5, idle_skip=8, name="bump_reminders")
         # Registers the custom_id regex patterns once, globally — this is
         # what makes the ad-card buttons keep responding on old messages
         # after a restart, with no per-listing state kept in memory (see

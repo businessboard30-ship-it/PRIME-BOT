@@ -1554,8 +1554,8 @@ class RoastCog(GuildOnlyCog):
         # See _adaptive_skip.py — these two sub-checks back off
         # independently once a clone has had nothing stale to expire /
         # nothing actually triggering for a while.
-        self._expire_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
-        self._trigger_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
+        self._expire_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5, name="roast_expire")
+        self._trigger_gate = AdaptiveSkip(idle_threshold=5, idle_skip=5, name="roast_trigger")
 
     def _pick_fresh_line(self, battle_id: int, bank: list[str], used_map: dict[int, set[str]]) -> str:
         used = used_map.setdefault(battle_id, set())

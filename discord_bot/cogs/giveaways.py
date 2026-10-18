@@ -86,7 +86,7 @@ class GiveawayEntryView(discord.ui.View):
 class GiveawayCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._gate = AdaptiveSkip(idle_threshold=3, idle_skip=1, max_skip=2)  # no active giveaway: sleeps up to ~3 min
+        self._gate = AdaptiveSkip(idle_threshold=3, idle_skip=1, max_skip=2, name="giveaways")  # no active giveaway: sleeps up to ~3 min
         self._poller.start()
 
     def cog_unload(self):

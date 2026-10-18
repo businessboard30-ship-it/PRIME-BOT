@@ -41,13 +41,18 @@ Usage inside a @tasks.loop function:
 
 
 class AdaptiveSkip:
-    def __init__(self, idle_threshold: int = 5, idle_skip: int = 5, max_skip: int | None = None):
+    def __init__(self, idle_threshold: int = 5, idle_skip: int = 5, max_skip: int | None = None,
+                 name: str | None = None):
         """idle_threshold: how many consecutive empty ticks before we
         start skipping. idle_skip: how many ticks to skip once idle,
         before checking again. max_skip (optional): when set, every
         further empty check doubles the skip (idle_skip, 2x, 4x ...) up
         to this many ticks, so a feature nobody uses keeps sleeping
-        deeper; any real work resets it to full speed."""
+        deeper; any real work resets it to full speed. name (optional):
+        key from modules.sleep_events.LABELS; when given, falling asleep
+        and waking up are reported to the support-server sleep log."""
+        self._name = name
+        self._announced = False
         self._idle_threshold = idle_threshold
         self._idle_skip = idle_skip
         self._max_skip = max_skip if max_skip and max_skip > idle_skip else None
@@ -70,6 +75,21 @@ class AdaptiveSkip:
         self._empty_streak = 0
         self._skip_remaining = 0
         self._next_skip = self._idle_skip
+        self._report_wake()
+
+    def _report(self, kind: str, text: str) -> None:
+        if not self._name:
+            return
+        try:
+            from modules import sleep_events
+            sleep_events.emit(kind, self._name, text.format(label=sleep_events.label(self._name)))
+        except Exception:
+            pass
+
+    def _report_wake(self) -> None:
+        if self._announced:
+            self._announced = False
+            self._report("wake", "☀️ **{label}** woke up: there is work to do again, back to normal speed.")
 
     def record(self, found_something: bool) -> None:
         if found_something:
@@ -77,6 +97,9 @@ class AdaptiveSkip:
             return
         self._empty_streak += 1
         if self._empty_streak >= self._idle_threshold:
+            if not self._announced:
+                self._announced = True
+                self._report("sleep", "😴 **{label}** went to sleep: nothing to do for a while, so it now checks less often.")
             self._skip_remaining = self._next_skip
             if self._max_skip:
                 self._next_skip = min(self._next_skip * 2, self._max_skip)

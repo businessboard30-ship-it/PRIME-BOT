@@ -132,7 +132,7 @@ class ShipCog(GuildOnlyCog):
         # trimmed lazily on read — this is a short rolling window, not a
         # durable log, so it doesn't need a table.
         self._recent_text_activity: dict[int, dict[int, datetime]] = {}
-        self._gate = AdaptiveSkip(idle_threshold=3, idle_skip=1, max_skip=4)  # nobody enabled Ship: sleeps up to ~5 min
+        self._gate = AdaptiveSkip(idle_threshold=3, idle_skip=1, max_skip=4, name="ship")  # nobody enabled Ship: sleeps up to ~5 min
         self._poller.start()
 
     def cog_unload(self):
