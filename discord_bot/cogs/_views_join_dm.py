@@ -1273,7 +1273,7 @@ class _WelcomeCardOptionsButton(discord.ui.DynamicItem[discord.ui.Button], templ
 
 class _WelcomeCustomizeCardButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_wsub_custom:(\d+):(-|\d+)$"):
     """\"Customize Card\" on the welcome sub-screen: opens the same ultra-card wizard as the /welcome setup wizard's
-    Customize Card button (own background, banner, colours, heading; free 5-day trial, then the one-time unlock).
+    Customize Card button (own background, banner, colours, heading; one-time unlock; the free trial is closed to new servers).
     DynamicItem like its siblings, so it survives bot restarts and never times out. Needs Manage Server in that server."""
 
     def __init__(self, guild_id: int, clone_id=None):
