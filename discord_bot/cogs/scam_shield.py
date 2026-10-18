@@ -36,6 +36,7 @@ from discord_bot.cogs._admin_mount import mount_admin_command
 from modules import scam_check as sc
 from modules import scam_reputation as rep
 from modules import scam_shield as ss
+from modules import scam_media as sm
 from modules import scam_ocr as sco
 from modules import scam_qr as sqr
 from modules import scam_shield_actions as sa
@@ -260,7 +261,11 @@ class ScamShieldCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        if before.content != after.content:           # scammers sometimes edit the bait in afterwards
+        # Scammers sometimes edit the bait in afterwards. A link preview (embed) also arrives as an edit with the
+        # same text, and so does a changed attachment list: those get looked at too.
+        if (before.content != after.content
+                or len(getattr(after, "embeds", None) or ()) > len(getattr(before, "embeds", None) or ())
+                or len(getattr(after, "attachments", None) or ()) != len(getattr(before, "attachments", None) or ())):
             await self._inspect(after)
 
     # ── a member caught in another server joins this one ─────────────────
@@ -576,7 +581,7 @@ class ScamShieldCog(commands.Cog):
 
     async def _match_pictures(self, message: discord.Message):
         """Hash rules first (free), then Gemini (budgeted). Each attachment is downloaded at most once."""
-        if not message.attachments:
+        if not message.attachments and not getattr(message, "embeds", None):
             return None
         cache: dict = {}
         hit = None
@@ -586,9 +591,65 @@ class ScamShieldCog(commands.Cog):
             hit = await self._match_qr(message, cache)           # free + fast: link hidden in a QR code
         if hit is None and sco.available():
             hit = await self._match_ocr(message, cache)          # free: read the words in the picture first
-        if hit is None and sv.available():
+        if hit is None:
+            hit = await self._match_extra(message, cache)        # free: animated GIF/WebP frames + link-preview images
+        if hit is None and sv.available() and message.attachments:
             hit = await self._match_vision(message, cache)       # budgeted AI check last
         return hit
+
+    async def _match_extra(self, message: discord.Message, cache: dict):
+        """Free checks (hash rules, QR codes, OCR text) on pictures the attachment stages skip: 2-3 frames of an
+        animated GIF / WebP, and the images inside link-preview embeds (Discord's proxied copies only)."""
+        items = []                                                # (data, is_attachment, ocr_ok)
+        for att in message.attachments[:3]:
+            ctype = (att.content_type or "").split(";")[0].lower()
+            name = att.filename.lower()
+            if not (ctype in ("image/gif", "image/webp") or name.endswith((".gif", ".webp"))):
+                continue
+            if att.size > ss.IMAGE_MAX_BYTES:
+                continue
+            w = att.width if isinstance(att.width, int) else None
+            h = att.height if isinstance(att.height, int) else None
+            if not sv.worth_checking(att.size, w, h):
+                continue
+            data = cache.get(att.id)
+            if data is None:
+                try:
+                    async with _download_slots:
+                        data = await asyncio.wait_for(att.read(), timeout=8)
+                except Exception:
+                    continue
+                cache[att.id] = data
+            items.append((data, True, True))
+        for url, ocr_ok in sm.embed_urls(message):
+            data = cache.get("emb:" + url)
+            if data is None:
+                async with _download_slots:
+                    data = await sm.fetch(url)
+                if data is None:
+                    continue
+                cache["emb:" + url] = data
+            items.append((data, False, ocr_ok))
+        if not items:
+            return None
+        loop = asyncio.get_running_loop()
+        gs = await ss.guild_settings(message.guild.id, getattr(self.bot, "clone_id", None))
+        allowed = gs["allowed_domains"]
+        for data, is_att, ocr_ok in items[:4]:
+            frs = await loop.run_in_executor(None, sm.frames, data)
+            if is_att and len(frs) <= 1:
+                continue                                          # a still WebP: the normal stages already checked it
+            for i, fr in enumerate(frs):
+                hit = ss.match_image(fr) if ss.has_image_rules() else None
+                if hit is None and sqr.available():
+                    hit = await sqr.scan(fr, allowed)
+                if hit is None and ocr_ok and sco.available() and i < 2:
+                    hit = await sco.scan(fr, allowed)
+                if hit:
+                    if hit[0] != "image" and hit[1].startswith(("word:", "domain:")):
+                        await ss.learn_image(fr, f"{hit[0]} {hit[1]}"[:150])
+                    return hit
+        return None
 
     async def _match_qr(self, message: discord.Message, cache: dict):
         """Decode QR codes in up to 2 image attachments and run the link through the scam rules."""
