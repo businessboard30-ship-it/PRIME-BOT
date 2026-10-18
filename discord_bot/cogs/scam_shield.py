@@ -39,6 +39,7 @@ from modules import scam_shield as ss
 from modules import scam_media as sm
 from modules import scam_ocr as sco
 from modules import scam_qr as sqr
+from modules import scam_risk as risk
 from modules import scam_shield_actions as sa
 from modules import scam_vision as sv
 from discord_bot.cogs import _views_scamshield_wizard as wiz
@@ -601,6 +602,15 @@ class ScamShieldCog(commands.Cog):
         """Free checks (hash rules, QR codes, OCR text) on pictures the attachment stages skip: 2-3 frames of an
         animated GIF / WebP, and the images inside link-preview embeds (Discord's proxied copies only)."""
         items = []                                                # (data, is_attachment, ocr_ok)
+        embed_pics = sm.embed_urls(message) if sm.enabled() else []
+        has_anim = any(
+            (a.content_type or "").split(";")[0].lower() in ("image/gif", "image/webp")
+            or a.filename.lower().endswith((".gif", ".webp")) for a in message.attachments[:3])
+        if not has_anim and not embed_pics:
+            return None                                           # nothing here for this stage: costs nothing
+        # Expensive: only for new / suspicious senders, at most once per 10 s per user and 30 a minute overall.
+        if not (risk.risky(message) and risk.allow(getattr(message.author, "id", 0))):
+            return None
         for att in message.attachments[:3]:
             ctype = (att.content_type or "").split(";")[0].lower()
             name = att.filename.lower()
@@ -621,7 +631,9 @@ class ScamShieldCog(commands.Cog):
                     continue
                 cache[att.id] = data
             items.append((data, True, True))
-        for url, ocr_ok in sm.embed_urls(message):
+        for url, ocr_ok in embed_pics:
+            if sm.seen_clean(url):
+                continue
             data = cache.get("emb:" + url)
             if data is None:
                 async with _download_slots:
@@ -644,11 +656,14 @@ class ScamShieldCog(commands.Cog):
                 if hit is None and sqr.available():
                     hit = await sqr.scan(fr, allowed)
                 if hit is None and ocr_ok and sco.available() and i < 2:
-                    hit = await sco.scan(fr, allowed)
+                    hit = await sco.scan(fr, allowed, deep=False)
                 if hit:
                     if hit[0] != "image" and hit[1].startswith(("word:", "domain:")):
                         await ss.learn_image(fr, f"{hit[0]} {hit[1]}"[:150])
                     return hit
+        for url, _ in embed_pics:
+            if ("emb:" + url) in cache:
+                sm.mark_clean(url)                                # downloaded and clean: never fetch it again
         return None
 
     async def _match_qr(self, message: discord.Message, cache: dict):
@@ -701,7 +716,7 @@ class ScamShieldCog(commands.Cog):
                     continue
                 cache[att.id] = data
             gs = await ss.guild_settings(message.guild.id, getattr(self.bot, "clone_id", None))
-            hit = await sco.scan(data, gs["allowed_domains"])
+            hit = await sco.scan(data, gs["allowed_domains"], deep=risk.risky(message))
             if hit:
                 if hit[1].startswith(("word:", "domain:")):      # a curated rule matched: safe to remember the picture
                     await ss.learn_image(data, f"OCR {hit[1]}"[:150])

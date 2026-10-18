@@ -310,15 +310,15 @@ def _has_host(text: str) -> bool:
     return bool(ss.hosts_in(clean_urls(text)))
 
 
-async def scan(data: bytes, allowed=()) -> Optional[Tuple[str, str, Optional[int]]]:
+async def scan(data: bytes, allowed=(), deep: bool = True) -> Optional[Tuple[str, str, Optional[int]]]:
     """Read the picture and run the text rules. Extra passes (address-bar crop, inverted, enlarged, middle crop) only
     run when the first read found nothing: all of them if it got almost no text, just the top strip if it got text
     but no link. Fails open: any problem means None."""
     try:
         first = await read_text(data)
         hit = match(first, allowed)
-        if hit or not available():
-            return hit
+        if hit or not deep or not available():
+            return hit                    # deep=False: the first read only (cheap senders)
         short = len((first or "").strip()) < MIN_TEXT_CHARS
         if not short and _has_host(first):
             return None
