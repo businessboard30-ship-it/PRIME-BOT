@@ -190,8 +190,10 @@ async def _auth(interaction: discord.Interaction, guild_id: int) -> Optional[dis
     if guild is None:
         await _reply(interaction, "I'm not in that server anymore.")
         return None
-    member = guild.get_member(interaction.user.id)
-    if member is None or not (member.guild_permissions.manage_guild or member.id == guild.owner_id):
+    # Owner is matched by id and the member is fetched when not cached (clicks from a DM or an uncached owner
+    # used to fail the old get_member() check even for the server owner).
+    from discord_bot.cogs._views_shared import user_can_manage_guild
+    if not await user_can_manage_guild(guild, interaction.user.id):
         await _reply(interaction, "You need the **Manage Server** permission to use Scam Shield settings.")
         return None
     return guild

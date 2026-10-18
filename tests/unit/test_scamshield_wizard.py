@@ -439,3 +439,36 @@ def test_the_command_is_registered_and_the_buttons_are_exported():
     cmd = cog_mod.ScamShieldCog.scamshield_cmd
     assert cmd.name == "scamshield" and "premium" in cmd.description
     assert wiz.DYNAMIC_ITEMS == (wiz.WizButton,)
+
+
+def _auth_ix(guild, uid):
+    ix = MagicMock()
+    ix.user = SimpleNamespace(id=uid)
+    ix.client = SimpleNamespace(get_guild=lambda gid: guild)
+    ix.response.is_done = lambda: False
+    ix.response.send_message = AsyncMock()
+    ix.followup.send = AsyncMock()
+    return ix
+
+
+def test_owner_passes_auth_even_when_not_in_member_cache():
+    guild = SimpleNamespace(id=GUILD, owner_id=42, get_member=lambda u: None)
+    ix = _auth_ix(guild, 42)
+    assert run(wiz._auth(ix, GUILD)) is guild
+    ix.response.send_message.assert_not_called()
+
+
+def test_manage_server_member_fetched_from_api_passes_auth():
+    perms = SimpleNamespace(administrator=False, manage_guild=True)
+    member = SimpleNamespace(guild_permissions=perms)
+    guild = SimpleNamespace(id=GUILD, owner_id=1, get_member=lambda u: None, fetch_member=AsyncMock(return_value=member))
+    assert run(wiz._auth(_auth_ix(guild, 5), GUILD)) is guild
+
+
+def test_plain_member_is_refused_by_auth():
+    perms = SimpleNamespace(administrator=False, manage_guild=False)
+    member = SimpleNamespace(guild_permissions=perms)
+    guild = SimpleNamespace(id=GUILD, owner_id=1, get_member=lambda u: member)
+    ix = _auth_ix(guild, 5)
+    assert run(wiz._auth(ix, GUILD)) is None
+    ix.response.send_message.assert_called_once()
