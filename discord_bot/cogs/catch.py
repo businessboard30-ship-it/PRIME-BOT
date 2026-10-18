@@ -820,7 +820,7 @@ class CatchCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._trigger_states: dict[tuple[int, int | None], ChannelTriggerState] = {}
-        self._gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=3)  # nothing expiring/due: sleeps up to ~2 min
+        self._gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=3, name="catch_scheduler")  # nothing expiring/due: sleeps up to ~2 min
         self._scheduler.start()
 
     def cog_unload(self) -> None:

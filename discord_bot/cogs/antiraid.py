@@ -882,7 +882,7 @@ class AntiRaidCog(GuildOnlyCog):
         self.bot = bot
 
     async def cog_load(self):
-        self._sweep_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=4)  # 30 s ticks, sleeps up to ~2.5 min
+        self._sweep_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=4, name="antiraid_sweeper")  # 30 s ticks, sleeps up to ~2.5 min
         self.sweeper.start()
 
     async def cog_unload(self):

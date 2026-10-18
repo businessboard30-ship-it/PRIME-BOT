@@ -32,7 +32,7 @@ class ReportNotificationsCog(commands.Cog):
         # A clone with no report channel configured (or one that's just
         # quiet) shouldn't hit the DB every 45s forever — see
         # _adaptive_skip.py.
-        self._gate = AdaptiveSkip(idle_threshold=5, idle_skip=8)
+        self._gate = AdaptiveSkip(idle_threshold=5, idle_skip=8, name="report_notifications")
         self._report_poller.start()
 
     def cog_unload(self):

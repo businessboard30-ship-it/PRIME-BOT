@@ -70,7 +70,7 @@ class ScheduleCog(commands.Cog):
         self.bot = bot
         # See _adaptive_skip.py's docstring — backs off the DB poll once
         # this clone has had nothing scheduled for a while.
-        self._gate = AdaptiveSkip(idle_threshold=5, idle_skip=5)
+        self._gate = AdaptiveSkip(idle_threshold=5, idle_skip=5, name="schedule")
         self._poller.start()
 
     def cog_unload(self):

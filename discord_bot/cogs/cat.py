@@ -385,7 +385,7 @@ class CatCog(commands.Cog):
 
     async def cog_load(self):
         self._care.start()
-        self._spawn_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=4)
+        self._spawn_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=4, name="cat_spawner")
         self._spawner.start()
         # Writing up old cats in the storage channel: main bot only (the pool and channel are shared by every bot).
         if getattr(self.bot, "clone_id", None) is None:
