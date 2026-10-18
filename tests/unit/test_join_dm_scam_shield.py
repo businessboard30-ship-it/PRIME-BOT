@@ -249,3 +249,11 @@ def test_the_action_column_is_migrated_and_wired_into_startup():
     src = root.joinpath("database.py").read_text(encoding="utf-8")
     assert "054_scam_shield_action.sql" in src
     assert ss._DEFAULT_GUILD["punish_action"] == "delete"
+
+
+def test_flag_button_opens_settings_without_back():
+    assert vs.FlagSettingsButton in vs.DYNAMIC_ITEMS and vs.FlagSettingsButton in jd.DYNAMIC_ITEMS
+    cid = vs.FlagSettingsButton(5, None).item.custom_id
+    assert re.match(vs.FlagSettingsButton.__discord_ui_compiled_template__.pattern, cid)
+    ids = {b.custom_id.split(":")[1] for b in _buttons(vs.build_view(vs.build_container(_guild(), None, _state(), back=False)))}
+    assert "back" not in ids and "act_ban" in ids

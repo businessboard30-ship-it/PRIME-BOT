@@ -767,7 +767,10 @@ class ScamShieldCog(commands.Cog):
                 embed.add_field(name="Message", value="🗑️ deleted" if deleted else "⚠️ couldn't delete (missing permission)")
                 if action_note:
                     embed.add_field(name="Sender", value=action_note[:200], inline=False)
-                await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                from discord_bot.cogs._views_join_dm_scamshield import FlagSettingsButton
+                flag_view = discord.ui.View(timeout=None)
+                flag_view.add_item(FlagSettingsButton(message.guild.id, clone_id))
+                await ch.send(embed=embed, view=flag_view, allowed_mentions=discord.AllowedMentions.none())
                 return None
             target = self._fallback_channel(message.guild, message.channel)
             if target is None:
