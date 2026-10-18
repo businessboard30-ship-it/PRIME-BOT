@@ -23,6 +23,8 @@ import time
 import discord
 from discord.ext import commands, tasks
 
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+
 from database import db
 from modules import guildatlas as ga
 
@@ -73,6 +75,8 @@ class GuildAtlasCog(commands.Cog):
             logger.info("GuildAtlas integration is OFF (set GUILDATLAS_SITE_URL and a 32+ char GUILDATLAS_INTERNAL_SECRET).")
             return
         # Every process (main bot and each clone) creates the permanent Disguild invites for servers it is itself in.
+        self._invite_gate = AdaptiveSkip(idle_threshold=3, idle_skip=1, max_skip=2)  # no invite requests: sleeps up to ~3 min
+        self._weblog_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=4)  # quiet site: sleeps up to ~2.5 min
         self.invite_loop.start()
         self.stats_loop.start()
         self.members_loop.start()  # a server that only has a clone still gets its member count
@@ -220,8 +224,12 @@ class GuildAtlasCog(commands.Cog):
     @tasks.loop(seconds=60)
     async def invite_loop(self):
         """Every process: create the permanent invite for server listings whose manager asked for one, in servers this bot is in."""
+        if not self._invite_gate.should_run():
+            return
         try:
-            for gid in (await self.client.pending_invites())[:20]:
+            pending = await self.client.pending_invites()
+            self._invite_gate.record(found_something=bool(pending))
+            for gid in pending[:20]:
                 if self.bot.get_guild(gid) is not None:
                     await self._handle_invite_request(gid)
         except Exception:
@@ -301,12 +309,15 @@ class GuildAtlasCog(commands.Cog):
     async def weblog_loop(self):
         """Main bot only: post new site events to #web-logs. The cursor only moves after Discord accepted the message, so nothing is lost
         or doubled; a brand-new reader starts at the newest event (no history replay)."""
+        if not self._weblog_gate.should_run():
+            return
         try:
             raw = await db.get_global_setting(ga.WEBLOG_CURSOR_KEY)
             cursor = int(raw) if raw and raw.isdigit() else None
             ok, events, latest = await self.client.web_events(cursor)
             if not ok:
                 return
+            self._weblog_gate.record(found_something=bool(events) or cursor is None)
             if cursor is None:
                 await db.set_global_setting(ga.WEBLOG_CURSOR_KEY, str(latest))
                 await self._weblog_channel()  # create the channel right away so it exists before the first event
