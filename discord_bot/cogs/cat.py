@@ -24,7 +24,7 @@ import logging
 import random
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -35,6 +35,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+from modules import guild_activity
 
 import config
 from modules import cat_care, cat_log, cat_perms, cat_pool, cat_quality, cat_setup, cat_vision
@@ -493,6 +494,10 @@ class CatCog(commands.Cog):
         for cfg in await cat_setup.due(clone_id, SPAWN_PER_TICK):
             guild = self.bot.get_guild(cfg.guild_id)
             if guild is None:
+                continue
+            if guild_activity.is_dormant(guild.id):
+                # nobody has talked here for weeks: no cat for an empty room; look again in an hour (activity wakes it)
+                await cat_setup.defer(cfg.guild_id, clone_id, datetime.now(timezone.utc) + timedelta(hours=1))
                 continue
             if not cfg.is_open():
                 # outside the server's chosen hours: post nothing, wake up when the window opens

@@ -34,6 +34,7 @@ import discord
 from discord.ext import commands, tasks
 
 from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+from modules import guild_activity
 
 from config import DISCORD_CLONE_ADMIN_IDS
 from database import db
@@ -288,6 +289,8 @@ class ShipCog(GuildOnlyCog):
         self._gate.record(found_something=any(r["enabled"] and r["channel_id"] for r in config_rows))
 
         for guild in list(self.bot.guilds):
+            if guild_activity.is_dormant(guild.id):
+                continue    # nobody has talked here for weeks: nothing to ship
             try:
                 config = configs_by_guild.get(guild.id) or {
                     "guild_id": guild.id,
