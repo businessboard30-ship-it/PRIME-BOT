@@ -248,3 +248,28 @@ def test_cog_learns_only_from_curated_ocr_hits():
     src = Path(__file__).resolve().parents[2].joinpath("discord_bot/cogs/scam_shield.py").read_text(encoding="utf-8")
     assert 'startswith(("word:", "domain:"))' in src and "sco.scan(" in src
     assert "rapidfuzz" in Path(__file__).resolve().parents[2].joinpath("requirements.txt").read_text()
+
+
+# ── memory guards ────────────────────────────────────────────────────────
+def test_huge_pictures_are_refused_before_decoding():
+    from PIL import Image
+    import io
+    im = Image.new("L", (5000, 4000), 128)          # 20 MP > MAX_PIXELS
+    b = io.BytesIO()
+    im.save(b, "PNG")
+    assert sco.prepare(b.getvalue()) is None
+    assert sco.variants(b.getvalue()) == []
+
+
+def test_normal_screenshot_still_prepares_and_stays_small():
+    png = sco.prepare(IMG.read_bytes())
+    assert png and len(png) < 3_000_000
+
+
+def test_slot_count_defaults_to_one_and_is_clamped(monkeypatch):
+    monkeypatch.delenv("SCAM_OCR_SLOTS", raising=False)
+    assert sco._slot_count() == 1
+    monkeypatch.setenv("SCAM_OCR_SLOTS", "99")
+    assert sco._slot_count() == 4
+    monkeypatch.setenv("SCAM_OCR_SLOTS", "abc")
+    assert sco._slot_count() == 1
