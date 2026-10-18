@@ -89,3 +89,55 @@ def test_only_the_listed_bot_posts_and_missing_token_is_disabled(monkeypatch):
 
 async def _cb(interaction: discord.Interaction):
     pass
+
+
+def test_listed_bot_without_token_asks_owner_and_modal_token_is_tested(monkeypatch):
+    """No env token + no stored token -> the listed bot DMs its owner; a token
+    submitted through the modal is test-posted and only kept if Top.gg accepts it."""
+    from discord_bot import listing_tokens
+
+    async def handler(request):
+        ok = request.headers.get("Authorization") == "Bearer good"
+        return web.Response(status=204 if ok else 401)
+
+    async def run():
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        monkeypatch.setattr(topgg_stats, "TOPGG_API", f"http://127.0.0.1:{port}")
+        monkeypatch.setattr(config, "TOPGG_TOKEN", "")
+        monkeypatch.setattr(config, "TOPGG_BOT_ID", "555")
+        monkeypatch.setattr(commands.Bot, "application_id", property(lambda self: 555))
+        monkeypatch.setattr(commands.Bot, "guilds", property(lambda self: [object()] * 4))
+
+        prompted = []
+
+        async def fake_load(service, bot_id):
+            return ""
+
+        async def fake_prompt(bot, service):
+            prompted.append(service)
+            return True
+
+        monkeypatch.setattr(listing_tokens, "load_token", fake_load)
+        monkeypatch.setattr(listing_tokens, "prompt_owner_for_token", fake_prompt)
+
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
+        bot.clone_id = 8
+        cog = TopggStatsCog(bot)
+        cog._stats_loop.cancel()
+        assert not cog.enabled
+        await cog._stats_loop.coro(cog)          # one loop iteration, by hand
+        assert prompted == ["topgg"]             # asked the owner, posted nothing
+
+        ok, _ = await cog.try_token("bad")
+        assert not ok and not cog.enabled        # rejected token is not kept
+        ok, _ = await cog.try_token("good")
+        assert ok and cog.enabled and cog.token == "good"
+        await runner.cleanup()
+
+    asyncio.run(run())

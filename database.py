@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "101"
+SCHEMA_VERSION = "102"
+# "101" -> "102" adds the listing_api_tokens table (Top.gg / DiscordThings tokens entered by the bot owner via DM modal). CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "99" -> "100" adds 053_guild_plus.sql (discord_guild_subscriptions.plus_expires_at / plus_subscription_id: Premium Plus tier). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "98" -> "99" adds 052_goodbye_style.sql (discord_welcome_extras.goodbye_title/goodbye_color/goodbye_image_url/goodbye_footer/goodbye_show_avatar: Premium-only goodbye message styling, NULL = default look). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "97" -> "98" wires 051_cat_life.sql into startup (cat_life_state, cat_life_daily, cat_outings: Cat Life). It shipped in PR #274 without being run, so cat release/trade/list and the Cat Life screens failed with UndefinedTableError. CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5828,6 +5829,22 @@ class Database:
             ON card_watches (user_id, COALESCE(clone_id, -1), card_id)
         """)
 
+        # API tokens for bot-listing sites (Top.gg / DiscordThings) entered by
+        # the bot's owner through the DM + modal flow in
+        # discord_bot/listing_tokens.py, so a clone needs no Railway variable.
+        # token_encrypted stays NULL until the owner submits one; prompted_at
+        # throttles the DM so a restarting clone doesn't nag.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS listing_api_tokens (
+                service TEXT NOT NULL,
+                bot_id BIGINT NOT NULL,
+                token_encrypted TEXT,
+                prompted_at TIMESTAMPTZ,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (service, bot_id)
+            )
+        """)
+
         # Seed a starter catalog once per clone (clone_id IS NULL = main
         # bot) — only if that clone has no cards yet, so it never clobbers
         # a catalog the owner has since edited/expanded.
@@ -7883,6 +7900,47 @@ class Database:
                     reference, clone_id
                 )
                 return clone_id
+
+    async def get_listing_token_encrypted(self, service: str, bot_id: int) -> Optional[str]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT token_encrypted FROM listing_api_tokens WHERE service = $1 AND bot_id = $2",
+                service, int(bot_id),
+            )
+
+    async def set_listing_token_encrypted(self, service: str, bot_id: int, token_encrypted: str) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO listing_api_tokens (service, bot_id, token_encrypted, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (service, bot_id)
+                DO UPDATE SET token_encrypted = EXCLUDED.token_encrypted, updated_at = NOW()
+                """,
+                service, int(bot_id), token_encrypted,
+            )
+
+    async def claim_listing_token_prompt(self, service: str, bot_id: int, cooldown_hours: int = 24) -> bool:
+        """True when the caller should DM the owner for a token now: no token
+        is stored and the last prompt was more than cooldown_hours ago (or
+        never). Atomic, so two processes can't both send the DM."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO listing_api_tokens (service, bot_id, prompted_at)
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (service, bot_id) DO UPDATE SET prompted_at = NOW()
+                WHERE listing_api_tokens.token_encrypted IS NULL
+                  AND (listing_api_tokens.prompted_at IS NULL
+                       OR listing_api_tokens.prompted_at < NOW() - make_interval(hours => $3))
+                RETURNING 1
+                """,
+                service, int(bot_id), int(cooldown_hours),
+            )
+            return row is not None
 
     async def touch_discord_clone_heartbeat(self, clone_id: int) -> None:
         """Called periodically by a running clone process itself (see

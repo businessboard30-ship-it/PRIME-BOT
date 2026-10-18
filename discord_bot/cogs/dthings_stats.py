@@ -13,8 +13,9 @@ Keeps the DiscordThings (dsc.sh) listing in sync with the bot:
 Only the process whose Discord application id equals DTHINGS_BOT_ID posts, so
 no other bot/clone can overwrite the listing's numbers. Auth is the raw API
 token in the Authorization header. The token comes from the DTHINGS_API_KEY
-environment variable (set it in Railway) — never commit it. With no token the
-cog loads and does nothing.
+environment variable if set, otherwise from the encrypted listing_api_tokens
+table. When the listed bot has neither, it DMs its owner a button + modal to
+paste the token once (discord_bot/listing_tokens.py) — never commit a token.
 
 Rate limits (per dsc.sh docs): 1 request/minute per endpoint, 30/min per token.
 Every request is best-effort: failures are logged and retried on the next tick.
@@ -27,6 +28,7 @@ import aiohttp
 from discord.ext import commands, tasks
 
 import config
+from discord_bot import listing_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +57,35 @@ class DthingsStatsCog(commands.Cog):
         self._commands_pushed = False
         self._skip_logged = False
         self._event_post_task = None
-        self.enabled = bool(config.DTHINGS_API_KEY)
-        if self.enabled:
-            self._stats_loop.change_interval(minutes=config.DTHINGS_POST_INTERVAL_MINUTES)
-            self._stats_loop.start()
-        else:
-            logger.info("[dthings] DTHINGS_API_KEY not set — server count / command sync disabled")
+        self._db_token = ""  # token entered via the DM modal (see listing_tokens.py)
+        self._stats_loop.change_interval(minutes=config.DTHINGS_POST_INTERVAL_MINUTES)
+        self._stats_loop.start()
+
+    @property
+    def token(self) -> str:
+        return config.DTHINGS_API_KEY or self._db_token
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.token)
+
+    async def cog_load(self):
+        # Keeps the DM's "Add token" button working across restarts.
+        self.bot.add_view(listing_tokens.TokenPromptView("dthings"))
+
+    async def try_token(self, token: str):
+        """Used by the token modal: test-posts with `token`; keeps it on
+        success. Returns (ok, detail) — detail never contains the token."""
+        previous = self._db_token
+        self._db_token = token
+        guilds = self.bot.guilds
+        users = sum(getattr(g, "member_count", 0) or 0 for g in guilds)
+        status, text = await self._post("/stats", build_stats_payload(len(guilds), self.bot.shard_count, users))
+        if 200 <= status < 300:
+            logger.info("[dthings] token accepted via DM modal")
+            return True, "ok"
+        self._db_token = previous
+        return False, f"HTTP {status}"
 
     def _is_listed_bot(self) -> bool:
         listed = str(config.DTHINGS_BOT_ID or "").strip()
@@ -75,7 +100,9 @@ class DthingsStatsCog(commands.Cog):
     async def _post(self, path: str, body: dict):
         """Returns (status, text). Never raises."""
         url = f"{DTHINGS_API}/bots/{config.DTHINGS_BOT_ID}{path}"
-        headers = {"Authorization": config.DTHINGS_API_KEY, "Content-Type": "application/json"}
+        if not self.token:
+            return 0, "no token"
+        headers = {"Authorization": self.token, "Content-Type": "application/json"}
         try:
             timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
@@ -142,6 +169,13 @@ class DthingsStatsCog(commands.Cog):
                     self._skip_logged = True
                     logger.info("[dthings] this bot (%s) is not the listed bot (DTHINGS_BOT_ID=%s) — not posting",
                                 getattr(self.bot.user, "id", "?"), config.DTHINGS_BOT_ID)
+                return
+            if not self.token:
+                app_id = listing_tokens.bot_app_id(self.bot)
+                self._db_token = await listing_tokens.load_token("dthings", app_id) if app_id else ""
+            if not self.token:
+                if await listing_tokens.prompt_owner_for_token(self.bot, "dthings"):
+                    logger.info("[dthings] no token — DM'd the owner a token prompt")
                 return
             await self.post_stats()
             if not self._commands_pushed:
