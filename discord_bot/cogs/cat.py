@@ -34,6 +34,8 @@ from discord_bot.cogs import _cat_visibility as vis
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+
 import config
 from modules import cat_care, cat_log, cat_perms, cat_pool, cat_quality, cat_setup, cat_vision
 
@@ -382,6 +384,7 @@ class CatCog(commands.Cog):
 
     async def cog_load(self):
         self._care.start()
+        self._spawn_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=4)
         self._spawner.start()
         # Writing up old cats in the storage channel: main bot only (the pool and channel are shared by every bot).
         if getattr(self.bot, "clone_id", None) is None:
@@ -472,8 +475,10 @@ class CatCog(commands.Cog):
 
     @tasks.loop(seconds=SPAWN_TICK_SECONDS)
     async def _spawner(self):
+        if not self._spawn_gate.should_run():
+            return
         try:
-            await self.spawn_due()
+            self._spawn_gate.record(found_something=bool(await self.spawn_due()))
         except Exception:
             logger.exception("[cat] spawner tick failed")
 

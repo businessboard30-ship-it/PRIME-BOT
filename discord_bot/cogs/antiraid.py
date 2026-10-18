@@ -47,6 +47,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+
 from database import db
 from discord_bot import perm_check
 from discord_bot.cogs._dm_support import GuildOnlyCog
@@ -880,6 +882,7 @@ class AntiRaidCog(GuildOnlyCog):
         self.bot = bot
 
     async def cog_load(self):
+        self._sweep_gate = AdaptiveSkip(idle_threshold=4, idle_skip=1, max_skip=4)  # 30 s ticks, sleeps up to ~2.5 min
         self.sweeper.start()
 
     async def cog_unload(self):
@@ -907,11 +910,14 @@ class AntiRaidCog(GuildOnlyCog):
     @tasks.loop(seconds=30)
     async def sweeper(self):
         """Ends raid modes whose quiet timer ran out (also recovers after a restart)."""
+        if not self._sweep_gate.should_run():
+            return
         try:
             expired = await db.list_expired_antiraid(self._clone_id())
         except Exception:
             logger.exception("anti-raid sweep query failed")
             return
+        self._sweep_gate.record(found_something=bool(expired))
         for row in expired:
             guild = self.bot.get_guild(row["guild_id"])
             if guild is None:
