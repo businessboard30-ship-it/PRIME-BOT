@@ -9,7 +9,7 @@ has a small daily budget. Reading the text is free, so it runs before the AI che
 How: the `tesseract` program (apt package tesseract-ocr, see railpack.json / nixpacks.toml), called as a
 subprocess with the image on stdin. If it isn't installed this whole stage is skipped (available() is False).
 
-Safety: fails open (any error, timeout or odd output = "no text", never a delete), at most two reads at once,
+Safety: fails open (any error, timeout or odd output = "no text", never a delete), at most SCAM_OCR_SLOTS reads at once (default 1),
 10-second cap per read, results cached by file hash so a repeated spam picture costs one read.
 """
 
@@ -32,16 +32,23 @@ logger = logging.getLogger(__name__)
 
 MAX_SIDE = 1600                 # px, longest side handed to tesseract
 MIN_UPSCALE_SIDE = 900          # smaller images are enlarged 2x (tesseract reads tiny text badly)
-MAX_PIXELS = 40_000_000         # refuse decompression-bomb sized pictures
+MAX_PIXELS = 16_000_000         # refuse huge pictures (a 36 MP one peaked at ~400 MB); real screenshots are far smaller
 READ_TIMEOUT = 10.0
 MIN_TEXT_CHARS = 30             # shorter output is noise (a meme with 3 words), never matched
 MAX_TEXT_CHARS = 4000
-CACHE_MAX = 500
+CACHE_MAX = 200                 # cached reads (text only, a few KB each)
 EXTRA_BUDGET = 14.0             # seconds for ALL extra passes on one picture (each pass still has READ_TIMEOUT)
-EXTRA_MAX_SIDE = 2400           # px, longest side of an enlarged extra pass
+EXTRA_MAX_SIDE = 2000           # px, longest side of an enlarged extra pass
 MIN_FUZZY_LABEL = 6             # a name shorter than this must match exactly (edit distance 1 is too loose there)
 
-_slots = asyncio.Semaphore(2)
+def _slot_count() -> int:
+    try:
+        return max(1, min(4, int(os.environ.get("SCAM_OCR_SLOTS", "1"))))
+    except ValueError:
+        return 1
+
+
+_slots = asyncio.Semaphore(_slot_count())   # each tesseract process peaks around 45 MB, so one at a time by default
 _cache: "OrderedDict[str, str]" = OrderedDict()
 _cache_more: "OrderedDict[str, str]" = OrderedDict()
 _which: Optional[str] = None
@@ -69,6 +76,7 @@ def prepare(data: bytes) -> Optional[bytes]:
         im = Image.open(io.BytesIO(data))
         if im.width * im.height > MAX_PIXELS:
             return None
+        im.draft("L", (MAX_SIDE, MAX_SIDE))          # JPEG: decode at 1/2, 1/4 or 1/8 size straight away
         im = ImageOps.autocontrast(ImageOps.exif_transpose(im).convert("L"))
         longest = max(im.size)
         if longest < MIN_UPSCALE_SIDE:
@@ -129,7 +137,9 @@ def variants(data: bytes, only_urlbar: bool = False) -> List[Tuple[bytes, str]]:
         im = Image.open(io.BytesIO(data))
         if im.width * im.height > MAX_PIXELS:
             return []
+        im.draft("L", (EXTRA_MAX_SIDE, EXTRA_MAX_SIDE))
         g = ImageOps.autocontrast(ImageOps.exif_transpose(im).convert("L"))
+        del im
         w, h = g.size
         out: List[Tuple[bytes, str]] = []
         if h >= 60:
