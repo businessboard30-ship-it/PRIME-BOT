@@ -608,12 +608,11 @@ class ScamShieldCog(commands.Cog):
                 except Exception:
                     continue
                 cache[att.id] = data
-            text = await sco.read_text(data)
-            if not text:
-                continue
             gs = await ss.guild_settings(message.guild.id, getattr(self.bot, "clone_id", None))
-            hit = sco.match(text, gs["allowed_domains"])
+            hit = await sco.scan(data, gs["allowed_domains"])
             if hit:
+                if hit[1].startswith(("word:", "domain:")):      # a curated rule matched: safe to remember the picture
+                    await ss.learn_image(data, f"OCR {hit[1]}"[:150])
                 return hit
         return None
 
@@ -657,6 +656,7 @@ class ScamShieldCog(commands.Cog):
             hit = await sv.is_scam_image(data, message.guild.id, message.author.id,
                                          getattr(self.bot, "clone_id", None))
             if hit:
+                await ss.learn_image(data, "AI vision")
                 return hit
         return None
 
