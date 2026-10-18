@@ -1312,6 +1312,7 @@ def _upload_setup(monkeypatch, add_result=7):
     i = MagicMock()
     i.user.id = 1
     i.response.defer = AsyncMock()
+    i.followup.send = AsyncMock()
     i.edit_original_response = AsyncMock()
     return pv, v, add, host, i
 
@@ -1380,6 +1381,7 @@ def test_upload_is_refused_for_users_without_the_scamshield_section(monkeypatch)
     run(m.on_submit(i))
     add.assert_not_awaited()
     host.assert_not_awaited()
+    i.followup.send.assert_awaited_once()                       # the modal already deferred, so it answers via followup
 
 
 def test_hosted_copy_keeps_the_right_file_extension():
