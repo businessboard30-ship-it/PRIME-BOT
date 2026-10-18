@@ -25,6 +25,8 @@ from discord_bot import perm_check
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from discord_bot.cogs._adaptive_skip import AdaptiveSkip
+
 from discord_bot.cogs._dm_support import GuildOnlyCog
 from discord_bot.cogs._views_verification import (
     build_verify_panel_embed,
@@ -587,6 +589,12 @@ class WizardView(discord.ui.View):
 class VerificationCog(GuildOnlyCog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Awake for 10 minutes (= how long a captcha link is valid) after startup and after every link handed out
+        # (wake_poll, called by the captcha button); after that it sleeps up to ~1 min between checks.
+        self._gate = AdaptiveSkip(idle_threshold=120, idle_skip=3, max_skip=11)
+
+    def wake_poll(self) -> None:
+        self._gate.wake()
 
     async def cog_load(self):
         import config
@@ -599,12 +607,15 @@ class VerificationCog(GuildOnlyCog):
     @tasks.loop(seconds=5)
     async def poll_turnstile_passes(self):
         """Applies roles for members who solved the Cloudflare Turnstile page."""
+        if not self._gate.should_run():
+            return
         clone_id = getattr(self.bot, "clone_id", None)
         try:
             passes = await db.claim_verification_passes(clone_id)
         except Exception:
             logger.exception("verification: couldn't claim turnstile passes")
             return
+        self._gate.record(found_something=bool(passes))
         for row in passes:
             try:
                 await apply_verification_pass(self.bot, row)

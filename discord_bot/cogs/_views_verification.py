@@ -233,6 +233,10 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
         if config.get("mode") == "captcha":
             if _turnstile_ready():
                 token = sign_challenge(_cfg.VERIFY_SIGNING_SECRET, self.guild_id, interaction.user.id, clone_id)
+                try:    # a link just went out: keep the pass poller at full speed for the next 10 minutes
+                    interaction.client.get_cog("VerificationCog").wake_poll()
+                except Exception:
+                    pass
                 view = discord.ui.View(timeout=None)
                 view.add_item(discord.ui.Button(
                     label="Open captcha", emoji="🧩", style=discord.ButtonStyle.link,

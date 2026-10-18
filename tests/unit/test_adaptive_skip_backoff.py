@@ -35,3 +35,18 @@ def test_found_work_resets_streak():
     g = AdaptiveSkip(idle_threshold=2, idle_skip=2, max_skip=8)
     _run(g, 10, found=lambda i: True)
     assert g.should_run()
+
+
+def test_verification_poll_sleeps_only_after_link_window_and_wakes_on_link():
+    from discord_bot.cogs.verification import VerificationCog
+
+    cog = VerificationCog.__new__(VerificationCog)
+    VerificationCog.__init__(cog, bot=object())
+    ran = _run(cog._gate, 120)
+    assert len(ran) == 120                     # full speed for the 10-minute link window
+    for _ in range(40):
+        if cog._gate.should_run():
+            cog._gate.record(found_something=False)
+    assert cog._gate.sleeping or cog._gate._next_skip > 3
+    cog.wake_poll()
+    assert not cog._gate.sleeping and cog._gate.should_run()
