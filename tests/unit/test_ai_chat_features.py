@@ -200,3 +200,12 @@ def test_date_requests_get_the_no_gif(msg):
 ])
 def test_normal_questions_are_not_date_requests(msg):
     assert not af.is_date_request(msg)
+
+
+def test_no_gif_is_sent_as_an_embed_image():
+    # AI replies are sent with suppress_embeds=True, so a bare link never unfurled.
+    pytest.importorskip("discord")
+    from discord_bot.cogs.ai_tools import _gif_embed
+    e = _gif_embed(af.date_answer())
+    assert e is not None and e.image.url == af.NO_DATE_GIF
+    assert _gif_embed("hello there") is None
