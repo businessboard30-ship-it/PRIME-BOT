@@ -6,7 +6,9 @@ Also (main bot only) keeps a private #bot-sleep-log channel in the support serve
 what went to sleep or woke up (loops from modules.sleep_events, servers that turned dormant or active again) and a
 daily summary."""
 
+import json
 import logging
+import time
 
 import discord
 from discord.ext import commands, tasks
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 CHANNEL_NAME = "bot-sleep-log"
 CHANNEL_KEY = "sleep_log_channel_id"
 NO_MENTIONS = discord.AllowedMentions.none()
+RELAY_PREFIX = "sleep_events:"
 
 
 class GuildActivityCog(commands.Cog):
@@ -34,6 +37,8 @@ class GuildActivityCog(commands.Cog):
         if self._is_main():
             self._post_loop.start()
             self._digest_loop.start()
+        elif se.enabled():
+            self._relay_loop.start()
 
     def _is_main(self) -> bool:
         return getattr(self.bot, "clone_id", None) is None and se.enabled()
@@ -42,6 +47,7 @@ class GuildActivityCog(commands.Cog):
         self._flush.cancel()
         self._post_loop.cancel()
         self._digest_loop.cancel()
+        self._relay_loop.cancel()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -133,14 +139,44 @@ class GuildActivityCog(commands.Cog):
         return ch
 
     @tasks.loop(minutes=2)
-    async def _post_loop(self):
+    async def _relay_loop(self):
+        """Clones: hand their events to the main bot (it is the one in the support server) as one small row."""
         try:
             if not se.pending():
+                return
+            name = getattr(self.bot.user, "name", None) or f"clone {getattr(self.bot, 'clone_id', '?')}"
+            lines = [f"[{name}] {text}" for _kind, text in se.drain(30)]
+            if lines:
+                key = f"{RELAY_PREFIX}{getattr(self.bot, 'clone_id', 'x')}:{int(time.time() * 1000)}"
+                await db.set_global_setting(key, json.dumps(lines))
+        except Exception:
+            logger.warning("[sleep-log] relay to the main bot failed", exc_info=True)
+
+    async def _collect_relayed(self) -> list:
+        """Main bot: takes (atomically deletes) the rows clones left behind. Bounded per pass."""
+        rows = await db.fetch("DELETE FROM bot_global_settings WHERE key IN (SELECT key FROM bot_global_settings "
+                              "WHERE key LIKE $1 ORDER BY key LIMIT 20) RETURNING key, value", RELAY_PREFIX + "%")
+        lines = []
+        for r in sorted(rows, key=lambda r: r["key"].rsplit(":", 1)[-1]):
+            try:
+                lines.extend(str(x) for x in json.loads(r["value"]))
+            except Exception:
+                continue
+        return lines
+
+    @tasks.loop(minutes=2)
+    async def _post_loop(self):
+        try:
+            waiting = bool(await db.fetchval("SELECT 1 FROM bot_global_settings WHERE key LIKE $1 LIMIT 1", RELAY_PREFIX + "%"))
+            if not se.pending() and not waiting:
                 return
             ch = await self._log_channel()
             if ch is None:
                 return          # events wait (bounded) until the channel can exist
             lines = [text for _kind, text in se.drain(15)]
+            if waiting:
+                lines.extend(await self._collect_relayed())
+            lines = lines[:25]
             if lines:
                 await ch.send(embed=discord.Embed(description="\n".join(lines)[:3900], color=0x2B2D31),
                               allowed_mentions=NO_MENTIONS)
@@ -168,6 +204,10 @@ class GuildActivityCog(commands.Cog):
                 color=0x57F287), allowed_mentions=NO_MENTIONS)
         except Exception:
             logger.warning("[sleep-log] digest failed", exc_info=True)
+
+    @_relay_loop.before_loop
+    async def _before_relay(self):
+        await self.bot.wait_until_ready()
 
     @_post_loop.before_loop
     async def _before_post(self):
