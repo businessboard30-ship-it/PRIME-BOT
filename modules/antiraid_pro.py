@@ -468,9 +468,10 @@ def next_pending(rows: List[dict], after_user_id: Optional[int] = None) -> Optio
     return rows[0]
 
 
-def review_embed(guild, row: dict, position: int, total: int) -> discord.Embed:
+def review_embed(guild, row: dict, position: int, total: int, member=None) -> discord.Embed:
+    """`member`: pass the fetched member when the cache may be cold, or an uncached person is shown as 'left'."""
     uid = int(row["user_id"])
-    member = guild.get_member(uid)
+    member = member or guild.get_member(uid)
     embed = discord.Embed(title=f"🔎 Review {position} of {total}", color=discord.Color.orange())
     if member is None:
         embed.description = f"<@{uid}> (`{uid}`) has left the server."

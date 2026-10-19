@@ -139,8 +139,13 @@ class SuggestionCog(GuildOnlyCog):
         if emoji in (APPROVE, DENY):
             if payload.event_type != "REACTION_ADD":
                 return
-            member = guild.get_member(payload.user_id)
-            if member is None or member.bot:
+            member = getattr(payload, "member", None) or guild.get_member(payload.user_id)
+            if member is None:                      # cold member cache: ask Discord, or the owner's reaction is ignored
+                try:
+                    member = await guild.fetch_member(payload.user_id)
+                except discord.HTTPException:
+                    return
+            if member.bot:
                 return
             if not member.guild_permissions.manage_guild:
                 try:

@@ -227,6 +227,15 @@ async def release_member(guild, clone_id, actor_id: int, user_id: int) -> Tuple[
     st_role_id = await db.get_quarantine_role(guild.id, clone_id)
     member = guild.get_member(user_id)
     if member is None:
+        # Not cached is not the same as gone: only a 404 means they left. Guessing "left" here used to drop
+        # people from the list (and skip giving their roles back) whenever the member cache was cold.
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.NotFound:
+            member = None
+        except discord.HTTPException:
+            return False, "I couldn't reach Discord to check on them, so they stay on the list. Try again in a moment."
+    if member is None:
         await db.remove_quarantined(guild.id, clone_id, user_id)
         await record_change(guild.id, clone_id, actor_id, "quarantine.release", user_id, "left the server")
         return True, "They've left the server — removed from the list, so they'll come back unquarantined."

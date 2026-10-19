@@ -87,6 +87,17 @@ async def _auth(interaction: discord.Interaction, guild_id: int, need: str, prem
     return guild
 
 
+async def _member_or_none(guild: discord.Guild, uid: int):
+    """Cache first, then the API; None only when they really left (or Discord can't be reached)."""
+    member = guild.get_member(uid)
+    if member is not None:
+        return member
+    try:
+        return await guild.fetch_member(uid)
+    except discord.HTTPException:
+        return None
+
+
 async def _save(interaction, guild: discord.Guild, clone_id, **fields) -> dict:
     """Audited write (same trail as every other panel setting) + anti-raid cache refresh."""
     from modules import server_panel as sp
@@ -123,7 +134,7 @@ async def _show_next(interaction: discord.Interaction, guild: discord.Guild, clo
         if int(before[i]["user_id"]) in now_ids:
             row = before[i]
             await interaction.edit_original_response(
-                content=note, embed=pro.review_embed(guild, row, i + 1, len(before)),
+                content=note, embed=pro.review_embed(guild, row, i + 1, len(before), member=await _member_or_none(guild, int(row["user_id"]))),
                 view=review_view(guild.id, clone_id, int(row["user_id"])))
             return
     left = len(now_ids)
@@ -237,7 +248,7 @@ class ProButton(discord.ui.DynamicItem[discord.ui.Button],
                 await interaction.followup.send("Nobody is waiting for review. 🎉", ephemeral=True)
                 return
             await interaction.followup.send(
-                embed=pro.review_embed(guild, rows[0], 1, len(rows)),
+                embed=pro.review_embed(guild, rows[0], 1, len(rows), member=await _member_or_none(guild, int(rows[0]["user_id"]))),
                 view=review_view(guild.id, cid, int(rows[0]["user_id"])), ephemeral=True)
 
         elif k == "qrel":
