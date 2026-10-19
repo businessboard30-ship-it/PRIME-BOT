@@ -114,7 +114,7 @@ def test_heist_screen_lists_seconds():
     assert "8s" in text and "25s" in text and "m \u00b7" not in text
 
 
-# ---- market cards ----
+# ---- market (Components V2) ----
 class FakeUser:
     display_name = "Sam"
     class display_avatar:
@@ -125,32 +125,94 @@ class FakeClient:
     def get_user(self, i): return FakeUser()
 
 
-def test_market_list_is_one_card_per_cat_with_seller_avatar_and_cat_picture(monkeypatch):
-    pytest.importorskip("discord")
+def _count(payload) -> int:
+    """Components in a message payload, nested ones included (what Discord's 40 limit counts)."""
+    if isinstance(payload, dict):
+        return (1 if isinstance(payload.get("type"), int) else 0) + sum(_count(v) for v in payload.values())
+    if isinstance(payload, (list, tuple)):
+        return sum(_count(v) for v in payload)
+    return 0
+
+
+def _listings(k):
+    return [cm.Listing(i, 100 + i, 1, None, 500 * i, 1, 2, 3, "open", cat(rank=i, cid=100 + i, name=f"Cat{i}", pool=i))
+            for i in range(1, k + 1)]
+
+
+def _texts(view):
+    out = []
+    def walk(items):
+        for it in items:
+            if hasattr(it, "content"):
+                out.append(it.content)
+            walk(getattr(it, "children", []) or [])
+    walk(view.children)
+    return "\n".join(out)
+
+
+def _market(monkeypatch, k=4, pics=True, who=FakeClient()):
     from discord_bot.cogs import _views_cat_market as vm
-    async def url_for(client, pool_id): return f"https://img/{pool_id}.png"
+    async def url_for(client, pool_id):
+        if not pics: raise RuntimeError("no picture")
+        return f"https://img/{pool_id}.png"
+    async def list_open(page=0, size=4): return _listings(k), k
     monkeypatch.setattr(vm.cat_pool, "url_for", url_for)
-    ls = [cm.Listing(i, 100 + i, 1, None, 500 * i, 1, 2, 3, "open", cat(rank=i, cid=100 + i, name=f"Cat{i}", pool=i))
-          for i in range(1, 4)]
-    cards = run(vm.market_cards(FakeClient(), ls))
-    assert len(cards) == 3
-    for i, e in enumerate(cards, 1):
-        assert e.author.name == "Seller: Sam" and e.author.icon_url == FakeUser.display_avatar.url
-        assert e.thumbnail.url == f"https://img/{i}.png" and f"Cat{i}" in e.title and f"{500 * i:,}" in e.description
+    monkeypatch.setattr(vm.cm, "list_open", list_open)
+    vm._SELLER_CACHE.clear()
+    view = vm.MarketView(who, type("U", (), {"id": 1})())
+    run(view.load())
+    return vm, view
 
 
-def test_market_cards_survive_a_missing_seller_and_picture(monkeypatch):
+def test_market_is_a_v2_layout_with_a_cat_picture_and_seller_avatar_per_cat(monkeypatch):
+    discord = pytest.importorskip("discord")
+    vm, view = _market(monkeypatch)
+    assert isinstance(view, discord.ui.LayoutView)
+    text = _texts(view)
+    for i in range(1, 5):
+        assert f"Cat{i}" in text and f"{500 * i:,}" in text
+    assert text.count("Sam") == 4
+    comps = view.to_components()
+    flat = repr(comps)
+    assert flat.count("https://img/") == 4 and flat.count("avatars/1/a.png") == 4      # one cat picture + one avatar each
+
+
+def test_a_full_market_page_stays_under_discords_40_component_limit(monkeypatch):
     pytest.importorskip("discord")
+    vm, view = _market(monkeypatch, k=vm_page())
+    n = _count(view.to_components())
+    assert 25 <= n <= 40, n                       # a full page really is big (not a vacuous count), and still fits
+
+
+def vm_page():
     from discord_bot.cogs import _views_cat_market as vm
-    async def url_for(client, pool_id): raise RuntimeError("no picture")
+    return vm.MARKET_PAGE
+
+
+def test_market_survives_a_missing_seller_and_picture(monkeypatch):
+    pytest.importorskip("discord")
     class Nobody:
         def get_user(self, i): return None
         async def fetch_user(self, i): raise RuntimeError("unknown")
-    monkeypatch.setattr(vm.cat_pool, "url_for", url_for)
-    vm._SELLER_CACHE.clear()
-    l = cm.Listing(1, 5, 42, None, 900, 1, 2, 3, "open", cat())
-    cards = run(vm.market_cards(Nobody(), [l]))
-    assert len(cards) == 1 and "Seller 42" in cards[0].author.name and cards[0].thumbnail.url is None
+    vm, view = _market(monkeypatch, k=1, pics=False, who=Nobody())
+    assert "Seller 1" in _texts(view) and "Cat1" in _texts(view)
+
+
+def test_empty_market_says_so_and_has_no_picker(monkeypatch):
+    pytest.importorskip("discord")
+    vm, view = _market(monkeypatch, k=0)
+    assert "No cats are for sale" in _texts(view)
+
+
+def test_detail_screen_has_big_picture_seller_avatar_and_adopt_button(monkeypatch):
+    discord = pytest.importorskip("discord")
+    vm, view = _market(monkeypatch, k=1)
+    l = view.listings[0]
+    detail = vm.MarketDetailView(view, l, view.seen[l.id])
+    assert isinstance(detail, discord.ui.LayoutView)
+    flat = repr(detail.to_components())
+    assert "https://img/1.png" in flat and "avatars/1/a.png" in flat and "Adopt for 500 coins" in flat
+    assert "Cat1" in _texts(detail)
 
 
 def test_sell_wizard_steps_show_the_allowed_range():
