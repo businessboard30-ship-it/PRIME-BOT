@@ -181,6 +181,7 @@ class ArenaView(discord.ui.LayoutView):
                _btn("Challenge a player", self._challenge, discord.ButtonStyle.primary, "⚔️", disabled=not on),
                _btn(f"Answer ({len(self.incoming)})", self._answer, discord.ButtonStyle.success, "📨",
                     disabled=not (on and self.incoming)),
+               _btn("Request board", self._board, discord.ButtonStyle.primary, "📋", disabled=not on),
                _btn("Refresh", self._refresh, discord.ButtonStyle.secondary, "🔄")]
         self.add_item(_box(arena_text(self.st, len(self.incoming), self.out_n, self.recent, self.note), [discord.ui.ActionRow(*row)]))
 
@@ -208,6 +209,10 @@ class ArenaView(discord.ui.LayoutView):
     async def _challenge(self, interaction: discord.Interaction):
         ready = await arena.ready_cats(interaction.user.id, _clone_id(interaction.client))
         await vis.edit(interaction, view=ChallengeView(self, ready))
+
+    async def _board(self, interaction: discord.Interaction):
+        from discord_bot.cogs import _views_cat_board as board     # imported here: the board module imports this one
+        await board.open_board(interaction, self)
 
     async def _answer(self, interaction: discord.Interaction):
         if not self.incoming:
