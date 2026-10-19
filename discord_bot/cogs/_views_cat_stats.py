@@ -115,9 +115,12 @@ class StatsView(discord.ui.LayoutView):
                                      style=discord.ButtonStyle.danger if self.armed else discord.ButtonStyle.secondary,
                                      disabled=self.stats.spent() == 0)
         respec_b.callback = self._respec
+        prac_b = discord.ui.Button(label="Practice", emoji="🪩", style=discord.ButtonStyle.primary,
+                                   disabled=have)
+        prac_b.callback = self._practice
         back_b = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
         back_b.callback = self._back
-        box.add_item(discord.ui.ActionRow(apply_b, clear_b, respec_b, back_b))
+        box.add_item(discord.ui.ActionRow(apply_b, clear_b, respec_b, prac_b, back_b))
         options = cs.skills_for(self.cat.cat_rank)
         slots = cs.slots_for(self.cat.cat_rank)
         sel = discord.ui.Select(
@@ -202,6 +205,10 @@ class StatsView(discord.ui.LayoutView):
             return
         await self._reload()
         await self._push(interaction, NOTES.get(res.status, _OOPS))
+
+    async def _practice(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_cat_fight import open_practice
+        await open_practice(interaction, self)
 
     async def _back(self, interaction: discord.Interaction):
         await self.parent._push(interaction)
