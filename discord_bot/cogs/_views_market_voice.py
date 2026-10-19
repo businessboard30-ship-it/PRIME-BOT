@@ -26,6 +26,7 @@ from discord_bot.cogs import _cat_visibility as vis
 
 from modules import cat_requests
 from modules import market_voice as mv
+from modules import ops_reports
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,10 @@ class ReportButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^market
 
     async def callback(self, interaction: discord.Interaction):
         r = await mv.report(self.voice_id, interaction.user.id)
+        if r == "ok":                                     # metadata only: ids, never audio
+            await ops_reports.submit(interaction.client, f"voice-report-{self.voice_id}",
+                                     f"Market voice report: message #{self.voice_id}, reported by {interaction.user.id}. "
+                                     "Details are in market_reports (the audio is not kept).")
         text = {"ok": "Reported. The owner can review it.", "again": "You already reported this one."}.get(r, "I can't report that one.")
         await interaction.response.send_message(text, ephemeral=True)
 

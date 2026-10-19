@@ -405,6 +405,10 @@ def report_rows(fight_id: int, foe_id: int, board: "BoardView"):
     """Report / Block buttons under a finished fight. Reports and blocks are about the other player only."""
     async def _report(interaction: discord.Interaction):
         status = await cr.report(fight_id, interaction.user.id)
+        if status == "ok":
+            await ops_reports.submit(interaction.client, f"fight-report-{fight_id}",
+                                     f"Cat fights report: fight #{fight_id}, reported by {interaction.user.id} about {foe_id}. "
+                                     "Details are in cat_fight_reports.")
         text = {"ok": cr.STATUS_TEXT["reported"], "again": "You already reported this fight."}.get(status, cr.STATUS_TEXT["gone"])
         await interaction.response.send_message("📨 " + text, ephemeral=True)
 
