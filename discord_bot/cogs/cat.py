@@ -437,15 +437,17 @@ class CatCog(commands.Cog):
         # Writing up old cats in the storage channel: main bot only (the pool and channel are shared by every bot).
         if getattr(self.bot, "clone_id", None) is None:
             self._backfill.start()
-            self._health_first = True
-            self._health_report.start()          # owner DM: where cat pictures came from and why new ones didn't
+            self._ops_flush.start()              # main bot posts every bot's queued health reports to the support server
+        self._health_first = True
+        self._health_report.start()              # every bot queues its own report: where pictures came from, why new ones didn't
 
     async def cog_unload(self):
         self._care.cancel()
         self._spawner.cancel()
         self._backfill.cancel()
+        self._health_report.cancel()
         if getattr(self.bot, "clone_id", None) is None:
-            self._health_report.cancel()
+            self._ops_flush.cancel()
 
     @tasks.loop(seconds=cat_care.HUNGER_TICK_SECONDS)
     async def _care(self):
@@ -517,6 +519,15 @@ class CatCog(commands.Cog):
 
     @_health_report.before_loop
     async def _before_health_report(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=1)
+    async def _ops_flush(self):
+        from modules import ops_reports
+        await ops_reports.flush(self.bot)
+
+    @_ops_flush.before_loop
+    async def _before_ops_flush(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=BACKFILL_TICK_MINUTES)

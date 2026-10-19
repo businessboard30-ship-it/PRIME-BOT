@@ -43,13 +43,13 @@ def test_record_never_raises():
 
 
 def test_send_report_dms_owners(monkeypatch):
-    from modules import image_host
+    from modules import ops_reports
     got = {}
 
     async def fake(bot, key, text, cooldown=0):
         got.update(key=key, text=text)
         return True
-    monkeypatch.setattr(image_host, "notify_owners", fake)
+    monkeypatch.setattr(ops_reports, "submit", fake)
     from modules import cat_pool
 
     async def count():
