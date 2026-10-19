@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from modules import cat_adopt, cat_battle, cat_stats
+from modules import cat_adopt, cat_battle, cat_records, cat_stats
 
 logger = logging.getLogger(__name__)
 
@@ -311,8 +311,9 @@ async def my_cats(owner_id: int, clone_id) -> List[Ready]:
     stats = await cat_stats.get_many(ids)
     fx = await effects_for(ids)
     out = []
+    vets = await cat_records.bonuses(ids)
     for c in cats:
-        f = cat_battle.from_cat(c, stats[c.id], hurt=fx[c.id].hurt())
+        f = cat_battle.from_cat(c, stats[c.id], hurt=fx[c.id].hurt(), vet_pct=vets.get(c.id, 0))
         out.append(Ready(c, stats[c.id], fx[c.id], f))
     out.sort(key=lambda r: -r.fighter.power)
     return out
@@ -441,7 +442,7 @@ async def cancel(fight_id: int, user_id: int) -> bool:
 def _snap(a: cat_battle.Fighter, b: cat_battle.Fighter) -> str:
     def d(f):
         return {"name": f.name, "strength": f.strength, "guard": f.guard, "speed": f.speed, "spirit": f.spirit,
-                "rank": f.rank, "skills": list(f.skills), "item_bonus": f.item_bonus}
+                "rank": f.rank, "skills": list(f.skills), "item_bonus": f.item_bonus, "vet_pct": f.vet_pct}
     return json.dumps({"a": d(a), "b": d(b)}, separators=(",", ":"))
 
 
@@ -451,7 +452,7 @@ def replay_from(fight: Fight) -> Optional[Tuple[cat_battle.Fighter, cat_battle.F
         return None
     s = json.loads(fight.snap)
     mk = lambda d: cat_battle.Fighter(d["name"], d["strength"], d["guard"], d["speed"], d["spirit"], d["rank"],
-                                      tuple(d["skills"]), d["item_bonus"])
+                                      tuple(d["skills"]), d["item_bonus"], int(d.get("vet_pct", 0)))
     a, b = mk(s["a"]), mk(s["b"])
     return a, b, cat_battle.fight(a, b, int(fight.seed))
 
@@ -566,8 +567,9 @@ async def _fight_and_settle(conn, fight: Fight, me_id: int, them_id: int, cat_id
     fx = {}
     for c in (cat_me, cat_them):
         fx[c.id] = bool(await conn.fetchval("SELECT 1 FROM cat_effects WHERE cat_id = $1 AND effect_key = 'hurt' AND ends_at > NOW()", c.id))
-    a = cat_battle.from_cat(cat_them, await cat_stats._load(conn, cat_them.id), hurt=fx[cat_them.id])
-    b = cat_battle.from_cat(cat_me, await cat_stats._load(conn, cat_me.id), hurt=fx[cat_me.id])
+    vets = {i: cat_records.bonus_pct(n) for i, n in (await cat_records.fights_in(conn, [cat_them.id, cat_me.id])).items()}
+    a = cat_battle.from_cat(cat_them, await cat_stats._load(conn, cat_them.id), hurt=fx[cat_them.id], vet_pct=vets[cat_them.id])
+    b = cat_battle.from_cat(cat_me, await cat_stats._load(conn, cat_me.id), hurt=fx[cat_me.id], vet_pct=vets[cat_me.id])
     result = cat_battle.fight(a, b, seed)
     winner_id, loser_id = (them_id, me_id) if result.winner == "a" else (me_id, them_id)
     loser_cat = cat_them.id if result.winner == "b" else cat_me.id
@@ -588,6 +590,8 @@ async def _fight_and_settle(conn, fight: Fight, me_id: int, them_id: int, cat_id
     new_w, new_l = old_w + gain, old_l + loss
     await conn.execute("UPDATE cat_arena SET rating = $3, wins = wins + 1, updated_at = NOW() WHERE owner_id = $1 AND bot_key = $2", winner_id, key, new_w)
     await conn.execute("UPDATE cat_arena SET rating = $3, losses = losses + 1, updated_at = NOW() WHERE owner_id = $1 AND bot_key = $2", loser_id, key, new_l)
+    win_cat, lose_cat = (cat_them.id, cat_me.id) if result.winner == "a" else (cat_me.id, cat_them.id)
+    await cat_records.record_fight(conn, win_cat, lose_cat, result.ended_by == "ko")
     from modules import cat_league
     await cat_league.play_points(conn, key, winner_id, loser_id)      # League points when both are entered (never raises)
     hurt = loser_hp <= 0
@@ -613,4 +617,5 @@ async def get_ready(cat_id: int) -> Optional[Ready]:
     cat = cat_adopt.Cat.from_row(row)
     st = await cat_stats.get_stats(cat.id)
     fx = (await effects_for([cat.id]))[cat.id]
-    return Ready(cat, st, fx, cat_battle.from_cat(cat, st, hurt=fx.hurt()))
+    vet = (await cat_records.bonuses([cat.id])).get(cat.id, 0)
+    return Ready(cat, st, fx, cat_battle.from_cat(cat, st, hurt=fx.hurt(), vet_pct=vet))

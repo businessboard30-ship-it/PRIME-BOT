@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "112"
+SCHEMA_VERSION = "113"
+# "112" -> "113" adds 064_cat_records.sql (cat_records: per-cat fight record for the Veteran bonus). CREATE TABLE IF NOT EXISTS only.
 # "111" -> "112" adds 063_cat_league_next.sql (cat_league_next: the division a player starts the next League season in). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "110" -> "111" adds 062_cat_league.sql (cat_league_seasons, cat_league_entries: League data layer). CREATE TABLE / INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "109" -> "110" adds 061_cat_fight_setup_reports.sql (cat_guild_config.fights_cross_server / fights_show_server, cat_fight_reports). ADD COLUMN / CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5773,6 +5774,11 @@ class Database:
         cat_league_next_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "063_cat_league_next.sql"
         if cat_league_next_migration.exists():
             await conn.execute(cat_league_next_migration.read_text())
+
+        # Cat fights R3: per-cat fight records. Additive/idempotent.
+        cat_records_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "064_cat_records.sql"
+        if cat_records_migration.exists():
+            await conn.execute(cat_records_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"

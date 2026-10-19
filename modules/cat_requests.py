@@ -348,8 +348,9 @@ async def accept(request_id: int, user_id: int, clone_id, cat_id: int, guild_id:
             cat_me, cat_them = A.cat_adopt.Cat.from_row(mine), A.cat_adopt.Cat.from_row(theirs)
             hurt = {c.id: bool(await conn.fetchval("SELECT 1 FROM cat_effects WHERE cat_id = $1 AND effect_key = 'hurt' AND ends_at > NOW()", c.id))
                     for c in (cat_me, cat_them)}
-            f_me = A.cat_battle.from_cat(cat_me, await A.cat_stats._load(conn, cat_me.id), hurt=hurt[cat_me.id])
-            f_them = A.cat_battle.from_cat(cat_them, await A.cat_stats._load(conn, cat_them.id), hurt=hurt[cat_them.id])
+            vets = {i: A.cat_records.bonus_pct(n) for i, n in (await A.cat_records.fights_in(conn, [cat_me.id, cat_them.id])).items()}
+            f_me = A.cat_battle.from_cat(cat_me, await A.cat_stats._load(conn, cat_me.id), hurt=hurt[cat_me.id], vet_pct=vets[cat_me.id])
+            f_them = A.cat_battle.from_cat(cat_them, await A.cat_stats._load(conn, cat_them.id), hurt=hurt[cat_them.id], vet_pct=vets[cat_them.id])
             if not in_band(f_them.power, f_me.power):
                 return A.AcceptResult("band")
 
