@@ -17,7 +17,9 @@ import discord
 from discord_bot.cogs import _cat_visibility as vis
 from modules import cat_arena as arena
 from modules import cat_battle as cb
+from modules import cat_requests
 from modules import cat_wallet
+from modules import ops_reports
 
 logger = logging.getLogger(__name__)
 
@@ -396,11 +398,34 @@ class IncomingView(discord.ui.LayoutView):
 
         async def done(i: discord.Interaction, res: arena.AcceptResult):
             again = _btn("Back to Arena", self._back_after)
-            await vis.edit(i, view=_screen(result_text(res, i.user.id), [discord.ui.ActionRow(again)]), original=True)
+            await vis.edit(i, view=_screen(result_text(res, i.user.id), [discord.ui.ActionRow(*report_buttons(res, i.user.id), again)]),
+                           original=True)
         await run_accept(interaction, f.id, cat_id, done, edit_first=lambda i, v: vis.edit(i, view=v))
 
     async def _back_after(self, interaction: discord.Interaction):
         await self.parent.push(interaction)
+
+
+def report_buttons(res: "arena.AcceptResult", viewer_id: int) -> list:
+    """Report / Block buttons for a finished fight, about the other player only. Empty when there is no fight to report."""
+    f = res.fight
+    if f is None or not getattr(f, "id", 0):
+        return []
+    foe = int(f.challenged_id) if int(f.challenger_id) == int(viewer_id) else int(f.challenger_id)
+    fid = int(f.id)
+
+    async def _report(i: discord.Interaction):
+        status = await cat_requests.report(fid, i.user.id)
+        if status == "ok":
+            await ops_reports.submit(i.client, f"fight-report-{fid}", f"Cat fights report: fight #{fid}, reported by {i.user.id} "
+                                     f"about {foe}. Details are in cat_fight_reports.")
+        text = {"ok": "Reported. The owner can review it.", "again": "You already reported this fight."}.get(status, "I can't report that fight.")
+        await i.response.send_message("📨 " + text, ephemeral=True)
+
+    async def _block(i: discord.Interaction):
+        ok = await cat_requests.block(i.user.id, foe)
+        await i.response.send_message("🚫 Blocked. You won't be matched with each other's requests any more." if ok else OOPS, ephemeral=True)
+    return [_btn("Report this fight", _report, emoji="📨"), _btn("Block player", _block, discord.ButtonStyle.danger, "🚫")]
 
 
 # ── accept: shared by the Arena screen and the private message ──────────
@@ -467,7 +492,8 @@ class AcceptButton(discord.ui.DynamicItem[discord.ui.Button], template=_ACCEPT_R
             return
 
         async def done(i: discord.Interaction, res: arena.AcceptResult):
-            await i.edit_original_response(view=_screen(result_text(res, i.user.id)))
+            rows = [discord.ui.ActionRow(*report_buttons(res, i.user.id))] if report_buttons(res, i.user.id) else None
+            await i.edit_original_response(view=_screen(result_text(res, i.user.id), rows or ()))
 
         async def first(i: discord.Interaction, v):
             await i.response.edit_message(view=v)
