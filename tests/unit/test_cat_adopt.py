@@ -79,7 +79,9 @@ def test_adopt_ok_edits_the_spawn_and_tells_the_adopter(monkeypatch):
     assert "adopted by <@10>" in e["embed"].description and "Rare" in e["embed"].description
     btn = e["view"].children[0].item
     assert btn.disabled and btn.label.startswith("Adopted")
-    assert "adopted **Mochi**" in i.followups[0][0] and i.followups[0][1]["ephemeral"] is True
+    # the public spawn post is still a classic embed message, so its edit above stays classic; the private follow-up is V2
+    assert "adopted **Mochi**" in v.view_text(i.followups[0][1]["view"]) and i.followups[0][1]["ephemeral"] is True
+    assert "embed" not in i.followups[0][1] and i.followups[0][0] is None
 
 
 @pytest.mark.parametrize("status,word", [("taken", "already adopted"), ("gone", "no longer available"),
@@ -162,7 +164,7 @@ def test_collection_browsing_wraps_around_and_is_owner_only(monkeypatch):
     view = v.CollectionView(SimpleNamespace(clone_id=None), SimpleNamespace(id=10), cats)
     i = FI(10)
     run(view._prev(i))
-    assert view.current.name == "C3" and "Cat 3 of 3" in i.edits[0]["embed"].footer.text
+    assert view.current.name == "C3" and "Cat 3 of 3" in v.view_text(i.edits[0]["view"])
     run(view._next(FI(10)))
     assert view.current.name == "A1"
     stranger = FI(11)
@@ -176,11 +178,11 @@ def test_release_needs_two_taps(monkeypatch):
     view = v.CollectionView(SimpleNamespace(clone_id=None), SimpleNamespace(id=10), [mkcat(1), mkcat(2, name="B2")])
     run(view._release(FI(10)))
     rel.assert_not_awaited() and view.confirm_release
-    assert any(getattr(c, "label", "") == "Tap again to release" for c in view.children)
+    assert any(getattr(c, "label", "") == "Tap again to release" for c in view.walk_children())
     i = FI(10)
     run(view._release(i))
     rel.assert_awaited_once_with(1, 10)
-    assert "new home" in i.edits[0]["content"]
+    assert "new home" in v.view_text(i.edits[0]["view"])
 
 
 def test_trading_is_blocked_in_dms():
@@ -219,7 +221,9 @@ def test_accepting_a_swap_runs_one_atomic_trade(monkeypatch):
     i = _offer_interaction(20)
     run(_offer()._accept(i))
     t.assert_awaited_once_with(1, 10, 2, 20, None, taker_clone_id=None)
-    assert "Trade done" in i.edits[0]["embed"].description and i.edits[0]["view"] is None
+    done = i.edits[0]["view"]                       # the answered offer keeps its title and loses its buttons
+    assert "Trade done" in v.view_text(done) and "Cat trade offer" in v.view_text(done)
+    assert not any(isinstance(c, discord.ui.Button) for c in done.walk_children())
 
 
 def test_accepting_a_gift(monkeypatch):
@@ -228,7 +232,7 @@ def test_accepting_a_gift(monkeypatch):
     i = _offer_interaction(20)
     run(_offer(take=False)._accept(i))
     t.assert_awaited_once_with(1, 10, None, 20, None, taker_clone_id=None)
-    assert "gifted" in i.edits[0]["embed"].description
+    assert "gifted" in v.view_text(i.edits[0]["view"])
 
 
 @pytest.mark.parametrize("status,word", [("gone", "changed owners"), ("limit", "home is full")])
@@ -236,14 +240,14 @@ def test_failed_trades_say_why(monkeypatch, status, word):
     monkeypatch.setattr(ca, "trade", AsyncMock(return_value=status))
     i = _offer_interaction(20)
     run(_offer()._accept(i))
-    assert word in i.edits[0]["embed"].description
+    assert word in v.view_text(i.edits[0]["view"])
 
 
 def test_decline_and_cancel_move_nothing(monkeypatch):
     t = AsyncMock()
     monkeypatch.setattr(ca, "trade", t)
-    i = _offer_interaction(20); run(_offer()._decline(i)); assert "declined" in i.edits[0]["embed"].description
-    j = _offer_interaction(10); run(_offer()._cancel(j)); assert "cancelled" in j.edits[0]["embed"].description
+    i = _offer_interaction(20); run(_offer()._decline(i)); assert "declined" in v.view_text(i.edits[0]["view"])
+    j = _offer_interaction(10); run(_offer()._cancel(j)); assert "cancelled" in v.view_text(j.edits[0]["view"])
     t.assert_not_awaited()
 
 
@@ -255,9 +259,11 @@ def test_sending_an_offer_posts_it_publicly_and_pings_only_the_target(monkeypatc
     i = FI(10)
     run(view._chosen(i))
     sent = i.channel.send.await_args.kwargs
-    assert sent["content"] == "<@20>" and sent["allowed_mentions"].users == [target]
-    assert "in exchange for" in sent["embed"].description and "no real money" in sent["embed"].description
-    assert "Offer sent" in i.edits[0]["content"]
+    # V2 posts carry no `content=`: the target's mention sits in the card text and is the only one allowed to ping
+    assert "content" not in sent and "embed" not in sent and sent["allowed_mentions"].users == [target]
+    card = v.view_text(sent["view"])
+    assert "<@20>" in card and "in exchange for" in card and "no real money" in card
+    assert "Offer sent" in v.view_text(i.edits[0]["view"])
 
 
 def test_gift_option_is_first_and_swap_choices_page_through_every_cat():

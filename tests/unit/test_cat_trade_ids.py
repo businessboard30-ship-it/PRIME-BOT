@@ -255,7 +255,7 @@ def test_dm_closed_is_reported_and_nothing_counted(monkeypatch):
     view.pick = SimpleNamespace(values=[v.GIFT_VALUE])
     i = _interaction()
     run(view._chosen(i))
-    assert "DMs are closed" in i.response.edit_message.call_args.kwargs["content"]
+    assert "DMs are closed" in v.view_text(i.response.edit_message.call_args.kwargs["view"])
     assert 99 not in v._remote_pending and not v._remote_at
 
 

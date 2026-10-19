@@ -73,14 +73,16 @@ def test_cat_card_and_listing_show_rank_and_cat_id():
     c = cat(3, "rare", cid=42)
 
     async def go():
-        card = await va.cat_embed_full(None, c, "x")
+        card = await va.cat_embed_full(None, c, "x")          # the classic card, still used by the public posts
         return card
     card = asyncio.run(go())
     assert "Rank 3" in card.description and "#42" in card.description
+    assert "Rank 3" in va._cat_body(c) and "#42" in va._cat_body(c)    # the V2 screens read the same facts
 
 
 def test_trade_screen_keeps_the_picture_visible():
     src = (ROOT / "discord_bot/cogs/_views_cat_adopt.py").read_text()
     i = src.index("async def _trade")
     block = src[i:i + 1200]
-    assert "embed=None" not in block and "cat_embed_full" in block and "cat #" in block
+    # V2: the cat card (picture + facts) is passed into the trade screen instead of an embed
+    assert "embed=" not in block and "_trade_card_text" in block and "image=" in block and "cat #" in block
