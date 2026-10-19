@@ -586,11 +586,21 @@ class MarketDetailView(discord.ui.LayoutView):
         back.callback = self._back
         voice = discord.ui.Button(label="Voice message", emoji="\U0001F399\uFE0F", style=discord.ButtonStyle.secondary)
         voice.callback = self._voice
-        box.add_item(discord.ui.ActionRow(buy, voice, back))
+        duel = discord.ui.Button(label="Duel the seller", emoji="\u2694\uFE0F", style=discord.ButtonStyle.secondary)
+        duel.callback = self._duel
+        box.add_item(discord.ui.ActionRow(buy, voice, duel, back))
         self.add_item(box)
 
     async def interaction_check(self, interaction):
         return await self.parent.interaction_check(interaction)
+
+    async def _duel(self, interaction: discord.Interaction):
+        from discord_bot.cogs import _views_cat_arena as arena_views         # lazy: it imports the market indirectly
+        if interaction.user.id == self.listing.seller_id:
+            await interaction.response.send_message("That is your own listing.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await arena_views.open_duel(interaction, self.listing.seller_id)
 
     async def _voice(self, interaction: discord.Interaction):
         from discord_bot.cogs import _views_market_voice as mvv

@@ -230,13 +230,27 @@ class ArenaView(discord.ui.LayoutView):
         await open_incoming(interaction, self, self.incoming, 0)
 
 
+async def open_duel(interaction: discord.Interaction, seller_id: int) -> None:
+    """Market duel: the Challenge screen with the seller already picked. Same stakes as any Arena challenge: both put up the
+    same wager, nothing moves until the seller accepts, winner is paid from the pot, the market fee does not apply. The
+    listed cat is held by its listing, so the seller answers with another cat."""
+    view = ArenaView()
+    await view.reload(interaction)
+    if not view.st.on:
+        view.note = "Turn Arena on first, then tap Duel the seller again from the Market."
+        await vis.edit(interaction, view=view)
+        return
+    ready = await arena.ready_cats(interaction.user.id, _clone_id(interaction.client))
+    await vis.edit(interaction, view=ChallengeView(view, ready, "⚔️ Market duel: same wager from both of you.", target=int(seller_id)))
+
+
 # ── challenge someone ───────────────────────────────────────────────────
 
 class ChallengeView(discord.ui.LayoutView):
-    def __init__(self, parent: ArenaView, ready: List[arena.Ready], note: Optional[str] = None):
+    def __init__(self, parent: ArenaView, ready: List[arena.Ready], note: Optional[str] = None, target: Optional[int] = None):
         super().__init__(timeout=600)
         self.parent, self.ready, self.note = parent, ready, note
-        self.target: Optional[int] = None
+        self.target: Optional[int] = target
         self.cat_id: Optional[int] = ready[0].cat.id if ready else None
         self.wager = arena.LADDER[0]
         self.sent: Optional[int] = None
