@@ -87,6 +87,7 @@ def render_text(cfg: cs.CatConfig, premium: bool, notice: str = "", problems: st
         f"**Cats a day:** about {_range_text(tier, cfg.pace_percent)}, spread across {'the day' if cs.window_hours(cfg.active_start, cfg.active_end) == 24 else 'your spawn hours'}",
         f"**Spawn hours:** {hours_text(cfg.active_start, cfg.active_end)}",
         f"**Public posts:** {ANNOUNCE_HELP[cs.clamp_announce(cfg.announce_mode)]}",
+        f"**Cat fights:** cross-server {'ON' if cfg.fights_cross_server else 'OFF'} · server name on the board {'ON' if cfg.fights_show_server else 'OFF'}",
         "",
         ("⭐ **Premium server:** up to 3 spawn channels, 250 to 300 cats a day (shared between your channels)." if premium else
          "**Free server:** 1 spawn channel, 120 to 140 cats a day.\n"
@@ -136,6 +137,10 @@ class CatSetupView(discord.ui.LayoutView):
         self.announce.callback = self._on_announce
         close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary)
         close.callback = self._on_close
+        self.cross = discord.ui.Button(style=discord.ButtonStyle.secondary)
+        self.cross.callback = self._on_cross
+        self.show_name = discord.ui.Button(style=discord.ButtonStyle.secondary)
+        self.show_name.callback = self._on_show_name
         self._sync()
 
         self.text = discord.ui.TextDisplay(self._text())
@@ -145,6 +150,7 @@ class CatSetupView(discord.ui.LayoutView):
         for item in (self.channels, self.pace, self.start_hour, self.end_hour):
             box.add_item(discord.ui.ActionRow(item))
         box.add_item(discord.ui.ActionRow(self.toggle, self.send_now, self.check, self.announce, close))
+        box.add_item(discord.ui.ActionRow(self.cross, self.show_name))
         box.add_item(discord.ui.TextDisplay(f"-# {FOOTER}"))
         self.add_item(box)
 
@@ -191,6 +197,12 @@ class CatSetupView(discord.ui.LayoutView):
         self.check.disabled = not self.cfg.channel_ids
         self.announce.label = f"Public posts: {ANNOUNCE_LABELS[cs.clamp_announce(self.cfg.announce_mode)]}"
         self.announce.emoji = "📣"
+        self.cross.label = "Cross-server fights: " + ("ON" if self.cfg.fights_cross_server else "OFF")
+        self.cross.emoji = "🌍"
+        self.cross.style = discord.ButtonStyle.success if self.cfg.fights_cross_server else discord.ButtonStyle.secondary
+        self.show_name.label = "Show our server name on the board: " + ("ON" if self.cfg.fights_show_server else "OFF")
+        self.show_name.emoji = "🏷️"
+        self.show_name.style = discord.ButtonStyle.success if self.cfg.fights_show_server else discord.ButtonStyle.secondary
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -255,6 +267,12 @@ class CatSetupView(discord.ui.LayoutView):
 
     async def _on_end(self, interaction: discord.Interaction):
         await self._apply(interaction, active_end=cs.clamp_hour(self.end_hour.values[0], 24))
+
+    async def _on_cross(self, interaction: discord.Interaction):
+        await self._apply(interaction, fights_cross_server=not self.cfg.fights_cross_server)
+
+    async def _on_show_name(self, interaction: discord.Interaction):
+        await self._apply(interaction, fights_show_server=not self.cfg.fights_show_server)
 
     async def _on_announce(self, interaction: discord.Interaction):
         modes = cs.ANNOUNCE_MODES

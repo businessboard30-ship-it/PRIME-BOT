@@ -40,6 +40,7 @@ STATUS_TEXT = {
     "max_open": f"You already have {MAX_OPEN} open requests. Cancel one or wait for it to end.",
     "gone": "That request isn't open any more.",
     "not_yours": "That request isn't yours.",
+    "reported": "Thanks, your report was saved. You can also block that player.",
     "self": "That's your own request. Someone else has to answer it.",
     "band": "Your cat is too far from that cat's power. Pick a closer cat.",
     "seen": "You can't answer that request.",
@@ -372,6 +373,52 @@ async def accept(request_id: int, user_id: int, clone_id, cat_id: int, guild_id:
             await conn.execute("UPDATE cat_fight_requests SET status = 'settled', accepter_id = $2, fight_id = $3, settled_at = NOW() WHERE id = $1",
                                int(request_id), me_id, fight.id)
             return res
+
+
+# ── reports and repeated pairs ──────────────────────────────────────────
+
+REPEAT_DAYS, REPEAT_FLAG_AT = 7, 6      # this many settled fights between the same two players in this many days get flagged
+
+
+async def report(fight_id: int, reporter_id: int) -> str:
+    """Save a report about the OTHER player of a fight the reporter took part in. One per person per fight.
+    Returns ok | again | gone. Never touches coins or cats; the owner reads the reports."""
+    try:
+        p = await _pool()
+        async with p.acquire() as conn:
+            async with conn.transaction():
+                f = await conn.fetchrow("SELECT challenger_id, challenged_id FROM cat_fights WHERE id = $1", int(fight_id))
+                if f is None or int(reporter_id) not in (int(f["challenger_id"]), int(f["challenged_id"])):
+                    return "gone"
+                other = int(f["challenged_id"]) if int(f["challenger_id"]) == int(reporter_id) else int(f["challenger_id"])
+                got = await conn.fetchval("INSERT INTO cat_fight_reports (fight_id, reporter_id, reported_id) VALUES ($1, $2, $3) "
+                                          "ON CONFLICT DO NOTHING RETURNING id", int(fight_id), int(reporter_id), other)
+        return "ok" if got is not None else "again"
+    except Exception:
+        logger.warning("[cat-requests] couldn't save a report", exc_info=True)
+        return "gone"
+
+
+async def pair_recent(a: int, b: int, days: int = REPEAT_DAYS) -> int:
+    """Settled fights between two players in the last `days` days. Never raises (0 on error)."""
+    try:
+        p = await _pool()
+        async with p.acquire() as conn:
+            return int(await conn.fetchval(
+                "SELECT COUNT(*) FROM cat_fights WHERE status = 'settled' AND settled_at > NOW() - $3 * INTERVAL '1 day' AND "
+                "((challenger_id = $1 AND challenged_id = $2) OR (challenger_id = $2 AND challenged_id = $1))",
+                int(a), int(b), int(days)) or 0)
+    except Exception:
+        logger.debug("[cat-requests] couldn't count a pair", exc_info=True)
+        return 0
+
+
+def pair_flag_text(a: int, b: int, n: int) -> Optional[str]:
+    """The note for the owner when two players keep fighting each other (possible coin passing). None below the line."""
+    if n < REPEAT_FLAG_AT:
+        return None
+    lo, hi = sorted((int(a), int(b)))
+    return f"Cat fights: players {lo} and {hi} have fought each other {n} times in {REPEAT_DAYS} days. Worth a look for coin passing."
 
 
 # ── reading the board ───────────────────────────────────────────────────
