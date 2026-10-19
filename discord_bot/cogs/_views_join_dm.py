@@ -2336,3 +2336,7 @@ DYNAMIC_ITEMS = DYNAMIC_ITEMS + _SCAM_ITEMS
 # Compact quick-start message buttons (Open server panel / Full setup guide).
 from discord_bot.cogs._views_quickstart_pointer import DYNAMIC_ITEMS as _POINTER_ITEMS  # noqa: E402
 DYNAMIC_ITEMS = DYNAMIC_ITEMS + _POINTER_ITEMS
+
+# Anime Follow button on every anime card.
+from discord_bot.cogs._views_anime_feed import DYNAMIC_ITEMS as _ANIME_ITEMS  # noqa: E402
+DYNAMIC_ITEMS = DYNAMIC_ITEMS + _ANIME_ITEMS

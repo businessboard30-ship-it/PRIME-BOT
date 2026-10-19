@@ -169,8 +169,12 @@ class Worker:
             except Exception:
                 logger.debug("[anime-feed] couldn't switch a feed off", exc_info=True)
             return False
+        follower_ids = [u for u in await af.followers_of(p.anime_id) if guild.get_member(u) is not None]
+        line, shown = af.ping_line(cfg.ping_role_id, follower_ids)
+        mentions = discord.AllowedMentions(users=[discord.Object(id=u) for u in shown], roles=[discord.Object(id=cfg.ping_role_id)] if cfg.ping_role_id else False,
+                                           everyone=False)
         try:
-            await channel.send(view=post_view(p), allowed_mentions=discord.AllowedMentions.none())
+            await channel.send(view=post_view(p, ping=line), allowed_mentions=mentions)
             return True
         except discord.Forbidden:
             logger.info("[anime-feed] no permission to post in guild %s", cfg.guild_id)   # keep the claim: don't retry forever

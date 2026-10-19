@@ -172,6 +172,7 @@ class FeedConfig:
     enabled: bool = False
     channel_id: Optional[int] = None
     enabled_at: Optional[datetime] = None
+    ping_role_id: Optional[int] = None
 
 
 def _key(clone_id) -> int:
@@ -187,7 +188,7 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
+            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at, ping_role_id FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
                                       int(guild_id), _key(clone_id))
     except Exception:
         logger.exception("[anime-feed] couldn't read the setup for guild %s", guild_id)
@@ -196,14 +197,15 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
 
 
 def _cfg(guild_id, clone_id, row) -> FeedConfig:
-    return FeedConfig(int(guild_id), clone_id, bool(row["enabled"]), int(row["channel_id"]) if row["channel_id"] else None, row["enabled_at"])
+    return FeedConfig(int(guild_id), clone_id, bool(row["enabled"]), int(row["channel_id"]) if row["channel_id"] else None, row["enabled_at"],
+                      int(row["ping_role_id"]) if row["ping_role_id"] else None)
 
 
 async def enabled_guilds(clone_id=None) -> List[FeedConfig]:
     """Every server of this bot with the feed on and a channel picked. Raises on database errors (the worker backs off)."""
     pool = await _pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at FROM anime_feed_config "
+        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at, ping_role_id FROM anime_feed_config "
                                 "WHERE clone_key = $1 AND enabled AND channel_id IS NOT NULL", _key(clone_id))
     return [_cfg(r["guild_id"], clone_id, r) for r in rows]
 
@@ -239,13 +241,59 @@ async def save_config(cfg: FeedConfig, updated_by: Optional[int] = None) -> None
     pool = await _pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at) "
-            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
+            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at, ping_role_id) "
+            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END, $6) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
             "enabled = EXCLUDED.enabled, channel_id = EXCLUDED.channel_id, updated_by = EXCLUDED.updated_by, updated_at = NOW(), "
+            "ping_role_id = EXCLUDED.ping_role_id, "
             "enabled_at = CASE WHEN NOT EXCLUDED.enabled THEN NULL WHEN anime_feed_config.enabled THEN anime_feed_config.enabled_at ELSE NOW() END",
-            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by)
+            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by, cfg.ping_role_id)
     try:
         from modules import anime_feed_worker
         anime_feed_worker.wake_all()
     except Exception:
         logger.debug("[anime-feed] couldn't wake the worker", exc_info=True)
+
+
+# ── personal follows ────────────────────────────────────────────────────
+
+FREE_FOLLOW_LIMIT = 5               # followed anime per person on the free plan (premium limits come with the plans slice)
+MAX_FOLLOWER_PINGS = 10             # people mentioned in one post; the rest are counted, not mentioned
+
+
+async def toggle_follow(user_id: int, anime_id: int, title: str, limit: int = FREE_FOLLOW_LIMIT) -> Tuple[str, int]:
+    """Follow or unfollow. Returns (state, count): 'followed' | 'unfollowed' | 'limit', and how many they follow now.
+    One transaction under a per-person advisory lock, so two quick taps can't slip past the limit."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", int(user_id))
+            if await conn.fetchval("DELETE FROM anime_follows WHERE user_id = $1 AND anime_id = $2 RETURNING 1", int(user_id), int(anime_id)):
+                n = int(await conn.fetchval("SELECT COUNT(*) FROM anime_follows WHERE user_id = $1", int(user_id)) or 0)
+                return "unfollowed", n
+            n = int(await conn.fetchval("SELECT COUNT(*) FROM anime_follows WHERE user_id = $1", int(user_id)) or 0)
+            if n >= limit:
+                return "limit", n
+            await conn.execute("INSERT INTO anime_follows (user_id, anime_id, title) VALUES ($1, $2, $3)", int(user_id), int(anime_id), str(title)[:120])
+            return "followed", n + 1
+
+
+async def followers_of(anime_id: int, limit: int = 500) -> List[int]:
+    """People following this anime, earliest first. Never raises (empty on error: the post still goes out)."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT user_id FROM anime_follows WHERE anime_id = $1 ORDER BY followed_at LIMIT $2", int(anime_id), int(limit))
+        return [int(r["user_id"]) for r in rows]
+    except Exception:
+        logger.debug("[anime-feed] couldn't read followers", exc_info=True)
+        return []
+
+
+def ping_line(role_id: Optional[int], user_ids: List[int]) -> Tuple[str, List[int]]:
+    """The mention line for a post and the user ids actually mentioned (at most MAX_FOLLOWER_PINGS); '' when nobody."""
+    shown = list(dict.fromkeys(int(u) for u in user_ids))[:MAX_FOLLOWER_PINGS]
+    extra = len(set(user_ids)) - len(shown)
+    parts = ([f"<@&{int(role_id)}>"] if role_id else []) + [f"<@{u}>" for u in shown]
+    if extra > 0:
+        parts.append(f"and {extra} more following")
+    return " ".join(parts), shown

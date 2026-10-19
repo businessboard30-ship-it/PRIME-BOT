@@ -10,6 +10,7 @@ One card builder serves previews, test posts and (later) real posts, so every se
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import List, Optional
 
@@ -39,8 +40,64 @@ def card_text(p: af.Preview, *, tag: Optional[str] = None) -> str:
     return "\n".join(lines)[:TEXT_LIMIT]
 
 
-def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=()) -> discord.ui.Container:
+class _FollowButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime_follow:(\d+)$"):
+    """Follow / Unfollow toggle on every anime card. Followers are mentioned when a new episode of that anime is posted in a
+    server where they are a member. Free plan: up to FREE_FOLLOW_LIMIT anime per person."""
+
+    def __init__(self, anime_id: int):
+        self.anime_id = int(anime_id)
+        super().__init__(discord.ui.Button(label="Follow", style=discord.ButtonStyle.secondary, emoji="🔔",
+                                           custom_id=f"anime_follow:{self.anime_id}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        title = _title_from_message(interaction) or f"Anime {self.anime_id}"
+        try:
+            state, n = await af.toggle_follow(interaction.user.id, self.anime_id, title)
+        except Exception:
+            logger.exception("[anime-feed] follow toggle failed")
+            await interaction.response.send_message(OOPS, ephemeral=True)
+            return
+        text = {"followed": f"🔔 Following **{title}** ({n}/{af.FREE_FOLLOW_LIMIT}). I'll mention you when a new episode is posted.",
+                "unfollowed": f"🔕 Unfollowed **{title}** ({n}/{af.FREE_FOLLOW_LIMIT} left in your list).",
+                "limit": f"🚫 You already follow {n} anime, the free limit. Unfollow one first by tapping its Follow button again."}[state]
+        await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+def _title_from_message(interaction: discord.Interaction) -> Optional[str]:
+    """The title is the '## Title' heading of the card the button sits on (nothing extra is stored on the message)."""
+    try:
+        for c in _walk(interaction.message.components):
+            m = re.match(r"^## (.+)", getattr(c, "content", "") or "")
+            if m:
+                return m.group(1).strip()[:120]
+    except Exception:
+        pass
+    return None
+
+
+def _walk(components):
+    for c in components or []:
+        yield c
+        for attr in ("children", "components"):
+            kids = getattr(c, attr, None)
+            if kids:
+                yield from _walk(kids)
+        acc = getattr(c, "accessory", None)
+        if acc is not None:
+            yield acc
+
+
+DYNAMIC_ITEMS = (_FollowButton,)
+
+
+def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping: str = "") -> discord.ui.Container:
     box = discord.ui.Container(accent_colour=ACCENT)
+    if ping:
+        box.add_item(discord.ui.TextDisplay(ping[:500]))
     text = card_text(p, tag=tag)
     if p.cover:
         section = discord.ui.Section(accessory=discord.ui.Thumbnail(p.cover))
@@ -48,15 +105,16 @@ def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=()) -> di
         box.add_item(section)
     else:
         box.add_item(discord.ui.TextDisplay(text))
-    box.add_item(discord.ui.ActionRow(discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url)))
+    box.add_item(discord.ui.ActionRow(discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url),
+                                      _FollowButton(p.anime_id)))
     for row in extra_rows:
         box.add_item(row)
     return box
 
 
-def post_view(p: af.Preview, *, tag: Optional[str] = None) -> discord.ui.LayoutView:
+def post_view(p: af.Preview, *, tag: Optional[str] = None, ping: str = "") -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
-    view.add_item(build_card(p, tag=tag))
+    view.add_item(build_card(p, tag=tag, ping=ping))
     return view
 
 
@@ -80,8 +138,9 @@ def setup_text(cfg: af.FeedConfig, note: Optional[str] = None) -> str:
               "Pick a channel, preview what I'll post, and switch the feed on. Titles come from AniList with their real airing "
               "times, shown in each reader's own timezone. Adult titles are never shown.", "",
               f"**Channel:** {f'<#{cfg.channel_id}>' if cfg.channel_id else 'not picked yet'}",
+              f"**Ping role:** {f'<@&{cfg.ping_role_id}>' if cfg.ping_role_id else 'none (optional)'}",
               f"**Feed:** {'ON' if cfg.enabled and cfg.channel_id else 'OFF'}",
-              "-# New episodes are posted when they air. Only episodes that air after you turn the feed on are posted, never a backlog."]
+              "-# People who tap Follow on an anime get mentioned when its next episode is posted. New episodes are posted when they air. Only episodes that air after you turn the feed on are posted, never a backlog."]
     return "\n".join(parts)
 
 
@@ -114,8 +173,10 @@ class AnimeSetupView(discord.ui.LayoutView):
             return
         sel = discord.ui.ChannelSelect(channel_types=[discord.ChannelType.text], placeholder="Pick the anime channel", min_values=1, max_values=1)
         sel.callback = self._on_channel
+        role = discord.ui.RoleSelect(placeholder="Optional: a role to ping on every new episode", min_values=0, max_values=1)
+        role.callback = self._on_role
         ready = bool(self.cfg.channel_id)
-        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(
+        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(role), discord.ui.ActionRow(
             _btn("Preview", self._on_preview, discord.ButtonStyle.primary, "👀"),
             _btn("Post a test", self._on_test, emoji="🧪", disabled=not ready),
             _btn("Turn off" if self.cfg.enabled else "Turn on", self._on_toggle,
@@ -155,6 +216,23 @@ class AnimeSetupView(discord.ui.LayoutView):
                 self.note = f"✅ Channel set to {channel.mention}."
             except Exception:
                 logger.exception("[anime-feed] couldn't save the channel")
+                self.note = OOPS
+        await self._push(interaction)
+
+    async def _on_role(self, interaction: discord.Interaction):
+        values = interaction.data.get("values") or []
+        role = self.guild.get_role(int(values[0])) if values else None
+        if values and (role is None or role.is_default() or role.managed):
+            self.note = "🚫 Pick a normal role (not @everyone and not a bot's role), or clear the choice."
+        elif role is not None and not role.mentionable and not self.guild.me.guild_permissions.mention_everyone:
+            self.note = f"🚫 {role.mention} can't be pinged. Make it mentionable, or give me **Mention Everyone**."
+        else:
+            self.cfg.ping_role_id = role.id if role else None
+            try:
+                await af.save_config(self.cfg, interaction.user.id)
+                self.note = f"✅ I'll ping {role.mention} on new episodes." if role else "Ping role cleared."
+            except Exception:
+                logger.exception("[anime-feed] couldn't save the ping role")
                 self.note = OOPS
         await self._push(interaction)
 
