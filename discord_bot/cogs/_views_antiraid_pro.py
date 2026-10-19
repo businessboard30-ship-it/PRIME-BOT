@@ -60,8 +60,16 @@ async def _auth(interaction: discord.Interaction, guild_id: int, need: str, prem
     if guild is None:
         await _reply(interaction, "I'm not in that server anymore.")
         return None
-    member = guild.get_member(interaction.user.id)
-    is_owner = member is not None and member.id == guild.owner_id
+    # The owner is matched by id, and the member comes from the click itself (a guild click carries a real Member),
+    # then the cache, then the API. The cache alone is empty on a cold start, which used to lock the owner out.
+    is_owner = interaction.user.id == guild.owner_id
+    member = interaction.user if (isinstance(interaction.user, discord.Member) and interaction.user.guild.id == guild.id) \
+        else guild.get_member(interaction.user.id)
+    if member is None and not is_owner:
+        try:
+            member = await guild.fetch_member(interaction.user.id)
+        except discord.HTTPException:
+            member = None
     if need == "manage":
         ok = is_owner or bool(member and member.guild_permissions.manage_guild)
         why = "You need the **Manage Server** permission to use this."
