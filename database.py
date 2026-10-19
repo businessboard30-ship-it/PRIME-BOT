@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "117"
+SCHEMA_VERSION = "118"
+# "117" -> "118" adds 069_bot_profile_vote.sql (bot_profile_vote_unlocks: servers unlocked for Edit bot profile by a DiscordThings vote). CREATE TABLE IF NOT EXISTS only.
 # "116" -> "117" adds 068_primole.sql (cat_wallets.primole column). ADD COLUMN IF NOT EXISTS only.
 # "115" -> "116" adds 067_market_voice.sql (market_voice, market_voice_settings, market_reports). CREATE TABLE IF NOT EXISTS only.
 # "114" -> "115" adds 066_market_cat_migrate.sql (copies cat_listings into market_listings keeping ids, closes the old open rows). Idempotent.
@@ -5804,6 +5805,11 @@ class Database:
         if primole_migration.exists():
             await conn.execute(primole_migration.read_text())
 
+        # Edit bot profile vote gate: servers unlocked by a DiscordThings vote. Additive/idempotent.
+        bot_profile_vote_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "069_bot_profile_vote.sql"
+        if bot_profile_vote_migration.exists():
+            await conn.execute(bot_profile_vote_migration.read_text())
+
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
         if cat_shared_wallet_migration.exists():
@@ -7990,6 +7996,20 @@ class Database:
                     reference, clone_id
                 )
                 return clone_id
+
+    async def is_bot_profile_unlocked(self, guild_id: int) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT 1 FROM bot_profile_vote_unlocks WHERE guild_id = $1", int(guild_id)))
+
+    async def unlock_bot_profile(self, guild_id: int, user_id: int) -> None:
+        """Idempotent: the first unlock is kept (who and when), later calls change nothing."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO bot_profile_vote_unlocks (guild_id, unlocked_by) VALUES ($1, $2) "
+                "ON CONFLICT (guild_id) DO NOTHING", int(guild_id), int(user_id))
 
     async def get_listing_token_encrypted(self, service: str, bot_id: int) -> Optional[str]:
         pool = await get_pool()

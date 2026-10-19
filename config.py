@@ -497,6 +497,11 @@ TOPGG_HIDE_COMMANDS = {
 # environment variable (Railway), never commit it. Unset = cog does nothing.
 DTHINGS_API_KEY = os.getenv("DTHINGS_API_KEY", "")
 DTHINGS_BOT_ID = os.getenv("DTHINGS_BOT_ID", "1539561247299604610")  # public application ID
+# Edit bot profile is unlocked per server once one of its admins has voted on DiscordThings.
+# Verified with GET /bots/{id}/check-vote (needs the same API token as the stats sync).
+# Set DTHINGS_VOTE_URL to the exact vote page; BOT_PROFILE_VOTE_GATE=0 turns the gate off.
+BOT_PROFILE_VOTE_GATE = os.getenv("BOT_PROFILE_VOTE_GATE", "1").strip().lower() not in ("0", "false", "no", "off")
+DTHINGS_VOTE_URL = os.getenv("DTHINGS_VOTE_URL") or f"https://discordthings.com/bot/{os.getenv('DTHINGS_BOT_ID', '1539561247299604610')}"
 DTHINGS_POST_INTERVAL_MINUTES = max(30.0, float(os.getenv("DTHINGS_POST_INTERVAL_MINUTES", "30")))
 DTHINGS_HIDE_COMMANDS = {
     n.strip().lower() for n in os.getenv("DTHINGS_HIDE_COMMANDS", "admin").split(",") if n.strip()
