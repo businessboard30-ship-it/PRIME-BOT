@@ -122,6 +122,21 @@ async def create_spawn(guild_id: int, clone_id, channel_id: int, pool_id: int) -
             guild_id, clone_id, channel_id, pool_id))
 
 
+async def picture_already_open(guild_id: int, pool_id: int) -> bool:
+    """True when this picture is already sitting, un-adopted and not yet faded, as a spawn in this server (any bot).
+    Used to stop the same cat being posted twice in a row. Never raises (on error: False, so a cat still posts)."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT 1 FROM cat_spawns WHERE guild_id = $1 AND pool_id = $2 AND adopted_by IS NULL "
+                "AND created_at > NOW() - make_interval(hours => $3) LIMIT 1", int(guild_id), int(pool_id),
+                SPAWN_EXPIRE_HOURS))
+    except Exception:
+        logger.debug("[cat] open-picture check failed", exc_info=True)
+        return False
+
+
 async def set_spawn_message(spawn_id: int, message_id: int) -> None:
     pool = await _pool()
     async with pool.acquire() as conn:

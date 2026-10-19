@@ -375,6 +375,29 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int, next_at: Optional
     if not url:
         return False
     pool_id = getattr(url, "pool_id", None)
+    if pool_id:
+        from modules import cat_adopt as _ca
+        # Never post the same picture again while it is still waiting in this server (that is the "duplicate cat").
+        for _ in range(2):
+            if not await _ca.picture_already_open(guild.id, pool_id):
+                break
+            logger.info("[cat] guild %s: picture %s is already open here, picking another", guild.id, pool_id)
+            cat_health.record("dup_blocked")
+            runaway = None            # a runaway that is already out stays out; it re-queues itself when its spawn fades
+            hint = cat_pool.server_hint.set((guild.id, guild.name))
+            try:
+                url = await fetch_cat_url(bot=bot, guild_id=guild.id)
+            finally:
+                cat_pool.server_hint.reset(hint)
+            if not url:
+                return False
+            pool_id = getattr(url, "pool_id", None)
+            if not pool_id:
+                break
+        else:
+            return False
+        if pool_id and await _ca.picture_already_open(guild.id, pool_id):
+            return False
     spawn_id = None
     if pool_id:                                   # only pooled pictures are adoptable (their photo is kept for good)
         try:

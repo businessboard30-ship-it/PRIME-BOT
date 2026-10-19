@@ -41,6 +41,7 @@ LABELS = {
     "store_ok": "NEW pictures saved to pool",
     "store_fail": "pictures NOT saved (duplicate or hosting channel problem)",
     "direct_used": "API picture used directly (could not be pooled)",
+    "dup_blocked": "duplicate spawns BLOCKED (same picture already open in that server)",
     "recent_fallback": "old picture reused because nothing else worked",
 }
 
