@@ -1111,7 +1111,9 @@ class TradeOfferView(discord.ui.LayoutView):
 from discord_bot.cogs import _views_cat_market as _market  # noqa: E402  (needs the names defined above)
 from discord_bot.cogs import _views_cat_arena as _arena  # noqa: E402
 
-DYNAMIC_ITEMS = (AdoptButton, MyCatsButton, HelpButton, MenuButton) + _market.DYNAMIC_ITEMS + _arena.DYNAMIC_ITEMS
+from discord_bot.cogs import _views_market_voice as _mvoice  # noqa: E402
+
+DYNAMIC_ITEMS = (AdoptButton, MyCatsButton, HelpButton, MenuButton) + _market.DYNAMIC_ITEMS + _arena.DYNAMIC_ITEMS + _mvoice.DYNAMIC_ITEMS
 
 
 # ── My cats: search, filters, sorting ──────────────────────────────────────

@@ -527,12 +527,19 @@ class MarketView(discord.ui.LayoutView):
             b.callback = (lambda d: (lambda i: self._turn(i, d)))(delta)
             nav.append(b)
         self.add_item(market_container(self.listings, self.seen, self.header(), sel, nav if shown or self.page else None))
+        vb = discord.ui.Button(label="Voice", emoji="\U0001F399\uFE0F", style=discord.ButtonStyle.secondary)
+        vb.callback = self._voice_screen
+        self.add_item(discord.ui.ActionRow(vb))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
             await interaction.response.send_message("Tap **Market** on `/cat` to open your own.", ephemeral=True)
             return False
         return True
+
+    async def _voice_screen(self, interaction: discord.Interaction):
+        from discord_bot.cogs import _views_market_voice as mvv
+        await mvv.open_screen(interaction)
 
     async def _turn(self, interaction, delta: int):
         self.page += delta
@@ -577,11 +584,27 @@ class MarketDetailView(discord.ui.LayoutView):
         buy.callback = self._buy
         back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
         back.callback = self._back
-        box.add_item(discord.ui.ActionRow(buy, back))
+        voice = discord.ui.Button(label="Voice message", emoji="\U0001F399\uFE0F", style=discord.ButtonStyle.secondary)
+        voice.callback = self._voice
+        box.add_item(discord.ui.ActionRow(buy, voice, back))
         self.add_item(box)
 
     async def interaction_check(self, interaction):
         return await self.parent.interaction_check(interaction)
+
+    async def _voice(self, interaction: discord.Interaction):
+        from discord_bot.cogs import _views_market_voice as mvv
+        from modules import market_voice as mv
+        if interaction.user.id == self.listing.seller_id:
+            await interaction.response.send_message("That is your own listing.", ephemeral=True)
+            return
+        if not await mv.voice_on(self.listing.seller_id):
+            await interaction.response.send_message("This seller is not taking voice messages.", ephemeral=True)
+            return
+        mvv.start_wait(interaction.user.id, self.listing.id)
+        await interaction.response.send_message(
+            f"\U0001F399\uFE0F Send me a Discord voice message (up to {mv.MAX_SECONDS}s) in a **DM with this bot** within "
+            f"{mvv.WAIT_SECONDS // 60} minutes. {mv.PRIVACY}", ephemeral=True)
 
     async def _back(self, interaction):
         await interaction.response.defer()
