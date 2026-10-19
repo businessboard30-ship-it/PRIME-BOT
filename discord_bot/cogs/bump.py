@@ -2004,8 +2004,10 @@ class BumpCog(commands.Cog):
             member = guild.get_member(int(configured_by)) if configured_by else None
             if member is not None and not member.bot:
                 who.append(member)
-            if guild.owner is not None and guild.owner not in who:
-                who.append(guild.owner)
+            from utils.guild_owner import resolve_guild_owner
+            owner = await resolve_guild_owner(guild)       # guild.owner is None on a cold cache
+            if owner is not None and all(getattr(w, "id", None) != owner.id for w in who):
+                who.append(owner)
             text = (
                 f"📣 The **bump channel** in **{discord.utils.escape_markdown(guild.name)}** was deleted, so the "
                 "server can't receive bumps right now.\n\n"

@@ -56,9 +56,16 @@ def make_guild(members=(), roles=(QROLE, ROLE_A, ROLE_B, BOOSTER, MOD_ROLE), man
     me = SimpleNamespace(id=BOT_ID, top_role=BOT_ROLE, guild_permissions=SimpleNamespace(manage_roles=manage_roles))
     by_role = {r.id: r for r in roles}
     by_member = {m.id: m for m in members}
+
+    async def fetch_member(uid):                       # like Discord: 404 for someone who isn't in the server
+        if uid in by_member:
+            return by_member[uid]
+        resp = SimpleNamespace(status=404, reason="Not Found")
+        raise discord.NotFound(resp, "Unknown Member")
+
     return SimpleNamespace(id=GUILD_ID, owner_id=OWNER, me=me, default_role=EVERYONE, channels=[],
                            get_role=lambda rid: by_role.get(rid), get_member=lambda uid: by_member.get(uid),
-                           get_channel=MagicMock(return_value=None))
+                           fetch_member=fetch_member, get_channel=MagicMock(return_value=None))
 
 
 @pytest.fixture()
