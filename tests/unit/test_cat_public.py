@@ -147,8 +147,8 @@ def test_board_post_public_rate_limited_and_safe(monkeypatch):
 
 def test_richest_board_has_no_post_button():
     async def go():
-        assert any(getattr(c, "label", "") == "Post to channel" for c in vm.BoardView(SimpleNamespace(id=1)).children)
-        assert not any(getattr(c, "label", "") == "Post to channel" for c in vm.BoardView(SimpleNamespace(id=1), "richest").children)
+        assert any(getattr(c, "label", "") == "Post to channel" for c in vm.BoardView(SimpleNamespace(id=1)).walk_children())
+        assert not any(getattr(c, "label", "") == "Post to channel" for c in vm.BoardView(SimpleNamespace(id=1), "richest").walk_children())
     run(go())
 
 

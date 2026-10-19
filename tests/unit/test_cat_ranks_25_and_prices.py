@@ -221,7 +221,7 @@ def test_sell_wizard_steps_show_the_allowed_range():
     c = cat(rank=5, rarity="rare", name="Mochi")
     low, high = cm.price_range("rare", 5)
     wiz = vm.SellWizard(c, 1)
-    assert f"{low:,}" in wiz.price_embed().description and f"{high:,}" in wiz.price_embed().description
-    assert "step 1 of 2" in wiz.price_embed().title
+    assert f"{low:,}" in wiz.price_text() and f"{high:,}" in wiz.price_text()
+    assert "step 1 of 2" in wiz.price_text()
     wiz.price = low
-    assert "step 2 of 2" in wiz.confirm_embed().title and f"{low:,}" in wiz.confirm_embed().description
+    assert "step 2 of 2" in wiz.confirm_text() and f"{low:,}" in wiz.confirm_text()
