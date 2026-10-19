@@ -439,6 +439,7 @@ class CatCog(commands.Cog):
             self._backfill.start()
             self._ops_flush.start()              # main bot posts every bot's queued health reports to the support server
             self._requests_sweep.start()         # main bot gives back the wager of request-board posts that ran out
+            self._league_sweep.start()           # main bot closes League seasons that ran out (promotions, relegations)
         self._health_first = True
         self._health_report.start()              # every bot queues its own report: where pictures came from, why new ones didn't
 
@@ -450,6 +451,7 @@ class CatCog(commands.Cog):
         if getattr(self.bot, "clone_id", None) is None:
             self._ops_flush.cancel()
             self._requests_sweep.cancel()
+            self._league_sweep.cancel()
 
     @tasks.loop(seconds=cat_care.HUNGER_TICK_SECONDS)
     async def _care(self):
@@ -535,6 +537,20 @@ class CatCog(commands.Cog):
 
     @_requests_sweep.before_loop
     async def _before_requests_sweep(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=30)
+    async def _league_sweep(self):
+        try:
+            from modules import cat_league
+            n = await cat_league.rollover()
+            if n:
+                logger.info("[cat] league: %s season(s) closed", n)
+        except Exception:
+            logger.exception("[cat] league sweep failed")
+
+    @_league_sweep.before_loop
+    async def _before_league_sweep(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=1)

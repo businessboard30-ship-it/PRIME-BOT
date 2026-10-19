@@ -588,6 +588,8 @@ async def _fight_and_settle(conn, fight: Fight, me_id: int, them_id: int, cat_id
     new_w, new_l = old_w + gain, old_l + loss
     await conn.execute("UPDATE cat_arena SET rating = $3, wins = wins + 1, updated_at = NOW() WHERE owner_id = $1 AND bot_key = $2", winner_id, key, new_w)
     await conn.execute("UPDATE cat_arena SET rating = $3, losses = losses + 1, updated_at = NOW() WHERE owner_id = $1 AND bot_key = $2", loser_id, key, new_l)
+    from modules import cat_league
+    await cat_league.play_points(conn, key, winner_id, loser_id)      # League points when both are entered (never raises)
     hurt = loser_hp <= 0
     for kind, hours in (("tired", TIRED_HOURS),) + ((("hurt", HURT_HOURS),) if hurt else ()):
         await conn.execute("INSERT INTO cat_effects (cat_id, effect_key, ends_at) VALUES ($1, $2, NOW() + $3 * INTERVAL '1 hour') "

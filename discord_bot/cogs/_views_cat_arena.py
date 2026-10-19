@@ -183,7 +183,8 @@ class ArenaView(discord.ui.LayoutView):
                     disabled=not (on and self.incoming)),
                _btn("Request board", self._board, discord.ButtonStyle.primary, "📋", disabled=not on),
                _btn("Refresh", self._refresh, discord.ButtonStyle.secondary, "🔄")]
-        self.add_item(_box(arena_text(self.st, len(self.incoming), self.out_n, self.recent, self.note), [discord.ui.ActionRow(*row)]))
+        more = discord.ui.ActionRow(_btn("League", self._league, discord.ButtonStyle.primary, "🏆", disabled=not on))
+        self.add_item(_box(arena_text(self.st, len(self.incoming), self.out_n, self.recent, self.note), [discord.ui.ActionRow(*row), more]))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
@@ -209,6 +210,10 @@ class ArenaView(discord.ui.LayoutView):
     async def _challenge(self, interaction: discord.Interaction):
         ready = await arena.ready_cats(interaction.user.id, _clone_id(interaction.client))
         await vis.edit(interaction, view=ChallengeView(self, ready))
+
+    async def _league(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_cat_league import open_league       # lazy: it imports this module
+        await open_league(interaction, self)
 
     async def _board(self, interaction: discord.Interaction):
         from discord_bot.cogs import _views_cat_board as board     # imported here: the board module imports this one
