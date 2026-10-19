@@ -29,6 +29,7 @@ from modules import cat_log
 from modules import cat_setup as cs
 from modules import cat_pool
 from modules import cat_rank as cr
+from modules import cat_stats
 from modules import cat_wallet
 
 logger = logging.getLogger(__name__)
@@ -397,6 +398,7 @@ class CollectionView(discord.ui.LayoutView):
         self.wallet = cat_wallet.Wallet()
         self.note: Optional[str] = None     # the result of the last action, shown on top of the card
         self._urls: Dict[int, str] = {}     # pool id -> picture
+        self._stats: Dict[int, cat_stats.Stats] = {}    # cat id -> stats, read once per cat shown
         self._build()
 
     async def refresh_wallet(self) -> None:
@@ -411,6 +413,8 @@ class CollectionView(discord.ui.LayoutView):
         if getattr(self, "trade_id", None) is None:
             self.trade_id = await cat_ids.safe_get(self.user.id, _clone_id(self.client)) or ""
         cat = self.current
+        if cat.id not in self._stats:
+            self._stats[cat.id] = await cat_stats.get_stats(cat.id)
         if not self._urls.get(cat.pool_id):
             url = await cat_image_url(self.client, cat)
             if url:
@@ -421,7 +425,7 @@ class CollectionView(discord.ui.LayoutView):
         parts = []
         if self.note:
             parts += [self.note, ""]
-        parts += [f"## {_cat_title(cat)}", _cat_body(cat), "",
+        parts += [f"## {_cat_title(cat)}", _cat_body(cat) + self._stats_line(cat), "",
                   f"**Your purse**\n{cat_wallet.wallet_text(self.wallet)}"]
         if getattr(self, "trade_id", None):
             parts += ["", f"**🆔 Your trade ID (yours for good)**\n`{self.trade_id}`\n"
@@ -430,6 +434,16 @@ class CollectionView(discord.ui.LayoutView):
                   + (f" (filtered from {len(self.all_cats)})" if len(self.cats) != len(self.all_cats) else "")
                   + " · just for fun, no real money"]
         return "\n".join(parts)
+
+    def _stats_line(self, cat: ca.Cat) -> str:
+        st = self._stats.get(cat.id)
+        if st is None:
+            return ""
+        t = cat_stats.totals(st, cat.trait)
+        left = cat_stats.unspent(st, cat.rarity, cat.cat_rank)
+        line = " ".join(f"{cat_stats.STAT_EMOJI[k]} {t[k]}" for k in cat_stats.STATS)
+        return (f"\n**Stats:** {line} · Power {cat_stats.power_rating(st, cat.trait)}"
+                + (f" · **{left} points to spend**" if left else ""))
 
     async def text(self) -> str:
         await self.prepare()
@@ -491,7 +505,9 @@ class CollectionView(discord.ui.LayoutView):
         fb = discord.ui.Button(label=(f"Filter ({self.filter.active})" if self.filter.active else "Filter / search"),
                                emoji="\U0001F50D", style=discord.ButtonStyle.secondary)
         fb.callback = self._open_filter
-        rows.append(discord.ui.ActionRow(fb))
+        sb = discord.ui.Button(label="Stats & skills", emoji="\u2694\uFE0F", style=discord.ButtonStyle.primary)
+        sb.callback = self._open_stats
+        rows.append(discord.ui.ActionRow(fb, sb))
         hungry = cat_care.is_hungry(self.current)
         care = []
         for label, emoji, fn, style, disabled in (
@@ -681,6 +697,11 @@ class CollectionView(discord.ui.LayoutView):
             self.filter = cat_filter.CatFilter()
             shown = list(self.all_cats)
         self.cats = shown
+
+    async def _open_stats(self, interaction):
+        from discord_bot.cogs._views_cat_stats import open_stats
+        self._stats.pop(self.current.id, None)          # re-read when the person comes back
+        await open_stats(interaction, self)
 
     async def _open_filter(self, interaction):
         self.confirm_release = False
