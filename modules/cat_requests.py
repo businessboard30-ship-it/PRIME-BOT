@@ -184,7 +184,7 @@ async def post(poster_id: int, clone_id, cat_id: int, wager: int, power: int, ho
             cat = await conn.fetchrow("SELECT id, owner_id, clone_id FROM cat_adoptions WHERE id = $1 FOR UPDATE", int(cat_id))
             if cat is None or int(cat["owner_id"]) != int(poster_id) or cat_arena._bk(cat["clone_id"]) != key:
                 return PostResult("cat")
-            if (await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", int(cat_id))
+            if (await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open' UNION ALL SELECT 1 FROM market_listings WHERE item_type = 'cat' AND item_ref = $1 AND status = 'open'", int(cat_id))
                     or await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", int(cat_id))
                     or await conn.fetchval("SELECT 1 FROM cat_effects WHERE cat_id = $1 AND effect_key = 'tired' AND ends_at > NOW()", int(cat_id))
                     or await conn.fetchval("SELECT 1 FROM cat_fight_requests WHERE cat_id = $1 AND status = ANY($2::text[]) "
@@ -304,7 +304,7 @@ async def accept(request_id: int, user_id: int, clone_id, cat_id: int, guild_id:
             theirs, mine = cats.get(int(req["cat_id"])), cats.get(int(cat_id))
 
             async def busy(cid: int) -> bool:
-                return bool(await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cid)
+                return bool(await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open' UNION ALL SELECT 1 FROM market_listings WHERE item_type = 'cat' AND item_ref = $1 AND status = 'open'", cid)
                             or await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cid)
                             or await conn.fetchval("SELECT 1 FROM cat_effects WHERE cat_id = $1 AND effect_key = 'tired' AND ends_at > NOW()", cid))
 

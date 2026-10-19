@@ -253,7 +253,8 @@ async def rename(cat_id: int, owner_id: int, new_name: str) -> bool:
     async with pool.acquire() as conn:
         return await conn.fetchval(
             "UPDATE cat_adoptions SET name = $3 WHERE id = $1 AND owner_id = $2 AND NOT EXISTS "
-            "(SELECT 1 FROM cat_listings l WHERE l.adoption_id = $1 AND l.status = 'open') RETURNING id",
+            "(SELECT 1 FROM cat_listings l WHERE l.adoption_id = $1 AND l.status = 'open') AND NOT EXISTS "
+            "(SELECT 1 FROM market_listings m WHERE m.item_type = 'cat' AND m.item_ref = $1 AND m.status = 'open') RETURNING id",
             cat_id, owner_id, name) is not None
 
 
@@ -263,6 +264,7 @@ async def release(cat_id: int, owner_id: int) -> bool:
         return await conn.fetchval(
             "DELETE FROM cat_adoptions WHERE id = $1 AND owner_id = $2 AND NOT EXISTS "
             "(SELECT 1 FROM cat_listings l WHERE l.adoption_id = $1 AND l.status = 'open') AND NOT EXISTS "
+            "(SELECT 1 FROM market_listings m WHERE m.item_type = 'cat' AND m.item_ref = $1 AND m.status = 'open') AND NOT EXISTS "
             "(SELECT 1 FROM cat_outings o WHERE o.adoption_id = $1 AND o.claimed_at IS NULL) AND NOT EXISTS "
             "(SELECT 1 FROM cat_fight_requests q WHERE q.cat_id = $1 AND q.status IN ('open','accepted','locked') "
             "AND (q.status <> 'open' OR q.expires_at > NOW())) RETURNING id",
@@ -292,7 +294,8 @@ async def trade(give_id: int, giver_id: int, take_id: Optional[int], taker_id: i
                     (take_id is not None and have.get(take_id) != (taker_id, _key(taker_clone_id))):
                 return "gone"
             if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = ANY($1::bigint[]) "
-                                   "AND status = 'open'", ids):
+                                   "AND status = 'open' UNION ALL SELECT 1 FROM market_listings WHERE item_type = 'cat' "
+                                   "AND item_ref = ANY($1::bigint[]) AND status = 'open'", ids):
                 return "gone"                       # a cat that is for sale can't be swapped at the same time
             if await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = ANY($1::bigint[]) "
                                    "AND claimed_at IS NULL", ids):

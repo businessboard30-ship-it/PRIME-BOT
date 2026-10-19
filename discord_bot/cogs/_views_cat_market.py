@@ -56,6 +56,8 @@ async def listing_embed(client, listing: cm.Listing, status_line: Optional[str] 
                   f"**Rank:** {cr.badge(cat.cat_rank)}", f"**Times traded:** {cat.traded_count}",
                   f"**Cat ID:** #{cat.id}"]
     lines += [f"**Price:** {cat_wallet.COINS} **{listing.price:,} coins**", f"**Seller:** <@{listing.seller_id}>"]
+    if cm.FEE_PERCENT:
+        lines.append(f"-# A {cm.FEE_PERCENT}% market fee is taken from the price when it sells. Listings last {cm.EXPIRY_DAYS} days.")
     e.description = (status_line + "\n\n" if status_line else "") + "\n".join(lines)
     if cat:
         try:
@@ -144,7 +146,9 @@ async def _after_sale(client, listing: cm.Listing, buyer) -> None:
     try:
         seller = await client.fetch_user(listing.seller_id)
         name = listing.cat.name if listing.cat else "your cat"
-        await seller.send(f"\U0001F4B0 **{name}** sold to {buyer} for **{listing.price:,} coins**! They're in your purse now.")
+        got = listing.price - listing.fee
+        extra = f" (market fee {listing.fee:,}, you got **{got:,}**)" if listing.fee else ""
+        await seller.send(f"\U0001F4B0 **{name}** sold to {buyer} for **{listing.price:,} coins**{extra}! They're in your purse now.")
     except Exception:
         logger.debug("[cat-market] couldn't DM the seller", exc_info=True)
 

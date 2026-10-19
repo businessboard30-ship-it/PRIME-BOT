@@ -147,16 +147,17 @@ def test_forty_cats_fit_in_a_collection():
 
 # -- selling and buying --------------------------------------------------------------------------
 class MarketConn:
+    """Fakes the market_listings sale path (modules/market.py): one listing for cat 4, seller 10."""
     def __init__(self, status="open", seller=10, seller_clone=None, owner=10, owner_clone=None, held=0, coins=500, price=300):
-        self.listing = {"id": 1, "adoption_id": 4, "seller_id": seller, "seller_clone_id": seller_clone, "price": price,
-                        "status": status, "guild_id": 1, "channel_id": 2, "message_id": 3}
+        self.listing = {"id": 1, "item_type": "cat", "item_ref": 4, "seller_id": seller, "seller_clone_id": seller_clone, "price": price,
+                        "fee": 0, "status": status, "guild_id": 1, "channel_id": 2, "message_id": 3, "is_expired": False}
         self.cat = {"owner_id": owner, "clone_id": owner_clone}
         self.held, self.coins, self.log = held, coins, []
     def transaction(self): return Tx()
     async def fetchrow(self, sql, *a):
-        if "FROM cat_listings WHERE id" in sql and "FOR UPDATE" in sql: return self.listing
+        if "FROM market_listings WHERE id" in sql and "FOR UPDATE" in sql: return self.listing
         if "FROM cat_adoptions WHERE id" in sql: return self.cat
-        if sql.lstrip().startswith("SELECT l.*"): return None
+    async def fetch(self, sql, *a): return []
     async def fetchval(self, sql, *a):
         if "COUNT(*)" in sql: return self.held
         if sql.startswith("UPDATE cat_wallets"):
@@ -167,15 +168,18 @@ class MarketConn:
 
 
 def test_buy_pays_the_seller_and_moves_the_cat(monkeypatch):
+    from modules import market
     conn = MarketConn()
-    use(monkeypatch, cm, conn)
+    use(monkeypatch, market, conn)
     async def fake_get(i): return "L"
     monkeypatch.setattr(cm, "get", fake_get)
+    monkeypatch.setattr(market, "get", fake_get)
     res = run(cm.buy(1, 20, 7))                            # buyer on clone 7, seller on the main bot
-    assert res.status == "ok" and res.listing == "L"
+    fee = market.fee_for(300)
+    assert res.status == "ok" and res.listing == "L" and res.fee == fee
     assert ("debit", 20, 300) in conn.log
-    credit = [x for x in conn.log if x[0] == "INSERT INTO" and x[1][0] == 10 and x[1][1] is None and x[1][2] == 300]
-    assert credit                                          # the seller's wallet on the seller's bot gets exactly the price
+    credit = [x for x in conn.log if x[0] == "INSERT INTO" and x[1][0] == 10 and x[1][1] is None and x[1][2] == 300 - fee]
+    assert credit                                          # the seller's wallet gets the price minus the market fee
     moved = [x for x in conn.log if x[0] == "UPDATE cat_adoptions"][0]
     assert moved[1] == (4, 20, 7)                          # cat lands in the buyer's bot
 
@@ -183,8 +187,9 @@ def test_buy_pays_the_seller_and_moves_the_cat(monkeypatch):
 @pytest.mark.parametrize("kw,status", [(dict(status="sold"), "gone"), (dict(seller=20), "own"), (dict(coins=10), "poor"),
                                        (dict(held=ca.MAX_CATS), "limit"), (dict(owner=99), "gone")])
 def test_buy_refusals_move_nothing(monkeypatch, kw, status):
+    from modules import market
     conn = MarketConn(**kw)
-    use(monkeypatch, cm, conn)
+    use(monkeypatch, market, conn)
     res = run(cm.buy(1, 20, None))
     assert res.status == status
     assert not [x for x in conn.log if x[0] in ("UPDATE cat_adoptions",)] and not any(x[0] == "debit" for x in conn.log)

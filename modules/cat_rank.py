@@ -98,7 +98,7 @@ async def rank_up(cat_id: int, owner_id: int, clone_id, expect_rank: int) -> Ran
                 return RankResult("stale", rank)
             if rank >= MAX_RANK:
                 return RankResult("max", rank)
-            if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cat_id):
+            if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open' UNION ALL SELECT 1 FROM market_listings WHERE item_type = 'cat' AND item_ref = $1 AND status = 'open'", cat_id):
                 return RankResult("listed", rank)
             cost = cost_to_reach(rank + 1, row["rarity"])
             left = await conn.fetchval(

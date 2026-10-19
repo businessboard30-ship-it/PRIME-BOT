@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "114"
+SCHEMA_VERSION = "115"
+# "114" -> "115" adds 066_market_cat_migrate.sql (copies cat_listings into market_listings keeping ids, closes the old open rows). Idempotent.
 # "113" -> "114" adds 065_market_listings.sql (market_listings: general marketplace, one table for every item type). CREATE TABLE IF NOT EXISTS only.
 # "112" -> "113" adds 064_cat_records.sql (cat_records: per-cat fight record for the Veteran bonus). CREATE TABLE IF NOT EXISTS only.
 # "111" -> "112" adds 063_cat_league_next.sql (cat_league_next: the division a player starts the next League season in). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5785,6 +5786,11 @@ class Database:
         market_listings_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "065_market_listings.sql"
         if market_listings_migration.exists():
             await conn.execute(market_listings_migration.read_text())
+
+        # General Marketplace R1b: move the old cat market rows over (ids kept). Idempotent.
+        market_cat_migrate = pathlib.Path(__file__).parent / "database" / "migrations" / "066_market_cat_migrate.sql"
+        if market_cat_migrate.exists():
+            await conn.execute(market_cat_migrate.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
