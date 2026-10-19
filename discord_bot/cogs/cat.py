@@ -441,6 +441,7 @@ class CatCog(commands.Cog):
             self._requests_sweep.start()         # main bot gives back the wager of request-board posts that ran out
             self._market_sweep.start()           # main bot closes market listings that ran out of time
             self._league_sweep.start()           # main bot closes League seasons that ran out (promotions, relegations)
+            self._voice_sweep.start()            # main bot deletes played voice messages and clears expired ones
         self._health_first = True
         self._health_report.start()              # every bot queues its own report: where pictures came from, why new ones didn't
 
@@ -454,6 +455,7 @@ class CatCog(commands.Cog):
             self._requests_sweep.cancel()
             self._market_sweep.cancel()
             self._league_sweep.cancel()
+            self._voice_sweep.cancel()
 
     @tasks.loop(seconds=cat_care.HUNGER_TICK_SECONDS)
     async def _care(self):
@@ -559,6 +561,27 @@ class CatCog(commands.Cog):
     @_market_sweep.before_loop
     async def _before_market_sweep(self):
         await self.bot.wait_until_ready()
+
+    @tasks.loop(seconds=45)
+    async def _voice_sweep(self):
+        try:
+            from discord_bot.cogs import _views_market_voice as mvv
+            await mvv.sweep(self.bot)
+        except Exception:
+            logger.exception("[cat] voice sweep failed")
+
+    @_voice_sweep.before_loop
+    async def _before_voice_sweep(self):
+        await self.bot.wait_until_ready()
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.guild is None and not message.author.bot and message.attachments:
+            try:
+                from discord_bot.cogs import _views_market_voice as mvv
+                await mvv.handle_incoming(self.bot, message)
+            except Exception:
+                logger.exception("[cat] voice message handling failed")
 
     @tasks.loop(minutes=30)
     async def _league_sweep(self):
