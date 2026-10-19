@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "108"
+SCHEMA_VERSION = "109"
+# "108" -> "109" adds 060_cat_requests.sql (cat_fight_requests, cat_blocks: Global Request Board data layer, block list). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "107" -> "108" adds 059_ops_reports.sql (ops_reports: bot health notes queued by every bot, posted by the main bot to the support server). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "106" -> "107" adds 058_cat_arena.sql (cat_arena, cat_arena_daily, cat_fights, cat_effects: opt-in PvP, challenges, fight log, tired/hurt). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "105" -> "106" adds 057_cat_stats_skills.sql (cat_stats, cat_skills: allocated stats and equipped skills per cat). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5749,6 +5750,11 @@ class Database:
         ops_reports_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "059_ops_reports.sql"
         if ops_reports_migration.exists():
             await conn.execute(ops_reports_migration.read_text())
+
+        # Cat fights Phase 4A: request board + block list. Additive/idempotent. Runs after 058 (cat_adoptions, cat_arena exist).
+        cat_requests_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "060_cat_requests.sql"
+        if cat_requests_migration.exists():
+            await conn.execute(cat_requests_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
