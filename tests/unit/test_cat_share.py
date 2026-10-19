@@ -1,5 +1,6 @@
 """Share buttons and the public cat profile: consent based, private data stays private, never pings (no database)."""
 import asyncio
+from discord_bot.cogs._views_cat_adopt import view_text
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -80,8 +81,8 @@ def test_clean_bio_plain_text_only():
 
 
 def test_card_has_no_private_data_and_only_pinned_cats():
-    e = cat_share.profile_embed("Max", profile(pinned=[cat(2, "Tofu", "rare", "Cuddly")]), {"full-set", "legend"})
-    text = " ".join([e.description] + [f.name + f.value for f in e.fields]).lower()
+    view = cat_share.profile_view("Max", profile(pinned=[cat(2, "Tofu", "rare", "Cuddly")]), {"full-set", "legend"})
+    text = view_text(view).lower()
     assert "tofu" in text and "legend keeper" in text and "full set" in text
     assert "coin" not in text and "diamond" not in text and "wallet" not in text
 
@@ -130,7 +131,7 @@ def test_care_share_shows_streak_but_no_rewards(monkeypatch):
     fake(monkeypatch, profile())
     i = Inter()
     press("care", i, streak=7)
-    d = i.public[0]["embed"].description
+    d = view_text(i.public[0]["view"])
     assert "7-day" in d and "coin" not in d.lower() and "diamond" not in d.lower()
 
 
@@ -139,7 +140,8 @@ def test_public_profile_command(monkeypatch):
     i = Inter(uid=1)
     run(v.show_public_profile(i, SimpleNamespace(id=7, display_name="Max", bot=False)))
     kw = i.response.sent[0]
-    assert kw["ephemeral"] is False and kw["allowed_mentions"].users is False and "embed" in kw
+    assert kw["ephemeral"] is False and kw["allowed_mentions"].users is False and "embed" not in kw
+    assert isinstance(kw["view"], discord.ui.LayoutView) and "Max's cat profile" in view_text(kw["view"])
 
 
 def test_public_profile_respects_hidden_and_bots(monkeypatch):
@@ -156,12 +158,12 @@ def test_own_hidden_profile_preview_stays_private(monkeypatch):
     fake(monkeypatch, profile(show=False))
     i = Inter(uid=7)
     run(v.show_public_profile(i, SimpleNamespace(id=7, display_name="Max", bot=False)))
-    assert i.response.sent[0]["ephemeral"] is True and "embed" in i.response.sent[0]
+    assert i.response.sent[0]["ephemeral"] is True and "view" in i.response.sent[0] and "embed" not in i.response.sent[0]
 
 
 def test_wired_in():
     cat_src = (ROOT / "discord_bot/cogs/cat.py").read_text(encoding="utf-8")
     views = (ROOT / "discord_bot/cogs/_views_cat_features.py").read_text(encoding="utf-8")
     assert "profile: Optional[discord.User]" in cat_src and "show_public_profile(" in cat_src
-    assert 'ShareButton("care"' in views and 'ShareButton("badges")' in views and "ProfileView(profile)" in views
+    assert 'ShareButton("care"' in views and 'ShareButton("badges")' in views and "ProfileView(profile," in views
     assert "cat_features.save_profile(" in views            # the bio / pin UI finally calls it

@@ -252,9 +252,9 @@ def test_the_adoption_result_for_the_adopter_is_a_private_v2_card(monkeypatch):
     assert "embed" in i.edits[0]                      # the public spawn post is still a classic embed message
 
 
-# ── what must NOT change: the public spawn post and its persistent buttons ───────────────────────────────────────────
+# ── what must NOT change: the persistent buttons (and the classic view older spawn posts still need) ────────────────
 
-def test_spawn_post_stays_classic_with_the_same_persistent_buttons():
+def test_classic_spawn_view_is_kept_for_older_posts_with_the_same_persistent_buttons():
     view = v.spawn_view(7)
     assert type(view) is discord.ui.View and not isinstance(view, discord.ui.LayoutView)
     ids = [c.custom_id for c in view.children]
@@ -262,9 +262,8 @@ def test_spawn_post_stays_classic_with_the_same_persistent_buttons():
     assert {c.__name__ for c in v.DYNAMIC_ITEMS} >= {"AdoptButton", "MyCatsButton", "HelpButton", "MenuButton"}
 
 
-def test_only_the_two_public_spawn_edits_still_pass_embeds():
+def test_adopt_callback_no_longer_passes_embeds_itself():
     import inspect
-    src = inspect.getsource(v)
-    lines = [l.strip() for l in src.splitlines() if "embed=" in l and not l.strip().startswith("#")]
-    assert len(lines) == 2, lines          # the spawn's "ran away" edit and its "adopted" edit, nothing else
-    assert all("spawn_view" in l for l in lines)
+    # Phase 5: the spawn edits go through spawn_edit_kwargs, which picks embed or V2 by the message's kind.
+    assert "embed=" not in inspect.getsource(v.AdoptButton.callback)
+    assert "spawn_edit_kwargs" in inspect.getsource(v.AdoptButton.callback)

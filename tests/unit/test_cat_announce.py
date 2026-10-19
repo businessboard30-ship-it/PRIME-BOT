@@ -1,5 +1,6 @@
 """Public cat announcements: wording, never pings, never breaks the action, hooked in where it matters."""
 import asyncio
+from discord_bot.cogs._views_cat_adopt import view_text
 from pathlib import Path
 
 import discord
@@ -47,7 +48,8 @@ def test_posts_publicly_without_pinging():
     i = Inter()
     assert run(an.announce(i, "hi")) is True
     kind, kw = i.sent[0]
-    assert kind == "followup" and kw["ephemeral"] is False and kw["embed"].description == "hi"
+    assert kind == "followup" and kw["ephemeral"] is False and "embed" not in kw
+    assert isinstance(kw["view"], discord.ui.LayoutView) and view_text(kw["view"]) == "hi"
     assert kw["allowed_mentions"].users is False and kw["allowed_mentions"].roles is False
 
 

@@ -20,6 +20,12 @@ def is_public(interaction: discord.Interaction, public: bool = True) -> bool:
     return bool(public) and getattr(interaction, "guild_id", None) is not None
 
 
+def message_is_v2(message) -> bool:
+    """True when `message` is a Components V2 message. Public cat posts come in two kinds (older classic embed posts
+    and newer V2 posts) and a message can't switch kind, so every edit of one checks this first."""
+    return bool(getattr(getattr(message, "flags", None), "components_v2", False))
+
+
 def lock_to_owner(view: Optional[discord.ui.View], owner_id: int):
     """Only `owner_id` can use `view`. Chains with the view's own interaction_check (some screens already have one).
     Safe to call twice. Returns the view for chaining."""

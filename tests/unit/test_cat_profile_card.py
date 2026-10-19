@@ -1,5 +1,6 @@
 """Drawn cat profile card: safe text, safe downloads, and the plain embed always stays as the fallback."""
 import asyncio
+from discord_bot.cogs._views_cat_adopt import view_text
 import io
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -120,8 +121,11 @@ def test_plain_embed_is_upgraded_to_the_card(monkeypatch):
     monkeypatch.setattr(pc, "render", AsyncMock(return_value=png_of()))
     i = FI()
     run(feats.upgrade_to_card(i, SimpleNamespace(display_name="Ama"), profile(), set(), footer="Hidden: only you can see this."))
-    e = i.edits[0]["embed"]
-    assert e.image.url == "attachment://cat_profile.png" and "Ama" in e.title and e.footer.text.startswith("Hidden")
+    view = i.edits[0]["view"]
+    pics = [g.items[0].media.url for g in view.walk_children() if isinstance(g, discord.ui.MediaGallery)]
+    text = view_text(view)
+    assert pics == ["attachment://cat_profile.png"] and "Ama" in text and "-# Hidden: only you can see this." in text
+    assert "embed" not in i.edits[0]
     assert i.edits[0]["attachments"][0].filename == pc.FILE_NAME
 
 
@@ -136,8 +140,8 @@ def test_if_the_card_fails_the_plain_embed_stays(monkeypatch):
 
 
 def test_card_embed_has_no_private_data():
-    e = cat_share.profile_card_embed("Ama")
-    assert not e.fields and e.description is None and "coin" not in (e.title or "").lower()
+    text = view_text(cat_share.profile_card_view("Ama"))
+    assert text == "## \U0001F4D6 Ama's cat profile" and "coin" not in text.lower()
 
 
 def test_share_posts_the_picture_with_the_embed(monkeypatch):
@@ -150,7 +154,10 @@ def test_share_posts_the_picture_with_the_embed(monkeypatch):
         channel = SimpleNamespace(id=2)
         followup = SimpleNamespace(send=AsyncMock(side_effect=lambda **k: sent.append(k)))
     monkeypatch.setattr(cat_announce, "mode_for", AsyncMock(return_value="all"))
-    ok = run(cat_announce.announce_embed(I(), cat_share.profile_card_embed("Ama"), kind="share", png=png_of()))
-    assert ok and sent[0]["file"].filename == "cat_profile.png"
+    ok = run(cat_announce.announce_card(I(), cat_share.profile_card_view("Ama"), kind="share", png=png_of()))
+    assert ok and sent[0]["file"].filename == "cat_profile.png" and "embed" not in sent[0]
+    assert isinstance(sent[0]["view"], discord.ui.LayoutView)
     sent.clear()
-    assert run(cat_announce.announce_embed(I(), discord.Embed(title="x"), kind="share")) and "file" not in sent[0]
+    assert run(cat_announce.announce_card(I(), cat_share.profile_card_view("Ama"), kind="share")) and "file" not in sent[0]
+    sent.clear()                                          # the older classic-embed call still works
+    assert run(cat_announce.announce_embed(I(), discord.Embed(title="x"), kind="share")) and "embed" in sent[0]

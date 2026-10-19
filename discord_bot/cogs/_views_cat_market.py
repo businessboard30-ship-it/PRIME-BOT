@@ -7,8 +7,9 @@ Cat market + leaderboard UI (play coins only, never real money; see modules/cat_
     cat's rarity and rank, or type one, then confirm). The bot posts the cat in the channel like a spawn: picture,
     price tag, Buy button. The first person who can pay takes it; the seller gets the coins.
   * Market (button on /cat): every open listing from the main bot and all clones, cheapest first, paged. A Components V2
-    message: one long list where every cat shows its picture and its seller's avatar in the same message. (The public
-    "for sale" posts in channels stay classic embeds: a message can't be switched to V2 after it is posted.)
+    message: one long list where every cat shows its picture and its seller's avatar in the same message. New public
+    "for sale" posts are V2 cards too. Older ones are classic embed posts that stay in channels (a message can't be
+    switched to V2 after it is posted), so Buy / Take back and the market's "close the post" step edit either kind.
   * Leaderboard (button on /cat): top collectors and richest, across the main bot and all clones.
 """
 
@@ -74,6 +75,63 @@ def listing_view(listing_id: int, price: Optional[int] = None) -> discord.ui.Vie
     return view
 
 
+async def listing_layout(client, listing: cm.Listing, status_line: Optional[str] = None,
+                         open_: bool = False) -> discord.ui.LayoutView:
+    """A for-sale post as one V2 card: the cat's facts, its picture and, while the listing is open, the Adopt and
+    Take back buttons (the same persistent buttons as before). A sold or taken-back post has no buttons."""
+    cat = listing.cat
+    lines = [f"## \U0001F3F7\uFE0F {cat.name} is for sale" if cat else "## \U0001F3F7\uFE0F A cat is for sale"]
+    if status_line:
+        lines += [status_line, ""]
+    if cat:
+        lines += [f"**Rarity:** {ca.rarity_badge(cat.rarity)}", f"**Personality:** {cat.trait}",
+                  f"**Rank:** {cr.badge(cat.cat_rank)}", f"**Times traded:** {cat.traded_count}",
+                  f"**Cat ID:** #{cat.id}"]
+    lines += [f"**Price:** {cat_wallet.COINS} **{listing.price:,} coins**", f"**Seller:** <@{listing.seller_id}>"]
+    box = discord.ui.Container(accent_colour=GOLD)
+    box.add_item(discord.ui.TextDisplay("\n".join(lines)[:3900]))
+    if cat:
+        try:
+            url = await cat_pool.url_for(client, cat.pool_id)
+        except Exception:
+            url = None
+        if url:
+            box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(str(url), description=cat.name[:256])))
+    box.add_item(discord.ui.TextDisplay(f"-# {NOTE}"))
+    if open_:
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.ActionRow(BuyButton(listing.id, listing.price), UnlistButton(listing.id)))
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(box)
+    return view
+
+
+async def listing_edit_kwargs(client, message, listing: cm.Listing, status_line: str) -> dict:
+    """What to pass to an edit that closes a for-sale post, for either kind of post: an older classic embed post gets
+    a new embed and loses its buttons; a V2 post gets a V2 card without buttons."""
+    if vis.message_is_v2(message):
+        return {"view": await listing_layout(client, listing, status_line),
+                "allowed_mentions": discord.AllowedMentions.none()}
+    return {"embed": await listing_embed(client, listing, status_line), "view": None}
+
+
+async def close_listing_post(client, listing: cm.Listing, status_line: str) -> None:
+    """Best effort: close the original for-sale post from somewhere that only knows its ids (a PartialMessage can't
+    tell which kind it is). Tries the classic edit first, which is what every older post needs, then the V2 edit.
+    Never raises."""
+    if not (listing.channel_id and listing.message_id):
+        return
+    try:
+        part = client.get_partial_messageable(listing.channel_id).get_partial_message(listing.message_id)
+        try:
+            await part.edit(embed=await listing_embed(client, listing, status_line), view=None)
+        except discord.HTTPException:
+            await part.edit(view=await listing_layout(client, listing, status_line),
+                            allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
+        logger.debug("[cat-market] couldn't update the listing post", exc_info=True)
+
+
 _BUY_TEXT = {
     "gone": "This cat isn't for sale any more.",
     "own": "That's your own cat. Use **Take back** to remove the listing.",
@@ -124,9 +182,8 @@ class BuyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_buy:(
                        user_name=str(interaction.user), pool_id=l.cat.pool_id if l.cat else 0,
                        cat_name=l.cat.name if l.cat else "", rarity=l.cat.rarity if l.cat else "",
                        trait=l.cat.trait if l.cat else "", other_id=l.seller_id, other_name=str(l.seller_id))
-        await interaction.response.edit_message(
-            embed=await listing_embed(interaction.client, l, f"\u2705 **Sold** to {interaction.user.mention} for {l.price:,} coins!"),
-            view=None)
+        await interaction.response.edit_message(**await listing_edit_kwargs(
+            interaction.client, interaction.message, l, f"\u2705 **Sold** to {interaction.user.mention} for {l.price:,} coins!"))
         await interaction.followup.send(f"\U0001F389 **{l.cat.name if l.cat else 'The cat'}** is yours! Open **My cats** to see it.",
                                         ephemeral=True)
         await _after_sale(interaction.client, l, interaction.user)
@@ -150,8 +207,8 @@ class UnlistButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_un
             await interaction.response.send_message(text, ephemeral=True)
             return
         l = await cm.get(self.listing_id)
-        await interaction.response.edit_message(
-            embed=await listing_embed(interaction.client, l, "\u21A9\uFE0F The seller took this cat off the market."), view=None)
+        await interaction.response.edit_message(**await listing_edit_kwargs(
+            interaction.client, interaction.message, l, "\u21A9\uFE0F The seller took this cat off the market."))
 
 
 # ?? sell ??????????????????????????????????????????????????????????????????
@@ -179,7 +236,7 @@ async def publish_listing(interaction: discord.Interaction, cat: ca.Cat, price: 
     if status != "ok":
         return _SELL_TEXT.get(status, "That didn't work.")
     try:
-        msg = await channel.send(embed=await listing_embed(client, listing), view=listing_view(listing.id, price),
+        msg = await channel.send(view=await listing_layout(client, listing, open_=True),
                                  allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException:
         await cm.cancel(listing.id, interaction.user.id)
@@ -545,13 +602,7 @@ class MarketDetailView(discord.ui.LayoutView):
             await cat_announce.announce(interaction, cat_announce.sale_text(
                 interaction.user.mention, f"<@{l.seller_id}>", l.cat.name, l.cat.id, l.cat.cat_rank, l.price))
         # Best effort: close the original listing post, if this bot can reach it.
-        try:
-            if l.channel_id and l.message_id:
-                part = interaction.client.get_partial_messageable(l.channel_id).get_partial_message(l.message_id)
-                await part.edit(embed=await listing_embed(
-                    interaction.client, l, f"\u2705 **Sold** to {interaction.user.mention} for {l.price:,} coins!"), view=None)
-        except Exception:
-            logger.debug("[cat-market] couldn't update the listing post", exc_info=True)
+        await close_listing_post(interaction.client, l, f"\u2705 **Sold** to {interaction.user.mention} for {l.price:,} coins!")
 
 
 # ?? leaderboard ???????????????????????????????????????????????????????????

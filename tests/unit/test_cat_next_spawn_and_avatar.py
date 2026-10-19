@@ -1,3 +1,4 @@
+import discord
 """Next-cat time on spawns, avatar on the cat profile, and the fuller help text."""
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -40,10 +41,12 @@ def test_upcoming_none_and_naive_times():
     assert cat_setup.upcoming(_cfg(), naive).tzinfo is not None
 
 
-def test_profile_embed_has_avatar_only_when_given():
+def test_profile_card_has_avatar_only_when_given():
     profile = {"bio": "", "collection_size": 2, "rarest": None, "pinned": [], "show_profile": True}
-    assert cat_share.profile_embed("Ama", profile, set(), "https://cdn/a.png").thumbnail.url == "https://cdn/a.png"
-    assert cat_share.profile_embed("Ama", profile, set()).thumbnail.url is None
+    def thumbs(view):
+        return [t.media.url for t in view.walk_children() if isinstance(t, discord.ui.Thumbnail)]
+    assert thumbs(cat_share.profile_view("Ama", profile, set(), "https://cdn/a.png")) == ["https://cdn/a.png"]
+    assert thumbs(cat_share.profile_view("Ama", profile, set())) == []
 
 
 def test_avatar_helper_never_raises():

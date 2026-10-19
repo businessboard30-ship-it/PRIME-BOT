@@ -1,5 +1,6 @@
 """Cat care: water, bed, food, random hunger, and cats that wander off (play coins only)."""
 import asyncio
+from discord_bot.cogs._views_cat_adopt import view_text
 import dataclasses
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -220,8 +221,8 @@ def test_a_runaway_cat_comes_back_in_a_spawn_with_a_kind_message(monkeypatch):
     monkeypatch.setattr(discord, "TextChannel", type(ch), raising=False)
     guild = SimpleNamespace(id=77, name="Srv", me=object(), get_channel=lambda cid: ch)
     assert run(cat.post_cat(SimpleNamespace(clone_id=None), guild, 5)) is True
-    e = sent["embed"]
-    assert "Mochi" in e.description and "Adopt me!" in e.description and e.title == "🐾 A familiar face!"
+    text = view_text(sent["view"])
+    assert "Mochi" in text and "Adopt me!" in text and "## 🐾 A familiar face!" in text and "embed" not in sent
     assert rec == ["returned"]
 
 

@@ -98,9 +98,11 @@ class _ShareButton(discord.ui.Button):
         if not picture_url:
             await interaction.response.send_message("There's no cat picture on this card to share.", ephemeral=True)
             return
-        from discord_bot.cogs.cat import cat_embed
-        try:      # the public post stays a classic embed (Phase 5 handles public posts)
-            await interaction.channel.send(embed=cat_embed(str(picture_url)),
+        import random
+        from discord_bot.cogs._views_cat_adopt import spawn_post
+        from discord_bot.cogs.cat import CAT_TITLES
+        try:      # a public V2 card: title and picture, no buttons
+            await interaction.channel.send(view=spawn_post(None, random.choice(CAT_TITLES), str(picture_url)),
                                            allowed_mentions=discord.AllowedMentions.none())
         except (discord.HTTPException, AttributeError):
             await interaction.response.send_message(

@@ -1,5 +1,6 @@
 """Milestone posts + the per-server public-post setting: posted on success, not on failure / wrong mode / rate limit, no pings."""
 import asyncio
+from discord_bot.cogs._views_cat_adopt import view_text
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -93,7 +94,8 @@ def test_only_rare_badges_are_announced():
     run(an.announce_badges(i, ["rare-hunter", "coat-collector"]))
     assert not i.sent
     run(an.announce_badges(i, ["full-set"]))
-    assert len(i.sent) == 1 and "Full Set" in i.sent[0]["embed"].description and "<@7>" in i.sent[0]["embed"].description
+    text = view_text(i.sent[0]["view"])
+    assert len(i.sent) == 1 and "Full Set" in text and "<@7>" in text
     setmode("off")
     j = Inter()
     run(an.announce_badges(j, ["legend"]))
