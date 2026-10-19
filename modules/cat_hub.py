@@ -12,6 +12,7 @@ MENU: List[Tuple[str, str, str, str]] = [
     ("mine", "🏠", "My cats", "Rename, rank up, trade, gift"),
     ("care", "💖", "Daily care", "Keep your streak going"),
     ("life", "🌸", "Cat Life", "Coins, walks, heists, spin"),
+    ("arena", "⚔️", "Arena", "Fight players, only if both agree"),
     ("quests", "🎯", "Quests", "Today's small goals"),
     ("market", "🏷️", "Market", "Buy and sell cats"),
     ("board", "🏆", "Leaderboard", "Top collectors and richest"),

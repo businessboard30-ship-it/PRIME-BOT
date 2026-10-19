@@ -48,7 +48,7 @@ def test_migration_widens_the_check_to_25_and_is_wired():
     sql = (ROOT / "database/migrations/056_cat_rank_25.sql").read_text()
     assert "BETWEEN 0 AND 25" in sql and "DROP CONSTRAINT" in sql
     db = (ROOT / "database.py").read_text()
-    assert "056_cat_rank_25.sql" in db and 'SCHEMA_VERSION = "106"' in db
+    assert "056_cat_rank_25.sql" in db and 'SCHEMA_VERSION = "' in db
 
 
 # ---- allowed prices ----

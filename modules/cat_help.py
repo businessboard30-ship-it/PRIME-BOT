@@ -4,9 +4,21 @@ from __future__ import annotations
 import os
 from typing import List, Tuple
 
-from modules import cat_adopt, cat_care, cat_life, cat_market, cat_rank, cat_wallet, cat_wishlist
+from modules import cat_adopt, cat_arena, cat_care, cat_life, cat_market, cat_rank, cat_wallet, cat_wishlist
 
 FOOTER = "Just for fun: play coins only, no real money."
+
+# One place for the Arena rules, built from the real numbers so the help can never disagree with the game.
+ARENA_LONG = (
+    "Tap **Arena** on /cat and turn it on. Nobody can challenge you, and you can't challenge anyone, until you do. "
+    "A fight only happens when **both** players agree: you send a challenge, the other player sees the odds and taps "
+    f"**Accept** or **Decline** ({cat_arena.EXPIRE_MINUTES} minutes to answer). "
+    f"Wagers: {', '.join(f'{w:,}' for w in cat_arena.LADDER)} {cat_wallet.COINS}. They only go in when the challenge is accepted, "
+    f"and the winner gets both minus a {cat_arena.FEE_PERCENT}% fee. Nobody ever loses a cat in these fights: the loser's cat is "
+    f"😴 tired for {cat_arena.TIRED_HOURS}h (and 🩹 hurt for {cat_arena.HURT_HOURS}h after a knock-out, fighting at -10% stats). "
+    f"Limits: {cat_arena.FIGHTS_PER_DAY} fights a day, {cat_arena.DAILY_NET_LOSS_LIMIT:,} {cat_wallet.COINS} lost a day, "
+    f"{cat_arena.PAIR_PER_DAY} fights a day against the same player. 🪩 Practice (in Stats & skills) is free fun against pretend cats.")
+
 
 # The round PRIME BOT ring from the website, shown as the small picture on the Help card.
 # Served by the site (website/assets/img/bot-ring.png); override with CAT_HELP_RING_URL if the site moves.
@@ -37,7 +49,9 @@ def sections() -> List[Tuple[str, str]]:
          f"{cat_life.percent(cat_life.HOME_OFF_FACTOR)}. 🌷 Take a cat for a walk (costs coins, brings some back). "
          f"🎀 Go on a pretend kitty heist with your cat: win big or lose the fee ({cat_life.HEISTS_PER_DAY} a day). "
          f"🎰 Coin flip and lucky spin, with a daily loss limit of {cat_life.COINS} {cat_life.DAILY_LOSS_LIMIT:,}. "
-         "Cats that are out can't be sold, traded or released until they're home. Never hurt, never lost."),
+         "Cats that are out can't be sold, traded or released until they're home. Heists only ever target pretend places, never real players."),
+        ("⚔️ Arena",
+         ARENA_LONG),
         ("🏷️ Market",
          f"Sell a cat for coins ({cat_market.MIN_PRICE:,} to {cat_market.MAX_PRICE:,}, up to "
          f"{cat_market.MAX_OPEN_PER_SELLER} for sale at once). Tap **Market** to browse and buy. "
@@ -90,6 +104,9 @@ def topics() -> List[Tuple[str, str, str, str]]:
         ("life", "🌸", "Cat Life",
          f"Tap **Cat Life** on /cat. Fed cats earn {cat_life.COINS} coins by the hour (collect within {cat_life.HOURS_CAP}h).\n"
          f"A cozy home keeps earnings up. Walks, heists, coin flip and spin live here too."),
+        ("arena", "⚔️", "Arena",
+         f"Turn **Arena** on, then challenge a player. They see the odds and must **Accept** first ({cat_arena.EXPIRE_MINUTES} min).\\n"
+         f"Wagers {cat_arena.LADDER[0]:,} to {cat_arena.LADDER[-1]:,} {cat_wallet.COINS}, {cat_arena.FEE_PERCENT}% fee. Nobody loses a cat: the loser is just tired."),
         ("market", "🏷️", "Market",
          f"Sell a cat for {cat_market.MIN_PRICE:,} to {cat_market.MAX_PRICE:,} coins "
          f"({cat_market.MAX_OPEN_PER_SELLER} for sale at once). Tap **Market** to browse and buy."),

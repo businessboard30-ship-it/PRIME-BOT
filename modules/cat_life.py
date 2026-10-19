@@ -9,7 +9,7 @@ Cat Life (play coins only, never real money; see modules/cat_wallet.py).
     happens to the cats, they just earn less (HOME_OFF_FACTOR) until it is paid again.
   * Walks: a cat goes out for a few hours. It costs coins, and it brings back a different amount (often a bit more, sometimes less).
   * Heists: a cat and its owner go on a pretend cartoon heist on an imaginary place. Win: a bigger payout. Fail: the fee is lost.
-    It is always against pretend targets, never against another player, and a cat is never hurt or lost.
+    It is always against pretend targets, never against another player, and nothing here can hurt or lose a cat (fights are separate: see cat_arena, and always need an accept).
   * Lucky games: coin flip and lucky spin. The house edge is built in and a daily loss limit protects players.
 
 Pure rules at the top (no database), queries below. Every spend is ONE transaction with the rows locked, so two quick taps

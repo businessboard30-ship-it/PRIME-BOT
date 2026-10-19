@@ -26,6 +26,7 @@ PINK = discord.Color.from_rgb(255, 182, 193)
 def _button_for(key: str):
     """The existing game button behind a menu entry (imported here so this module never loops back on the others)."""
     from discord_bot.cogs import _views_cat_adopt as adopt
+    from discord_bot.cogs import _views_cat_arena as arena
     from discord_bot.cogs import _views_cat_features as feat
     from discord_bot.cogs import _views_cat_life as life
     from discord_bot.cogs import _views_cat_market as market
@@ -34,7 +35,7 @@ def _button_for(key: str):
         "market": market.MarketButton, "board": market.LeaderboardButton,
         "care": feat.CareButton, "quests": feat.QuestsButton, "badges": feat.BadgesButton,
         "wishlist": feat.WishlistButton, "profile": feat.ProfileButton, "cosmetics": feat.CosmeticsButton,
-        "life": life.CatLifeButton,
+        "life": life.CatLifeButton, "arena": arena.ArenaButton,
     }
     cls = table.get(key)
     return cls() if cls else None

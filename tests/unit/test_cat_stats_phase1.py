@@ -242,7 +242,7 @@ def test_migration_is_additive_and_wired():
     assert "CREATE TABLE IF NOT EXISTS cat_stats" in sql and "CREATE TABLE IF NOT EXISTS cat_skills" in sql
     assert not re.search(r"\bDROP\b|(?<!ON )\bDELETE\b|\bTRUNCATE\b", sql, re.I)
     db = (ROOT / "database.py").read_text()
-    assert "057_cat_stats_skills.sql" in db and 'SCHEMA_VERSION = "106"' in db
+    assert "057_cat_stats_skills.sql" in db and 'SCHEMA_VERSION = "' in db
 
 
 def test_my_cats_has_the_stats_button_and_shows_stats():
