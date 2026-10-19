@@ -82,6 +82,28 @@ def build_reminder_view(batch_id: int) -> discord.ui.View:
     return view
 
 
+async def _apply_without_batch(interaction: discord.Interaction, *, later: bool) -> bool:
+    """The batch row is gone (cleaned up, or an old message), but the reminder was posted in this server's own
+    channel, so the click still tells us which server and bot it is about. Apply the choice there instead of
+    pretending it worked."""
+    guild_id = getattr(interaction, "guild_id", None)
+    if not guild_id:
+        return False
+    clone_id = getattr(interaction.client, "clone_id", None)
+    now = discord.utils.utcnow()
+    if later:
+        await db.set_automod_config(guild_id, clone_id=clone_id,
+                                    log_channel_last_notice_at=now, wordfilter_last_notice_at=now)
+    else:
+        await db.set_automod_config(guild_id, clone_id=clone_id,
+                                    log_channel_notice_count=_MAX_FALLBACK_NOTICES,
+                                    wordfilter_notice_count=_MAX_FALLBACK_NOTICES)
+    return True
+
+
+_MAX_FALLBACK_NOTICES = 99   # above any cap, so "Don't ask again" stays final even if the caps change
+
+
 async def _apply_to_batch(batch_id: int, *, later: bool) -> bool:
     """Shared logic for both buttons: loads the batch's item list and
     updates every guild row it references. Returns False if the batch is
@@ -130,7 +152,8 @@ class _ReminderLaterButton(discord.ui.DynamicItem[discord.ui.Button], template=_
         return cls(int(match.group(1)))
 
     async def callback(self, interaction: discord.Interaction):
-        await _apply_to_batch(self.batch_id, later=True)
+        if not await _apply_to_batch(self.batch_id, later=True):
+            await _apply_without_batch(interaction, later=True)
         # Guard against a duplicate INTERACTION_CREATE dispatch — see
         # _ReminderDismissButton below for why this can fire twice.
         if interaction.response.is_done():
@@ -155,7 +178,13 @@ class _ReminderDismissButton(discord.ui.DynamicItem[discord.ui.Button], template
         return cls(int(match.group(1)))
 
     async def callback(self, interaction: discord.Interaction):
-        await _apply_to_batch(self.batch_id, later=False)
+        if not await _apply_to_batch(self.batch_id, later=False):
+            if not await _apply_without_batch(interaction, later=False):
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "I couldn't save that here. Run `/automod toggle filter:word_filter enabled:True` in the "
+                        "server (or ask an admin to) and the reminders stop for good.", ephemeral=True)
+                return
         # Guard against a duplicate INTERACTION_CREATE dispatch — Discord
         # occasionally redelivers the same interaction during a gateway
         # resume (observed in production logs alongside "WebSocket ...
