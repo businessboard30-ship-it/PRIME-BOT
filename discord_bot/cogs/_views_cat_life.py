@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 PINK = discord.Color.from_rgb(255, 182, 193)
 COINS, DIAMOND = cat_wallet.COINS, cat_wallet.DIAMOND
-FOOTER = "Play coins only 💖 just for fun, no real money. Your cats are never hurt or lost."
+FOOTER = "Play coins only 💖 just for fun, no real money. Heists are against pretend places only."
 OOPS = "😿 Something went wrong, please try again in a moment."
 
 
