@@ -128,22 +128,39 @@ def gamble_note(res: "cat_life.GambleResult") -> str:
 
 # ── screens ───────────────────────────────────────────────────────────────
 
+def _screen(text: str, *rows) -> discord.ui.LayoutView:
+    """One Components V2 card: a Container with the text, the ActionRows (if any) and the footer.
+    V2 messages can't carry content or embeds, so every Cat Life screen is built like this."""
+    view = discord.ui.LayoutView(timeout=300)
+    view.add_item(_container(text, *rows))
+    return view
+
+
+def _container(text: str, *rows) -> discord.ui.Container:
+    box = discord.ui.Container(accent_colour=PINK)
+    box.add_item(discord.ui.TextDisplay(text))
+    if rows:
+        box.add_item(discord.ui.Separator())
+        for row in rows:
+            box.add_item(row)
+    box.add_item(discord.ui.TextDisplay(f"-# {FOOTER}"))
+    return box
+
+
 async def hub_payload(user_id: int, clone_id, note: Optional[str] = None):
     wallet = await cat_wallet.safe_wallet(user_id, clone_id)
     ov = await cat_life.overview(user_id, clone_id)
-    embed = discord.Embed(title="🌸 Cat Life 🎀", color=PINK, description=hub_description(ov, wallet, note))
-    embed.set_footer(text=FOOTER)
-    return embed, HubView(ov)
+    return HubView(ov, f"## 🌸 Cat Life 🎀\n{hub_description(ov, wallet, note)}")
 
 
 async def _show_hub(interaction: discord.Interaction, note: Optional[str] = None) -> None:
     try:
-        embed, view = await hub_payload(interaction.user.id, _clone(interaction), note)
+        view = await hub_payload(interaction.user.id, _clone(interaction), note)
     except Exception:
         logger.exception("[cat-life] hub failed")
         await _reply(interaction, OOPS)
         return
-    await _edit(interaction, embed, view)
+    await _edit(interaction, view)
 
 
 async def _reply(interaction: discord.Interaction, text: str) -> None:
@@ -153,12 +170,12 @@ async def _reply(interaction: discord.Interaction, text: str) -> None:
         await interaction.response.send_message(text, ephemeral=True)
 
 
-async def _edit(interaction: discord.Interaction, embed: discord.Embed, view: discord.ui.View) -> None:
+async def _edit(interaction: discord.Interaction, view: discord.ui.View) -> None:
     vis.lock_to_owner(view, interaction.user.id)       # every redraw of a public Cat Life screen stays owner-only
     if interaction.response.is_done():
-        await interaction.edit_original_response(embed=embed, view=view)
+        await interaction.edit_original_response(view=view)
     else:
-        await interaction.response.edit_message(embed=embed, view=view)
+        await interaction.response.edit_message(view=view)
 
 
 class CatLifeButton(discord.ui.Button):
@@ -169,29 +186,31 @@ class CatLifeButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         try:
-            embed, view = await hub_payload(interaction.user.id, _clone(interaction))
+            view = await hub_payload(interaction.user.id, _clone(interaction))
         except Exception:
             logger.exception("[cat-life] hub failed")
             await interaction.response.send_message(OOPS, ephemeral=True)
             return
-        await vis.send(interaction, embed=embed, view=view)
+        await vis.send(interaction, view=view)
 
 
-class HubView(discord.ui.View):
-    def __init__(self, ov: "cat_life.Overview"):
+class HubView(discord.ui.LayoutView):
+    def __init__(self, ov: "cat_life.Overview", text: str):
         super().__init__(timeout=300)
         has = ov.cats > 0
-        self._add("Collect", "💰", discord.ButtonStyle.success, self._collect, 0, disabled=not has)
-        self._add("Claim", "🎁", discord.ButtonStyle.primary, self._claim, 0, disabled=not (ov.outings_ready or ov.outings_out))
-        self._add(f"Pay rent ({ov.rent_per_day:,}/day)", "🏡", discord.ButtonStyle.secondary, self._rent, 0, disabled=not has)
-        self._add("Take a walk", "🌷", discord.ButtonStyle.secondary, self._walk, 1, disabled=not has)
-        self._add("Heist", "🎀", discord.ButtonStyle.secondary, self._heist, 1, disabled=not has)
-        self._add("Lucky games", "🎰", discord.ButtonStyle.secondary, self._games, 1)
+        top = [self._btn("Collect", "💰", discord.ButtonStyle.success, self._collect, disabled=not has),
+               self._btn("Claim", "🎁", discord.ButtonStyle.primary, self._claim, disabled=not (ov.outings_ready or ov.outings_out)),
+               self._btn(f"Pay rent ({ov.rent_per_day:,}/day)", "🏡", discord.ButtonStyle.secondary, self._rent, disabled=not has)]
+        bottom = [self._btn("Take a walk", "🌷", discord.ButtonStyle.secondary, self._walk, disabled=not has),
+                  self._btn("Heist", "🎀", discord.ButtonStyle.secondary, self._heist, disabled=not has),
+                  self._btn("Lucky games", "🎰", discord.ButtonStyle.secondary, self._games)]
+        self.add_item(_container(text, discord.ui.ActionRow(*top), discord.ui.ActionRow(*bottom)))
 
-    def _add(self, label, emoji, style, cb, row, disabled=False):
-        b = discord.ui.Button(label=label[:80], emoji=emoji, style=style, row=row, disabled=disabled)
+    @staticmethod
+    def _btn(label, emoji, style, cb, disabled=False):
+        b = discord.ui.Button(label=label[:80], emoji=emoji, style=style, disabled=disabled)
         b.callback = cb
-        self.add_item(b)
+        return b
 
     async def _collect(self, interaction: discord.Interaction):
         try:
@@ -231,7 +250,7 @@ class HubView(discord.ui.View):
             await _show_hub(interaction, "🐱 None of your cats can go out right now. They may be hungry, away, or for sale. "
                                          "Feed them in **My cats**. 💛")
             return
-        await _edit(interaction, _outing_embed(kind), OutingView(kind, rows))
+        await _edit(interaction, OutingView(kind, rows))
 
     async def _walk(self, interaction: discord.Interaction):
         await self._outing(interaction, "walk")
@@ -240,35 +259,34 @@ class HubView(discord.ui.View):
         await self._outing(interaction, "heist")
 
     async def _games(self, interaction: discord.Interaction):
-        await _edit(interaction, _games_embed(), GamesView())
+        await _edit(interaction, GamesView())
 
 
-def _outing_embed(kind: str) -> discord.Embed:
+def _outing_text(kind: str) -> str:
     if kind == "walk":
         lines = [f"{w.emoji} **{w.name}**: {w.hours}h · costs {COINS} {w.fee:,}" + (f" · {DIAMOND} lucky find chance" if w.diamond_chance else "")
                  for w in cat_life.WALKS.values()]
-        e = discord.Embed(title="🌷 Take a walk", color=PINK, description=(
+        text = ("## 🌷 Take a walk\n"
             "Pick a place and a cat. The longer and fancier the walk, the more it costs, and the more your cat can bring home "
-            "(sometimes a bit less, a walk is an adventure!). Rarer and higher ranked cats do better. 🌸\n\n" + "\n".join(lines)))
+            "(sometimes a bit less, a walk is an adventure!). Rarer and higher ranked cats do better. 🌸\n\n" + "\n".join(lines))
     else:
         lines = [f"{h.emoji} **{h.name}**: {h.seconds}s · costs {COINS} {h.fee:,} · base chance {cat_life.percent(h.success)} · "
                  f"win {COINS} {int(h.fee * h.multiplier):,}" for h in cat_life.HEISTS.values()]
-        e = discord.Embed(title="🎀 Kitty heist", color=PINK, description=(
+        text = ("## 🎀 Kitty heist\n"
             "You and your cat sneak into a pretend place in the cutest heist ever! If you win you get a big payout; if you get "
             "caught, the fee is gone. Stronger cats have better chances (up to "
-            f"{cat_life.percent(cat_life.HEIST_MAX_SUCCESS)}). Only pretend places, never real players. 🧶\n\n" + "\n".join(lines)))
-    e.set_footer(text=FOOTER)
-    return e
+            f"{cat_life.percent(cat_life.HEIST_MAX_SUCCESS)}). Only pretend places, never real players. 🧶\n\n" + "\n".join(lines))
+    return text
 
 
 async def _heist_reveal(interaction: discord.Interaction, res: "cat_life.OutingStart", heist: "cat_life.Heist") -> None:
     """Heists take seconds: show the sneak-in screen, wait, then pay out and show the result on the same message.
     The outing is already saved, so if the bot restarts during the wait the 🎁 Claim button still pays it."""
-    e = discord.Embed(title=f"🎀 Sneaking into {heist.name} {heist.emoji}", color=PINK, description=(
+    sneaking = _screen(
+        f"## 🎀 Sneaking into {heist.name} {heist.emoji}\n"
         f"You and **{res.cat_name}** tiptoe in... Your chance: **{cat_life.percent(res.chance)}**\n"
-        f"Result <t:{_ts(res.ends_at)}:R>! 🤞\n(Spent {COINS} {res.cost:,}, {COINS} {res.coins:,} left.)"))
-    e.set_footer(text=FOOTER)
-    await interaction.response.edit_message(embed=e, view=None)
+        f"Result <t:{_ts(res.ends_at)}:R>! 🤞\n(Spent {COINS} {res.cost:,}, {COINS} {res.coins:,} left.)")
+    await interaction.response.edit_message(view=sneaking)      # same message, buttons gone while the cat sneaks
     await asyncio.sleep(heist.seconds + 1)
     items = []
     for _ in range(4):                                # a second or two of clock difference between the bot and the database
@@ -284,30 +302,28 @@ async def _heist_reveal(interaction: discord.Interaction, res: "cat_life.OutingS
                     "🎀 The heist is still going. Tap 🎁 Claim in a moment to see how it went! 🐾")
 
 
-class OutingView(discord.ui.View):
+class OutingView(discord.ui.LayoutView):
     def __init__(self, kind: str, cat_rows):
         super().__init__(timeout=300)
         self.kind = kind
         self.route: Optional[str] = None
         self.cat_id: Optional[int] = None
         table = cat_life.WALKS if kind == "walk" else cat_life.HEISTS
-        self.place = discord.ui.Select(placeholder="Where to? 🌸", min_values=1, max_values=1, row=0, options=[
+        self.place = discord.ui.Select(placeholder="Where to? 🌸", min_values=1, max_values=1, options=[
             discord.SelectOption(label=v.name[:100], value=k, emoji=v.emoji, description=f"{v.fee:,} coins"[:100])
             for k, v in table.items()])
         self.place.callback = self._place
-        self.add_item(self.place)
-        self.cat = discord.ui.Select(placeholder="Which cat? 🐱", min_values=1, max_values=1, row=1, options=[
+        self.cat = discord.ui.Select(placeholder="Which cat? 🐱", min_values=1, max_values=1, options=[
             discord.SelectOption(label=r["name"][:100], value=str(r["id"]), emoji=cat_adopt.RARITY_EMOJI.get(r["rarity"]),
                                  description=f"{r['rarity'].title()} · rank {int(r['cat_rank'] or 0)}"[:100])
             for r in cat_rows[:25]])
         self.cat.callback = self._cat
-        self.add_item(self.cat)
-        self.go = discord.ui.Button(label="Let's go!", emoji="✨", style=discord.ButtonStyle.success, disabled=True, row=2)
+        self.go = discord.ui.Button(label="Let's go!", emoji="✨", style=discord.ButtonStyle.success, disabled=True)
         self.go.callback = self._go
-        self.add_item(self.go)
-        back = discord.ui.Button(label="Back", emoji="⬅️", style=discord.ButtonStyle.secondary, row=2)
+        back = discord.ui.Button(label="Back", emoji="⬅️", style=discord.ButtonStyle.secondary)
         back.callback = self._back
-        self.add_item(back)
+        self.add_item(_container(_outing_text(kind), discord.ui.ActionRow(self.place), discord.ui.ActionRow(self.cat),
+                                 discord.ui.ActionRow(self.go, back)))
 
     def _ready(self):
         self.go.disabled = not (self.route and self.cat_id)
@@ -342,36 +358,34 @@ class OutingView(discord.ui.View):
         await _show_hub(interaction)
 
 
-def _games_embed(note: Optional[str] = None) -> discord.Embed:
-    desc = (note + "\n\n" if note else "") + (
+def _games_text(note: Optional[str] = None) -> str:
+    return "## 🎰 Lucky games\n" + (note + "\n\n" if note else "") + (
         "🪙 **Coin flip**: pick a bet, then flip. Win and you get double back!\n"
         "🎡 **Lucky spin**: anything from nothing up to **x15** your bet!\n\n"
         f"To keep it fun and gentle, bets are {COINS} {cat_life.BETS[0]:,} to {COINS} {cat_life.BETS[-1]:,} and you can lose at most "
         f"{COINS} {cat_life.DAILY_LOSS_LIMIT:,} a day. The house wins a little more often than you, so play for fun, not to get rich. 💖")
-    e = discord.Embed(title="🎰 Lucky games", color=PINK, description=desc)
-    e.set_footer(text=FOOTER)
-    return e
 
 
-class GamesView(discord.ui.View):
-    def __init__(self, bet: int = cat_life.BETS[0]):
+class GamesView(discord.ui.LayoutView):
+    def __init__(self, bet: int = cat_life.BETS[0], note: Optional[str] = None):
         super().__init__(timeout=300)
-        self.bet = bet
-        sel = discord.ui.Select(placeholder=f"Bet: {bet:,} coins", min_values=1, max_values=1, row=0, options=[
+        self.bet, self.note = bet, note
+        sel = discord.ui.Select(placeholder=f"Bet: {bet:,} coins", min_values=1, max_values=1, options=[
             discord.SelectOption(label=f"{b:,} coins", value=str(b), emoji="🪙", default=b == bet) for b in cat_life.BETS])
         sel.callback = self._bet
-        self.add_item(sel)
+        buttons = []
         for label, emoji, game in (("Coin flip", "🪙", "flip"), ("Lucky spin", "🎡", "spin")):
-            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.primary, row=1)
+            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.primary)
             b.callback = self._play(game)
-            self.add_item(b)
-        back = discord.ui.Button(label="Back", emoji="⬅️", style=discord.ButtonStyle.secondary, row=1)
+            buttons.append(b)
+        back = discord.ui.Button(label="Back", emoji="⬅️", style=discord.ButtonStyle.secondary)
         back.callback = self._back
-        self.add_item(back)
+        buttons.append(back)
+        self.add_item(_container(_games_text(note), discord.ui.ActionRow(sel), discord.ui.ActionRow(*buttons)))
 
     async def _bet(self, interaction: discord.Interaction):
         bet = int(interaction.data["values"][0])
-        await interaction.response.edit_message(view=GamesView(bet))
+        await interaction.response.edit_message(view=GamesView(bet, self.note))   # the last result stays on screen
 
     def _play(self, game: str):
         async def cb(interaction: discord.Interaction):
@@ -381,7 +395,7 @@ class GamesView(discord.ui.View):
                 logger.exception("[cat-life] gamble failed")
                 await _reply(interaction, OOPS)
                 return
-            await interaction.response.edit_message(embed=_games_embed(gamble_note(res)), view=GamesView(self.bet))
+            await interaction.response.edit_message(view=GamesView(self.bet, gamble_note(res)))
         return cb
 
     async def _back(self, interaction: discord.Interaction):
