@@ -244,13 +244,17 @@ async def describe(listings: Iterable[Listing]) -> Dict[int, str]:
     return out
 
 
-async def expire_due() -> int:
-    """Close open listings past their expiry. Safe to run from a sweeper. Returns how many closed."""
+async def expire_due_ids() -> List[int]:
+    """Close open listings past their expiry. Safe to run from a sweeper. Returns the ids that closed."""
     p = await _pool()
     async with p.acquire() as conn:
         rows = await conn.fetch("UPDATE market_listings SET status = 'expired', closed_at = NOW() "
                                 "WHERE status = 'open' AND expires_at <= NOW() RETURNING id")
-    return len(rows)
+    return [int(r["id"]) for r in rows]
+
+
+async def expire_due() -> int:
+    return len(await expire_due_ids())
 
 
 async def buy(listing_id: int, buyer_id: int, buyer_clone_id) -> BuyResult:

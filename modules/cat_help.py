@@ -55,6 +55,7 @@ def sections() -> List[Tuple[str, str]]:
         ("🏷️ Market",
          f"Sell a cat for coins ({cat_market.MIN_PRICE:,} to {cat_market.MAX_PRICE:,}, up to "
          f"{cat_market.MAX_OPEN_PER_SELLER} for sale at once). Tap **Market** to browse and buy. "
+         f"A {cat_market.FEE_PERCENT}% market fee is taken from the price when it sells, and a listing lasts {cat_market.EXPIRY_DAYS} days. "
          "A cat that is for sale can't be traded, ranked up, renamed or released until you take it off."),
         ("🤝 Trading",
          "In **My cats**, tap **Trade / gift**: pick a member, or use a trade ID. "
@@ -109,7 +110,8 @@ def topics() -> List[Tuple[str, str, str, str]]:
          f"Wagers {cat_arena.LADDER[0]:,} to {cat_arena.LADDER[-1]:,} {cat_wallet.COINS}, {cat_arena.FEE_PERCENT}% fee. Nobody loses a cat: the loser is just tired."),
         ("market", "🏷️", "Market",
          f"Sell a cat for {cat_market.MIN_PRICE:,} to {cat_market.MAX_PRICE:,} coins "
-         f"({cat_market.MAX_OPEN_PER_SELLER} for sale at once). Tap **Market** to browse and buy."),
+         f"({cat_market.MAX_OPEN_PER_SELLER} for sale at once, {cat_market.EXPIRY_DAYS} days each). Tap **Market** to browse and buy. "
+         f"A {cat_market.FEE_PERCENT}% fee is taken when it sells."),
         ("trade", "🤝", "Trade",
          "In **My cats** tap **Trade / gift**. Pick a member or use a trade ID.\n"
          "Nothing moves until they accept."),

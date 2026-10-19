@@ -97,7 +97,8 @@ def test_create_listing_refuses_a_price_outside_the_cats_range(monkeypatch):
     class Pool:
         def acquire(self): return Acq()
     async def _p(): return Pool()
-    monkeypatch.setattr(cm, "_pool", _p)
+    from modules import market
+    monkeypatch.setattr(market, "_pool", _p)
     assert run(cm.create_listing(7, 1, None, 500, 1, 2)) == ("out_of_range", None)
 
 

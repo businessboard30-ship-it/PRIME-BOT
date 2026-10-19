@@ -130,6 +130,7 @@ class CareResult:
 
 
 _NOT_FOR_SALE = ("NOT EXISTS (SELECT 1 FROM cat_listings l WHERE l.adoption_id = a.id AND l.status = 'open') "
+                 "AND NOT EXISTS (SELECT 1 FROM market_listings m WHERE m.item_type = 'cat' AND m.item_ref = a.id AND m.status = 'open') "
                  "AND NOT EXISTS (SELECT 1 FROM cat_fight_requests q WHERE q.cat_id = a.id AND q.status IN ('open','accepted','locked'))")
 
 
@@ -144,7 +145,8 @@ async def _spend(conn, owner_id: int, clone_id, cost: int) -> Optional[int]:
 
 async def _lock_cat(conn, cat_id: int, owner_id: int, clone_id):
     return await conn.fetchrow(
-        "SELECT a.*, " + ("EXISTS (SELECT 1 FROM cat_listings l WHERE l.adoption_id = a.id AND l.status = 'open')") +
+        "SELECT a.*, " + ("(EXISTS (SELECT 1 FROM cat_listings l WHERE l.adoption_id = a.id AND l.status = 'open') OR "
+                                       "EXISTS (SELECT 1 FROM market_listings m WHERE m.item_type = 'cat' AND m.item_ref = a.id AND m.status = 'open'))") +
         " AS for_sale FROM cat_adoptions a WHERE a.id = $1 AND a.owner_id = $2 AND COALESCE(a.clone_id, -1) = $3 FOR UPDATE",
         cat_id, owner_id, _key(clone_id))
 

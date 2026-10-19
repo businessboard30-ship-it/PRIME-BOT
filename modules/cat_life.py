@@ -267,6 +267,7 @@ async def _daily(conn, owner_id: int):
 
 
 _FREE_CAT = ("NOT EXISTS (SELECT 1 FROM cat_listings l WHERE l.adoption_id = a.id AND l.status = 'open') "
+                 "AND NOT EXISTS (SELECT 1 FROM market_listings m WHERE m.item_type = 'cat' AND m.item_ref = a.id AND m.status = 'open') "
              "AND NOT EXISTS (SELECT 1 FROM cat_outings o WHERE o.adoption_id = a.id AND o.claimed_at IS NULL)")
 
 
@@ -408,7 +409,7 @@ async def _start(owner_id: int, clone_id, cat_id: int, kind: str, route: str, fe
                 return OutingStart("gone")
             if cat["hungry_since"] is not None:
                 return OutingStart("hungry", cat_name=cat["name"])
-            if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cat_id) or \
+            if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open' UNION ALL SELECT 1 FROM market_listings WHERE item_type = 'cat' AND item_ref = $1 AND status = 'open'", cat_id) or \
                     await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cat_id) or \
                     await conn.fetchval("SELECT 1 FROM cat_fight_requests WHERE cat_id = $1 AND status IN ('open','accepted','locked') "
                                         "AND (status <> 'open' OR expires_at > NOW())", cat_id):

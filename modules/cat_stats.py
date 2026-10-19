@@ -268,7 +268,7 @@ async def _lock_cat(conn, cat_id: int, owner_id: int, clone_id, expect_rank: Opt
         return None, "not_yours"
     if expect_rank is not None and cat_rank.clamp(row["cat_rank"]) != cat_rank.clamp(expect_rank):
         return None, "stale"
-    if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cat_id):
+    if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open' UNION ALL SELECT 1 FROM market_listings WHERE item_type = 'cat' AND item_ref = $1 AND status = 'open'", cat_id):
         return None, "listed"
     return row, None
 

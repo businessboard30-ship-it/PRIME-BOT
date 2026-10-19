@@ -169,7 +169,7 @@ def test_a_failure_mid_accept_rolls_everything_back(db):
 
 
 def test_cat_locks_are_wired_into_every_place_a_cat_can_move():
-    for f in ("modules/cat_arena.py", "modules/cat_adopt.py", "modules/cat_market.py", "modules/cat_life.py", "modules/cat_care.py"):
+    for f in ("modules/cat_arena.py", "modules/cat_adopt.py", "modules/market.py", "modules/cat_life.py", "modules/cat_care.py"):
         assert "cat_fight_requests" in (ROOT / f).read_text(), f
 
 

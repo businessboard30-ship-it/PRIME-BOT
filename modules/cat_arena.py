@@ -298,10 +298,11 @@ async def busy_ids(cat_ids: Sequence[int]) -> set:
     p = await _pool()
     async with p.acquire() as conn:
         a = await conn.fetch("SELECT adoption_id FROM cat_listings WHERE adoption_id = ANY($1::bigint[]) AND status = 'open'", ids)
+        a2 = await conn.fetch("SELECT item_ref FROM market_listings WHERE item_type = 'cat' AND item_ref = ANY($1::bigint[]) AND status = 'open'", ids)
         b = await conn.fetch("SELECT adoption_id FROM cat_outings WHERE adoption_id = ANY($1::bigint[]) AND claimed_at IS NULL", ids)
         c = await conn.fetch("SELECT cat_id FROM cat_fight_requests WHERE cat_id = ANY($1::bigint[]) AND status = ANY($2::text[]) "
                              "AND (status <> 'open' OR expires_at > NOW())", ids, ["open", "accepted", "locked"])
-    return {int(r["adoption_id"]) for r in a} | {int(r["adoption_id"]) for r in b} | {int(r["cat_id"]) for r in c}
+    return {int(r["adoption_id"]) for r in a} | {int(r["item_ref"]) for r in a2} | {int(r["adoption_id"]) for r in b} | {int(r["cat_id"]) for r in c}
 
 
 async def my_cats(owner_id: int, clone_id) -> List[Ready]:
@@ -352,7 +353,7 @@ async def send_challenge(challenger_id: int, clone_id, target_id: int, cat_id: i
             cat = await conn.fetchrow("SELECT id, owner_id, clone_id FROM cat_adoptions WHERE id = $1 FOR UPDATE", int(cat_id))
             if cat is None or int(cat["owner_id"]) != int(challenger_id) or _bk(cat["clone_id"]) != key:
                 return ChallengeResult("cat")
-            if (await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", int(cat_id))
+            if (await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open' UNION ALL SELECT 1 FROM market_listings WHERE item_type = 'cat' AND item_ref = $1 AND status = 'open'", int(cat_id))
                     or await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", int(cat_id))
                     or await conn.fetchval("SELECT 1 FROM cat_effects WHERE cat_id = $1 AND effect_key = 'tired' AND ends_at > NOW()", int(cat_id))):
                 return ChallengeResult("cat")
@@ -498,7 +499,7 @@ async def _accept_tx(conn, fight_id: int, user_id: int, clone_id, cat_id: int, s
     theirs, mine = cats.get(fight.challenger_cat), cats.get(cat_id)
 
     async def blocked(cid: int) -> bool:
-        return bool(await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cid)
+        return bool(await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open' UNION ALL SELECT 1 FROM market_listings WHERE item_type = 'cat' AND item_ref = $1 AND status = 'open'", cid)
                     or await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cid)
                     or await conn.fetchval("SELECT 1 FROM cat_fight_requests WHERE cat_id = $1 AND status IN ('open','accepted','locked') "
                                        "AND (status <> 'open' OR expires_at > NOW())", cid)

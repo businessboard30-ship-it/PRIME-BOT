@@ -23,12 +23,15 @@ from typing import List, Optional
 
 from modules import cat_adopt as ca
 from modules import cat_rank as cr
+from modules import market as _market
 
 logger = logging.getLogger(__name__)
 
 MIN_PRICE = 10
 MAX_PRICE = 50_000_000                  # the top ranks of a legendary cat are worth tens of millions
 MAX_OPEN_PER_SELLER = 5
+FEE_PERCENT = _market.FEE_PERCENT       # one set of numbers, shown on the screens
+EXPIRY_DAYS = _market.EXPIRY_DAYS
 PAGE_SIZE = 10
 
 
@@ -78,6 +81,13 @@ def parse_price(raw) -> Optional[int]:
     return price if MIN_PRICE <= price <= MAX_PRICE else None
 
 
+def _fee(r) -> int:
+    try:
+        return int(r["fee"] or 0)
+    except (KeyError, TypeError):
+        return 0
+
+
 @dataclass(frozen=True)
 class Listing:
     id: int
@@ -90,6 +100,7 @@ class Listing:
     message_id: Optional[int]
     status: str
     cat: Optional[ca.Cat] = None
+    fee: int = 0
 
     @classmethod
     def from_row(cls, r) -> "Listing":
@@ -103,17 +114,20 @@ class Listing:
             cat = None
         return cls(id=int(r["id"]), adoption_id=int(r["adoption_id"]), seller_id=int(r["seller_id"]),
                    seller_clone_id=r["seller_clone_id"], price=int(r["price"]), guild_id=r["guild_id"],
-                   channel_id=r["channel_id"], message_id=r["message_id"], status=r["status"], cat=cat)
+                   channel_id=r["channel_id"], message_id=r["message_id"], status=r["status"], cat=cat,
+                   fee=_fee(r))
 
 
 @dataclass(frozen=True)
 class BuyResult:
     status: str                         # ok | gone | own | poor | limit
     listing: Optional[Listing] = None
+    fee: int = 0
 
 
-_JOIN = ("SELECT l.*, a.name, a.rarity, a.trait, a.pool_id, a.traded_count, a.cat_rank FROM cat_listings l "
-         "JOIN cat_adoptions a ON a.id = l.adoption_id ")
+_JOIN = ("SELECT l.id, l.item_ref AS adoption_id, l.seller_id, l.seller_clone_id, l.price, l.fee, l.guild_id, l.channel_id, "
+         "l.message_id, l.status, a.name, a.rarity, a.trait, a.pool_id, a.traded_count, a.cat_rank FROM market_listings l "
+         "JOIN cat_adoptions a ON a.id = l.item_ref AND l.item_type = 'cat' ")
 
 
 async def _pool():
@@ -125,43 +139,22 @@ def _key(clone_id) -> int:
     return -1 if clone_id is None else int(clone_id)
 
 
+# The database part now lives in modules/market.py (one table for every item type). These wrappers keep the cat screens
+# and their persistent buttons working unchanged: listing ids are the same, a cat listing is a market_listings row.
+
 async def create_listing(cat_id: int, seller_id: int, seller_clone_id, price: int,
                          guild_id: Optional[int], channel_id: Optional[int]) -> tuple:
     """Returns (status, Listing|None): ok | not_yours | listed | away | too_many | bad_price | out_of_range."""
-    if not MIN_PRICE <= int(price) <= MAX_PRICE:
-        return "bad_price", None
-    pool = await _pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            owner = await conn.fetchrow(
-                "SELECT owner_id, clone_id, rarity, cat_rank FROM cat_adoptions WHERE id = $1 FOR UPDATE", cat_id)
-            if owner is None or int(owner["owner_id"]) != seller_id or _key(owner["clone_id"]) != _key(seller_clone_id):
-                return "not_yours", None
-            if not price_ok(owner["rarity"], owner["cat_rank"], int(price)):
-                return "out_of_range", None            # checked against the rank the cat has right now
-            if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cat_id):
-                return "listed", None
-            if await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cat_id):
-                return "away", None                 # out on a walk or a heist: sell it after it is back
-            if await conn.fetchval("SELECT 1 FROM cat_fight_requests WHERE cat_id = $1 AND status IN ('open','accepted','locked') "
-                                   "AND (status <> 'open' OR expires_at > NOW())", cat_id):
-                return "away", None                 # held by a fight request: sell it after the request ends
-            open_n = await conn.fetchval("SELECT COUNT(*) FROM cat_listings WHERE seller_id = $1 AND status = 'open'",
-                                         seller_id)
-            if int(open_n or 0) >= MAX_OPEN_PER_SELLER:
-                return "too_many", None
-            lid = await conn.fetchval(
-                "INSERT INTO cat_listings (adoption_id, seller_id, seller_clone_id, price, guild_id, channel_id) "
-                "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id", cat_id, seller_id, seller_clone_id, int(price), guild_id,
-                channel_id)
-    return "ok", await get(int(lid))
+    from modules import market
+    status, l = await market.create_listing("cat", int(cat_id), int(seller_id), seller_clone_id, int(price), guild_id, channel_id)
+    if status != "ok" or l is None:
+        return status, None
+    return "ok", await get(l.id)
 
 
 async def set_message(listing_id: int, channel_id: int, message_id: int) -> None:
-    pool = await _pool()
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE cat_listings SET channel_id = $2, message_id = $3 WHERE id = $1",
-                           listing_id, channel_id, message_id)
+    from modules import market
+    await market.set_message(listing_id, channel_id, message_id)
 
 
 async def get(listing_id: int) -> Optional[Listing]:
@@ -172,56 +165,26 @@ async def get(listing_id: int) -> Optional[Listing]:
 
 
 async def cancel(listing_id: int, seller_id: int) -> bool:
-    pool = await _pool()
-    async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "UPDATE cat_listings SET status = 'cancelled', closed_at = NOW() "
-            "WHERE id = $1 AND seller_id = $2 AND status = 'open' RETURNING id", listing_id, seller_id) is not None
+    from modules import market
+    return await market.cancel(listing_id, seller_id)
 
 
 async def list_open(page: int = 0, size: int = PAGE_SIZE) -> tuple:
-    """(listings, total_open) for one page, cheapest first."""
+    """(listings, total_open) for one page, cheapest first. Listings past their expiry are not shown."""
     pool = await _pool()
     async with pool.acquire() as conn:
-        total = await conn.fetchval("SELECT COUNT(*) FROM cat_listings WHERE status = 'open'")
-        rows = await conn.fetch(_JOIN + "WHERE l.status = 'open' ORDER BY l.price, l.id LIMIT $1 OFFSET $2",
+        total = await conn.fetchval("SELECT COUNT(*) FROM market_listings WHERE status = 'open' AND item_type = 'cat' "
+                                    "AND expires_at > NOW()")
+        rows = await conn.fetch(_JOIN + "WHERE l.status = 'open' AND l.expires_at > NOW() ORDER BY l.price, l.id LIMIT $1 OFFSET $2",
                                 size, max(0, page) * size)
     return [Listing.from_row(r) for r in rows], int(total or 0)
 
 
 async def buy(listing_id: int, buyer_id: int, buyer_clone_id) -> BuyResult:
-    """All or nothing: the coins leave the buyer, reach the seller, and the cat changes hands, or none of it happens."""
-    pool = await _pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow("SELECT * FROM cat_listings WHERE id = $1 FOR UPDATE", listing_id)
-            if row is None or row["status"] != "open":
-                return BuyResult("gone")
-            seller_id, seller_clone, price = int(row["seller_id"]), row["seller_clone_id"], int(row["price"])
-            if seller_id == buyer_id:
-                return BuyResult("own")
-            cat = await conn.fetchrow("SELECT owner_id, clone_id FROM cat_adoptions WHERE id = $1 FOR UPDATE",
-                                      row["adoption_id"])
-            if cat is None or int(cat["owner_id"]) != seller_id or _key(cat["clone_id"]) != _key(seller_clone):
-                await conn.execute("UPDATE cat_listings SET status = 'void', closed_at = NOW() WHERE id = $1", listing_id)
-                return BuyResult("gone")
-            held = await conn.fetchval(
-                "SELECT COUNT(*) FROM cat_adoptions WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2",
-                buyer_id, _key(buyer_clone_id))
-            if int(held or 0) >= ca.MAX_CATS:
-                return BuyResult("limit")
-            paid = await conn.fetchval(
-                "UPDATE cat_wallets SET coins = coins - $3, updated_at = NOW() "
-                "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND coins >= $3 RETURNING coins",
-                buyer_id, -1, price)                  # -1: the wallet is shared by every bot
-            if paid is None:
-                return BuyResult("poor")
-            await conn.execute(
-                "INSERT INTO cat_wallets (owner_id, clone_id, coins, diamonds) VALUES ($1, $2, $3, 0) "
-                "ON CONFLICT (owner_id, (COALESCE(clone_id, -1))) DO UPDATE SET "
-                "coins = cat_wallets.coins + EXCLUDED.coins, updated_at = NOW()", seller_id, None, price)
-            await conn.execute("UPDATE cat_adoptions SET owner_id = $2, clone_id = $3, traded_count = traded_count + 1 "
-                               "WHERE id = $1", row["adoption_id"], buyer_id, buyer_clone_id)
-            await conn.execute("UPDATE cat_listings SET status = 'sold', buyer_id = $2, buyer_clone_id = $3, "
-                               "closed_at = NOW() WHERE id = $1", listing_id, buyer_id, buyer_clone_id)
-    return BuyResult("ok", await get(listing_id))
+    """All or nothing (see market.buy): coins leave the buyer, the seller gets the price minus the market fee, the cat
+    changes hands, or none of it happens."""
+    from modules import market
+    res = await market.buy(int(listing_id), int(buyer_id), buyer_clone_id)
+    if res.status != "ok":
+        return BuyResult(res.status)
+    return BuyResult("ok", await get(int(listing_id)), res.fee)
