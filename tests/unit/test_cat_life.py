@@ -196,12 +196,12 @@ def test_views_build_without_a_database():
     import asyncio
 
     async def build():
-        hub = v.HubView(ov())
-        assert len(hub.children) == 6
+        hub = v.HubView(ov(), "## hub")
+        assert len([c for c in hub.walk_children() if hasattr(c, "label")]) == 6
         rows = [{"id": 1, "name": "Mochi", "rarity": "rare", "cat_rank": 2}]
         assert v.OutingView("walk", rows).go.disabled
         assert len(v.OutingView("heist", rows).place.options) == len(cl.HEISTS)
-        assert len(v.GamesView(500).children) == 4
+        assert len([c for c in v.GamesView(500).walk_children() if hasattr(c, "label") or hasattr(c, "options")]) == 4
     asyncio.run(build())
 
 

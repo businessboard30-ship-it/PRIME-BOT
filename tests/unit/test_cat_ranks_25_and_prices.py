@@ -110,7 +110,7 @@ def test_heists_take_seconds_not_minutes():
 def test_heist_screen_lists_seconds():
     pytest.importorskip("discord")
     from discord_bot.cogs import _views_cat_life as v
-    text = v._outing_embed("heist").description
+    text = v._outing_text("heist")
     assert "8s" in text and "25s" in text and "m \u00b7" not in text
 
 
