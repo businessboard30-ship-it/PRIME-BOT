@@ -70,12 +70,13 @@ def test_my_cats_filter_flow_only_commits_on_done(monkeypatch):
     assert view.filter == cf.CatFilter() and len(view.cats) == 4        # draft only, nothing changed yet
     captured = {}
 
-    async def fake_embed():
+    async def fake_draw():                      # the card is redrawn after Done (no database in this test)
         captured["n"] = len(view.cats)
-        return None
-    monkeypatch.setattr(view, "embed", fake_embed)
-    run(fv._done(I()))
+    monkeypatch.setattr(view, "draw", fake_draw)
+    i = I()
+    run(fv._done(i))
     assert captured["n"] == 2 and {c.id for c in view.cats} == {3, 4}
+    assert i.edits[0]["view"] is view and view.index == 0              # back on the My cats card, first match on show
     assert len(view.all_cats) == 4                                      # the collection itself is untouched
 
 

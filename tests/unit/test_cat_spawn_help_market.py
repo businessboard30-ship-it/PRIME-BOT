@@ -1,6 +1,8 @@
 """Spawn message now carries Adopt + My cats + Market + Help; Help is private and its numbers come from the real rules."""
 import asyncio
 import re
+
+import discord
 from types import SimpleNamespace
 
 from discord_bot.cogs import _views_cat_adopt as v
@@ -43,11 +45,13 @@ def test_help_button_round_trips_and_replies_privately():
     inter = SimpleNamespace(response=SimpleNamespace(send_message=send_message))
     run(obj.callback(inter))
     assert sent[0]["ephemeral"] is True
-    e = sent[0]["embed"]
-    assert "Adopt me" in e.description and "Market" in e.description and "no real money" in e.footer.text
-    assert len(e.description) < 400                          # short first screen; the detail is behind the menu
-    assert e.thumbnail.url == cat_help.RING_URL
-    menu = sent[0]["view"].children[0]
+    assert "embed" not in sent[0]                            # a V2 card: no embed, text lives in the view
+    view = sent[0]["view"]
+    text = v.view_text(view)
+    assert "Adopt me" in text and "Market" in text and "no real money" in text
+    assert len(cat_help.topic_text(None)) < 400              # short first screen; the detail is behind the menu
+    assert [t.media.url for t in view.walk_children() if isinstance(t, discord.ui.Thumbnail)] == [cat_help.RING_URL]
+    menu = next(c for c in view.walk_children() if isinstance(c, discord.ui.Select))
     assert [o.value for o in menu.options] == [k for k, *_ in cat_help.topics()]
 
 
@@ -74,8 +78,9 @@ def test_picking_a_topic_switches_the_card_in_place():
         inter = SimpleNamespace(response=SimpleNamespace(edit_message=edit_message))
         await sel.callback(inter)
     run(go())
-    assert edited[0]["embed"].description == cat_help.topic_text("market")
-    assert [o.value for o in edited[0]["view"].children[0].options if o.default] == ["market"]
+    assert "embed" not in edited[0] and cat_help.topic_text("market") in v.view_text(edited[0]["view"])
+    menu = next(c for c in edited[0]["view"].walk_children() if isinstance(c, discord.ui.Select))
+    assert [o.value for o in menu.options if o.default] == ["market"]
 
 
 def test_help_text_uses_the_real_numbers():

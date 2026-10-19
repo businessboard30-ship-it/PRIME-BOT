@@ -246,7 +246,7 @@ def _adopt_with(monkeypatch, reward):
     monkeypatch.setattr(ca, "adopt", AsyncMock(return_value=ca.AdoptResult("ok", cat, reward)))
     i = FI(uid=10, message=_msg_with_embed())
     run(v.AdoptButton(5).callback(i))
-    return i.followups[0][0]
+    return v.view_text(i.followups[0][1]["view"])
 
 
 def test_adopt_message_says_what_came_with_the_cat(monkeypatch):
@@ -275,13 +275,13 @@ def _view(monkeypatch, wallet, convert=None):
 
 
 def _labels(view):
-    return [(c.label, c.disabled) for c in view.children if isinstance(c, discord.ui.Button)]
+    return [(c.label, c.disabled) for c in view.walk_children() if isinstance(c, discord.ui.Button)]
 
 
 def test_purse_is_shown_on_the_cat_card(monkeypatch):
     view = _view(monkeypatch, cw.Wallet(1234, 2))
-    e = run(view.embed())
-    assert [f.name for f in e.fields] == ["Your purse"] and e.fields[0].value == "🪙 1,234 coins · 💎 2 diamonds"
+    card = run(view.text())
+    assert "**Your purse**" in card and "🪙 1,234 coins · 💎 2 diamonds" in card
 
 
 def test_convert_buttons_are_disabled_without_diamonds_and_on_with_them(monkeypatch):
@@ -289,7 +289,9 @@ def test_convert_buttons_are_disabled_without_diamonds_and_on_with_them(monkeypa
     assert none["💎 Convert 1"] is True and none["💎 Convert all (0)"] is True
     some = dict(_labels(_view(monkeypatch, cw.Wallet(500, 4))))
     assert some["💎 Convert 1"] is False and some["💎 Convert all (4)"] is False
-    assert all(c.row == 1 for c in _view(monkeypatch, cw.Wallet(0, 1)).children if isinstance(c, discord.ui.Button) and "Convert" in c.label)
+    rows = [r for r in _view(monkeypatch, cw.Wallet(0, 1)).walk_children() if isinstance(r, discord.ui.ActionRow)]
+    convert_row = [r for r in rows if any("Convert" in (getattr(c, "label", "") or "") for c in r.children)]
+    assert len(convert_row) == 1 and rows.index(convert_row[0]) == 1          # the second row, right under the cat's buttons
 
 
 def test_convert_one_converts_one_refreshes_and_says_so(monkeypatch):
@@ -307,8 +309,9 @@ def test_convert_one_converts_one_refreshes_and_says_so(monkeypatch):
     run(view._convert_one(i))
     assert calls == [(10, None, 1)]
     edit = i.edits[0]
-    assert "Converted" in edit["content"] and "10,500" in edit["content"]
-    assert edit["embed"].fields[0].value == "🪙 10,500 coins · 💎 1 diamond" and dict(_labels(view))["💎 Convert all (1)"] is False
+    card = v.view_text(edit["view"])
+    assert "Converted" in card and "10,500" in card
+    assert "🪙 10,500 coins · 💎 1 diamond" in card and dict(_labels(view))["💎 Convert all (1)"] is False
 
 
 def test_convert_all_passes_none(monkeypatch):
@@ -327,7 +330,7 @@ def test_convert_with_nothing_to_convert_is_a_polite_message(monkeypatch):
     view = _view(monkeypatch, cw.Wallet(0, 1), convert)
     i = FI(uid=10)
     run(view._convert_one(i))
-    assert "don't have a diamond" in i.edits[0]["content"]
+    assert "don't have a diamond" in v.view_text(i.edits[0]["view"])
 
 
 def test_convert_error_is_reported_not_raised(monkeypatch):
@@ -353,7 +356,8 @@ def test_opening_my_cats_loads_the_wallet(monkeypatch):
     monkeypatch.setattr(cw, "safe_wallet", safe)
     i = FI(uid=10)
     run(v.open_collection(i))
-    assert i.sent[0][1]["embed"].fields[0].value == "🪙 77 coins · 💎 1 diamond"
+    sent = i.sent[0][1]
+    assert "embed" not in sent and "🪙 77 coins · 💎 1 diamond" in v.view_text(sent["view"])
 
 
 # ── play money only ───────────────────────────────────────────────────────

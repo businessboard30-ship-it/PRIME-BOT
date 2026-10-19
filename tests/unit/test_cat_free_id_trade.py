@@ -53,7 +53,8 @@ def test_free_server_member_id_opens_a_local_trade(monkeypatch):
     run(_modal().on_submit(i))
     view = _view(i)
     assert isinstance(view, v.TradeAskView) and view.remote is False and view.target.id == 77
-    assert "this server" in i.response.edit_message.call_args.kwargs["content"]
+    assert "this server" in v.view_text(view)               # the prompt lives in the V2 card, not in `content=`
+    assert "content" not in i.response.edit_message.call_args.kwargs
     i.response.send_message.assert_not_called()
 
 
@@ -136,8 +137,8 @@ def test_remote_offer_is_still_premium_only_at_send_time(monkeypatch):
 
 def test_button_label_no_longer_says_premium_and_the_card_explains_both(monkeypatch):
     view = v.TradeTargetView(_parent())
-    labels = [getattr(c, "label", None) for c in view.children]
+    labels = [getattr(c, "label", None) for c in view.walk_children()]
     assert "Trade by ID" in labels and not any(l and "Premium" in l for l in labels)
     import inspect
-    src = inspect.getsource(v.CollectionView.embed)
+    src = inspect.getsource(v.CollectionView._body)
     assert "Members of your server" in src and "Premium" in src

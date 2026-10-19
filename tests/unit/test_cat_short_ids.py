@@ -210,5 +210,5 @@ def test_no_word_ids_are_shown_to_people_any_more():
 
 
 def test_the_my_cats_screen_shows_the_short_id(monkeypatch):
-    src = inspect.getsource(v.CollectionView.embed)
-    assert "cat_ids.safe_get" in src and "Your trade ID" in src
+    assert "cat_ids.safe_get" in inspect.getsource(v.CollectionView.prepare)
+    assert "Your trade ID" in inspect.getsource(v.CollectionView._body)

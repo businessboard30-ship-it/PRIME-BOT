@@ -93,7 +93,9 @@ def _view(monkeypatch, cats):
 
 
 def _care_buttons(view):
-    return {c.label: c for c in view.children if isinstance(c, discord.ui.Button) and c.row == 4}
+    """The buttons of the LAST ActionRow of the card (V2 has no row numbers; the care row is drawn last)."""
+    last = [r for r in view.walk_children() if isinstance(r, discord.ui.ActionRow)][-1]
+    return {c.label: c for c in last.children if isinstance(c, discord.ui.Button)}
 
 
 def test_care_buttons_sit_on_the_last_row_and_feed_only_works_when_hungry(monkeypatch):
@@ -107,7 +109,7 @@ def test_care_buttons_sit_on_the_last_row_and_feed_only_works_when_hungry(monkey
 
 def test_a_cat_card_shows_its_care_status(monkeypatch):
     view = _view(monkeypatch, [dataclasses.replace(mkcat(1), hungry_since=NOW)])
-    assert "Hungry" in run(view.embed()).description
+    assert "Hungry" in run(view.text())
 
 
 def test_feeding_spends_coins_and_refreshes(monkeypatch):
@@ -124,8 +126,9 @@ def test_feeding_spends_coins_and_refreshes(monkeypatch):
     run(view._feed(i))
     assert calls == [(1, 10, None)]
     edit = i.edits[0]
-    assert "ate happily" in edit["content"] and "420" in edit["content"]
-    assert "Happy and fed" in edit["embed"].description
+    card = v.view_text(edit["view"])
+    assert "ate happily" in card and "420" in card
+    assert "Happy and fed" in card
 
 
 @pytest.mark.parametrize("status,needle", [("poor", "You need 30 coins and have 5"), ("gone", "isn't yours"),
@@ -137,7 +140,7 @@ def test_other_outcomes_say_so(monkeypatch, status, needle):
     monkeypatch.setattr(ca, "list_cats", AsyncMock(return_value=[mkcat(1), mkcat(2)]))
     i = FI(uid=10)
     run(view._water(i))
-    assert needle in i.edits[0]["content"]
+    assert needle in v.view_text(i.edits[0]["view"])
 
 
 def test_if_the_last_cat_wandered_off_the_screen_closes_politely(monkeypatch):
@@ -146,7 +149,9 @@ def test_if_the_last_cat_wandered_off_the_screen_closes_politely(monkeypatch):
     monkeypatch.setattr(ca, "list_cats", AsyncMock(return_value=[]))
     i = FI(uid=10)
     run(view._water(i))
-    assert i.edits[0]["view"] is None and "don't have any cats" in i.edits[0]["content"]
+    closed = i.edits[0]["view"]
+    assert "don't have any cats" in v.view_text(closed)
+    assert not any(isinstance(c, discord.ui.Button) for c in closed.walk_children())
 
 
 def test_buying_bed_calls_rent_bed(monkeypatch):
@@ -156,7 +161,7 @@ def test_buying_bed_calls_rent_bed(monkeypatch):
     monkeypatch.setattr(ca, "list_cats", AsyncMock(return_value=[mkcat(1), mkcat(2)]))
     i = FI(uid=10)
     run(view._bed(i))
-    assert rent.await_args.args == (1, 10, None) and "cosy bed" in i.edits[0]["content"]
+    assert rent.await_args.args == (1, 10, None) and "cosy bed" in v.view_text(i.edits[0]["view"])
 
 
 # ── the care loop and runaways ───────────────────────────────────────────

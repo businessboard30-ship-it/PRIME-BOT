@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import discord
 from discord_bot.cogs import _cat_visibility as vis
@@ -63,20 +63,63 @@ def cat_line(cat: ca.Cat) -> str:
     return f"**{cat.name}** · {ca.rarity_badge(cat.rarity)} · {cat.trait}"
 
 
-async def cat_embed_full(client, cat: ca.Cat, position: str = "") -> discord.Embed:
-    e = discord.Embed(title=f"{ca.RARITY_EMOJI.get(cat.rarity, '🐱')} {cat.name}", color=PINK)
-    e.description = (f"**Rarity:** {ca.rarity_badge(cat.rarity)}\n**Personality:** {cat.trait}\n"
-                     f"**Rank:** {cr.badge(cat.cat_rank)}\n**Times traded:** {cat.traded_count}\n"
-                     f"**Cat ID:** #{cat.id}\n\n{cat_care.status_lines(cat)}")
+def _cat_body(cat: ca.Cat) -> str:
+    return (f"**Rarity:** {ca.rarity_badge(cat.rarity)}\n**Personality:** {cat.trait}\n"
+            f"**Rank:** {cr.badge(cat.cat_rank)}\n**Times traded:** {cat.traded_count}\n"
+            f"**Cat ID:** #{cat.id}\n\n{cat_care.status_lines(cat)}")
+
+
+def _cat_title(cat: ca.Cat) -> str:
+    return f"{ca.RARITY_EMOJI.get(cat.rarity, '🐱')} {cat.name}"
+
+
+async def cat_image_url(client, cat: ca.Cat) -> Optional[str]:
+    """The cat's picture, or None when it can't be found (a missing picture never breaks a screen)."""
     try:
-        url = await cat_pool.url_for(client, cat.pool_id)
+        return await cat_pool.url_for(client, cat.pool_id) or None
     except Exception:
-        url = None
+        return None
+
+
+async def cat_embed_full(client, cat: ca.Cat, position: str = "") -> discord.Embed:
+    """Classic embed card of a cat. Kept for the public posts (Phase 5); the private screens use `_cat_body`."""
+    e = discord.Embed(title=_cat_title(cat), color=PINK)
+    e.description = _cat_body(cat)
+    url = await cat_image_url(client, cat)
     if url:
         e.set_image(url=url)
     if position:
         e.set_footer(text=position)
     return e
+
+
+# ── Components V2 building blocks ─────────────────────────────────────────
+# One Container per screen: text, an optional picture, a Separator, then the ActionRows. A V2 message can't carry
+# `content=`, `embed=` or `embeds=`, so notes and results live in the card's text.
+
+def _box(text: str, rows=(), image: Optional[str] = None, alt: str = "Cat",
+         colour: Optional[discord.Color] = None) -> discord.ui.Container:
+    box = discord.ui.Container(accent_colour=colour or PINK)
+    box.add_item(discord.ui.TextDisplay(text[:3900]))
+    if image:
+        box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(str(image), description=alt[:256])))
+    if rows:
+        box.add_item(discord.ui.Separator())
+        for row in rows:
+            box.add_item(row)
+    return box
+
+
+def _notice(text: str) -> discord.ui.LayoutView:
+    """A one-card V2 message with no buttons (results, 'no cats left', expired offers)."""
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(_box(text))
+    return view
+
+
+def view_text(view: discord.ui.BaseView) -> str:
+    """All the text on a V2 screen, for tests and logs."""
+    return "\n".join(c.content for c in view.walk_children() if isinstance(c, discord.ui.TextDisplay))
 
 
 # ── Adopt button on a spawn ───────────────────────────────────────────────
@@ -119,25 +162,26 @@ class HelpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_help
         return cls()
 
     async def callback(self, interaction: discord.Interaction):
-        view = HelpView()
-        await vis.send(interaction, embed=view.embed(), view=view)
+        await vis.send(interaction, view=HelpView())
 
 
-class HelpView(discord.ui.View):
+class HelpView(discord.ui.LayoutView):
     """Short help for the cat game: a few lines per topic, switched with a menu. Private to whoever tapped Help."""
 
     def __init__(self, key: Optional[str] = None):
         super().__init__(timeout=300)
         self.key = key
-        self.add_item(HelpTopicSelect(key))
+        box = discord.ui.Container(accent_colour=PINK)
+        box.add_item(discord.ui.Section(discord.ui.TextDisplay(self.text()),
+                                        accessory=discord.ui.Thumbnail(cat_help.RING_URL)))
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.ActionRow(HelpTopicSelect(key)))
+        self.add_item(box)
 
-    def embed(self) -> discord.Embed:
+    def text(self) -> str:
         rows = {k: (e, label) for k, e, label, _ in cat_help.topics()}
         title = "🐱 Cat help" if self.key not in rows else f"{rows[self.key][0]} {rows[self.key][1]}"
-        embed = discord.Embed(title=title, description=cat_help.topic_text(self.key), color=PINK)
-        embed.set_thumbnail(url=cat_help.RING_URL)
-        embed.set_footer(text=cat_help.FOOTER)
-        return embed
+        return f"## {title}\n{cat_help.topic_text(self.key)}\n-# {cat_help.FOOTER}"
 
 
 class HelpTopicSelect(discord.ui.Select):
@@ -148,8 +192,7 @@ class HelpTopicSelect(discord.ui.Select):
                      for key, emoji, label, _ in cat_help.topics()])
 
     async def callback(self, interaction: discord.Interaction):
-        view = HelpView(self.values[0])
-        await interaction.response.edit_message(embed=view.embed(), view=view)
+        await interaction.response.edit_message(view=HelpView(self.values[0]))
 
 
 class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_adopt:(\d+)$"):
@@ -200,11 +243,11 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
         await interaction.response.edit_message(embed=embed, view=spawn_view(self.spawn_id, adopted=True))
         earned: list = []
         badge_lines = await cat_quests.on_adopt(interaction.user.id, _clone_id(interaction.client), cat.rarity, earned)
-        await interaction.followup.send(
+        await interaction.followup.send(view=_notice(
             f"🎉 You adopted **{cat.name}**, a {ca.rarity_badge(cat.rarity)} {cat.trait.lower()} cat! "
             + (f"\n{cat_wallet.reward_text(res.reward)}" if res.reward else "")
             + (("\n🏅 Badge earned: " + ", ".join(badge_lines)) if badge_lines else "")
-            + "\nOpen **My cats** to rename, trade or gift.", ephemeral=True)
+            + "\nOpen **My cats** to rename, trade or gift."), ephemeral=True)
         await cat_announce.announce_badges(interaction, earned)
 
 
@@ -232,8 +275,8 @@ async def open_collection(interaction: discord.Interaction) -> None:
         return
     view = CollectionView(interaction.client, interaction.user, cats)
     await view.refresh_wallet()
-    view._build()
-    await vis.send(interaction, embed=await view.embed(), view=view)
+    await view.draw()
+    await vis.send(interaction, view=view)
 
 
 class RenameModal(discord.ui.Modal, title="Rename your cat"):
@@ -250,10 +293,15 @@ class RenameModal(discord.ui.Modal, title="Rename your cat"):
                                                     ephemeral=True)
             return
         await self.parent.reload(interaction.user.id)
-        await interaction.response.edit_message(embed=await self.parent.embed(), view=self.parent)
+        self.parent.note = None
+        await self.parent.draw()
+        await interaction.response.edit_message(view=self.parent)
 
 
-class CollectionView(discord.ui.View):
+class CollectionView(discord.ui.LayoutView):
+    """My cats: one card for the cat on show (picture, facts, purse, trade ID) with every button inside it.
+    Results of an action (fed, ranked up, released ...) show as a line on top of the card until the next tap."""
+
     def __init__(self, client, user, cats: List[ca.Cat], index: int = 0):
         super().__init__(timeout=600)
         self.client, self.user, self.cats, self.index = client, user, cats, index
@@ -262,6 +310,8 @@ class CollectionView(discord.ui.View):
         self.confirm_release = False
         self.confirm_rank_for = None        # (cat id, rank) the person tapped once; a second tap spends the coins
         self.wallet = cat_wallet.Wallet()
+        self.note: Optional[str] = None     # the result of the last action, shown on top of the card
+        self._urls: Dict[int, str] = {}     # pool id -> picture
         self._build()
 
     async def refresh_wallet(self) -> None:
@@ -271,23 +321,44 @@ class CollectionView(discord.ui.View):
     def current(self) -> ca.Cat:
         return self.cats[self.index]
 
-    async def embed(self) -> discord.Embed:
-        e = await cat_embed_full(self.client, self.current,
-                                 f"Cat {self.index + 1} of {len(self.cats)}"
-                                 + (f" (filtered from {len(self.all_cats)})" if len(self.cats) != len(self.all_cats) else "")
-                                 + " · just for fun, no real money")
-        e.add_field(name="Your purse", value=cat_wallet.wallet_text(self.wallet), inline=False)
+    async def prepare(self) -> None:
+        """The async lookups a card needs (trade ID, picture), cached so a tap never waits for them twice."""
         if getattr(self, "trade_id", None) is None:
             self.trade_id = await cat_ids.safe_get(self.user.id, _clone_id(self.client)) or ""
-        if self.trade_id:
-            e.add_field(name="🆔 Your trade ID (yours for good)", value=f"`{self.trade_id}`\n"
-                        "Members of your server can use it to offer you a trade, and ⭐ Premium servers can use it from any server. Nothing happens until you accept.",
-                        inline=False)
-        return e
+        cat = self.current
+        if not self._urls.get(cat.pool_id):
+            url = await cat_image_url(self.client, cat)
+            if url:
+                self._urls[cat.pool_id] = url
+
+    def _body(self) -> str:
+        cat = self.current
+        parts = []
+        if self.note:
+            parts += [self.note, ""]
+        parts += [f"## {_cat_title(cat)}", _cat_body(cat), "",
+                  f"**Your purse**\n{cat_wallet.wallet_text(self.wallet)}"]
+        if getattr(self, "trade_id", None):
+            parts += ["", f"**🆔 Your trade ID (yours for good)**\n`{self.trade_id}`\n"
+                      "Members of your server can use it to offer you a trade, and ⭐ Premium servers can use it from any server. Nothing happens until you accept."]
+        parts += ["", f"-# Cat {self.index + 1} of {len(self.cats)}"
+                  + (f" (filtered from {len(self.all_cats)})" if len(self.cats) != len(self.all_cats) else "")
+                  + " · just for fun, no real money"]
+        return "\n".join(parts)
+
+    async def text(self) -> str:
+        await self.prepare()
+        return self._body()
+
+    async def draw(self) -> None:
+        """Fetch what the card needs, then rebuild it. Call this before every edit of the message."""
+        await self.prepare()
+        self._build()
 
     def _build(self) -> None:
         self.clear_items()
         many = len(self.cats) > 1
+        nav = []
         for label, fn, style, disabled in (
             ("◀", self._prev, discord.ButtonStyle.secondary, not many),
             ("▶", self._next, discord.ButtonStyle.secondary, not many),
@@ -298,8 +369,27 @@ class CollectionView(discord.ui.View):
         ):
             b = discord.ui.Button(label=label, style=style, disabled=disabled)
             b.callback = fn
-            self.add_item(b)
-        if len(self.cats) > 1:
+            nav.append(b)
+        rows = [discord.ui.ActionRow(*nav)]
+        money = []
+        have = self.wallet.diamonds
+        for label, fn in ((f"{cat_wallet.DIAMOND} Convert 1", self._convert_one),
+                          (f"{cat_wallet.DIAMOND} Convert all ({have})", self._convert_all)):
+            b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=have < 1)
+            b.callback = fn
+            money.append(b)
+        cost = cr.next_cost(self.current)
+        if cost is None:
+            rb = discord.ui.Button(label="Top rank \U0001F31F", style=discord.ButtonStyle.secondary, disabled=True)
+        else:
+            armed = self.confirm_rank_for == (self.current.id, self.current.cat_rank)
+            rb = discord.ui.Button(
+                label=(f"Tap again: spend {cost:,} coins" if armed else f"\u2B50 Rank up \u00b7 {cost:,} coins")[:80],
+                style=discord.ButtonStyle.danger if armed else discord.ButtonStyle.primary)
+        rb.callback = self._rank_up
+        money.append(rb)
+        rows.append(discord.ui.ActionRow(*money))
+        if many:
             page = self.index // JUMP_PAGE
             chunk = self.cats[page * JUMP_PAGE:(page + 1) * JUMP_PAGE]
             pages = -(-len(self.cats) // JUMP_PAGE)
@@ -310,38 +400,31 @@ class CollectionView(discord.ui.View):
                                               value=str(page * JUMP_PAGE + i), emoji=ca.RARITY_EMOJI.get(c.rarity),
                                               description=(cr.badge(c.cat_rank) if c.cat_rank else None),
                                               default=(page * JUMP_PAGE + i) == self.index)
-                         for i, c in enumerate(chunk)], row=2)
+                         for i, c in enumerate(chunk)])
             jump.callback = self._jump
-            self.add_item(jump)
+            rows.append(discord.ui.ActionRow(jump))
         fb = discord.ui.Button(label=(f"Filter ({self.filter.active})" if self.filter.active else "Filter / search"),
-                               emoji="\U0001F50D", style=discord.ButtonStyle.secondary, row=3)
+                               emoji="\U0001F50D", style=discord.ButtonStyle.secondary)
         fb.callback = self._open_filter
-        self.add_item(fb)
-        have = self.wallet.diamonds
-        for label, fn in ((f"{cat_wallet.DIAMOND} Convert 1", self._convert_one),
-                          (f"{cat_wallet.DIAMOND} Convert all ({have})", self._convert_all)):
-            b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=have < 1, row=1)
-            b.callback = fn
-            self.add_item(b)
-        cost = cr.next_cost(self.current)
-        if cost is None:
-            rb = discord.ui.Button(label="Top rank \U0001F31F", style=discord.ButtonStyle.secondary, disabled=True, row=1)
-        else:
-            armed = self.confirm_rank_for == (self.current.id, self.current.cat_rank)
-            rb = discord.ui.Button(
-                label=(f"Tap again: spend {cost:,} coins" if armed else f"\u2B50 Rank up \u00b7 {cost:,} coins")[:80],
-                style=discord.ButtonStyle.danger if armed else discord.ButtonStyle.primary, row=1)
-        rb.callback = self._rank_up
-        self.add_item(rb)
+        rows.append(discord.ui.ActionRow(fb))
         hungry = cat_care.is_hungry(self.current)
+        care = []
         for label, emoji, fn, style, disabled in (
                 (f"Feed · {cat_care.FOOD_COST}", cat_care.FOOD, self._feed,
                  discord.ButtonStyle.danger if hungry else discord.ButtonStyle.secondary, not hungry),
                 (f"Water · {cat_care.WATER_COST}", cat_care.DROP, self._water, discord.ButtonStyle.secondary, False),
                 (f"Bed · {cat_care.BED_COST}", cat_care.BED, self._bed, discord.ButtonStyle.secondary, False)):
-            b = discord.ui.Button(label=label, emoji=emoji, style=style, disabled=disabled, row=4)
+            b = discord.ui.Button(label=label, emoji=emoji, style=style, disabled=disabled)
             b.callback = fn
-            self.add_item(b)
+            care.append(b)
+        rows.append(discord.ui.ActionRow(*care))
+        self.add_item(_box(self._body(), rows, image=self._urls.get(self.current.pool_id), alt=self.current.name))
+
+    async def _push(self, interaction, note: Optional[str] = None) -> None:
+        """Show the card again (with `note` on top) by editing the message the person tapped on."""
+        self.note = note
+        await self.draw()
+        await interaction.response.edit_message(view=self)
 
     async def _care(self, interaction, action, ok_text) -> None:
         cat = self.current
@@ -362,11 +445,10 @@ class CollectionView(discord.ui.View):
         }.get(res.status, "Something went wrong, try again in a moment.")
         await self.reload(interaction.user.id)
         if not self.cats:                      # the cat wandered off while this screen was open and it was the last one
-            await interaction.response.edit_message(content=note + "\nYou don't have any cats right now.", embed=None, view=None)
+            await interaction.response.edit_message(view=_notice(note + "\nYou don't have any cats right now."))
             return
         await self.refresh_wallet()
-        self._build()
-        await interaction.response.edit_message(content=note, embed=await self.embed(), view=self)
+        await self._push(interaction, note)
 
     async def _feed(self, interaction):
         await self._care(interaction, cat_care.feed, f"{cat_care.FOOD} **{{name}}** ate happily and purrs. ({{cost}} coins, {{coins:,}} left)")
@@ -382,7 +464,7 @@ class CollectionView(discord.ui.View):
         key = (cat.id, cat.cat_rank)
         if self.confirm_rank_for != key:                     # first tap: just arm the button
             self.confirm_rank_for = key
-            await self._show(interaction)
+            await self._push(interaction)
             return
         self.confirm_rank_for = None
         try:
@@ -402,8 +484,7 @@ class CollectionView(discord.ui.View):
         }.get(res.status, "Something went wrong, try again in a moment.")
         await self.reload(interaction.user.id)
         await self.refresh_wallet()
-        self._build()
-        await interaction.response.edit_message(content=note, embed=await self.embed(), view=self)
+        await self._push(interaction, note)
         if res.status == "ok":
             await cat_announce.announce(interaction, cat_announce.rank_up_text(
                 interaction.user.mention, cat.name, cat.id, res.rank), gold=res.rank >= cr.MAX_RANK)
@@ -418,10 +499,9 @@ class CollectionView(discord.ui.View):
             return
         await self.refresh_wallet()
         self.confirm_release = False
-        self._build()
         note = ("You don't have a diamond to convert." if result is None else
                 f"{cat_wallet.DIAMOND} Converted! You now have {result.coins:,} coins.")
-        await interaction.response.edit_message(content=note, embed=await self.embed(), view=self)
+        await self._push(interaction, note)
 
     async def _convert_one(self, interaction):
         await self._convert(interaction, 1)
@@ -459,12 +539,10 @@ class CollectionView(discord.ui.View):
 
     async def _open_filter(self, interaction):
         self.confirm_release = False
-        view = FilterView(self)
-        await interaction.response.edit_message(content=view.status(), embed=None, view=view)
+        await interaction.response.edit_message(view=FilterView(self))
 
     async def _show(self, interaction):
-        self._build()
-        await interaction.response.edit_message(embed=await self.embed(), view=self)
+        await self._push(interaction)
 
     async def _jump(self, interaction):
         self.index, self.confirm_release = int(interaction.data["values"][0]), False
@@ -492,47 +570,54 @@ class CollectionView(discord.ui.View):
         await self.reload(interaction.user.id)
         if not self.cats:
             await interaction.response.edit_message(
-                content=f"👋 **{cat.name}** went off to find a new home. You have no cats left.", embed=None, view=None)
+                view=_notice(f"👋 **{cat.name}** went off to find a new home. You have no cats left."))
             return
-        await interaction.response.edit_message(content=f"👋 **{cat.name}** went off to find a new home.",
-                                                embed=await self.embed(), view=self)
+        await self._push(interaction, f"👋 **{cat.name}** went off to find a new home.")
 
     async def _trade(self, interaction):
         if interaction.guild is None or interaction.channel is None:
             await interaction.response.send_message("Trades happen in a server channel, not in DMs.", ephemeral=True)
             return
-        view = TradeTargetView(self)
+        await self.prepare()
         cat = self.current
-        await interaction.response.edit_message(
-            content=(f"🤝 **{cat.name}** (cat #{cat.id}, {cr.badge(cat.cat_rank)}): pick a member to trade or gift with, "
-                     "use Trade by ID, or sell it for coins. (Trades and gifts are just for fun.)"),
-            embed=await cat_embed_full(self.client, cat, "This is the cat you are trading or selling"), view=view)
+        text = (f"🤝 **{cat.name}** (cat #{cat.id}, {cr.badge(cat.cat_rank)}): pick a member to trade or gift with, "
+                "use Trade by ID, or sell it for coins. (Trades and gifts are just for fun.)\n\n"
+                + _trade_card_text(cat))
+        view = TradeTargetView(self, text=text, image=self._urls.get(cat.pool_id))
+        await interaction.response.edit_message(view=view)
+
+
+def _trade_card_text(cat: ca.Cat) -> str:
+    """The cat being traded or sold, kept on screen through the trade steps."""
+    return f"## {_cat_title(cat)}\n{_cat_body(cat)}\n-# This is the cat you are trading or selling"
 
 
 # ── trade flow ────────────────────────────────────────────────────────────
 
-class TradeTargetView(discord.ui.View):
-    def __init__(self, parent: CollectionView):
+class TradeTargetView(discord.ui.LayoutView):
+    """Step 1 of a trade: the cat on show, a member picker, Trade by ID, Sell for coins and Back."""
+
+    def __init__(self, parent: CollectionView, text: str = "", image: Optional[str] = None):
         super().__init__(timeout=300)
         self.parent = parent
+        self.text = text or "🤝 Pick a member to trade or gift with, use Trade by ID, or sell it for coins."
+        self.image = image
         self.picker = discord.ui.UserSelect(placeholder="Pick a member", min_values=1, max_values=1)
         self.picker.callback = self._picked
-        self.add_item(self.picker)
         by_id = discord.ui.Button(label="Trade by ID", emoji="🆔", style=discord.ButtonStyle.primary)
         by_id.callback = self._by_id
-        self.add_item(by_id)
         sell = discord.ui.Button(label="Sell for coins", emoji="\U0001F3F7\uFE0F", style=discord.ButtonStyle.success)
         sell.callback = self._sell
-        self.add_item(sell)
         back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
         back.callback = self._back
-        self.add_item(back)
+        self.add_item(_box(self.text, [discord.ui.ActionRow(self.picker), discord.ui.ActionRow(by_id, sell, back)],
+                           image=image, alt=getattr(getattr(parent, "current", None), "name", "Cat")))
 
     async def interaction_check(self, interaction):
         return await self.parent.interaction_check(interaction)
 
     async def _back(self, interaction):
-        await interaction.response.edit_message(content=None, embed=await self.parent.embed(), view=self.parent)
+        await self.parent._push(interaction)
 
     async def _sell(self, interaction: discord.Interaction):
         from discord_bot.cogs._views_cat_market import open_sell_wizard
@@ -548,10 +633,10 @@ class TradeTargetView(discord.ui.View):
             await interaction.response.send_message("Pick another member (not yourself, not a bot).", ephemeral=True)
             return
         theirs = await ca.list_cats(target.id, _clone_id(interaction.client))
-        view = TradeAskView(self.parent, target, theirs)
-        await interaction.response.edit_message(
-            content=(f"🤝 What should **{self.parent.current.name}** be swapped for? Pick one of {target.display_name}'s "
-                     "cats, or just gift yours."), view=view)
+        text = (f"🤝 What should **{self.parent.current.name}** be swapped for? Pick one of {target.display_name}'s "
+                "cats, or just gift yours.\n\n" + _trade_card_text(self.parent.current))
+        view = TradeAskView(self.parent, target, theirs, text=text, image=self.image)
+        await interaction.response.edit_message(view=view)
 
 
 REMOTE_COOLDOWN = 60.0                 # seconds between two cross-server offers from the same person
@@ -631,10 +716,10 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
                 await interaction.response.send_message("That ID doesn't belong to a person.", ephemeral=True)
                 return
             theirs = await ca.list_cats(owner_id, their_clone)
-            await interaction.response.edit_message(
-                content=(f"🆔 Trading with **{member.display_name}** (a member of this server). What should "
-                         f"**{self.parent.current.name}** be swapped for? Or just gift yours."),
-                embed=None, view=TradeAskView(self.parent, member, theirs, their_clone=their_clone))
+            await interaction.response.edit_message(view=TradeAskView(
+                self.parent, member, theirs, their_clone=their_clone,
+                text=(f"🆔 Trading with **{member.display_name}** (a member of this server). What should "
+                      f"**{self.parent.current.name}** be swapped for? Or just gift yours.")))
             return
         try:
             target = await client.fetch_user(owner_id)
@@ -644,23 +729,26 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
             await interaction.response.send_message("😿 I couldn't find that person right now.", ephemeral=True)
             return
         theirs = await ca.list_cats(owner_id, their_clone)
-        view = TradeAskView(self.parent, target, theirs, remote=True, their_clone=their_clone)
-        await interaction.response.edit_message(
-            content=(f"🌍 Trading with **{target.display_name}** (from any server). What should "
-                     f"**{self.parent.current.name}** be swapped for? Or just gift yours."), embed=None, view=view)
+        view = TradeAskView(self.parent, target, theirs, remote=True, their_clone=their_clone,
+                            text=(f"🌍 Trading with **{target.display_name}** (from any server). What should "
+                                  f"**{self.parent.current.name}** be swapped for? Or just gift yours."))
+        await interaction.response.edit_message(view=view)
 
 
 _UNSET = object()
 
 
-class TradeAskView(discord.ui.View):
+class TradeAskView(discord.ui.LayoutView):
+    """Step 2 of a trade: what to ask for in return (one of their cats, or nothing for a gift)."""
+
     def __init__(self, parent: CollectionView, target, their_cats: List[ca.Cat], remote: bool = False,
-                 their_clone=_UNSET):
+                 their_clone=_UNSET, text: str = "", image: Optional[str] = None):
         super().__init__(timeout=300)
         self.remote = remote
         # which bot's collection their cats are in: this one unless the ID they gave belongs to another bot
         self.their_clone = _clone_id(getattr(parent, "client", None)) if their_clone is _UNSET else their_clone
         self.parent, self.target = parent, target
+        self.text, self.image = text or "🤝 What should it be swapped for? Or just gift yours.", image
         self.their = {c.id: c for c in their_cats}             # every cat; the select shows one page at a time
         self.page = 0
         self._build()
@@ -678,15 +766,17 @@ class TradeAskView(discord.ui.View):
             placeholder=(f"Swap for\u2026 (cats {self.page * ASK_PAGE + 1}-{self.page * ASK_PAGE + len(chunk)} of {len(cats)})"
                          if pages > 1 else "Swap for\u2026"), options=options)
         self.pick.callback = self._chosen
-        self.add_item(self.pick)
+        buttons = []
         if pages > 1:
             for label, delta, off in (("\u25C0", -1, self.page <= 0), ("\u25B6", 1, self.page >= pages - 1)):
                 b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=off)
                 b.callback = (lambda d: (lambda i: self._turn(i, d)))(delta)
-                self.add_item(b)
+                buttons.append(b)
         back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
         back.callback = self._back
-        self.add_item(back)
+        buttons.append(back)
+        self.add_item(_box(self.text, [discord.ui.ActionRow(self.pick), discord.ui.ActionRow(*buttons)],
+                           image=self.image, alt=getattr(getattr(self.parent, "current", None), "name", "Cat")))
 
     async def _turn(self, interaction, delta: int):
         self.page += delta
@@ -697,7 +787,7 @@ class TradeAskView(discord.ui.View):
         return await self.parent.interaction_check(interaction)
 
     async def _back(self, interaction):
-        await interaction.response.edit_message(content=None, embed=await self.parent.embed(), view=self.parent)
+        await self.parent._push(interaction)
 
     async def _chosen(self, interaction: discord.Interaction):
         mine = self.parent.current
@@ -706,19 +796,13 @@ class TradeAskView(discord.ui.View):
         if value != GIFT_VALUE and want is None:
             await interaction.response.send_message("That cat isn't available any more.", ephemeral=True)
             return
-        offer = TradeOfferView(interaction.client, interaction.user, self.target, mine, want, remote=self.remote,
-                               taker_clone=self.their_clone)
-        embed = discord.Embed(title="🤝 Cat trade offer", color=PINK)
         where = f" from **{interaction.guild.name}**" if self.remote and interaction.guild else ""
-        embed.description = (
-            f"{interaction.user.mention}{where} offers {cat_line(mine)}\n"
-            + (f"in exchange for {self.target.mention}'s {cat_line(want)}" if want else
-               f"as a **gift** to {self.target.mention} 🎁")
-            + "\n\nJust for fun, no real money. Nothing moves until it's accepted.")
+        offer = TradeOfferView(interaction.client, interaction.user, self.target, mine, want, remote=self.remote,
+                               taker_clone=self.their_clone, where=where)
         if self.remote:
             premium = await cs.is_premium(interaction.guild.id, _clone_id(interaction.client)) if interaction.guild else False
             if not cat_ids.can_trade_across_servers(premium):
-                await interaction.response.edit_message(content="⭐ Trading by ID needs a Premium server.", view=None)
+                await interaction.response.edit_message(view=_notice("⭐ Trading by ID needs a Premium server."))
                 return
             import time
             wait = REMOTE_COOLDOWN - (time.monotonic() - _remote_at.get(interaction.user.id, -1e9))
@@ -731,49 +815,61 @@ class TradeAskView(discord.ui.View):
                     ephemeral=True)
                 return
             try:
-                msg = await self.target.send(embed=embed, view=offer)
+                msg = await self.target.send(view=offer)
             except discord.HTTPException:
-                await interaction.response.edit_message(
-                    content="😿 I couldn't message them (their DMs are closed). Ask them to open DMs, or trade in a "
-                            "server you share.", view=None)
+                await interaction.response.edit_message(view=_notice(
+                    "😿 I couldn't message them (their DMs are closed). Ask them to open DMs, or trade in a "
+                    "server you share."))
                 return
             _remote_at[interaction.user.id] = time.monotonic()
             _remote_pending[self.target.id] = _remote_pending.get(self.target.id, 0) + 1
             offer.counted = True
             offer.message = msg
-            await interaction.response.edit_message(
-                content=f"✅ Offer sent to {self.target.display_name} by DM. They have {OFFER_TIMEOUT // 60} minutes to "
-                        "answer, and I'll tell you what they say.", embed=None, view=None)
+            await interaction.response.edit_message(view=_notice(
+                f"✅ Offer sent to {self.target.display_name} by DM. They have {OFFER_TIMEOUT // 60} minutes to "
+                "answer, and I'll tell you what they say."))
             return
         try:
             msg = await interaction.channel.send(
-                content=self.target.mention, embed=embed, view=offer,
+                view=offer,
                 allowed_mentions=discord.AllowedMentions(users=[self.target], everyone=False, roles=False))
         except discord.HTTPException:
             await interaction.response.edit_message(
-                content="😿 I couldn't post the offer in this channel (I need Send Messages).", view=None)
+                view=_notice("😿 I couldn't post the offer in this channel (I need Send Messages)."))
             return
         offer.message = msg
-        await interaction.response.edit_message(content=f"✅ Offer sent to {self.target.mention}. They have "
-                                                f"{OFFER_TIMEOUT // 60} minutes to answer.", embed=None, view=None)
+        await interaction.response.edit_message(view=_notice(
+            f"✅ Offer sent to {self.target.mention}. They have {OFFER_TIMEOUT // 60} minutes to answer."))
 
 
-class TradeOfferView(discord.ui.View):
+def _offer_done(text: str) -> discord.ui.LayoutView:
+    """What a trade offer turns into once it is answered, cancelled or expired: the same title, no buttons."""
+    return _notice(f"## 🤝 Cat trade offer\n{text}")
+
+
+class TradeOfferView(discord.ui.LayoutView):
     """Public offer. Only the other person can accept or decline; only the sender can cancel."""
 
     def __init__(self, client, giver, taker, give: ca.Cat, take: Optional[ca.Cat], remote: bool = False,
-                 taker_clone=_UNSET):
+                 taker_clone=_UNSET, where: str = ""):
         super().__init__(timeout=OFFER_TIMEOUT)
         self.client, self.giver, self.taker, self.give, self.take = client, giver, taker, give, take
         self.taker_clone = _clone_id(client) if taker_clone is _UNSET else taker_clone
         self.remote, self.counted = remote, False
         self.message: Optional[discord.Message] = None
+        self.text = (
+            f"## 🤝 Cat trade offer\n{giver.mention}{where} offers {cat_line(give)}\n"
+            + (f"in exchange for {taker.mention}'s {cat_line(take)}" if take else
+               f"as a **gift** to {taker.mention} 🎁")
+            + "\n\nJust for fun, no real money. Nothing moves until it's accepted.")
+        buttons = []
         for label, fn, style in (("Accept", self._accept, discord.ButtonStyle.success),
                                  ("Decline", self._decline, discord.ButtonStyle.danger),
                                  ("Cancel offer", self._cancel, discord.ButtonStyle.secondary)):
             b = discord.ui.Button(label=label, style=style)
             b.callback = fn
-            self.add_item(b)
+            buttons.append(b)
+        self.add_item(_box(self.text, [discord.ui.ActionRow(*buttons)]))
 
     def _release_slot(self) -> None:
         if self.counted:
@@ -796,10 +892,7 @@ class TradeOfferView(discord.ui.View):
         self.stop()
         self._release_slot()
         await self._tell_giver(text)
-        embed = interaction.message.embeds[0] if interaction.message and interaction.message.embeds else None
-        if embed is not None:
-            embed.description = text
-        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        await interaction.response.edit_message(view=_offer_done(text))
 
     async def _accept(self, interaction: discord.Interaction):
         if interaction.user.id != self.taker.id:
@@ -836,9 +929,7 @@ class TradeOfferView(discord.ui.View):
         await self._tell_giver("⏰ Your cat trade offer expired without an answer.")
         if self.message is not None:
             try:
-                await self.message.edit(content=None, view=None,
-                                        embed=discord.Embed(title="🤝 Cat trade offer", color=PINK,
-                                                            description="⏰ This offer expired."))
+                await self.message.edit(view=_offer_done("⏰ This offer expired."))
             except discord.HTTPException:
                 pass
 
@@ -862,10 +953,10 @@ class SearchModal(discord.ui.Modal, title="Search your cats"):
     async def on_submit(self, interaction: discord.Interaction):
         self.parent.f = self.parent.f.with_(query=cat_filter.clean_query(self.text.value))
         self.parent._build()
-        await interaction.response.edit_message(content=self.parent.status(), view=self.parent)
+        await interaction.response.edit_message(view=self.parent)
 
 
-class FilterView(discord.ui.View):
+class FilterView(discord.ui.LayoutView):
     """Pick a rarity, a trait, a sort order or a name search, then Done. Nothing is changed in the collection."""
 
     def __init__(self, parent: CollectionView):
@@ -886,28 +977,29 @@ class FilterView(discord.ui.View):
     def _build(self) -> None:
         self.clear_items()
         f = self.f
-        rar = discord.ui.Select(placeholder="Rarity", row=0, options=[
+        rar = discord.ui.Select(placeholder="Rarity", options=[
             discord.SelectOption(label="Any rarity", value="any", default=f.rarity is None)] + [
             discord.SelectOption(label=r.title(), value=r, emoji=ca.RARITY_EMOJI.get(r), default=f.rarity == r)
             for r in ca.RARITY_RANK])
         rar.callback = self._rarity
-        trait = discord.ui.Select(placeholder="Trait", row=1, options=[
+        trait = discord.ui.Select(placeholder="Trait", options=[
             discord.SelectOption(label="Any trait", value="any", default=f.trait is None)] + [
             discord.SelectOption(label=t, value=t, default=f.trait == t) for t in ca.TRAITS])
         trait.callback = self._trait
-        sort = discord.ui.Select(placeholder="Sort by", row=2, options=[
+        sort = discord.ui.Select(placeholder="Sort by", options=[
             discord.SelectOption(label=label, value=key, default=f.sort == key) for key, label in cat_filter.SORTS.items()])
         sort.callback = self._sort
-        for item in (rar, trait, sort):
-            self.add_item(item)
+        buttons = []
         for label, fn, style, disabled in (
             ("Search name / ID", self._search, discord.ButtonStyle.secondary, False),
             ("Clear", self._clear, discord.ButtonStyle.secondary, f == cat_filter.CatFilter()),
             ("Done", self._done, discord.ButtonStyle.success, self._matches() == 0),
         ):
-            b = discord.ui.Button(label=label, style=style, disabled=disabled, row=3)
+            b = discord.ui.Button(label=label, style=style, disabled=disabled)
             b.callback = fn
-            self.add_item(b)
+            buttons.append(b)
+        self.add_item(_box(self.status(), [discord.ui.ActionRow(rar), discord.ui.ActionRow(trait),
+                                           discord.ui.ActionRow(sort), discord.ui.ActionRow(*buttons)]))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return await self.parent.interaction_check(interaction)
@@ -915,7 +1007,7 @@ class FilterView(discord.ui.View):
     async def _update(self, interaction, **kw):
         self.f = self.f.with_(**kw)
         self._build()
-        await interaction.response.edit_message(content=self.status(), view=self)
+        await interaction.response.edit_message(view=self)
 
     async def _rarity(self, interaction):
         v = interaction.data["values"][0]
@@ -935,11 +1027,10 @@ class FilterView(discord.ui.View):
     async def _clear(self, interaction):
         self.f = cat_filter.CatFilter()
         self._build()
-        await interaction.response.edit_message(content=self.status(), view=self)
+        await interaction.response.edit_message(view=self)
 
     async def _done(self, interaction):
         self.parent.filter = self.f
         self.parent._reapply()
         self.parent.index = 0
-        self.parent._build()
-        await interaction.response.edit_message(content=None, embed=await self.parent.embed(), view=self.parent)
+        await self.parent._push(interaction)
