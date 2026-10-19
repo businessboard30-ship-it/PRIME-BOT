@@ -212,7 +212,7 @@ class SellModal(discord.ui.Modal):
             return
         if self.wizard is not None:
             self.wizard.price = price
-            await interaction.response.edit_message(embed=self.wizard.confirm_embed(), view=self.wizard.confirm_view())
+            await interaction.response.edit_message(view=self.wizard.confirm_view())
             return
         if interaction.channel is None or interaction.guild is None:
             await interaction.response.send_message("Sell cats in a server channel, not in DMs.", ephemeral=True)
@@ -222,86 +222,87 @@ class SellModal(discord.ui.Modal):
 
 
 class SellWizard:
-    """Two steps on one private message: 1) pick a price (presets across the allowed range, or type one), 2) confirm."""
+    """Two steps on one private message: 1) pick a price (presets across the allowed range, or type one), 2) confirm.
+    Both steps are Components V2 cards (one Container: text, a Separator, the controls)."""
 
     def __init__(self, cat: ca.Cat, owner_id: int):
         self.cat, self.owner_id = cat, owner_id
         self.price: Optional[int] = None
 
-    def price_embed(self) -> discord.Embed:
-        c = self.cat
-        e = discord.Embed(title=f"\U0001F3F7\uFE0F Sell {c.name}  \u00b7  step 1 of 2", color=GOLD, description=(
-            f"{ca.rarity_badge(c.rarity)} \u00b7 {cr.badge(c.cat_rank)}\n"
-            f"A **{c.rarity}** cat at this rank can be sold for {range_line(c)}.\n"
-            "Rank up your cat and its allowed range goes up. Pick a price below, or type your own."))
-        e.set_footer(text=NOTE)
-        return e
-
-    def price_view(self) -> discord.ui.View:
-        wiz = self
+    def _card(self, text: str, *rows) -> discord.ui.LayoutView:
         view = _OwnerView(self.owner_id)
+        box = discord.ui.Container(accent_colour=GOLD)
+        box.add_item(discord.ui.TextDisplay(text))
+        box.add_item(discord.ui.Separator())
+        for row in rows:
+            box.add_item(row)
+        view.add_item(box)
+        return view
+
+    def price_text(self) -> str:
+        c = self.cat
+        return (f"## \U0001F3F7\uFE0F Sell {c.name}  \u00b7  step 1 of 2\n"
+                f"{ca.rarity_badge(c.rarity)} \u00b7 {cr.badge(c.cat_rank)}\n"
+                f"A **{c.rarity}** cat at this rank can be sold for {range_line(c)}.\n"
+                "Rank up your cat and its allowed range goes up. Pick a price below, or type your own.\n"
+                f"-# {NOTE}")
+
+    def price_view(self) -> discord.ui.LayoutView:
+        wiz = self
         choices = cm.price_choices(self.cat.rarity, self.cat.cat_rank)
         sel = discord.ui.Select(placeholder="Pick a price\u2026", options=[
             discord.SelectOption(label=f"{p:,} coins", value=str(p), emoji="\U0001FA99") for p in choices])
 
         async def picked(interaction: discord.Interaction):
             wiz.price = int(sel.values[0])
-            await interaction.response.edit_message(embed=wiz.confirm_embed(), view=wiz.confirm_view())
+            await interaction.response.edit_message(view=wiz.confirm_view())
 
         sel.callback = picked
-        view.add_item(sel)
         custom = discord.ui.Button(label="Type a price", emoji="\u270F\uFE0F", style=discord.ButtonStyle.primary)
 
         async def typed(interaction: discord.Interaction):
             await interaction.response.send_modal(SellModal(wiz.cat, wiz))
 
         custom.callback = typed
-        view.add_item(custom)
         cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
 
         async def cancelled(interaction: discord.Interaction):
-            await interaction.response.edit_message(content="Okay, nothing was listed.", embed=None, view=None)
+            await interaction.response.edit_message(view=_notice_layout("Okay, nothing was listed."))
 
         cancel.callback = cancelled
-        view.add_item(cancel)
-        return view
+        return self._card(self.price_text(), discord.ui.ActionRow(sel), discord.ui.ActionRow(custom, cancel))
 
-    def confirm_embed(self) -> discord.Embed:
+    def confirm_text(self) -> str:
         c = self.cat
-        e = discord.Embed(title=f"\U0001F3F7\uFE0F Sell {c.name}  \u00b7  step 2 of 2", color=GOLD, description=(
-            f"{ca.rarity_badge(c.rarity)} \u00b7 {cr.badge(c.cat_rank)}\n"
-            f"**Price:** {cat_wallet.COINS} **{self.price:,} coins**  (allowed: {range_line(c)})\n\n"
-            "I'll post it in this channel with a Buy button. You can take it back any time from the post. Ready?"))
-        e.set_footer(text=NOTE)
-        return e
+        return (f"## \U0001F3F7\uFE0F Sell {c.name}  \u00b7  step 2 of 2\n"
+                f"{ca.rarity_badge(c.rarity)} \u00b7 {cr.badge(c.cat_rank)}\n"
+                f"**Price:** {cat_wallet.COINS} **{self.price:,} coins**  (allowed: {range_line(c)})\n\n"
+                "I'll post it in this channel with a Buy button. You can take it back any time from the post. Ready?\n"
+                f"-# {NOTE}")
 
-    def confirm_view(self) -> discord.ui.View:
+    def confirm_view(self) -> discord.ui.LayoutView:
         wiz = self
-        view = _OwnerView(self.owner_id)
         ok = discord.ui.Button(label="List it", emoji="\u2705", style=discord.ButtonStyle.success)
 
         async def confirmed(interaction: discord.Interaction):
             if interaction.channel is None or interaction.guild is None:
-                await interaction.response.edit_message(content="Sell cats in a server channel, not in DMs.",
-                                                        embed=None, view=None)
+                await interaction.response.edit_message(view=_notice_layout("Sell cats in a server channel, not in DMs."))
                 return
             await interaction.response.defer()
             text = await publish_listing(interaction, wiz.cat, wiz.price)
-            await interaction.edit_original_response(content=text, embed=None, view=None)
+            await interaction.edit_original_response(view=_notice_layout(text))
 
         ok.callback = confirmed
-        view.add_item(ok)
         back = discord.ui.Button(label="Change price", emoji="\u2B05\uFE0F", style=discord.ButtonStyle.secondary)
 
         async def went_back(interaction: discord.Interaction):
-            await interaction.response.edit_message(embed=wiz.price_embed(), view=wiz.price_view())
+            await interaction.response.edit_message(view=wiz.price_view())
 
         back.callback = went_back
-        view.add_item(back)
-        return view
+        return self._card(self.confirm_text(), discord.ui.ActionRow(ok, back))
 
 
-class _OwnerView(discord.ui.View):
+class _OwnerView(discord.ui.LayoutView):
     def __init__(self, owner_id: int):
         super().__init__(timeout=300)
         self.owner_id = owner_id
@@ -315,7 +316,7 @@ class _OwnerView(discord.ui.View):
 
 async def open_sell_wizard(interaction: discord.Interaction, cat: ca.Cat) -> None:
     wiz = SellWizard(cat, interaction.user.id)
-    await interaction.response.send_message(embed=wiz.price_embed(), view=wiz.price_view(), ephemeral=True)
+    await interaction.response.send_message(view=wiz.price_view(), ephemeral=True)
 
 
 # ?? market browser ????????????????????????????????????????????????????????
@@ -566,26 +567,43 @@ class LeaderboardButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^c
 
     async def callback(self, interaction: discord.Interaction):
         view = BoardView(interaction.user)
-        await vis.send(interaction, embed=await view.embed(), view=view)
+        await view.draw()
+        await vis.send(interaction, view=view)
 
 
-class BoardView(discord.ui.View):
+class BoardView(discord.ui.LayoutView):
+    """The leaderboard as one V2 card: title, the ranking, a footer, and the Top collectors / Richest / Post buttons."""
+
     def __init__(self, user, mode: str = "collectors"):
         super().__init__(timeout=300)
         self.user, self.mode = user, mode
+        self._text = ""                            # the ranking; loaded by draw() because it needs the database
         self._build()
 
     def _build(self) -> None:
         self.clear_items()
+        buttons = []
         for key, label in (("collectors", "Top collectors"), ("richest", "Richest")):
             b = discord.ui.Button(label=label, style=discord.ButtonStyle.primary if self.mode == key
                                   else discord.ButtonStyle.secondary, disabled=self.mode == key)
             b.callback = (lambda k: (lambda i: self._switch(i, k)))(key)
-            self.add_item(b)
+            buttons.append(b)
         if self.mode == "collectors":              # the richest board shows wallets, so it is never posted publicly
             post = discord.ui.Button(label="Post to channel", emoji="\U0001F4E3", style=discord.ButtonStyle.success)
             post.callback = self._post
-            self.add_item(post)
+            buttons.append(post)
+        box = discord.ui.Container(accent_colour=GOLD)
+        box.add_item(discord.ui.TextDisplay(self._body()))
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.ActionRow(*buttons))
+        self.add_item(box)
+
+    def _body(self) -> str:
+        title = "\U0001F3C6 Richest cat owners" if self.mode == "richest" else "\U0001F3C6 Top cat collectors"
+        footer = ("Main bot and clones together \u00b7 "
+                  + ("points: common 1, uncommon 3, rare 8, legendary 25" if self.mode != "richest" else "coins + diamonds"))
+        ranking = self._text or "\u2026"
+        return f"## {title}\n{ranking}\n-# {footer}"
 
     async def _post(self, interaction: discord.Interaction):
         if interaction.guild is None:
@@ -611,23 +629,23 @@ class BoardView(discord.ui.View):
         else:
             await interaction.followup.send("I couldn't post here (the server may have public posts turned off).", ephemeral=True)
 
-    async def embed(self) -> discord.Embed:
+    async def text(self) -> str:
+        """The ranking for the current tab (what used to be the embed description)."""
         try:
             rows, rank = await (cat_board.top_richest if self.mode == "richest" else cat_board.top_collectors)(10, self.user.id)
-            text = cat_board.format_board(rows, self.mode, rank)
+            return cat_board.format_board(rows, self.mode, rank)
         except Exception:
             logger.exception("[cat-board] couldn't load the leaderboard")
-            text = "The leaderboard isn't available right now. Try again in a moment."
-        title = "\U0001F3C6 Richest cat owners" if self.mode == "richest" else "\U0001F3C6 Top cat collectors"
-        e = discord.Embed(title=title, description=text, color=GOLD)
-        e.set_footer(text="Main bot and clones together \u00b7 "
-                          + ("points: common 1, uncommon 3, rare 8, legendary 25" if self.mode != "richest" else "coins + diamonds"))
-        return e
+            return "The leaderboard isn't available right now. Try again in a moment."
+
+    async def draw(self) -> None:
+        self._text = await self.text()
+        self._build()
 
     async def _switch(self, interaction: discord.Interaction, mode: str):
         self.mode = mode
-        self._build()
-        await interaction.response.edit_message(embed=await self.embed(), view=self)
+        await self.draw()
+        await interaction.response.edit_message(view=self)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
