@@ -39,6 +39,7 @@ WARN_AFTER_HOURS = 24
 LEAVE_AFTER_HOURS = 48
 RUNAWAY_ANYWHERE_DAYS = 3           # if its own server stopped spawning cats, it returns anywhere after this long
 BATCH = 500
+BULK_LIMIT = 100                    # most cats one 'all' tap looks after
 
 DROP, BED, FOOD = "💧", "🛏️", "🍖"
 
@@ -190,6 +191,80 @@ async def water(cat_id: int, owner_id: int, clone_id) -> CareResult:
 
 async def rent_bed(cat_id: int, owner_id: int, clone_id) -> CareResult:
     return await _comfort(cat_id, owner_id, clone_id, "bed_until", BED_COST)
+
+
+# ── "all" buttons: the same single-cat actions (same prices, same rules), run for every cat that needs it ──
+
+BULK_KINDS = {"feed": ("hungry_since", FOOD_COST), "water": ("watered_until", WATER_COST), "bed": ("bed_until", BED_COST)}
+
+
+@dataclass(frozen=True)
+class BulkResult:
+    kind: str
+    done: int = 0               # cats looked after
+    spent: int = 0
+    coins: Optional[int] = None  # coins left after the last spend (or what the person has when they ran short)
+    short: int = 0              # cats that still needed it when the coins ran out
+    skipped: int = 0            # cats that didn't need it any more by the time their turn came
+
+
+def bulk_target_count(cats, kind: str, now: Optional[datetime] = None) -> int:
+    """How many of `cats` an 'all' tap would look after (for the button state; the database has the last word)."""
+    now = _now(now)
+    if kind == "feed":
+        return sum(1 for c in cats if is_hungry(c))
+    col = BULK_KINDS[kind][0]
+    return sum(1 for c in cats if not active(getattr(c, col, None), now + timedelta(hours=RENEW_WINDOW_HOURS)))
+
+
+async def _candidates(owner_id: int, clone_id, kind: str) -> List[int]:
+    """Ids of this person's cats that need `kind`, most urgent first. Cats for sale on the market are left alone."""
+    col = BULK_KINDS[kind][0]            # fixed names only, never user input
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        if kind == "feed":
+            rows = await conn.fetch(
+                "SELECT a.id FROM cat_adoptions a WHERE a.owner_id = $1 AND COALESCE(a.clone_id, -1) = $2 "
+                f"AND a.hungry_since IS NOT NULL AND {_NOT_FOR_SALE} ORDER BY a.hungry_since, a.id LIMIT $3",
+                owner_id, _key(clone_id), BULK_LIMIT)
+        else:
+            edge = datetime.now(timezone.utc) + timedelta(hours=RENEW_WINDOW_HOURS)
+            rows = await conn.fetch(
+                "SELECT a.id FROM cat_adoptions a WHERE a.owner_id = $1 AND COALESCE(a.clone_id, -1) = $2 "
+                f"AND (a.{col} IS NULL OR a.{col} <= $4) AND {_NOT_FOR_SALE} ORDER BY a.id LIMIT $3",
+                owner_id, _key(clone_id), BULK_LIMIT, edge)
+    return [int(r["id"]) for r in rows]
+
+
+async def bulk_preview(owner_id: int, clone_id, kind: str):
+    """(cats, coins) an 'all' tap would look after and cost right now."""
+    ids = await _candidates(owner_id, clone_id, kind)
+    return len(ids), len(ids) * BULK_KINDS[kind][1]
+
+
+async def bulk_care(owner_id: int, clone_id, kind: str) -> BulkResult:
+    """Feed / water / rent a bed for every cat that needs it. Each cat is its own safe single action, so a tap that runs
+    out of coins part-way keeps what it already did and says how many are left."""
+    action = {"feed": feed, "water": water, "bed": rent_bed}[kind]
+    ids = await _candidates(owner_id, clone_id, kind)
+    done = spent = skipped = 0
+    coins: Optional[int] = None
+    for n, cat_id in enumerate(ids):
+        try:
+            res = await action(cat_id, owner_id, clone_id)
+        except Exception:
+            logger.exception("[cat-care] bulk %s failed for cat %s", kind, cat_id)
+            skipped += 1
+            continue
+        if res.status == "ok":
+            done += 1
+            spent += res.cost
+            coins = res.coins
+        elif res.status == "poor":
+            return BulkResult(kind, done, spent, res.coins, short=len(ids) - n, skipped=skipped)
+        else:
+            skipped += 1
+    return BulkResult(kind, done, spent, coins, skipped=skipped)
 
 
 async def get_cat_care(cat_id: int):

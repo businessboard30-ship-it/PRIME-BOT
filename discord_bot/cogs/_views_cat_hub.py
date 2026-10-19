@@ -63,7 +63,8 @@ def hub_text(lines: list) -> str:
 
 
 class HubSelect(discord.ui.Select):
-    def __init__(self):
+    def __init__(self, hub: Optional["HubView"] = None):
+        self.hub = hub
         super().__init__(
             placeholder="What would you like to do?",
             options=[discord.SelectOption(label=label, value=key, emoji=emoji, description=desc)
@@ -74,7 +75,27 @@ class HubSelect(discord.ui.Select):
         if btn is None:
             await interaction.response.send_message("That isn't available right now.", ephemeral=True)
             return
-        await btn.callback(interaction)
+        # The chosen screen replaces this card in place (vis.send sees the origin) and gets a Back to menu button.
+        token = vis.menu_origin.set({"picture_url": getattr(self.hub, "picture_url", None)})
+        try:
+            await btn.callback(interaction)
+        finally:
+            vis.menu_origin.reset(token)
+
+
+class BackToMenu(discord.ui.Button):
+    """Back to the Cat menu card, in the same message."""
+
+    def __init__(self):
+        super().__init__(label="Back to menu", emoji="◀", style=discord.ButtonStyle.secondary, custom_id=vis.BACK_ID)
+
+    async def callback(self, interaction: discord.Interaction):
+        picture = vis.hub_picture(getattr(interaction.message, "id", None))
+        lines = await status(interaction)
+        view = HubView(picture, can_setup=await _can_setup(interaction), lines=lines)
+        if getattr(interaction, "guild_id", None) is not None:
+            vis.lock_to_owner(view, interaction.user.id)
+        await interaction.response.edit_message(view=view)
 
 
 class _NextCatButton(discord.ui.Button):
@@ -128,7 +149,7 @@ class HubView(discord.ui.LayoutView):
         if self.picture_url:
             box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(str(self.picture_url), description="Cat")))
         box.add_item(discord.ui.Separator())
-        box.add_item(discord.ui.ActionRow(HubSelect()))
+        box.add_item(discord.ui.ActionRow(HubSelect(self)))
         buttons = [_NextCatButton(self), _ShareButton(self)]
         if self.can_setup:
             buttons.append(_SetupButton())

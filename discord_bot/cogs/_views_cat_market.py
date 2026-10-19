@@ -269,7 +269,7 @@ class SellModal(discord.ui.Modal):
             return
         if self.wizard is not None:
             self.wizard.price = price
-            await interaction.response.edit_message(view=self.wizard.confirm_view())
+            await vis.edit(interaction, view=self.wizard.confirm_view())
             return
         if interaction.channel is None or interaction.guild is None:
             await interaction.response.send_message("Sell cats in a server channel, not in DMs.", ephemeral=True)
@@ -312,7 +312,7 @@ class SellWizard:
 
         async def picked(interaction: discord.Interaction):
             wiz.price = int(sel.values[0])
-            await interaction.response.edit_message(view=wiz.confirm_view())
+            await vis.edit(interaction, view=wiz.confirm_view())
 
         sel.callback = picked
         custom = discord.ui.Button(label="Type a price", emoji="\u270F\uFE0F", style=discord.ButtonStyle.primary)
@@ -324,7 +324,7 @@ class SellWizard:
         cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
 
         async def cancelled(interaction: discord.Interaction):
-            await interaction.response.edit_message(view=_notice_layout("Okay, nothing was listed."))
+            await vis.edit(interaction, view=_notice_layout("Okay, nothing was listed."))
 
         cancel.callback = cancelled
         return self._card(self.price_text(), discord.ui.ActionRow(sel), discord.ui.ActionRow(custom, cancel))
@@ -343,17 +343,17 @@ class SellWizard:
 
         async def confirmed(interaction: discord.Interaction):
             if interaction.channel is None or interaction.guild is None:
-                await interaction.response.edit_message(view=_notice_layout("Sell cats in a server channel, not in DMs."))
+                await vis.edit(interaction, view=_notice_layout("Sell cats in a server channel, not in DMs."))
                 return
             await interaction.response.defer()
             text = await publish_listing(interaction, wiz.cat, wiz.price)
-            await interaction.edit_original_response(view=_notice_layout(text))
+            await vis.edit(interaction, original=True, view=_notice_layout(text))
 
         ok.callback = confirmed
         back = discord.ui.Button(label="Change price", emoji="\u2B05\uFE0F", style=discord.ButtonStyle.secondary)
 
         async def went_back(interaction: discord.Interaction):
-            await interaction.response.edit_message(view=wiz.price_view())
+            await vis.edit(interaction, view=wiz.price_view())
 
         back.callback = went_back
         return self._card(self.confirm_text(), discord.ui.ActionRow(ok, back))
@@ -535,7 +535,7 @@ class MarketView(discord.ui.LayoutView):
         self.note = None
         await interaction.response.defer()                       # looking up the cards can take a moment
         await self.load()
-        await interaction.edit_original_response(view=self)
+        await vis.edit(interaction, original=True, view=self)
 
     async def _picked(self, interaction: discord.Interaction):
         l = await cm.get(int(interaction.data["values"][0]))
@@ -543,12 +543,12 @@ class MarketView(discord.ui.LayoutView):
             self.note = "That cat was just taken."
             await interaction.response.defer()
             await self.load()
-            await interaction.edit_original_response(view=self)
+            await vis.edit(interaction, original=True, view=self)
             return
         self.note = None
         await interaction.response.defer()
         seen = self.seen.get(l.id) or (await _look_up(self.client, [l])).get(l.id) or _Seen(f"Seller {l.seller_id}", None, None)
-        await interaction.edit_original_response(view=MarketDetailView(self, l, seen))
+        await vis.edit(interaction, original=True, view=MarketDetailView(self, l, seen))
 
 
 class MarketDetailView(discord.ui.LayoutView):
@@ -582,7 +582,7 @@ class MarketDetailView(discord.ui.LayoutView):
     async def _back(self, interaction):
         await interaction.response.defer()
         await self.parent.load()
-        await interaction.edit_original_response(view=self.parent)
+        await vis.edit(interaction, original=True, view=self.parent)
 
     async def _buy(self, interaction: discord.Interaction):
         res = await cm.buy(self.listing.id, interaction.user.id, _clone_id(interaction.client))
@@ -595,7 +595,7 @@ class MarketDetailView(discord.ui.LayoutView):
             await interaction.response.send_message(_BUY_TEXT.get(res.status, "That didn't work."), ephemeral=True)
             return
         l = res.listing
-        await interaction.response.edit_message(
+        await vis.edit(interaction,
             view=_notice_layout(f"\U0001F389 **{l.cat.name}** is yours! Open **My cats** to see it."))
         await _after_sale(interaction.client, l, interaction.user)
         if l.cat:
@@ -696,7 +696,7 @@ class BoardView(discord.ui.LayoutView):
     async def _switch(self, interaction: discord.Interaction, mode: str):
         self.mode = mode
         await self.draw()
-        await interaction.response.edit_message(view=self)
+        await vis.edit(interaction, view=self)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:

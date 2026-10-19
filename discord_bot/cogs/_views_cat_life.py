@@ -172,10 +172,7 @@ async def _reply(interaction: discord.Interaction, text: str) -> None:
 
 async def _edit(interaction: discord.Interaction, view: discord.ui.View) -> None:
     vis.lock_to_owner(view, interaction.user.id)       # every redraw of a public Cat Life screen stays owner-only
-    if interaction.response.is_done():
-        await interaction.edit_original_response(view=view)
-    else:
-        await interaction.response.edit_message(view=view)
+    await vis.edit(interaction, original=interaction.response.is_done(), view=view)
 
 
 class CatLifeButton(discord.ui.Button):
@@ -286,7 +283,7 @@ async def _heist_reveal(interaction: discord.Interaction, res: "cat_life.OutingS
         f"## 🎀 Sneaking into {heist.name} {heist.emoji}\n"
         f"You and **{res.cat_name}** tiptoe in... Your chance: **{cat_life.percent(res.chance)}**\n"
         f"Result <t:{_ts(res.ends_at)}:R>! 🤞\n(Spent {COINS} {res.cost:,}, {COINS} {res.coins:,} left.)")
-    await interaction.response.edit_message(view=sneaking)      # same message, buttons gone while the cat sneaks
+    await vis.edit(interaction, view=sneaking)      # same message, buttons gone while the cat sneaks
     await asyncio.sleep(heist.seconds + 1)
     items = []
     for _ in range(4):                                # a second or two of clock difference between the bot and the database
@@ -331,12 +328,12 @@ class OutingView(discord.ui.LayoutView):
     async def _place(self, interaction: discord.Interaction):
         self.route = self.place.values[0]
         self._ready()
-        await interaction.response.edit_message(view=self)
+        await vis.edit(interaction, view=self)
 
     async def _cat(self, interaction: discord.Interaction):
         self.cat_id = int(self.cat.values[0])
         self._ready()
-        await interaction.response.edit_message(view=self)
+        await vis.edit(interaction, view=self)
 
     async def _go(self, interaction: discord.Interaction):
         if not (self.route and self.cat_id):
@@ -385,7 +382,7 @@ class GamesView(discord.ui.LayoutView):
 
     async def _bet(self, interaction: discord.Interaction):
         bet = int(interaction.data["values"][0])
-        await interaction.response.edit_message(view=GamesView(bet, self.note))   # the last result stays on screen
+        await vis.edit(interaction, view=GamesView(bet, self.note))   # the last result stays on screen
 
     def _play(self, game: str):
         async def cb(interaction: discord.Interaction):
@@ -395,7 +392,7 @@ class GamesView(discord.ui.LayoutView):
                 logger.exception("[cat-life] gamble failed")
                 await _reply(interaction, OOPS)
                 return
-            await interaction.response.edit_message(view=GamesView(self.bet, gamble_note(res)))
+            await vis.edit(interaction, view=GamesView(self.bet, gamble_note(res)))
         return cb
 
     async def _back(self, interaction: discord.Interaction):

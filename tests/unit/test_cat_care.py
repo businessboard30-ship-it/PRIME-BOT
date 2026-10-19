@@ -94,8 +94,9 @@ def _view(monkeypatch, cats):
 
 
 def _care_buttons(view):
-    """The buttons of the LAST ActionRow of the card (V2 has no row numbers; the care row is drawn last)."""
-    last = [r for r in view.walk_children() if isinstance(r, discord.ui.ActionRow)][-1]
+    """The buttons of the care row (V2 has no row numbers, so find the row that has the Feed button)."""
+    last = next(r for r in view.walk_children() if isinstance(r, discord.ui.ActionRow)
+                and any(str(getattr(c, "label", "")).startswith("Feed ·") for c in r.children))
     return {c.label: c for c in last.children if isinstance(c, discord.ui.Button)}
 
 
