@@ -164,3 +164,25 @@ def test_migration_is_loaded_and_additive():
     sql = (ROOT / "database/migrations/064_cat_records.sql").read_text()
     assert "CREATE TABLE IF NOT EXISTS cat_records" in sql and "DROP" not in sql.upper()
     assert "064_cat_records.sql" in (ROOT / "database.py").read_text()
+
+
+# ---------- screens ----------
+def test_stats_screen_shows_the_record_and_stays_in_budget():
+    from discord_bot.cogs import _views_cat_stats as vs
+    from modules import cat_adopt as ca, cat_stats as cs
+    cat = ca.Cat.from_row(FakeConn._cat(11, 1, "Mochi"))
+    r = rec.Record(11, fights=23, wins=14, losses=9, kos=4, streak=2, best_streak=5)
+    t = vs.screen_text(cat, cs.Stats(), {s: 0 for s in cs.STATS}, record=r)
+    assert "Fight record" in t and "14W 9L" in t and "Veteran +2%" in t and "7 more fights" in t
+    assert len(t) < 3900
+    assert "Fight record" not in vs.screen_text(cat, cs.Stats(), {s: 0 for s in cs.STATS})
+    assert "maxed" in vs.screen_text(cat, cs.Stats(), {s: 0 for s in cs.STATS}, record=rec.Record(11, fights=80))
+
+
+def test_result_text_mentions_the_veteran_bonus(db):
+    from discord_bot.cogs import _views_cat_arena as va
+    conn = db()
+    conn.records[11] = dict(cat_id=11, fights=60, wins=30, losses=30, kos=5, streak=0, best_streak=3)
+    res = run(ar.accept(1, 1, None, 11, seed=7))
+    assert "Veteran +5%" in va.result_text(res, 1)
+    assert "Veteran" not in va.result_text(res, 2)

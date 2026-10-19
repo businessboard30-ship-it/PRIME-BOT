@@ -129,6 +129,8 @@ def result_text(res: arena.AcceptResult, viewer_id: int) -> str:
              + f" · 🏅 rating {new_rating:,} ({change:+d})"]
     if not won:
         lines.append(f"😴 **{mine.name}** is tired for {arena.TIRED_HOURS}h" + (f" and 🩹 hurt for {arena.HURT_HOURS}h." if res.hurt else "."))
+    if mine.vet_pct:
+        lines.append(f"🎖️ **{mine.name}** fought with Veteran +{mine.vet_pct}% from experience.")
     if res.mismatch:
         lines.append("-# The cats were far apart in power, so the weaker side loses no rating.")
     lines.append(f"-# Fight code `{r.seed}` · just for fun, play coins only")

@@ -15,6 +15,7 @@ import discord
 from discord_bot.cogs import _cat_visibility as vis
 from modules import cat_adopt as ca
 from modules import cat_rank as cr
+from modules import cat_records as crec
 from modules import cat_stats as cs
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ NOTES = {
 
 
 def screen_text(cat: ca.Cat, stats: cs.Stats, pending: Dict[str, int], note: Optional[str] = None,
-                armed: bool = False) -> str:
+                armed: bool = False, record: Optional[crec.Record] = None) -> str:
     """The whole text of the screen (pure, so the budget test can measure it)."""
     total = cs.pool(cat.rarity, cat.cat_rank)
     left = total - stats.spent() - sum(pending.values())
@@ -61,17 +62,25 @@ def screen_text(cat: ca.Cat, stats: cs.Stats, pending: Dict[str, int], note: Opt
               "",
               f"**Skills** ({cs.slots_for(cat.cat_rank)} of {cs.MAX_SLOTS} slots)",
               cs.skill_lines(stats.skills, cat.cat_rank),
-              "",
-              f"-# Respec: {'free (first time)' if not cost else f'{cost:,} coins'}"
+              ""]
+    if record is not None:
+        nxt = record.to_next()
+        parts += [f"**Fight record** · {crec.line(record)}",
+                  f"-# Veteran: +{crec.VET_STEP_PCT}% power per {crec.VET_EVERY} fights fought, up to +{crec.VET_CAP_PCT}%"
+                  + (f" · {nxt} more fight{'s' if nxt != 1 else ''} to the next step" if nxt else " · maxed"),
+                  ""]
+    parts += [f"-# Respec: {'free (first time)' if not cost else f'{cost:,} coins'}"
               + (" · tap Respec again to confirm" if armed else "")
               + " · just for fun, play coins only"]
     return "\n".join(parts)
 
 
 class StatsView(discord.ui.LayoutView):
-    def __init__(self, parent, cat: ca.Cat, stats: Optional[cs.Stats] = None, note: Optional[str] = None):
+    def __init__(self, parent, cat: ca.Cat, stats: Optional[cs.Stats] = None, note: Optional[str] = None,
+                 record: Optional[crec.Record] = None):
         super().__init__(timeout=600)
         self.parent, self.cat = parent, cat
+        self.record = record
         self.stats = stats or cs.Stats()
         self.note = note
         self.pending: Dict[str, int] = {s: 0 for s in cs.STATS}
@@ -92,7 +101,7 @@ class StatsView(discord.ui.LayoutView):
 
     # -- layout ----------------------------------------------------------
     def text(self) -> str:
-        return screen_text(self.cat, self.stats, self.pending, self.note, self.armed)
+        return screen_text(self.cat, self.stats, self.pending, self.note, self.armed, self.record)
 
     def _build(self) -> None:
         self.clear_items()
@@ -218,4 +227,4 @@ async def open_stats(interaction: discord.Interaction, parent) -> None:
     """Open the screen for the cat on show in My cats."""
     cat = parent.current
     stats = await cs.get_stats(cat.id)
-    await vis.edit(interaction, view=StatsView(parent, cat, stats))
+    await vis.edit(interaction, view=StatsView(parent, cat, stats, record=await crec.get(cat.id)))
