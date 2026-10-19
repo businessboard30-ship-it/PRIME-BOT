@@ -139,6 +139,8 @@ class CatConfig:
     next_at: Optional[datetime] = None
     last_post_at: Optional[datetime] = None
     announce_mode: str = "all"          # see ANNOUNCE_MODES
+    fights_cross_server: bool = False   # cat fights: this server's board posts may be answered from other servers (default OFF)
+    fights_show_server: bool = False    # cat fights: show this server's name on the public board (default OFF)
 
     def effective(self, premium: bool, today: Optional[date] = None) -> Tuple[Tuple[int, ...], float]:
         """(channels, average seconds between cats) after applying the limits of the server's CURRENT plan."""
@@ -162,7 +164,9 @@ class CatConfig:
             active_start=clamp_hour(row["active_start"] if "active_start" in row.keys() else 0, 0) % 24,
             active_end=clamp_hour(row["active_end"] if "active_end" in row.keys() else 24, 24),
             next_at=row["next_at"], last_post_at=row["last_post_at"],
-            announce_mode=clamp_announce(row["announce_mode"] if "announce_mode" in row.keys() else "all"))
+            announce_mode=clamp_announce(row["announce_mode"] if "announce_mode" in row.keys() else "all"),
+            fights_cross_server=bool(row["fights_cross_server"]) if "fights_cross_server" in row.keys() else False,
+            fights_show_server=bool(row["fights_show_server"]) if "fights_show_server" in row.keys() else False)
 
 
 def after_change(old: CatConfig, new: CatConfig, now: Optional[datetime] = None) -> CatConfig:
@@ -207,18 +211,20 @@ async def save_config(cfg: CatConfig, updated_by: Optional[int] = None) -> None:
             """
             INSERT INTO cat_guild_config
                 (guild_id, clone_id, enabled, channel_ids, interval_minutes, next_at, updated_by, pace_percent,
-                 active_start, active_end, announce_mode, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+                 active_start, active_end, announce_mode, fights_cross_server, fights_show_server, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
             ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
                 enabled = EXCLUDED.enabled, channel_ids = EXCLUDED.channel_ids,
                 interval_minutes = EXCLUDED.interval_minutes, next_at = EXCLUDED.next_at,
                 updated_by = EXCLUDED.updated_by, pace_percent = EXCLUDED.pace_percent,
                 active_start = EXCLUDED.active_start, active_end = EXCLUDED.active_end,
-                announce_mode = EXCLUDED.announce_mode, updated_at = NOW()
+                announce_mode = EXCLUDED.announce_mode, fights_cross_server = EXCLUDED.fights_cross_server,
+                fights_show_server = EXCLUDED.fights_show_server, updated_at = NOW()
             """,
             cfg.guild_id, cfg.clone_id, cfg.enabled, list(cfg.channel_ids), cfg.interval_minutes,
             cfg.next_at, updated_by, clamp_pace(cfg.pace_percent),
-            clamp_hour(cfg.active_start, 0) % 24, clamp_hour(cfg.active_end, 24), clamp_announce(cfg.announce_mode))
+            clamp_hour(cfg.active_start, 0) % 24, clamp_hour(cfg.active_end, 24), clamp_announce(cfg.announce_mode),
+            bool(cfg.fights_cross_server), bool(cfg.fights_show_server))
 
 
 async def due(clone_id: Optional[int], limit: int = 10) -> List[CatConfig]:

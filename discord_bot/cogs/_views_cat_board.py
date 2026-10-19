@@ -15,6 +15,8 @@ import discord
 from discord_bot.cogs import _cat_visibility as vis
 from discord_bot.cogs._views_cat_arena import OOPS, _box, _btn, _clone_id, _screen, cat_line, result_text, run_accept
 from modules import cat_arena as arena
+from modules import cat_setup as cs
+from modules import ops_reports
 from modules import cat_requests as cr
 from modules import cat_wallet
 
@@ -141,6 +143,7 @@ class BoardView(discord.ui.LayoutView):
         rows.append(discord.ui.ActionRow(
             _btn("Post a request", self._post, discord.ButtonStyle.success, "📮"),
             _btn("My requests", self._mine, discord.ButtonStyle.primary, "🗂️"),
+            _btn("Blocked", self._blocked, emoji="🚫"),
             _btn("Back", self._back)))
         names = [request_line(r, _name_of(self.client, r.poster_id)) for r in self.items]
         self.add_item(_box(board_text(names, self.page, self.pages, self._power(), self.note), rows))
@@ -178,7 +181,10 @@ class BoardView(discord.ui.LayoutView):
 
         async def done(i: discord.Interaction, res: arena.AcceptResult):
             self.items = []
-            await i.edit_original_response(view=_screen(result_text(res, i.user.id)))
+            f = res.fight
+            foe = f.challenger_id if i.user.id == f.challenged_id else f.challenged_id
+            await i.edit_original_response(view=_screen(result_text(res, i.user.id), report_rows(f.id, foe, self)))
+            await flag_pair(i.client, i.user.id, foe)
 
         async def first(i: discord.Interaction, v):
             await i.response.edit_message(view=v)
@@ -200,6 +206,9 @@ class BoardView(discord.ui.LayoutView):
 
     async def _mine(self, interaction: discord.Interaction):
         await open_mine(interaction, self.parent, self)
+
+    async def _blocked(self, interaction: discord.Interaction):
+        await open_blocked(interaction, self.parent, self)
 
     async def _back(self, interaction: discord.Interaction):
         await self.parent.push(interaction)
@@ -287,9 +296,12 @@ class PostView(discord.ui.LayoutView):
             await self._again(interaction, "Pick a cat first.")
             return
         guild = getattr(interaction, "guild", None)
+        gid = getattr(interaction, "guild_id", None)
         try:
+            cfg = await cs.get_config(gid, _clone_id(interaction.client)) if gid else None
             res = await cr.post(interaction.user.id, _clone_id(interaction.client), cur.cat.id, self.wager, cur.fighter.power,
-                                self.hours, getattr(interaction, "guild_id", None), getattr(guild, "name", None))
+                                self.hours, gid, getattr(guild, "name", None),
+                                cross_server=bool(cfg and cfg.fights_cross_server), show_server=bool(cfg and cfg.fights_show_server))
         except Exception:
             logger.exception("[cat-board] couldn't post a request")
             await self._again(interaction, OOPS)
@@ -385,3 +397,106 @@ async def open_mine(interaction: discord.Interaction, parent, board: BoardView) 
         await board._show(interaction, OOPS)
         return
     await vis.edit(interaction, view=MineView(parent, board, items))
+
+
+# ── report, block, block list ───────────────────────────────────────────
+
+def report_rows(fight_id: int, foe_id: int, board: "BoardView"):
+    """Report / Block buttons under a finished fight. Reports and blocks are about the other player only."""
+    async def _report(interaction: discord.Interaction):
+        status = await cr.report(fight_id, interaction.user.id)
+        text = {"ok": cr.STATUS_TEXT["reported"], "again": "You already reported this fight."}.get(status, cr.STATUS_TEXT["gone"])
+        await interaction.response.send_message("📨 " + text, ephemeral=True)
+
+    async def _block(interaction: discord.Interaction):
+        ok = await cr.block(interaction.user.id, foe_id)
+        await interaction.response.send_message("🚫 Blocked. You won't see each other's requests any more." if ok else OOPS, ephemeral=True)
+
+    async def _back(interaction: discord.Interaction):
+        await board._show(interaction)
+    return [discord.ui.ActionRow(_btn("Report this fight", _report, emoji="📨"), _btn("Block player", _block, discord.ButtonStyle.danger, "🚫"),
+                                 _btn("Back to board", _back))]
+
+
+async def flag_pair(client, a: int, b: int) -> None:
+    """Quietly tell the owner when the same two players keep fighting each other. Best effort."""
+    try:
+        text = cr.pair_flag_text(a, b, await cr.pair_recent(a, b))
+        if text:
+            lo, hi = sorted((int(a), int(b)))
+            await ops_reports.submit(client, f"cat-pair-{lo}-{hi}", text, cooldown=86400)
+    except Exception:
+        logger.debug("[cat-board] couldn't flag a repeated pair", exc_info=True)
+
+
+def blocked_text(names: List[str], note: Optional[str] = None) -> str:
+    parts = [note, ""] if note else []
+    parts += ["## 🚫 Blocked players",
+              "Blocked players never see your requests and you never see theirs. Only you can see this list."]
+    parts += [""] + [f"{i}. {n}" for i, n in enumerate(names, 1)] if names else ["", "You haven't blocked anyone."]
+    return "\n".join(parts)
+
+
+class BlockedView(discord.ui.LayoutView):
+    def __init__(self, parent, board: "BoardView", ids: List[int], note: Optional[str] = None):
+        super().__init__(timeout=600)
+        self.parent, self.board, self.ids, self.note = parent, board, ids, note
+        self.pick: Optional[int] = ids[0] if ids else None
+        self._build()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await self.parent.interaction_check(interaction)
+
+    def _names(self, client) -> List[str]:
+        return [_name_of(client, i) for i in self.ids]
+
+    def _build(self, client=None) -> None:
+        self.clear_items()
+        names = self._names(client or self.board.client)
+        rows = []
+        if self.ids:
+            sel = discord.ui.Select(placeholder="Pick a player", options=[
+                discord.SelectOption(label=f"{n}"[:100], value=str(i), default=i == self.pick) for n, i in zip(names, self.ids)][:25])
+            sel.callback = self._select
+            rows.append(discord.ui.ActionRow(sel))
+        rows.append(discord.ui.ActionRow(_btn("Unblock", self._unblock, discord.ButtonStyle.primary, "✅", disabled=not self.ids),
+                                         _btn("Back to board", self._back)))
+        self.add_item(_box(blocked_text(names[:25], self.note), rows))
+
+    async def _again(self, interaction: discord.Interaction, note: Optional[str] = None):
+        self.note = note
+        self._build(interaction.client)
+        await vis.edit(interaction, view=self)
+
+    async def _select(self, interaction: discord.Interaction):
+        self.pick = int(interaction.data["values"][0])
+        await self._again(interaction)
+
+    async def _unblock(self, interaction: discord.Interaction):
+        if not self.pick:
+            await self._again(interaction, "Pick a player first.")
+            return
+        try:
+            await cr.unblock(interaction.user.id, self.pick)
+            self.ids = await cr.blocked_by(interaction.user.id)
+        except Exception:
+            logger.exception("[cat-board] couldn't unblock")
+            await self._again(interaction, OOPS)
+            return
+        self.pick = self.ids[0] if self.ids else None
+        await self._again(interaction, "✅ Unblocked.")
+
+    async def _back(self, interaction: discord.Interaction):
+        await self.board._show(interaction)
+
+
+async def open_blocked(interaction: discord.Interaction, parent, board: BoardView) -> None:
+    try:
+        ids = await cr.blocked_by(interaction.user.id)
+    except Exception:
+        logger.exception("[cat-board] couldn't read the block list")
+        await board._show(interaction, OOPS)
+        return
+    view = BlockedView(parent, board, ids)
+    view._build(interaction.client)
+    await vis.edit(interaction, view=view)
