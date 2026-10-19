@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 STATS = ("strength", "guard", "speed", "spirit")
 STAT_LABEL = {"strength": "Strength", "guard": "Guard", "speed": "Speed", "spirit": "Spirit"}
-STAT_EMOJI = {"strength": "💪", "guard": "🛡️", "speed": "💨", "spirit": "✨"}
+STAT_EMOJI = {"strength": "🦾", "guard": "🪖", "speed": "☄️", "spirit": "🪬"}
 STAT_HELP = {"strength": "damage", "guard": "less damage taken, more HP", "speed": "acts first, dodges",
              "spirit": "crits and skill power"}
 
@@ -54,13 +54,13 @@ class Skill:
 
 SKILLS: Dict[str, Skill] = {s.key: s for s in (
     Skill("pounce", "Pounce", "🐾", "Big hit, but slow to recover.", 0, 3),
-    Skill("hiss", "Hiss", "😾", "Lowers the other cat's Strength for 1 round.", 0, 3),
-    Skill("fluff_guard", "Fluff Guard", "☁️", "Fluffs up and blocks a hit.", 0, 4),
-    Skill("nap_heal", "Nap Heal", "😴", "A small heal, once a fight.", 3, 8),
-    Skill("zoomies_dodge", "Zoomies Dodge", "💨", "The next hit misses.", 5, 4),
-    Skill("lucky_paw", "Lucky Paw", "🍀", "Extra crit chance.", 5, 3),
+    Skill("hiss", "Hiss", "🫨", "Lowers the other cat's Strength for 1 round.", 0, 3),
+    Skill("fluff_guard", "Fluff Guard", "🫧", "Fluffs up and blocks a hit.", 0, 4),
+    Skill("nap_heal", "Nap Heal", "🪷", "A small heal, once a fight.", 3, 8),
+    Skill("zoomies_dodge", "Zoomies Dodge", "🪽", "The next hit misses.", 5, 4),
+    Skill("lucky_paw", "Lucky Paw", "🧿", "Extra crit chance.", 5, 3),
     Skill("counter_claw", "Counter Claw", "🪝", "Hands back part of the damage.", 8, 4),
-    Skill("yarn_trap", "Yarn Trap", "🧶", "The other cat skips a turn. Long cooldown.", 12, 6),
+    Skill("yarn_trap", "Yarn Trap", "🕸️", "The other cat skips a turn. Long cooldown.", 12, 6),
 )}
 
 
