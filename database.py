@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "118"
+SCHEMA_VERSION = "119"
+# "118" -> "119" adds 070_anime_feed.sql (anime_feed_config: per-server anime release feed channel + on/off). CREATE TABLE IF NOT EXISTS only.
 # "117" -> "118" adds 069_bot_profile_vote.sql (bot_profile_vote_unlocks: servers unlocked for Edit bot profile by a DiscordThings vote). CREATE TABLE IF NOT EXISTS only.
 # "116" -> "117" adds 068_primole.sql (cat_wallets.primole column). ADD COLUMN IF NOT EXISTS only.
 # "115" -> "116" adds 067_market_voice.sql (market_voice, market_voice_settings, market_reports). CREATE TABLE IF NOT EXISTS only.
@@ -5809,6 +5810,11 @@ class Database:
         bot_profile_vote_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "069_bot_profile_vote.sql"
         if bot_profile_vote_migration.exists():
             await conn.execute(bot_profile_vote_migration.read_text())
+
+        # Anime release feed setup (channel + on/off per server). Additive/idempotent.
+        anime_feed_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "070_anime_feed.sql"
+        if anime_feed_migration.exists():
+            await conn.execute(anime_feed_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
