@@ -10,6 +10,7 @@ One card builder serves previews, test posts and (later) real posts, so every se
 from __future__ import annotations
 
 import logging
+import time
 from typing import List, Optional
 
 import discord
@@ -28,7 +29,8 @@ TEXT_LIMIT = 3800
 def card_text(p: af.Preview, *, tag: Optional[str] = None) -> str:
     head = f"## {p.title}"
     meta = " · ".join(x for x in (p.fmt, ", ".join(p.genres)) if x)
-    lines = [head, f"**{af.episode_label(p)}** airs <t:{p.airing_at}:F> (<t:{p.airing_at}:R>)"]
+    verb = "aired" if p.airing_at <= int(time.time()) else "airs"
+    lines = [head, f"**{af.episode_label(p)}** {verb} <t:{p.airing_at}:F> (<t:{p.airing_at}:R>)"]
     if meta:
         lines.append(f"-# {meta}")
     if p.synopsis:
@@ -79,7 +81,7 @@ def setup_text(cfg: af.FeedConfig, note: Optional[str] = None) -> str:
               "times, shown in each reader's own timezone. Adult titles are never shown.", "",
               f"**Channel:** {f'<#{cfg.channel_id}>' if cfg.channel_id else 'not picked yet'}",
               f"**Feed:** {'ON' if cfg.enabled and cfg.channel_id else 'OFF'}",
-              "-# Automatic posting starts with the next update. Until then you can preview and send a test post."]
+              "-# New episodes are posted when they air. Only episodes that air after you turn the feed on are posted, never a backlog."]
     return "\n".join(parts)
 
 
@@ -159,6 +161,7 @@ class AnimeSetupView(discord.ui.LayoutView):
     async def _on_preview(self, interaction: discord.Interaction):
         await interaction.response.defer()
         items, ok = await af.airing_soon()
+        items = af.upcoming(items, int(time.time()))
         self.previews, self.index, self.screen = items, 0, "preview"
         self.note = None if ok else "😿 I can't reach AniList right now, so there's nothing to preview. Try again in a few minutes."
         await self._push(interaction)
@@ -182,6 +185,7 @@ class AnimeSetupView(discord.ui.LayoutView):
         await interaction.response.defer()
         channel = self.guild.get_channel(self.cfg.channel_id) if self.cfg.channel_id else None
         items, ok = await af.airing_soon()
+        items = af.upcoming(items, int(time.time())) or items
         if channel is None:
             self.note = "🚫 That channel is gone. Pick another."
         elif not items:

@@ -284,6 +284,7 @@ class AnimeBotDiscord(commands.Bot):
 
         await self.load_extension("discord_bot.cogs.guild_activity")
         await self.load_extension("discord_bot.cogs.catch")
+        await self.load_extension("discord_bot.cogs.anime_feed")
         await self.load_extension("discord_bot.cogs.help")
         await self.load_extension("discord_bot.cogs.dashboard")
         # archive / archive_automation dropped: feature retired to free up

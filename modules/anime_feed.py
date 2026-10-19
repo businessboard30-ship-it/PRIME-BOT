@@ -18,12 +18,14 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 CACHE_TTL = 15 * 60
 WINDOW_HOURS = 48
+LOOKBACK_HOURS = 3                  # episodes that aired in the last 3 hours are still "just aired"; older ones are never posted
 MAX_ITEMS = 12
 SYNOPSIS_CHARS = 280
 SOURCE_NAME = "AniList"
@@ -114,6 +116,10 @@ def episode_label(p: Preview) -> str:
     return f"Episode {p.episode}{total}"
 
 
+def upcoming(items: List[Preview], now: int) -> List[Preview]:
+    return [p for p in items if p.airing_at > now]
+
+
 # ── provider (cached, shared across servers) ────────────────────────────
 
 _cache: Tuple[float, List[Preview]] = (0.0, [])
@@ -124,7 +130,7 @@ async def _fetch(now: int) -> Optional[dict]:
     from anime_service import get_session
     from config import ANILIST_ENDPOINT
     session = await get_session()
-    body = {"query": _QUERY, "variables": {"from": now, "to": now + WINDOW_HOURS * 3600, "perPage": 40}}
+    body = {"query": _QUERY, "variables": {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": 40}}
     async with session.post(ANILIST_ENDPOINT, json=body) as resp:
         if resp.status != 200:
             logger.warning("[anime-feed] AniList answered %s", resp.status)
@@ -133,7 +139,7 @@ async def _fetch(now: int) -> Optional[dict]:
 
 
 async def airing_soon() -> Tuple[List[Preview], bool]:
-    """Titles airing in the next 48 hours, soonest first. (items, ok). ok=False means the provider could not be reached;
+    """Titles that aired in the last 3 hours or air in the next 48, soonest first (use `upcoming` for only the future). (items, ok). ok=False means the provider could not be reached;
     an empty list with ok=True means nothing is scheduled. Fresh cache is reused; simultaneous callers share one request."""
     global _cache, _lock
     if _lock is None:
@@ -165,6 +171,7 @@ class FeedConfig:
     clone_id: Optional[int] = None
     enabled: bool = False
     channel_id: Optional[int] = None
+    enabled_at: Optional[datetime] = None
 
 
 def _key(clone_id) -> int:
@@ -180,20 +187,65 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT enabled, channel_id FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
+            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
                                       int(guild_id), _key(clone_id))
     except Exception:
         logger.exception("[anime-feed] couldn't read the setup for guild %s", guild_id)
         row = None
-    return FeedConfig(guild_id, clone_id, bool(row["enabled"]), int(row["channel_id"]) if row and row["channel_id"] else None) if row \
-        else FeedConfig(guild_id, clone_id)
+    return _cfg(guild_id, clone_id, row) if row else FeedConfig(guild_id, clone_id)
+
+
+def _cfg(guild_id, clone_id, row) -> FeedConfig:
+    return FeedConfig(int(guild_id), clone_id, bool(row["enabled"]), int(row["channel_id"]) if row["channel_id"] else None, row["enabled_at"])
+
+
+async def enabled_guilds(clone_id=None) -> List[FeedConfig]:
+    """Every server of this bot with the feed on and a channel picked. Raises on database errors (the worker backs off)."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at FROM anime_feed_config "
+                                "WHERE clone_key = $1 AND enabled AND channel_id IS NOT NULL", _key(clone_id))
+    return [_cfg(r["guild_id"], clone_id, r) for r in rows]
+
+
+async def claim(guild_id: int, clone_id, anime_id: int, episode: int) -> bool:
+    """True for exactly one caller per (server, episode): the duplicate guard. Claim BEFORE sending."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        got = await conn.fetchval("INSERT INTO anime_feed_posted (guild_id, clone_key, anime_id, episode) VALUES ($1, $2, $3, $4) "
+                                  "ON CONFLICT DO NOTHING RETURNING 1", int(guild_id), _key(clone_id), int(anime_id), int(episode))
+    return got is not None
+
+
+async def release(guild_id: int, clone_id, anime_id: int, episode: int) -> None:
+    """Give a claim back when the send failed for a reason worth retrying."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM anime_feed_posted WHERE guild_id = $1 AND clone_key = $2 AND anime_id = $3 AND episode = $4",
+                           int(guild_id), _key(clone_id), int(anime_id), int(episode))
+
+
+async def disable(guild_id: int, clone_id=None) -> None:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE anime_feed_config SET enabled = FALSE, enabled_at = NULL, updated_at = NOW() WHERE guild_id = $1 AND clone_key = $2",
+                           int(guild_id), _key(clone_id))
 
 
 async def save_config(cfg: FeedConfig, updated_by: Optional[int] = None) -> None:
+    """Saves the channel and switch. `enabled_at` is stamped when the feed turns on (and cleared when it turns off), so only
+    episodes that air AFTER that moment are ever posted. Wakes the worker so a change takes effect without waiting."""
+    on = bool(cfg.enabled and cfg.channel_id)
     pool = await _pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at) "
-            "VALUES ($1, $2, $3, $4, $5, NOW()) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
-            "enabled = EXCLUDED.enabled, channel_id = EXCLUDED.channel_id, updated_by = EXCLUDED.updated_by, updated_at = NOW()",
-            int(cfg.guild_id), _key(cfg.clone_id), bool(cfg.enabled and cfg.channel_id), cfg.channel_id, updated_by)
+            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at) "
+            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
+            "enabled = EXCLUDED.enabled, channel_id = EXCLUDED.channel_id, updated_by = EXCLUDED.updated_by, updated_at = NOW(), "
+            "enabled_at = CASE WHEN NOT EXCLUDED.enabled THEN NULL WHEN anime_feed_config.enabled THEN anime_feed_config.enabled_at ELSE NOW() END",
+            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by)
+    try:
+        from modules import anime_feed_worker
+        anime_feed_worker.wake_all()
+    except Exception:
+        logger.debug("[anime-feed] couldn't wake the worker", exc_info=True)
