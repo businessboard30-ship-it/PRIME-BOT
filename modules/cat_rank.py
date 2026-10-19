@@ -4,7 +4,7 @@
 Cat ranks (play game only, coins only, never real money).
 
   * Every cat starts at rank 0, the old ones and the new ones alike. Spend coins to rank a cat up, one step at a time,
-    up to rank 5. The rank stays with the cat when it is traded or sold, so a ranked cat is worth more on the market.
+    up to rank 25. The rank stays with the cat when it is traded or sold, so a ranked cat is worth more on the market.
   * Rarer cats cost more to rank up (same multiplier as their adoption rewards): common x1, uncommon x1.5, rare x2.5,
     legendary x5.
   * Every rank adds 2 points to its owner's Collectors score on the /cat leaderboard.
@@ -22,10 +22,22 @@ from modules import cat_wallet
 
 logger = logging.getLogger(__name__)
 
-MAX_RANK = 5
-RANK_TITLES = ("Newcomer", "Rising", "Seasoned", "Champion", "Royal", "Legend")
-RANK_EMOJI = ("\u25AB\uFE0F", "\U0001F949", "\U0001F948", "\U0001F947", "\U0001F48E", "\U0001F31F")
-BASE_COST = (0, 300, 900, 2_400, 6_000, 15_000)     # coins to REACH rank n, for a common cat
+MAX_RANK = 25
+RANK_TITLES = (
+    "Newcomer", "Rising", "Seasoned", "Champion", "Royal", "Legend",                    # ranks 0-5 (the original six)
+    "Mythic", "Celestial", "Cosmic", "Stellar", "Radiant", "Eternal", "Immortal", "Divine", "Ascendant", "Sovereign",
+    "Emperor", "Archon", "Titan", "Phoenix", "Dragon", "Astral", "Primordial", "Omniscient", "Transcendent", "Ultimate",
+)                                                                                       # ranks 6-25
+RANK_EMOJI = (
+    "\u25AB\uFE0F", "\U0001F949", "\U0001F948", "\U0001F947", "\U0001F48E", "\U0001F31F",
+    "\U0001F52E", "\u2728", "\U0001F30C", "\U0001F4AB", "\u2600\uFE0F", "\u267E\uFE0F", "\U0001F531", "\U0001F47C",
+    "\U0001F680", "\U0001F3DB\uFE0F", "\U0001F985", "\u26A1", "\U0001F5FF", "\U0001F525", "\U0001F409",
+    "\U0001F320", "\U0001F300", "\U0001F441\uFE0F", "\U0001FA90", "\U0001F3C6",
+)
+_ORIGINAL_COST = (0, 300, 900, 2_400, 6_000, 15_000)                                    # ranks 0-5, unchanged
+_GROWTH = 1.18                                                                          # each new rank costs 18% more than the last
+BASE_COST = _ORIGINAL_COST + tuple(
+    int(round(15_000 * _GROWTH ** (n - 5), -2)) for n in range(6, MAX_RANK + 1))        # coins to REACH rank n, for a common cat
 POINTS_PER_RANK = 2                                  # added to the Collectors leaderboard score
 
 

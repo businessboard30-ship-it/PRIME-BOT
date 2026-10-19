@@ -10,6 +10,8 @@ Cat market (play coins only, never real money).
     lands in its new owner's collection on the bot they bought it with, and the coins move between the two wallets
     (each wallet belongs to one person on one bot).
   * A cat that is for sale can't be released or swapped until the listing is taken down.
+  * The asking price must sit inside the range for the cat's rarity and rank (price_range): a higher rank and a rarer
+    cat can ask for more, and nobody can list a top-rank cat for next to nothing or a common cat for a fortune.
 """
 
 from __future__ import annotations
@@ -20,13 +22,49 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from modules import cat_adopt as ca
+from modules import cat_rank as cr
 
 logger = logging.getLogger(__name__)
 
 MIN_PRICE = 10
-MAX_PRICE = 1_000_000
+MAX_PRICE = 50_000_000                  # the top ranks of a legendary cat are worth tens of millions
 MAX_OPEN_PER_SELLER = 5
 PAGE_SIZE = 10
+
+
+# Allowed asking price = a range that grows with the cat's rarity and with the coins that went into its ranks.
+RARITY_BASE_VALUE = {"common": 50, "uncommon": 150, "rare": 500, "legendary": 2_000}
+LOW_SHARE_OF_INVESTED = 0.10        # the cheapest ask: 10% of what its ranks cost, plus a fifth of the base value
+HIGH_SHARE_OF_INVESTED = 1.5        # the dearest ask: 1.5x what its ranks cost, plus 3x the base value
+
+
+def price_range(rarity: str, rank) -> tuple:
+    """(lowest, highest) asking price in coins for a cat of this rarity and rank (0-25)."""
+    base = RARITY_BASE_VALUE.get(rarity, RARITY_BASE_VALUE["common"])
+    r = cr.clamp(rank)
+    invested = sum(cr.cost_to_reach(n, rarity) for n in range(1, r + 1))
+    low = max(MIN_PRICE, int(round(base * 0.2 + invested * LOW_SHARE_OF_INVESTED)))
+    high = min(MAX_PRICE, int(round(base * 3 + invested * HIGH_SHARE_OF_INVESTED)))
+    return low, max(high, low * 2 if low * 2 <= MAX_PRICE else MAX_PRICE)
+
+
+def price_ok(rarity: str, rank, price: int) -> bool:
+    low, high = price_range(rarity, rank)
+    return low <= int(price) <= high
+
+
+def price_choices(rarity: str, rank) -> List[int]:
+    """Five tidy preset prices across the allowed range: lowest, 25%, 50%, 75%, highest."""
+    low, high = price_range(rarity, rank)
+    out = []
+    for share in (0.0, 0.25, 0.5, 0.75, 1.0):
+        raw = low + (high - low) * share
+        digits = len(str(int(raw)))
+        step = 10 ** max(0, digits - 2)                       # two significant figures: 1,200 not 1,187
+        p = max(low, min(high, int(round(raw / step) * step)))
+        if p not in out:
+            out.append(p)
+    return out
 
 
 def parse_price(raw) -> Optional[int]:
@@ -89,15 +127,18 @@ def _key(clone_id) -> int:
 
 async def create_listing(cat_id: int, seller_id: int, seller_clone_id, price: int,
                          guild_id: Optional[int], channel_id: Optional[int]) -> tuple:
-    """Returns (status, Listing|None): ok | not_yours | listed | away | too_many | bad_price."""
+    """Returns (status, Listing|None): ok | not_yours | listed | away | too_many | bad_price | out_of_range."""
     if not MIN_PRICE <= int(price) <= MAX_PRICE:
         return "bad_price", None
     pool = await _pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            owner = await conn.fetchrow("SELECT owner_id, clone_id FROM cat_adoptions WHERE id = $1 FOR UPDATE", cat_id)
+            owner = await conn.fetchrow(
+                "SELECT owner_id, clone_id, rarity, cat_rank FROM cat_adoptions WHERE id = $1 FOR UPDATE", cat_id)
             if owner is None or int(owner["owner_id"]) != seller_id or _key(owner["clone_id"]) != _key(seller_clone_id):
                 return "not_yours", None
+            if not price_ok(owner["rarity"], owner["cat_rank"], int(price)):
+                return "out_of_range", None            # checked against the rank the cat has right now
             if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cat_id):
                 return "listed", None
             if await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cat_id):

@@ -25,7 +25,7 @@ def test_costs_scale_with_rank_and_rarity():
 
 def test_next_cost_stops_at_the_top():
     assert cr.next_cost(cat(0)) == 300 and cr.next_cost(cat(4, "rare")) == 15000 * 0 + int(round(15000 * 2.5))
-    assert cr.next_cost(cat(5)) is None and cr.next_cost(cat(99)) is None
+    assert cr.next_cost(cat(5)) == 17700 and cr.next_cost(cat(25)) is None and cr.next_cost(cat(99)) is None
 
 
 def test_old_cats_default_to_rank_zero_and_junk_is_clamped():

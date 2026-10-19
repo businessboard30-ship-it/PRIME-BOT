@@ -5,6 +5,7 @@ All the rules and database work live in modules/cat_life.py; this file only draw
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -250,7 +251,7 @@ def _outing_embed(kind: str) -> discord.Embed:
             "Pick a place and a cat. The longer and fancier the walk, the more it costs, and the more your cat can bring home "
             "(sometimes a bit less, a walk is an adventure!). Rarer and higher ranked cats do better. 🌸\n\n" + "\n".join(lines)))
     else:
-        lines = [f"{h.emoji} **{h.name}**: {h.minutes}m · costs {COINS} {h.fee:,} · base chance {cat_life.percent(h.success)} · "
+        lines = [f"{h.emoji} **{h.name}**: {h.seconds}s · costs {COINS} {h.fee:,} · base chance {cat_life.percent(h.success)} · "
                  f"win {COINS} {int(h.fee * h.multiplier):,}" for h in cat_life.HEISTS.values()]
         e = discord.Embed(title="🎀 Kitty heist", color=PINK, description=(
             "You and your cat sneak into a pretend place in the cutest heist ever! If you win you get a big payout; if you get "
@@ -258,6 +259,29 @@ def _outing_embed(kind: str) -> discord.Embed:
             f"{cat_life.percent(cat_life.HEIST_MAX_SUCCESS)}). Only pretend places, never real players. 🧶\n\n" + "\n".join(lines)))
     e.set_footer(text=FOOTER)
     return e
+
+
+async def _heist_reveal(interaction: discord.Interaction, res: "cat_life.OutingStart", heist: "cat_life.Heist") -> None:
+    """Heists take seconds: show the sneak-in screen, wait, then pay out and show the result on the same message.
+    The outing is already saved, so if the bot restarts during the wait the 🎁 Claim button still pays it."""
+    e = discord.Embed(title=f"🎀 Sneaking into {heist.name} {heist.emoji}", color=PINK, description=(
+        f"You and **{res.cat_name}** tiptoe in... Your chance: **{cat_life.percent(res.chance)}**\n"
+        f"Result <t:{_ts(res.ends_at)}:R>! 🤞\n(Spent {COINS} {res.cost:,}, {COINS} {res.coins:,} left.)"))
+    e.set_footer(text=FOOTER)
+    await interaction.response.edit_message(embed=e, view=None)
+    await asyncio.sleep(heist.seconds + 1)
+    items = []
+    for _ in range(4):                                # a second or two of clock difference between the bot and the database
+        try:
+            items = await cat_life.claim_outings(interaction.user.id, _clone(interaction))
+        except Exception:
+            logger.exception("[cat-life] heist reveal failed")
+            break
+        if items:
+            break
+        await asyncio.sleep(1.5)
+    await _show_hub(interaction, claim_note(items) if items else
+                    "🎀 The heist is still going. Tap 🎁 Claim in a moment to see how it went! 🐾")
 
 
 class OutingView(discord.ui.View):
@@ -308,6 +332,9 @@ class OutingView(discord.ui.View):
         except Exception:
             logger.exception("[cat-life] outing failed")
             await _reply(interaction, OOPS)
+            return
+        if self.kind == "heist" and res.status == "ok":
+            await _heist_reveal(interaction, res, cat_life.HEISTS[self.route])
             return
         await _show_hub(interaction, outing_start_note(res, self.kind, self.route))
 

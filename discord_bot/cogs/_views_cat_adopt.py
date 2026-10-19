@@ -535,8 +535,8 @@ class TradeTargetView(discord.ui.View):
         await interaction.response.edit_message(content=None, embed=await self.parent.embed(), view=self.parent)
 
     async def _sell(self, interaction: discord.Interaction):
-        from discord_bot.cogs._views_cat_market import SellModal
-        await interaction.response.send_modal(SellModal(self.parent.current))
+        from discord_bot.cogs._views_cat_market import open_sell_wizard
+        await open_sell_wizard(interaction, self.parent.current)
 
     async def _by_id(self, interaction: discord.Interaction):
         # Everyone can type an ID. Whether it works across servers is decided after the ID is read (TradeIdModal).

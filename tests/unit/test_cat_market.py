@@ -40,7 +40,7 @@ def use(monkeypatch, mod, conn):
 
 # -- pure rules ----------------------------------------------------------------------------------
 @pytest.mark.parametrize("raw,price", [("1500", 1500), ("1,500", 1500), ("1.5k", 1500), (" 20 ", 20), ("5", None),
-                                       ("2m", None), ("abc", None), ("-10", None), ("", None), ("1e9", None)])
+                                       ("2m", 2_000_000), ("60m", None), ("abc", None), ("-10", None), ("", None), ("1e9", None)])
 def test_parse_price(raw, price):
     assert cm.parse_price(raw) == price
 
