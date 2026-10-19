@@ -80,7 +80,8 @@ def test_equip_select_wears_the_item_and_says_so(monkeypatch):
     monkeypatch.setattr(type(sel), "values", property(lambda self: ["1"]))
     i = FI(10)
     run(sel.callback(i))
-    assert "Royal Crown" in i.sent[0][0] and "on your profile card" in i.sent[0][0] and i.sent[0][1]["ephemeral"] is False
+    t = _v2_text(i.sent[0][1]["view"])
+    assert "Royal Crown" in t and "on your profile card" in t and i.sent[0][1]["ephemeral"] is False
     assert sel.options[0].description.startswith("Pick to wear")
 
 
@@ -125,3 +126,18 @@ def test_migration_is_additive_and_wired():
     sql = (ROOT / "database/migrations/048_cat_equipped.sql").read_text()
     assert "CREATE TABLE IF NOT EXISTS cat_equipped" in sql and "DROP " not in sql.upper() and "DELETE FROM" not in sql.upper()
     assert "048_cat_equipped.sql" in (ROOT / "database.py").read_text()
+
+
+def _v2_text(view):
+    out = []
+    def walk(items):
+        for it in items:
+            if hasattr(it, "content"):
+                out.append(it.content)
+            walk(getattr(it, "children", []) or [])
+    walk(view.children)
+    return "\n".join(out)
+
+
+def _v2_urls(view):
+    return str(view.to_components())

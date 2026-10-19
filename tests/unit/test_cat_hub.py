@@ -83,10 +83,54 @@ def test_picking_a_missing_entry_says_so(monkeypatch):
 
 # ── the card ──────────────────────────────────────────────────────────────
 
-def test_card_has_ring_picture_and_optional_cat():
-    e = hub.card(["⏰ **Next cat:** soon"], "https://cdn.discordapp.com/attachments/1/2/c.jpg")
-    assert e.image.url.endswith("c.jpg") and e.thumbnail.url and "Next cat" in e.description
-    assert hub.card([]).image.url is None
+def _count(payload) -> int:
+    """Components in a message payload, nested ones included (what Discord's 40 limit counts)."""
+    if isinstance(payload, dict):
+        return (1 if isinstance(payload.get("type"), int) else 0) + sum(_count(v) for v in payload.values())
+    if isinstance(payload, (list, tuple)):
+        return sum(_count(v) for v in payload)
+    return 0
+
+
+def _texts(view):
+    out = []
+    def walk(items):
+        for it in items:
+            if hasattr(it, "content"):
+                out.append(it.content)
+            walk(getattr(it, "children", []) or [])
+    walk(view.children)
+    return "\n".join(out)
+
+
+def test_card_is_v2_with_ring_picture_and_optional_cat():
+    import discord
+    v = hub.HubView("https://cdn.discordapp.com/attachments/1/2/c.jpg", can_setup=True, lines=["⏰ **Next cat:** soon"])
+    assert isinstance(v, discord.ui.LayoutView)
+    payload = v.to_components()
+    assert "c.jpg" in str(payload) and "bot-ring" in str(payload)
+    t = _texts(v)
+    assert "Cat menu" in t and "Next cat" in t
+    plain = hub.HubView(lines=[])
+    assert "c.jpg" not in str(plain.to_components())
+
+
+def test_hub_stays_under_discords_40_component_limit():
+    full = _count(hub.HubView("https://x/y.jpg", can_setup=True, lines=["a", "b"]).to_components())
+    small = _count(hub.HubView().to_components())
+    assert 10 <= small < full <= 40, (small, full)         # real lower bound, so the counter can't pass vacuously
+
+
+def test_next_cat_button_rebuilds_the_card(monkeypatch):
+    async def lines(_i):
+        return ["⏰ **Next cat:** later"]
+    monkeypatch.setattr(hub, "status", lines)
+    v = hub.HubView(lines=["old"])
+    i = _inter()
+    i.response.edit_message = AsyncMock()
+    nxt = next(c for row in v.walk_children() for c in [row] if isinstance(c, hub._NextCatButton))
+    run(nxt.callback(i))
+    assert "later" in _texts(v) and "old" not in _texts(v) and i.response.edit_message.await_args.kwargs["view"] is v
 
 
 def _inter(done=False, guild_id=5):
@@ -109,7 +153,7 @@ def test_open_hub_is_private_and_uses_followup_only_after_a_defer(monkeypatch):
     b = _inter(done=True)
     run(hub.open_hub(b, "https://x/y.jpg", note="😺 Easy there"))
     kw = b.followup.send.await_args.kwargs
-    assert kw["ephemeral"] is False and kw["embed"].description.startswith("😺 Easy there")
+    assert kw["ephemeral"] is False and "😺 Easy there" in _texts(kw["view"]) and "embed" not in kw
     assert kw["view"].picture_url == "https://x/y.jpg"
     c = _inter(done=False)
     run(hub.open_hub(c, deferred=True))                     # send_cat has already deferred
