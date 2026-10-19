@@ -40,6 +40,14 @@ STATUS_TEXT = {
     "max_open": f"You already have {MAX_OPEN} open requests. Cancel one or wait for it to end.",
     "gone": "That request isn't open any more.",
     "not_yours": "That request isn't yours.",
+    "self": "That's your own request. Someone else has to answer it.",
+    "band": "Your cat is too far from that cat's power. Pick a closer cat.",
+    "seen": "You can't answer that request.",
+    "cat_you": cat_arena.STATUS_TEXT["cat"],
+    "poor_you": cat_arena.STATUS_TEXT["poor"],
+    "limit_them": "The poster has hit their fight limit for today, so the request was taken down.",
+    "pair": cat_arena.STATUS_TEXT["pair"],
+    "them_off": "The poster can no longer fight, so the request was taken down and their wager returned.",
 }
 
 
@@ -245,6 +253,125 @@ async def expire_due(limit: int = 50) -> int:
         except Exception:
             logger.warning("[cat-requests] couldn't expire request %s", rid, exc_info=True)
     return done
+
+
+# ── accepting a request ─────────────────────────────────────────────────
+
+_HELD = ("SELECT 1 FROM cat_fight_requests WHERE cat_id = $1 AND status IN ('open','accepted','locked') AND id <> $2 "
+         "AND (status <> 'open' OR expires_at > NOW())")
+
+
+async def _close_refund(conn, req, status: str) -> None:
+    """Take the request down and give the poster's wager back (inside the caller's transaction)."""
+    await conn.execute("UPDATE cat_fight_requests SET status = $2, settled_at = NOW() WHERE id = $1 AND status = 'open'",
+                       int(req["id"]), status)
+    await _refund(conn, int(req["poster_id"]), int(req["wager"]))
+
+
+async def accept(request_id: int, user_id: int, clone_id, cat_id: int, guild_id: Optional[int] = None,
+                 seed: Optional[int] = None) -> cat_arena.AcceptResult:
+    """Answer an open request with `cat_id`. ONE transaction: the request row is locked first, then cats by id, arena
+    rows, daily rows and wallets by owner id. The poster's wager was escrowed when they posted; the accepter's is taken
+    here, the fight runs, the winner is paid and the request is settled, or nothing at all happens. A second tap or a
+    race finds the request no longer open and gets 'gone'. When the poster can no longer fight (cat gone or busy, Arena
+    off, new-player cap, daily limit) the request is closed and their wager refunded."""
+    import secrets
+    seed = secrets.randbelow(2 ** 31) if seed is None else int(seed)
+    A = cat_arena
+    key = A._bk(clone_id)
+    p = await _pool()
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            req = await conn.fetchrow("SELECT *, (expires_at > NOW()) AS live FROM cat_fight_requests WHERE id = $1 FOR UPDATE",
+                                      int(request_id))
+            if req is None or req["status"] != "open" or not req["live"]:
+                return A.AcceptResult("gone")
+            me_id, them_id, wager = int(user_id), int(req["poster_id"]), int(req["wager"])
+            if me_id == them_id:
+                return A.AcceptResult("self")
+            if int(req["clone_key"]) != key:
+                return A.AcceptResult("gone")
+            if await conn.fetchval("SELECT 1 FROM cat_blocks WHERE (owner_id = $1 AND blocked_id = $2) OR (owner_id = $2 AND blocked_id = $1)",
+                                   me_id, them_id):
+                return A.AcceptResult("seen")
+            if not visible_to(poster_id=them_id, viewer_id=me_id, poster_guild=req["guild_id"], viewer_guild=guild_id,
+                              cross_server=bool(req["cross_server"])):
+                return A.AcceptResult("seen")
+
+            cats = {int(r["id"]): r for r in await conn.fetch(
+                "SELECT * FROM cat_adoptions WHERE id = ANY($1::bigint[]) ORDER BY id FOR UPDATE", [int(req["cat_id"]), int(cat_id)])}
+            theirs, mine = cats.get(int(req["cat_id"])), cats.get(int(cat_id))
+
+            async def busy(cid: int) -> bool:
+                return bool(await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cid)
+                            or await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cid)
+                            or await conn.fetchval("SELECT 1 FROM cat_effects WHERE cat_id = $1 AND effect_key = 'tired' AND ends_at > NOW()", cid))
+
+            if theirs is None or int(theirs["owner_id"]) != them_id or A._bk(theirs["clone_id"]) != key or await busy(int(req["cat_id"])):
+                await _close_refund(conn, req, "cancelled")
+                return A.AcceptResult("cat_them")
+            if (mine is None or int(mine["owner_id"]) != me_id or A._bk(mine["clone_id"]) != key or await busy(int(cat_id))
+                    or await conn.fetchval(_HELD, int(cat_id), int(request_id))):
+                return A.AcceptResult("cat_you")
+
+            arena = {int(r["owner_id"]): r for r in await conn.fetch(
+                "SELECT owner_id, arena_on, rating, created_at FROM cat_arena WHERE owner_id = ANY($1::bigint[]) AND bot_key = $2 "
+                "ORDER BY owner_id FOR UPDATE", [me_id, them_id], key)}
+            if not arena.get(me_id) or not arena[me_id]["arena_on"]:
+                return A.AcceptResult("me_off")
+            if not arena.get(them_id) or not arena[them_id]["arena_on"] or A.wager_error(wager, arena[them_id]["created_at"]):
+                await _close_refund(conn, req, "cancelled")
+                return A.AcceptResult("them_off")
+            if A.wager_error(wager, arena[me_id]["created_at"]):
+                return A.AcceptResult("new")
+
+            day = A.today()
+            for uid in (me_id, them_id):
+                await conn.execute("INSERT INTO cat_arena_daily (owner_id, day) VALUES ($1, $2) ON CONFLICT DO NOTHING", uid, day)
+            drows = {int(r["owner_id"]): r for r in await conn.fetch(
+                "SELECT owner_id, fights, net FROM cat_arena_daily WHERE owner_id = ANY($1::bigint[]) AND day = $2 ORDER BY owner_id FOR UPDATE",
+                [me_id, them_id], day)}
+            d_me, d_them = drows[me_id], drows[them_id]
+            if int(d_me["fights"]) >= A.FIGHTS_PER_DAY or A.loss_room(int(d_me["net"])) < wager:
+                return A.AcceptResult("limit_me")
+            if int(d_them["fights"]) >= A.FIGHTS_PER_DAY or A.loss_room(int(d_them["net"])) < wager:
+                await _close_refund(conn, req, "cancelled")
+                return A.AcceptResult("limit_them")
+            earlier = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM cat_fights WHERE status = 'settled' AND day = $3 AND "
+                "((challenger_id = $1 AND challenged_id = $2) OR (challenger_id = $2 AND challenged_id = $1))", me_id, them_id, day) or 0)
+            if earlier >= A.PAIR_PER_DAY:
+                return A.AcceptResult("pair")
+
+            # the power band, from the cat as it is right now (stats and Hurt included)
+            cat_me, cat_them = A.cat_adopt.Cat.from_row(mine), A.cat_adopt.Cat.from_row(theirs)
+            hurt = {c.id: bool(await conn.fetchval("SELECT 1 FROM cat_effects WHERE cat_id = $1 AND effect_key = 'hurt' AND ends_at > NOW()", c.id))
+                    for c in (cat_me, cat_them)}
+            f_me = A.cat_battle.from_cat(cat_me, await A.cat_stats._load(conn, cat_me.id), hurt=hurt[cat_me.id])
+            f_them = A.cat_battle.from_cat(cat_them, await A.cat_stats._load(conn, cat_them.id), hurt=hurt[cat_them.id])
+            if not in_band(f_them.power, f_me.power):
+                return A.AcceptResult("band")
+
+            # escrow the accepter's wager (the poster's is already held)
+            wallets = {int(r["owner_id"]): int(r["coins"]) for r in await conn.fetch(
+                "SELECT owner_id, coins FROM cat_wallets WHERE owner_id = ANY($1::bigint[]) AND COALESCE(clone_id, -1) = $2 "
+                "ORDER BY owner_id FOR UPDATE", [me_id, them_id], -1)}
+            if wallets.get(me_id, 0) < wager:
+                return A.AcceptResult("poor", wager=wager)
+            took = await conn.fetchval("UPDATE cat_wallets SET coins = coins - $3, updated_at = NOW() "
+                                       "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND coins >= $3 RETURNING coins", me_id, -1, wager)
+            if took is None:
+                raise A._Abort("poor", wager=wager)
+
+            frow = await conn.fetchrow(
+                "INSERT INTO cat_fights (mode, clone_key, guild_id, challenger_id, challenged_id, challenger_cat, wager, status, expires_at) "
+                "VALUES ('request', $1, $2, $3, $4, $5, $6, 'pending', NOW()) RETURNING *",
+                key, req["guild_id"], them_id, me_id, int(req["cat_id"]), wager)
+            fight = A.Fight.from_row(frow)
+            res = await A._fight_and_settle(conn, fight, me_id, them_id, int(cat_id), mine, theirs, arena, day, earlier, key, seed)
+            await conn.execute("UPDATE cat_fight_requests SET status = 'settled', accepter_id = $2, fight_id = $3, settled_at = NOW() WHERE id = $1",
+                               int(request_id), me_id, fight.id)
+            return res
 
 
 # ── reading the board ───────────────────────────────────────────────────

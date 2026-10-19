@@ -129,7 +129,8 @@ class CareResult:
     until: Optional[datetime] = None
 
 
-_NOT_FOR_SALE = "NOT EXISTS (SELECT 1 FROM cat_listings l WHERE l.adoption_id = a.id AND l.status = 'open')"
+_NOT_FOR_SALE = ("NOT EXISTS (SELECT 1 FROM cat_listings l WHERE l.adoption_id = a.id AND l.status = 'open') "
+                 "AND NOT EXISTS (SELECT 1 FROM cat_fight_requests q WHERE q.cat_id = a.id AND q.status IN ('open','accepted','locked'))")
 
 
 async def _spend(conn, owner_id: int, clone_id, cost: int) -> Optional[int]:

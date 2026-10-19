@@ -181,6 +181,7 @@ class ArenaView(discord.ui.LayoutView):
                _btn("Challenge a player", self._challenge, discord.ButtonStyle.primary, "⚔️", disabled=not on),
                _btn(f"Answer ({len(self.incoming)})", self._answer, discord.ButtonStyle.success, "📨",
                     disabled=not (on and self.incoming)),
+               _btn("Request board", self._board, discord.ButtonStyle.primary, "📋", disabled=not on),
                _btn("Refresh", self._refresh, discord.ButtonStyle.secondary, "🔄")]
         self.add_item(_box(arena_text(self.st, len(self.incoming), self.out_n, self.recent, self.note), [discord.ui.ActionRow(*row)]))
 
@@ -208,6 +209,10 @@ class ArenaView(discord.ui.LayoutView):
     async def _challenge(self, interaction: discord.Interaction):
         ready = await arena.ready_cats(interaction.user.id, _clone_id(interaction.client))
         await vis.edit(interaction, view=ChallengeView(self, ready))
+
+    async def _board(self, interaction: discord.Interaction):
+        from discord_bot.cogs import _views_cat_board as board     # imported here: the board module imports this one
+        await board.open_board(interaction, self)
 
     async def _answer(self, interaction: discord.Interaction):
         if not self.incoming:
@@ -393,17 +398,19 @@ class IncomingView(discord.ui.LayoutView):
 
 # ── accept: shared by the Arena screen and the private message ──────────
 
-async def run_accept(interaction: discord.Interaction, fight_id: int, cat_id: int, finish, edit_first) -> None:
+async def run_accept(interaction: discord.Interaction, fight_id: int, cat_id: int, finish, edit_first,
+                     runner=None, texts=None) -> None:
     """Accept, then play the replay on the message the person tapped. `finish(interaction, result)` shows the end screen;
-    `edit_first(interaction, view)` answers the tap. The fight is already decided when the replay starts: it is only a show."""
+    `edit_first(interaction, view)` answers the tap. The fight is already decided when the replay starts: it is only a show.
+    `runner` (optional, no arguments) does the accept itself, e.g. answering a board request; `texts` maps its statuses to words."""
     try:
-        res = await arena.accept(fight_id, interaction.user.id, _clone_id(interaction.client), cat_id)
+        res = await runner() if runner else await arena.accept(fight_id, interaction.user.id, _clone_id(interaction.client), cat_id)
     except Exception:
         logger.exception("[cat-arena] accept failed for fight %s", fight_id)
         await interaction.response.send_message(OOPS, ephemeral=True)
         return
     if res.status != "ok":
-        text = arena.STATUS_TEXT.get(res.status, "That didn't work.")
+        text = (texts or arena.STATUS_TEXT).get(res.status, "That didn't work.")
         if res.status == "poor":
             w = await cat_wallet.safe_wallet(interaction.user.id, _clone_id(interaction.client))
             text += f" You have {cat_wallet.wallet_text(w)}."

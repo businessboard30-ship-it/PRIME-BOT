@@ -291,7 +291,7 @@ async def effects_for(cat_ids: Sequence[int]) -> Dict[int, Effects]:
 
 
 async def busy_ids(cat_ids: Sequence[int]) -> set:
-    """Cats that are for sale or out on a walk/heist (they can't fight)."""
+    """Cats that are for sale, out on a walk/heist, or held by a board request (they can't fight)."""
     ids = [int(i) for i in cat_ids]
     if not ids:
         return set()
@@ -299,7 +299,9 @@ async def busy_ids(cat_ids: Sequence[int]) -> set:
     async with p.acquire() as conn:
         a = await conn.fetch("SELECT adoption_id FROM cat_listings WHERE adoption_id = ANY($1::bigint[]) AND status = 'open'", ids)
         b = await conn.fetch("SELECT adoption_id FROM cat_outings WHERE adoption_id = ANY($1::bigint[]) AND claimed_at IS NULL", ids)
-    return {int(r["adoption_id"]) for r in a} | {int(r["adoption_id"]) for r in b}
+        c = await conn.fetch("SELECT cat_id FROM cat_fight_requests WHERE cat_id = ANY($1::bigint[]) AND status = ANY($2::text[]) "
+                             "AND (status <> 'open' OR expires_at > NOW())", ids, ["open", "accepted", "locked"])
+    return {int(r["adoption_id"]) for r in a} | {int(r["adoption_id"]) for r in b} | {int(r["cat_id"]) for r in c}
 
 
 async def my_cats(owner_id: int, clone_id) -> List[Ready]:
@@ -497,6 +499,8 @@ async def _accept_tx(conn, fight_id: int, user_id: int, clone_id, cat_id: int, s
     async def blocked(cid: int) -> bool:
         return bool(await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cid)
                     or await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cid)
+                    or await conn.fetchval("SELECT 1 FROM cat_fight_requests WHERE cat_id = $1 AND status IN ('open','accepted','locked') "
+                                       "AND (status <> 'open' OR expires_at > NOW())", cid)
                     or await conn.fetchval("SELECT 1 FROM cat_effects WHERE cat_id = $1 AND effect_key = 'tired' AND ends_at > NOW()", cid))
 
     if theirs is None or int(theirs["owner_id"]) != them_id or _bk(theirs["clone_id"]) != key or await blocked(fight.challenger_cat):
@@ -549,6 +553,14 @@ async def _accept_tx(conn, fight_id: int, user_id: int, clone_id, cat_id: int, s
         if took is None:
             raise _Abort("poor", wager=wager)            # can't happen after the check above; rolls back if it ever does
 
+    return await _fight_and_settle(conn, fight, me_id, them_id, cat_id, mine, theirs, arena, day, earlier, key, seed)
+
+
+async def _fight_and_settle(conn, fight: Fight, me_id: int, them_id: int, cat_id: int, mine, theirs, arena, day, earlier: int,
+                            key: int, seed: int) -> AcceptResult:
+    """Run the fight and settle it inside the caller's transaction. Both wagers must already be taken. `fight` is a
+    pending cat_fights row (a challenge, or one a request accept just inserted); me_id is the person who accepted."""
+    fight_id, wager = fight.id, fight.wager
     # fight
     cat_me, cat_them = cat_adopt.Cat.from_row(mine), cat_adopt.Cat.from_row(theirs)
     fx = {}

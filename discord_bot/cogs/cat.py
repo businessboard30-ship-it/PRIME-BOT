@@ -438,6 +438,7 @@ class CatCog(commands.Cog):
         if getattr(self.bot, "clone_id", None) is None:
             self._backfill.start()
             self._ops_flush.start()              # main bot posts every bot's queued health reports to the support server
+            self._requests_sweep.start()         # main bot gives back the wager of request-board posts that ran out
         self._health_first = True
         self._health_report.start()              # every bot queues its own report: where pictures came from, why new ones didn't
 
@@ -448,6 +449,7 @@ class CatCog(commands.Cog):
         self._health_report.cancel()
         if getattr(self.bot, "clone_id", None) is None:
             self._ops_flush.cancel()
+            self._requests_sweep.cancel()
 
     @tasks.loop(seconds=cat_care.HUNGER_TICK_SECONDS)
     async def _care(self):
@@ -519,6 +521,20 @@ class CatCog(commands.Cog):
 
     @_health_report.before_loop
     async def _before_health_report(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=5)
+    async def _requests_sweep(self):
+        try:
+            from modules import cat_requests
+            n = await cat_requests.expire_due()
+            if n:
+                logger.info("[cat] request board: %s expired request(s) refunded", n)
+        except Exception:
+            logger.exception("[cat] request board sweep failed")
+
+    @_requests_sweep.before_loop
+    async def _before_requests_sweep(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=1)

@@ -409,7 +409,9 @@ async def _start(owner_id: int, clone_id, cat_id: int, kind: str, route: str, fe
             if cat["hungry_since"] is not None:
                 return OutingStart("hungry", cat_name=cat["name"])
             if await conn.fetchval("SELECT 1 FROM cat_listings WHERE adoption_id = $1 AND status = 'open'", cat_id) or \
-                    await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cat_id):
+                    await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cat_id) or \
+                    await conn.fetchval("SELECT 1 FROM cat_fight_requests WHERE cat_id = $1 AND status IN ('open','accepted','locked') "
+                                        "AND (status <> 'open' OR expires_at > NOW())", cat_id):
                 return OutingStart("busy", cat_name=cat["name"])
             if kind == "heist":
                 day = await _daily(conn, owner_id)
