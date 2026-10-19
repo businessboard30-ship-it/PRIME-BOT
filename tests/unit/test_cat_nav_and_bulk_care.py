@@ -51,6 +51,7 @@ def _inter(guild=1, message=True, done=False):
     i.message = SimpleNamespace(id=555, components=[]) if message else None
     i.response.is_done = MagicMock(return_value=done)
     i.response.edit_message = AsyncMock()
+    i.response.defer = AsyncMock()
     i.response.send_message = AsyncMock()
     i.edit_original_response = AsyncMock()
     i.followup.send = AsyncMock()

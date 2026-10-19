@@ -4,7 +4,7 @@ bot owners a short plain-language report (so nobody has to read logs).
 
 - record(event) is a cheap in-memory counter (never raises, never blocks).
 - report_text() turns the counters into a short message with a verdict and the likely fix.
-- send_report(bot) DMs it via image_host.notify_owners (cooldown applies). The cat cog calls it every few hours and
+- send_report(bot) queues it via ops_reports (the main bot posts it to the support server's bot-health channel; no DMs). The cat cog calls it every few hours and
   also right after a clear failure (alert()).
 Counters reset after each report, so every report covers only the period since the last one.
 """
@@ -41,6 +41,7 @@ LABELS = {
     "store_ok": "NEW pictures saved to pool",
     "store_fail": "pictures NOT saved (duplicate or hosting channel problem)",
     "direct_used": "API picture used directly (could not be pooled)",
+    "dup_blocked": "duplicate spawns BLOCKED (same picture already open in that server)",
     "recent_fallback": "old picture reused because nothing else worked",
 }
 
@@ -113,10 +114,10 @@ def reset() -> None:
 
 
 async def send_report(bot, force: bool = False) -> bool:
-    """DM the owners the report and reset the counters. Never raises."""
+    """Queue the report for the support-server channel and reset the counters. Never raises."""
     try:
         import config
-        from modules import cat_pool, image_host
+        from modules import cat_pool, ops_reports
         try:
             size = await cat_pool.pool_count()
         except Exception:
@@ -124,7 +125,7 @@ async def send_report(bot, force: bool = False) -> bool:
         hours = max(0.01, (time.time() - _since) / 3600)
         from modules import cat_vision
         text = report_text(size, bool(getattr(config, "CAT_API_KEY", "")), bool(cat_vision.api_key()), hours)
-        sent = await image_host.notify_owners(bot, "cat-health", text, cooldown=0 if force else STALE_REPORT_COOLDOWN)
+        sent = await ops_reports.submit(bot, "cat-health", text, cooldown=0 if force else STALE_REPORT_COOLDOWN)
         if sent:
             reset()
         return sent
@@ -136,8 +137,8 @@ async def send_report(bot, force: bool = False) -> bool:
 async def alert(bot, reason: str) -> None:
     """Immediate short DM for a clear failure (rate limited per reason)."""
     try:
-        from modules import image_host
-        await image_host.notify_owners(bot, f"cat-alert:{reason}", f"🐱 Cat pictures problem: {reason}",
-                                       cooldown=ALERT_COOLDOWN)
+        from modules import ops_reports
+        await ops_reports.submit(bot, f"cat-alert:{reason}", f"🐱 Cat pictures problem: {reason}",
+                                 cooldown=ALERT_COOLDOWN)
     except Exception:
         logger.debug("[cat-health] alert failed", exc_info=True)

@@ -375,6 +375,29 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int, next_at: Optional
     if not url:
         return False
     pool_id = getattr(url, "pool_id", None)
+    if pool_id:
+        from modules import cat_adopt as _ca
+        # Never post the same picture again while it is still waiting in this server (that is the "duplicate cat").
+        for _ in range(2):
+            if not await _ca.picture_already_open(guild.id, pool_id):
+                break
+            logger.info("[cat] guild %s: picture %s is already open here, picking another", guild.id, pool_id)
+            cat_health.record("dup_blocked")
+            runaway = None            # a runaway that is already out stays out; it re-queues itself when its spawn fades
+            hint = cat_pool.server_hint.set((guild.id, guild.name))
+            try:
+                url = await fetch_cat_url(bot=bot, guild_id=guild.id)
+            finally:
+                cat_pool.server_hint.reset(hint)
+            if not url:
+                return False
+            pool_id = getattr(url, "pool_id", None)
+            if not pool_id:
+                break
+        else:
+            return False
+        if pool_id and await _ca.picture_already_open(guild.id, pool_id):
+            return False
     spawn_id = None
     if pool_id:                                   # only pooled pictures are adoptable (their photo is kept for good)
         try:
@@ -414,15 +437,17 @@ class CatCog(commands.Cog):
         # Writing up old cats in the storage channel: main bot only (the pool and channel are shared by every bot).
         if getattr(self.bot, "clone_id", None) is None:
             self._backfill.start()
-            self._health_first = True
-            self._health_report.start()          # owner DM: where cat pictures came from and why new ones didn't
+            self._ops_flush.start()              # main bot posts every bot's queued health reports to the support server
+        self._health_first = True
+        self._health_report.start()              # every bot queues its own report: where pictures came from, why new ones didn't
 
     async def cog_unload(self):
         self._care.cancel()
         self._spawner.cancel()
         self._backfill.cancel()
+        self._health_report.cancel()
         if getattr(self.bot, "clone_id", None) is None:
-            self._health_report.cancel()
+            self._ops_flush.cancel()
 
     @tasks.loop(seconds=cat_care.HUNGER_TICK_SECONDS)
     async def _care(self):
@@ -494,6 +519,15 @@ class CatCog(commands.Cog):
 
     @_health_report.before_loop
     async def _before_health_report(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(minutes=1)
+    async def _ops_flush(self):
+        from modules import ops_reports
+        await ops_reports.flush(self.bot)
+
+    @_ops_flush.before_loop
+    async def _before_ops_flush(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=BACKFILL_TICK_MINUTES)

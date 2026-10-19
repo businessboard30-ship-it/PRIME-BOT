@@ -532,13 +532,15 @@ class CollectionView(discord.ui.LayoutView):
         rows.append(discord.ui.ActionRow(*bulk))
         self.add_item(_box(self._body(), rows, image=self._urls.get(self.current.pool_id), alt=self.current.name))
 
-    async def _push(self, interaction, note: Optional[str] = None, keep_bulk: bool = False) -> None:
-        """Show the card again (with `note` on top) by editing the message the person tapped on."""
+    async def _push(self, interaction, note: Optional[str] = None, keep_bulk: bool = False,
+                    original: bool = False) -> None:
+        """Show the card again (with `note` on top) by editing the message the person tapped on.
+        `original=True` when the tap was already acknowledged (deferred), as the "all" buttons do."""
         if not keep_bulk:
             self.confirm_bulk = None
         self.note = note
         await self.draw()
-        await vis.edit(interaction, view=self)
+        await vis.edit(interaction, view=self, original=original)
 
     async def _care(self, interaction, action, ok_text) -> None:
         cat = self.current
@@ -587,22 +589,28 @@ class CollectionView(discord.ui.LayoutView):
 
         def cats(n: int) -> str:
             return f"{n} cat" + ("" if n == 1 else "s")
+        # Feed all / Water all / Sleep all can touch dozens of cats, one database step each: far more than Discord's 3
+        # seconds to answer a tap. Acknowledge the tap NOW, then edit the message when the work is done.
+        try:
+            await interaction.response.defer()
+        except discord.HTTPException:
+            logger.warning("[cat-care] couldn't acknowledge the bulk tap", exc_info=True)
         try:
             if self.confirm_bulk is None or self.confirm_bulk[0] != kind:
                 n, cost = await cat_care.bulk_preview(uid, clone, kind)
                 if n == 0:
-                    await self._push(interaction, f"{emoji} None of your cats need that right now.")
+                    await self._push(interaction, f"{emoji} None of your cats need that right now.", original=True)
                     return
                 self.confirm_bulk = (kind, cats(n), cost)
                 await self._push(interaction, f"{emoji} {ask_verb} **{cats(n)}** for {cost:,} coins? Tap the button again to confirm.",
-                                 keep_bulk=True)
+                                 keep_bulk=True, original=True)
                 return
             self.confirm_bulk = None
             res = await cat_care.bulk_care(uid, clone, kind)
         except Exception:
             logger.exception("[cat-care] bulk %s failed", kind)
             self.confirm_bulk = None
-            await interaction.response.send_message("😿 Something went wrong, try again in a moment.", ephemeral=True)
+            await interaction.followup.send("😿 Something went wrong, try again in a moment.", ephemeral=True)
             return
         if res.done:
             note = f"{emoji} {done_verb} **{cats(res.done)}**. ({res.spent:,} coins, {res.coins:,} left)"
@@ -615,10 +623,10 @@ class CollectionView(discord.ui.LayoutView):
             note = f"{emoji} None of your cats need that right now."
         await self.reload(uid)
         if not self.cats:
-            await vis.edit(interaction, view=_notice(note + "\nYou don't have any cats right now."))
+            await vis.edit(interaction, view=_notice(note + "\nYou don't have any cats right now."), original=True)
             return
         await self.refresh_wallet()
-        await self._push(interaction, note)
+        await self._push(interaction, note, original=True)
 
     async def _rank_up(self, interaction):
         cat = self.current

@@ -347,7 +347,7 @@ async def take_runaway(guild_id: int) -> Optional[Runaway]:
     pool = await _pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "UPDATE cat_runaways SET returned_at = NOW() WHERE pool_id = ("
+            "UPDATE cat_runaways SET returned_at = NOW() WHERE returned_at IS NULL AND claimed_at IS NULL AND pool_id = ("
             " SELECT pool_id FROM cat_runaways WHERE returned_at IS NULL AND claimed_at IS NULL "
             " AND (guild_id = $1 OR guild_id IS NULL OR left_at < NOW() - make_interval(days => $2)) "
             " ORDER BY left_at LIMIT 1 FOR UPDATE SKIP LOCKED) "
