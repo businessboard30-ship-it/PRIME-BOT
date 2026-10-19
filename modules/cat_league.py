@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional
 
 from modules import cat_arena
@@ -51,6 +52,27 @@ def points_for(won: bool) -> int:
     return POINTS_WIN if won else POINTS_LOSS
 
 
+PROMOTE_SHARE = 5               # one in five (top and bottom) moves each season
+
+
+def moves(ranked: List[tuple], division: int) -> dict:
+    """New divisions for one division's ranked entrants [(owner_id, points), ...] best first. The top fifth go up (only with
+    at least one point, never above Diamond), the bottom fifth go down (never below Bronze). Needs 5+ entrants to move anyone."""
+    n = len(ranked)
+    k = n // PROMOTE_SHARE
+    out = {int(o): int(division) for o, _ in ranked}
+    if k <= 0:
+        return out
+    if division < len(DIVISIONS) - 1:
+        for o, pts in ranked[:k]:
+            if int(pts) > 0:
+                out[int(o)] = int(division) + 1
+    if division > 0:
+        for o, _ in ranked[n - k:]:
+            out[int(o)] = int(division) - 1
+    return out
+
+
 def rank_key(points: int, wins: int, joined_order: int) -> tuple:
     """Sort key for standings: more points, then more wins, then who joined first."""
     return (-int(points), -int(wins), int(joined_order))
@@ -66,6 +88,7 @@ class Entry:
     points: int = 0
     wins: int = 0
     losses: int = 0
+    ends_at: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -81,16 +104,88 @@ async def _pool():
     return await get_pool()
 
 
+async def _close_season(conn, season_id: int, key: int) -> None:
+    """Close a season that ran out: promote the top fifth of each division, relegate the bottom fifth, and remember where
+    everyone starts next time (cat_league_next). Inside the caller's transaction."""
+    await conn.execute("UPDATE cat_league_seasons SET status = 'closed' WHERE id = $1 AND status = 'active'", int(season_id))
+    rows = await conn.fetch("SELECT owner_id, division, points FROM cat_league_entries WHERE season_id = $1 "
+                            "ORDER BY division, points DESC, wins DESC, joined_at, owner_id", int(season_id))
+    by_div: dict = {}
+    for r in rows:
+        by_div.setdefault(int(r["division"]), []).append((int(r["owner_id"]), int(r["points"])))
+    for div, ranked in by_div.items():
+        for owner, new_div in moves(ranked, div).items():
+            await conn.execute("INSERT INTO cat_league_next (clone_key, owner_id, division) VALUES ($1, $2, $3) "
+                               "ON CONFLICT (clone_key, owner_id) DO UPDATE SET division = EXCLUDED.division", int(key), owner, new_div)
+
+
 async def _current_season(conn, key: int) -> int:
-    """The active season of this bot; closes one that ran out and starts the next. Needs the caller's transaction."""
-    await conn.execute("UPDATE cat_league_seasons SET status = 'closed' WHERE clone_key = $1 AND status = 'active' AND ends_at <= NOW()", key)
-    sid = await conn.fetchval("SELECT id FROM cat_league_seasons WHERE clone_key = $1 AND status = 'active'", key)
-    if sid is None:
-        sid = await conn.fetchval("INSERT INTO cat_league_seasons (clone_key, ends_at) VALUES ($1, NOW() + $2 * INTERVAL '1 day') "
-                                  "ON CONFLICT DO NOTHING RETURNING id", key, SEASON_DAYS)
-        if sid is None:                                          # another bot process made it first
-            sid = await conn.fetchval("SELECT id FROM cat_league_seasons WHERE clone_key = $1 AND status = 'active'", key)
+    """The active season of this bot. One that ran out is closed (with promotions) and the next one starts. Needs the
+    caller's transaction."""
+    row = await conn.fetchrow("SELECT id, (ends_at <= NOW()) AS ended FROM cat_league_seasons WHERE clone_key = $1 AND status = 'active' "
+                              "FOR UPDATE", key)
+    if row is not None and row["ended"]:
+        await _close_season(conn, int(row["id"]), key)
+        row = None
+    if row is not None:
+        return int(row["id"])
+    sid = await conn.fetchval("INSERT INTO cat_league_seasons (clone_key, ends_at) VALUES ($1, NOW() + $2 * INTERVAL '1 day') "
+                              "ON CONFLICT DO NOTHING RETURNING id", key, SEASON_DAYS)
+    if sid is None:                                              # another bot process made it first
+        sid = await conn.fetchval("SELECT id FROM cat_league_seasons WHERE clone_key = $1 AND status = 'active'", key)
     return int(sid)
+
+
+async def rollover(limit: int = 5) -> int:
+    """Close seasons that ran out (main-bot sweep). Each one in its own transaction; rows another worker holds are skipped."""
+    done = 0
+    p = await _pool()
+    async with p.acquire() as conn:
+        ids = [(int(r["id"]), int(r["clone_key"])) for r in await conn.fetch(
+            "SELECT id, clone_key FROM cat_league_seasons WHERE status = 'active' AND ends_at <= NOW() ORDER BY id LIMIT $1", int(limit))]
+    for sid, key in ids:
+        try:
+            async with p.acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow("SELECT id FROM cat_league_seasons WHERE id = $1 AND status = 'active' AND ends_at <= NOW() "
+                                              "FOR UPDATE SKIP LOCKED", sid)
+                    if row is None:
+                        continue
+                    await _close_season(conn, sid, key)
+                    done += 1
+        except Exception:
+            logger.warning("[cat-league] couldn't close season %s", sid, exc_info=True)
+    return done
+
+
+async def play_points(conn, key: int, winner_id: int, loser_id: int) -> None:
+    """Called inside a fight's settlement: when BOTH players are entered in this bot's active season, each gets their points.
+    Never raises into the settlement (a League hiccup must not undo a fight), and reads before it writes."""
+    try:
+        sid = await conn.fetchval("SELECT id FROM cat_league_seasons WHERE clone_key = $1 AND status = 'active' AND ends_at > NOW()", int(key))
+        if sid is None:
+            return
+        n = await conn.fetchval("SELECT COUNT(*) FROM cat_league_entries WHERE season_id = $1 AND owner_id = ANY($2::bigint[])",
+                                int(sid), [int(winner_id), int(loser_id)])
+        if int(n or 0) != 2:
+            return
+        await award(conn, int(sid), int(winner_id), True)
+        await award(conn, int(sid), int(loser_id), False)
+    except Exception:
+        logger.warning("[cat-league] couldn't award points", exc_info=True)
+
+
+async def season_info(clone_id):
+    """(season_id, ends_at) of this bot's active season, or None when nobody has joined yet. Never raises."""
+    try:
+        p = await _pool()
+        async with p.acquire() as conn:
+            r = await conn.fetchrow("SELECT id, ends_at FROM cat_league_seasons WHERE clone_key = $1 AND status = 'active' AND ends_at > NOW()",
+                                    cat_arena._bk(clone_id))
+        return (int(r["id"]), r["ends_at"]) if r else None
+    except Exception:
+        logger.debug("[cat-league] couldn't read the season", exc_info=True)
+        return None
 
 
 async def join(owner_id: int, clone_id) -> JoinResult:
@@ -110,7 +205,8 @@ async def join(owner_id: int, clone_id) -> JoinResult:
                                       int(owner_id), -1, ENTRY_FEE)
             if row is None:
                 return JoinResult("poor", sid)
-            div = division_for(int(me["rating"]))
+            kept = await conn.fetchval("SELECT division FROM cat_league_next WHERE clone_key = $1 AND owner_id = $2", key, int(owner_id))
+            div = int(kept) if kept is not None else division_for(int(me["rating"]))
             await conn.execute("INSERT INTO cat_league_entries (season_id, owner_id, division, fee) VALUES ($1, $2, $3, $4)",
                                sid, int(owner_id), div, ENTRY_FEE)
     return JoinResult("ok", sid, div, int(row["coins"]))
@@ -129,10 +225,10 @@ async def my_entry(owner_id: int, clone_id) -> Optional[Entry]:
     try:
         p = await _pool()
         async with p.acquire() as conn:
-            r = await conn.fetchrow("SELECT e.season_id, e.owner_id, e.division, e.points, e.wins, e.losses FROM cat_league_entries e "
+            r = await conn.fetchrow("SELECT e.season_id, e.owner_id, e.division, e.points, e.wins, e.losses, s.ends_at FROM cat_league_entries e "
                                     "JOIN cat_league_seasons s ON s.id = e.season_id WHERE e.owner_id = $1 AND s.clone_key = $2 "
                                     "AND s.status = 'active' AND s.ends_at > NOW()", int(owner_id), cat_arena._bk(clone_id))
-        return Entry(**{k: int(r[k]) for k in ("season_id", "owner_id", "division", "points", "wins", "losses")}) if r else None
+        return Entry(**{k: int(r[k]) for k in ("season_id", "owner_id", "division", "points", "wins", "losses")}, ends_at=r["ends_at"]) if r else None
     except Exception:
         logger.debug("[cat-league] couldn't read my entry", exc_info=True)
         return None

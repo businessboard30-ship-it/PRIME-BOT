@@ -46,6 +46,9 @@ class Fake:
     async def fetchrow(self, sql, *a):
         if "FROM cat_arena" in sql:
             return self.arena
+        if "FROM cat_league_seasons" in sql and "FOR UPDATE" in sql:
+            i = next((i for i, x in enumerate(self.seasons, 1) if self.seasons[x]["status"] == "active"), None)
+            return {"id": i, "ended": False} if i else None
         if sql.startswith("UPDATE cat_wallets"):
             if self.coins >= a[2]:
                 self.coins -= a[2]
