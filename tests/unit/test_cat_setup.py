@@ -309,9 +309,9 @@ def test_non_admin_tapping_cat_still_gets_a_cat(monkeypatch):
 
 def test_setup_embed_explains_the_free_and_premium_limits():
     cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(5,))
-    free = wiz.render_embed(cfg, premium=False).description
+    free = wiz.render_text(cfg, premium=False)
     assert "Free server" in free and "/premium" in free and "120 to 140" in free and "🟢 ON" in free
-    prem = wiz.render_embed(cfg, premium=True).description
+    prem = wiz.render_text(cfg, premium=True)
     assert "Premium server" in prem and "250 to 300" in prem and "/premium" not in prem
 
 
@@ -375,8 +375,8 @@ def test_pace_lowers_the_daily_amount_never_raises_it():
 
 def test_wizard_offers_the_paces_and_shows_the_chosen_amount():
     cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(5,), pace_percent=50)
-    assert "60 to 70" in wiz.render_embed(cfg, premium=False).description
-    assert "125 to 150" in wiz.render_embed(cfg, premium=True).description
+    assert "60 to 70" in wiz.render_text(cfg, premium=False)
+    assert "125 to 150" in wiz.render_text(cfg, premium=True)
     assert [p for p in cs.PACES] == [100, 75, 50, 25, 10]
 
 

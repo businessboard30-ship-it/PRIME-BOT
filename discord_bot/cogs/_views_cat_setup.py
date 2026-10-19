@@ -68,10 +68,15 @@ def hours_text(start: int, end: int) -> str:
             f"({start:02d}:00 to {end % 24:02d}:00 UTC)")
 
 
-def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "", problems: str = "") -> discord.Embed:
+PINK = discord.Color.from_rgb(255, 182, 193)
+FOOTER = "Only sharp, high-resolution cats are posted."
+
+
+def render_text(cfg: cs.CatConfig, premium: bool, notice: str = "", problems: str = "") -> str:
+    """The wizard's text (it used to be an embed description). Kept as a plain string so tests can assert wording."""
     tier = cs.tier_for(premium)
     chans = " ".join(f"<#{c}>" for c in cfg.channel_ids) or "none yet, pick below"
-    lines = []
+    lines = ["## 🐱 Cat setup"]
     if notice:
         lines += [f"⚠️ {notice}", ""]
     if problems:
@@ -87,12 +92,20 @@ def render_embed(cfg: cs.CatConfig, premium: bool, notice: str = "", problems: s
          "**Free server:** 1 spawn channel, 120 to 140 cats a day.\n"
          "⭐ **Premium:** up to 3 channels and 250 to 300 cats a day. Upgrade with `/premium` in your server."),
     ]
-    e = discord.Embed(title="🐱 Cat setup", description="\n".join(lines), color=discord.Color.from_rgb(255, 182, 193))
-    e.set_footer(text="Only sharp, high-resolution cats are posted.")
-    return e
+    return "\n".join(lines)
 
 
-class CatSetupView(discord.ui.View):
+def _final_view(text: str) -> discord.ui.LayoutView:
+    """The wizard with no controls (after Close or a timeout). A V2 message can't be left empty, so it keeps its text."""
+    view = discord.ui.LayoutView(timeout=None)
+    box = discord.ui.Container(accent_colour=PINK)
+    box.add_item(discord.ui.TextDisplay(text))
+    box.add_item(discord.ui.TextDisplay(f"-# {FOOTER}"))
+    view.add_item(box)
+    return view
+
+
+class CatSetupView(discord.ui.LayoutView):
     def __init__(self, bot, guild: discord.Guild, clone_id, owner_id: int, cfg: cs.CatConfig, premium: bool):
         super().__init__(timeout=900)
         self.bot, self.guild, self.clone_id, self.owner_id = bot, guild, clone_id, owner_id
@@ -102,37 +115,45 @@ class CatSetupView(discord.ui.View):
 
         self.channels = discord.ui.ChannelSelect(
             channel_types=[discord.ChannelType.text], placeholder="Pick the channel where cats appear",
-            min_values=1, max_values=cs.PREMIUM.max_channels, row=0)
+            min_values=1, max_values=cs.PREMIUM.max_channels)
         self.channels.callback = self._on_channels
-        self.add_item(self.channels)
 
-        self.pace = discord.ui.Select(placeholder="Want fewer cats? Pick how many", row=1, options=self._pace_options())
+        self.pace = discord.ui.Select(placeholder="Want fewer cats? Pick how many", options=self._pace_options())
         self.pace.callback = self._on_pace
-        self.add_item(self.pace)
 
-        self.start_hour = discord.ui.Select(placeholder="Spawn timing: cats start at (UTC)", row=2, options=self._hour_options(range(0, 24), self.cfg.active_start))
+        self.start_hour = discord.ui.Select(placeholder="Spawn timing: cats start at (UTC)", options=self._hour_options(range(0, 24), self.cfg.active_start))
         self.start_hour.callback = self._on_start
-        self.add_item(self.start_hour)
-        self.end_hour = discord.ui.Select(placeholder="Spawn timing: cats stop at (UTC)", row=3, options=self._hour_options(range(1, 25), self.cfg.active_end))
+        self.end_hour = discord.ui.Select(placeholder="Spawn timing: cats stop at (UTC)", options=self._hour_options(range(1, 25), self.cfg.active_end))
         self.end_hour.callback = self._on_end
-        self.add_item(self.end_hour)
 
-        self.toggle = discord.ui.Button(label="Turn on", style=discord.ButtonStyle.success, row=4)
+        self.toggle = discord.ui.Button(label="Turn on", style=discord.ButtonStyle.success)
         self.toggle.callback = self._on_toggle
-        self.add_item(self.toggle)
-        self.send_now = discord.ui.Button(label="Send a cat now", emoji="🐱", style=discord.ButtonStyle.primary, row=4)
+        self.send_now = discord.ui.Button(label="Send a cat now", emoji="🐱", style=discord.ButtonStyle.primary)
         self.send_now.callback = self._on_send_now
-        self.add_item(self.send_now)
-        self.check = discord.ui.Button(label="Check permissions", emoji="🔍", style=discord.ButtonStyle.secondary, row=4)
+        self.check = discord.ui.Button(label="Check permissions", emoji="🔍", style=discord.ButtonStyle.secondary)
         self.check.callback = self._on_check
-        self.add_item(self.check)
-        self.announce = discord.ui.Button(style=discord.ButtonStyle.secondary, row=4)
+        self.announce = discord.ui.Button(style=discord.ButtonStyle.secondary)
         self.announce.callback = self._on_announce
-        self.add_item(self.announce)
-        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, row=4)
+        close = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary)
         close.callback = self._on_close
-        self.add_item(close)
         self._sync()
+
+        self.text = discord.ui.TextDisplay(self._text())
+        box = discord.ui.Container(accent_colour=PINK)
+        box.add_item(self.text)
+        box.add_item(discord.ui.Separator())
+        for item in (self.channels, self.pace, self.start_hour, self.end_hour):
+            box.add_item(discord.ui.ActionRow(item))
+        box.add_item(discord.ui.ActionRow(self.toggle, self.send_now, self.check, self.announce, close))
+        box.add_item(discord.ui.TextDisplay(f"-# {FOOTER}"))
+        self.add_item(box)
+
+    def _text(self, with_problems: bool = True) -> str:
+        return render_text(self.cfg, self.premium, self.notice, self._problems() if with_problems else "")
+
+    def _refresh(self) -> None:
+        self._sync()
+        self.text.content = self._text()
 
     def _pace_options(self):
         tier = cs.tier_for(self.premium)
@@ -191,8 +212,8 @@ class CatSetupView(discord.ui.View):
             self.notice = "I couldn't save that (database problem). Nothing changed."
         else:
             self.cfg = new
-        self._sync()
-        await interaction.response.edit_message(embed=render_embed(self.cfg, self.premium, self.notice, self._problems()), view=self)
+        self._refresh()
+        await interaction.response.edit_message(view=self)
         self.notice = ""
 
     async def _on_check(self, interaction: discord.Interaction):
@@ -220,7 +241,8 @@ class CatSetupView(discord.ui.View):
         self.notice = " ".join(msgs)
         if not kept:
             self._sync()
-            await interaction.response.edit_message(embed=render_embed(self.cfg, self.premium, self.notice), view=self)
+            self.text.content = render_text(self.cfg, self.premium, self.notice)
+            await interaction.response.edit_message(view=self)
             self.notice = ""
             return
         await self._apply(interaction, channel_ids=kept)
@@ -260,12 +282,12 @@ class CatSetupView(discord.ui.View):
 
     async def _on_close(self, interaction: discord.Interaction):
         self.stop()
-        await interaction.response.edit_message(embed=render_embed(self.cfg, self.premium), view=None)
+        await interaction.response.edit_message(view=_final_view(render_text(self.cfg, self.premium)))
 
     async def on_timeout(self) -> None:
         if self.message is not None:
             try:
-                await self.message.edit(view=None)
+                await self.message.edit(view=_final_view(render_text(self.cfg, self.premium)))
             except discord.HTTPException:
                 pass
 
@@ -278,7 +300,6 @@ async def open_setup(bot, guild: discord.Guild, clone_id, owner_id: int, channel
     cfg = await cs.get_config(guild.id, clone_id)
     premium = await cs.is_premium(guild.id, clone_id)
     view = CatSetupView(bot, guild, clone_id, owner_id, cfg, premium)
-    msg = await channel.send(embed=render_embed(cfg, premium, problems=view._problems()), view=view,
-                             allowed_mentions=discord.AllowedMentions.none())
+    msg = await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
     view.message = msg
     return msg
