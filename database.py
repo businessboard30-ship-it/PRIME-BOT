@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "104"
+SCHEMA_VERSION = "105"
+# "104" -> "105" adds 056_cat_rank_25.sql (cat_adoptions.cat_rank CHECK widened from 0-5 to 0-25: 20 new cat ranks). Drops the old CHECK, adds the new one, idempotent. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "103" -> "104" adds 055_scam_shield_hubowin.sql (starter Scam Shield rules: hubowin word, hubowin.com domain, fake Kai Cenat post image hash). INSERT ... ON CONFLICT DO NOTHING. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "102" -> "103" adds 054_scam_shield_action.sql (discord_scam_shield_guild.punish_action: delete / timeout / quarantine / kick / ban for the person who posted a caught scam). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "101" -> "102" adds the listing_api_tokens table (Top.gg / DiscordThings tokens entered by the bot owner via DM modal). CREATE TABLE IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5725,6 +5726,11 @@ class Database:
         scam_hubowin_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "055_scam_shield_hubowin.sql"
         if scam_hubowin_migration.exists():
             await conn.execute(scam_hubowin_migration.read_text())
+
+        # Cat ranks 0-25 (20 new ranks): widens the cat_rank CHECK. Idempotent. Runs after 041 (which adds the column).
+        cat_rank25_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "056_cat_rank_25.sql"
+        if cat_rank25_migration.exists():
+            await conn.execute(cat_rank25_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"

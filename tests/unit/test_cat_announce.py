@@ -37,7 +37,7 @@ def test_wording():
     plain = an.adopt_text("<@1>", "Mochi", 5, "\U0001F431 Common", "Brave", "common")
     assert "LEGENDARY" not in plain and "Cat #5" in plain and "<@1>" in plain
     assert "Rank 2" in an.rank_up_text("<@1>", "Mochi", 5, 2) and "top rank" not in an.rank_up_text("<@1>", "Mochi", 5, 2)
-    assert "top rank" in an.rank_up_text("<@1>", "Mochi", 5, 5)
+    assert "top rank" in an.rank_up_text("<@1>", "Mochi", 5, 25) and "top rank" not in an.rank_up_text("<@1>", "Mochi", 5, 5)
     s = an.sale_text("<@2>", "<@1>", "Mochi", 5, 3, 1500)
     assert "1,500 coins" in s and "Rank 3" in s and "<@1>" in s
     assert "Rank" not in an.sale_text("<@2>", "<@1>", "Mochi", 5, 0, 99)        # nothing to brag about at rank 0

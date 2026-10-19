@@ -3,17 +3,22 @@
 """
 Cat market + leaderboard UI (play coins only, never real money; see modules/cat_market.py and modules/cat_board.py).
 
-  * Sell: in "My cats" -> Trade / gift -> "Sell for coins". The owner names a price and the bot posts the cat in the
-    channel like a spawn: picture, price tag, Buy button. The first person who can pay takes it; the seller gets the coins.
-  * Market (button on /cat): every open listing from the main bot and all clones, cheapest first, paged.
+  * Sell: in "My cats" -> Trade / gift -> "Sell for coins" opens a small wizard (pick a price inside the range for the
+    cat's rarity and rank, or type one, then confirm). The bot posts the cat in the channel like a spawn: picture,
+    price tag, Buy button. The first person who can pay takes it; the seller gets the coins.
+  * Market (button on /cat): every open listing from the main bot and all clones, cheapest first, paged. A Components V2
+    message: one long list where every cat shows its picture and its seller's avatar in the same message. (The public
+    "for sale" posts in channels stay classic embeds: a message can't be switched to V2 after it is posted.)
   * Leaderboard (button on /cat): top collectors and richest, across the main bot and all clones.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from typing import List, Optional
+import time
+from typing import Dict, List, Optional, Tuple
 
 import discord
 from discord_bot.cogs import _cat_visibility as vis
@@ -151,52 +156,252 @@ class UnlistButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_un
 
 # ?? sell ??????????????????????????????????????????????????????????????????
 
-class SellModal(discord.ui.Modal):
-    """The title and the box label carry the cat's name, so there is no doubt which cat is being priced."""
+_SELL_TEXT = {"not_yours": "That cat isn't yours any more.", "listed": "That cat is already for sale.",
+              "away": "That cat is out on a walk or a heist \U0001F338 Sell it after it is back.",
+              "too_many": f"You can have {cm.MAX_OPEN_PER_SELLER} cats for sale at a time. Take one back first.",
+              "bad_price": "That price won't work.",
+              "out_of_range": "That price is outside the allowed range for this cat's rank. Pick another price."}
 
-    def __init__(self, cat: ca.Cat):
+
+def range_line(cat: ca.Cat) -> str:
+    low, high = cm.price_range(cat.rarity, cat.cat_rank)
+    return f"{cat_wallet.COINS} **{low:,}** to **{high:,}** coins"
+
+
+async def publish_listing(interaction: discord.Interaction, cat: ca.Cat, price: int) -> str:
+    """Create the listing and post it in the channel. The interaction must already be deferred. Returns the text for the seller."""
+    channel = interaction.channel
+    if channel is None or interaction.guild is None:
+        return "Sell cats in a server channel, not in DMs."
+    client = interaction.client
+    status, listing = await cm.create_listing(cat.id, interaction.user.id, _clone_id(client), price,
+                                              interaction.guild.id, channel.id)
+    if status != "ok":
+        return _SELL_TEXT.get(status, "That didn't work.")
+    try:
+        msg = await channel.send(embed=await listing_embed(client, listing), view=listing_view(listing.id, price),
+                                 allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+        await cm.cancel(listing.id, interaction.user.id)
+        return "I couldn't post the listing here (I need Send Messages and Embed Links)."
+    await cm.set_message(listing.id, channel.id, msg.id)
+    return (f"\U0001F3F7\uFE0F **{cat.name}** is for sale for **{price:,} coins**! You'll get the coins the moment "
+            "someone adopts it. It also shows in **Market** on `/cat`, for the main bot and every clone.")
+
+
+class SellModal(discord.ui.Modal):
+    """The title and the box label carry the cat's name, so there is no doubt which cat is being priced.
+    `wizard`, when given, is the sell wizard that opened it: a good price moves it on to the confirm step."""
+
+    def __init__(self, cat: ca.Cat, wizard: "Optional[SellWizard]" = None):
         super().__init__(title=f"Sell {cat.name} (cat #{cat.id})"[:45])
         self.cat = cat
+        self.wizard = wizard
+        low, high = cm.price_range(cat.rarity, cat.cat_rank)
         self.price = discord.ui.TextInput(label=f"Price for {cat.name}, in coins"[:45], min_length=2, max_length=12,
-                                          placeholder=f"{cm.MIN_PRICE:,} to {cm.MAX_PRICE:,}  (1500, 1.5k ok)")
+                                          placeholder=f"{low:,} to {high:,}  (1500, 1.5k ok)"[:100])
         self.add_item(self.price)
 
     async def on_submit(self, interaction: discord.Interaction):
         price = cm.parse_price(str(self.price))
-        if price is None:
+        low, high = cm.price_range(self.cat.rarity, self.cat.cat_rank)
+        if price is None or not low <= price <= high:
             await interaction.response.send_message(
-                f"That isn't a price. Use a number from {cm.MIN_PRICE:,} to {cm.MAX_PRICE:,} coins.", ephemeral=True)
+                f"**{self.cat.name}** ({cr.badge(self.cat.cat_rank)}) can be sold for {low:,} to {high:,} coins. "
+                "Type a number in that range.", ephemeral=True)
             return
-        channel = interaction.channel
-        if channel is None or interaction.guild is None:
+        if self.wizard is not None:
+            self.wizard.price = price
+            await interaction.response.edit_message(embed=self.wizard.confirm_embed(), view=self.wizard.confirm_view())
+            return
+        if interaction.channel is None or interaction.guild is None:
             await interaction.response.send_message("Sell cats in a server channel, not in DMs.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        client = interaction.client
-        status, listing = await cm.create_listing(self.cat.id, interaction.user.id, _clone_id(client), price,
-                                                  interaction.guild.id, channel.id)
-        if status != "ok":
-            text = {"not_yours": "That cat isn't yours any more.", "listed": "That cat is already for sale.",
-                    "away": "That cat is out on a walk or a heist 🌸 Sell it after it is back.",
-                    "too_many": f"You can have {cm.MAX_OPEN_PER_SELLER} cats for sale at a time. Take one back first.",
-                    "bad_price": "That price won't work."}[status]
-            await interaction.followup.send(text, ephemeral=True)
-            return
-        try:
-            msg = await channel.send(embed=await listing_embed(client, listing), view=listing_view(listing.id, price),
-                                     allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            await cm.cancel(listing.id, interaction.user.id)
-            await interaction.followup.send("I couldn't post the listing here (I need Send Messages and Embed Links).",
-                                            ephemeral=True)
-            return
-        await cm.set_message(listing.id, channel.id, msg.id)
-        await interaction.followup.send(
-            f"\U0001F3F7\uFE0F **{self.cat.name}** is for sale for **{price:,} coins**! You'll get the coins the moment "
-            "someone adopts it. It also shows in **Market** on `/cat`, for the main bot and every clone.", ephemeral=True)
+        await interaction.followup.send(await publish_listing(interaction, self.cat, price), ephemeral=True)
+
+
+class SellWizard:
+    """Two steps on one private message: 1) pick a price (presets across the allowed range, or type one), 2) confirm."""
+
+    def __init__(self, cat: ca.Cat, owner_id: int):
+        self.cat, self.owner_id = cat, owner_id
+        self.price: Optional[int] = None
+
+    def price_embed(self) -> discord.Embed:
+        c = self.cat
+        e = discord.Embed(title=f"\U0001F3F7\uFE0F Sell {c.name}  \u00b7  step 1 of 2", color=GOLD, description=(
+            f"{ca.rarity_badge(c.rarity)} \u00b7 {cr.badge(c.cat_rank)}\n"
+            f"A **{c.rarity}** cat at this rank can be sold for {range_line(c)}.\n"
+            "Rank up your cat and its allowed range goes up. Pick a price below, or type your own."))
+        e.set_footer(text=NOTE)
+        return e
+
+    def price_view(self) -> discord.ui.View:
+        wiz = self
+        view = _OwnerView(self.owner_id)
+        choices = cm.price_choices(self.cat.rarity, self.cat.cat_rank)
+        sel = discord.ui.Select(placeholder="Pick a price\u2026", options=[
+            discord.SelectOption(label=f"{p:,} coins", value=str(p), emoji="\U0001FA99") for p in choices])
+
+        async def picked(interaction: discord.Interaction):
+            wiz.price = int(sel.values[0])
+            await interaction.response.edit_message(embed=wiz.confirm_embed(), view=wiz.confirm_view())
+
+        sel.callback = picked
+        view.add_item(sel)
+        custom = discord.ui.Button(label="Type a price", emoji="\u270F\uFE0F", style=discord.ButtonStyle.primary)
+
+        async def typed(interaction: discord.Interaction):
+            await interaction.response.send_modal(SellModal(wiz.cat, wiz))
+
+        custom.callback = typed
+        view.add_item(custom)
+        cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary)
+
+        async def cancelled(interaction: discord.Interaction):
+            await interaction.response.edit_message(content="Okay, nothing was listed.", embed=None, view=None)
+
+        cancel.callback = cancelled
+        view.add_item(cancel)
+        return view
+
+    def confirm_embed(self) -> discord.Embed:
+        c = self.cat
+        e = discord.Embed(title=f"\U0001F3F7\uFE0F Sell {c.name}  \u00b7  step 2 of 2", color=GOLD, description=(
+            f"{ca.rarity_badge(c.rarity)} \u00b7 {cr.badge(c.cat_rank)}\n"
+            f"**Price:** {cat_wallet.COINS} **{self.price:,} coins**  (allowed: {range_line(c)})\n\n"
+            "I'll post it in this channel with a Buy button. You can take it back any time from the post. Ready?"))
+        e.set_footer(text=NOTE)
+        return e
+
+    def confirm_view(self) -> discord.ui.View:
+        wiz = self
+        view = _OwnerView(self.owner_id)
+        ok = discord.ui.Button(label="List it", emoji="\u2705", style=discord.ButtonStyle.success)
+
+        async def confirmed(interaction: discord.Interaction):
+            if interaction.channel is None or interaction.guild is None:
+                await interaction.response.edit_message(content="Sell cats in a server channel, not in DMs.",
+                                                        embed=None, view=None)
+                return
+            await interaction.response.defer()
+            text = await publish_listing(interaction, wiz.cat, wiz.price)
+            await interaction.edit_original_response(content=text, embed=None, view=None)
+
+        ok.callback = confirmed
+        view.add_item(ok)
+        back = discord.ui.Button(label="Change price", emoji="\u2B05\uFE0F", style=discord.ButtonStyle.secondary)
+
+        async def went_back(interaction: discord.Interaction):
+            await interaction.response.edit_message(embed=wiz.price_embed(), view=wiz.price_view())
+
+        back.callback = went_back
+        view.add_item(back)
+        return view
+
+
+class _OwnerView(discord.ui.View):
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("This is someone else's sale.", ephemeral=True)
+            return False
+        return True
+
+
+async def open_sell_wizard(interaction: discord.Interaction, cat: ca.Cat) -> None:
+    wiz = SellWizard(cat, interaction.user.id)
+    await interaction.response.send_message(embed=wiz.price_embed(), view=wiz.price_view(), ephemeral=True)
 
 
 # ?? market browser ????????????????????????????????????????????????????????
+
+_SELLER_CACHE: Dict[int, Tuple[float, str, Optional[str]]] = {}      # seller id -> (expires, name, avatar url)
+_SELLER_TTL = 600
+
+
+async def _seller_info(client, seller_id: int) -> Tuple[str, Optional[str]]:
+    """(display name, avatar url) for a seller, cached for a few minutes. Never raises: a stranger falls back to a plain name."""
+    hit = _SELLER_CACHE.get(seller_id)
+    if hit and hit[0] > time.monotonic():
+        return hit[1], hit[2]
+    user = client.get_user(seller_id)
+    if user is None:
+        try:
+            user = await asyncio.wait_for(client.fetch_user(seller_id), timeout=3)
+        except Exception:
+            user = None
+    name = (getattr(user, "display_name", None) or getattr(user, "name", None)) if user else None
+    avatar = user.display_avatar.url if user is not None and getattr(user, "display_avatar", None) else None
+    if user is not None:                                   # don't cache a failed lookup
+        _SELLER_CACHE[seller_id] = (time.monotonic() + _SELLER_TTL, name or f"Seller {seller_id}", avatar)
+    return name or f"Seller {seller_id}", avatar
+
+
+MARKET_PAGE = 4          # cats per page: each one uses 7 of the 40 components Discord allows in one V2 message
+
+
+def _notice_layout(text: str) -> discord.ui.LayoutView:
+    """A one-line V2 message (V2 messages can't carry plain content, so notes are cards too)."""
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(discord.ui.Container(discord.ui.TextDisplay(text), accent_colour=GOLD))
+    return view
+
+
+class _Seen:
+    """What one listing shows besides its own data: the seller's name + avatar and the cat's picture."""
+    __slots__ = ("seller", "avatar", "pic")
+
+    def __init__(self, seller: str, avatar: Optional[str], pic: Optional[str]):
+        self.seller, self.avatar, self.pic = seller, avatar, pic
+
+
+async def _look_up(client, listings: List[cm.Listing]) -> Dict[int, "_Seen"]:
+    shown = [l for l in listings if l.cat]
+    sellers, pics = await asyncio.gather(
+        asyncio.gather(*[_seller_info(client, l.seller_id) for l in shown]),
+        asyncio.gather(*[cat_pool.url_for(client, l.cat.pool_id) for l in shown], return_exceptions=True))
+    return {l.id: _Seen(name, avatar, pic if isinstance(pic, str) and pic else None)
+            for l, (name, avatar), pic in zip(shown, sellers, pics)}
+
+
+def _person(seen: "_Seen", prefix: str = "Seller"):
+    """The seller line: their avatar as the small picture beside it when there is one."""
+    text = f"-# {prefix}\n**{seen.seller}**"
+    if seen.avatar:
+        return discord.ui.Section(text, accessory=discord.ui.Thumbnail(seen.avatar, description=seen.seller[:256]))
+    return discord.ui.TextDisplay(text)
+
+
+def market_container(listings: List[cm.Listing], seen: Dict[int, "_Seen"], header: str, select=None, nav=None):
+    """The whole market as one long Container: a header, then for every cat its card (cat picture) and its
+    seller (avatar), then the picker and the page buttons. One message, no separate screens."""
+    box = discord.ui.Container(accent_colour=GOLD)
+    box.add_item(discord.ui.TextDisplay(header))
+    for l in listings:
+        if not l.cat or l.id not in seen:
+            continue
+        c, info = l.cat, seen[l.id]
+        body = (f"### {ca.RARITY_EMOJI.get(c.rarity, '')} {c.name}\n{cr.badge(c.cat_rank)} \u00b7 {c.trait}\n"
+                f"{cat_wallet.COINS} **{l.price:,} coins** \u00b7 cat #{c.id}")
+        box.add_item(discord.ui.Separator())
+        if info.pic:
+            box.add_item(discord.ui.Section(body, accessory=discord.ui.Thumbnail(info.pic, description=c.name[:256])))
+        else:
+            box.add_item(discord.ui.TextDisplay(body))
+        box.add_item(_person(info))
+    if select is not None or nav:
+        box.add_item(discord.ui.Separator())
+    if select is not None:
+        box.add_item(discord.ui.ActionRow(select))
+    if nav:
+        box.add_item(discord.ui.ActionRow(*nav))
+    return box
+
 
 class MarketButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_market$"):
     def __init__(self):
@@ -208,52 +413,58 @@ class MarketButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ma
         return cls()
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=not vis.is_public(interaction))      # avatars + pictures take a moment
         view = MarketView(interaction.client, interaction.user)
         await view.load()
-        await vis.send(interaction, embed=view.embed(), view=view)
+        await vis.send(interaction, view=view, deferred=True)
 
 
-class MarketView(discord.ui.View):
+class MarketView(discord.ui.LayoutView):
     def __init__(self, client, user, page: int = 0):
         super().__init__(timeout=300)
         self.client, self.user, self.page = client, user, page
         self.listings: List[cm.Listing] = []
+        self.seen: Dict[int, _Seen] = {}
         self.total = 0
+        self.note: Optional[str] = None
+
+    @property
+    def pages(self) -> int:
+        return max(1, -(-self.total // MARKET_PAGE))
 
     async def load(self) -> None:
-        self.listings, self.total = await cm.list_open(self.page)
-        pages = max(1, -(-self.total // cm.PAGE_SIZE))
-        if self.page >= pages:
-            self.page = pages - 1
-            self.listings, self.total = await cm.list_open(self.page)
+        self.listings, self.total = await cm.list_open(self.page, MARKET_PAGE)
+        if self.page >= self.pages:
+            self.page = self.pages - 1
+            self.listings, self.total = await cm.list_open(self.page, MARKET_PAGE)
+        self.seen = await _look_up(self.client, self.listings)
         self._build()
 
-    def embed(self) -> discord.Embed:
-        e = discord.Embed(title="\U0001F3F7\uFE0F Cat market", color=GOLD)
+    def header(self) -> str:
         if not self.listings:
-            e.description = "No cats are for sale right now. Put one up from **My cats** > Trade / gift > Sell for coins."
+            text = ("## \U0001F3F7\uFE0F Cat market\nNo cats are for sale right now. "
+                    "Put one up from **My cats** > Trade / gift > Sell for coins.")
         else:
-            e.description = "\n".join(
-                f"{ca.RARITY_EMOJI.get(l.cat.rarity, '')} **{l.cat.name}** \u00b7 {l.cat.rarity.title()} \u00b7 "
-                f"{cat_wallet.COINS} {l.price:,}" for l in self.listings if l.cat)
-        pages = max(1, -(-self.total // cm.PAGE_SIZE))
-        e.set_footer(text=f"Page {self.page + 1}/{pages} \u00b7 {self.total} for sale \u00b7 main bot and clones together \u00b7 {NOTE}")
-        return e
+            text = (f"## \U0001F3F7\uFE0F Cat market\n-# page {self.page + 1}/{self.pages} \u00b7 {self.total} for sale \u00b7 "
+                    f"cheapest first \u00b7 main bot and clones together \u00b7 {NOTE}")
+        return f"{self.note}\n\n{text}" if self.note else text
 
     def _build(self) -> None:
         self.clear_items()
-        if self.listings:
-            sel = discord.ui.Select(placeholder="Look at a cat\u2026", options=[
+        shown = [l for l in self.listings if l.cat]
+        sel = None
+        if shown:
+            sel = discord.ui.Select(placeholder="Look closer at a cat\u2026", options=[
                 discord.SelectOption(label=f"{l.cat.name} \u00b7 {l.cat.rarity.title()} \u00b7 {l.price:,} coins"[:100],
-                                     description=l.cat.trait, value=str(l.id), emoji=ca.RARITY_EMOJI.get(l.cat.rarity))
-                for l in self.listings if l.cat])
+                                     description=l.cat.trait[:100], value=str(l.id), emoji=ca.RARITY_EMOJI.get(l.cat.rarity))
+                for l in shown])
             sel.callback = self._picked
-            self.add_item(sel)
-        pages = max(1, -(-self.total // cm.PAGE_SIZE))
-        for label, delta, off in (("\u25C0", -1, self.page <= 0), ("\u25B6", 1, self.page >= pages - 1)):
+        nav = []
+        for label, delta, off in (("\u25C0", -1, self.page <= 0), ("\u25B6", 1, self.page >= self.pages - 1)):
             b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=off)
             b.callback = (lambda d: (lambda i: self._turn(i, d)))(delta)
-            self.add_item(b)
+            nav.append(b)
+        self.add_item(market_container(self.listings, self.seen, self.header(), sel, nav if shown or self.page else None))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
@@ -263,37 +474,57 @@ class MarketView(discord.ui.View):
 
     async def _turn(self, interaction, delta: int):
         self.page += delta
+        self.note = None
+        await interaction.response.defer()                       # looking up the cards can take a moment
         await self.load()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
+        await interaction.edit_original_response(view=self)
 
     async def _picked(self, interaction: discord.Interaction):
         l = await cm.get(int(interaction.data["values"][0]))
         if l is None or l.status != "open":
+            self.note = "That cat was just taken."
+            await interaction.response.defer()
             await self.load()
-            await interaction.response.edit_message(content="That cat was just taken.", embed=self.embed(), view=self)
+            await interaction.edit_original_response(view=self)
             return
-        await interaction.response.edit_message(content=None, embed=await listing_embed(self.client, l),
-                                                view=MarketDetailView(self, l))
+        self.note = None
+        await interaction.response.defer()
+        seen = self.seen.get(l.id) or (await _look_up(self.client, [l])).get(l.id) or _Seen(f"Seller {l.seller_id}", None, None)
+        await interaction.edit_original_response(view=MarketDetailView(self, l, seen))
 
 
-class MarketDetailView(discord.ui.View):
-    def __init__(self, parent: MarketView, listing: cm.Listing):
+class MarketDetailView(discord.ui.LayoutView):
+    """One cat up close: a big picture, its details, the seller with their avatar, and the Adopt button."""
+
+    def __init__(self, parent: MarketView, listing: cm.Listing, seen: _Seen):
         super().__init__(timeout=300)
         self.parent, self.listing = parent, listing
-        buy = discord.ui.Button(label=f"Adopt for {listing.price:,} coins", emoji="\U0001F4B0",
-                                style=discord.ButtonStyle.success)
+        cat = listing.cat
+        box = discord.ui.Container(accent_colour=GOLD)
+        box.add_item(discord.ui.TextDisplay(f"## \U0001F3F7\uFE0F {cat.name} is for sale" if cat else "## \U0001F3F7\uFE0F A cat is for sale"))
+        if seen.pic:
+            box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(seen.pic, description=(cat.name if cat else "cat")[:256])))
+        if cat:
+            box.add_item(discord.ui.TextDisplay(
+                f"**Rarity:** {ca.rarity_badge(cat.rarity)}\n**Personality:** {cat.trait}\n**Rank:** {cr.badge(cat.cat_rank)}\n"
+                f"**Times traded:** {cat.traded_count}\n**Cat ID:** #{cat.id}"))
+        box.add_item(discord.ui.TextDisplay(f"{cat_wallet.COINS} **{listing.price:,} coins**"))
+        box.add_item(discord.ui.Separator())
+        box.add_item(_person(seen))
+        buy = discord.ui.Button(label=f"Adopt for {listing.price:,} coins", emoji="\U0001F4B0", style=discord.ButtonStyle.success)
         buy.callback = self._buy
         back = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary)
         back.callback = self._back
-        self.add_item(buy)
-        self.add_item(back)
+        box.add_item(discord.ui.ActionRow(buy, back))
+        self.add_item(box)
 
     async def interaction_check(self, interaction):
         return await self.parent.interaction_check(interaction)
 
     async def _back(self, interaction):
+        await interaction.response.defer()
         await self.parent.load()
-        await interaction.response.edit_message(embed=self.parent.embed(), view=self.parent)
+        await interaction.edit_original_response(view=self.parent)
 
     async def _buy(self, interaction: discord.Interaction):
         res = await cm.buy(self.listing.id, interaction.user.id, _clone_id(interaction.client))
@@ -307,7 +538,7 @@ class MarketDetailView(discord.ui.View):
             return
         l = res.listing
         await interaction.response.edit_message(
-            content=f"\U0001F389 **{l.cat.name}** is yours! Open **My cats** to see it.", embed=None, view=None)
+            view=_notice_layout(f"\U0001F389 **{l.cat.name}** is yours! Open **My cats** to see it."))
         await _after_sale(interaction.client, l, interaction.user)
         if l.cat:
             await cat_announce.announce(interaction, cat_announce.sale_text(

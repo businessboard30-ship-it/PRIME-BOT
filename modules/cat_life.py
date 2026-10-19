@@ -74,17 +74,17 @@ class Heist:
     key: str
     emoji: str
     name: str
-    minutes: int
+    seconds: int                                 # how long the heist takes: the result comes in seconds
     fee: int
     success: float                               # base chance
     multiplier: float                            # total returned on a win (the fee is included)
 
 
 HEISTS: Dict[str, Heist] = {h.key: h for h in (
-    Heist("bakery", "🧁", "Sweet Strawberry Bakery", 30, 200, 0.70, 1.35),
-    Heist("jewel", "💍", "Sparkle Jewel Shop", 45, 600, 0.50, 1.90),
-    Heist("bank", "🏦", "Grand Pink Bank", 60, 1500, 0.30, 3.10),
-    Heist("vault", "👑", "Royal Treasure Vault", 90, 4000, 0.10, 9.00),
+    Heist("bakery", "🧁", "Sweet Strawberry Bakery", 8, 200, 0.70, 1.35),
+    Heist("jewel", "💍", "Sparkle Jewel Shop", 12, 600, 0.50, 1.90),
+    Heist("bank", "🏦", "Grand Pink Bank", 18, 1500, 0.30, 3.10),
+    Heist("vault", "👑", "Royal Treasure Vault", 25, 4000, 0.10, 9.00),
 )}
 HEIST_RARITY_BONUS = {"common": 0.0, "uncommon": 0.02, "rare": 0.04, "legendary": 0.07}
 HEIST_RANK_BONUS = 0.01                          # per rank (rank is 0-5)
@@ -451,7 +451,7 @@ async def start_heist(owner_id: int, clone_id, cat_id: int, route: str, rng=_RNG
         success, payout = heist_roll(heist, cat["rarity"], rank, rng)
         return success, payout, 0, heist_story(cat["name"], success, payout, rng), heist_chance(heist, cat["rarity"], rank)
 
-    return await _start(owner_id, clone_id, cat_id, "heist", route, heist.fee, timedelta(minutes=heist.minutes), roll)
+    return await _start(owner_id, clone_id, cat_id, "heist", route, heist.fee, timedelta(seconds=heist.seconds), roll)
 
 
 @dataclass(frozen=True)
