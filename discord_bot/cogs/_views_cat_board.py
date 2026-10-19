@@ -2,7 +2,7 @@
 
 """Request Board screens (fights plan, phase 4B): browse open fight requests, post one, take yours down.
 Play coins only. Opens from the Arena screen (no new slash command) and edits one message in place.
-Accepting a request comes in the next slice, so the board is browse-only for now.
+Accept runs the fight through cat_requests.accept (one transaction) and plays the same replay as the Arena.
 Other players' ids never appear here: a request shows a display name and, only if the poster chose it, a server name."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import List, Optional
 import discord
 
 from discord_bot.cogs import _cat_visibility as vis
-from discord_bot.cogs._views_cat_arena import OOPS, _box, _btn, _clone_id, cat_line
+from discord_bot.cogs._views_cat_arena import OOPS, _box, _btn, _clone_id, _screen, cat_line, result_text, run_accept
 from modules import cat_arena as arena
 from modules import cat_requests as cr
 from modules import cat_wallet
@@ -45,7 +45,7 @@ def board_text(rows: List[str], page: int, pages: int, my_power: Optional[int], 
         parts += ["You have no cat that is ready to fight right now (tired, for sale, out or on a request)."]
     elif rows:
         parts += [f"Matching your cat's power {pr_band(my_power)}:", ""] + [f"{i}. {line}" for i, line in enumerate(rows, 1)]
-        parts += ["", f"-# Page {page + 1} of {pages} · accepting a request arrives in the next update"]
+        parts += ["", f"-# Page {page + 1} of {pages} · pick a request below and tap Accept to fight it with the cat above"]
     else:
         parts += ["Nothing on the board for your cat right now. Post a request and wait for someone to answer!"]
     return "\n".join(parts)
@@ -91,6 +91,7 @@ class BoardView(discord.ui.LayoutView):
         super().__init__(timeout=600)
         self.parent, self.ready = parent, ready
         self.cat_id: Optional[int] = ready[0].cat.id if ready else None
+        self.req_id: Optional[int] = None
         self.page, self.pages = 0, 1
         self.items: List[cr.Request] = []
         self.note: Optional[str] = None
@@ -112,6 +113,8 @@ class BoardView(discord.ui.LayoutView):
             self.items, self.pages, self.page = [], 1, 0
         else:
             self.items, self.page, self.pages = await cr.board(self.user_id, self.clone_id, self.guild_id, power, self.page)
+        if self.req_id not in {r.id for r in self.items}:
+            self.req_id = self.items[0].id if self.items else None
         self._build()
 
     def _build(self) -> None:
@@ -124,7 +127,14 @@ class BoardView(discord.ui.LayoutView):
                 for r in self.ready[:25]])
             sel.callback = self._pick_cat
             rows.append(discord.ui.ActionRow(sel))
+        if self.items:
+            pick = discord.ui.Select(placeholder="Answer which request", options=[
+                discord.SelectOption(label=f"{i}. {r.cat_name or 'A cat'} · {r.wager:,} coins"[:100], value=str(r.id),
+                                     default=r.id == self.req_id) for i, r in enumerate(self.items, 1)])
+            pick.callback = self._pick_req
+            rows.append(discord.ui.ActionRow(pick))
         rows.append(discord.ui.ActionRow(
+            _btn("Accept", self._accept, discord.ButtonStyle.success, "⚔️", disabled=not (self.req_id and self.cat_id)),
             _btn("Prev", self._prev, emoji="◀️", disabled=self.page <= 0),
             _btn("Next", self._next, emoji="▶️", disabled=self.page >= self.pages - 1),
             _btn("Refresh", self._refresh, emoji="🔄")))
@@ -151,6 +161,28 @@ class BoardView(discord.ui.LayoutView):
     async def _pick_cat(self, interaction: discord.Interaction):
         self.cat_id, self.page = int(interaction.data["values"][0]), 0
         await self._show(interaction)
+
+    async def _pick_req(self, interaction: discord.Interaction):
+        self.req_id = int(interaction.data["values"][0])
+        self._build()
+        await vis.edit(interaction, view=self)
+
+    async def _accept(self, interaction: discord.Interaction):
+        if not (self.req_id and self.cat_id):
+            await interaction.response.send_message("🚫 Pick a cat and a request first.", ephemeral=True)
+            return
+        rid, cid, guild_id = self.req_id, self.cat_id, getattr(interaction, "guild_id", None)
+
+        async def runner():
+            return await cr.accept(rid, interaction.user.id, _clone_id(interaction.client), cid, guild_id)
+
+        async def done(i: discord.Interaction, res: arena.AcceptResult):
+            self.items = []
+            await i.edit_original_response(view=_screen(result_text(res, i.user.id)))
+
+        async def first(i: discord.Interaction, v):
+            await i.response.edit_message(view=v)
+        await run_accept(interaction, rid, cid, done, first, runner=runner, texts=cr.STATUS_TEXT)
 
     async def _prev(self, interaction: discord.Interaction):
         self.page = max(0, self.page - 1)

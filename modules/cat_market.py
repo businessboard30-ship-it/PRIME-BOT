@@ -143,6 +143,9 @@ async def create_listing(cat_id: int, seller_id: int, seller_clone_id, price: in
                 return "listed", None
             if await conn.fetchval("SELECT 1 FROM cat_outings WHERE adoption_id = $1 AND claimed_at IS NULL", cat_id):
                 return "away", None                 # out on a walk or a heist: sell it after it is back
+            if await conn.fetchval("SELECT 1 FROM cat_fight_requests WHERE cat_id = $1 AND status IN ('open','accepted','locked') "
+                                   "AND (status <> 'open' OR expires_at > NOW())", cat_id):
+                return "away", None                 # held by a fight request: sell it after the request ends
             open_n = await conn.fetchval("SELECT COUNT(*) FROM cat_listings WHERE seller_id = $1 AND status = 'open'",
                                          seller_id)
             if int(open_n or 0) >= MAX_OPEN_PER_SELLER:

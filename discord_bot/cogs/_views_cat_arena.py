@@ -398,17 +398,19 @@ class IncomingView(discord.ui.LayoutView):
 
 # ── accept: shared by the Arena screen and the private message ──────────
 
-async def run_accept(interaction: discord.Interaction, fight_id: int, cat_id: int, finish, edit_first) -> None:
+async def run_accept(interaction: discord.Interaction, fight_id: int, cat_id: int, finish, edit_first,
+                     runner=None, texts=None) -> None:
     """Accept, then play the replay on the message the person tapped. `finish(interaction, result)` shows the end screen;
-    `edit_first(interaction, view)` answers the tap. The fight is already decided when the replay starts: it is only a show."""
+    `edit_first(interaction, view)` answers the tap. The fight is already decided when the replay starts: it is only a show.
+    `runner` (optional, no arguments) does the accept itself, e.g. answering a board request; `texts` maps its statuses to words."""
     try:
-        res = await arena.accept(fight_id, interaction.user.id, _clone_id(interaction.client), cat_id)
+        res = await runner() if runner else await arena.accept(fight_id, interaction.user.id, _clone_id(interaction.client), cat_id)
     except Exception:
         logger.exception("[cat-arena] accept failed for fight %s", fight_id)
         await interaction.response.send_message(OOPS, ephemeral=True)
         return
     if res.status != "ok":
-        text = arena.STATUS_TEXT.get(res.status, "That didn't work.")
+        text = (texts or arena.STATUS_TEXT).get(res.status, "That didn't work.")
         if res.status == "poor":
             w = await cat_wallet.safe_wallet(interaction.user.id, _clone_id(interaction.client))
             text += f" You have {cat_wallet.wallet_text(w)}."

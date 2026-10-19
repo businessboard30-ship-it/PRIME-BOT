@@ -99,6 +99,7 @@ class TradeConn:
     async def fetchval(self, sql, *a):
         if "FROM cat_listings" in sql: return 1 if self.listed else None
         if "FROM cat_outings" in sql: return 1 if self.away else None
+        if "FROM cat_fight_requests" in sql: return None
         return self.held
     async def execute(self, sql, cat_id, owner, clone): self.updates.append((cat_id, owner, clone))
 
