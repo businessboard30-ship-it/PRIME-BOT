@@ -56,6 +56,7 @@ class Fighter:
     rank: int = 0
     skills: Tuple[str, ...] = ()
     item_bonus: int = 0
+    vet_pct: int = 0                # Veteran bonus from fights fought (cat_records), capped at +5
 
     @property
     def hp(self) -> int:
@@ -65,16 +66,17 @@ class Fighter:
     def power(self) -> int:
         """Power Rating. The item bonus is capped at +10% of everything else."""
         rest = self.strength + self.guard + self.speed + self.spirit + 2 * len(self.skills)
-        return rest + min(int(self.item_bonus), int(rest * ITEM_CAP))
+        base = rest + min(int(self.item_bonus), int(rest * ITEM_CAP))
+        return base + int(round(base * int(self.vet_pct) / 100)) if self.vet_pct else base
 
 
-def from_cat(cat, stats: cat_stats.Stats, hurt: bool = False, item_bonus: int = 0) -> Fighter:
+def from_cat(cat, stats: cat_stats.Stats, hurt: bool = False, item_bonus: int = 0, vet_pct: int = 0) -> Fighter:
     """A fighter snapshot of a cat: allocated points plus the free trait bonus; -10% if Hurt."""
     t = cat_stats.totals(stats, cat.trait)
     f = HURT_FACTOR if hurt else 1.0
     return Fighter(name=cat.name, strength=max(1, int(t["strength"] * f)), guard=int(t["guard"] * f),
                    speed=int(t["speed"] * f), spirit=int(t["spirit"] * f), rank=cat.cat_rank,
-                   skills=tuple(k for k in stats.skills if k in cat_stats.SKILLS), item_bonus=item_bonus)
+                   skills=tuple(k for k in stats.skills if k in cat_stats.SKILLS), item_bonus=item_bonus, vet_pct=int(vet_pct))
 
 
 @dataclass
@@ -171,6 +173,8 @@ def _act(me: _Side, foe: _Side, rng: random.Random, lines: List[str]) -> None:
             mult = POUNCE_MULT
             lines.append(f"{sk.emoji} **{n}** pounces!")
     strength = (me.f.strength + SPIRIT_POWER * me.f.spirit) * (HISS_MULT if me.weak else 1.0)
+    if me.f.vet_pct:
+        strength *= 1 + me.f.vet_pct / 100
     me.weak = False
     sp = me.f.speed + foe.f.speed
     hit = _clamp(0.55 + SPEED_SWING * ((me.f.speed / sp if sp else 0.5) - 0.5), 0.15, 0.90)
