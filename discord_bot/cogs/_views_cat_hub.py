@@ -57,13 +57,9 @@ async def status(interaction: discord.Interaction) -> list:
         return []
 
 
-def card(lines: list, picture_url: Optional[str] = None) -> discord.Embed:
-    embed = discord.Embed(title="🐱 Cat menu", description=cat_hub.card_text(lines), color=PINK)
-    embed.set_thumbnail(url=cat_help.RING_URL)
-    if picture_url:
-        embed.set_image(url=str(picture_url))
-    embed.set_footer(text=cat_help.FOOTER)
-    return embed
+def hub_text(lines: list) -> str:
+    """The heading and status lines at the top of the menu card."""
+    return f"## \U0001F431 Cat menu\n{cat_hub.card_text(lines)}"
 
 
 class HubSelect(discord.ui.Select):
@@ -71,7 +67,7 @@ class HubSelect(discord.ui.Select):
         super().__init__(
             placeholder="What would you like to do?",
             options=[discord.SelectOption(label=label, value=key, emoji=emoji, description=desc)
-                     for key, emoji, label, desc in cat_hub.MENU], row=0)
+                     for key, emoji, label, desc in cat_hub.MENU])
 
     async def callback(self, interaction: discord.Interaction):
         btn = _button_for(self.values[0])
@@ -81,29 +77,30 @@ class HubSelect(discord.ui.Select):
         await btn.callback(interaction)
 
 
-class HubView(discord.ui.View):
-    """Menu + three buttons. Only the person it was opened for sees it (it is private)."""
+class _NextCatButton(discord.ui.Button):
+    def __init__(self, hub: "HubView"):
+        super().__init__(label="Next cat", emoji="⏰", style=discord.ButtonStyle.secondary)
+        self.hub = hub
 
-    def __init__(self, picture_url: Optional[str] = None, can_setup: bool = False):
-        super().__init__(timeout=600)
-        self.picture_url = picture_url
-        self.add_item(HubSelect())
-        if can_setup:
-            self.add_item(_SetupButton())
+    async def callback(self, interaction: discord.Interaction):
+        self.hub.lines = await status(interaction)
+        self.hub.build()
+        await interaction.response.edit_message(view=self.hub)
 
-    @discord.ui.button(label="Next cat", emoji="⏰", style=discord.ButtonStyle.secondary, row=1)
-    async def refresh(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        lines = await status(interaction)
-        await interaction.response.edit_message(embed=card(lines, self.picture_url), view=self)
 
-    @discord.ui.button(label="Share this cat", emoji="📣", style=discord.ButtonStyle.secondary, row=1)
-    async def share(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        if not self.picture_url:
+class _ShareButton(discord.ui.Button):
+    def __init__(self, hub: "HubView"):
+        super().__init__(label="Share this cat", emoji="📣", style=discord.ButtonStyle.secondary)
+        self.hub = hub
+
+    async def callback(self, interaction: discord.Interaction):
+        picture_url = self.hub.picture_url
+        if not picture_url:
             await interaction.response.send_message("There's no cat picture on this card to share.", ephemeral=True)
             return
         from discord_bot.cogs.cat import cat_embed
-        try:
-            await interaction.channel.send(embed=cat_embed(str(self.picture_url)),
+        try:      # the public post stays a classic embed (Phase 5 handles public posts)
+            await interaction.channel.send(embed=cat_embed(str(picture_url)),
                                            allowed_mentions=discord.AllowedMentions.none())
         except (discord.HTTPException, AttributeError):
             await interaction.response.send_message(
@@ -112,11 +109,37 @@ class HubView(discord.ui.View):
         await interaction.response.send_message("📣 Shared in the channel.", ephemeral=True)
 
 
+class HubView(discord.ui.LayoutView):
+    """Components V2 menu card: status, the cat picture, the menu and three buttons. Locked to whoever opened it."""
+
+    def __init__(self, picture_url: Optional[str] = None, can_setup: bool = False, lines: Optional[list] = None):
+        super().__init__(timeout=600)
+        self.picture_url = picture_url
+        self.can_setup = can_setup
+        self.lines = list(lines or [])
+        self.build()
+
+    def build(self) -> None:
+        self.clear_items()
+        box = discord.ui.Container(accent_colour=PINK)
+        box.add_item(discord.ui.Section(hub_text(self.lines), accessory=discord.ui.Thumbnail(cat_help.RING_URL)))
+        if self.picture_url:
+            box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(str(self.picture_url), description="Cat")))
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.ActionRow(HubSelect()))
+        buttons = [_NextCatButton(self), _ShareButton(self)]
+        if self.can_setup:
+            buttons.append(_SetupButton())
+        box.add_item(discord.ui.ActionRow(*buttons))
+        box.add_item(discord.ui.TextDisplay(f"-# {cat_help.FOOTER}"))
+        self.add_item(box)
+
+
 class _SetupButton(discord.ui.Button):
     """Server managers only: opens the same Cat setup wizard as /catsetup, so spawns are one tap away."""
 
     def __init__(self):
-        super().__init__(label="Set up spawns", emoji="🛠️", style=discord.ButtonStyle.primary, row=1)
+        super().__init__(label="Set up spawns", emoji="🛠️", style=discord.ButtonStyle.primary)
 
     async def callback(self, interaction: discord.Interaction):
         from discord_bot.cogs._views_shared import user_can_manage_guild
@@ -166,8 +189,8 @@ async def open_hub(interaction: discord.Interaction, picture_url: Optional[str] 
     lines = await status(interaction)
     if note:
         lines.insert(0, note)
-    view = HubView(picture_url, can_setup=await _can_setup(interaction))
+    view = HubView(picture_url, can_setup=await _can_setup(interaction), lines=lines)
     # Public in a server (locked to whoever opened it); the interaction was deferred with the same visibility.
     if deferred is None:
         deferred = interaction.response.is_done()
-    await vis.send(interaction, embed=card(lines, picture_url), view=view, deferred=deferred)
+    await vis.send(interaction, view=view, deferred=deferred)

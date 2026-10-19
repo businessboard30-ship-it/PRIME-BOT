@@ -24,6 +24,18 @@ PINK = discord.Color.from_rgb(255, 182, 193)
 GOLD = discord.Color.gold()
 
 
+def _layout(text: str, *rows, colour=None, timeout: float = 120) -> discord.ui.LayoutView:
+    """A Components V2 card: one Container holding `text` and, below it, any ActionRows (V2 messages can't carry
+    plain content or embeds, so notes and results are cards too)."""
+    view = discord.ui.LayoutView(timeout=timeout)
+    box = discord.ui.Container(accent_colour=colour or PINK)
+    box.add_item(discord.ui.TextDisplay(text))
+    for row in rows:
+        box.add_item(row)
+    view.add_item(box)
+    return view
+
+
 def feature_button_view() -> discord.ui.View:
     view = discord.ui.View(timeout=300)
     view.add_item(CatLifeButton())
@@ -46,13 +58,13 @@ class CareButton(discord.ui.Button):
         except Exception:
             await interaction.response.send_message("Daily care is temporarily unavailable. Try again shortly.", ephemeral=True)
             return
-        share = discord.ui.View(timeout=120)
-        share.add_item(ShareButton("care", streak=result.streak))
+        def share():
+            return discord.ui.ActionRow(ShareButton("care", streak=result.streak))
         if result.status == "already":
-            await vis.send(interaction, content=f"You already cared for your cats today. Streak: **{result.streak} days**.", view=share)
+            await vis.send(interaction, view=_layout(f"You already cared for your cats today. Streak: **{result.streak} days**.", share()))
             return
         diamond = f" and 💎 **{result.diamonds} diamond**" if result.diamonds else ""
-        await vis.send(interaction, content=f"💖 Care complete! {interaction.user.mention} is on a **{result.streak} day** streak and earned 🪙 **{result.coins} coins**{diamond}.", view=share)
+        await vis.send(interaction, view=_layout(f"## 💖 Care complete!\n{interaction.user.mention} is on a **{result.streak} day** streak and earned 🪙 **{result.coins} coins**{diamond}.", share(), colour=GOLD))
         if result.streak in cat_announce.MILESTONE_STREAKS:
             await cat_announce.announce(interaction, cat_announce.streak_text(interaction.user.mention, result.streak), kind="milestone")
 
@@ -75,7 +87,7 @@ class CosmeticBuySelect(discord.ui.Select):
         text = {"ok": f"{item.emoji} You bought **{item.name}**! It stays yours even if you sell or release cats.",
                 "owned": "You already own that one.", "poor": "You don't have enough coins/diamonds for that yet.",
                 "missing": "That item is no longer in the shop."}.get(status, "Something went wrong.")
-        await vis.send(interaction, content=text, public=(status == "ok"))
+        await vis.send(interaction, view=_layout(text, colour=GOLD if status == "ok" else None), public=(status == "ok"))
 
 
 class CosmeticEquipSelect(discord.ui.Select):
@@ -98,7 +110,8 @@ class CosmeticEquipSelect(discord.ui.Select):
         text = {"equipped": f"{item.emoji} **{item.name}** is on your profile card now. Open **My profile** to see it.",
                 "removed": f"{item.emoji} **{item.name}** is off your profile card.",
                 "not_owned": "Buy that one in the shop first.", "missing": "That item is no longer in the shop."}.get(status, "Something went wrong.")
-        await vis.send(interaction, content=text, public=(status in ("equipped", "removed")))
+        await vis.send(interaction, view=_layout(text, colour=GOLD if status in ("equipped", "removed") else None),
+                       public=(status in ("equipped", "removed")))
 
 
 class CosmeticsButton(discord.ui.Button):
@@ -111,20 +124,22 @@ class CosmeticsButton(discord.ui.Button):
         except Exception:
             await interaction.response.send_message("The cosmetic shop is temporarily unavailable.", ephemeral=True)
             return
-        embed = discord.Embed(title="✨ Cat cosmetics", description="Hats, collars and card backgrounds for your public profile.", color=PINK)
-        embed.add_field(name="Available", value="\n".join(
+        available = "\n".join(
             f"{item.emoji} **{item.name}** — {item.price_coins:,} coins" + (f" + {item.price_diamonds} diamonds" if item.price_diamonds else "")
-            for item in items) or "Nothing in stock yet.", inline=False)
+            for item in items) or "Nothing in stock yet."
         owned, worn_ids = await cat_features.wardrobe(interaction.user.id, getattr(interaction.client, "clone_id", None))
+        text = ("## ✨ Cat cosmetics\nHats, collars and card backgrounds for your public profile.\n\n"
+                f"### 🛍️ Available\n{available}")
         if owned:
-            embed.add_field(name="Yours", value="\n".join(f"{i.emoji} **{i.name}**" + (" (worn)" if i.id in worn_ids else "") for i in owned), inline=False)
-        embed.set_footer(text="Cosmetics are play-only rewards.")
-        view = discord.ui.View(timeout=120)
+            text += "\n\n### 👒 Yours\n" + "\n".join(
+                f"{i.emoji} **{i.name}**" + (" (worn)" if i.id in worn_ids else "") for i in owned)
+        text += "\n\n-# Cosmetics are play-only rewards."
+        rows = []
         if items:
-            view.add_item(CosmeticBuySelect(items))
+            rows.append(discord.ui.ActionRow(CosmeticBuySelect(items)))
         if owned:
-            view.add_item(CosmeticEquipSelect(owned, worn_ids))
-        await vis.send(interaction, embed=embed, view=view)
+            rows.append(discord.ui.ActionRow(CosmeticEquipSelect(owned, worn_ids)))
+        await vis.send(interaction, view=_layout(text, *rows, colour=PINK))
 
 
 class ProfileButton(discord.ui.Button):
@@ -344,7 +359,7 @@ class QuestClaimSelect(discord.ui.Select):
             return
         text = {"ok": "🎁 Quest claimed! Your 💎 were added to your wallet.",
                 "not_ready": "That quest isn't ready, or you already claimed it."}.get(status, "Something went wrong.")
-        await vis.send(interaction, content=text, public=(status == "ok"))
+        await vis.send(interaction, view=_layout(text, colour=GOLD if status == "ok" else None), public=(status == "ok"))
         if status == "ok":
             try:
                 done = all(q.claimed for q in await cat_quests.quests(interaction.user.id, _clone(interaction)))
@@ -366,13 +381,10 @@ class QuestsButton(discord.ui.Button):
             return
         lines = [f"{'✅' if q.progress >= q.target else '🟦'} **{q.title}** — {q.progress}/{q.target} · 💎 {q.reward}"
                  + (" · claimed" if q.claimed else "") for q in items]
-        embed = discord.Embed(title="🎯 Daily cat quests", color=GOLD,
-                              description="Finish these before UTC midnight, then claim your diamonds.\n\n" + "\n".join(lines))
-        view = discord.ui.View(timeout=120)
+        text = "## 🎯 Daily cat quests\nFinish these before UTC midnight, then claim your diamonds.\n\n" + "\n".join(lines)
         ready = [q for q in items if q.ready]
-        if ready:
-            view.add_item(QuestClaimSelect(ready))
-        await vis.send(interaction, embed=embed, view=view)
+        rows = [discord.ui.ActionRow(QuestClaimSelect(ready))] if ready else []
+        await vis.send(interaction, view=_layout(text, *rows, colour=GOLD))
 
 
 class BadgesButton(discord.ui.Button):
@@ -391,55 +403,58 @@ class BadgesButton(discord.ui.Button):
         text = "\n".join(lines)
         if new:
             text = "🎉 New: " + ", ".join(cat_quests.badge_line(s) for s in new) + "\n\n" + text
-        view = discord.ui.View(timeout=120)
-        if have or new:
-            view.add_item(ShareButton("badges"))
-        await vis.send(interaction, embed=discord.Embed(title="🏅 Collection badges", description=text, color=GOLD), view=view)
+        rows = [discord.ui.ActionRow(ShareButton("badges"))] if (have or new) else []
+        await vis.send(interaction, view=_layout("## 🏅 Collection badges\n" + text, *rows, colour=GOLD))
         await cat_announce.announce_badges(interaction, new)
 
 
 # ── Wishlist ─────────────────────────────────────────────────────────────────
 
-def _board_embed(wants, total: int, page: int, rarity) -> discord.Embed:
+def _board_text(wants, total: int, page: int, rarity) -> str:
     lines = [f"<@{w.owner_id}> is looking for {w.text()}" for w in wants]
     desc = "\n".join(lines) or "Nobody is looking for anything yet. Be the first to post a want!"
-    e = discord.Embed(title="🔎 Cat wishlist" + (f" · {rarity}" if rarity else ""), description=desc, color=PINK)
     pages = max(1, -(-total // cat_wishlist.PAGE_SIZE))
-    e.set_footer(text=f"Page {page + 1}/{pages} · {total} open · Got a match? Open My cats, then Trade / gift. Wants expire after "
-                      f"{cat_wishlist.LIFETIME_DAYS} days.")
-    return e
+    return (f"## 🔎 Cat wishlist" + (f" · {rarity}" if rarity else "") + f"\n{desc}\n\n"
+            f"-# Page {page + 1}/{pages} · {total} open · Got a match? Open My cats, then Trade / gift. "
+            f"Wants expire after {cat_wishlist.LIFETIME_DAYS} days.")
 
 
-class WishlistBoardView(discord.ui.View):
-    def __init__(self, page: int = 0, total: int = 0, rarity=None):
+class WishlistBoardView(discord.ui.LayoutView):
+    """The wishlist board as one Components V2 card: wants, page buttons and a rarity filter."""
+
+    def __init__(self, page: int = 0, total: int = 0, rarity=None, wants=None):
         super().__init__(timeout=300)
         self.page, self.rarity = page, rarity
         pages = max(1, -(-total // cat_wishlist.PAGE_SIZE))
+        buttons = []
         for label, delta, off in (("◀", -1, page <= 0), ("▶", 1, page >= pages - 1)):
-            b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=off, row=0)
+            b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=off)
             b.callback = self._turn(delta)
-            self.add_item(b)
-        post = discord.ui.Button(label="Post a want", emoji="➕", style=discord.ButtonStyle.success, row=0)
+            buttons.append(b)
+        post = discord.ui.Button(label="Post a want", emoji="➕", style=discord.ButtonStyle.success)
         post.callback = self._post
-        mine = discord.ui.Button(label="My wants", emoji="📝", style=discord.ButtonStyle.secondary, row=0)
+        mine = discord.ui.Button(label="My wants", emoji="📝", style=discord.ButtonStyle.secondary)
         mine.callback = self._mine
-        self.add_item(post)
-        self.add_item(mine)
-        sel = discord.ui.Select(placeholder="Show only…", row=1, options=[
+        buttons += [post, mine]
+        sel = discord.ui.Select(placeholder="Show only…", options=[
             discord.SelectOption(label="All rarities", value="any", default=rarity is None)] + [
             discord.SelectOption(label=r.title(), value=r, emoji=cat_adopt.RARITY_EMOJI.get(r), default=rarity == r)
             for r in cat_wishlist.RARITIES])
         sel.callback = self._filter
-        self.add_item(sel)
+        box = discord.ui.Container(accent_colour=PINK)
+        box.add_item(discord.ui.TextDisplay(_board_text(wants or [], total, page, rarity)))
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.ActionRow(*buttons))
+        box.add_item(discord.ui.ActionRow(sel))
+        self.add_item(box)
 
     async def _render(self, interaction, page: int, rarity, edit: bool = True):
         wants, total = await cat_wishlist.board(page, rarity=rarity)
-        view = WishlistBoardView(page, total, rarity)
-        embed = _board_embed(wants, total, page, rarity)
+        view = WishlistBoardView(page, total, rarity, wants)
         if edit:
-            await interaction.response.edit_message(embed=embed, view=view)
+            await interaction.response.edit_message(view=view)
         else:
-            await vis.send(interaction, embed=embed, view=view)
+            await vis.send(interaction, view=view)
 
     def _turn(self, delta):
         async def cb(interaction: discord.Interaction):
@@ -458,8 +473,7 @@ class WishlistBoardView(discord.ui.View):
 
     async def _post(self, interaction: discord.Interaction):
         view = WishlistPostView()
-        await interaction.response.send_message("What are you looking for? Pick a rarity (and a trait if you like).",
-                                                view=view, ephemeral=True)
+        await interaction.response.send_message(view=view, ephemeral=True)
 
     async def _mine(self, interaction: discord.Interaction):
         try:
@@ -470,10 +484,9 @@ class WishlistBoardView(discord.ui.View):
         if not mine:
             await interaction.response.send_message("You have no open wants. Tap **Post a want** to add one.", ephemeral=True)
             return
-        view = discord.ui.View(timeout=120)
-        view.add_item(WishlistRemoveSelect(mine))
-        await interaction.response.send_message("\n".join(f"• {w.text()}" for w in mine) + "\n\nPick one to remove it.",
-                                                view=view, ephemeral=True)
+        text = "## 📝 My wants\n" + "\n".join(f"• {w.text()}" for w in mine) + "\n\nPick one to remove it."
+        await interaction.response.send_message(
+            view=_layout(text, discord.ui.ActionRow(WishlistRemoveSelect(mine))), ephemeral=True)
 
 
 class WishlistNoteModal(discord.ui.Modal, title="Post a want"):
@@ -504,24 +517,29 @@ class WishlistNoteModal(discord.ui.Modal, title="Post a want"):
                 cat_public.mark_wish(interaction.user.id)
 
 
-class WishlistPostView(discord.ui.View):
+class WishlistPostView(discord.ui.LayoutView):
     def __init__(self):
         super().__init__(timeout=180)
         self.rarity, self.trait = None, None
-        rar = discord.ui.Select(placeholder="Rarity (required)", row=0, options=[
+        rar = discord.ui.Select(placeholder="Rarity (required)", options=[
             discord.SelectOption(label=r.title(), value=r, emoji=cat_adopt.RARITY_EMOJI.get(r)) for r in cat_wishlist.RARITIES])
         rar.callback = self._rarity
-        trait = discord.ui.Select(placeholder="Trait (optional)", row=1, options=[
+        trait = discord.ui.Select(placeholder="Trait (optional)", options=[
             discord.SelectOption(label="Any trait", value="any")] + [discord.SelectOption(label=t, value=t) for t in cat_adopt.TRAITS])
         trait.callback = self._trait
-        self.go = discord.ui.Button(label="Continue", style=discord.ButtonStyle.success, disabled=True, row=2)
+        self.go = discord.ui.Button(label="Continue", style=discord.ButtonStyle.success, disabled=True)
         self.go.callback = self._go
         self.share = False
         self.share_btn = discord.ui.Button(label="Also post in this channel: off", emoji="📣",
-                                           style=discord.ButtonStyle.secondary, row=2)
+                                           style=discord.ButtonStyle.secondary)
         self.share_btn.callback = self._toggle_share
-        for item in (rar, trait, self.go, self.share_btn):
-            self.add_item(item)
+        box = discord.ui.Container(accent_colour=PINK)
+        box.add_item(discord.ui.TextDisplay("## ➕ Post a want\nWhat are you looking for? Pick a rarity (and a trait if you like)."))
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.ActionRow(rar))
+        box.add_item(discord.ui.ActionRow(trait))
+        box.add_item(discord.ui.ActionRow(self.go, self.share_btn))
+        self.add_item(box)
 
     async def _toggle_share(self, interaction: discord.Interaction):
         self.share = not self.share
@@ -567,4 +585,4 @@ class WishlistButton(discord.ui.Button):
         except Exception:
             await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
             return
-        await vis.send(interaction, embed=_board_embed(wants, total, 0, None), view=WishlistBoardView(0, total, None))
+        await vis.send(interaction, view=WishlistBoardView(0, total, None, wants))

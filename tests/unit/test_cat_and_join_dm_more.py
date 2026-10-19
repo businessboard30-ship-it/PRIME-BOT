@@ -301,11 +301,11 @@ def test_cat_button_sends_an_embed_then_rate_limits(monkeypatch):
     monkeypatch.setattr(cat, "fetch_cat_url", fake)
     i = FakeInteraction()
     run(jd._CatButton(7, None).callback(i))
-    assert i.followups[0][1]["embed"].image.url == GOOD
+    assert GOOD in _v2_urls(i.followups[0][1]["view"])
     j = FakeInteraction()
     run(jd._CatButton(7, None).callback(j))                   # same user, straight away
-    e = j.followups[0][1]["embed"]                           # the menu still opens, just without a new picture
-    assert "another cat picture" in e.description and e.image.url is None and j.followups[0][1]["ephemeral"] is False
+    v = j.followups[0][1]["view"]                            # the menu still opens, just without a new picture
+    assert "another cat picture" in _v2_text(v) and GOOD not in _v2_urls(v) and j.followups[0][1]["ephemeral"] is False
 
 
 def test_cat_button_says_sorry_when_no_cat(monkeypatch):
@@ -315,5 +315,20 @@ def test_cat_button_says_sorry_when_no_cat(monkeypatch):
     monkeypatch.setattr(cat, "fetch_cat_url", none)
     i = FakeInteraction()
     run(jd._CatButton(7, None).callback(i))
-    e = i.followups[0][1]["embed"]                           # the menu opens with a note instead of a picture
-    assert "couldn't find a cat" in e.description and e.image.url is None and i.followups[0][1]["ephemeral"] is False
+    v = i.followups[0][1]["view"]                            # the menu opens with a note instead of a picture
+    assert "couldn't find a cat" in _v2_text(v) and GOOD not in _v2_urls(v) and i.followups[0][1]["ephemeral"] is False
+
+
+def _v2_text(view):
+    out = []
+    def walk(items):
+        for it in items:
+            if hasattr(it, "content"):
+                out.append(it.content)
+            walk(getattr(it, "children", []) or [])
+    walk(view.children)
+    return "\n".join(out)
+
+
+def _v2_urls(view):
+    return str(view.to_components())

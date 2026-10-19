@@ -304,7 +304,7 @@ def test_non_admin_tapping_cat_still_gets_a_cat(monkeypatch):
     cat._last_use.clear()
     i = FI()
     run(jd._CatButton(7, None).callback(i))
-    assert i.followups and i.followups[0][1]["embed"].image.url.endswith("abc.jpg")
+    assert i.followups and "abc.jpg" in str(i.followups[0][1]["view"].to_components())
 
 
 def test_setup_embed_explains_the_free_and_premium_limits():
