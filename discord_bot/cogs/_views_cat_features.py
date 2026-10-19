@@ -474,7 +474,7 @@ class WishlistBoardView(discord.ui.LayoutView):
         wants, total = await cat_wishlist.board(page, rarity=rarity)
         view = WishlistBoardView(page, total, rarity, wants)
         if edit:
-            await interaction.response.edit_message(view=view)
+            await vis.edit(interaction, view=view)
         else:
             await vis.send(interaction, view=view)
 
@@ -567,12 +567,12 @@ class WishlistPostView(discord.ui.LayoutView):
         self.share = not self.share
         self.share_btn.label = f"Also post in this channel: {'on' if self.share else 'off'}"
         self.share_btn.style = discord.ButtonStyle.primary if self.share else discord.ButtonStyle.secondary
-        await interaction.response.edit_message(view=self)
+        await vis.edit(interaction, view=self)
 
     async def _rarity(self, interaction: discord.Interaction):
         self.rarity = interaction.data["values"][0]
         self.go.disabled = False
-        await interaction.response.edit_message(view=self)
+        await vis.edit(interaction, view=self)
 
     async def _trait(self, interaction: discord.Interaction):
         v = interaction.data["values"][0]

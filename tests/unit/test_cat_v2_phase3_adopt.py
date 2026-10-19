@@ -113,7 +113,8 @@ def test_all_button_labels_and_order_are_kept():
     assert labels[:5] == ["◀", "▶", "Rename", "Trade / gift", "Release"]
     assert "Filter / search" in labels and any(l.startswith("⭐ Rank up") for l in labels)
     assert [l for l in labels if "Convert" in l] == ["💎 Convert 1", "💎 Convert all (2)"]
-    assert labels[-3:] == ["Feed · 80", "Water · 30", "Bed · 120"]
+    assert [l for l in labels if l.startswith(("Feed ·", "Water ·", "Bed ·"))] == ["Feed · 80", "Water · 30", "Bed · 120"]
+    assert labels[-3:] == ["Feed all (0)", "Water all (3)", "Sleep all (3)"]
 
 
 def test_help_card_budget_for_every_topic():

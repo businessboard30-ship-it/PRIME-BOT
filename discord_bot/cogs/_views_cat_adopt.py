@@ -279,7 +279,7 @@ class HelpTopicSelect(discord.ui.Select):
                      for key, emoji, label, _ in cat_help.topics()])
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(view=HelpView(self.values[0]))
+        await vis.edit(interaction, view=HelpView(self.values[0]))
 
 
 class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_adopt:(\d+)$"):
@@ -379,7 +379,7 @@ class RenameModal(discord.ui.Modal, title="Rename your cat"):
         await self.parent.reload(interaction.user.id)
         self.parent.note = None
         await self.parent.draw()
-        await interaction.response.edit_message(view=self.parent)
+        await vis.edit(interaction, view=self.parent)
 
 
 class CollectionView(discord.ui.LayoutView):
@@ -393,6 +393,7 @@ class CollectionView(discord.ui.LayoutView):
         self.filter = cat_filter.CatFilter()
         self.confirm_release = False
         self.confirm_rank_for = None        # (cat id, rank) the person tapped once; a second tap spends the coins
+        self.confirm_bulk = None            # (kind, cats, coins) after one tap on Feed all / Water all / Sleep all
         self.wallet = cat_wallet.Wallet()
         self.note: Optional[str] = None     # the result of the last action, shown on top of the card
         self._urls: Dict[int, str] = {}     # pool id -> picture
@@ -502,13 +503,26 @@ class CollectionView(discord.ui.LayoutView):
             b.callback = fn
             care.append(b)
         rows.append(discord.ui.ActionRow(*care))
+        bulk = []
+        for kind, verb, emoji in (("feed", "Feed all", cat_care.FOOD), ("water", "Water all", cat_care.DROP),
+                                  ("bed", "Sleep all", cat_care.BED)):
+            n = cat_care.bulk_target_count(self.all_cats, kind)
+            armed = self.confirm_bulk is not None and self.confirm_bulk[0] == kind
+            label = (f"Tap again: {self.confirm_bulk[1]} for {self.confirm_bulk[2]:,}" if armed else f"{verb} ({n})")
+            b = discord.ui.Button(label=label[:80], emoji=emoji, disabled=(n == 0 and not armed),
+                                  style=discord.ButtonStyle.danger if armed else discord.ButtonStyle.secondary)
+            b.callback = self._bulk_cb(kind)
+            bulk.append(b)
+        rows.append(discord.ui.ActionRow(*bulk))
         self.add_item(_box(self._body(), rows, image=self._urls.get(self.current.pool_id), alt=self.current.name))
 
-    async def _push(self, interaction, note: Optional[str] = None) -> None:
+    async def _push(self, interaction, note: Optional[str] = None, keep_bulk: bool = False) -> None:
         """Show the card again (with `note` on top) by editing the message the person tapped on."""
+        if not keep_bulk:
+            self.confirm_bulk = None
         self.note = note
         await self.draw()
-        await interaction.response.edit_message(view=self)
+        await vis.edit(interaction, view=self)
 
     async def _care(self, interaction, action, ok_text) -> None:
         cat = self.current
@@ -529,7 +543,7 @@ class CollectionView(discord.ui.LayoutView):
         }.get(res.status, "Something went wrong, try again in a moment.")
         await self.reload(interaction.user.id)
         if not self.cats:                      # the cat wandered off while this screen was open and it was the last one
-            await interaction.response.edit_message(view=_notice(note + "\nYou don't have any cats right now."))
+            await vis.edit(interaction, view=_notice(note + "\nYou don't have any cats right now."))
             return
         await self.refresh_wallet()
         await self._push(interaction, note)
@@ -542,6 +556,53 @@ class CollectionView(discord.ui.LayoutView):
 
     async def _bed(self, interaction):
         await self._care(interaction, cat_care.rent_bed, f"{cat_care.BED} **{{name}}** has a cosy bed until {{until}}. ({{cost}} coins, {{coins:,}} left)")
+
+    def _bulk_cb(self, kind):
+        async def cb(interaction):
+            await self._bulk(interaction, kind)
+        return cb
+
+    async def _bulk(self, interaction, kind: str) -> None:
+        """Feed / water / sleep every cat that needs it. The first tap shows the exact cost; a second tap does it."""
+        verbs = {"feed": ("Fed", "Feed", cat_care.FOOD), "water": ("Watered", "Water", cat_care.DROP),
+                 "bed": ("Gave a cosy bed to", "Give a bed to", cat_care.BED)}
+        done_verb, ask_verb, emoji = verbs[kind]
+        uid, clone = interaction.user.id, _clone_id(self.client)
+
+        def cats(n: int) -> str:
+            return f"{n} cat" + ("" if n == 1 else "s")
+        try:
+            if self.confirm_bulk is None or self.confirm_bulk[0] != kind:
+                n, cost = await cat_care.bulk_preview(uid, clone, kind)
+                if n == 0:
+                    await self._push(interaction, f"{emoji} None of your cats need that right now.")
+                    return
+                self.confirm_bulk = (kind, cats(n), cost)
+                await self._push(interaction, f"{emoji} {ask_verb} **{cats(n)}** for {cost:,} coins? Tap the button again to confirm.",
+                                 keep_bulk=True)
+                return
+            self.confirm_bulk = None
+            res = await cat_care.bulk_care(uid, clone, kind)
+        except Exception:
+            logger.exception("[cat-care] bulk %s failed", kind)
+            self.confirm_bulk = None
+            await interaction.response.send_message("😿 Something went wrong, try again in a moment.", ephemeral=True)
+            return
+        if res.done:
+            note = f"{emoji} {done_verb} **{cats(res.done)}**. ({res.spent:,} coins, {res.coins:,} left)"
+            if res.short:
+                note += f"\nNot enough coins for {cats(res.short)} more."
+        elif res.short:
+            note = (f"You need {cat_care.BULK_KINDS[kind][1]:,} coins for each cat and have {res.coins:,}. "
+                    "Adopt cats, sell a cat or convert a diamond to earn more.")
+        else:
+            note = f"{emoji} None of your cats need that right now."
+        await self.reload(uid)
+        if not self.cats:
+            await vis.edit(interaction, view=_notice(note + "\nYou don't have any cats right now."))
+            return
+        await self.refresh_wallet()
+        await self._push(interaction, note)
 
     async def _rank_up(self, interaction):
         cat = self.current
@@ -623,7 +684,7 @@ class CollectionView(discord.ui.LayoutView):
 
     async def _open_filter(self, interaction):
         self.confirm_release = False
-        await interaction.response.edit_message(view=FilterView(self))
+        await vis.edit(interaction, view=FilterView(self))
 
     async def _show(self, interaction):
         await self._push(interaction)
@@ -653,7 +714,7 @@ class CollectionView(discord.ui.LayoutView):
             cat_log.record(interaction.client, "release", **_event(interaction, cat))
         await self.reload(interaction.user.id)
         if not self.cats:
-            await interaction.response.edit_message(
+            await vis.edit(interaction,
                 view=_notice(f"👋 **{cat.name}** went off to find a new home. You have no cats left."))
             return
         await self._push(interaction, f"👋 **{cat.name}** went off to find a new home.")
@@ -668,7 +729,7 @@ class CollectionView(discord.ui.LayoutView):
                 "use Trade by ID, or sell it for coins. (Trades and gifts are just for fun.)\n\n"
                 + _trade_card_text(cat))
         view = TradeTargetView(self, text=text, image=self._urls.get(cat.pool_id))
-        await interaction.response.edit_message(view=view)
+        await vis.edit(interaction, view=view)
 
 
 def _trade_card_text(cat: ca.Cat) -> str:
@@ -720,7 +781,7 @@ class TradeTargetView(discord.ui.LayoutView):
         text = (f"🤝 What should **{self.parent.current.name}** be swapped for? Pick one of {target.display_name}'s "
                 "cats, or just gift yours.\n\n" + _trade_card_text(self.parent.current))
         view = TradeAskView(self.parent, target, theirs, text=text, image=self.image)
-        await interaction.response.edit_message(view=view)
+        await vis.edit(interaction, view=view)
 
 
 REMOTE_COOLDOWN = 60.0                 # seconds between two cross-server offers from the same person
@@ -800,7 +861,7 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
                 await interaction.response.send_message("That ID doesn't belong to a person.", ephemeral=True)
                 return
             theirs = await ca.list_cats(owner_id, their_clone)
-            await interaction.response.edit_message(view=TradeAskView(
+            await vis.edit(interaction, view=TradeAskView(
                 self.parent, member, theirs, their_clone=their_clone,
                 text=(f"🆔 Trading with **{member.display_name}** (a member of this server). What should "
                       f"**{self.parent.current.name}** be swapped for? Or just gift yours.")))
@@ -816,7 +877,7 @@ class TradeIdModal(discord.ui.Modal, title="Trade by ID"):
         view = TradeAskView(self.parent, target, theirs, remote=True, their_clone=their_clone,
                             text=(f"🌍 Trading with **{target.display_name}** (from any server). What should "
                                   f"**{self.parent.current.name}** be swapped for? Or just gift yours."))
-        await interaction.response.edit_message(view=view)
+        await vis.edit(interaction, view=view)
 
 
 _UNSET = object()
@@ -865,7 +926,7 @@ class TradeAskView(discord.ui.LayoutView):
     async def _turn(self, interaction, delta: int):
         self.page += delta
         self._build()
-        await interaction.response.edit_message(view=self)
+        await vis.edit(interaction, view=self)
 
     async def interaction_check(self, interaction):
         return await self.parent.interaction_check(interaction)
@@ -886,7 +947,7 @@ class TradeAskView(discord.ui.LayoutView):
         if self.remote:
             premium = await cs.is_premium(interaction.guild.id, _clone_id(interaction.client)) if interaction.guild else False
             if not cat_ids.can_trade_across_servers(premium):
-                await interaction.response.edit_message(view=_notice("⭐ Trading by ID needs a Premium server."))
+                await vis.edit(interaction, view=_notice("⭐ Trading by ID needs a Premium server."))
                 return
             import time
             wait = REMOTE_COOLDOWN - (time.monotonic() - _remote_at.get(interaction.user.id, -1e9))
@@ -901,7 +962,7 @@ class TradeAskView(discord.ui.LayoutView):
             try:
                 msg = await self.target.send(view=offer)
             except discord.HTTPException:
-                await interaction.response.edit_message(view=_notice(
+                await vis.edit(interaction, view=_notice(
                     "😿 I couldn't message them (their DMs are closed). Ask them to open DMs, or trade in a "
                     "server you share."))
                 return
@@ -909,7 +970,7 @@ class TradeAskView(discord.ui.LayoutView):
             _remote_pending[self.target.id] = _remote_pending.get(self.target.id, 0) + 1
             offer.counted = True
             offer.message = msg
-            await interaction.response.edit_message(view=_notice(
+            await vis.edit(interaction, view=_notice(
                 f"✅ Offer sent to {self.target.display_name} by DM. They have {OFFER_TIMEOUT // 60} minutes to "
                 "answer, and I'll tell you what they say."))
             return
@@ -918,11 +979,11 @@ class TradeAskView(discord.ui.LayoutView):
                 view=offer,
                 allowed_mentions=discord.AllowedMentions(users=[self.target], everyone=False, roles=False))
         except discord.HTTPException:
-            await interaction.response.edit_message(
+            await vis.edit(interaction,
                 view=_notice("😿 I couldn't post the offer in this channel (I need Send Messages)."))
             return
         offer.message = msg
-        await interaction.response.edit_message(view=_notice(
+        await vis.edit(interaction, view=_notice(
             f"✅ Offer sent to {self.target.mention}. They have {OFFER_TIMEOUT // 60} minutes to answer."))
 
 
@@ -976,7 +1037,7 @@ class TradeOfferView(discord.ui.LayoutView):
         self.stop()
         self._release_slot()
         await self._tell_giver(text)
-        await interaction.response.edit_message(view=_offer_done(text))
+        await vis.edit(interaction, view=_offer_done(text))
 
     async def _accept(self, interaction: discord.Interaction):
         if interaction.user.id != self.taker.id:
@@ -1037,7 +1098,7 @@ class SearchModal(discord.ui.Modal, title="Search your cats"):
     async def on_submit(self, interaction: discord.Interaction):
         self.parent.f = self.parent.f.with_(query=cat_filter.clean_query(self.text.value))
         self.parent._build()
-        await interaction.response.edit_message(view=self.parent)
+        await vis.edit(interaction, view=self.parent)
 
 
 class FilterView(discord.ui.LayoutView):
@@ -1091,7 +1152,7 @@ class FilterView(discord.ui.LayoutView):
     async def _update(self, interaction, **kw):
         self.f = self.f.with_(**kw)
         self._build()
-        await interaction.response.edit_message(view=self)
+        await vis.edit(interaction, view=self)
 
     async def _rarity(self, interaction):
         v = interaction.data["values"][0]
@@ -1111,7 +1172,7 @@ class FilterView(discord.ui.LayoutView):
     async def _clear(self, interaction):
         self.f = cat_filter.CatFilter()
         self._build()
-        await interaction.response.edit_message(view=self)
+        await vis.edit(interaction, view=self)
 
     async def _done(self, interaction):
         self.parent.filter = self.f
