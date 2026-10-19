@@ -40,6 +40,7 @@ class Reward:
 class Wallet:
     coins: int = 0
     diamonds: int = 0
+    primole: int = 0                        # 🔮 account-bound second currency (modules/cat_primole.py)
 
 
 def roll_reward(rarity: str, rng=random) -> Reward:
@@ -61,7 +62,8 @@ def reward_text(reward: Optional[Reward]) -> str:
 
 
 def wallet_text(w: Wallet) -> str:
-    return f"{COINS} {w.coins:,} coins · {DIAMOND} {w.diamonds:,} diamond{'s' if w.diamonds != 1 else ''}"
+    text = f"{COINS} {w.coins:,} coins · {DIAMOND} {w.diamonds:,} diamond{'s' if w.diamonds != 1 else ''}"
+    return text + (f" · 🔮 {w.primole:,} Primole" if w.primole else "")
 
 
 # ── database ──────────────────────────────────────────────────────────────
@@ -93,9 +95,11 @@ async def add_reward(conn, owner_id: int, clone_id, reward: Reward) -> None:
 async def get_wallet(owner_id: int, clone_id) -> Wallet:
     pool = await _pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT coins, diamonds FROM cat_wallets WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2",
+        row = await conn.fetchrow("SELECT coins, diamonds, primole FROM cat_wallets WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2",
                                   owner_id, SHARED_KEY)
-    return Wallet(int(row["coins"]), int(row["diamonds"])) if row else Wallet()
+    if not row:
+        return Wallet()
+    return Wallet(int(row["coins"]), int(row["diamonds"]), int(row["primole"]) if "primole" in row.keys() else 0)
 
 
 async def safe_wallet(owner_id: int, clone_id) -> Wallet:

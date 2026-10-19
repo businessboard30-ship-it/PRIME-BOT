@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import List, Tuple
 
-from modules import cat_adopt, cat_arena, cat_care, cat_life, cat_market, cat_rank, cat_wallet, cat_wishlist
+from modules import cat_adopt, cat_arena, cat_care, cat_life, cat_market, cat_primole, cat_rank, cat_wallet, cat_wishlist
 
 FOOTER = "Just for fun: play coins only, no real money."
 
@@ -37,7 +37,9 @@ def sections() -> List[Tuple[str, str]]:
         ("🏠 My cats",
          "Rename, release, ⭐ rank up (spend coins, up to rank "
          f"{cat_rank.MAX_RANK}), trade or gift, and 🔍 filter or search your collection. "
-         f"{cat_wallet.DIAMOND} 1 diamond converts into {cat_wallet.DIAMOND_COINS:,} {cat_wallet.COINS} coins."),
+         f"{cat_wallet.DIAMOND} 1 diamond converts into {cat_wallet.DIAMOND_COINS:,} {cat_wallet.COINS} coins, or into "
+         f"{cat_primole.PRIMOLE_PER_DIAMOND} {cat_primole.PRIMOLE} {cat_primole.NAME} (tap twice, it can't be undone). "
+         f"{cat_primole.NAME} is for premium items later. It stays yours: it can't be traded, gifted, listed or fought over."),
         ("🍖 Care",
          f"Your cats get hungry now and then. In **My cats**, tap {cat_care.FOOD} **Feed** ({cat_care.FOOD_COST} coins). "
          f"{cat_care.DROP} **Water** ({cat_care.WATER_COST}) and a {cat_care.BED} **Bed** ({cat_care.BED_COST}, rented for "

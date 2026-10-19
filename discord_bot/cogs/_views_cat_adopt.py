@@ -30,6 +30,7 @@ from modules import cat_setup as cs
 from modules import cat_pool
 from modules import cat_rank as cr
 from modules import cat_stats
+from modules import cat_primole
 from modules import cat_wallet
 
 logger = logging.getLogger(__name__)
@@ -393,6 +394,8 @@ class CollectionView(discord.ui.LayoutView):
         self.all_cats = list(cats)                  # everything the person owns; self.cats is the filtered view of it
         self.filter = cat_filter.CatFilter()
         self.confirm_release = False
+        self._primole_armed = False
+        self.confirm_primole = False        # tapped once on "to Primole"; a second tap converts (final)
         self.confirm_rank_for = None        # (cat id, rank) the person tapped once; a second tap spends the coins
         self.confirm_bulk = None            # (kind, cats, coins) after one tap on Feed all / Water all / Sleep all
         self.wallet = cat_wallet.Wallet()
@@ -477,6 +480,13 @@ class CollectionView(discord.ui.LayoutView):
             b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=have < 1)
             b.callback = fn
             money.append(b)
+        pb = discord.ui.Button(
+            label=(f"Tap again: 1 💎 → {cat_primole.PRIMOLE_PER_DIAMOND} 🔮 (final)" if self.confirm_primole
+                   else f"🔮 To Primole · 1 💎 = {cat_primole.PRIMOLE_PER_DIAMOND}")[:80],
+            style=discord.ButtonStyle.danger if self.confirm_primole else discord.ButtonStyle.secondary,
+            disabled=have < 1)
+        pb.callback = self._convert_primole
+        money.append(pb)
         cost = cr.next_cost(self.current)
         if cost is None:
             rb = discord.ui.Button(label="Top rank \U0001F31F", style=discord.ButtonStyle.secondary, disabled=True)
@@ -672,6 +682,25 @@ class CollectionView(discord.ui.LayoutView):
                 f"{cat_wallet.DIAMOND} Converted! You now have {result.coins:,} coins.")
         await self._push(interaction, note)
 
+    async def _convert_primole(self, interaction) -> None:
+        """Diamond -> Primole, one way. First tap arms the button, the second converts exactly one diamond."""
+        if not self._primole_armed:
+            self.confirm_primole = True
+            await self._push(interaction, cat_primole.convert_note())
+            return
+        self.confirm_primole = False
+        try:
+            result = await cat_primole.convert_diamonds(interaction.user.id, 1)
+        except Exception:
+            logger.exception("[cat-primole] convert failed")
+            await interaction.response.send_message("😿 Something went wrong, try again in a moment.", ephemeral=True)
+            return
+        await self.refresh_wallet()
+        self.confirm_release = False
+        note = ("You don't have a diamond to convert." if result is None else
+                f"{cat_primole.PRIMOLE} Converted! You now have {result.primole:,} {cat_primole.NAME}.")
+        await self._push(interaction, note)
+
     async def _convert_one(self, interaction):
         await self._convert(interaction, 1)
 
@@ -683,6 +712,7 @@ class CollectionView(discord.ui.LayoutView):
             await interaction.response.send_message("These are someone else's cats. Tap **My cats** for yours.",
                                                     ephemeral=True)
             return False
+        self._primole_armed, self.confirm_primole = self.confirm_primole, False     # any other tap disarms it
         return True
 
     async def reload(self, user_id: int) -> None:

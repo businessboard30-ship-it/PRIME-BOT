@@ -109,7 +109,7 @@ class Conn:
         if sql.startswith("INSERT INTO cat_adoptions"):
             return {"id": 1, "owner_id": a[0], "clone_id": a[1], "pool_id": a[2], "name": a[3], "rarity": a[4], "trait": a[5],
                     "adopted_at": None, "traded_count": 0}
-        if "SELECT coins, diamonds FROM cat_wallets" in sql:
+        if "SELECT coins, diamonds" in sql and "FROM cat_wallets" in sql:
             w = self.wallet.get((a[0], a[1]))
             return {"coins": w[0], "diamonds": w[1]} if w else None
         if sql.startswith("UPDATE cat_wallets"):
