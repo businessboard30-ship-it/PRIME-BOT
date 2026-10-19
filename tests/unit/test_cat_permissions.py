@@ -149,7 +149,7 @@ def test_panel_warns_live_when_on_and_a_permission_is_missing():
     view, _ = _view(perms=P(embed=False))
     text = view._problems()
     assert "Embed Links" in text and "<#1>" in text
-    assert text in wiz.render_embed(view.cfg, False, problems=text).description
+    assert text in wiz.render_text(view.cfg, False, problems=text)
 
 
 def test_panel_is_quiet_when_all_is_fine_or_the_game_is_off():
@@ -158,14 +158,14 @@ def test_panel_is_quiet_when_all_is_fine_or_the_game_is_off():
     assert _view(channels=())[0]._problems() == ""
 
 
-def test_render_embed_without_problems_is_unchanged():
+def test_render_text_without_problems_is_unchanged():
     view, _ = _view()
-    assert "can't post" not in wiz.render_embed(view.cfg, False).description
+    assert "can't post" not in wiz.render_text(view.cfg, False)
 
 
 def test_check_button_exists_and_reports_both_outcomes():
     view, _ = _view(perms=P(send=False))
-    assert any(getattr(c, "label", "") == "Check permissions" for c in view.children)
+    assert any(getattr(c, "label", "") == "Check permissions" for c in view.walk_children())
     i = MagicMock(); i.response.send_message = AsyncMock()
     run(view._on_check(i))
     msg = i.response.send_message.call_args.args[0]

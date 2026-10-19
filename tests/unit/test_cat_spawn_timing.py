@@ -1,5 +1,6 @@
 """Cat spawn timing: a server picks the UTC hours cats may appear; the daily amount is unchanged."""
 import asyncio
+import discord
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -66,17 +67,14 @@ def test_changing_hours_reschedules():
 
 def test_wizard_shows_and_sets_hours():
     cfg = cs.CatConfig(guild_id=1, enabled=True, channel_ids=(5,), active_start=8, active_end=20)
-    assert "Spawn hours" in wiz.render_embed(cfg, False).description
-    assert "all day" in wiz.render_embed(cs.CatConfig(guild_id=1), False).description
+    assert "Spawn hours" in wiz.render_text(cfg, False)
+    assert "all day" in wiz.render_text(cs.CatConfig(guild_id=1), False)
     view = wiz.CatSetupView(MagicMock(), SimpleNamespace(id=1), None, 42, cfg, False)
     assert [o.value for o in view.start_hour.options if o.default] == ["8"]
     assert [o.value for o in view.end_hour.options if o.default] == ["20"]
     assert len(view.start_hour.options) == 24 and len(view.end_hour.options) == 24
-    assert all(len({c.row for c in [i]}) for i in view.children)
-    rows = {}
-    for c in view.children:
-        rows.setdefault(c.row, []).append(c)
-    assert max(rows) <= 4
+    rows = [c for c in view.walk_children() if isinstance(c, discord.ui.ActionRow)]
+    assert len(rows) == 5 and all(len(r.children) <= 5 for r in rows)
 
 
 def test_spawner_posts_nothing_outside_hours_and_defers(monkeypatch):
