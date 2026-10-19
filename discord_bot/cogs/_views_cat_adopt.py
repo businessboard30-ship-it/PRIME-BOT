@@ -393,6 +393,7 @@ class CollectionView(discord.ui.LayoutView):
         self.all_cats = list(cats)                  # everything the person owns; self.cats is the filtered view of it
         self.filter = cat_filter.CatFilter()
         self.confirm_release = False
+        self.confirm_primole = False        # first tap on the final diamond -> Primole button
         self.confirm_rank_for = None        # (cat id, rank) the person tapped once; a second tap spends the coins
         self.confirm_bulk = None            # (kind, cats, coins) after one tap on Feed all / Water all / Sleep all
         self.wallet = cat_wallet.Wallet()
@@ -477,6 +478,13 @@ class CollectionView(discord.ui.LayoutView):
             b = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, disabled=have < 1)
             b.callback = fn
             money.append(b)
+        armed_p = self.confirm_primole
+        pb = discord.ui.Button(
+            label=(f"Tap again: {cat_wallet.DIAMOND}1 \u2192 {cat_wallet.PRIMOLE}{cat_wallet.DIAMOND_PRIMOLE}, final"
+                   if armed_p else f"{cat_wallet.PRIMOLE} 1 \u2192 {cat_wallet.DIAMOND_PRIMOLE} Primole"),
+            style=discord.ButtonStyle.danger if armed_p else discord.ButtonStyle.secondary, disabled=have < 1)
+        pb.callback = self._convert_primole
+        money.append(pb)
         cost = cr.next_cost(self.current)
         if cost is None:
             rb = discord.ui.Button(label="Top rank \U0001F31F", style=discord.ButtonStyle.secondary, disabled=True)
@@ -636,6 +644,7 @@ class CollectionView(discord.ui.LayoutView):
             await self._push(interaction)
             return
         self.confirm_rank_for = None
+        self.confirm_primole = False
         try:
             res = await cr.rank_up(cat.id, interaction.user.id, _clone_id(self.client), cat.cat_rank)
         except Exception:
@@ -668,8 +677,27 @@ class CollectionView(discord.ui.LayoutView):
             return
         await self.refresh_wallet()
         self.confirm_release = False
+        self.confirm_primole = False
         note = ("You don't have a diamond to convert." if result is None else
                 f"{cat_wallet.DIAMOND} Converted! You now have {result.coins:,} coins.")
+        await self._push(interaction, note)
+
+    async def _convert_primole(self, interaction):
+        """Diamond -> Primole is final, so the first tap only arms the button (like Rank up)."""
+        if not self.confirm_primole:
+            self.confirm_primole = True
+            await self._push(interaction)
+            return
+        self.confirm_primole = False
+        try:
+            result = await cat_wallet.convert_to_primole(interaction.user.id, _clone_id(self.client), 1)
+        except Exception:
+            logger.exception("[cat-wallet] primole convert failed")
+            await interaction.response.send_message("😿 Something went wrong, try again in a moment.", ephemeral=True)
+            return
+        await self.refresh_wallet()
+        note = ("You don't have a diamond to convert." if result is None else
+                f"{cat_wallet.PRIMOLE} Converted! You now have {result.primole:,} Primole. (This can't be undone.)")
         await self._push(interaction, note)
 
     async def _convert_one(self, interaction):
@@ -691,6 +719,7 @@ class CollectionView(discord.ui.LayoutView):
         self._reapply()
         self.index = next((i for i, c in enumerate(self.cats) if c.id == keep), min(self.index, max(len(self.cats) - 1, 0)))
         self.confirm_release = False
+        self.confirm_primole = False
         if self.cats:                           # nothing to draw when the last cat is gone (sold, released, wandered off)
             self._build()
 

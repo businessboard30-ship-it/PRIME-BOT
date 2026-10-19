@@ -28,6 +28,8 @@ COIN_MIN, COIN_MAX = 50, 500                # before the rarity multiplier
 RARITY_MULTIPLIER = {"common": 1.0, "uncommon": 1.5, "rare": 2.5, "legendary": 5.0}
 COINS = "🪙"
 DIAMOND = "💎"
+PRIMOLE = "🔮"
+DIAMOND_PRIMOLE = 100                       # 1 diamond = 100 Primole (one way: Primole never turns back into diamonds or coins)
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class Reward:
 class Wallet:
     coins: int = 0
     diamonds: int = 0
+    primole: int = 0                        # account-bound: cannot be traded, gifted, listed or paid in fights
 
 
 def roll_reward(rarity: str, rng=random) -> Reward:
@@ -61,7 +64,8 @@ def reward_text(reward: Optional[Reward]) -> str:
 
 
 def wallet_text(w: Wallet) -> str:
-    return f"{COINS} {w.coins:,} coins · {DIAMOND} {w.diamonds:,} diamond{'s' if w.diamonds != 1 else ''}"
+    text = f"{COINS} {w.coins:,} coins · {DIAMOND} {w.diamonds:,} diamond{'s' if w.diamonds != 1 else ''}"
+    return text + (f" · {PRIMOLE} {w.primole:,} Primole" if w.primole else "")
 
 
 # ── database ──────────────────────────────────────────────────────────────
@@ -93,9 +97,9 @@ async def add_reward(conn, owner_id: int, clone_id, reward: Reward) -> None:
 async def get_wallet(owner_id: int, clone_id) -> Wallet:
     pool = await _pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT coins, diamonds FROM cat_wallets WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2",
+        row = await conn.fetchrow("SELECT coins, diamonds, primole FROM cat_wallets WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2",
                                   owner_id, SHARED_KEY)
-    return Wallet(int(row["coins"]), int(row["diamonds"])) if row else Wallet()
+    return Wallet(int(row["coins"]), int(row["diamonds"]), int(row.get("primole") or 0)) if row else Wallet()
 
 
 async def safe_wallet(owner_id: int, clone_id) -> Wallet:
@@ -123,3 +127,33 @@ async def convert(owner_id: int, clone_id, count: Optional[int] = 1) -> Optional
                 "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND diamonds >= $3 RETURNING coins, diamonds",
                 owner_id, SHARED_KEY, int(count), DIAMOND_COINS)
     return Wallet(int(row["coins"]), int(row["diamonds"])) if row else None
+
+
+async def convert_to_primole(owner_id: int, clone_id, count: int = 1) -> Optional[Wallet]:
+    """Turn `count` diamonds into Primole (DIAMOND_PRIMOLE each). FINAL: there is no way back to diamonds or coins.
+    One atomic statement, so two quick taps can never spend the same diamond twice. Returns the new wallet, or None
+    when there aren't enough diamonds (or count is not a positive whole number)."""
+    count = int(count)
+    if count < 1:
+        return None
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE cat_wallets SET diamonds = diamonds - $3, primole = primole + $3::bigint * $4, updated_at = NOW() "
+            "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND diamonds >= $3 RETURNING coins, diamonds, primole",
+            owner_id, SHARED_KEY, count, DIAMOND_PRIMOLE)
+    return Wallet(int(row["coins"]), int(row["diamonds"]), int(row["primole"])) if row else None
+
+
+async def spend_primole(conn, owner_id: int, amount: int) -> Optional[int]:
+    """Spend Primole inside the caller's transaction (so it commits or rolls back with the purchase). Returns the
+    Primole left, or None when the person can't afford it. Primole only ever leaves the wallet here, never moves to
+    another person."""
+    amount = int(amount)
+    if amount < 1:
+        return None
+    row = await conn.fetchrow(
+        "UPDATE cat_wallets SET primole = primole - $3, updated_at = NOW() "
+        "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND primole >= $3 RETURNING primole",
+        owner_id, SHARED_KEY, amount)
+    return int(row["primole"]) if row else None
