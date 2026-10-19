@@ -38,7 +38,7 @@ from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 from modules import guild_activity
 
 import config
-from modules import cat_care, cat_log, cat_perms, cat_pool, cat_quality, cat_setup, cat_vision
+from modules import cat_care, cat_health, cat_log, cat_perms, cat_pool, cat_quality, cat_setup, cat_vision
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,7 @@ def cooldown_left(user_id: int) -> float:
 async def _get_json(session, url, headers=None):
     async with session.get(url, headers=headers or {}, timeout=_TIMEOUT) as r:
         if r.status != 200:
+            cat_health.record("api_http_error", error=f"cat API answered HTTP {r.status}")
             return None
         return await r.json(content_type=None)
 
@@ -110,7 +111,12 @@ _background: set = set()
 async def _candidates_thecatapi(session) -> list:
     """Up to 5 pictures from ONE API call, big ones first. Pictures already known to be too small are dropped here."""
     headers = {"x-api-key": config.CAT_API_KEY} if getattr(config, "CAT_API_KEY", "") else None
-    data = await _get_json(session, CAT_API_BATCH_URL, headers)
+    cat_health.record("api_call")
+    try:
+        data = await _get_json(session, CAT_API_BATCH_URL, headers)
+    except Exception as e:
+        cat_health.record("api_exception", error=f"cat API {type(e).__name__}")
+        raise
     out = []
     for item in data if isinstance(data, list) else []:
         if not isinstance(item, dict) or not safe_image_url(item.get("url")):
@@ -121,6 +127,7 @@ async def _candidates_thecatapi(session) -> list:
             continue
         out.append({"url": item["url"], "id": str(item.get("id") or ""), "pixels": (w or 0) * (h or 0)})
     out.sort(key=lambda c: -c["pixels"])
+    cat_health.record("api_ok" if out else "api_empty")
     return out[:5]
 
 
@@ -155,17 +162,23 @@ async def _grow_pool(bot, session):
         good = []
         for c in cands:
             if c["id"] and c["id"] in known:
+                cat_health.record("cand_known")
                 continue
             try:
                 data = await _download(session, c["url"])
             except Exception:
+                cat_health.record("cand_download")
                 continue
+            if not data:
+                cat_health.record("cand_download")
             q = cat_quality.assess(data) if data else None
             if q is not None and q.ok:
                 if not await cat_vision.approve(data):          # AI: must be a clear, nice photo of a cat
+                    cat_health.record("cand_vision")
                     continue
                 good.append((q, data, c))
             elif q is not None:
+                cat_health.record("cand_quality")
                 logger.info("[cat] skipped a picture: %s", q.reason)
         good.sort(key=lambda g: -g[0].sharpness)
         best = None
@@ -175,10 +188,12 @@ async def _grow_pool(bot, session):
             except Exception:
                 logger.warning("[cat] couldn't save to the pool", exc_info=True)
                 url = None
+            cat_health.record("store_ok" if url else "store_fail")
             best = best or url
         if best:
             return best
         if good:                                    # passed the filter but couldn't be pooled: use it directly
+            cat_health.record("direct_used")
             return good[0][2]["url"]
     return None
 
@@ -220,11 +235,13 @@ async def _fetch_via_pool(bot, session, guild_id=None):
         # (that is what used to push busy servers onto the API).
         url = await cat_pool.pick(bot)
         if url:
+            cat_health.record("pool_manual")
             return url
     if n >= POOL_MIN:
         window = seen_window(n)
         url = await _pick(bot, guild_id, unseen_only=True, seen_days=window)
         if url:
+            cat_health.record("pool_unseen")
             if n < POOL_MAX and random.randrange(GROW_ONE_IN) == 0 and not _fill_lock.locked():
                 task = asyncio.create_task(_grow_in_background(bot))
                 _background.add(task)
@@ -236,7 +253,10 @@ async def _fetch_via_pool(bot, session, guild_id=None):
         if guild_id is not None:
             await cat_pool.mark_seen(guild_id, getattr(url, "pool_id", None))
         return url
-    return await _pick(bot, guild_id, seen_days=seen_window(n))
+    url = await _pick(bot, guild_id, seen_days=seen_window(n))
+    if url:
+        cat_health.record("pool_repeat")
+    return url
 
 
 async def fetch_cat_url(session=None, bot=None, guild_id=None):
@@ -269,6 +289,13 @@ async def fetch_cat_url(session=None, bot=None, guild_id=None):
     finally:
         if own:
             await session.close()
+    if _recent:
+        cat_health.record("recent_fallback")
+        if bot is not None:
+            task = asyncio.create_task(cat_health.alert(
+                bot, "no new picture could be fetched; an old one was reused. Check the cat API key and the pool."))
+            _background.add(task)
+            task.add_done_callback(_background.discard)
     return random.choice(list(_recent)) if _recent else None
 
 
@@ -387,11 +414,15 @@ class CatCog(commands.Cog):
         # Writing up old cats in the storage channel: main bot only (the pool and channel are shared by every bot).
         if getattr(self.bot, "clone_id", None) is None:
             self._backfill.start()
+            self._health_first = True
+            self._health_report.start()          # owner DM: where cat pictures came from and why new ones didn't
 
     async def cog_unload(self):
         self._care.cancel()
         self._spawner.cancel()
         self._backfill.cancel()
+        if getattr(self.bot, "clone_id", None) is None:
+            self._health_report.cancel()
 
     @tasks.loop(seconds=cat_care.HUNGER_TICK_SECONDS)
     async def _care(self):
@@ -453,6 +484,17 @@ class CatCog(commands.Cog):
                 logger.debug("[cat] couldn't mark spawn %s as gone", r["id"], exc_info=True)
             await asyncio.sleep(1)
         return len(rows)
+
+    @tasks.loop(hours=cat_health.REPORT_EVERY_HOURS)
+    async def _health_report(self):
+        if self._health_first:
+            self._health_first = False       # skip the tick that fires at startup; report after a full period
+            return
+        await cat_health.send_report(self.bot)
+
+    @_health_report.before_loop
+    async def _before_health_report(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=BACKFILL_TICK_MINUTES)
     async def _backfill(self):
