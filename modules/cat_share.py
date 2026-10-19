@@ -43,41 +43,75 @@ def mark_shared(user_id: int, kind: str, now: Optional[float] = None) -> None:
     _last_share[(user_id, kind)] = time.monotonic() if now is None else now
 
 
-def profile_embed(display_name: str, profile: dict, badges, avatar_url: Optional[str] = None) -> discord.Embed:
-    """Public card. Only collection size, rarest cat, pinned (still owned) cats and badge names."""
-    e = discord.Embed(title=f"\U0001F4D6 {display_name}'s cat profile", color=GOLD)
-    if avatar_url:
-        e.set_thumbnail(url=avatar_url)          # the player's own Discord picture, nothing private
-    e.description = profile.get("bio") or "No bio yet \u2014 their cats are waiting for a story."
-    e.add_field(name="Collection", value=f"\U0001F43E **{profile['collection_size']}** cats", inline=True)
+def profile_text(display_name: str, profile: dict, badges) -> str:
+    """Public card text. Only collection size, rarest cat, pinned (still owned) cats and badge names."""
     rarest = profile.get("rarest")
-    e.add_field(name="Rarest", value=f"{rarest.name} \u00b7 {rarest.rarity.title()}" if rarest else "None yet", inline=True)
+    lines = [f"## \U0001F4D6 {display_name}'s cat profile",
+             profile.get("bio") or "No bio yet \u2014 their cats are waiting for a story.", "",
+             f"**Collection:** \U0001F43E **{profile['collection_size']}** cats",
+             f"**Rarest:** {rarest.name} \u00b7 {rarest.rarity.title()}" if rarest else "**Rarest:** None yet"]
     worn = [f"{v['emoji']} {v['name']}" for v in (profile.get("equipped") or {}).values() if v]
     if worn:
-        e.add_field(name="Wearing", value=" \u00b7 ".join(worn), inline=False)
+        lines.append("**Wearing:** " + " \u00b7 ".join(worn))
     if profile.get("pinned"):
-        e.add_field(name="Showcase", value="\n".join(f"\U0001F431 **{c.name}** \u00b7 {c.trait}" for c in profile["pinned"]),
-                    inline=False)
+        lines += ["", "**Showcase**"] + [f"\U0001F431 **{c.name}** \u00b7 {c.trait}" for c in profile["pinned"]]
     if badges:
         names = [f"{cat_quests.BADGES[s][0]} {cat_quests.BADGES[s][1]}" for s in cat_quests.BADGES if s in badges]
         if names:
-            e.add_field(name="Badges", value=" \u00b7 ".join(names), inline=False)
-    return e
+            lines += ["", "**Badges:** " + " \u00b7 ".join(names)]
+    return "\n".join(lines)
 
 
-def profile_card_embed(display_name: str) -> discord.Embed:
-    """The profile as a drawn card (modules/cat_profile_card.py). The picture carries the details; the title keeps the
-    message readable for screen readers and notifications."""
-    e = discord.Embed(title=f"\U0001F4D6 {display_name}'s cat profile", color=GOLD)
-    e.set_image(url="attachment://cat_profile.png")
-    return e
+def profile_box(display_name: str, profile: dict, badges, avatar_url: Optional[str] = None,
+                footer: Optional[str] = None) -> discord.ui.Container:
+    """The public profile as one V2 Container (text, the player's own Discord picture beside it, optional footer).
+    Callers add their own buttons below it when the card is a private screen."""
+    box = discord.ui.Container(accent_colour=discord.Colour(GOLD))
+    text = profile_text(display_name, profile, badges)[:3900]
+    if avatar_url:
+        box.add_item(discord.ui.Section(text, accessory=discord.ui.Thumbnail(avatar_url)))   # nothing private
+    else:
+        box.add_item(discord.ui.TextDisplay(text))
+    if footer:
+        box.add_item(discord.ui.TextDisplay(f"-# {footer}"[:400]))
+    return box
 
 
-def badges_embed(display_name: str, badges) -> Optional[discord.Embed]:
+def profile_card_box(display_name: str, footer: Optional[str] = None) -> discord.ui.Container:
+    """The profile as a drawn card (modules/cat_profile_card.py). The picture carries the details; the heading keeps
+    the message readable for screen readers and notifications. The picture is the attachment `cat_profile.png`."""
+    box = discord.ui.Container(accent_colour=discord.Colour(GOLD))
+    box.add_item(discord.ui.TextDisplay(f"## \U0001F4D6 {display_name}'s cat profile"))
+    box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem("attachment://cat_profile.png",
+                                                                  description=f"{display_name}'s cat profile"[:256])))
+    if footer:
+        box.add_item(discord.ui.TextDisplay(f"-# {footer}"[:400]))
+    return box
+
+
+def badges_view(display_name: str, badges) -> Optional[discord.ui.LayoutView]:
     names = [f"{cat_quests.BADGES[s][0]} **{cat_quests.BADGES[s][1]}**" for s in cat_quests.BADGES if s in badges]
     if not names:
         return None
-    return discord.Embed(title=f"\U0001F3C5 {display_name}'s cat badges", description="\n".join(names), color=GOLD)
+    return layout(discord.ui.Container(
+        discord.ui.TextDisplay(f"## \U0001F3C5 {display_name}'s cat badges\n" + "\n".join(names)),
+        accent_colour=discord.Colour(GOLD)))
+
+
+def layout(box: discord.ui.Container, timeout: Optional[float] = None) -> discord.ui.LayoutView:
+    """Wraps one Container as a V2 message (a public card has nothing to tap, so no timeout)."""
+    view = discord.ui.LayoutView(timeout=timeout)
+    view.add_item(box)
+    return view
+
+
+def profile_view(display_name: str, profile: dict, badges, avatar_url: Optional[str] = None,
+                 footer: Optional[str] = None) -> discord.ui.LayoutView:
+    return layout(profile_box(display_name, profile, badges, avatar_url, footer))
+
+
+def profile_card_view(display_name: str, footer: Optional[str] = None) -> discord.ui.LayoutView:
+    return layout(profile_card_box(display_name, footer))
 
 
 def care_text(mention: str, streak: int) -> str:

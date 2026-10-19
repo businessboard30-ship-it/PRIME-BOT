@@ -117,9 +117,8 @@ def test_render_passes_the_worn_slugs_to_the_card(monkeypatch):
 def test_plain_profile_names_what_is_worn():
     profile = {"bio": "", "collection_size": 1, "rarest": None, "pinned": [],
                "equipped": {"hat": {"slug": "royal-crown", "name": "Royal Crown", "emoji": "👑"}}}
-    e = cat_share.profile_embed("Ama", profile, [])
-    assert any(f.name == "Wearing" and "Royal Crown" in f.value for f in e.fields)
-    assert not any(f.name == "Wearing" for f in cat_share.profile_embed("Ama", {**profile, "equipped": {}}, []).fields)
+    assert "**Wearing:** 👑 Royal Crown" in cat_share.profile_text("Ama", profile, [])
+    assert "Wearing" not in cat_share.profile_text("Ama", {**profile, "equipped": {}}, [])
 
 
 def test_migration_is_additive_and_wired():

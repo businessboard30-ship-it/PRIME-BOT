@@ -196,8 +196,9 @@ def test_wizard_is_owner_only():
     assert run(view.interaction_check(other)) is False and "someone else's sale" in other.sent[0][0]
 
 
-def test_the_public_listing_post_is_still_a_classic_embed_message():
+def test_the_public_listing_post_is_now_a_v2_message_and_older_ones_keep_their_classic_pieces():
     import inspect
     src = inspect.getsource(vm.publish_listing)
-    assert "embed=await listing_embed" in src and "view=listing_view(" in src
-    assert type(vm.listing_view(1, 500)) is discord.ui.View
+    assert "view=await listing_layout(" in src and "embed=" not in src
+    assert type(vm.listing_view(1, 500)) is discord.ui.View          # kept for older posts
+    assert inspect.iscoroutinefunction(vm.listing_embed)

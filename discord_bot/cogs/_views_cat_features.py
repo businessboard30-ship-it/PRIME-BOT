@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from typing import Optional
 
 import discord
 from discord_bot.cogs import _cat_visibility as vis
@@ -153,12 +154,10 @@ class ProfileButton(discord.ui.Button):
         except Exception:
             await interaction.response.send_message("Your profile is temporarily unavailable.", ephemeral=True)
             return
-        embed = cat_share.profile_embed(interaction.user.display_name, profile, badges, _avatar(interaction.user))
-        if not profile["show_profile"]:
-            embed.set_footer(text="Hidden: only you can see this. Tap Show profile to let others see it.")
-        await vis.send(interaction, embed=embed, view=ProfileView(profile), public=bool(profile["show_profile"]))
-        await upgrade_to_card(interaction, interaction.user, profile, badges,
-                              footer=embed.footer.text if not profile["show_profile"] else None)
+        hidden = None if profile["show_profile"] else HIDDEN_NOTE
+        view = ProfileView(profile, interaction.user.display_name, badges, _avatar(interaction.user), footer=hidden)
+        await vis.send(interaction, view=view, public=bool(profile["show_profile"]))
+        await upgrade_to_card(interaction, interaction.user, profile, badges, footer=hidden, view=view)
 
 
 class ShareButton(discord.ui.Button):
@@ -186,29 +185,29 @@ class ShareButton(discord.ui.Button):
             await interaction.followup.send(card, ephemeral=True)
             return
         posted = await (cat_announce.announce(interaction, card[0], kind="share") if card[0] is not None
-                        else cat_announce.announce_embed(interaction, card[1], kind="share",
-                                                         png=card[2] if len(card) > 2 else None))
+                        else cat_announce.announce_card(interaction, card[1], kind="share",
+                                                        png=card[2] if len(card) > 2 else None))
         if posted:
             cat_share.mark_shared(interaction.user.id, self.kind)
         else:
             await interaction.followup.send("I couldn't post in this channel.", ephemeral=True)
 
     async def _card(self, interaction):
-        """Returns a private message (str) when there is nothing to share, else (text, None) or (None, embed)."""
+        """Returns a private message (str) when there is nothing to share, else (text, None) or (None, card) where the card is a V2 view (plus the picture bytes for the drawn profile)."""
         who, clone = interaction.user, _clone(interaction)
         if self.kind == "care":
             return cat_share.care_text(who.mention, self.streak), None
         if self.kind == "badges":
-            embed = cat_share.badges_embed(who.display_name, await cat_quests.owned_badges(who.id, clone))
-            return "You have no badges to show yet." if embed is None else (None, embed)
+            card = cat_share.badges_view(who.display_name, await cat_quests.owned_badges(who.id, clone))
+            return "You have no badges to show yet." if card is None else (None, card)
         profile = await cat_features.public_profile(who.id, clone)
         if not profile["show_profile"]:
             return "Your profile is hidden, so it can't be shared. Tap Show profile first."
         badges = await cat_quests.owned_badges(who.id, clone)
         png = await cat_profile_card.render(interaction.client, who, who.display_name, profile, badges)
         if png is not None:
-            return None, cat_share.profile_card_embed(who.display_name), png
-        return None, cat_share.profile_embed(who.display_name, profile, badges, _avatar(who))
+            return None, cat_share.profile_card_view(who.display_name), png
+        return None, cat_share.profile_view(who.display_name, profile, badges, _avatar(who))
 
 
 class BioModal(discord.ui.Modal, title="Edit your cat bio"):
@@ -252,21 +251,42 @@ class PinSelect(discord.ui.Select):
         await _update_profile(interaction, pinned=[int(v) for v in self.values], done="🐱 Showcase updated.")
 
 
-class ProfileView(discord.ui.View):
-    def __init__(self, profile: dict):
+HIDDEN_NOTE = "Hidden: only you can see this. Tap Show profile to let others see it."
+
+
+class ProfileView(discord.ui.LayoutView):
+    """The private profile screen as one V2 card: the profile (text, or the drawn card once it is ready) and the
+    Share / Edit bio / Pin cats / Clear pins / Hide-Show buttons. `show_card()` swaps in the drawn picture."""
+
+    def __init__(self, profile: dict, name: str = "", badges=(), avatar: Optional[str] = None,
+                 footer: Optional[str] = None):
         super().__init__(timeout=180)
-        self.profile = profile
-        share = ShareButton("profile", row=0)
+        self.profile, self.name, self.badges, self.avatar, self.footer = profile, name, badges, avatar, footer
+        self.card = False
+        share = ShareButton("profile")
         share.disabled = not profile["show_profile"]
-        self.add_item(share)
+        self.buttons = [share]
         for label, emoji, cb in (("Edit bio", "✏️", self._bio), ("Pin cats", "📌", self._pin), ("Clear pins", "🧹", self._clear)):
-            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=0)
+            b = discord.ui.Button(label=label, emoji=emoji, style=discord.ButtonStyle.secondary)
             b.callback = cb
-            self.add_item(b)
+            self.buttons.append(b)
         vis = discord.ui.Button(label="Hide profile" if profile["show_profile"] else "Show profile",
-                                emoji="🙈" if profile["show_profile"] else "👀", style=discord.ButtonStyle.secondary, row=0)
+                                emoji="🙈" if profile["show_profile"] else "👀", style=discord.ButtonStyle.secondary)
         vis.callback = self._toggle
-        self.add_item(vis)
+        self.buttons.append(vis)
+        self.build()
+
+    def build(self) -> None:
+        self.clear_items()
+        box = (cat_share.profile_card_box(self.name, self.footer) if self.card
+               else cat_share.profile_box(self.name, self.profile, self.badges, self.avatar, self.footer))
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.ActionRow(*self.buttons))
+        self.add_item(box)
+
+    def show_card(self) -> None:
+        self.card = True
+        self.build()
 
     async def _bio(self, interaction: discord.Interaction):
         await interaction.response.send_modal(BioModal(self.profile["bio"]))
@@ -311,24 +331,26 @@ async def show_public_profile(interaction: discord.Interaction, target) -> None:
     if not profile["collection_size"] and not profile["bio"]:
         await interaction.response.send_message(f"{target.display_name} hasn't adopted any cats yet.", ephemeral=True)
         return
-    embed = cat_share.profile_embed(target.display_name, profile, badges, _avatar(target))
+    view = cat_share.profile_view(target.display_name, profile, badges, _avatar(target))
     mine_hidden = not profile["show_profile"]
-    await interaction.response.send_message(embed=embed, ephemeral=mine_hidden, allowed_mentions=discord.AllowedMentions.none())
+    await interaction.response.send_message(view=view, ephemeral=mine_hidden, allowed_mentions=discord.AllowedMentions.none())
     await upgrade_to_card(interaction, target, profile, badges, footer=None)
 
 
-async def upgrade_to_card(interaction, user, profile: dict, badges, footer=None) -> None:
-    """The plain profile embed is already on screen (so the 3-second reply window is never at risk). Draw the card and
-    swap it in. If anything goes wrong the plain embed simply stays. Never raises."""
+async def upgrade_to_card(interaction, user, profile: dict, badges, footer=None, view=None) -> None:
+    """The plain text profile is already on screen (so the 3-second reply window is never at risk). Draw the card and
+    swap it in: the same private screen (`view`, with its buttons and owner lock) shows the picture, or for a public
+    profile a fresh card replaces the text. If anything goes wrong the plain profile simply stays. Never raises."""
     try:
         png = await cat_profile_card.render(interaction.client, user, user.display_name, profile, badges)
         if png is None:
             return
-        embed = cat_share.profile_card_embed(user.display_name)
-        if footer:
-            embed.set_footer(text=footer)
+        if view is not None and hasattr(view, "show_card"):
+            view.show_card()
+        else:
+            view = cat_share.profile_card_view(user.display_name, footer)
         await interaction.edit_original_response(
-            embed=embed, attachments=[discord.File(io.BytesIO(png), filename=cat_profile_card.FILE_NAME)])
+            view=view, attachments=[discord.File(io.BytesIO(png), filename=cat_profile_card.FILE_NAME)])
     except Exception:
         logging.getLogger(__name__).info("[cat-profile] kept the plain profile (card not shown)", exc_info=True)
 

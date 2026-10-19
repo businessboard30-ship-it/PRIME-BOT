@@ -355,14 +355,11 @@ async def post_cat(bot, guild: discord.Guild, channel_id: int, next_at: Optional
             spawn_id = await cat_adopt.create_spawn(guild.id, getattr(bot, "clone_id", None), channel_id, pool_id)
         except Exception:
             logger.warning("[cat] couldn't record the spawn, posting without Adopt", exc_info=True)
-    try:
-        kwargs = {}
-        if spawn_id is not None:
-            from discord_bot.cogs._views_cat_adopt import spawn_view
-            kwargs["view"] = spawn_view(spawn_id)
-        embed = (cat_embed(url, next_at, title="🐾 A familiar face!", description=cat_care.returned_embed_text(runaway.cat_name))
-                 if runaway else cat_embed(url, next_at))
-        msg = await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none(), **kwargs)
+    try:             # a Components V2 post; spawn posts sent before this change are classic embeds and still work
+        from discord_bot.cogs._views_cat_adopt import spawn_post
+        card = (spawn_post(spawn_id, "🐾 A familiar face!", str(url), next_at, cat_care.returned_embed_text(runaway.cat_name))
+                if runaway else spawn_post(spawn_id, random.choice(CAT_TITLES), str(url), next_at))
+        msg = await ch.send(view=card, allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException:
         logger.info("[cat] couldn't post in channel %s", channel_id, exc_info=True)
         if runaway:
@@ -442,7 +439,7 @@ class CatCog(commands.Cog):
         """Unadopted cats older than cat_adopt.SPAWN_EXPIRE_HOURS wander off: the Adopt button is disabled and the post
         says so. A message that can't be edited (deleted, no access) is simply skipped."""
         from modules import cat_adopt
-        from discord_bot.cogs._views_cat_adopt import spawn_view
+        from discord_bot.cogs._views_cat_adopt import spawn_edit_kwargs
         rows = await cat_adopt.expire_spawns(clone_id, SPAWN_EXPIRE_PER_TICK)
         for r in rows:
             guild = self.bot.get_guild(r["guild_id"])
@@ -450,10 +447,8 @@ class CatCog(commands.Cog):
             if ch is None or not r.get("message_id"):
                 continue
             try:
-                msg = await ch.fetch_message(r["message_id"])
-                embed = discord.Embed.from_dict(msg.embeds[0].to_dict()) if msg.embeds else discord.Embed(color=discord.Color.from_rgb(255, 182, 193))
-                embed.description = cat_adopt.EXPIRED_NOTE
-                await msg.edit(embed=embed, view=spawn_view(r["id"], gone=True))
+                msg = await ch.fetch_message(r["message_id"])      # classic or V2: the helper edits it the matching way
+                await msg.edit(**spawn_edit_kwargs(msg, r["id"], cat_adopt.EXPIRED_NOTE, gone=True))
             except discord.HTTPException:
                 logger.debug("[cat] couldn't mark spawn %s as gone", r["id"], exc_info=True)
             await asyncio.sleep(1)

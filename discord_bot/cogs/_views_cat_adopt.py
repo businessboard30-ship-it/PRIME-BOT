@@ -82,7 +82,8 @@ async def cat_image_url(client, cat: ca.Cat) -> Optional[str]:
 
 
 async def cat_embed_full(client, cat: ca.Cat, position: str = "") -> discord.Embed:
-    """Classic embed card of a cat. Kept for the public posts (Phase 5); the private screens use `_cat_body`."""
+    """Classic embed card of a cat. No live screen uses it since Phase 5 (public posts are V2 cards now); kept as the
+    old card layout. The V2 screens use `_cat_body`."""
     e = discord.Embed(title=_cat_title(cat), color=PINK)
     e.description = _cat_body(cat)
     url = await cat_image_url(client, cat)
@@ -120,6 +121,92 @@ def _notice(text: str) -> discord.ui.LayoutView:
 def view_text(view: discord.ui.BaseView) -> str:
     """All the text on a V2 screen, for tests and logs."""
     return "\n".join(c.content for c in view.walk_children() if isinstance(c, discord.ui.TextDisplay))
+
+
+# ── Public spawn post (Components V2) ─────────────────────────────────────
+# New spawn posts are one V2 card: heading, a line of text, the cat picture, and the five persistent buttons. Spawn
+# posts that were sent before this change are still classic embeds, and they stay in channels (and keep working), so
+# every edit of a spawn message checks which kind it is. A message can't change kind after posting: classic messages
+# are edited with an embed, V2 messages with a V2 view.
+
+NEXT_CAT_MARK = "**⏰ Next cat**"
+
+
+message_is_v2 = vis.message_is_v2
+
+
+def next_cat_tail(next_at) -> str:
+    """The 'Next cat' lines of a spawn card (Discord shows <t:..> in each viewer's own time zone)."""
+    if next_at is None:
+        return ""
+    ts = int(next_at.timestamp())
+    return f"{NEXT_CAT_MARK}\nAround <t:{ts}:t> (<t:{ts}:R>)"
+
+
+def spawn_layout(spawn_id: Optional[int], heading: str, body: str = "", image=None, tail: str = "",
+                 adopted: bool = False, gone: bool = False) -> discord.ui.LayoutView:
+    """The V2 spawn card. Without a `spawn_id` (a picture that can't be adopted) it has no buttons."""
+    text = heading + (f"\n{body}" if body else "") + (f"\n{tail}" if tail else "")
+    view = discord.ui.LayoutView(timeout=None)
+    box = discord.ui.Container(accent_colour=PINK)
+    box.add_item(discord.ui.TextDisplay(text[:3900]))
+    if image:
+        box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(str(image), description="Cat")))
+    if spawn_id is not None:
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.ActionRow(AdoptButton(spawn_id, adopted=adopted, gone=gone), MyCatsButton(),
+                                          _market.MarketButton(), HelpButton(), MenuButton()))
+    view.add_item(box)
+    return view
+
+
+def spawn_post(spawn_id: Optional[int], title: str, image, next_at=None, description: Optional[str] = None):
+    """A brand-new public spawn post."""
+    return spawn_layout(spawn_id, f"## {title}", description or "", image, next_cat_tail(next_at))
+
+
+def _walk_components(components):
+    for c in components or ():
+        yield c
+        yield from _walk_components(getattr(c, "children", None))
+
+
+def spawn_parts(message) -> tuple:
+    """(heading, next-cat tail, picture URL) read back from a V2 spawn message, so an edit keeps the original title,
+    the 'Next cat' lines and the picture. Anything missing comes back empty. Never raises."""
+    heading, tail, image = "", "", None
+    try:
+        for c in _walk_components(getattr(message, "components", None)):
+            kind = getattr(c, "type", None)
+            if kind == discord.ComponentType.text_display and not heading:
+                lines = str(getattr(c, "content", "")).split("\n")
+                if lines and lines[0].startswith("## "):
+                    heading = lines[0]
+                for i, line in enumerate(lines):
+                    if line.startswith(NEXT_CAT_MARK):
+                        tail = "\n".join(lines[i:])
+                        break
+            elif kind == discord.ComponentType.media_gallery and image is None:
+                items = getattr(c, "items", None) or []
+                if items:
+                    image = items[0].media.url
+    except Exception:
+        logger.debug("[cat-adopt] couldn't read the spawn message", exc_info=True)
+    return heading, tail, image
+
+
+def spawn_edit_kwargs(message, spawn_id: int, body: str, adopted: bool = False, gone: bool = False) -> dict:
+    """What to pass to `message.edit(...)` / `response.edit_message(...)` to show `body` on a spawn post, for either kind
+    of spawn message: a classic embed message keeps its embed (new text) and classic buttons; a V2 message gets a
+    fresh V2 card with the same title, picture and 'Next cat' lines."""
+    if message_is_v2(message):
+        heading, tail, image = spawn_parts(message)
+        return {"view": spawn_layout(spawn_id, heading or "## 🐱 A cat", body, image, tail, adopted=adopted, gone=gone),
+                "allowed_mentions": discord.AllowedMentions.none()}
+    embeds = getattr(message, "embeds", None)
+    embed = discord.Embed.from_dict(embeds[0].to_dict()) if embeds else discord.Embed(color=PINK)
+    embed.description = body
+    return {"embed": embed, "view": spawn_view(spawn_id, adopted=adopted, gone=gone)}
 
 
 # ── Adopt button on a spawn ───────────────────────────────────────────────
@@ -224,9 +311,8 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
         if res.status == "expired":
             await interaction.response.send_message("💨 This cat already wandered off. Watch for the next one!", ephemeral=True)
             try:                                    # also close the old spawn for everybody else
-                embed = discord.Embed.from_dict(interaction.message.embeds[0].to_dict())
-                embed.description = ca.EXPIRED_NOTE
-                await interaction.message.edit(embed=embed, view=spawn_view(self.spawn_id, gone=True))
+                await interaction.message.edit(**spawn_edit_kwargs(interaction.message, self.spawn_id, ca.EXPIRED_NOTE,
+                                                                   gone=True))
             except Exception:
                 logger.debug("[cat-adopt] couldn't mark the spawn as gone", exc_info=True)
             return
@@ -236,11 +322,9 @@ class AdoptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_ado
             return
         cat = res.cat
         cat_log.record(interaction.client, "adopt", **_event(interaction, cat))
-        embed = (interaction.message.embeds[0] if interaction.message and interaction.message.embeds
-                 else discord.Embed(color=PINK))
-        embed.description = cat_announce.adopt_text(interaction.user.mention, cat.name, cat.id,
-                                                    ca.rarity_badge(cat.rarity), cat.trait, cat.rarity)
-        await interaction.response.edit_message(embed=embed, view=spawn_view(self.spawn_id, adopted=True))
+        body = cat_announce.adopt_text(interaction.user.mention, cat.name, cat.id,
+                                       ca.rarity_badge(cat.rarity), cat.trait, cat.rarity)
+        await interaction.response.edit_message(**spawn_edit_kwargs(interaction.message, self.spawn_id, body, adopted=True))
         earned: list = []
         badge_lines = await cat_quests.on_adopt(interaction.user.id, _clone_id(interaction.client), cat.rarity, earned)
         await interaction.followup.send(view=_notice(

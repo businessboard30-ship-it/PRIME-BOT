@@ -118,6 +118,11 @@ def _guild_with_channel():
     return g, ch
 
 
+def _button_ids(view):
+    """custom_ids of every button on a (V2 or classic) view, in order."""
+    return [c.custom_id for c in view.walk_children() if isinstance(c, discord.ui.Item) and getattr(c, "custom_id", None)]
+
+
 def test_pooled_spawn_gets_an_adopt_button(monkeypatch):
     g, ch = _guild_with_channel()
     monkeypatch.setattr(cat, "fetch_cat_url", AsyncMock(return_value=cat_pool.PooledUrl("https://cdn.discordapp.com/x.jpg", 9)))
@@ -128,8 +133,9 @@ def test_pooled_spawn_gets_an_adopt_button(monkeypatch):
     bot = SimpleNamespace(clone_id=None)
     assert run(cat.post_cat(bot, g, 1)) is True
     create.assert_awaited_once_with(77, None, 1, 9)
-    ids = [c.custom_id for c in ch.send.await_args.kwargs["view"].children]
+    ids = _button_ids(ch.send.await_args.kwargs["view"])
     assert ids == ["cat_adopt:31", "cat_mine", "cat_market", "cat_help", "cat_menu"]
+    assert "embed" not in ch.send.await_args.kwargs              # a V2 post: no embed next to the card
     setmsg.assert_awaited_once_with(31, 555)
 
 
@@ -139,7 +145,8 @@ def test_unpooled_picture_posts_without_adopt(monkeypatch):
     create = AsyncMock()
     monkeypatch.setattr(ca, "create_spawn", create)
     assert run(cat.post_cat(SimpleNamespace(clone_id=None), g, 1)) is True
-    create.assert_not_awaited() and "view" not in ch.send.await_args.kwargs
+    create.assert_not_awaited()
+    assert _button_ids(ch.send.await_args.kwargs["view"]) == []        # a card with the picture, no Adopt button
 
 
 def test_spawn_still_posts_if_recording_it_fails(monkeypatch):
@@ -147,7 +154,7 @@ def test_spawn_still_posts_if_recording_it_fails(monkeypatch):
     monkeypatch.setattr(cat, "fetch_cat_url", AsyncMock(return_value=cat_pool.PooledUrl("https://cdn.discordapp.com/x.jpg", 9)))
     monkeypatch.setattr(ca, "create_spawn", AsyncMock(side_effect=RuntimeError("db")))
     assert run(cat.post_cat(SimpleNamespace(clone_id=None), g, 1)) is True
-    assert "view" not in ch.send.await_args.kwargs
+    assert _button_ids(ch.send.await_args.kwargs["view"]) == []
 
 
 # ── collection ────────────────────────────────────────────────────────────

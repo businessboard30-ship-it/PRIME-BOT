@@ -113,11 +113,25 @@ def mode_allows(mode: str, kind: str) -> bool:
     return mode == "all" or (mode == "milestones" and kind in ("milestone", "share"))
 
 
+def card_view(text: str, gold: bool = False, image: Optional[str] = None, footer: Optional[str] = None) -> discord.ui.LayoutView:
+    """A public one-card Components V2 message: the text, an optional picture (a URL, or `attachment://name`) and a
+    small footer. Nothing to tap, so it needs no owner lock. Mentions in the text never ping (see `announce_card`)."""
+    view = discord.ui.LayoutView(timeout=None)
+    box = discord.ui.Container(accent_colour=GOLD if gold else PINK)
+    box.add_item(discord.ui.TextDisplay(text[:3900]))
+    if image:
+        box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(image)))
+    if footer:
+        box.add_item(discord.ui.TextDisplay(f"-# {footer}"[:400]))
+    view.add_item(box)
+    return view
+
+
 async def announce(interaction: discord.Interaction, text: str, gold: bool = False, kind: str = "event") -> bool:
     """Post `text` where everyone can see it: as a public follow-up to the button that was pressed (no channel
     permission needed), else straight into the channel. Never raises. Does nothing in DMs, or when the server's
     setting turns this kind of post off. kind="milestone" posts are also rate limited."""
-    return await announce_embed(interaction, discord.Embed(description=text, color=GOLD if gold else PINK), kind)
+    return await announce_card(interaction, card_view(text, gold), kind)
 
 
 def _pic(png: Optional[bytes], name: str) -> dict:
@@ -128,9 +142,16 @@ def _pic(png: Optional[bytes], name: str) -> dict:
     return {"file": discord.File(io.BytesIO(png), filename=name)}
 
 
-async def announce_embed(interaction: discord.Interaction, embed: discord.Embed, kind: str = "event",
-                         png: Optional[bytes] = None, png_name: str = "cat_profile.png") -> bool:
-    """Same as `announce`, for a ready-made card (profile, badges). Mentions never ping. Never raises."""
+def _body(card) -> dict:
+    """A V2 card goes out as `view=`, a classic embed as `embed=` (a V2 message can't carry an embed)."""
+    return {"embed": card} if isinstance(card, discord.Embed) else {"view": card}
+
+
+async def announce_card(interaction: discord.Interaction, card, kind: str = "event",
+                        png: Optional[bytes] = None, png_name: str = "cat_profile.png") -> bool:
+    """Same as `announce`, for a ready-made card (profile, badges): a Components V2 `LayoutView` (or, for old callers,
+    a classic `discord.Embed`). A `png` is attached and must be named by the card as `attachment://<png_name>`.
+    Mentions never ping. Never raises."""
     guild = getattr(interaction, "guild", None)
     if guild is None:
         return False
@@ -144,7 +165,7 @@ async def announce_embed(interaction: discord.Interaction, embed: discord.Embed,
     quiet = discord.AllowedMentions.none()
     posted = False
     try:
-        await interaction.followup.send(embed=embed, ephemeral=False, allowed_mentions=quiet, **_pic(png, png_name))
+        await interaction.followup.send(ephemeral=False, allowed_mentions=quiet, **_body(card), **_pic(png, png_name))
         posted = True
     except Exception:
         logger.debug("[cat-announce] follow-up failed, trying the channel", exc_info=True)
@@ -152,13 +173,17 @@ async def announce_embed(interaction: discord.Interaction, embed: discord.Embed,
         try:
             channel = getattr(interaction, "channel", None)
             if channel is not None:
-                await channel.send(embed=embed, allowed_mentions=quiet, **_pic(png, png_name))
+                await channel.send(allowed_mentions=quiet, **_body(card), **_pic(png, png_name))
                 posted = True
         except Exception:
             logger.debug("[cat-announce] couldn't post in the channel either", exc_info=True)
     if posted and kind == "milestone":
         _mark_milestone(uid, chan)
     return posted
+
+
+# Older name, kept so existing callers keep working; takes a V2 card or a classic embed.
+announce_embed = announce_card
 
 
 async def announce_badges(interaction: discord.Interaction, slugs) -> None:
