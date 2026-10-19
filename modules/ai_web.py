@@ -38,10 +38,10 @@ from aiohttp.abc import AbstractResolver
 
 logger = logging.getLogger(__name__)
 
-MAX_URLS = 2                 # links read per message
+MAX_URLS = 3                 # links read per message
 MAX_REDIRECTS = 3
 MAX_DOWNLOAD_BYTES = 1_000_000
-MAX_CHARS_PER_PAGE = 3500    # what the model sees per link
+MAX_CHARS_PER_PAGE = 6000    # what the model sees per link
 TOTAL_TIMEOUT = 8            # seconds per link
 USER_AGENT = "Mozilla/5.0 (compatible; PrimeBot-LinkReader/1.0)"
 ALLOWED_PORTS = {None, 80, 443}

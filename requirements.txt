@@ -13,6 +13,7 @@ davey>=0.1.5
 groq>=0.4.2
 cryptography>=42.0.0
 Pillow>=10.0.0
+pypdf>=4.0.0
 rapidfuzz>=3.0.0
 # Used by modules/level_card.py's font-fallback chain (draw_text_fallback)
 # to check which bundled font actually has a given character's glyph, so

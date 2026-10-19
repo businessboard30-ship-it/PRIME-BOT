@@ -12,8 +12,8 @@ def run(c):
 
 
 def test_extract_urls_dedupes_strips_punctuation_and_caps():
-    t = "see https://a.com/x, and <https://b.org/y> then https://a.com/x again https://c.net"
-    assert ai_web.extract_urls(t) == ["https://a.com/x", "https://b.org/y"]
+    t = "see https://a.com/x, and <https://b.org/y> then https://a.com/x again https://c.net https://d.io"
+    assert ai_web.extract_urls(t) == ["https://a.com/x", "https://b.org/y", "https://c.net"]
     assert ai_web.extract_urls("no links here") == []
     assert ai_web.extract_urls("(https://a.com/p).") == ["https://a.com/p"]
 
