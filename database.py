@@ -8481,9 +8481,9 @@ class Database:
     _AUTORESPONDERS_CACHE_TTL_SECONDS = 300
     _autoresponders_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (list_of_dicts, fetched_at_monotonic)
 
-    async def get_automod_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+    async def get_automod_config(self, guild_id: int, clone_id: Optional[int] = None, fresh: bool = False) -> Dict:
         cache_key = (guild_id, clone_id)
-        cached = self._automod_config_cache.get(cache_key)
+        cached = None if fresh else self._automod_config_cache.get(cache_key)
         if cached is not None:
             config, fetched_at = cached
             if time.monotonic() - fetched_at < self._AUTOMOD_CACHE_TTL_SECONDS:
@@ -8514,7 +8514,9 @@ class Database:
         it in place) so a failed/partial write, or a concurrent writer,
         can't leave a stale merged config cached — the next get_automod_config
         call re-reads from the DB and repopulates it fresh."""
-        current = await self.get_automod_config(guild_id, clone_id)
+        # fresh=True: this writes the WHOLE row back, so merging into a cached copy (up to 5 minutes old, and each
+        # bot/clone process has its own) could put old values back, e.g. undo a "Don't ask again" on the reminders.
+        current = await self.get_automod_config(guild_id, clone_id, fresh=True)
         merged = {**current, **fields}
         pool = await get_pool()
         async with pool.acquire() as conn:
