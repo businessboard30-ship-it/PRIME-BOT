@@ -164,6 +164,10 @@ _lock: Optional[asyncio.Lock] = None
 async def _fetch(now: int) -> Optional[dict]:
     from anime_service import get_session
     from config import ANILIST_ENDPOINT
+    from modules.anime_feed_limiter import anilist
+    if not anilist.try_acquire(priority=True):                       # the worker may use the whole budget
+        logger.warning("[anime-feed] AniList budget used up for this minute")
+        return None
     session = await get_session()
     body = {"query": _QUERY, "variables": {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": MAX_FETCH}}
     async with session.post(ANILIST_ENDPOINT, json=body) as resp:
@@ -266,6 +270,9 @@ async def get_detail(anime_id: int) -> Tuple[Optional[Detail], bool]:
     try:
         from anime_service import get_session
         from config import ANILIST_ENDPOINT
+        from modules.anime_feed_limiter import anilist
+        if not anilist.try_acquire():                                # user actions leave room for the posting worker
+            return (hit[1], True) if hit and hit[1] else (None, False)
         session = await get_session()
         async with session.post(ANILIST_ENDPOINT, json={"query": _DETAIL_QUERY, "variables": {"id": aid}}) as resp:
             if resp.status != 200:
@@ -414,11 +421,12 @@ async def toggle_follow(user_id: int, anime_id: int, title: str, limit: int = FR
 
 
 async def followers_of(anime_id: int, limit: int = 500) -> List[int]:
-    """People following this anime, earliest first. Never raises (empty on error: the post still goes out)."""
+    """People following this anime who chose to be MENTIONED (alert mode 'mention'), earliest first. DM and muted followers are not here.
+    Never raises (empty on error: the post still goes out)."""
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT user_id FROM anime_follows WHERE anime_id = $1 ORDER BY followed_at LIMIT $2", int(anime_id), int(limit))
+            rows = await conn.fetch("SELECT user_id FROM anime_follows WHERE anime_id = $1 AND alert_mode = 'mention' ORDER BY followed_at LIMIT $2", int(anime_id), int(limit))
         return [int(r["user_id"]) for r in rows]
     except Exception:
         logger.debug("[anime-feed] couldn't read followers", exc_info=True)

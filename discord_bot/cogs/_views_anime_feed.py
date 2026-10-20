@@ -163,10 +163,24 @@ def detail_view(d: Optional[af.Detail], ok: bool, anime_id: int) -> discord.ui.L
     return view
 
 
-DYNAMIC_ITEMS = (_FollowButton, _MoreButton)
+def _actions():
+    """The panel buttons live in _views_anime_actions (which imports this module), so they are loaded lazily."""
+    from discord_bot.cogs import _views_anime_actions as aa
+    return aa
 
 
-def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping: str = "") -> discord.ui.Container:
+def _all_dynamic_items():
+    return (_FollowButton, _MoreButton) + tuple(_actions().ACTION_ITEMS)
+
+
+def __getattr__(name: str):
+    """`DYNAMIC_ITEMS` (every persistent anime item, registered at startup) is built on first use, which avoids an import cycle."""
+    if name == "DYNAMIC_ITEMS":
+        return _all_dynamic_items()
+    raise AttributeError(name)
+
+
+def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping: str = "", dm: bool = False) -> discord.ui.Container:
     box = discord.ui.Container(accent_colour=discord.Color(p.color) if p.color else ACCENT)
     if ping:
         box.add_item(discord.ui.TextDisplay(ping[:500]))
@@ -175,16 +189,20 @@ def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping:
         gallery.add_item(media=p.image, description=p.title[:200])
         box.add_item(gallery)
     box.add_item(discord.ui.TextDisplay(card_text(p, tag=tag)))
-    box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id),
-                                      discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url)))
+    aa = _actions()
+    link = discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url)
+    if dm:                              # a DM alert: Mute is the one-tap way out
+        box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), aa._MuteButton(p.anime_id), aa._AlertButton(p.anime_id), link))
+    else:
+        box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id), aa._AlertButton(p.anime_id), link))
     for row in extra_rows:
         box.add_item(row)
     return box
 
 
-def post_view(p: af.Preview, *, tag: Optional[str] = None, ping: str = "") -> discord.ui.LayoutView:
+def post_view(p: af.Preview, *, tag: Optional[str] = None, ping: str = "", dm: bool = False) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
-    view.add_item(build_card(p, tag=tag, ping=ping))
+    view.add_item(build_card(p, tag=tag, ping=ping, dm=dm))
     return view
 
 
