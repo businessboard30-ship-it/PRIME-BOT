@@ -1,7 +1,7 @@
 -- path: database/migrations/073_verification_pro.sql
 
 -- ============================================================================
--- Migration 069: join verification premium extras
+-- Migration 073: join verification premium extras
 -- ============================================================================
 -- All columns are nullable (NULL = off / default look). A server that is not
 -- premium keeps whatever it saved here, but modules/verification_pro.py ignores
