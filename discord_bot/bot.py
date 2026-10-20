@@ -223,6 +223,11 @@ class AnimeBotDiscord(commands.Bot):
         # rather than registered per fixed custom_id, so one call here
         # covers every guild's buttons, past and future.
         self.add_dynamic_items(*DYNAMIC_ITEMS)
+        try:                                                  # old anime buttons that match nothing get a private pointer, not "interaction failed"
+            from discord_bot.cogs._views_anime_feed import stale_button_listener
+            self.add_listener(stale_button_listener, "on_interaction")
+        except Exception:
+            logger.exception("Anime stale-button listener failed to register")
         if getattr(self, "clone_id", None) is None:
             try:
                 import gumroad_autocreate

@@ -17,6 +17,7 @@ import asyncio
 import logging
 import random
 import time
+from dataclasses import dataclass
 from typing import List, Optional
 
 from modules import anime_feed as af
@@ -37,6 +38,25 @@ _workers: List["Worker"] = []
 def wake_all() -> None:
     for w in list(_workers):
         w.wake()
+
+
+@dataclass
+class PassStats:
+    """What one pass did, logged as ONE line so an operator can read the feed's health from the logs alone."""
+    servers: int = 0           # servers with the feed on that this bot can see
+    due: int = 0               # (server, episode) pairs that were due
+    posted: int = 0
+    dms: int = 0
+    dm_backlog: bool = False   # the per-pass DM cap was hit; the rest goes on the next short pass
+    ms: int = 0
+
+    def line(self) -> str:
+        return (f"servers={self.servers} due={self.due} posted={self.posted} dms={self.dms} "
+                f"dm_backlog={int(self.dm_backlog)} took={self.ms}ms")
+
+    @property
+    def busy(self) -> bool:
+        return bool(self.posted or self.dms or self.dm_backlog)
 
 
 # ── pure rules ──────────────────────────────────────────────────────────
@@ -75,6 +95,8 @@ class Worker:
         self.task: Optional[asyncio.Task] = None
         self.posted_total = 0
         self.dms_total = 0
+        self.last_pass: Optional[PassStats] = None
+        self._paused_logged = False
 
     def wake(self) -> None:
         self._wake.set()
@@ -126,17 +148,28 @@ class Worker:
 
     async def cycle(self) -> Optional[float]:
         """One pass. Returns seconds to wait, or None when there is nothing to do until something changes."""
-        try:
-            guilds = [g for g in await af.enabled_guilds(self.clone_id) if self.bot.get_guild(g.guild_id) is not None]
-        except Exception:
-            return self._fail("couldn't read the feed settings")
-        try:
-            dm_work = await alerts.has_dm_followers()                 # someone with a DM alert is work too, even when no server has the feed on
-        except Exception:
-            if not guilds:
-                return self._fail("couldn't read the DM alerts")
-            logger.debug("[anime-feed] couldn't read the DM alerts", exc_info=True)
-            dm_work = False
+        feed_on, alerts_on = af.feed_enabled(), af.alerts_enabled()
+        if not (feed_on or alerts_on):                                # both kill switches are engaged: idle, no database and no provider requests
+            if not self._paused_logged:
+                logger.warning("[anime-feed] paused by ANIME_FEED_ENABLED / ANIME_ALERTS_ENABLED; no posting, no DMs")
+                self._paused_logged = True
+            return None
+        self._paused_logged = False
+        started = time.monotonic()
+        guilds = []
+        if feed_on:
+            try:
+                guilds = [g for g in await af.enabled_guilds(self.clone_id) if self.bot.get_guild(g.guild_id) is not None]
+            except Exception:
+                return self._fail("couldn't read the feed settings")
+        dm_work = False
+        if alerts_on:
+            try:
+                dm_work = await alerts.has_dm_followers()             # someone with a DM alert is work too, even when no server has the feed on
+            except Exception:
+                if not guilds:
+                    return self._fail("couldn't read the DM alerts")
+                logger.debug("[anime-feed] couldn't read the DM alerts", exc_info=True)
         if not guilds and not dm_work:
             return None
         items, ok = await af.airing_soon()
@@ -146,9 +179,11 @@ class Worker:
         self._set(RUNNING)
         now = int(time.time())
         posted = 0
+        stats = PassStats(servers=len(guilds))
         for cfg in guilds:
             since = cfg.enabled_at.timestamp() if cfg.enabled_at else None
             for p in due(af.filter_kinds(items, cfg.content_kinds), now, since):
+                stats.due += 1
                 if posted >= MAX_POSTS_PER_CYCLE:
                     break
                 if await self._post(cfg, p):
@@ -166,7 +201,11 @@ class Worker:
         self.dms_total += dms
         self._set(SLEEPING)
         wait = MIN_SLEEP if backlog else next_wait(items, now)       # a capped DM queue is finished on the next short pass
-        logger.debug("[anime-feed] posted %s, DMed %s, sleeping %ss (%s servers)", posted, dms, wait, len(guilds))
+        stats.posted, stats.dms, stats.dm_backlog = posted, dms, backlog
+        stats.ms = int((time.monotonic() - started) * 1000)
+        self.last_pass = stats
+        # one INFO line when the pass did something, a DEBUG line when it was quiet (so a healthy idle feed does not fill the log)
+        (logger.info if stats.busy else logger.debug)("[anime-feed] pass: %s sleeping=%ss", stats.line(), wait)
         return wait
 
     def _fail(self, why: str) -> float:

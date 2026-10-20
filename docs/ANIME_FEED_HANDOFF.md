@@ -4,6 +4,13 @@ Repo: `github.com/businessboard30-ship-it/PRIME-BOT` (Discord bot, Python, disco
 Owner style: wants things built and merged, short plain updates, tells you decisions in chat. Owner writes in caps and informally; read intent, not typos.
 Written 2026-10-20. Read `docs/ANIME_FEED_UPGRADE_PLAN.md` next: it is the source of truth for what to build.
 
+## 0. Status update (2026-10-20, later) - read this first; sections 1 and 4 below are the older picture
+
+- **D1 to D5 are all merged into `main`** (#411, #412, #413 and the D2-D5 PRs through #415). Schema is `125`.
+- **Subscription (PR #417)**: the personal upgrade is now a monthly **subscription** (`anime_plus` is a 4th plan in `modules/user_subs.py`, same system as `card_plan` and Developer mode: Paystack recurring plan for Ghana, Gumroad membership elsewhere, existing webhooks do charge/renew/cancel/fail/end). The old one-off tables stay readable so already-bought days are honoured.
+- **D6 (this PR)**: `ANIME_FEED_ENABLED` / `ANIME_ALERTS_ENABLED` kill switches (env, default on, read each pass), one INFO log line per busy pass (`servers/due/posted/dms/dm_backlog/took`), and a safety net that answers old or unmatched `anime_*` buttons privately instead of "interaction failed" (`RETIRED_FAMILIES` is where a removed feature's id family goes). The "DB token store" from the plan was **not needed**: every browser state already fits in a 100-character `custom_id`.
+- **Still open for the owner**: set the real price (`ANIME_PLUS_FEE_USD`), confirm the Paystack plan was auto-created, create/adopt the Gumroad membership named "Anime Feed Upgrade - Monthly". Nothing here was tested against live Discord, AniList, Paystack or Gumroad.
+
 ## 1. Where things stand
 
 **Already merged into `main`**
