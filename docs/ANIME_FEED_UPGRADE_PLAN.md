@@ -159,7 +159,9 @@ D1 is the visible win with no data risk. D2 comes before D3 so the new entry poi
 5. **Donghua**: on by default, existing servers included.
 6. **Categories**: Love, Sci-Fi, Donghua and more (list in 2.6).
 
-**Still open (small, can be decided at D5):** personal upgrade price and duration (monthly vs one-time), the exact list of features that are exclusive, and whether the personal upgrade should also unlock anything on the server side (plan says no).
+7. **Personal upgrade is monthly** (confirmed), and the proposed exclusive list is accepted: more than 5 follows, DM alerts, quiet hours, "my follows" digest, Categories "Top picks" sort.
+
+**Still open (small, decided at D5):** the monthly price (a config value) and whether the personal upgrade should also unlock anything on the server side (plan says no).
 
 ## 8. Tests (per slice)
 
