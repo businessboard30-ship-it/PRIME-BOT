@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -31,6 +32,26 @@ MAX_PAGES = 3                       # AniList pages read per refresh, so donghua
 MAX_FETCH = 50                      # most airings kept from the provider (AniList's page limit); the worker posts from all of these
 SYNOPSIS_CHARS = 280
 SOURCE_NAME = "AniList"
+
+
+# -- kill switches (operations) --------------------------------------------------------------
+# Environment flags read at the moment they are used, so an incident can be contained without a code change: set the variable to 0 /
+# false / off / no and restart. Unset or empty means ON. Buttons keep answering (follows and settings are only data); these stop the
+# background work: posting to servers (ANIME_FEED_ENABLED) and DMs (ANIME_ALERTS_ENABLED).
+_OFF = frozenset({"0", "false", "off", "no", "disabled"})
+
+
+def _flag(name: str) -> bool:
+    raw = os.getenv(name)
+    return True if raw is None or not raw.strip() else raw.strip().lower() not in _OFF
+
+
+def feed_enabled() -> bool:
+    return _flag("ANIME_FEED_ENABLED")
+
+
+def alerts_enabled() -> bool:
+    return _flag("ANIME_ALERTS_ENABLED")
 
 _QUERY = """
 query ($from: Int, $to: Int, $perPage: Int, $page: Int) {

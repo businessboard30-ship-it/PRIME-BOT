@@ -190,6 +190,36 @@ def _all_dynamic_items():
     return (_FollowButton, _MoreButton) + tuple(_actions().ACTION_ITEMS) + tuple(_browse().BROWSE_ITEMS) + tuple(_plus().PLUS_ITEMS)
 
 
+# -- old buttons ------------------------------------------------------------------------------
+# Every anime button is a persistent DynamicItem that rebuilds from its custom_id alone, so a card keeps working across restarts and
+# deploys. This is the safety net for the rare button that no longer matches anything (an id from a retired feature, or one that no
+# longer fits its template): instead of Discord's "This interaction failed", the person gets a private pointer to a fresh card.
+# Families are the text before the first ':'. When a feature is ever REMOVED, move its family into RETIRED_FAMILIES so its old cards
+# still get this message. Only these families are answered, never another module's ids.
+LIVE_FAMILIES = frozenset({"anime_follow", "anime_more", "anime_alert", "anime_amode", "anime_atz", "anime_aq", "anime_mute", "anime_pg",
+                           "anime_search", "anime_cats", "anime_catsel", "anime_plus", "anime_plus_pay", "anime_plus_verify"})
+RETIRED_FAMILIES: frozenset = frozenset()
+STALE_TEXT = "🔄 That button is from an older version of this card and doesn't work any more. Tap a button on the **newest anime post** instead."
+
+
+def is_stale_anime_id(custom_id: str) -> bool:
+    """True for an id of ours (or a retired family of ours) that no current item will answer."""
+    if not isinstance(custom_id, str) or custom_id.split(":", 1)[0] not in (LIVE_FAMILIES | RETIRED_FAMILIES):
+        return False
+    return not any(cls.__discord_ui_compiled_template__.fullmatch(custom_id) for cls in _all_dynamic_items())
+
+
+async def stale_button_listener(interaction: discord.Interaction) -> None:
+    """`on_interaction` listener. Does nothing for every interaction except a component press whose id is stale."""
+    try:
+        if interaction.type is not discord.InteractionType.component or interaction.response.is_done():
+            return
+        if is_stale_anime_id((interaction.data or {}).get("custom_id", "")):
+            await interaction.response.send_message(STALE_TEXT, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
+        logger.debug("[anime-feed] couldn't answer a stale button", exc_info=True)
+
+
 def __getattr__(name: str):
     """`DYNAMIC_ITEMS` (every persistent anime item, registered at startup) is built on first use, which avoids an import cycle."""
     if name == "DYNAMIC_ITEMS":
