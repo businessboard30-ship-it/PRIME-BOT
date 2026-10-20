@@ -257,8 +257,8 @@ DISCORD_CLONE_FREE_EVERY_NTH = 3
 WELCOME_CARD_PACK_FEE_USD = 2
 
 # Anime feed personal upgrade: a monthly SUBSCRIPTION (product "anime_plus" in modules/user_subs.py). Price in USD per month; Paystack
-# (Ghana) converts it to GHS at checkout, Gumroad (everyone else) is a membership. PLACEHOLDER: set ANIME_PLUS_FEE_USD (env) to the
-# real price; the Paystack plan and the Gumroad membership are created from it (see paystack_autocreate / gumroad_autocreate).
+# (Ghana) converts it to GHS at checkout, Gumroad (everyone else) is a membership. Price confirmed by the owner at $3/month (override with
+# ANIME_PLUS_FEE_USD); the Paystack plan and the Gumroad membership are created from it (see paystack_autocreate / gumroad_autocreate).
 ANIME_PLUS_FEE_USD = float(os.getenv("ANIME_PLUS_FEE_USD", "3"))
 ANIME_PLUS_PRODUCT_NAME = "Anime Feed Upgrade - Monthly"
 ANIME_PLUS_PRODUCT_DESCRIPTION = "Follow up to 50 anime, DM alerts and quiet hours, in any server. Renews monthly, cancel any time."
