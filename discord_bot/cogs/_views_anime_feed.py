@@ -309,7 +309,14 @@ def detail_view(d: Optional[af.Detail], ok: bool, anime_id: int) -> discord.ui.L
     return view
 
 
-DYNAMIC_ITEMS = (_FollowButton, _MoreButton, _AlertButton)
+def _all_dynamic_items():
+    """Every persistent anime button the bot must register. The browse module is imported here (not at the top) because it imports
+    this one; always import THIS module first."""
+    from discord_bot.cogs import _views_anime_browse as browse
+    return (_FollowButton, _MoreButton, _AlertButton) + tuple(browse.DYNAMIC_ITEMS)
+
+
+DYNAMIC_ITEMS = ()                      # filled at the bottom of this module, once every class above exists
 
 
 def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping: str = "") -> discord.ui.Container:
@@ -323,6 +330,8 @@ def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping:
     box.add_item(discord.ui.TextDisplay(card_text(p, tag=tag)))
     box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id), _AlertButton(p.anime_id),
                                       discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url)))
+    from discord_bot.cogs import _views_anime_browse as browse
+    box.add_item(discord.ui.ActionRow(browse.SearchButton(), browse.CategoriesButton()))
     for row in extra_rows:
         box.add_item(row)
     return box
@@ -529,3 +538,6 @@ async def open_setup(bot, guild: discord.Guild, clone_id, owner_id: int, channel
     msg = await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
     view.message = msg
     return msg
+
+
+DYNAMIC_ITEMS = _all_dynamic_items()

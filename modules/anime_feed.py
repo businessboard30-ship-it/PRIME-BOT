@@ -13,6 +13,7 @@ it hosts no episodes.
 from __future__ import annotations
 
 import asyncio
+import collections
 import html
 import logging
 import re
@@ -70,6 +71,70 @@ class Preview:
     def image(self) -> Optional[str]:
         """The one big picture for the card: wide banner, else the big cover, else the normal cover, else nothing."""
         return self.banner or self.cover_xl or self.cover
+
+
+# ── one shared AniList limiter (AniList allows about 90 requests a minute) ─────────────────────────────
+# The posting worker has PRIORITY: it is never held back by the budget (only by an AniList Retry-After), while Search, Categories and
+# Read more share BROWSE_BUDGET requests per rolling minute, so people browsing can never starve the posting worker.
+
+RATE_WINDOW = 60.0
+BROWSE_BUDGET = 60
+_sent: "collections.deque[float]" = collections.deque()
+_blocked_until = 0.0
+
+
+def provider_allowed(priority: bool = False) -> bool:
+    now = time.monotonic()
+    if now < _blocked_until:
+        return False
+    while _sent and now - _sent[0] > RATE_WINDOW:
+        _sent.popleft()
+    return True if priority else len(_sent) < BROWSE_BUDGET
+
+
+def provider_note() -> None:
+    _sent.append(time.monotonic())
+
+
+def provider_block(seconds: float) -> None:
+    """AniList said slow down (HTTP 429): nobody asks again until Retry-After has passed (capped at 5 minutes)."""
+    global _blocked_until
+    _blocked_until = max(_blocked_until, time.monotonic() + max(1.0, min(float(seconds), 300.0)))
+
+
+def provider_reset() -> None:
+    global _blocked_until
+    _sent.clear()
+    _blocked_until = 0.0
+
+
+def _retry_after(resp) -> float:
+    try:
+        return float(resp.headers.get("Retry-After", 60))
+    except (AttributeError, TypeError, ValueError):
+        return 60.0
+
+
+async def provider_post(query: str, variables: dict, priority: bool = False) -> Optional[dict]:
+    """One bounded AniList GraphQL request through the shared limiter. None on any failure (the caller says so plainly)."""
+    if not provider_allowed(priority):
+        return None
+    try:
+        from anime_service import get_session
+        from config import ANILIST_ENDPOINT
+        session = await get_session()
+        provider_note()
+        async with session.post(ANILIST_ENDPOINT, json={"query": query, "variables": variables}) as resp:
+            if resp.status == 429:
+                provider_block(_retry_after(resp))
+                return None
+            if resp.status != 200:
+                logger.warning("[anime-feed] AniList answered %s", resp.status)
+                return None
+            return await resp.json()
+    except Exception:
+        logger.warning("[anime-feed] couldn't reach AniList", exc_info=True)
+        return None
 
 
 # ── pure helpers ────────────────────────────────────────────────────────
@@ -164,9 +229,15 @@ _lock: Optional[asyncio.Lock] = None
 async def _fetch(now: int) -> Optional[dict]:
     from anime_service import get_session
     from config import ANILIST_ENDPOINT
+    if not provider_allowed(True):
+        return None
     session = await get_session()
+    provider_note()
     body = {"query": _QUERY, "variables": {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": MAX_FETCH}}
     async with session.post(ANILIST_ENDPOINT, json=body) as resp:
+        if resp.status == 429:
+            provider_block(_retry_after(resp))
+            return None
         if resp.status != 200:
             logger.warning("[anime-feed] AniList answered %s", resp.status)
             return None
@@ -263,11 +334,17 @@ async def get_detail(anime_id: int) -> Tuple[Optional[Detail], bool]:
     hit = _details.get(aid)
     if hit and now - hit[0] < DETAIL_TTL:
         return hit[1], True
+    if not provider_allowed(False):                                  # busy: serve the old copy or say so, never queue up requests
+        return (hit[1], True) if hit and hit[1] else (None, False)
     try:
         from anime_service import get_session
         from config import ANILIST_ENDPOINT
         session = await get_session()
+        provider_note()
         async with session.post(ANILIST_ENDPOINT, json={"query": _DETAIL_QUERY, "variables": {"id": aid}}) as resp:
+            if resp.status == 429:
+                provider_block(_retry_after(resp))
+                return (hit[1], True) if hit and hit[1] else (None, False)
             if resp.status != 200:
                 logger.warning("[anime-feed] AniList answered %s for a detail", resp.status)
                 return (hit[1], True) if hit and hit[1] else (None, False)
