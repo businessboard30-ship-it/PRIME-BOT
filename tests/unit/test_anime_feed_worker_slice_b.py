@@ -9,6 +9,7 @@ import discord
 import pytest
 
 from modules import anime_feed as af
+from modules import anime_feed_alerts as alerts
 from modules import anime_feed_worker as aw
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -88,6 +89,10 @@ def make(monkeypatch, guilds, items, ok=True, chans=None, claimed=None, enabled_
     monkeypatch.setattr(af, "claim", claim)
     monkeypatch.setattr(af, "release", release)
     monkeypatch.setattr(af, "disable", disable)
+
+    async def no_dm_followers():
+        return False
+    monkeypatch.setattr(alerts, "has_dm_followers", no_dm_followers)         # D2: nobody has a DM alert unless a test says so
     bot = SimpleNamespace(get_guild=lambda gid: SimpleNamespace(get_channel=lambda cid: chans.get(gid)), wait_until_ready=None)
     return aw.Worker(bot, None, post_gap=0), calls, chans
 

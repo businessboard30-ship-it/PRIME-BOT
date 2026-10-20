@@ -26,20 +26,23 @@ logger = logging.getLogger(__name__)
 CACHE_TTL = 15 * 60
 WINDOW_HOURS = 48
 LOOKBACK_HOURS = 3                  # episodes that aired in the last 3 hours are still "just aired"; older ones are never posted
-MAX_ITEMS = 12
+MAX_ITEMS = 12                      # most titles a PREVIEW browser shows
+MAX_PAGES = 3                       # AniList pages read per refresh, so donghua are not crowded out of one page of a busy day
+MAX_FETCH = 50                      # most airings kept from the provider (AniList's page limit); the worker posts from all of these
 SYNOPSIS_CHARS = 280
 SOURCE_NAME = "AniList"
 
 _QUERY = """
-query ($from: Int, $to: Int, $perPage: Int) {
-  Page(page: 1, perPage: $perPage) {
+query ($from: Int, $to: Int, $perPage: Int, $page: Int) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo { hasNextPage }
     airingSchedules(airingAt_greater: $from, airingAt_lesser: $to, sort: TIME) {
       airingAt
       episode
       media {
-        id siteUrl isAdult format episodes genres
-        title { romaji english }
-        coverImage { large }
+        id siteUrl isAdult format episodes genres countryOfOrigin bannerImage
+        title { romaji english native }
+        coverImage { large extraLarge color }
         description(asHtml: false)
       }
     }
@@ -60,6 +63,15 @@ class Preview:
     genres: Tuple[str, ...] = ()
     fmt: str = ""
     episodes: Optional[int] = None
+    banner: Optional[str] = None    # wide banner from the provider (https only)
+    cover_xl: Optional[str] = None  # big cover, the fallback when there is no banner
+    color: Optional[int] = None     # the cover's dominant colour, used as the card accent
+    origin: str = ""                # 'JP' / 'CN' / 'KR' ... (countryOfOrigin)
+
+    @property
+    def image(self) -> Optional[str]:
+        """The one big picture for the card: wide banner, else the big cover, else the normal cover, else nothing."""
+        return self.banner or self.cover_xl or self.cover
 
 
 # ── pure helpers ────────────────────────────────────────────────────────
@@ -101,14 +113,34 @@ def parse_airing(payload: dict) -> List[Preview]:
             url = m.get("siteUrl") or f"https://anilist.co/anime/{int(m['id'])}"
             if not url.startswith("https://anilist.co/"):
                 url = f"https://anilist.co/anime/{int(m['id'])}"
-            cover = (m.get("coverImage") or {}).get("large")
+            ci = m.get("coverImage") or {}
             out.append(Preview(int(m["id"]), title[:120], int(r["episode"]), int(r["airingAt"]), clean_synopsis(m.get("description")),
-                               cover if isinstance(cover, str) and cover.startswith("https://") else None, url,
+                               _https(ci.get("large")), url,
                                tuple(str(g) for g in (m.get("genres") or [])[:3]), str(m.get("format") or "").replace("_", " ").title(),
-                               int(m["episodes"]) if m.get("episodes") else None))
+                               int(m["episodes"]) if m.get("episodes") else None,
+                               _https(m.get("bannerImage")), _https(ci.get("extraLarge")), _color(ci.get("color")),
+                               str(m.get("countryOfOrigin") or "")[:2].upper()))
         except (TypeError, ValueError, AttributeError):
             continue
-    return out[:MAX_ITEMS]
+    return out[:MAX_FETCH]
+
+
+ORIGIN_LABELS = {"JP": "Anime", "CN": "Donghua", "KR": "Korean animation", "TW": "Taiwanese animation"}
+
+
+def origin_label(p: Preview) -> str:
+    """'Donghua' for Chinese animation, 'Anime' for Japanese, empty when the provider says nothing (never guessed)."""
+    return ORIGIN_LABELS.get((p.origin or "").upper(), "")
+
+
+def _https(url) -> Optional[str]:
+    return url if isinstance(url, str) and url.startswith("https://") and " " not in url and len(url) <= 500 else None
+
+
+def _color(raw) -> Optional[int]:
+    """AniList sends '#e4a15d'; anything else is ignored."""
+    m = re.fullmatch(r"#?([0-9a-fA-F]{6})", str(raw or "").strip())
+    return int(m.group(1), 16) if m else None
 
 
 def episode_label(p: Preview) -> str:
@@ -120,17 +152,58 @@ def upcoming(items: List[Preview], now: int) -> List[Preview]:
     return [p for p in items if p.airing_at > now]
 
 
+def for_preview(items: List[Preview], now: int) -> List[Preview]:
+    """What the preview browser shows: the soonest upcoming titles, capped."""
+    return upcoming(items, now)[:MAX_ITEMS]
+
+
 # ── provider (cached, shared across servers) ────────────────────────────
+
+def has_next_page(payload) -> bool:
+    try:
+        return bool(payload["data"]["Page"]["pageInfo"]["hasNextPage"])
+    except (KeyError, TypeError):
+        return False
+
+
+# What a server's feed posts. 'both' is the default (donghua ON, including for servers that already used the feed).
+KINDS = ("both", "anime", "donghua")
+DEFAULT_KINDS = "both"
+DONGHUA_ORIGIN = "CN"
+
+
+def clean_kinds(raw) -> str:
+    return raw if raw in KINDS else DEFAULT_KINDS
+
+
+def kind_allows(kinds: str, origin: str) -> bool:
+    """True when a feed set to `kinds` posts a title from this country of origin. Unknown origin counts as anime."""
+    kinds = clean_kinds(kinds)
+    is_donghua = (origin or "").upper() == DONGHUA_ORIGIN
+    if kinds == "donghua":
+        return is_donghua
+    if kinds == "anime":
+        return not is_donghua
+    return True
+
+
+def filter_kinds(items: List["Preview"], kinds: str) -> List["Preview"]:
+    return [p for p in items if kind_allows(kinds, p.origin)]
+
 
 _cache: Tuple[float, List[Preview]] = (0.0, [])
 _lock: Optional[asyncio.Lock] = None
 
 
-async def _fetch(now: int) -> Optional[dict]:
+async def _fetch(now: int, page: int = 1) -> Optional[dict]:
     from anime_service import get_session
     from config import ANILIST_ENDPOINT
+    from modules.anime_feed_limiter import anilist
+    if not anilist.try_acquire(priority=True):                       # the worker may use the whole budget
+        logger.warning("[anime-feed] AniList budget used up for this minute")
+        return None
     session = await get_session()
-    body = {"query": _QUERY, "variables": {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": 40}}
+    body = {"query": _QUERY, "variables": {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": MAX_FETCH, "page": page}}
     async with session.post(ANILIST_ENDPOINT, json=body) as resp:
         if resp.status != 200:
             logger.warning("[anime-feed] AniList answered %s", resp.status)
@@ -159,8 +232,125 @@ async def airing_soon() -> Tuple[List[Preview], bool]:
         if payload is None:
             return (list(items), True) if items else ([], False)      # an old list beats nothing
         parsed = parse_airing(payload)
+        page = 1
+        while has_next_page(payload) and page < MAX_PAGES:
+            page += 1
+            try:
+                more = await _fetch(int(time.time()), page)
+            except Exception:
+                logger.debug("[anime-feed] couldn't read page %s", page, exc_info=True)
+                break
+            if more is None:
+                break                                               # keep what page 1 gave us; a thinner list beats none
+            payload = more
+            seen = {(p.anime_id, p.episode) for p in parsed}
+            parsed += [p for p in parse_airing(more) if (p.anime_id, p.episode) not in seen]
         _cache = (time.time(), parsed)
         return list(parsed), True
+
+
+# ── full details for "Read more" (one title, cached, bounded) ───────────
+
+DETAIL_TTL = 6 * 3600
+DETAIL_MAX = 300
+READ_MORE_CHARS = 3500
+_DETAIL_QUERY = """
+query ($id: Int) {
+  Media(id: $id, type: ANIME) {
+    id siteUrl isAdult format status episodes genres countryOfOrigin
+    title { romaji english native }
+    description(asHtml: false)
+    nextAiringEpisode { episode airingAt }
+  }
+}
+"""
+_details: "dict[int, Tuple[float, Optional[Detail]]]" = {}
+
+
+@dataclass(frozen=True)
+class Detail:
+    anime_id: int
+    title: str
+    native: str
+    url: str
+    synopsis: str                   # the FULL text (cut only at READ_MORE_CHARS), not the short card version
+    fmt: str
+    status: str
+    episodes: Optional[int]
+    genres: Tuple[str, ...]
+    origin: str
+    next_episode: Optional[int]
+    next_at: Optional[int]
+
+
+def parse_detail(payload: dict) -> Optional[Detail]:
+    """Provider JSON -> Detail. None for missing data or adult titles; never raises on odd shapes."""
+    try:
+        m = payload["data"]["Media"]
+        if not m or m.get("isAdult") or not m.get("id"):
+            return None
+        t = m.get("title") or {}
+        title = (t.get("english") or t.get("romaji") or t.get("native") or "").strip()
+        if not title:
+            return None
+        url = m.get("siteUrl") or f"https://anilist.co/anime/{int(m['id'])}"
+        if not url.startswith("https://anilist.co/"):
+            url = f"https://anilist.co/anime/{int(m['id'])}"
+        nxt = m.get("nextAiringEpisode") or {}
+        return Detail(int(m["id"]), title[:120], str(t.get("native") or "")[:120], url,
+                      clean_synopsis(m.get("description"), READ_MORE_CHARS),
+                      str(m.get("format") or "").replace("_", " ").title(), str(m.get("status") or "").replace("_", " ").title(),
+                      int(m["episodes"]) if m.get("episodes") else None,
+                      tuple(str(g) for g in (m.get("genres") or [])[:6]), str(m.get("countryOfOrigin") or "")[:2].upper(),
+                      int(nxt["episode"]) if nxt.get("episode") else None, int(nxt["airingAt"]) if nxt.get("airingAt") else None)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+async def get_detail(anime_id: int) -> Tuple[Optional[Detail], bool]:
+    """(detail, ok). ok=False means the provider could not be reached (an older cached copy is still returned when there is one).
+    ok=True with None means there is nothing to show (unknown or adult title). Cached 6 hours, at most DETAIL_MAX titles."""
+    aid, now = int(anime_id), time.time()
+    hit = _details.get(aid)
+    if hit and now - hit[0] < DETAIL_TTL:
+        return hit[1], True
+    try:
+        from anime_service import get_session
+        from config import ANILIST_ENDPOINT
+        from modules.anime_feed_limiter import anilist
+        if not anilist.try_acquire():                                # user actions leave room for the posting worker
+            return (hit[1], True) if hit and hit[1] else (None, False)
+        session = await get_session()
+        async with session.post(ANILIST_ENDPOINT, json={"query": _DETAIL_QUERY, "variables": {"id": aid}}) as resp:
+            if resp.status != 200:
+                logger.warning("[anime-feed] AniList answered %s for a detail", resp.status)
+                return (hit[1], True) if hit and hit[1] else (None, False)
+            payload = await resp.json()
+    except Exception:
+        logger.warning("[anime-feed] couldn't fetch a detail", exc_info=True)
+        return (hit[1], True) if hit and hit[1] else (None, False)
+    detail = parse_detail(payload)
+    if len(_details) >= DETAIL_MAX:
+        for k in sorted(_details, key=lambda k: _details[k][0])[:DETAIL_MAX // 4]:   # drop the oldest quarter
+            _details.pop(k, None)
+    _details[aid] = (now, detail)
+    return detail, True
+
+
+_cooldowns: "dict[tuple, float]" = {}
+
+
+def cooldown_left(user_id: int, key: str, seconds: float) -> float:
+    """Seconds the person must still wait for this action (0 when allowed, and then the clock starts). Bounded memory."""
+    now, k = time.monotonic(), (int(user_id), key)
+    until = _cooldowns.get(k, 0.0)
+    if until > now:
+        return until - now
+    if len(_cooldowns) > 5000:
+        for old in [x for x, t in _cooldowns.items() if t <= now]:
+            _cooldowns.pop(old, None)
+    _cooldowns[k] = now + seconds
+    return 0.0
 
 
 # ── per-server setup ────────────────────────────────────────────────────
@@ -173,6 +363,7 @@ class FeedConfig:
     channel_id: Optional[int] = None
     enabled_at: Optional[datetime] = None
     ping_role_id: Optional[int] = None
+    content_kinds: str = DEFAULT_KINDS      # 'both' | 'anime' | 'donghua'
 
 
 def _key(clone_id) -> int:
@@ -188,7 +379,7 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at, ping_role_id FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
+            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at, ping_role_id, content_kinds FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
                                       int(guild_id), _key(clone_id))
     except Exception:
         logger.exception("[anime-feed] couldn't read the setup for guild %s", guild_id)
@@ -196,16 +387,24 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
     return _cfg(guild_id, clone_id, row) if row else FeedConfig(guild_id, clone_id)
 
 
+def _opt(row, key):
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
 def _cfg(guild_id, clone_id, row) -> FeedConfig:
     return FeedConfig(int(guild_id), clone_id, bool(row["enabled"]), int(row["channel_id"]) if row["channel_id"] else None, row["enabled_at"],
-                      int(row["ping_role_id"]) if row["ping_role_id"] else None)
+                      int(row["ping_role_id"]) if row["ping_role_id"] else None,
+                      clean_kinds(_opt(row, "content_kinds")))
 
 
 async def enabled_guilds(clone_id=None) -> List[FeedConfig]:
     """Every server of this bot with the feed on and a channel picked. Raises on database errors (the worker backs off)."""
     pool = await _pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at, ping_role_id FROM anime_feed_config "
+        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at, ping_role_id, content_kinds FROM anime_feed_config "
                                 "WHERE clone_key = $1 AND enabled AND channel_id IS NOT NULL", _key(clone_id))
     return [_cfg(r["guild_id"], clone_id, r) for r in rows]
 
@@ -241,12 +440,12 @@ async def save_config(cfg: FeedConfig, updated_by: Optional[int] = None) -> None
     pool = await _pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at, ping_role_id) "
-            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END, $6) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
+            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at, ping_role_id, content_kinds) "
+            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END, $6, $7) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
             "enabled = EXCLUDED.enabled, channel_id = EXCLUDED.channel_id, updated_by = EXCLUDED.updated_by, updated_at = NOW(), "
-            "ping_role_id = EXCLUDED.ping_role_id, "
+            "ping_role_id = EXCLUDED.ping_role_id, content_kinds = EXCLUDED.content_kinds, "
             "enabled_at = CASE WHEN NOT EXCLUDED.enabled THEN NULL WHEN anime_feed_config.enabled THEN anime_feed_config.enabled_at ELSE NOW() END",
-            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by, cfg.ping_role_id)
+            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by, cfg.ping_role_id, clean_kinds(cfg.content_kinds))
     try:
         from modules import anime_feed_worker
         anime_feed_worker.wake_all()
@@ -278,11 +477,12 @@ async def toggle_follow(user_id: int, anime_id: int, title: str, limit: int = FR
 
 
 async def followers_of(anime_id: int, limit: int = 500) -> List[int]:
-    """People following this anime, earliest first. Never raises (empty on error: the post still goes out)."""
+    """People following this anime who chose to be MENTIONED (alert mode 'mention'), earliest first. DM and muted followers are not here.
+    Never raises (empty on error: the post still goes out)."""
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT user_id FROM anime_follows WHERE anime_id = $1 ORDER BY followed_at LIMIT $2", int(anime_id), int(limit))
+            rows = await conn.fetch("SELECT user_id FROM anime_follows WHERE anime_id = $1 AND alert_mode = 'mention' ORDER BY followed_at LIMIT $2", int(anime_id), int(limit))
         return [int(r["user_id"]) for r in rows]
     except Exception:
         logger.debug("[anime-feed] couldn't read followers", exc_info=True)

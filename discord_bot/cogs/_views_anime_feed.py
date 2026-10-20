@@ -29,7 +29,7 @@ TEXT_LIMIT = 3800
 
 def card_text(p: af.Preview, *, tag: Optional[str] = None) -> str:
     head = f"## {p.title}"
-    meta = " · ".join(x for x in (p.fmt, ", ".join(p.genres)) if x)
+    meta = " · ".join(x for x in (af.origin_label(p), p.fmt, ", ".join(p.genres)) if x)
     verb = "aired" if p.airing_at <= int(time.time()) else "airs"
     lines = [head, f"**{af.episode_label(p)}** {verb} <t:{p.airing_at}:F> (<t:{p.airing_at}:R>)"]
     if meta:
@@ -56,15 +56,22 @@ class _FollowButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime
     async def callback(self, interaction: discord.Interaction):
         title = _title_from_message(interaction) or f"Anime {self.anime_id}"
         try:
-            state, n = await af.toggle_follow(interaction.user.id, self.anime_id, title)
+            clone = getattr(interaction.client, "clone_id", None) or 0
+            limit = await _plus_mod().follow_limit(interaction.user.id, interaction.guild.id if interaction.guild else None, clone)
+            state, n = await af.toggle_follow(interaction.user.id, self.anime_id, title, limit)
         except Exception:
             logger.exception("[anime-feed] follow toggle failed")
             await interaction.response.send_message(OOPS, ephemeral=True)
             return
-        text = {"followed": f"🔔 Following **{title}** ({n}/{af.FREE_FOLLOW_LIMIT}). I'll mention you when a new episode is posted.",
-                "unfollowed": f"🔕 Unfollowed **{title}** ({n}/{af.FREE_FOLLOW_LIMIT} left in your list).",
-                "limit": f"🚫 You already follow {n} anime, the free limit. Unfollow one first by tapping its Follow button again."}[state]
+        text = {"followed": f"🔔 Following **{title}** ({n}/{limit}). I'll mention you when a new episode is posted.",
+                "unfollowed": f"🔕 Unfollowed **{title}** ({n}/{limit} in your list).",
+                "limit": f"🚫 You already follow {n} anime, your limit. Unfollow one first by tapping its Follow button again." + (f" Tap **Upgrade** to follow up to {_plus_mod().PLUS_FOLLOW_LIMIT}." if limit < _plus_mod().PLUS_FOLLOW_LIMIT else "")}[state]
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+def _plus_mod():
+    from modules import anime_plus
+    return anime_plus
 
 
 def _title_from_message(interaction: discord.Interaction) -> Optional[str]:
@@ -91,30 +98,130 @@ def _walk(components):
             yield acc
 
 
-DYNAMIC_ITEMS = (_FollowButton,)
+class _MoreButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime_more:(\d+)$"):
+    """Read more: the full synopsis and details of this anime, shown only to the person who tapped (nothing is posted in the
+    channel). Anyone can use it. Everything it needs is in the custom_id (the AniList id), so it works on any old card after a
+    restart."""
+
+    COOLDOWN = 3.0
+
+    def __init__(self, anime_id: int):
+        self.anime_id = int(anime_id)
+        super().__init__(discord.ui.Button(label="Read more", style=discord.ButtonStyle.primary, emoji="📖",
+                                           custom_id=f"anime_more:{self.anime_id}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        wait = af.cooldown_left(interaction.user.id, "more", self.COOLDOWN)
+        if wait > 0:
+            await interaction.response.send_message(f"⏳ One moment, try again in {int(wait) + 1}s.", ephemeral=True)
+            return
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)      # answer inside Discord's 3 seconds first
+            detail, ok = await af.get_detail(self.anime_id)
+            await interaction.followup.send(view=detail_view(detail, ok, self.anime_id), ephemeral=True,
+                                            allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            logger.exception("[anime-feed] read more failed")
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(OOPS, ephemeral=True)
+                else:
+                    await interaction.response.send_message(OOPS, ephemeral=True)
+            except discord.HTTPException:
+                pass
 
 
-def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping: str = "") -> discord.ui.Container:
+def detail_text(d: af.Detail) -> str:
+    meta = " · ".join(x for x in (ORIGIN_NAME.get(d.origin, ""), d.fmt, d.status, f"{d.episodes} episodes" if d.episodes else "") if x)
+    lines = [f"## {d.title}"]
+    if d.native and d.native != d.title:
+        lines.append(f"-# {d.native}")
+    if meta:
+        lines.append(meta)
+    if d.genres:
+        lines.append(", ".join(d.genres))
+    if d.next_episode and d.next_at:
+        lines.append(f"**Episode {d.next_episode}** airs <t:{d.next_at}:F> (<t:{d.next_at}:R>)")
+    lines += ["", d.synopsis or "_No synopsis available._", "", f"-# Source: {af.SOURCE_NAME}"]
+    return "\n".join(lines)[:3990]
+
+
+ORIGIN_NAME = af.ORIGIN_LABELS
+
+
+def detail_view(d: Optional[af.Detail], ok: bool, anime_id: int) -> discord.ui.LayoutView:
+    """The private Read more panel. Never raises; says plainly when AniList is unreachable or the title is unavailable."""
+    view = discord.ui.LayoutView(timeout=None)
     box = discord.ui.Container(accent_colour=ACCENT)
+    if d is None:
+        box.add_item(discord.ui.TextDisplay("😿 I can't reach AniList right now. Try again in a few minutes." if not ok
+                                            else "🚫 There are no details to show for this title."))
+        box.add_item(discord.ui.ActionRow(discord.ui.Button(label="Open on AniList", style=discord.ButtonStyle.link,
+                                                            url=f"https://anilist.co/anime/{int(anime_id)}")))
+    else:
+        box.add_item(discord.ui.TextDisplay(detail_text(d)))
+        box.add_item(discord.ui.ActionRow(discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=d.url),
+                                          _FollowButton(d.anime_id)))
+    view.add_item(box)
+    return view
+
+
+def _actions():
+    """The panel buttons live in _views_anime_actions (which imports this module), so they are loaded lazily."""
+    from discord_bot.cogs import _views_anime_actions as aa
+    return aa
+
+
+def _browse():
+    from discord_bot.cogs import _views_anime_browse as ab
+    return ab
+
+
+def _plus():
+    from discord_bot.cogs import _views_anime_plus as ap
+    return ap
+
+
+def _all_dynamic_items():
+    return (_FollowButton, _MoreButton) + tuple(_actions().ACTION_ITEMS) + tuple(_browse().BROWSE_ITEMS) + tuple(_plus().PLUS_ITEMS)
+
+
+def __getattr__(name: str):
+    """`DYNAMIC_ITEMS` (every persistent anime item, registered at startup) is built on first use, which avoids an import cycle."""
+    if name == "DYNAMIC_ITEMS":
+        return _all_dynamic_items()
+    raise AttributeError(name)
+
+
+def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping: str = "", dm: bool = False) -> discord.ui.Container:
+    box = discord.ui.Container(accent_colour=discord.Color(p.color) if p.color else ACCENT)
     if ping:
         box.add_item(discord.ui.TextDisplay(ping[:500]))
-    text = card_text(p, tag=tag)
-    if p.cover:
-        section = discord.ui.Section(accessory=discord.ui.Thumbnail(p.cover))
-        section.add_item(text)
-        box.add_item(section)
-    else:
-        box.add_item(discord.ui.TextDisplay(text))
-    box.add_item(discord.ui.ActionRow(discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url),
-                                      _FollowButton(p.anime_id)))
+    if p.image:                         # ONE big full-width picture (banner, else the big cover); a missing image never blocks a post
+        gallery = discord.ui.MediaGallery()
+        gallery.add_item(media=p.image, description=p.title[:200])
+        box.add_item(gallery)
+    box.add_item(discord.ui.TextDisplay(card_text(p, tag=tag)))
+    aa = _actions()
+    link = discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url)
+    if dm:                              # a DM alert: Mute is the one-tap way out
+        box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), aa._MuteButton(p.anime_id), aa._AlertButton(p.anime_id), link))
+    else:                               # row 1: this anime; row 2: find more
+        ab = _browse()
+        box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id), aa._AlertButton(p.anime_id), _plus()._UpgradeButton()))
+        box.add_item(discord.ui.ActionRow(ab._SearchButton(), ab._CategoriesButton(), link))
     for row in extra_rows:
         box.add_item(row)
     return box
 
 
-def post_view(p: af.Preview, *, tag: Optional[str] = None, ping: str = "") -> discord.ui.LayoutView:
+def post_view(p: af.Preview, *, tag: Optional[str] = None, ping: str = "", dm: bool = False) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
-    view.add_item(build_card(p, tag=tag, ping=ping))
+    view.add_item(build_card(p, tag=tag, ping=ping, dm=dm))
     return view
 
 
@@ -132,6 +239,9 @@ def _info_box(text: str, rows=()) -> discord.ui.Container:
     return box
 
 
+KIND_LABELS = {"both": "Anime and donghua", "anime": "Anime only", "donghua": "Donghua only (Chinese animation)"}
+
+
 def setup_text(cfg: af.FeedConfig, note: Optional[str] = None) -> str:
     parts = [note, ""] if note else []
     parts += ["## 🎌 Anime releases",
@@ -139,6 +249,7 @@ def setup_text(cfg: af.FeedConfig, note: Optional[str] = None) -> str:
               "times, shown in each reader's own timezone. Adult titles are never shown.", "",
               f"**Channel:** {f'<#{cfg.channel_id}>' if cfg.channel_id else 'not picked yet'}",
               f"**Ping role:** {f'<@&{cfg.ping_role_id}>' if cfg.ping_role_id else 'none (optional)'}",
+              f"**Posts:** {KIND_LABELS[af.clean_kinds(cfg.content_kinds)]}",
               f"**Feed:** {'ON' if cfg.enabled and cfg.channel_id else 'OFF'}",
               "-# People who tap Follow on an anime get mentioned when its next episode is posted. New episodes are posted when they air. Only episodes that air after you turn the feed on are posted, never a backlog."]
     return "\n".join(parts)
@@ -176,7 +287,10 @@ class AnimeSetupView(discord.ui.LayoutView):
         role = discord.ui.RoleSelect(placeholder="Optional: a role to ping on every new episode", min_values=0, max_values=1)
         role.callback = self._on_role
         ready = bool(self.cfg.channel_id)
-        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(role), discord.ui.ActionRow(
+        kinds = discord.ui.Select(placeholder="What to post", min_values=1, max_values=1, options=[
+            discord.SelectOption(label=KIND_LABELS[k], value=k, default=(k == af.clean_kinds(self.cfg.content_kinds))) for k in af.KINDS])
+        kinds.callback = self._on_kinds
+        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(role), discord.ui.ActionRow(kinds), discord.ui.ActionRow(
             _btn("Preview", self._on_preview, discord.ButtonStyle.primary, "👀"),
             _btn("Post a test", self._on_test, emoji="🧪", disabled=not ready),
             _btn("Turn off" if self.cfg.enabled else "Turn on", self._on_toggle,
@@ -236,10 +350,21 @@ class AnimeSetupView(discord.ui.LayoutView):
                 self.note = OOPS
         await self._push(interaction)
 
+    async def _on_kinds(self, interaction: discord.Interaction):
+        values = interaction.data.get("values") or []
+        self.cfg.content_kinds = af.clean_kinds(values[0] if values else None)
+        try:
+            await af.save_config(self.cfg, interaction.user.id)
+            self.note = f"✅ This server's feed now posts: {KIND_LABELS[self.cfg.content_kinds]}."
+        except Exception:
+            logger.exception("[anime-feed] couldn't save the content kinds")
+            self.note = OOPS
+        await self._push(interaction)
+
     async def _on_preview(self, interaction: discord.Interaction):
         await interaction.response.defer()
         items, ok = await af.airing_soon()
-        items = af.upcoming(items, int(time.time()))
+        items = af.for_preview(af.filter_kinds(items, self.cfg.content_kinds), int(time.time()))
         self.previews, self.index, self.screen = items, 0, "preview"
         self.note = None if ok else "😿 I can't reach AniList right now, so there's nothing to preview. Try again in a few minutes."
         await self._push(interaction)
@@ -263,6 +388,7 @@ class AnimeSetupView(discord.ui.LayoutView):
         await interaction.response.defer()
         channel = self.guild.get_channel(self.cfg.channel_id) if self.cfg.channel_id else None
         items, ok = await af.airing_soon()
+        items = af.filter_kinds(items, self.cfg.content_kinds)
         items = af.upcoming(items, int(time.time())) or items
         if channel is None:
             self.note = "🚫 That channel is gone. Pick another."
