@@ -148,7 +148,7 @@ class Worker:
         posted = 0
         for cfg in guilds:
             since = cfg.enabled_at.timestamp() if cfg.enabled_at else None
-            for p in due(items, now, since):
+            for p in due(af.filter_kinds(items, cfg.content_kinds), now, since):
                 if posted >= MAX_POSTS_PER_CYCLE:
                     break
                 if await self._post(cfg, p):

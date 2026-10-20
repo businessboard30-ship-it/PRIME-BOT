@@ -27,13 +27,15 @@ CACHE_TTL = 15 * 60
 WINDOW_HOURS = 48
 LOOKBACK_HOURS = 3                  # episodes that aired in the last 3 hours are still "just aired"; older ones are never posted
 MAX_ITEMS = 12                      # most titles a PREVIEW browser shows
+MAX_PAGES = 3                       # AniList pages read per refresh, so donghua are not crowded out of one page of a busy day
 MAX_FETCH = 50                      # most airings kept from the provider (AniList's page limit); the worker posts from all of these
 SYNOPSIS_CHARS = 280
 SOURCE_NAME = "AniList"
 
 _QUERY = """
-query ($from: Int, $to: Int, $perPage: Int) {
-  Page(page: 1, perPage: $perPage) {
+query ($from: Int, $to: Int, $perPage: Int, $page: Int) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo { hasNextPage }
     airingSchedules(airingAt_greater: $from, airingAt_lesser: $to, sort: TIME) {
       airingAt
       episode
@@ -157,11 +159,43 @@ def for_preview(items: List[Preview], now: int) -> List[Preview]:
 
 # ── provider (cached, shared across servers) ────────────────────────────
 
+def has_next_page(payload) -> bool:
+    try:
+        return bool(payload["data"]["Page"]["pageInfo"]["hasNextPage"])
+    except (KeyError, TypeError):
+        return False
+
+
+# What a server's feed posts. 'both' is the default (donghua ON, including for servers that already used the feed).
+KINDS = ("both", "anime", "donghua")
+DEFAULT_KINDS = "both"
+DONGHUA_ORIGIN = "CN"
+
+
+def clean_kinds(raw) -> str:
+    return raw if raw in KINDS else DEFAULT_KINDS
+
+
+def kind_allows(kinds: str, origin: str) -> bool:
+    """True when a feed set to `kinds` posts a title from this country of origin. Unknown origin counts as anime."""
+    kinds = clean_kinds(kinds)
+    is_donghua = (origin or "").upper() == DONGHUA_ORIGIN
+    if kinds == "donghua":
+        return is_donghua
+    if kinds == "anime":
+        return not is_donghua
+    return True
+
+
+def filter_kinds(items: List["Preview"], kinds: str) -> List["Preview"]:
+    return [p for p in items if kind_allows(kinds, p.origin)]
+
+
 _cache: Tuple[float, List[Preview]] = (0.0, [])
 _lock: Optional[asyncio.Lock] = None
 
 
-async def _fetch(now: int) -> Optional[dict]:
+async def _fetch(now: int, page: int = 1) -> Optional[dict]:
     from anime_service import get_session
     from config import ANILIST_ENDPOINT
     from modules.anime_feed_limiter import anilist
@@ -169,7 +203,7 @@ async def _fetch(now: int) -> Optional[dict]:
         logger.warning("[anime-feed] AniList budget used up for this minute")
         return None
     session = await get_session()
-    body = {"query": _QUERY, "variables": {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": MAX_FETCH}}
+    body = {"query": _QUERY, "variables": {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": MAX_FETCH, "page": page}}
     async with session.post(ANILIST_ENDPOINT, json=body) as resp:
         if resp.status != 200:
             logger.warning("[anime-feed] AniList answered %s", resp.status)
@@ -198,6 +232,19 @@ async def airing_soon() -> Tuple[List[Preview], bool]:
         if payload is None:
             return (list(items), True) if items else ([], False)      # an old list beats nothing
         parsed = parse_airing(payload)
+        page = 1
+        while has_next_page(payload) and page < MAX_PAGES:
+            page += 1
+            try:
+                more = await _fetch(int(time.time()), page)
+            except Exception:
+                logger.debug("[anime-feed] couldn't read page %s", page, exc_info=True)
+                break
+            if more is None:
+                break                                               # keep what page 1 gave us; a thinner list beats none
+            payload = more
+            seen = {(p.anime_id, p.episode) for p in parsed}
+            parsed += [p for p in parse_airing(more) if (p.anime_id, p.episode) not in seen]
         _cache = (time.time(), parsed)
         return list(parsed), True
 
@@ -316,6 +363,7 @@ class FeedConfig:
     channel_id: Optional[int] = None
     enabled_at: Optional[datetime] = None
     ping_role_id: Optional[int] = None
+    content_kinds: str = DEFAULT_KINDS      # 'both' | 'anime' | 'donghua'
 
 
 def _key(clone_id) -> int:
@@ -331,7 +379,7 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at, ping_role_id FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
+            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at, ping_role_id, content_kinds FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
                                       int(guild_id), _key(clone_id))
     except Exception:
         logger.exception("[anime-feed] couldn't read the setup for guild %s", guild_id)
@@ -339,16 +387,24 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
     return _cfg(guild_id, clone_id, row) if row else FeedConfig(guild_id, clone_id)
 
 
+def _opt(row, key):
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
 def _cfg(guild_id, clone_id, row) -> FeedConfig:
     return FeedConfig(int(guild_id), clone_id, bool(row["enabled"]), int(row["channel_id"]) if row["channel_id"] else None, row["enabled_at"],
-                      int(row["ping_role_id"]) if row["ping_role_id"] else None)
+                      int(row["ping_role_id"]) if row["ping_role_id"] else None,
+                      clean_kinds(_opt(row, "content_kinds")))
 
 
 async def enabled_guilds(clone_id=None) -> List[FeedConfig]:
     """Every server of this bot with the feed on and a channel picked. Raises on database errors (the worker backs off)."""
     pool = await _pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at, ping_role_id FROM anime_feed_config "
+        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at, ping_role_id, content_kinds FROM anime_feed_config "
                                 "WHERE clone_key = $1 AND enabled AND channel_id IS NOT NULL", _key(clone_id))
     return [_cfg(r["guild_id"], clone_id, r) for r in rows]
 
@@ -384,12 +440,12 @@ async def save_config(cfg: FeedConfig, updated_by: Optional[int] = None) -> None
     pool = await _pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at, ping_role_id) "
-            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END, $6) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
+            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at, ping_role_id, content_kinds) "
+            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END, $6, $7) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
             "enabled = EXCLUDED.enabled, channel_id = EXCLUDED.channel_id, updated_by = EXCLUDED.updated_by, updated_at = NOW(), "
-            "ping_role_id = EXCLUDED.ping_role_id, "
+            "ping_role_id = EXCLUDED.ping_role_id, content_kinds = EXCLUDED.content_kinds, "
             "enabled_at = CASE WHEN NOT EXCLUDED.enabled THEN NULL WHEN anime_feed_config.enabled THEN anime_feed_config.enabled_at ELSE NOW() END",
-            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by, cfg.ping_role_id)
+            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by, cfg.ping_role_id, clean_kinds(cfg.content_kinds))
     try:
         from modules import anime_feed_worker
         anime_feed_worker.wake_all()
