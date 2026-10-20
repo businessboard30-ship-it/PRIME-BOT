@@ -104,7 +104,13 @@ class Worker:
         if wait_ready:
             await wait_ready()
         while True:
-            wait = await self.cycle()
+            try:
+                wait = await self.cycle()
+            except asyncio.CancelledError:
+                raise
+            except Exception:                             # never let one bad pass kill the shared worker: back off and go on
+                logger.exception("[anime-feed] cycle crashed")
+                wait = self._fail("a pass crashed")
             if wait is None:                              # nobody has the feed on: wait for an event, no timer, no polling
                 self._set(STOPPED)
                 await self._wake.wait()

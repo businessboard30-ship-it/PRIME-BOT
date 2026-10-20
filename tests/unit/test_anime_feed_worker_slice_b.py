@@ -183,3 +183,24 @@ def test_wiring_and_migration():
     assert "anime_feed_posted" in sql and "PRIMARY KEY (guild_id, clone_key, anime_id, episode)" in sql and "DROP" not in sql.upper()
     assert "071_anime_feed_posting.sql" in (ROOT / "database.py").read_text()
     assert "wake_all" in (ROOT / "modules/anime_feed.py").read_text()
+
+
+def test_a_crashing_cycle_backs_off_instead_of_killing_the_worker():
+    async def go():
+        w = aw.Worker(SimpleNamespace())
+        calls = []
+
+        async def cycle():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("db down while fetching followers")
+            raise asyncio.CancelledError()
+
+        w.cycle = cycle
+        w._wake.set()                                        # skip the real sleep after the first (crashed) pass
+        with pytest.raises(asyncio.CancelledError):
+            await w.run()
+        return calls, w
+    calls, w = run(go())
+    assert len(calls) == 2                                   # it survived the crash and ran another pass
+    assert w.failures == 1 and w.state == aw.BACKOFF
