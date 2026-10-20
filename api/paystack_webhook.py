@@ -358,6 +358,30 @@ class handler(BaseHTTPRequestHandler):
                     logger.warning(f"[v0] image_search_unlock payment {reference} confirmed but no matching pending row found")
                     await record_failure("paystack", "no_matching_row", reference, "image_search_unlock: paid but no pending row to complete")
 
+            elif payment_type == 'anime_plus':
+                # Anime feed personal upgrade (discord_bot/cogs/_views_anime_plus.py). Completes the pending row and grants/extends the
+                # entitlement in one transaction, so a restart between paying and tapping "I've paid" never loses it, and the webhook
+                # plus the Verify tap together add the days only once. Best-effort DM (no gateway connection in this process).
+                from modules import anime_plus
+                completed = await anime_plus.complete_payment(reference)
+                if completed:
+                    logger.info(f"[v0] anime_plus payment {reference} confirmed — user_id={completed['user_id']} clone_id={completed['clone_id']}")
+                    from discord_bot.dm_send import dm_user
+                    from config import DISCORD_BOT_TOKEN
+                    bot_token = DISCORD_BOT_TOKEN
+                    if completed['clone_id']:
+                        clone = await db.get_discord_clone(int(completed['clone_id']))
+                        if clone:
+                            from utils.crypto import secret_manager
+                            bot_token = secret_manager.decrypt(clone['bot_token_encrypted'])
+                    if bot_token:
+                        until = completed['expires_at']
+                        stamp = f"<t:{int(until.timestamp())}:D>" if until else "soon"
+                        if not await dm_user(int(completed['user_id']), f"✅ Payment confirmed. Your anime upgrade is active until {stamp}.", bot_token):
+                            logger.warning(f"[v0] Could not DM anime_plus confirmation to user {completed['user_id']} — the upgrade is active regardless")
+                else:
+                    logger.warning(f"[v0] anime_plus payment {reference} confirmed but no matching pending row found (already completed, or unknown)")
+
         except Exception as e:
             logger.error(f"[v0] Error processing payment {reference}: {e}")
             await record_failure("paystack", "handler_error", reference,

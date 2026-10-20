@@ -70,7 +70,7 @@ def test_card_buttons_read_more_follow_and_link_and_fit_the_limits():
     kids = list(vf.post_view(P(banner="https://b"), ping="<@&5> <@1>").walk_children())
     buttons = [getattr(k, "item", k) for k in kids if isinstance(k, (discord.ui.Button, discord.ui.DynamicItem))]   # DynamicItem wraps a Button
     labels = [b.label for b in buttons]
-    assert labels == ["Read more", "Follow", "Alert me", "Search", "Categories", "Details on AniList"]
+    assert labels == ["Read more", "Follow", "Alert me", "Upgrade", "Search", "Categories", "Details on AniList"]
     assert len(kids) <= 40
 
 
@@ -79,7 +79,7 @@ def test_card_buttons_read_more_follow_and_link_and_fit_the_limits():
 def test_every_dynamic_button_on_a_card_is_registered_and_rebuilds_from_its_custom_id_alone():
     kids = list(vf.post_view(P(anime_id=42, banner="https://b")).walk_children())
     ids = [k.custom_id for k in kids if isinstance(k, discord.ui.DynamicItem)]
-    assert set(ids) == {"anime_more:42", "anime_follow:42", "anime_alert:42", "anime_search", "anime_cats"} and all(len(i) <= 100 for i in ids)
+    assert set(ids) == {"anime_more:42", "anime_follow:42", "anime_alert:42", "anime_plus", "anime_search", "anime_cats"} and all(len(i) <= 100 for i in ids)
     for cid in ids:                                                   # a restart: only the custom_id string is left
         classes = [c for c in vf.DYNAMIC_ITEMS if re.match(c.__discord_ui_compiled_template__, cid)]
         assert len(classes) == 1 and classes[0] in jd.DYNAMIC_ITEMS   # exactly one handler, and the bot registers it

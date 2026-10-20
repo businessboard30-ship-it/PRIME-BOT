@@ -56,15 +56,22 @@ class _FollowButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime
     async def callback(self, interaction: discord.Interaction):
         title = _title_from_message(interaction) or f"Anime {self.anime_id}"
         try:
-            state, n = await af.toggle_follow(interaction.user.id, self.anime_id, title)
+            clone = getattr(interaction.client, "clone_id", None) or 0
+            limit = await _plus_mod().follow_limit(interaction.user.id, interaction.guild.id if interaction.guild else None, clone)
+            state, n = await af.toggle_follow(interaction.user.id, self.anime_id, title, limit)
         except Exception:
             logger.exception("[anime-feed] follow toggle failed")
             await interaction.response.send_message(OOPS, ephemeral=True)
             return
-        text = {"followed": f"🔔 Following **{title}** ({n}/{af.FREE_FOLLOW_LIMIT}). I'll mention you when a new episode is posted.",
-                "unfollowed": f"🔕 Unfollowed **{title}** ({n}/{af.FREE_FOLLOW_LIMIT} left in your list).",
-                "limit": f"🚫 You already follow {n} anime, the free limit. Unfollow one first by tapping its Follow button again."}[state]
+        text = {"followed": f"🔔 Following **{title}** ({n}/{limit}). I'll mention you when a new episode is posted.",
+                "unfollowed": f"🔕 Unfollowed **{title}** ({n}/{limit} in your list).",
+                "limit": f"🚫 You already follow {n} anime, your limit. Unfollow one first by tapping its Follow button again." + (f" Tap **Upgrade** to follow up to {_plus_mod().PLUS_FOLLOW_LIMIT}." if limit < _plus_mod().PLUS_FOLLOW_LIMIT else "")}[state]
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+def _plus_mod():
+    from modules import anime_plus
+    return anime_plus
 
 
 def _title_from_message(interaction: discord.Interaction) -> Optional[str]:
@@ -174,8 +181,13 @@ def _browse():
     return ab
 
 
+def _plus():
+    from discord_bot.cogs import _views_anime_plus as ap
+    return ap
+
+
 def _all_dynamic_items():
-    return (_FollowButton, _MoreButton) + tuple(_actions().ACTION_ITEMS) + tuple(_browse().BROWSE_ITEMS)
+    return (_FollowButton, _MoreButton) + tuple(_actions().ACTION_ITEMS) + tuple(_browse().BROWSE_ITEMS) + tuple(_plus().PLUS_ITEMS)
 
 
 def __getattr__(name: str):
@@ -198,9 +210,9 @@ def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping:
     link = discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url)
     if dm:                              # a DM alert: Mute is the one-tap way out
         box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), aa._MuteButton(p.anime_id), aa._AlertButton(p.anime_id), link))
-    else:                               # row 1: this anime; row 2: find more (Upgrade joins row 1 with the upgrade slice)
+    else:                               # row 1: this anime; row 2: find more
         ab = _browse()
-        box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id), aa._AlertButton(p.anime_id)))
+        box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id), aa._AlertButton(p.anime_id), _plus()._UpgradeButton()))
         box.add_item(discord.ui.ActionRow(ab._SearchButton(), ab._CategoriesButton(), link))
     for row in extra_rows:
         box.add_item(row)

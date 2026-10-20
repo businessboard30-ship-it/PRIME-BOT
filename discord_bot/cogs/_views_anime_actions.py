@@ -16,6 +16,7 @@ import discord
 
 from modules import anime_feed as af
 from modules import anime_feed_alerts as alerts
+from modules import anime_plus as plus
 from discord_bot.cogs._views_anime_feed import ACCENT, OOPS, _title_from_message, _walk
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,12 @@ NO_PINGS = discord.AllowedMentions.none()
 MODE_TEXT = {"mention": "Mention me in the server", "dm": "DM me", "off": "Mute this anime"}
 MODE_EMOJI = {"mention": "🔔", "dm": "📩", "off": "🔕"}
 PANEL_COOLDOWN = 2.0
+LOCKED_DM = "🔒 DM alerts are part of the upgrade. Tap **Upgrade** on the card to unlock them (premium servers have them for everyone)."
+LOCKED_QUIET = "🔒 Quiet hours are part of the upgrade. Tap **Upgrade** on the card to unlock them (premium servers have them for everyone)."
+
+
+async def _plus_state(interaction: discord.Interaction) -> bool:
+    return await plus.has_anime_plus(interaction.user.id, interaction.guild.id if interaction.guild else None, getattr(interaction.client, "clone_id", None) or 0)
 
 
 async def _answer_error(interaction: discord.Interaction) -> None:
@@ -108,10 +115,16 @@ class _ModeSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"^anime_a
         try:
             await interaction.response.defer()
             title = _panel_title(interaction) or f"Anime {self.anime_id}"
-            state, n = await alerts.set_mode(interaction.user.id, self.anime_id, title, mode, af.FREE_FOLLOW_LIMIT)
+            has_plus = await _plus_state(interaction)
+            if mode == "dm" and not has_plus:                          # DM alerts are an exclusive feature: nothing is changed
+                current = await alerts.get_mode(interaction.user.id, self.anime_id)
+                view = alert_panel(self.anime_id, title, current, await alerts.get_prefs(interaction.user.id), LOCKED_DM)
+                await interaction.edit_original_response(view=view, allowed_mentions=NO_PINGS)
+                return
+            state, n = await alerts.set_mode(interaction.user.id, self.anime_id, title, mode, plus.PLUS_FOLLOW_LIMIT if has_plus else plus.FREE_FOLLOW_LIMIT)
             if state == "limit":
                 current = await alerts.get_mode(interaction.user.id, self.anime_id)
-                note = f"🚫 You already follow {n} anime, the free limit. Unfollow one first (tap its Follow button again)."
+                note = f"🚫 You already follow {n} anime, your limit. Unfollow one first (tap its Follow button again)." + ("" if has_plus else " Tap **Upgrade** to follow up to 50.")
                 view = alert_panel(self.anime_id, title, current, await alerts.get_prefs(interaction.user.id), note)
             else:
                 view = alert_panel(self.anime_id, title, mode, await alerts.get_prefs(interaction.user.id), f"✅ {MODE_EMOJI[mode]} {MODE_TEXT[mode]}.")
@@ -158,13 +171,17 @@ class _QuietSelect(discord.ui.DynamicItem[discord.ui.Select], template=r"^anime_
         if key not in alerts.QUIET_PRESETS:
             await interaction.response.send_message("🚫 That choice isn't available.", ephemeral=True)
             return
+        if key != "off" and not await _plus_state(interaction):          # quiet hours are an exclusive feature; turning them OFF is always allowed
+            await _save_pref(interaction, self.anime_id, None, LOCKED_QUIET)
+            return
         await _save_pref(interaction, self.anime_id, lambda uid: alerts.set_quiet(uid, key), "✅ Quiet hours off." if key == "off" else "✅ Quiet hours saved.")
 
 
 async def _save_pref(interaction: discord.Interaction, anime_id: int, save, note: str) -> None:
     try:
         await interaction.response.defer()
-        await save(interaction.user.id)
+        if save is not None:
+            await save(interaction.user.id)
         title = _panel_title(interaction) or f"Anime {anime_id}"
         view = alert_panel(anime_id, title, await alerts.get_mode(interaction.user.id, anime_id), await alerts.get_prefs(interaction.user.id), note)
         await interaction.edit_original_response(view=view, allowed_mentions=NO_PINGS)

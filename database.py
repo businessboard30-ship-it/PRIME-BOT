@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "124"
+SCHEMA_VERSION = "125"
+# "124" -> "125" adds 076_anime_plus.sql (anime_plus_entitlements + anime_plus_payments, CREATE TABLE IF NOT EXISTS only).
 # "123" -> "124" adds 075_anime_feed_kinds.sql (anime_feed_config.content_kinds TEXT NOT NULL DEFAULT 'both'). ADD COLUMN IF NOT EXISTS only.
 # "122" -> "123" adds 074_anime_alerts.sql (anime_follows.alert_mode + partial index, anime_user_prefs, anime_alerts_sent). ADD COLUMN / CREATE TABLE IF NOT EXISTS only.
 # "121" -> "122" adds 073_verification_pro.sql (8 nullable ADD COLUMN IF NOT EXISTS on discord_verification_config: panel look, log channel, auto-kick, min account age, welcome text) + a partial index. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5846,6 +5847,11 @@ class Database:
         anime_kinds_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "075_anime_feed_kinds.sql"
         if anime_kinds_migration.exists():
             await conn.execute(anime_kinds_migration.read_text())
+
+        # Anime feed D5: personal upgrade entitlements + checkout rows. Additive/idempotent.
+        anime_plus_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "076_anime_plus.sql"
+        if anime_plus_migration.exists():
+            await conn.execute(anime_plus_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"

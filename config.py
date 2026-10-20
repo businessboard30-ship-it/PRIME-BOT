@@ -736,6 +736,7 @@ PRICE_REGISTRY = {
     "image_search_unlock": {"label": "Image search source-link unlock",           "default": 10},
     "premium_group_fee":   {"label": "Premium group join fee",                    "default": 20},
     "utility_sub_fee":     {"label": "AI Chat + Download subscription (2 months)", "default": 25},
+    "anime_plus":          {"label": "Anime feed personal upgrade (per month)",   "default": 5},   # PLACEHOLDER price: the owner sets the real one here (or per clone)
 }
 
 # --- Real clone-bot system (Part 3 of the master brief) ---------------------

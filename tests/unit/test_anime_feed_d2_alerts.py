@@ -12,6 +12,7 @@ from discord_bot.cogs import _views_anime_feed as vf
 from discord_bot.cogs import _views_join_dm as jd
 from modules import anime_feed as af
 from modules import anime_feed_alerts as al
+from modules import anime_plus as plus
 from modules import anime_feed_limiter as lim
 from modules import anime_feed_worker as aw
 
@@ -89,7 +90,7 @@ def test_every_new_item_is_registered_and_rebuilds_from_its_custom_id_alone():
 def test_dm_card_swaps_follow_for_mute_and_both_cards_fit_the_limits():
     server = [getattr(k, "item", k).label for k in vf.post_view(P()).walk_children() if isinstance(getattr(k, "item", k), discord.ui.Button)]
     dm = [getattr(k, "item", k).label for k in vf.post_view(P(), dm=True).walk_children() if isinstance(getattr(k, "item", k), discord.ui.Button)]
-    assert server == ["Read more", "Follow", "Alert me", "Search", "Categories", "Details on AniList"]
+    assert server == ["Read more", "Follow", "Alert me", "Upgrade", "Search", "Categories", "Details on AniList"]
     assert dm == ["Read more", "Mute", "Alert me", "Details on AniList"]
     assert len(list(vf.post_view(P(), ping="<@1>").walk_children())) <= 40
 
@@ -125,8 +126,16 @@ def test_mode_select_defers_first_follows_when_needed_and_respects_the_free_limi
     monkeypatch.setattr(al, "get_prefs", get_prefs)
     edits = []
 
+    state = {"plus": False}
+
+    async def has_plus(uid, gid=None, clone=None):
+        return state["plus"]
+    monkeypatch.setattr(plus, "has_anime_plus", has_plus)
+
     class I:
         user = SimpleNamespace(id=9)
+        guild = None
+        client = SimpleNamespace(clone_id=0)
         response = Resp()
         message = SimpleNamespace(components=[SimpleNamespace(content="## 🔔 Alerts: My Show", children=None)])
 
@@ -139,13 +148,17 @@ def test_mode_select_defers_first_follows_when_needed_and_respects_the_free_limi
     i = I("off")
     run(item.callback(i))
     assert i.response.deferred == 1 and calls == [(9, 42, "My Show", "off", af.FREE_FOLLOW_LIMIT)] and len(edits) == 1
-    i2 = I("dm")
+    i2 = I("dm")                                                      # DM alerts are exclusive: without the upgrade nothing changes
     run(item.callback(i2))
     text = " ".join(getattr(k, "content", "") or "" for k in edits[-1]["view"].walk_children())
-    assert "free limit" in text
+    assert "Upgrade" in text and len(calls) == 1
+    state["plus"] = True                                              # with the upgrade the limit is the bigger one
+    run(item.callback(I("dm")))
+    text = " ".join(getattr(k, "content", "") or "" for k in edits[-1]["view"].walk_children())
+    assert "your limit" in text and calls[-1] == (9, 42, "My Show", "dm", plus.PLUS_FOLLOW_LIMIT)
     i3 = I("hack")
     run(item.callback(i3))
-    assert i3.response.sent and calls[-1][3] == "dm"                                # an unknown value never reaches the database
+    assert i3.response.sent and calls[-1][3] == "dm" and len(calls) == 2           # an unknown value never reaches the database
 
 
 # -- worker: DM queue, dedupe, quiet hours, lifecycle -----------------------------------------

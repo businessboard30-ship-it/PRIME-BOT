@@ -130,13 +130,18 @@ def test_every_card_has_a_follow_button_with_a_valid_persistent_id_and_still_fit
 def test_follow_button_replies_privately_with_the_count_and_the_limit_message(monkeypatch):
     sent = []
 
-    async def toggle(user_id, anime_id, title):
+    async def toggle(user_id, anime_id, title, limit=5):
         return "limit", 5
+
+    async def free(user_id, guild_id=None, clone_id=None):
+        return 5
+    from modules import anime_plus
+    monkeypatch.setattr(anime_plus, "follow_limit", free)
     monkeypatch.setattr(af, "toggle_follow", toggle)
-    inter = SimpleNamespace(user=SimpleNamespace(id=7), message=None,
+    inter = SimpleNamespace(user=SimpleNamespace(id=7), message=None, guild=None, client=SimpleNamespace(clone_id=0),
                             response=SimpleNamespace(send_message=AsyncMock(side_effect=lambda *a, **k: sent.append((a, k)))))
     run(vf._FollowButton(42).callback(inter))
-    assert sent and sent[0][1]["ephemeral"] is True and "free limit" in sent[0][0][0]
+    assert sent and sent[0][1]["ephemeral"] is True and "your limit" in sent[0][0][0] and "Upgrade" in sent[0][0][0]
 
 
 def test_title_is_read_from_the_card_heading_and_survives_odd_messages():
