@@ -39,6 +39,7 @@ CLAIM_KEY = "gumguild:{reference}"
 _MAX_OPTIONS = 25  # Discord select-menu limit
 
 _PRODUCT_LABELS = {
+    "anime_plus": "Anime Feed Upgrade (monthly)",
     "welcome_card_pack": "Welcome Card Pack",
     "ultra_welcome_pack": "Customize Card",
     "custom_role": "Custom Role",

@@ -256,11 +256,12 @@ DISCORD_CLONE_FREE_EVERY_NTH = 3
 # config.DISCOVER_CAP_TIERS. No more hardcoded GHS here.
 WELCOME_CARD_PACK_FEE_USD = 2
 
-# Anime feed personal upgrade: price in USD per 30 days (USD base like the packs above; Stripe charges USD directly, Paystack
-# is converted at checkout). PLACEHOLDER: change this one number to set the real price.
-ANIME_PLUS_FEE_USD = 3
-ANIME_PLUS_PRODUCT_NAME = "Anime Feed Upgrade"
-ANIME_PLUS_PRODUCT_DESCRIPTION = "30 days: follow up to 50 anime, DM alerts and quiet hours, in any server."
+# Anime feed personal upgrade: a monthly SUBSCRIPTION (product "anime_plus" in modules/user_subs.py). Price in USD per month; Paystack
+# (Ghana) converts it to GHS at checkout, Gumroad (everyone else) is a membership. Price confirmed by the owner at $3/month (override with
+# ANIME_PLUS_FEE_USD); the Paystack plan and the Gumroad membership are created from it (see paystack_autocreate / gumroad_autocreate).
+ANIME_PLUS_FEE_USD = float(os.getenv("ANIME_PLUS_FEE_USD", "3"))
+ANIME_PLUS_PRODUCT_NAME = "Anime Feed Upgrade - Monthly"
+ANIME_PLUS_PRODUCT_DESCRIPTION = "Follow up to 50 anime, DM alerts and quiet hours, in any server. Renews monthly, cancel any time."
 
 # Ultra pack: on top of the premium card pack's fixed artist themes above,
 # this unlocks /welcome custombg — a guild can point the welcome card's
@@ -352,6 +353,7 @@ GUMROAD_PRODUCT_LINKS = {
     "level_pass": os.getenv("GUMROAD_LEVEL_PASS_LINK", ""),
     "dev_monthly": os.getenv("GUMROAD_DEV_MONTHLY_LINK", ""),
     "dev_yearly": os.getenv("GUMROAD_DEV_YEARLY_LINK", ""),
+    "anime_plus": os.getenv("GUMROAD_ANIME_PLUS_LINK", ""),
 }
 GUMROAD_PRODUCT_IDS = {
     "welcome_card_pack": "dE2cyP0dOzPPAqn2wZerqw==",
@@ -376,6 +378,7 @@ GUMROAD_PRODUCT_IDS = {
     "level_pass": os.getenv("GUMROAD_LEVEL_PASS_ID", ""),
     "dev_monthly": os.getenv("GUMROAD_DEV_MONTHLY_ID", ""),
     "dev_yearly": os.getenv("GUMROAD_DEV_YEARLY_ID", ""),
+    "anime_plus": os.getenv("GUMROAD_ANIME_PLUS_ID", ""),
 }
 # Paystack recurring plan codes (PLN_...) for the per-user plans, created in the Paystack dashboard.
 # Empty = the Ghana checkout for that plan is unavailable (fails closed, never a one-off charge).
@@ -383,6 +386,7 @@ USER_PLAN_PAYSTACK_CODES = {
     "card_plan": os.getenv("PAYSTACK_PLAN_CARD_PLAN", "").strip(),
     "dev_monthly": os.getenv("PAYSTACK_PLAN_DEV_MONTHLY", "").strip(),
     "dev_yearly": os.getenv("PAYSTACK_PLAN_DEV_YEARLY", "").strip(),
+    "anime_plus": os.getenv("PAYSTACK_PLAN_ANIME_PLUS", "").strip(),
 }
 
 # Minimum price for a sponsored ad placement (1 week). Advertisers can name

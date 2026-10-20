@@ -67,6 +67,7 @@ def test_a_broken_check_grants_nothing(monkeypatch):
     async def boom(*a, **k):
         raise RuntimeError("db down")
     monkeypatch.setattr(plus, "_pool", boom)
+    monkeypatch.setattr(plus, "_subscription_row", boom)
     assert run(plus.personal_expiry(5, 0)) is None and plus._cache == {}          # fail safe, and the failure is not cached
     from modules import antiraid_pro
 
@@ -132,22 +133,33 @@ def test_webhook_and_verify_together_add_the_days_once(monkeypatch):
 def test_upgrade_text_covers_each_case_and_lists_only_what_exists():
     from discord_bot.cogs import _views_anime_plus as v
     none = v.upgrade_text("none", None, "$3 USD", False)
-    assert "$3 USD" in none and "DM alerts" in none and "Quiet hours" in none and "50" in none and "never makes a server premium" in none
+    assert "$3 USD" in none and "per month" in none and "cancel any time" in none.lower()
+    assert "DM alerts" in none and "Quiet hours" in none and "50" in none and "never makes a server premium" in none
     server = v.upgrade_text("server", None, "$3 USD", False)
     assert "This server is premium" in server and "Nothing to buy" in server
-    personal = v.upgrade_text("personal", FUTURE, "$3 USD", True)
-    assert "active until <t:" in personal and "I've paid" in personal
+    active = v.upgrade_text("personal", FUTURE, "$3 USD", False, "active")
+    assert "subscribed" in active and "renews on <t:" in active
+    cancelled = v.upgrade_text("personal", FUTURE, "$3 USD", False, "cancelled")
+    assert "ends on <t:" in cancelled and "will not renew" in cancelled
+    due = v.upgrade_text("personal", FUTURE, "$3 USD", False, "past_due")
+    assert "renewal payment failed" in due
+    legacy = v.upgrade_text("personal", FUTURE, "$3 USD", True, "legacy")
+    assert "active until <t:" in legacy and "I've paid" in legacy
 
 
 def _buttons(view):
     return [getattr(k, "item", k) for k in view.walk_children() if isinstance(k, (discord.ui.Button, discord.ui.DynamicItem))]
 
 
-def test_server_premium_card_has_no_pay_button_and_free_card_does():
+def test_only_people_who_can_still_subscribe_see_the_subscribe_button():
     from discord_bot.cogs import _views_anime_plus as v
-    assert [b.label for b in _buttons(v.upgrade_view("server", None, "$3 USD", False))] == []
-    assert [b.label for b in _buttons(v.upgrade_view("none", None, "$3 USD", False))] == ["Upgrade"]
-    assert [b.label for b in _buttons(v.upgrade_view("personal", FUTURE, "$3 USD", True))] == ["Add more days", "I've paid"]
+    labels = lambda *a: [b.label for b in _buttons(v.upgrade_view(*a))]
+    assert labels("server", None, "$3 USD", False) == []                                  # premium server: nothing to buy
+    assert labels("none", None, "$3 USD", False) == ["Subscribe"]
+    assert labels("personal", FUTURE, "$3 USD", False, "active") == []                   # a live subscription is never sold twice
+    assert labels("personal", FUTURE, "$3 USD", False, "cancelled") == ["Subscribe again"]
+    assert labels("personal", FUTURE, "$3 USD", False, "past_due") == ["Subscribe again"]
+    assert labels("personal", FUTURE, "$3 USD", True, "legacy") == ["Subscribe again", "I've paid"]
 
 
 def test_upgrade_buttons_are_persistent_registered_and_rebuild_from_the_custom_id_alone():
@@ -235,31 +247,199 @@ def v_price():
     return v._price_text()
 
 
-def test_the_payment_is_checked_automatically_and_completed_once(monkeypatch):
+def test_the_watcher_dms_once_when_the_subscription_goes_live(monkeypatch):
     from discord_bot.cogs import _views_anime_plus as v
-    import payments
     monkeypatch.setattr(v, "WATCH_EVERY", 0)
-    states, completes, dms = ["pending", "pending"], [], []
+    states, dms = ["none", "none", "active"], []
 
-    async def status(ref):
-        return states.pop(0) if states else "completed"
-
-    async def complete(ref):
-        completes.append(ref)
-        return {"user_id": 1}
+    async def state(uid, clone=None, fresh=False):
+        assert fresh is True                                                          # it must bypass the 30 s cache
+        return states.pop(0)
 
     async def expiry(uid, clone=None):
         return FUTURE
-
-    async def gw(clone, provider, platform=None):
-        return SimpleNamespace(verify_payment=lambda ref, api_key=None: {"status": "success" if completes == [] and len(states) == 0 else "pending"}), "k"
-    monkeypatch.setattr(plus, "payment_status", status)
-    monkeypatch.setattr(plus, "complete_payment", complete)
+    monkeypatch.setattr(plus, "personal_state", state)
     monkeypatch.setattr(plus, "personal_expiry", expiry)
-    monkeypatch.setattr(payments, "resolve_gateway_for_provider", gw)
 
     async def send(text):
         dms.append(text)
-    user = SimpleNamespace(id=1, send=send)
-    run(v._watch(user, "refA", "stripe", 0))
-    assert completes == ["refA"] and len(dms) == 1 and "active until" in dms[0]
+    run(v._watch(SimpleNamespace(id=1, send=send), 0))
+    assert len(dms) == 1 and "renews on" in dms[0] and states == []
+
+
+# -- the subscription itself -----------------------------------------------------------------
+
+def _sub(status, delta_days):
+    return {"status": status, "expires_at": datetime.now(timezone.utc) + timedelta(days=delta_days)}
+
+
+def _personal(monkeypatch, sub=None, legacy=None):
+    _reset()
+
+    async def row(uid):
+        return sub
+
+    async def old(uid, clone):
+        return legacy
+    monkeypatch.setattr(plus, "_subscription_row", row)
+    monkeypatch.setattr(plus, "_legacy_expiry", old)
+
+
+def test_an_active_subscription_unlocks_and_a_cancelled_one_keeps_access_to_the_period_end(monkeypatch):
+    _personal(monkeypatch, sub=_sub("active", 20))
+    exp, st = run(plus._personal(1, 0))
+    assert st == "active" and exp is not None
+    _personal(monkeypatch, sub=_sub("cancelled", 5))
+    assert run(plus._personal(1, 0))[1] == "cancelled" and run(plus.personal_expiry(1, 0)) is not None
+
+
+def test_a_failed_renewal_has_a_short_grace_then_nothing(monkeypatch):
+    _personal(monkeypatch, sub=_sub("past_due", -1))                                     # inside the 3-day grace
+    assert run(plus._personal(1, 0))[1] == "past_due"
+    _personal(monkeypatch, sub=_sub("past_due", -10))
+    assert run(plus._personal(1, 0)) == (None, "none")
+    _personal(monkeypatch, sub=_sub("expired", -1))
+    assert run(plus._personal(1, 0)) == (None, "none")
+    _personal(monkeypatch, sub=_sub("active", -1))                                       # an active row past its date never grants
+    assert run(plus._personal(1, 0)) == (None, "none")
+
+
+def test_days_bought_before_the_subscription_are_still_honoured_and_the_later_date_wins(monkeypatch):
+    legacy = datetime.now(timezone.utc) + timedelta(days=8)
+    _personal(monkeypatch, legacy=legacy)
+    assert run(plus._personal(1, 0)) == (legacy, "legacy")
+    sub = _sub("active", 20)
+    _personal(monkeypatch, sub=sub, legacy=legacy)
+    exp, st = run(plus._personal(1, 0))
+    assert exp == sub["expires_at"] and st == "active"
+
+
+def test_one_side_failing_never_grants_and_is_not_cached(monkeypatch):
+    _reset()
+
+    async def boom(*a, **k):
+        raise RuntimeError("down")
+
+    async def old(uid, clone):
+        return None
+    monkeypatch.setattr(plus, "_subscription_row", boom)
+    monkeypatch.setattr(plus, "_legacy_expiry", old)
+    assert run(plus._personal(1, 0)) == (None, "none") and plus._cache == {}
+
+
+def test_subscribing_is_refused_when_already_subscribed(monkeypatch):
+    from discord_bot.cogs import _views_anime_plus as v
+    patch_state(monkeypatch, expiry=FUTURE)
+    sent = []
+
+    async def state(uid, clone=None, fresh=False):
+        return "active"
+    monkeypatch.setattr(plus, "personal_state", state)
+
+    async def send(*a, **k):
+        sent.append(a)
+
+    async def defer(**k):
+        pass
+    import payments_manual
+    called = []
+
+    async def geo(*a, **k):
+        called.append(k)
+    monkeypatch.setattr(payments_manual, "start_geo_payment", geo)
+    inter = SimpleNamespace(user=SimpleNamespace(id=3), guild=SimpleNamespace(id=9), client=SimpleNamespace(clone_id=0),
+                            response=SimpleNamespace(defer=defer, is_done=lambda: True), followup=SimpleNamespace(send=send))
+    run(v._PayButton().callback(inter))
+    assert sent and "already subscribed" in sent[0][0] and called == []
+
+
+def test_subscribe_starts_the_shared_recurring_checkout_at_the_config_price(monkeypatch):
+    from discord_bot.cogs import _views_anime_plus as v
+    import config, payments_manual
+    patch_state(monkeypatch)
+
+    async def state(uid, clone=None, fresh=False):
+        return "none"
+    monkeypatch.setattr(plus, "personal_state", state)
+    monkeypatch.setattr(v, "_start_watch", lambda *a, **k: None)
+    called = []
+
+    async def geo(interaction, **k):
+        called.append(k)
+    monkeypatch.setattr(payments_manual, "start_geo_payment", geo)
+
+    async def defer(**k):
+        pass
+    inter = SimpleNamespace(user=SimpleNamespace(id=3), guild=SimpleNamespace(id=9), client=SimpleNamespace(clone_id=0),
+                            response=SimpleNamespace(defer=defer, is_done=lambda: True), followup=SimpleNamespace(send=None))
+    run(v._PayButton().callback(inter))
+    assert len(called) == 1 and called[0]["payment_type"] == "anime_plus" and called[0]["price_usd"] == config.ANIME_PLUS_FEE_USD
+    assert "month" in called[0]["amount_display"]
+
+
+def test_anime_plus_is_registered_everywhere_a_recurring_plan_must_be():
+    import config, gumroad_autocreate as ga, paystack_autocreate as pa, payments_manual as pm
+    from modules import entitlements as ent, user_subs
+    assert user_subs.is_plan("anime_plus") and user_subs.price_usd("anime_plus") == float(config.ANIME_PLUS_FEE_USD) and user_subs.PLANS["anime_plus"]["period_days"] >= 30
+    assert "anime_plus" in ent.PRODUCTS and "anime_plus" in pa.PLAN_SPECS and pa.PLAN_SPECS["anime_plus"]["interval"] == "monthly"
+    assert ga.PRODUCTS["anime_plus"]["kind"] == "membership"
+    assert "anime_plus" in config.USER_PLAN_PAYSTACK_CODES and "anime_plus" in pm.UNLOCK_HANDLERS
+    assert "anime_plus" in config.GUMROAD_PRODUCT_LINKS and "anime_plus" in config.GUMROAD_PRODUCT_IDS
+    # the webhook routes a paid anime_plus charge to the shared per-user plan handler, not a bespoke grant
+    from modules import paystack_user_plans as pup
+    assert pup._product({"metadata": {"type": "anime_plus"}}) == "anime_plus"
+
+
+def test_full_subscription_lifecycle_through_the_shared_paystack_handler(monkeypatch):
+    """charge -> renewal -> cancel (keeps access) -> failed renewal -> ended, each read back through the anime check."""
+    import paystack_autocreate
+    from modules import paystack_user_plans as psp
+    from tests.unit.test_user_billing import FakeDB
+
+    class DB(FakeDB):
+        def __init__(self):
+            super().__init__()
+            self.pay = {"ref1": {"provider": "paystack", "user_id": 77, "payment_type": "anime_plus", "status": "pending"}}
+
+        async def get_payment_by_reference(self, ref):
+            return self.pay.get(ref)
+
+        async def mark_payment_paid(self, ref):
+            self.pay[ref]["status"] = "completed"
+
+    async def noop(*a, **k):
+        return None
+    monkeypatch.setattr(paystack_autocreate, "load_runtime", noop)
+    db = DB()
+
+    async def row(uid):
+        return db.rows.get((str(uid), "anime_plus"))
+
+    async def old(uid, clone):
+        return None
+    monkeypatch.setattr(plus, "_subscription_row", row)
+    monkeypatch.setattr(plus, "_legacy_expiry", old)
+    meta = {"type": "anime_plus", "user_id": "77"}
+
+    def handle(event, data):
+        return run(psp.handle(db, event, data, now=datetime.now(timezone.utc)))      # the real clock: access checks use it too
+
+    def state():
+        _reset()
+        return run(plus._personal(77, 0))[1]
+
+    assert state() == "none"
+    assert handle("charge.success", {"status": "success", "reference": "ref1", "id": 1, "metadata": meta}) == "applied"
+    assert state() == "active" and db.pay["ref1"]["status"] == "completed"
+    # a renewal later: no pending row, but the entitlement exists, so it extends from the later date (never loses paid time)
+    before = db.rows[("77", "anime_plus")]["expires_at"]
+    assert handle("charge.success", {"status": "success", "reference": "renew1", "id": 2, "metadata": meta}) == "applied"
+    assert db.rows[("77", "anime_plus")]["expires_at"] > before
+    # a renewal for someone who never bought is ignored, it can never create access
+    other = {"status": "success", "reference": "x", "id": 9, "metadata": {"type": "anime_plus", "user_id": "99"}}
+    assert handle("charge.success", other) == "ignored" and ("99", "anime_plus") not in db.rows
+    # the person cancels: access runs to the end of the period
+    assert handle("subscription.not_renew", {"metadata": meta, "subscription_code": "SUB_1", "next_payment_date": "d"}) == "applied"
+    assert db.rows[("77", "anime_plus")]["status"] == "cancelled"
+    _reset()
+    assert run(plus._personal(77, 0))[1] == "cancelled" and run(plus.personal_expiry(77, 0)) is not None

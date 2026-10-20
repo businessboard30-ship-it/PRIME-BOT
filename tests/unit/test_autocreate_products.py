@@ -45,7 +45,7 @@ def test_gumroad_adopts_old_names_and_never_creates_memberships():
     assert "PRIME-BOT Premium - Yearly" in ga.PRODUCTS["premium_yearly"]["legacy"]
     assert {p: s["kind"] for p, s in ga.PRODUCTS.items() if s["kind"] == "membership"} == {
         "card_plan": "membership", "dev_monthly": "membership", "dev_yearly": "membership",
-        "premium_plus": "membership"}
+        "premium_plus": "membership", "anime_plus": "membership"}
     assert ga._cents("dev_yearly") == 3000 and ga._cents("card_plan") == 200 and ga._cents("premium_yearly") == round(config.PREMIUM_YEARLY_FEE_USD * 100)
 
 
@@ -63,7 +63,7 @@ def test_paystack_creates_missing_plans_and_saves_codes(pdb, monkeypatch):
     assert {p["name"] for p in posts} == {s["name"] for s in pa.PLAN_SPECS.values()}
     assert all(p["currency"] == "GHS" and p["amount"] == 1234 for p in posts)
     assert {p["interval"] for p in posts} == {"monthly", "annually"}
-    assert set(pdb.s) >= {"paystack_plan:card_plan", "paystack_plan:dev_monthly", "paystack_plan:dev_yearly"}
+    assert set(pdb.s) >= {"paystack_plan:card_plan", "paystack_plan:dev_monthly", "paystack_plan:dev_yearly", "paystack_plan:anime_plus"}
     assert pa.plan_code_for("dev_yearly") and pa.code_to_product()[pa.plan_code_for("card_plan")] == "card_plan"
 
 
@@ -91,7 +91,7 @@ def test_paystack_refusal_dms_the_owner_once_and_fails_closed(pdb, monkeypatch):
     monkeypatch.setattr(pa, "_request", lambda m, p, payload=None: {"status": True, "data": []} if m == "GET" else {"status": False, "message": "nope"})
     assert asyncio.run(pa.ensure_plans()) is False
     assert asyncio.run(pa.ensure_plans()) is False
-    assert len(sent) == 3 and all("prime" not in m.lower() for m in sent)      # once per plan, not once per pass
+    assert len(sent) == 4 and all("prime" not in m.lower() for m in sent)      # once per plan, not once per pass
     assert pa.plan_code_for("card_plan") == ""
 
 

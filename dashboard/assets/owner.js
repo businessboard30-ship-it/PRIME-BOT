@@ -857,7 +857,7 @@
   }
 
   /* ---------- Visitors (owner only: names and ids of people who used the dashboard) ---------- */
-  var PLAN_LABEL = { card_plan: "Card plan", dev_monthly: "Developer", dev_yearly: "Developer" };
+  var PLAN_LABEL = { card_plan: "Card plan", dev_monthly: "Developer", dev_yearly: "Developer", anime_plus: "Anime upgrade" };
   function visitorsPage() {
     var out = h("div", null), days = 14; shell("visitors", out);
     function draw() {

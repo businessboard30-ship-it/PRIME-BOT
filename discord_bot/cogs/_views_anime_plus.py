@@ -3,8 +3,10 @@
 """
 Anime feed D5: the Upgrade button on every card and its private (ephemeral) card. Persistent DynamicItems: all state is in the
 database (the person's latest payment row), nothing in memory, so Upgrade / Pay / Verify keep working on any old card after a restart.
-A premium SERVER needs no upgrade (everything is already on); otherwise a person can buy a personal monthly upgrade that never makes
-the server premium. The payment is completed by the webhook (api/paystack_webhook.py, case 'anime_plus') or by the Verify tap.
+A premium SERVER needs no upgrade (everything is already on); otherwise a person can subscribe to a personal monthly upgrade that never
+makes the server premium. It is a real SUBSCRIPTION on the shared per-user plan system (modules/user_subs.py, product "anime_plus"):
+Ghana pays through a recurring Paystack plan, everyone else through a Gumroad membership, and the existing webhooks create, renew,
+cancel and end it. Nothing here grants access; only those webhooks do.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ import asyncio
 import logging
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 import discord
 
@@ -38,30 +40,42 @@ def _stamp(dt: Optional[datetime]) -> str:
     return f"<t:{int(dt.timestamp())}:D>" if dt else "soon"
 
 
-def upgrade_text(state: str, expires: Optional[datetime], price_text: str, pending: bool) -> str:
+def upgrade_text(state: str, expires: Optional[datetime], price_text: str, pending: bool, plan_state: str = "active") -> str:
     feats = "\n".join(f"• {f}" for f in plus.FEATURES)
     if state == "server":
         body = "✅ **This server is premium**, so everything below is already on for you. Nothing to buy."
         if expires:
             body += f"\n-# Your own personal upgrade (active until {_stamp(expires)}) also works in servers that are not premium."
     elif state == "personal":
-        body = f"✅ **Your upgrade is active until {_stamp(expires)}.** Pay again to add {plus.PLUS_DAYS} more days."
+        if plan_state == "cancelled":
+            body = f"✅ **Your upgrade ends on {_stamp(expires)}** and will not renew. Subscribe again to keep it."
+        elif plan_state == "past_due":
+            body = f"⚠️ **Your last renewal payment failed.** Your upgrade runs until {_stamp(expires)} unless the payment goes through. Subscribe again to fix it."
+        elif plan_state == "legacy":
+            body = f"✅ **Your upgrade is active until {_stamp(expires)}** (a one-time payment). Subscribe to keep it going after that."
+        else:
+            body = f"✅ **You're subscribed.** Your upgrade renews on {_stamp(expires)}. Cancel any time and keep it to the end of the period."
     else:
-        body = f"Unlock more for yourself, in any server: **{price_text}** for {plus.PLUS_DAYS} days."
+        body = f"Unlock more for yourself, in any server: **{price_text} per month**. Renews monthly, cancel any time."
     parts = ["## ⭐ Anime upgrade", body, "", "**What you get**", feats, "",
              "-# It's personal: it never makes a server premium. Premium servers unlock all of this for everyone in them."]
     if pending:
-        parts.append("-# You have a checkout waiting. Paid already? Tap **I've paid** to check.")
+        parts.append("-# You have an older checkout waiting. Paid already? Tap **I've paid** to check.")
     return "\n".join(parts)
 
 
-def upgrade_view(state: str, expires: Optional[datetime], price_text: str, pending: bool) -> discord.ui.LayoutView:
+def can_subscribe(state: str, plan_state: str) -> bool:
+    """A premium server needs nothing, and a live subscription must never be paid for twice."""
+    return state != "server" and not (state == "personal" and plan_state == "active")
+
+
+def upgrade_view(state: str, expires: Optional[datetime], price_text: str, pending: bool, plan_state: str = "active") -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
     box = discord.ui.Container(accent_colour=ACCENT)
-    box.add_item(discord.ui.TextDisplay(upgrade_text(state, expires, price_text, pending)[:3900]))
+    box.add_item(discord.ui.TextDisplay(upgrade_text(state, expires, price_text, pending, plan_state)[:3900]))
     buttons = []
-    if state != "server":
-        buttons.append(_PayButton("Add more days" if state == "personal" else "Upgrade"))
+    if can_subscribe(state, plan_state):
+        buttons.append(_PayButton("Subscribe again" if state == "personal" else "Subscribe"))
     if pending:
         buttons.append(_VerifyButton())
     if buttons:
@@ -75,48 +89,39 @@ def _price_text() -> str:
     return f"${config.ANIME_PLUS_FEE_USD:g} USD"
 
 
-_watchers: set = set()                                                   # strong references so a watcher is not garbage collected
+_watchers: Dict[int, "asyncio.Task"] = {}                              # one per person, strong references so a watcher is not garbage collected
 WATCH_EVERY = 15
 WATCH_FOR = 15 * 60
 
 
-async def _watch(user: discord.abc.User, reference: str, provider: str, clone: int) -> None:
-    """Checks the payment by itself every 15 s for 15 minutes, so nobody has to tap anything. Whoever completes it first (this
-    watcher, the webhook, or the person's 'I've paid' tap) wins; the days are added once. If the bot restarts mid-wait, the webhook
-    (or the 'I've paid' button) still completes it."""
+async def _watch(user: discord.abc.User, clone: int) -> None:
+    """Waits (15 s steps, 15 minutes) for the subscription to go live, then DMs once. It only READS the entitlement; the webhook (or the
+    Verify button on the payment card) is what creates it. If the bot restarts mid-wait nothing is lost, the upgrade is still granted."""
     try:
-        from payments import resolve_gateway_for_provider
         waited = 0
         while waited < WATCH_FOR:
             await asyncio.sleep(WATCH_EVERY)
             waited += WATCH_EVERY
-            status = await plus.payment_status(reference)
-            if status is None:
-                return
-            done = status == "completed"
-            if not done:
-                gateway, api_key = await resolve_gateway_for_provider(clone, provider, platform="discord")
-                result = await asyncio.to_thread(gateway.verify_payment, reference, api_key=api_key)
-                if (result or {}).get("status") != "success":
-                    continue
-                done = bool(await plus.complete_payment(reference)) or True
-            if done:
+            if await plus.personal_state(user.id, clone, fresh=True) == "active":
                 expires = await plus.personal_expiry(user.id, clone)
                 try:
-                    await user.send(f"✅ Payment confirmed. Your anime upgrade is active until {_stamp(expires)}.")
+                    await user.send(f"✅ You're subscribed. Your anime upgrade is active and renews on {_stamp(expires)}.")
                 except discord.HTTPException:
                     pass                                              # closed DMs: the upgrade is active regardless
                 return
     except asyncio.CancelledError:
         raise
     except Exception:
-        logger.warning("[anime-plus] payment watcher stopped", exc_info=True)
+        logger.warning("[anime-plus] subscription watcher stopped", exc_info=True)
 
 
-def _start_watch(user, reference: str, provider: str, clone: int) -> None:
-    task = asyncio.create_task(_watch(user, reference, provider, clone))
-    _watchers.add(task)
-    task.add_done_callback(_watchers.discard)
+def _start_watch(user, clone: int) -> None:
+    old = _watchers.pop(user.id, None)
+    if old and not old.done():
+        old.cancel()
+    task = asyncio.create_task(_watch(user, clone))
+    _watchers[user.id] = task
+    task.add_done_callback(lambda t, uid=user.id: _watchers.pop(uid, None) if _watchers.get(uid) is t else None)
 
 
 async def _pending(user_id: int, clone_id: int) -> bool:
@@ -150,7 +155,8 @@ class _UpgradeButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anim
             await interaction.response.defer(ephemeral=True)
             clone = _clone_of(interaction)
             state, expires = await plus.status(interaction.user.id, _gid(interaction), clone)
-            view = upgrade_view(state, expires, _price_text(), await _pending(interaction.user.id, clone))
+            plan_state = await plus.personal_state(interaction.user.id, clone)
+            view = upgrade_view(state, expires, _price_text(), await _pending(interaction.user.id, clone), plan_state)
             await interaction.followup.send(view=view, ephemeral=True, allowed_mentions=NO_PINGS)
         except Exception:
             logger.exception("[anime-plus] upgrade card failed")
@@ -158,7 +164,10 @@ class _UpgradeButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anim
 
 
 class _PayButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime_plus_pay$"):
-    def __init__(self, label: str = "Upgrade"):
+    """Starts the monthly subscription checkout through the shared recurring flow (payments_manual.start_geo_payment): Paystack plan for
+    Ghana, Gumroad membership elsewhere. The price comes from config via modules/user_subs.py, never from the click."""
+
+    def __init__(self, label: str = "Subscribe"):
         super().__init__(discord.ui.Button(label=label, style=discord.ButtonStyle.success, emoji="💳", custom_id="anime_plus_pay"))
 
     @classmethod
@@ -170,38 +179,23 @@ class _PayButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime_pl
             await interaction.response.defer(ephemeral=True)
             clone = _clone_of(interaction)
             state, _ = await plus.status(interaction.user.id, _gid(interaction), clone)
+            plan_state = await plus.personal_state(interaction.user.id, clone, fresh=True)
             if state == "server":                                           # never charge someone who already has it for free
                 await interaction.followup.send("✅ This server is premium, so you already have everything. Nothing to buy.", ephemeral=True)
                 return
-            import config
-            import utils.currency as fx
-            from payments import resolve_gateway
-            price_usd = float(config.ANIME_PLUS_FEE_USD)
-            gateway, api_key, provider = await resolve_gateway(clone, platform="discord")
-            if provider == "stripe":                                       # base price is USD: no conversion for Stripe
-                minor, currency = round(price_usd * 100), "usd"
-            else:                                                          # Paystack account settles in GHS: convert from the USD price
-                minor, currency = fx.usd_to_minor_units(price_usd, "GHS")
-            result = await asyncio.to_thread(
-                gateway.initialize_payment, f"user_{interaction.user.id}@animebot.com", minor, interaction.user.id,
-                f"AnimePlus_{interaction.user.id}", payment_type="anime_plus",
-                extra_metadata={"clone_id": clone, "provider": "discord", "product": config.ANIME_PLUS_PRODUCT_NAME,
-                                "description": config.ANIME_PLUS_PRODUCT_DESCRIPTION},
-                api_key=api_key, currency=currency)
-            if not result or result.get("status") != "success":
-                logger.error("[anime-plus] payment init failed for user %s provider=%r result=%r", interaction.user.id, provider, result)
-                await interaction.followup.send("❌ Couldn't start checkout right now. Try again shortly.", ephemeral=True)
+            if not can_subscribe(state, plan_state):                        # never charge twice for a live subscription
+                await interaction.followup.send("✅ You're already subscribed. Nothing more to pay.", ephemeral=True)
                 return
-            await plus.start_payment(interaction.user.id, clone, result.get("reference"), provider)    # persisted BEFORE the link is shown
-            shown = (f"${price_usd:g} USD" if currency.upper() == "USD"
-                     else f"{minor / fx.MINOR_UNIT_MULTIPLIER.get(currency, 100):.2f} {currency.upper()} (about ${price_usd:g} USD)")
-            _start_watch(interaction.user, result.get("reference"), provider, clone)
-            view = discord.ui.LayoutView(timeout=None)
-            box = discord.ui.Container(accent_colour=ACCENT)
-            box.add_item(discord.ui.TextDisplay(f"## 💳 {config.ANIME_PLUS_PRODUCT_NAME}\n{config.ANIME_PLUS_PRODUCT_DESCRIPTION}\n\nPay **{shown}**. I check the payment by myself and DM you when it's confirmed (or tap **I've paid**).\n[Complete payment]({result.get('authorization_url')})"))
-            box.add_item(discord.ui.ActionRow(_VerifyButton()))
-            view.add_item(box)
-            await interaction.followup.send(view=view, ephemeral=True, allowed_mentions=NO_PINGS)
+            import config
+            from modules import user_subs
+            from payments_manual import start_geo_payment
+            price_usd = user_subs.price_usd("anime_plus")
+            _start_watch(interaction.user, clone)
+            await start_geo_payment(
+                interaction, payment_type="anime_plus", price_usd=price_usd,
+                product_title=f"💳 {config.ANIME_PLUS_PRODUCT_NAME}",
+                product_description=config.ANIME_PLUS_PRODUCT_DESCRIPTION,
+                amount_display=f"${price_usd:g} USD / month")
         except Exception:
             logger.exception("[anime-plus] checkout failed")
             await _fail(interaction)
@@ -222,18 +216,18 @@ class _VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime
             await interaction.response.defer(ephemeral=True)
             clone = _clone_of(interaction)
             row = await plus.latest_payment(interaction.user.id, clone)
-            if not row:
-                await interaction.followup.send("I can't find a checkout for you. Tap **Upgrade** on a card to start one.", ephemeral=True)
-                return
-            if row["status"] == "pending":
+            if row and row["status"] == "pending":                           # an older one-off checkout still waiting: check it as before
                 from payments import resolve_gateway_for_provider
                 gateway, api_key = await resolve_gateway_for_provider(clone, row.get("provider"), platform="discord")
                 result = await asyncio.to_thread(gateway.verify_payment, row["payment_reference"], api_key=api_key)
-                if result.get("status") != "success":
-                    await interaction.followup.send("Payment not confirmed yet. Complete payment, then tap **I've paid** again.", ephemeral=True)
-                    return
-                await plus.complete_payment(row["payment_reference"])       # None means the webhook got there first: same result
+                if result.get("status") == "success":
+                    await plus.complete_payment(row["payment_reference"])     # None means the webhook got there first: same result
+            plus.forget(interaction.user.id, clone)
+            state = await plus.personal_state(interaction.user.id, clone, fresh=True)
             expires = await plus.personal_expiry(interaction.user.id, clone)
+            if state == "none":
+                await interaction.followup.send("Not confirmed yet. Finish the payment, then tap **Verify** on the payment card (or this button) again.", ephemeral=True)
+                return
             await interaction.followup.send(f"✅ Your anime upgrade is active until {_stamp(expires)}.", ephemeral=True, allowed_mentions=NO_PINGS)
         except Exception:
             logger.exception("[anime-plus] verify failed")
