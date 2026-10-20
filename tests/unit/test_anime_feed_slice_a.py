@@ -17,6 +17,14 @@ ROOT = Path(__file__).resolve().parents[2]
 def run(c):
     return asyncio.run(c)
 
+@pytest.fixture(autouse=True)
+def _no_donghua_network(monkeypatch):
+    """The donghua schedule is a second provider call; these tests stay offline."""
+    async def none():
+        return [], True
+    monkeypatch.setattr(af, "donghua_soon", none)
+
+
 
 def row(mid=1, ep=3, adult=False, title="Frieren", at=2_000_000_000, desc="<b>Hi</b><br>there (Source: X)", cover="https://s4.anilist.co/c.jpg"):
     return {"airingAt": at, "episode": ep, "media": {"id": mid, "siteUrl": f"https://anilist.co/anime/{mid}", "isAdult": adult, "format": "TV_SHORT",

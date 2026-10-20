@@ -357,6 +357,9 @@ def _info_box(text: str, rows=()) -> discord.ui.Container:
     return box
 
 
+KINDS_LABEL = {"anime": "Anime only", "donghua": "Donghua only", "both": "Anime and Donghua"}
+
+
 def setup_text(cfg: af.FeedConfig, note: Optional[str] = None) -> str:
     parts = [note, ""] if note else []
     parts += ["## 🎌 Anime releases",
@@ -364,6 +367,7 @@ def setup_text(cfg: af.FeedConfig, note: Optional[str] = None) -> str:
               "times, shown in each reader's own timezone. Adult titles are never shown.", "",
               f"**Channel:** {f'<#{cfg.channel_id}>' if cfg.channel_id else 'not picked yet'}",
               f"**Ping role:** {f'<@&{cfg.ping_role_id}>' if cfg.ping_role_id else 'none (optional)'}",
+              f"**Posts:** {KINDS_LABEL[af.normalize_kinds(cfg.content_kinds)]}",
               f"**Feed:** {'ON' if cfg.enabled and cfg.channel_id else 'OFF'}",
               "-# People who tap Follow on an anime get mentioned when its next episode is posted. New episodes are posted when they air. Only episodes that air after you turn the feed on are posted, never a backlog."]
     return "\n".join(parts)
@@ -400,8 +404,12 @@ class AnimeSetupView(discord.ui.LayoutView):
         sel.callback = self._on_channel
         role = discord.ui.RoleSelect(placeholder="Optional: a role to ping on every new episode", min_values=0, max_values=1)
         role.callback = self._on_role
+        kinds = discord.ui.Select(placeholder="What to post", min_values=1, max_values=1, options=[
+            discord.SelectOption(label=KINDS_LABEL[k], value=k, emoji={"anime": "🎴", "donghua": "🐉", "both": "🎎"}[k],
+                                 default=af.normalize_kinds(self.cfg.content_kinds) == k) for k in af.KINDS])
+        kinds.callback = self._on_kinds
         ready = bool(self.cfg.channel_id)
-        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(role), discord.ui.ActionRow(
+        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(role), discord.ui.ActionRow(kinds), discord.ui.ActionRow(
             _btn("Preview", self._on_preview, discord.ButtonStyle.primary, "👀"),
             _btn("Post a test", self._on_test, emoji="🧪", disabled=not ready),
             _btn("Turn off" if self.cfg.enabled else "Turn on", self._on_toggle,
@@ -461,10 +469,23 @@ class AnimeSetupView(discord.ui.LayoutView):
                 self.note = OOPS
         await self._push(interaction)
 
+    async def _on_kinds(self, interaction: discord.Interaction):
+        value = af.normalize_kinds((interaction.data.get("values") or ["both"])[0])
+        old = self.cfg.content_kinds
+        self.cfg.content_kinds = value
+        try:
+            await af.save_config(self.cfg, interaction.user.id)
+            self.note = f"✅ This server will get: {KINDS_LABEL[value]}."
+        except Exception:
+            logger.exception("[anime-feed] couldn't save the content kinds")
+            self.cfg.content_kinds = old
+            self.note = OOPS
+        await self._push(interaction)
+
     async def _on_preview(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        items, ok = await af.airing_soon()
-        items = af.for_preview(items, int(time.time()))
+        items, ok = await af.feed_items(af.wants(self.cfg.content_kinds, "CN"))
+        items = af.for_preview(af.for_kinds(items, self.cfg.content_kinds), int(time.time()))
         self.previews, self.index, self.screen = items, 0, "preview"
         self.note = None if ok else "😿 I can't reach AniList right now, so there's nothing to preview. Try again in a few minutes."
         await self._push(interaction)
@@ -487,7 +508,8 @@ class AnimeSetupView(discord.ui.LayoutView):
     async def _on_test(self, interaction: discord.Interaction):
         await interaction.response.defer()
         channel = self.guild.get_channel(self.cfg.channel_id) if self.cfg.channel_id else None
-        items, ok = await af.airing_soon()
+        items, ok = await af.feed_items(af.wants(self.cfg.content_kinds, "CN"))
+        items = af.for_kinds(items, self.cfg.content_kinds)
         items = af.upcoming(items, int(time.time())) or items
         if channel is None:
             self.note = "🚫 That channel is gone. Pick another."

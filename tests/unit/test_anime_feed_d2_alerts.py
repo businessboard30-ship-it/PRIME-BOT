@@ -17,6 +17,14 @@ from modules import anime_feed_worker as aw
 def run(c):
     return asyncio.run(c)
 
+@pytest.fixture(autouse=True)
+def _no_donghua_network(monkeypatch):
+    """The donghua schedule is a second provider call; these tests stay offline."""
+    async def none():
+        return [], True
+    monkeypatch.setattr(af, "donghua_soon", none)
+
+
 
 def P(i, ep=1, at=0, title="Show"):
     return af.Preview(i, title, ep, at, "syn", None, f"https://anilist.co/anime/{i}")

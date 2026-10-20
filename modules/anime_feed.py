@@ -33,9 +33,9 @@ SYNOPSIS_CHARS = 280
 SOURCE_NAME = "AniList"
 
 _QUERY = """
-query ($from: Int, $to: Int, $perPage: Int) {
+query ($from: Int, $to: Int, $perPage: Int, $ids: [Int]) {
   Page(page: 1, perPage: $perPage) {
-    airingSchedules(airingAt_greater: $from, airingAt_lesser: $to, sort: TIME) {
+    airingSchedules(airingAt_greater: $from, airingAt_lesser: $to, mediaId_in: $ids, sort: TIME) {
       airingAt
       episode
       media {
@@ -269,6 +269,108 @@ async def airing_soon() -> Tuple[List[Preview], bool]:
         return list(parsed), True
 
 
+# ── donghua (Chinese animation) ─────────────────────────────────────────
+# AniList's airing schedule can't be filtered by country, so donghua would be crowded out by the much larger Japanese schedule. Instead:
+# (1) the ids of the popular RELEASING Chinese titles are fetched and cached for an hour, (2) the schedule is asked for only those ids.
+# Coverage is whatever AniList has (partial, and it can lag Chinese platforms); nothing is scraped or invented.
+
+KINDS = ("anime", "donghua", "both")
+DONGHUA_IDS_TTL = 3600
+DONGHUA_IDS_MAX = 50
+_CN_IDS_QUERY = """
+query ($per: Int) {
+  Page(page: 1, perPage: $per) {
+    media(type: ANIME, isAdult: false, countryOfOrigin: CN, status: RELEASING, sort: POPULARITY_DESC) { id }
+  }
+}
+"""
+_cn_ids: "Tuple[float, Optional[List[int]]]" = (0.0, None)
+_cn_cache: "Tuple[float, Optional[List[Preview]]]" = (0.0, None)
+_cn_lock: Optional[asyncio.Lock] = None
+
+
+def normalize_kinds(value) -> str:
+    return value if value in KINDS else "both"
+
+
+def wants(kinds: str, origin: str) -> bool:
+    """Does a server set to `kinds` post a title from this origin? Donghua = Chinese origin; anime = everything else."""
+    cn = (origin or "").upper() == "CN"
+    k = normalize_kinds(kinds)
+    return k == "both" or (k == "donghua") == cn
+
+
+def for_kinds(items: List[Preview], kinds: str) -> List[Preview]:
+    return [p for p in items if wants(kinds, p.origin)]
+
+
+def merge(*lists: List[Preview]) -> List[Preview]:
+    """One list, soonest first, one entry per (title, episode)."""
+    seen, out = set(), []
+    for lst in lists:
+        for p in lst:
+            k = (p.anime_id, p.episode)
+            if k not in seen:
+                seen.add(k)
+                out.append(p)
+    return sorted(out, key=lambda p: p.airing_at)
+
+
+async def _donghua_ids() -> Optional[List[int]]:
+    global _cn_ids
+    stamp, ids = _cn_ids
+    if ids is not None and time.time() - stamp < DONGHUA_IDS_TTL:
+        return list(ids)
+    payload = await provider_post(_CN_IDS_QUERY, {"per": DONGHUA_IDS_MAX}, priority=True)
+    try:
+        found = [int(m["id"]) for m in payload["data"]["Page"]["media"] or [] if m and m.get("id")]
+    except (KeyError, TypeError, ValueError):
+        return list(ids) if ids is not None else None             # an old list beats nothing
+    _cn_ids = (time.time(), found)
+    return found
+
+
+async def donghua_soon() -> Tuple[List[Preview], bool]:
+    """Chinese titles that aired in the last 3 hours or air in the next 48. (items, ok) like `airing_soon`. Cached 15 minutes, shared."""
+    global _cn_cache, _cn_lock
+    if _cn_lock is None:
+        _cn_lock = asyncio.Lock()
+    stamp, items = _cn_cache
+    if items is not None and time.time() - stamp < CACHE_TTL:
+        return list(items), True
+    async with _cn_lock:
+        stamp, items = _cn_cache
+        if items is not None and time.time() - stamp < CACHE_TTL:
+            return list(items), True
+        ids = await _donghua_ids()
+        if ids is None:
+            return (list(items), True) if items is not None else ([], False)
+        if not ids:
+            _cn_cache = (time.time(), [])
+            return [], True
+        now = int(time.time())
+        payload = await provider_post(_QUERY, {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": MAX_FETCH, "ids": ids}, priority=True)
+        if payload is None:
+            return (list(items), True) if items is not None else ([], False)
+        parsed = parse_airing(payload)
+        _cn_cache = (time.time(), parsed)
+        return list(parsed), True
+
+
+async def feed_items(include_donghua: bool = True) -> Tuple[List[Preview], bool]:
+    """Everything the feed may post, merged: the general schedule plus (when wanted) the donghua schedule. ok=False only when the main
+    schedule is unreachable; a missing donghua list never blocks anime."""
+    items, ok = await airing_soon()
+    if not ok:
+        return [], False
+    if include_donghua:
+        cn, cn_ok = await donghua_soon()
+        if cn_ok:
+            return merge(items, cn), True
+        logger.info("[anime-feed] donghua schedule unavailable this pass")
+    return list(items), True
+
+
 # ── full details for "Read more" (one title, cached, bounded) ───────────
 
 DETAIL_TTL = 6 * 3600
@@ -386,6 +488,7 @@ class FeedConfig:
     channel_id: Optional[int] = None
     enabled_at: Optional[datetime] = None
     ping_role_id: Optional[int] = None
+    content_kinds: str = "both"         # 'anime' | 'donghua' | 'both' (donghua is on by default)
 
 
 def _key(clone_id) -> int:
@@ -401,7 +504,7 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at, ping_role_id FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
+            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at, ping_role_id, content_kinds FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
                                       int(guild_id), _key(clone_id))
     except Exception:
         logger.exception("[anime-feed] couldn't read the setup for guild %s", guild_id)
@@ -410,15 +513,19 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
 
 
 def _cfg(guild_id, clone_id, row) -> FeedConfig:
+    try:
+        kinds = normalize_kinds(row["content_kinds"])
+    except (KeyError, IndexError):
+        kinds = "both"
     return FeedConfig(int(guild_id), clone_id, bool(row["enabled"]), int(row["channel_id"]) if row["channel_id"] else None, row["enabled_at"],
-                      int(row["ping_role_id"]) if row["ping_role_id"] else None)
+                      int(row["ping_role_id"]) if row["ping_role_id"] else None, kinds)
 
 
 async def enabled_guilds(clone_id=None) -> List[FeedConfig]:
     """Every server of this bot with the feed on and a channel picked. Raises on database errors (the worker backs off)."""
     pool = await _pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at, ping_role_id FROM anime_feed_config "
+        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at, ping_role_id, content_kinds FROM anime_feed_config "
                                 "WHERE clone_key = $1 AND enabled AND channel_id IS NOT NULL", _key(clone_id))
     return [_cfg(r["guild_id"], clone_id, r) for r in rows]
 
@@ -454,12 +561,12 @@ async def save_config(cfg: FeedConfig, updated_by: Optional[int] = None) -> None
     pool = await _pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at, ping_role_id) "
-            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END, $6) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
+            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at, ping_role_id, content_kinds) "
+            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END, $6, $7) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
             "enabled = EXCLUDED.enabled, channel_id = EXCLUDED.channel_id, updated_by = EXCLUDED.updated_by, updated_at = NOW(), "
-            "ping_role_id = EXCLUDED.ping_role_id, "
+            "ping_role_id = EXCLUDED.ping_role_id, content_kinds = EXCLUDED.content_kinds, "
             "enabled_at = CASE WHEN NOT EXCLUDED.enabled THEN NULL WHEN anime_feed_config.enabled THEN anime_feed_config.enabled_at ELSE NOW() END",
-            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by, cfg.ping_role_id)
+            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by, cfg.ping_role_id, normalize_kinds(cfg.content_kinds))
     try:
         from modules import anime_feed_worker
         anime_feed_worker.wake_all()
