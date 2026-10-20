@@ -83,7 +83,7 @@ def test_migration_is_additive_and_loaded_and_version_bumped():
     assert body.startswith("ALTER TABLE CAT_WALLETS ADD COLUMN IF NOT EXISTS PRIMOLE BIGINT NOT NULL DEFAULT 0")
     assert not re.search(r"\b(DROP|DELETE|TRUNCATE)\b", body)
     db = (ROOT / "database.py").read_text()
-    assert "068_primole.sql" in db and 'SCHEMA_VERSION = "117"' in db
+    assert "068_primole.sql" in db and int(re.search(r'^SCHEMA_VERSION = "(\d+)"', db, re.M).group(1)) >= 117
 
 
 # conversion

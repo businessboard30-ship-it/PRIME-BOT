@@ -136,7 +136,7 @@ class ServerSetupView(discord.ui.View):
         # at running /setupverification separately.
         current = await db.get_verification_config(interaction.guild_id, clone_id=self.clone_id)
         wizard = _VerificationWizardView(interaction.user.id, current)
-        await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+        await interaction.response.send_message(view=wizard, ephemeral=True)
 
     @discord.ui.button(label="Enable Reaction Roles", style=discord.ButtonStyle.primary, emoji="🎭", row=1)
     async def enable_reaction_roles(self, interaction: discord.Interaction, button: discord.ui.Button):

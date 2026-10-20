@@ -4,19 +4,23 @@
 Join verification / anti-raid gate.
 
 One command only — /setupverification — everything else is the wizard
-flow below (mode, channel, role pickers) plus one shared on_member_join
-listener that applies whichever mode the guild picked. This mirrors the
+flow below (a Components V2 layout with two pages: Setup, and Premium
+extras) plus one shared on_member_join listener that applies whichever
+mode the guild picked. Captcha is the default mode. This mirrors the
 guild-scoped-config pattern already used by automod/ticket/welcome: the
 listener and the persistent button (_views_verification.py) both read
 discord_verification_config fresh each time, so behaviour is uniform
 across the bot and every clone without any bot-scoped code branching.
 
-Wizard state (mode / channel / role picks) lives on the WizardView
-instance itself while the admin is stepping through it — same as other
-admin-only setup wizards in this codebase that don't need to survive a
-restart mid-flow, unlike the persistent verify button which does.
+Wizard state (mode / channel / role picks / premium extras) lives on the
+WizardView instance itself while the admin is stepping through it — same as
+other admin-only setup wizards in this codebase that don't need to survive a
+restart mid-flow, unlike the persistent verify button which does. The
+layout is rebuilt from that state on every refresh, so every picker always
+shows what is currently chosen.
 """
 
+import asyncio
 import logging
 
 import discord
@@ -35,6 +39,7 @@ from discord_bot.cogs._views_verification import (
     apply_verification_pass,
 )
 from database import db
+from modules import verification_pro
 
 
 async def _fresh_role_positions(guild, role):
@@ -76,10 +81,14 @@ class ModeSelect(discord.ui.Select):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
         super().__init__(
-            placeholder="1. Choose verification mode",
+            placeholder="Choose how members verify",
             options=[
-                discord.SelectOption(label="Button click (low friction)", value="button", emoji="✅"),
-                discord.SelectOption(label="Captcha (blocks scripted joins)", value="captcha", emoji="🧩"),
+                discord.SelectOption(label="Captcha (recommended)", value="captcha", emoji="🧩",
+                                     description="A quick security check. Blocks scripted joins.",
+                                     default=wizard.mode == "captcha"),
+                discord.SelectOption(label="Button click", value="button", emoji="✅",
+                                     description="One tap. Low friction, but bots can click it too.",
+                                     default=wizard.mode == "button"),
             ],
         )
 
@@ -92,7 +101,7 @@ class ChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
         super().__init__(
-            placeholder="2. Choose the #verify channel",
+            placeholder="Choose the verify channel",
             channel_types=[discord.ChannelType.text],
             # default_values pre-populates the picker with whatever's
             # already chosen — without this, Discord always renders a
@@ -102,7 +111,7 @@ class ChannelSelect(discord.ui.ChannelSelect):
             # look like "nothing was picked, pick it again" after an
             # auto-create or after a value carried over from a previous
             # /setupverification run.
-            default_values=[discord.Object(id=wizard.channel_id)] if wizard.channel_id else [],
+            default_values=[discord.Object(id=wizard.channel_id, type=discord.abc.GuildChannel)] if wizard.channel_id else [],
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -127,9 +136,8 @@ class AutoCreateVerifyChannelButton(discord.ui.Button):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
         super().__init__(
-            label="✨ Auto-create #verify channel",
+            label="✨ Auto-create",
             style=discord.ButtonStyle.primary,
-            row=4,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -211,11 +219,11 @@ class UnverifiedRoleSelect(discord.ui.RoleSelect):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
         super().__init__(
-            placeholder="3. Choose the Unverified role",
+            placeholder="Choose the Unverified role",
             # Same reasoning as ChannelSelect above — pre-populate so a
             # carried-over or auto-created role shows as actually
             # selected instead of resetting to the bare placeholder.
-            default_values=[discord.Object(id=wizard.unverified_role_id)] if wizard.unverified_role_id else [],
+            default_values=[discord.Object(id=wizard.unverified_role_id, type=discord.Role)] if wizard.unverified_role_id else [],
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -228,9 +236,8 @@ class AutoCreateUnverifiedButton(discord.ui.Button):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
         super().__init__(
-            label="✨ Auto-create Unverified role",
+            label="✨ Auto-create",
             style=discord.ButtonStyle.primary,
-            row=4,
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -356,8 +363,8 @@ class VerifiedRoleSelect(discord.ui.RoleSelect):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
         super().__init__(
-            placeholder="4. (Optional) Choose a Verified role", min_values=0, max_values=1,
-            default_values=[discord.Object(id=wizard.verified_role_id)] if wizard.verified_role_id else [],
+            placeholder="Optional: choose a Verified role", min_values=0, max_values=1,
+            default_values=[discord.Object(id=wizard.verified_role_id, type=discord.Role)] if wizard.verified_role_id else [],
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -372,7 +379,7 @@ class AutoCreateVerifiedButton(discord.ui.Button):
 
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
-        super().__init__(label="✨ Auto-create Verified role", style=discord.ButtonStyle.primary, row=4)
+        super().__init__(label="✨ Auto-create", style=discord.ButtonStyle.primary)
 
     async def callback(self, interaction: discord.Interaction):
         wizard = self.wizard
@@ -430,7 +437,8 @@ class AutoCreateVerifiedButton(discord.ui.Button):
 class FinishButton(discord.ui.Button):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
-        super().__init__(label="Lock down & enable", style=discord.ButtonStyle.success, emoji="🔒", row=4)
+        super().__init__(label="Lock down & enable", style=discord.ButtonStyle.success, emoji="🔒",
+                         disabled=not (wizard.channel_id and wizard.unverified_role_id))
 
     async def callback(self, interaction: discord.Interaction):
         wizard = self.wizard
@@ -476,7 +484,10 @@ class FinishButton(discord.ui.Button):
 
         touched = await lockdown_guild_channels(guild, unverified_role, wizard.channel_id)
 
-        panel_embed = build_verify_panel_embed(guild.name, wizard.mode)
+        clone_id = _clone_id_of(interaction)
+        premium = await verification_pro.is_premium(guild.id, clone_id)
+        look = verification_pro.panel_look(verification_pro.effective_cfg(wizard.pro, premium))
+        panel_embed = build_verify_panel_embed(guild.name, wizard.mode, look)
         panel_view = build_verify_panel_view(guild.id)
         try:
             panel_message = await channel.send(embed=panel_embed, view=panel_view)
@@ -494,10 +505,10 @@ class FinishButton(discord.ui.Button):
             )
             return
 
-        clone_id = _clone_id_of(interaction)
         await db.set_verification_config(
             guild.id,
             clone_id=clone_id,
+            **wizard.pro,
             mode=wizard.mode,
             channel_id=wizard.channel_id,
             unverified_role_id=wizard.unverified_role_id,
@@ -506,8 +517,11 @@ class FinishButton(discord.ui.Button):
             enabled=True,
         )
 
+        note = ""
+        if not premium and verification_pro.paused_extras(wizard.pro):
+            note = "\n💎 Your premium extras are saved, but stay off until Premium is active on this server."
         await interaction.followup.send(
-            f"✅ Verification is live — locked down {touched} channel(s) and posted the panel in {channel.mention}.",
+            f"✅ Verification is live — locked down {touched} channel(s) and posted the panel in {channel.mention}.{note}",
             ephemeral=True,
         )
         wizard.stop()
@@ -516,43 +530,183 @@ class FinishButton(discord.ui.Button):
 class CancelButton(discord.ui.Button):
     def __init__(self, wizard: "WizardView"):
         self.wizard = wizard
-        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary, row=4)
+        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary)
 
     async def callback(self, interaction: discord.Interaction):
         self.wizard.stop()
-        await interaction.response.edit_message(content="Verification setup cancelled.", embed=None, view=None)
+        done = discord.ui.LayoutView(timeout=None)
+        container = discord.ui.Container(accent_colour=discord.Color.light_grey())
+        container.add_item(discord.ui.TextDisplay("Verification setup cancelled."))
+        done.add_item(container)
+        await interaction.response.edit_message(view=done)
 
 
-class WizardView(discord.ui.View):
+# ── premium extras (page 2) ───────────────────────────────────────────────
+
+class PremiumPageButton(discord.ui.Button):
+    def __init__(self, wizard: "WizardView"):
+        self.wizard = wizard
+        super().__init__(label="Premium extras", style=discord.ButtonStyle.primary, emoji="💎")
+
+    async def callback(self, interaction: discord.Interaction):
+        # Looked up when the page opens (not at construction) so building the wizard stays synchronous.
+        self.wizard.premium = await verification_pro.is_premium(interaction.guild_id, _clone_id_of(interaction))
+        self.wizard.page = "pro"
+        await self.wizard.refresh(interaction)
+
+
+class BackToSetupButton(discord.ui.Button):
+    def __init__(self, wizard: "WizardView"):
+        self.wizard = wizard
+        super().__init__(label="Back to setup", style=discord.ButtonStyle.secondary, emoji="⬅️")
+
+    async def callback(self, interaction: discord.Interaction):
+        self.wizard.page = "setup"
+        await self.wizard.refresh(interaction)
+
+
+class GetPremiumButton(discord.ui.Button):
+    def __init__(self, wizard: "WizardView"):
+        self.wizard = wizard
+        super().__init__(label="Get Premium", style=discord.ButtonStyle.success, emoji="💎")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        clone_id = _clone_id_of(interaction)
+        try:
+            from discord_bot.cogs._views_premium import send_premium_pitch
+            await send_premium_pitch(interaction, interaction.guild_id, clone_id)
+        except Exception:
+            logger.exception("verification: couldn't show the Premium pitch for guild %s", interaction.guild_id)
+            await interaction.followup.send("💎 Run `/premium` to see the plans.", ephemeral=True)
+
+
+class LogChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, wizard: "WizardView"):
+        self.wizard = wizard
+        current = wizard.pro.get("log_channel_id")
+        super().__init__(
+            placeholder="Optional: choose a log channel", min_values=0, max_values=1,
+            channel_types=[discord.ChannelType.text],
+            default_values=[discord.Object(id=current, type=discord.abc.GuildChannel)] if current else [],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.wizard.pro["log_channel_id"] = self.values[0].id if self.values else None
+        await self.wizard.refresh(interaction)
+
+
+class _ChoiceSelect(discord.ui.Select):
+    """Select over (stored value, label) choices where None = Off. Subclasses set `field`/`choices`/`placeholder_text`."""
+    field = ""
+    choices = ()
+    placeholder_text = ""
+
+    def __init__(self, wizard: "WizardView"):
+        self.wizard = wizard
+        current = wizard.pro.get(self.field)
+        super().__init__(
+            placeholder=self.placeholder_text,
+            options=[
+                discord.SelectOption(label=label, value="off" if value is None else str(value), default=value == current)
+                for value, label in self.choices
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        pick = self.values[0]
+        self.wizard.pro[self.field] = None if pick == "off" else int(pick)
+        await self.wizard.refresh(interaction)
+
+
+class KickAfterSelect(_ChoiceSelect):
+    field = "kick_after_minutes"
+    choices = verification_pro.KICK_AFTER_CHOICES
+    placeholder_text = "Kick members who haven't verified after…"
+
+
+class MinAgeSelect(_ChoiceSelect):
+    field = "min_account_age_days"
+    choices = verification_pro.MIN_AGE_CHOICES
+    placeholder_text = "Minimum account age to join…"
+
+
+class LookModal(discord.ui.Modal, title="Panel look & welcome message"):
+    def __init__(self, wizard: "WizardView"):
+        super().__init__()
+        self.wizard = wizard
+        pro = wizard.pro
+        color = pro.get("panel_color")
+        self.title_in = discord.ui.TextInput(
+            label="Panel title", required=False, max_length=verification_pro.TITLE_MAX,
+            default=pro.get("panel_title") or "", placeholder="blank = Welcome to <server>")
+        self.text_in = discord.ui.TextInput(
+            label="Panel text", required=False, style=discord.TextStyle.paragraph, max_length=verification_pro.TEXT_MAX,
+            default=pro.get("panel_text") or "", placeholder="blank = the standard text")
+        self.color_in = discord.ui.TextInput(
+            label="Panel colour (hex)", required=False, max_length=7,
+            default=f"#{color:06X}" if color is not None else "", placeholder="#5865F2")
+        self.image_in = discord.ui.TextInput(
+            label="Banner image link (https)", required=False, max_length=verification_pro.IMAGE_URL_MAX,
+            default=pro.get("panel_image_url") or "")
+        self.welcome_in = discord.ui.TextInput(
+            label="Welcome DM after verifying", required=False, style=discord.TextStyle.paragraph,
+            max_length=verification_pro.WELCOME_MAX, default=pro.get("welcome_text") or "",
+            placeholder="Use {user} and {server}. Blank = the standard message.")
+        for item in (self.title_in, self.text_in, self.color_in, self.image_in, self.welcome_in):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            color = verification_pro.parse_color(self.color_in.value)
+            image = verification_pro.clean_image_url(self.image_in.value)
+        except ValueError as e:
+            await interaction.response.send_message(f"⚠️ Nothing saved: {e}.", ephemeral=True)
+            return
+        self.wizard.pro.update(
+            panel_title=verification_pro.clean_text(self.title_in.value, verification_pro.TITLE_MAX),
+            panel_text=verification_pro.clean_text(self.text_in.value, verification_pro.TEXT_MAX),
+            panel_color=color,
+            panel_image_url=image,
+            welcome_text=verification_pro.clean_text(self.welcome_in.value, verification_pro.WELCOME_MAX),
+        )
+        await self.wizard.refresh(interaction)
+
+
+class LookButton(discord.ui.Button):
+    def __init__(self, wizard: "WizardView"):
+        self.wizard = wizard
+        super().__init__(label="Edit", style=discord.ButtonStyle.secondary, emoji="🎨")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(LookModal(self.wizard))
+
+
+# ── the wizard ────────────────────────────────────────────────────────────
+
+class WizardView(discord.ui.LayoutView):
+    """Two pages in one message: Setup (method, verify channel, roles, enable) and Premium extras.
+
+    The layout is rebuilt from the state below on every refresh (never patched in place), so a picker always shows
+    what is chosen and the Lock down button is only enabled once it can work."""
+
     def __init__(self, invoker_id: int, current: dict):
         super().__init__(timeout=600)
         self.invoker_id = invoker_id
-        self.mode = current.get("mode") or "button"
+        self.mode = current.get("mode") or "captcha"
         self.channel_id = current.get("channel_id")
         self.unverified_role_id = current.get("unverified_role_id")
         self.verified_role_id = current.get("verified_role_id")
+        self.pro = {k: current.get(k) for k in verification_pro.PRO_FIELDS}
+        self.premium = False        # looked up when the Premium page opens
+        self.page = "setup"
         self.auto_created_role_id = None
         self.auto_created_channel_id = None
         self._creating_role = False
         self._creating_channel = False
-        # channel_select/unverified_role_select kept as direct attributes
-        # (not just added via add_item) so AutoCreateVerifyChannelButton /
-        # AutoCreateUnverifiedButton can update their .default_values
-        # after creating/reusing an entity — that's what makes the
-        # picker visibly show the auto-created choice instead of
-        # resetting to its placeholder on the next refresh.
-        self.channel_select = ChannelSelect(self)
-        self.unverified_role_select = UnverifiedRoleSelect(self)
-        self.add_item(ModeSelect(self))
-        self.add_item(self.channel_select)
-        self.add_item(self.unverified_role_select)
-        self.verified_role_select = VerifiedRoleSelect(self)
-        self.add_item(self.verified_role_select)
-        self.add_item(AutoCreateUnverifiedButton(self))
-        self.add_item(AutoCreateVerifiedButton(self))
-        self.add_item(AutoCreateVerifyChannelButton(self))
-        self.add_item(FinishButton(self))
-        self.add_item(CancelButton(self))
+        # Kept as attributes (rebuilt every refresh) because the auto-create buttons update their .default_values.
+        self.channel_select = self.unverified_role_select = self.verified_role_select = None
+        self._build()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker_id:
@@ -560,30 +714,93 @@ class WizardView(discord.ui.View):
             return False
         return True
 
-    def build_embed(self) -> discord.Embed:
-        def fmt_channel(cid):
-            return f"<#{cid}>" if cid else "*not set*"
+    # -- layout --------------------------------------------------------
 
-        def fmt_role(rid):
-            return f"<@&{rid}>" if rid else "*not set*"
+    @staticmethod
+    def _chan(cid) -> str:
+        return f"<#{cid}>" if cid else "*not set*"
 
-        embed = discord.Embed(
-            title="Join verification setup",
-            description=(
-                "New members get the Unverified role on join and can only see the verify channel "
-                "until they pass this. Pick your options below, then hit **Lock down & enable** — "
-                "the bot will apply the channel overwrites automatically."
-            ),
-            color=discord.Color.blurple(),
-        )
-        embed.add_field(name="Mode", value="Captcha 🧩" if self.mode == "captcha" else "Button click ✅", inline=False)
-        embed.add_field(name="Verify channel", value=fmt_channel(self.channel_id), inline=True)
-        embed.add_field(name="Unverified role", value=fmt_role(self.unverified_role_id), inline=True)
-        embed.add_field(name="Verified role", value=fmt_role(self.verified_role_id) if self.verified_role_id else "*none — just removes Unverified*", inline=True)
-        return embed
+    @staticmethod
+    def _role(rid, empty="*not set*") -> str:
+        return f"<@&{rid}>" if rid else empty
+
+    @staticmethod
+    def _row_with_button(container, text: str, button) -> None:
+        section = discord.ui.Section(accessory=button)
+        section.add_item(text)
+        container.add_item(section)
+
+    def _build(self) -> None:
+        self.clear_items()
+        container = discord.ui.Container(accent_colour=discord.Color.blurple())
+        (self._build_pro if self.page == "pro" else self._build_setup)(container)
+        self.add_item(container)
+
+    def _build_setup(self, c) -> None:
+        c.add_item(discord.ui.TextDisplay(
+            "## 🔐 Join verification\n"
+            "New members get the **Unverified** role and can only see the verify channel until they pass the check. "
+            "Set it up below, then press **Lock down & enable**; I apply the channel permissions for you."
+        ))
+        c.add_item(discord.ui.Separator())
+        c.add_item(discord.ui.TextDisplay("### 1 · How members verify"))
+        c.add_item(discord.ui.ActionRow(ModeSelect(self)))
+        c.add_item(discord.ui.Separator())
+
+        self._row_with_button(c, f"### 2 · Verify channel\n{self._chan(self.channel_id)}", AutoCreateVerifyChannelButton(self))
+        self.channel_select = ChannelSelect(self)
+        c.add_item(discord.ui.ActionRow(self.channel_select))
+
+        self._row_with_button(c, f"### 3 · Unverified role\n{self._role(self.unverified_role_id)}", AutoCreateUnverifiedButton(self))
+        self.unverified_role_select = UnverifiedRoleSelect(self)
+        c.add_item(discord.ui.ActionRow(self.unverified_role_select))
+
+        self._row_with_button(
+            c, f"### 4 · Verified role (optional)\n{self._role(self.verified_role_id, '*none, I just remove Unverified*')}",
+            AutoCreateVerifiedButton(self))
+        self.verified_role_select = VerifiedRoleSelect(self)
+        c.add_item(discord.ui.ActionRow(self.verified_role_select))
+
+        c.add_item(discord.ui.Separator())
+        missing = [n for n, v in (("a verify channel", self.channel_id), ("an Unverified role", self.unverified_role_id)) if not v]
+        c.add_item(discord.ui.TextDisplay(
+            "✅ Ready. Press **Lock down & enable**." if not missing else f"⚠️ Still needed: {' and '.join(missing)}."))
+        c.add_item(discord.ui.ActionRow(FinishButton(self), PremiumPageButton(self), CancelButton(self)))
+
+    def _build_pro(self, c) -> None:
+        pro = self.pro
+        status = ("✅ Premium is active on this server." if self.premium else
+                  "🔒 **Needs Premium.** You can set these up now; they're saved but stay off until Premium is active.")
+        c.add_item(discord.ui.TextDisplay(f"## 💎 Premium extras\n{status}"))
+        c.add_item(discord.ui.Separator())
+
+        c.add_item(discord.ui.TextDisplay(
+            f"### Log channel\nWho verified or got kicked. Now: {self._chan(pro.get('log_channel_id'))}"))
+        c.add_item(discord.ui.ActionRow(LogChannelSelect(self)))
+
+        kick = verification_pro.label_for(verification_pro.KICK_AFTER_CHOICES, pro.get("kick_after_minutes"))
+        c.add_item(discord.ui.TextDisplay(f"### Auto-kick unverified\nMembers who never verify are removed. Now: **{kick}**"))
+        c.add_item(discord.ui.ActionRow(KickAfterSelect(self)))
+
+        age = verification_pro.label_for(verification_pro.MIN_AGE_CHOICES, pro.get("min_account_age_days"))
+        c.add_item(discord.ui.TextDisplay(f"### Minimum account age\nNewer accounts are kicked when they join. Now: **{age}**"))
+        c.add_item(discord.ui.ActionRow(MinAgeSelect(self)))
+
+        look_bits = [n for n, k in (("title", "panel_title"), ("text", "panel_text"), ("colour", "panel_color"),
+                                     ("banner", "panel_image_url"), ("welcome DM", "welcome_text")) if pro.get(k) not in (None, "")]
+        self._row_with_button(
+            c, f"### Panel look & welcome DM\nCustom: {', '.join(look_bits) if look_bits else 'none, using the standard look'}",
+            LookButton(self))
+
+        c.add_item(discord.ui.Separator())
+        row = [BackToSetupButton(self)]
+        if not self.premium:
+            row.append(GetPremiumButton(self))
+        c.add_item(discord.ui.ActionRow(*row))
 
     async def refresh(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        self._build()
+        await interaction.response.edit_message(view=self)
 
 
 class VerificationCog(GuildOnlyCog):
@@ -600,9 +817,66 @@ class VerificationCog(GuildOnlyCog):
         import config
         if getattr(config, "TURNSTILE_ENABLED", False):
             self.poll_turnstile_passes.start()
+        self.kick_unverified.start()
 
     async def cog_unload(self):
         self.poll_turnstile_passes.cancel()
+        self.kick_unverified.cancel()
+
+    # Premium: remove members who never verified. Max kicks per server per pass keeps a big backlog from hammering Discord.
+    MAX_KICKS_PER_PASS = 25
+
+    @tasks.loop(minutes=2)
+    async def kick_unverified(self):
+        clone_id = getattr(self.bot, "clone_id", None)
+        try:
+            rows = await db.get_verification_kick_configs(clone_id)
+        except Exception:
+            logger.exception("verification: couldn't load auto-kick configs")
+            return
+        for row in rows:
+            try:
+                await self._kick_stale_in(row, clone_id)
+            except Exception:
+                logger.exception("verification: auto-kick failed for guild %s", row.get("guild_id"))
+
+    @kick_unverified.before_loop
+    async def _before_kick(self):
+        await self.bot.wait_until_ready()
+
+    async def _kick_stale_in(self, row: dict, clone_id) -> int:
+        guild = self.bot.get_guild(row["guild_id"])
+        if guild is None:
+            return 0
+        cfg = await verification_pro.effective_for(guild.id, clone_id, row)
+        minutes = cfg.get("kick_after_minutes")
+        role = guild.get_role(cfg["unverified_role_id"]) if cfg.get("unverified_role_id") else None
+        if not minutes or role is None:           # not premium (paused), or the role is gone
+            return 0
+        if not guild.me.guild_permissions.kick_members:
+            perm_check.flag(guild.id, clone_id, "verification_kick",
+                            "Auto-kick for unverified members is on, but I don't have the Kick Members permission.")
+            return 0
+        verified_role = guild.get_role(cfg["verified_role_id"]) if cfg.get("verified_role_id") else None
+        kicked = 0
+        for member in list(role.members):
+            if member.bot or member == guild.owner or member.top_role >= guild.me.top_role:
+                continue
+            if verified_role is not None and verified_role in member.roles:
+                continue
+            if not verification_pro.should_kick(member.joined_at, minutes):
+                continue
+            label = verification_pro.label_for(verification_pro.KICK_AFTER_CHOICES, minutes)
+            if await verification_pro.kick_for(
+                member, cfg, reason=f"Didn't verify within {label} (join verification)",
+                log_text=f"🚪 **Kicked:** {member.mention} (`{member.id}`) didn't verify within {label}.",
+                dm=f"You were removed from **{guild.name}** because you didn't verify within {label}. You're welcome to rejoin and try again.",
+            ):
+                kicked += 1
+            if kicked >= self.MAX_KICKS_PER_PASS:
+                break
+            await asyncio.sleep(1)
+        return kicked
 
     @tasks.loop(seconds=5)
     async def poll_turnstile_passes(self):
@@ -644,7 +918,7 @@ class VerificationCog(GuildOnlyCog):
         clone_id = _clone_id_of(interaction)
         current = await db.get_verification_config(interaction.guild_id, clone_id=clone_id)
         wizard = WizardView(interaction.user.id, current)
-        await interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+        await interaction.followup.send(view=wizard, ephemeral=True)
 
     async def ai_setupverification(self, confirm_interaction: discord.Interaction):
         """Entry point for execute_ai_command — confirm_interaction's response
@@ -655,7 +929,7 @@ class VerificationCog(GuildOnlyCog):
         clone_id = _clone_id_of(confirm_interaction)
         current = await db.get_verification_config(confirm_interaction.guild_id, clone_id=clone_id)
         wizard = WizardView(confirm_interaction.user.id, current)
-        await confirm_interaction.followup.send(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+        await confirm_interaction.followup.send(view=wizard, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -669,6 +943,16 @@ class VerificationCog(GuildOnlyCog):
             return
         if not config.get("enabled") or not config.get("unverified_role_id"):
             return
+        # Premium: minimum account age. The role is never given to an account that gets kicked here.
+        extras = await verification_pro.effective_for(member.guild.id, clone_id, config)
+        min_days = extras.get("min_account_age_days")
+        if verification_pro.account_too_young(member.created_at, min_days):
+            if await verification_pro.kick_for(
+                member, extras, reason=f"Account younger than {min_days} day(s) (join verification)",
+                log_text=f"🚫 **Kicked:** {member.mention} (`{member.id}`), account is younger than {min_days} day(s).",
+                dm=f"Your account is too new to join **{member.guild.name}** yet. Please try again once it is at least {min_days} day(s) old.",
+            ):
+                return
         role = member.guild.get_role(config["unverified_role_id"])
         if role is None:
             return

@@ -1749,7 +1749,7 @@ async def _enable_verification(interaction: discord.Interaction, guild: discord.
     current = await db.get_verification_config(guild.id, clone_id=clone_id)
     wizard = WizardView(interaction.user.id, current)
     try:
-        await channel.send(embed=wizard.build_embed(), view=wizard)
+        await channel.send(view=wizard)
     except (discord.Forbidden, discord.HTTPException):
         return False, "I couldn't post there — try `/setupverification` directly in the server instead."
     return True, f"Posted the join verification setup in {channel.mention} — head over and pick your options there."
