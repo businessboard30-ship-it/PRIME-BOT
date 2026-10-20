@@ -73,7 +73,18 @@ class LeagueView(discord.ui.LayoutView):
             _btn("Back", self._back))
         self.add_item(_box(league_text(self.entry, self.names, self.ends_ts, self.note, self.top), [row]))
 
+    @staticmethod
+    async def _ack(interaction: discord.Interaction) -> None:
+        """Answer the tap NOW. Everything below talks to the database, and Discord gives only 3 seconds to answer a tap
+        (a far database can take longer than that), so acknowledge first and edit the message when the work is done."""
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer()
+            except discord.HTTPException:
+                logger.warning("[cat-league] couldn't acknowledge the tap", exc_info=True)
+
     async def _show(self, interaction: discord.Interaction, note: Optional[str] = None) -> None:
+        await self._ack(interaction)
         self.note = note
         try:
             await self.load(interaction)
@@ -81,12 +92,13 @@ class LeagueView(discord.ui.LayoutView):
             logger.exception("[cat-league] couldn't load the League screen")
             self.note = OOPS
             self._build()
-        await vis.edit(interaction, view=self)
+        await vis.edit(interaction, view=self, original=True)
 
     async def _refresh(self, interaction: discord.Interaction):
         await self._show(interaction)
 
     async def _join(self, interaction: discord.Interaction):
+        await self._ack(interaction)
         try:
             res = await cl.join(interaction.user.id, _clone_id(interaction.client))
         except Exception:
