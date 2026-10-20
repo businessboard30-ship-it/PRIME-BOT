@@ -131,11 +131,11 @@ def test_webhook_and_verify_together_add_the_days_once(monkeypatch):
 
 def test_upgrade_text_covers_each_case_and_lists_only_what_exists():
     from discord_bot.cogs import _views_anime_plus as v
-    none = v.upgrade_text("none", None, "GHS 5", False)
-    assert "GHS 5" in none and "DM alerts" in none and "Quiet hours" in none and "50" in none and "never makes a server premium" in none
-    server = v.upgrade_text("server", None, "GHS 5", False)
+    none = v.upgrade_text("none", None, "$3 USD", False)
+    assert "$3 USD" in none and "DM alerts" in none and "Quiet hours" in none and "50" in none and "never makes a server premium" in none
+    server = v.upgrade_text("server", None, "$3 USD", False)
     assert "This server is premium" in server and "Nothing to buy" in server
-    personal = v.upgrade_text("personal", FUTURE, "GHS 5", True)
+    personal = v.upgrade_text("personal", FUTURE, "$3 USD", True)
     assert "active until <t:" in personal and "I've paid" in personal
 
 
@@ -145,9 +145,9 @@ def _buttons(view):
 
 def test_server_premium_card_has_no_pay_button_and_free_card_does():
     from discord_bot.cogs import _views_anime_plus as v
-    assert [b.label for b in _buttons(v.upgrade_view("server", None, "GHS 5", False))] == []
-    assert [b.label for b in _buttons(v.upgrade_view("none", None, "GHS 5", False))] == ["Upgrade"]
-    assert [b.label for b in _buttons(v.upgrade_view("personal", FUTURE, "GHS 5", True))] == ["Add more days", "I've paid"]
+    assert [b.label for b in _buttons(v.upgrade_view("server", None, "$3 USD", False))] == []
+    assert [b.label for b in _buttons(v.upgrade_view("none", None, "$3 USD", False))] == ["Upgrade"]
+    assert [b.label for b in _buttons(v.upgrade_view("personal", FUTURE, "$3 USD", True))] == ["Add more days", "I've paid"]
 
 
 def test_upgrade_buttons_are_persistent_registered_and_rebuild_from_the_custom_id_alone():
@@ -224,6 +224,42 @@ def test_migration_is_additive_wired_and_price_is_a_config_value():
     assert "DROP " not in sql.upper() and "DELETE " not in sql.upper() and "IF NOT EXISTS" in sql
     assert "076_anime_plus.sql" in (ROOT / "database.py").read_text()
     import config
-    assert config.PRICE_REGISTRY["anime_plus"]["default"] > 0 and plus.PRICE_KEY == "anime_plus"
+    assert config.ANIME_PLUS_FEE_USD > 0 and config.ANIME_PLUS_PRODUCT_NAME and "anime_plus" not in config.PRICE_REGISTRY      # priced in USD, not GHS
+    assert v_price() == f"${config.ANIME_PLUS_FEE_USD:g} USD"
     hook = (ROOT / "api/paystack_webhook.py").read_text()
     assert "payment_type == 'anime_plus'" in hook and "anime_plus.complete_payment(reference)" in hook
+
+
+def v_price():
+    from discord_bot.cogs import _views_anime_plus as v
+    return v._price_text()
+
+
+def test_the_payment_is_checked_automatically_and_completed_once(monkeypatch):
+    from discord_bot.cogs import _views_anime_plus as v
+    import payments
+    monkeypatch.setattr(v, "WATCH_EVERY", 0)
+    states, completes, dms = ["pending", "pending"], [], []
+
+    async def status(ref):
+        return states.pop(0) if states else "completed"
+
+    async def complete(ref):
+        completes.append(ref)
+        return {"user_id": 1}
+
+    async def expiry(uid, clone=None):
+        return FUTURE
+
+    async def gw(clone, provider, platform=None):
+        return SimpleNamespace(verify_payment=lambda ref, api_key=None: {"status": "success" if completes == [] and len(states) == 0 else "pending"}), "k"
+    monkeypatch.setattr(plus, "payment_status", status)
+    monkeypatch.setattr(plus, "complete_payment", complete)
+    monkeypatch.setattr(plus, "personal_expiry", expiry)
+    monkeypatch.setattr(payments, "resolve_gateway_for_provider", gw)
+
+    async def send(text):
+        dms.append(text)
+    user = SimpleNamespace(id=1, send=send)
+    run(v._watch(user, "refA", "stripe", 0))
+    assert completes == ["refA"] and len(dms) == 1 and "active until" in dms[0]

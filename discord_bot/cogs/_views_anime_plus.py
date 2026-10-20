@@ -70,10 +70,53 @@ def upgrade_view(state: str, expires: Optional[datetime], price_text: str, pendi
     return view
 
 
-async def _price_text(clone_id: int) -> str:
-    from database import db
-    price = await db.get_clone_price(clone_id, plus.PRICE_KEY)
-    return f"GHS {price:g}"
+def _price_text() -> str:
+    import config
+    return f"${config.ANIME_PLUS_FEE_USD:g} USD"
+
+
+_watchers: set = set()                                                   # strong references so a watcher is not garbage collected
+WATCH_EVERY = 15
+WATCH_FOR = 15 * 60
+
+
+async def _watch(user: discord.abc.User, reference: str, provider: str, clone: int) -> None:
+    """Checks the payment by itself every 15 s for 15 minutes, so nobody has to tap anything. Whoever completes it first (this
+    watcher, the webhook, or the person's 'I've paid' tap) wins; the days are added once. If the bot restarts mid-wait, the webhook
+    (or the 'I've paid' button) still completes it."""
+    try:
+        from payments import resolve_gateway_for_provider
+        waited = 0
+        while waited < WATCH_FOR:
+            await asyncio.sleep(WATCH_EVERY)
+            waited += WATCH_EVERY
+            status = await plus.payment_status(reference)
+            if status is None:
+                return
+            done = status == "completed"
+            if not done:
+                gateway, api_key = await resolve_gateway_for_provider(clone, provider, platform="discord")
+                result = await asyncio.to_thread(gateway.verify_payment, reference, api_key=api_key)
+                if (result or {}).get("status") != "success":
+                    continue
+                done = bool(await plus.complete_payment(reference)) or True
+            if done:
+                expires = await plus.personal_expiry(user.id, clone)
+                try:
+                    await user.send(f"✅ Payment confirmed. Your anime upgrade is active until {_stamp(expires)}.")
+                except discord.HTTPException:
+                    pass                                              # closed DMs: the upgrade is active regardless
+                return
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("[anime-plus] payment watcher stopped", exc_info=True)
+
+
+def _start_watch(user, reference: str, provider: str, clone: int) -> None:
+    task = asyncio.create_task(_watch(user, reference, provider, clone))
+    _watchers.add(task)
+    task.add_done_callback(_watchers.discard)
 
 
 async def _pending(user_id: int, clone_id: int) -> bool:
@@ -107,7 +150,7 @@ class _UpgradeButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anim
             await interaction.response.defer(ephemeral=True)
             clone = _clone_of(interaction)
             state, expires = await plus.status(interaction.user.id, _gid(interaction), clone)
-            view = upgrade_view(state, expires, await _price_text(clone), await _pending(interaction.user.id, clone))
+            view = upgrade_view(state, expires, _price_text(), await _pending(interaction.user.id, clone))
             await interaction.followup.send(view=view, ephemeral=True, allowed_mentions=NO_PINGS)
         except Exception:
             logger.exception("[anime-plus] upgrade card failed")
@@ -130,28 +173,32 @@ class _PayButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime_pl
             if state == "server":                                           # never charge someone who already has it for free
                 await interaction.followup.send("✅ This server is premium, so you already have everything. Nothing to buy.", ephemeral=True)
                 return
-            from database import db
-            from payments import resolve_gateway, gateway_charge_amount, charge_error_message
-            price = await db.get_clone_price(clone, plus.PRICE_KEY)
+            import config
+            import utils.currency as fx
+            from payments import resolve_gateway
+            price_usd = float(config.ANIME_PLUS_FEE_USD)
             gateway, api_key, provider = await resolve_gateway(clone, platform="discord")
-            charge = gateway_charge_amount(provider, price)
-            if charge.get("error"):
-                await interaction.followup.send(charge_error_message(charge), ephemeral=True)
-                return
+            if provider == "stripe":                                       # base price is USD: no conversion for Stripe
+                minor, currency = round(price_usd * 100), "usd"
+            else:                                                          # Paystack account settles in GHS: convert from the USD price
+                minor, currency = fx.usd_to_minor_units(price_usd, "GHS")
             result = await asyncio.to_thread(
-                gateway.initialize_payment, f"user_{interaction.user.id}@discord.user", charge["amount_minor_units"], interaction.user.id,
-                f"AnimePlus_{interaction.user.id}", payment_type="anime_plus", extra_metadata={"clone_id": clone, "provider": "discord"},
-                api_key=api_key, currency=charge["currency"])
+                gateway.initialize_payment, f"user_{interaction.user.id}@animebot.com", minor, interaction.user.id,
+                f"AnimePlus_{interaction.user.id}", payment_type="anime_plus",
+                extra_metadata={"clone_id": clone, "provider": "discord", "product": config.ANIME_PLUS_PRODUCT_NAME,
+                                "description": config.ANIME_PLUS_PRODUCT_DESCRIPTION},
+                api_key=api_key, currency=currency)
             if not result or result.get("status") != "success":
-                logger.error("[anime-plus] payment init failed for user %s", interaction.user.id)
+                logger.error("[anime-plus] payment init failed for user %s provider=%r result=%r", interaction.user.id, provider, result)
                 await interaction.followup.send("❌ Couldn't start checkout right now. Try again shortly.", ephemeral=True)
                 return
             await plus.start_payment(interaction.user.id, clone, result.get("reference"), provider)    # persisted BEFORE the link is shown
-            shown = (f"GHS {price:g}.00" if charge["currency"] == "GHS"
-                     else f"{charge['amount_minor_units'] / 100:.2f} {charge['currency'].upper()} (converted from GHS {price:g})")
+            shown = (f"${price_usd:g} USD" if currency.upper() == "USD"
+                     else f"{minor / fx.MINOR_UNIT_MULTIPLIER.get(currency, 100):.2f} {currency.upper()} (about ${price_usd:g} USD)")
+            _start_watch(interaction.user, result.get("reference"), provider, clone)
             view = discord.ui.LayoutView(timeout=None)
             box = discord.ui.Container(accent_colour=ACCENT)
-            box.add_item(discord.ui.TextDisplay(f"## 💳 Anime upgrade\nPay **{shown}** for {plus.PLUS_DAYS} days, then tap **I've paid**.\n[Complete payment]({result.get('authorization_url')})"))
+            box.add_item(discord.ui.TextDisplay(f"## 💳 {config.ANIME_PLUS_PRODUCT_NAME}\n{config.ANIME_PLUS_PRODUCT_DESCRIPTION}\n\nPay **{shown}**. I check the payment by myself and DM you when it's confirmed (or tap **I've paid**).\n[Complete payment]({result.get('authorization_url')})"))
             box.add_item(discord.ui.ActionRow(_VerifyButton()))
             view.add_item(box)
             await interaction.followup.send(view=view, ephemeral=True, allowed_mentions=NO_PINGS)

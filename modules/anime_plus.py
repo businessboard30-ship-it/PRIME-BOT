@@ -7,7 +7,7 @@ Anime feed D5: the upgrade ("two brains").
 
 The personal entitlement is its own thing: it never makes a server premium. Exclusive features (more than 5 follows, DM alerts,
 quiet hours) all go through this one check. Checks fail safe to False (a database hiccup never grants anything), and a positive
-answer is cached for 30 s so a busy card does not hit the database per tap. The price is a config value (PRICE_REGISTRY['anime_plus']).
+answer is cached for 30 s so a busy card does not hit the database per tap. The price is a config value in USD (config.ANIME_PLUS_FEE_USD).
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-PRICE_KEY = "anime_plus"
 PLUS_DAYS = 30                      # one payment buys this many days; renewing extends from the later of now and the current expiry
 from modules.anime_feed import FREE_FOLLOW_LIMIT  # noqa: E402  (one source for the free limit)
 PLUS_FOLLOW_LIMIT = 50
@@ -89,6 +88,12 @@ async def start_payment(user_id: int, clone_id, reference: str, provider: str, d
     async with pool.acquire() as conn:
         await conn.execute("INSERT INTO anime_plus_payments (user_id, clone_id, payment_reference, provider, days) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (payment_reference) DO NOTHING",
                            int(user_id), _clone(clone_id), reference, str(provider or "paystack"), int(days))
+
+
+async def payment_status(reference: str) -> Optional[str]:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT status FROM anime_plus_payments WHERE payment_reference = $1", reference)
 
 
 async def latest_payment(user_id: int, clone_id=None) -> Optional[dict]:

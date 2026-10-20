@@ -256,6 +256,12 @@ DISCORD_CLONE_FREE_EVERY_NTH = 3
 # config.DISCOVER_CAP_TIERS. No more hardcoded GHS here.
 WELCOME_CARD_PACK_FEE_USD = 2
 
+# Anime feed personal upgrade: price in USD per 30 days (USD base like the packs above; Stripe charges USD directly, Paystack
+# is converted at checkout). PLACEHOLDER: change this one number to set the real price.
+ANIME_PLUS_FEE_USD = 3
+ANIME_PLUS_PRODUCT_NAME = "Anime Feed Upgrade"
+ANIME_PLUS_PRODUCT_DESCRIPTION = "30 days: follow up to 50 anime, DM alerts and quiet hours, in any server."
+
 # Ultra pack: on top of the premium card pack's fixed artist themes above,
 # this unlocks /welcome custombg — a guild can point the welcome card's
 # background at their OWN png/jpeg (hosted anywhere with a direct image
@@ -736,7 +742,6 @@ PRICE_REGISTRY = {
     "image_search_unlock": {"label": "Image search source-link unlock",           "default": 10},
     "premium_group_fee":   {"label": "Premium group join fee",                    "default": 20},
     "utility_sub_fee":     {"label": "AI Chat + Download subscription (2 months)", "default": 25},
-    "anime_plus":          {"label": "Anime feed personal upgrade (per month)",   "default": 5},   # PLACEHOLDER price: the owner sets the real one here (or per clone)
 }
 
 # --- Real clone-bot system (Part 3 of the master brief) ---------------------
