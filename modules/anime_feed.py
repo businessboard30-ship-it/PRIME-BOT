@@ -37,9 +37,9 @@ query ($from: Int, $to: Int, $perPage: Int) {
       airingAt
       episode
       media {
-        id siteUrl isAdult format episodes genres
-        title { romaji english }
-        coverImage { large }
+        id siteUrl isAdult format episodes genres countryOfOrigin bannerImage
+        title { romaji english native }
+        coverImage { large extraLarge color }
         description(asHtml: false)
       }
     }
@@ -60,6 +60,15 @@ class Preview:
     genres: Tuple[str, ...] = ()
     fmt: str = ""
     episodes: Optional[int] = None
+    banner: Optional[str] = None    # wide banner from the provider (https only)
+    cover_xl: Optional[str] = None  # big cover, the fallback when there is no banner
+    color: Optional[int] = None     # the cover's dominant colour, used as the card accent
+    origin: str = ""                # 'JP' / 'CN' / 'KR' ... (countryOfOrigin)
+
+    @property
+    def image(self) -> Optional[str]:
+        """The one big picture for the card: wide banner, else the big cover, else the normal cover, else nothing."""
+        return self.banner or self.cover_xl or self.cover
 
 
 # ── pure helpers ────────────────────────────────────────────────────────
@@ -101,14 +110,34 @@ def parse_airing(payload: dict) -> List[Preview]:
             url = m.get("siteUrl") or f"https://anilist.co/anime/{int(m['id'])}"
             if not url.startswith("https://anilist.co/"):
                 url = f"https://anilist.co/anime/{int(m['id'])}"
-            cover = (m.get("coverImage") or {}).get("large")
+            ci = m.get("coverImage") or {}
             out.append(Preview(int(m["id"]), title[:120], int(r["episode"]), int(r["airingAt"]), clean_synopsis(m.get("description")),
-                               cover if isinstance(cover, str) and cover.startswith("https://") else None, url,
+                               _https(ci.get("large")), url,
                                tuple(str(g) for g in (m.get("genres") or [])[:3]), str(m.get("format") or "").replace("_", " ").title(),
-                               int(m["episodes"]) if m.get("episodes") else None))
+                               int(m["episodes"]) if m.get("episodes") else None,
+                               _https(m.get("bannerImage")), _https(ci.get("extraLarge")), _color(ci.get("color")),
+                               str(m.get("countryOfOrigin") or "")[:2].upper()))
         except (TypeError, ValueError, AttributeError):
             continue
     return out[:MAX_ITEMS]
+
+
+ORIGIN_LABELS = {"JP": "Anime", "CN": "Donghua", "KR": "Korean animation", "TW": "Taiwanese animation"}
+
+
+def origin_label(p: Preview) -> str:
+    """'Donghua' for Chinese animation, 'Anime' for Japanese, empty when the provider says nothing (never guessed)."""
+    return ORIGIN_LABELS.get((p.origin or "").upper(), "")
+
+
+def _https(url) -> Optional[str]:
+    return url if isinstance(url, str) and url.startswith("https://") and " " not in url and len(url) <= 500 else None
+
+
+def _color(raw) -> Optional[int]:
+    """AniList sends '#e4a15d'; anything else is ignored."""
+    m = re.fullmatch(r"#?([0-9a-fA-F]{6})", str(raw or "").strip())
+    return int(m.group(1), 16) if m else None
 
 
 def episode_label(p: Preview) -> str:
@@ -161,6 +190,107 @@ async def airing_soon() -> Tuple[List[Preview], bool]:
         parsed = parse_airing(payload)
         _cache = (time.time(), parsed)
         return list(parsed), True
+
+
+# ── full details for "Read more" (one title, cached, bounded) ───────────
+
+DETAIL_TTL = 6 * 3600
+DETAIL_MAX = 300
+READ_MORE_CHARS = 3500
+_DETAIL_QUERY = """
+query ($id: Int) {
+  Media(id: $id, type: ANIME) {
+    id siteUrl isAdult format status episodes genres countryOfOrigin
+    title { romaji english native }
+    description(asHtml: false)
+    nextAiringEpisode { episode airingAt }
+  }
+}
+"""
+_details: "dict[int, Tuple[float, Optional[Detail]]]" = {}
+
+
+@dataclass(frozen=True)
+class Detail:
+    anime_id: int
+    title: str
+    native: str
+    url: str
+    synopsis: str                   # the FULL text (cut only at READ_MORE_CHARS), not the short card version
+    fmt: str
+    status: str
+    episodes: Optional[int]
+    genres: Tuple[str, ...]
+    origin: str
+    next_episode: Optional[int]
+    next_at: Optional[int]
+
+
+def parse_detail(payload: dict) -> Optional[Detail]:
+    """Provider JSON -> Detail. None for missing data or adult titles; never raises on odd shapes."""
+    try:
+        m = payload["data"]["Media"]
+        if not m or m.get("isAdult") or not m.get("id"):
+            return None
+        t = m.get("title") or {}
+        title = (t.get("english") or t.get("romaji") or t.get("native") or "").strip()
+        if not title:
+            return None
+        url = m.get("siteUrl") or f"https://anilist.co/anime/{int(m['id'])}"
+        if not url.startswith("https://anilist.co/"):
+            url = f"https://anilist.co/anime/{int(m['id'])}"
+        nxt = m.get("nextAiringEpisode") or {}
+        return Detail(int(m["id"]), title[:120], str(t.get("native") or "")[:120], url,
+                      clean_synopsis(m.get("description"), READ_MORE_CHARS),
+                      str(m.get("format") or "").replace("_", " ").title(), str(m.get("status") or "").replace("_", " ").title(),
+                      int(m["episodes"]) if m.get("episodes") else None,
+                      tuple(str(g) for g in (m.get("genres") or [])[:6]), str(m.get("countryOfOrigin") or "")[:2].upper(),
+                      int(nxt["episode"]) if nxt.get("episode") else None, int(nxt["airingAt"]) if nxt.get("airingAt") else None)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+async def get_detail(anime_id: int) -> Tuple[Optional[Detail], bool]:
+    """(detail, ok). ok=False means the provider could not be reached (an older cached copy is still returned when there is one).
+    ok=True with None means there is nothing to show (unknown or adult title). Cached 6 hours, at most DETAIL_MAX titles."""
+    aid, now = int(anime_id), time.time()
+    hit = _details.get(aid)
+    if hit and now - hit[0] < DETAIL_TTL:
+        return hit[1], True
+    try:
+        from anime_service import get_session
+        from config import ANILIST_ENDPOINT
+        session = await get_session()
+        async with session.post(ANILIST_ENDPOINT, json={"query": _DETAIL_QUERY, "variables": {"id": aid}}) as resp:
+            if resp.status != 200:
+                logger.warning("[anime-feed] AniList answered %s for a detail", resp.status)
+                return (hit[1], True) if hit and hit[1] else (None, False)
+            payload = await resp.json()
+    except Exception:
+        logger.warning("[anime-feed] couldn't fetch a detail", exc_info=True)
+        return (hit[1], True) if hit and hit[1] else (None, False)
+    detail = parse_detail(payload)
+    if len(_details) >= DETAIL_MAX:
+        for k in sorted(_details, key=lambda k: _details[k][0])[:DETAIL_MAX // 4]:   # drop the oldest quarter
+            _details.pop(k, None)
+    _details[aid] = (now, detail)
+    return detail, True
+
+
+_cooldowns: "dict[tuple, float]" = {}
+
+
+def cooldown_left(user_id: int, key: str, seconds: float) -> float:
+    """Seconds the person must still wait for this action (0 when allowed, and then the clock starts). Bounded memory."""
+    now, k = time.monotonic(), (int(user_id), key)
+    until = _cooldowns.get(k, 0.0)
+    if until > now:
+        return until - now
+    if len(_cooldowns) > 5000:
+        for old in [x for x, t in _cooldowns.items() if t <= now]:
+            _cooldowns.pop(old, None)
+    _cooldowns[k] = now + seconds
+    return 0.0
 
 
 # ── per-server setup ────────────────────────────────────────────────────

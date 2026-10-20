@@ -29,7 +29,7 @@ TEXT_LIMIT = 3800
 
 def card_text(p: af.Preview, *, tag: Optional[str] = None) -> str:
     head = f"## {p.title}"
-    meta = " · ".join(x for x in (p.fmt, ", ".join(p.genres)) if x)
+    meta = " · ".join(x for x in (af.origin_label(p), p.fmt, ", ".join(p.genres)) if x)
     verb = "aired" if p.airing_at <= int(time.time()) else "airs"
     lines = [head, f"**{af.episode_label(p)}** {verb} <t:{p.airing_at}:F> (<t:{p.airing_at}:R>)"]
     if meta:
@@ -91,22 +91,92 @@ def _walk(components):
             yield acc
 
 
-DYNAMIC_ITEMS = (_FollowButton,)
+class _MoreButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime_more:(\d+)$"):
+    """Read more: the full synopsis and details of this anime, shown only to the person who tapped (nothing is posted in the
+    channel). Anyone can use it. Everything it needs is in the custom_id (the AniList id), so it works on any old card after a
+    restart."""
+
+    COOLDOWN = 3.0
+
+    def __init__(self, anime_id: int):
+        self.anime_id = int(anime_id)
+        super().__init__(discord.ui.Button(label="Read more", style=discord.ButtonStyle.primary, emoji="📖",
+                                           custom_id=f"anime_more:{self.anime_id}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        wait = af.cooldown_left(interaction.user.id, "more", self.COOLDOWN)
+        if wait > 0:
+            await interaction.response.send_message(f"⏳ One moment, try again in {int(wait) + 1}s.", ephemeral=True)
+            return
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)      # answer inside Discord's 3 seconds first
+            detail, ok = await af.get_detail(self.anime_id)
+            await interaction.followup.send(view=detail_view(detail, ok, self.anime_id), ephemeral=True,
+                                            allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            logger.exception("[anime-feed] read more failed")
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(OOPS, ephemeral=True)
+                else:
+                    await interaction.response.send_message(OOPS, ephemeral=True)
+            except discord.HTTPException:
+                pass
+
+
+def detail_text(d: af.Detail) -> str:
+    meta = " · ".join(x for x in (ORIGIN_NAME.get(d.origin, ""), d.fmt, d.status, f"{d.episodes} episodes" if d.episodes else "") if x)
+    lines = [f"## {d.title}"]
+    if d.native and d.native != d.title:
+        lines.append(f"-# {d.native}")
+    if meta:
+        lines.append(meta)
+    if d.genres:
+        lines.append(", ".join(d.genres))
+    if d.next_episode and d.next_at:
+        lines.append(f"**Episode {d.next_episode}** airs <t:{d.next_at}:F> (<t:{d.next_at}:R>)")
+    lines += ["", d.synopsis or "_No synopsis available._", "", f"-# Source: {af.SOURCE_NAME}"]
+    return "\n".join(lines)[:3990]
+
+
+ORIGIN_NAME = af.ORIGIN_LABELS
+
+
+def detail_view(d: Optional[af.Detail], ok: bool, anime_id: int) -> discord.ui.LayoutView:
+    """The private Read more panel. Never raises; says plainly when AniList is unreachable or the title is unavailable."""
+    view = discord.ui.LayoutView(timeout=None)
+    box = discord.ui.Container(accent_colour=ACCENT)
+    if d is None:
+        box.add_item(discord.ui.TextDisplay("😿 I can't reach AniList right now. Try again in a few minutes." if not ok
+                                            else "🚫 There are no details to show for this title."))
+        box.add_item(discord.ui.ActionRow(discord.ui.Button(label="Open on AniList", style=discord.ButtonStyle.link,
+                                                            url=f"https://anilist.co/anime/{int(anime_id)}")))
+    else:
+        box.add_item(discord.ui.TextDisplay(detail_text(d)))
+        box.add_item(discord.ui.ActionRow(discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=d.url),
+                                          _FollowButton(d.anime_id)))
+    view.add_item(box)
+    return view
+
+
+DYNAMIC_ITEMS = (_FollowButton, _MoreButton)
 
 
 def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping: str = "") -> discord.ui.Container:
-    box = discord.ui.Container(accent_colour=ACCENT)
+    box = discord.ui.Container(accent_colour=discord.Color(p.color) if p.color else ACCENT)
     if ping:
         box.add_item(discord.ui.TextDisplay(ping[:500]))
-    text = card_text(p, tag=tag)
-    if p.cover:
-        section = discord.ui.Section(accessory=discord.ui.Thumbnail(p.cover))
-        section.add_item(text)
-        box.add_item(section)
-    else:
-        box.add_item(discord.ui.TextDisplay(text))
-    box.add_item(discord.ui.ActionRow(discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url),
-                                      _FollowButton(p.anime_id)))
+    if p.image:                         # ONE big full-width picture (banner, else the big cover); a missing image never blocks a post
+        gallery = discord.ui.MediaGallery()
+        gallery.add_item(media=p.image, description=p.title[:200])
+        box.add_item(gallery)
+    box.add_item(discord.ui.TextDisplay(card_text(p, tag=tag)))
+    box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id),
+                                      discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url)))
     for row in extra_rows:
         box.add_item(row)
     return box
