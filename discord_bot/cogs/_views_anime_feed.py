@@ -16,6 +16,7 @@ from typing import List, Optional
 
 import discord
 
+from modules import anime_alerts as aa
 from modules import anime_feed as af
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,151 @@ class _MoreButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime_m
                 pass
 
 
+class _AlertButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^anime_alert:(\d+)$"):
+    """Alert me: opens a private panel to pick how you're told about this anime (mention in the server / DM / mute). Anyone can use
+    it. Everything needed is in the custom_id (the AniList id), so it works on any old card after a restart."""
+
+    COOLDOWN = 2.0
+
+    def __init__(self, anime_id: int):
+        self.anime_id = int(anime_id)
+        super().__init__(discord.ui.Button(label="Alert me", style=discord.ButtonStyle.secondary, emoji="⏰",
+                                           custom_id=f"anime_alert:{self.anime_id}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        wait = af.cooldown_left(interaction.user.id, "alert", self.COOLDOWN)
+        if wait > 0:
+            await interaction.response.send_message(f"⏳ One moment, try again in {int(wait) + 1}s.", ephemeral=True)
+            return
+        title = _title_from_message(interaction) or f"Anime {self.anime_id}"
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            guild_id = interaction.guild.id if interaction.guild else None
+            panel = await AlertPanel.open(interaction.user.id, self.anime_id, title, guild_id)
+            await interaction.followup.send(view=panel, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            logger.exception("[anime-feed] alert panel failed")
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(OOPS, ephemeral=True)
+                else:
+                    await interaction.response.send_message(OOPS, ephemeral=True)
+            except discord.HTTPException:
+                pass
+
+
+def alert_text(title: str, mode: Optional[str], prefs: aa.Prefs, plus: bool, note: Optional[str] = None) -> str:
+    lines = [note, ""] if note else []
+    lines += [f"## ⏰ Alerts for {title}"[:200], f"**Now:** {aa.mode_label(mode)}", "",
+              "Pick how I tell you when a new episode comes out. Choosing one also follows the anime.",
+              "-# 🔔 mention = tagged in the server post · 📩 DM = a private message, only if you choose it · 🔕 mute = followed, no alert"]
+    if plus:
+        q = f"{prefs.quiet_start:02d}:00 to {prefs.quiet_end:02d}:00" if prefs.quiet_start is not None and prefs.quiet_end is not None else "off"
+        tz = next((lbl for lbl, m in aa.TZ_CHOICES if m == prefs.tz_minutes), f"UTC{prefs.tz_minutes:+d} min")
+        lines += ["", f"**Quiet hours:** {q} ({tz}). DM alerts that fall inside quiet hours are skipped."]
+    return "\n".join(lines)[:3990]
+
+
+class AlertPanel(discord.ui.LayoutView):
+    """Private, short-lived panel (re-open it from the card's Alert me button any time; nothing here needs to survive a restart)."""
+
+    def __init__(self, user_id: int, anime_id: int, title: str, guild_id: Optional[int], mode: Optional[str], prefs: aa.Prefs, plus: bool):
+        super().__init__(timeout=300)
+        self.user_id, self.anime_id, self.title, self.guild_id = user_id, anime_id, title, guild_id
+        self.mode, self.prefs, self.plus = mode, prefs, plus
+        self.note: Optional[str] = None
+        self._build()
+
+    @classmethod
+    async def open(cls, user_id: int, anime_id: int, title: str, guild_id: Optional[int]) -> "AlertPanel":
+        mode = await aa.get_mode(user_id, anime_id)
+        prefs = await aa.get_prefs(user_id)
+        plus = await af.has_anime_plus(user_id, guild_id)
+        return cls(user_id, anime_id, title, guild_id, mode, prefs, plus)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("⏰ This panel is someone else's. Tap Alert me on the card for your own.", ephemeral=True)
+            return False
+        return True
+
+    def _build(self) -> None:
+        self.clear_items()
+        modes = discord.ui.Select(placeholder="How should I alert you?", min_values=1, max_values=1, options=[
+            discord.SelectOption(label="Mention me in the server", value=aa.MENTION, emoji="🔔", default=self.mode == aa.MENTION,
+                                 description="Tagged in the post when the episode comes out"),
+            discord.SelectOption(label="DM me" + ("" if self.plus else " (Anime+)"), value=aa.DM, emoji="📩", default=self.mode == aa.DM,
+                                 description="A private message, even if the server feed is off"),
+            discord.SelectOption(label="Mute", value=aa.MUTE, emoji="🔕", default=self.mode == aa.MUTE,
+                                 description="Keep following, no alerts")])
+        modes.callback = self._on_mode
+        rows = [discord.ui.ActionRow(modes)]
+        if self.plus:
+            quiet = discord.ui.Select(placeholder="Quiet hours for DM alerts", min_values=1, max_values=1, options=[
+                discord.SelectOption(label="No quiet hours", value="off", emoji="🔊", default=self.prefs.quiet_start is None)] + [
+                discord.SelectOption(label=lbl, value=f"{a}-{b}", emoji="🌙", default=(self.prefs.quiet_start, self.prefs.quiet_end) == (a, b))
+                for lbl, a, b in aa.QUIET_CHOICES])
+            quiet.callback = self._on_quiet
+            tz = discord.ui.Select(placeholder="Your timezone (for quiet hours)", min_values=1, max_values=1, options=[
+                discord.SelectOption(label=lbl, value=str(m), default=m == self.prefs.tz_minutes) for lbl, m in aa.TZ_CHOICES])
+            tz.callback = self._on_tz
+            rows += [discord.ui.ActionRow(quiet), discord.ui.ActionRow(tz)]
+        self.add_item(_info_box(alert_text(self.title, self.mode, self.prefs, self.plus, self.note), rows))
+
+    async def _push(self, interaction: discord.Interaction) -> None:
+        self._build()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_mode(self, interaction: discord.Interaction):
+        mode = (interaction.data.get("values") or [""])[0]
+        try:
+            if mode == aa.DM and not await af.has_anime_plus(self.user_id, self.guild_id):
+                self.note = "🔒 DM alerts are part of Anime+. Mention and mute are free."
+            else:
+                state, n = await aa.set_mode(self.user_id, self.anime_id, self.title, mode, af.FREE_FOLLOW_LIMIT)
+                if state == "limit":
+                    self.note = f"🚫 You already follow {n} anime, the free limit. Unfollow one first."
+                else:
+                    self.mode = mode
+                    self.note = {aa.MENTION: "✅ I'll mention you in the server post.", aa.DM: "✅ I'll DM you when it airs. Make sure your DMs are open.",
+                                 aa.MUTE: "✅ Muted. You still follow it."}[mode]
+        except Exception:
+            logger.exception("[anime-feed] couldn't save the alert mode")
+            self.note = OOPS
+        await self._push(interaction)
+
+    async def _save_prefs(self, interaction: discord.Interaction, prefs: aa.Prefs, ok_note: str):
+        try:
+            await aa.save_prefs(self.user_id, prefs)
+            self.prefs, self.note = prefs, ok_note
+        except Exception:
+            logger.exception("[anime-feed] couldn't save alert settings")
+            self.note = OOPS
+        await self._push(interaction)
+
+    async def _on_quiet(self, interaction: discord.Interaction):
+        v = (interaction.data.get("values") or ["off"])[0]
+        if v == "off":
+            start = end = None
+        else:
+            a, b = v.split("-")
+            start, end = int(a), int(b)
+        await self._save_prefs(interaction, aa.Prefs(self.prefs.tz_minutes, start, end), "✅ Quiet hours saved.")
+
+    async def _on_tz(self, interaction: discord.Interaction):
+        try:
+            m = int((interaction.data.get("values") or ["0"])[0])
+        except ValueError:
+            m = 0
+        if m not in {x for _, x in aa.TZ_CHOICES}:
+            m = 0
+        await self._save_prefs(interaction, aa.Prefs(m, self.prefs.quiet_start, self.prefs.quiet_end), "✅ Timezone saved.")
+
+
 def detail_text(d: af.Detail) -> str:
     meta = " · ".join(x for x in (ORIGIN_NAME.get(d.origin, ""), d.fmt, d.status, f"{d.episodes} episodes" if d.episodes else "") if x)
     lines = [f"## {d.title}"]
@@ -163,7 +309,7 @@ def detail_view(d: Optional[af.Detail], ok: bool, anime_id: int) -> discord.ui.L
     return view
 
 
-DYNAMIC_ITEMS = (_FollowButton, _MoreButton)
+DYNAMIC_ITEMS = (_FollowButton, _MoreButton, _AlertButton)
 
 
 def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping: str = "") -> discord.ui.Container:
@@ -175,7 +321,7 @@ def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping:
         gallery.add_item(media=p.image, description=p.title[:200])
         box.add_item(gallery)
     box.add_item(discord.ui.TextDisplay(card_text(p, tag=tag)))
-    box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id),
+    box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id), _AlertButton(p.anime_id),
                                       discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url)))
     for row in extra_rows:
         box.add_item(row)

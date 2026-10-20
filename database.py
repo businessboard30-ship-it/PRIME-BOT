@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "122"
+SCHEMA_VERSION = "123"
+# "122" -> "123" adds 074_anime_alerts.sql (anime_follows.alert_mode/alert_changed_at, anime_user_prefs, anime_alerts_sent). ADD COLUMN / CREATE TABLE IF NOT EXISTS only.
 # "121" -> "122" adds 073_verification_pro.sql (8 nullable ADD COLUMN IF NOT EXISTS on discord_verification_config: panel look, log channel, auto-kick, min account age, welcome text) + a partial index. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "120" -> "121" adds 072_anime_follow_ping.sql (anime_feed_config.ping_role_id, anime_follows). ADD COLUMN / CREATE TABLE IF NOT EXISTS only.
 # "119" -> "120" adds 071_anime_feed_posting.sql (anime_feed_config.enabled_at, anime_feed_posted dedup table). ADD COLUMN / CREATE TABLE IF NOT EXISTS only.
@@ -5828,6 +5829,11 @@ class Database:
         anime_follow_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "072_anime_follow_ping.sql"
         if anime_follow_migration.exists():
             await conn.execute(anime_follow_migration.read_text())
+
+        # Anime feed alerts: per-anime alert mode, personal quiet hours, DM dedupe. Additive/idempotent.
+        anime_alerts_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "074_anime_alerts.sql"
+        if anime_alerts_migration.exists():
+            await conn.execute(anime_alerts_migration.read_text())
 
         # Join verification premium extras (panel look, log channel, auto-kick, min account age, welcome text).
         # Additive/idempotent.

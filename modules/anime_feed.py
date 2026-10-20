@@ -414,15 +414,21 @@ async def toggle_follow(user_id: int, anime_id: int, title: str, limit: int = FR
 
 
 async def followers_of(anime_id: int, limit: int = 500) -> List[int]:
-    """People following this anime, earliest first. Never raises (empty on error: the post still goes out)."""
+    """People following this anime who want to be mentioned in the server (not DM-only or muted), earliest first. Never raises (empty on error: the post still goes out)."""
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT user_id FROM anime_follows WHERE anime_id = $1 ORDER BY followed_at LIMIT $2", int(anime_id), int(limit))
+            rows = await conn.fetch("SELECT user_id FROM anime_follows WHERE anime_id = $1 AND alert_mode = 'mention' ORDER BY followed_at LIMIT $2", int(anime_id), int(limit))
         return [int(r["user_id"]) for r in rows]
     except Exception:
         logger.debug("[anime-feed] couldn't read followers", exc_info=True)
         return []
+
+
+async def has_anime_plus(user_id: int, guild_id: Optional[int] = None, clone_id=None) -> bool:
+    """Exclusive extras (DM alerts, quiet hours). Always True until the Upgrade slice (D5) replaces this with
+    `server premium OR personal entitlement`; every caller already goes through it."""
+    return True
 
 
 def ping_line(role_id: Optional[int], user_ids: List[int]) -> Tuple[str, List[int]]:

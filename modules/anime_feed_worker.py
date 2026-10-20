@@ -19,6 +19,7 @@ import random
 import time
 from typing import List, Optional
 
+from modules import anime_alerts as aa
 from modules import anime_feed as af
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,8 @@ GRACE_SECONDS = af.LOOKBACK_HOURS * 3600
 MAX_POSTS_PER_CYCLE = 25
 POST_GAP = 1.0
 BACKOFF_BASE, BACKOFF_MAX = 60, 1800
+MAX_DMS_PER_CYCLE = 40                  # bounded DM queue: at most this many alerts per pass
+DM_GAP = 1.2                            # seconds between DMs (about 50 a minute at most)
 
 _workers: List["Worker"] = []
 
@@ -66,8 +69,8 @@ def backoff_delay(attempt: int, rng=random) -> float:
 # ── the worker ──────────────────────────────────────────────────────────
 
 class Worker:
-    def __init__(self, bot, clone_id=None, post_gap: float = POST_GAP):
-        self.bot, self.clone_id, self.post_gap = bot, clone_id, post_gap
+    def __init__(self, bot, clone_id=None, post_gap: float = POST_GAP, dm_gap: float = DM_GAP):
+        self.bot, self.clone_id, self.post_gap, self.dm_gap = bot, clone_id, post_gap, dm_gap
         self.state = STOPPED
         self.failures = 0
         self._wake = asyncio.Event()
@@ -128,7 +131,12 @@ class Worker:
             guilds = [g for g in await af.enabled_guilds(self.clone_id) if self.bot.get_guild(g.guild_id) is not None]
         except Exception:
             return self._fail("couldn't read the feed settings")
-        if not guilds:
+        try:
+            dm_wanted = await aa.any_dm_alerts()                  # someone with a DM alert keeps the worker awake even with no feeds on
+        except Exception:
+            logger.debug("[anime-feed] couldn't check DM alerts", exc_info=True)
+            dm_wanted = False
+        if not guilds and not dm_wanted:
             return None
         items, ok = await af.airing_soon()
         if not ok:
@@ -146,10 +154,70 @@ class Worker:
                     posted += 1
                     await asyncio.sleep(self.post_gap)
         self.posted_total += posted
+        if dm_wanted:
+            try:
+                await self._deliver_dms(items, now)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("[anime-feed] DM pass failed")
         self._set(SLEEPING)
         wait = next_wait(items, now)
         logger.debug("[anime-feed] posted %s, sleeping %ss (%s servers)", posted, wait, len(guilds))
         return wait
+
+    async def _deliver_dms(self, items: List[af.Preview], now: int) -> int:
+        """Private alerts for people who chose DM. Claimed BEFORE sending; skipped in quiet hours; bounded per pass."""
+        sent = 0
+        for p in due(items, now):
+            if sent >= MAX_DMS_PER_CYCLE:
+                break
+            try:
+                targets = await aa.dm_targets(p.anime_id, p.airing_at)
+            except Exception:
+                logger.warning("[anime-feed] couldn't read DM targets", exc_info=True)
+                continue
+            for t in targets:
+                if sent >= MAX_DMS_PER_CYCLE:
+                    break
+                if aa.in_quiet(now, t.tz_minutes, t.quiet_start, t.quiet_end):
+                    continue
+                try:
+                    if not await aa.claim_dm(t.user_id, p.anime_id, p.episode):
+                        continue
+                except Exception:
+                    logger.warning("[anime-feed] couldn't claim a DM", exc_info=True)
+                    continue
+                if await self._dm(t.user_id, p):
+                    sent += 1
+                await asyncio.sleep(self.dm_gap)
+        return sent
+
+    async def _dm(self, user_id: int, p: af.Preview) -> bool:
+        import discord
+        from discord_bot.cogs._views_anime_feed import post_view
+        try:
+            user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
+            await user.send(view=post_view(p, tag="Alert · change it with Alert me"), allowed_mentions=discord.AllowedMentions.none())
+        except (discord.Forbidden, discord.NotFound):                   # DMs closed (or the account is gone): keep the claim, count it
+            try:
+                if await aa.note_dm_result(user_id, False):
+                    logger.info("[anime-feed] DMs closed 3 times in a row; a person's DM alerts moved back to mention mode")
+            except Exception:
+                logger.debug("[anime-feed] couldn't record a DM failure", exc_info=True)
+            return False
+        except Exception:                                               # temporary: give the claim back so a later pass retries
+            logger.warning("[anime-feed] DM failed, will retry", exc_info=True)
+            try:
+                await aa.release_dm(user_id, p.anime_id, p.episode)
+            except Exception:
+                logger.debug("[anime-feed] couldn't release a DM claim", exc_info=True)
+            return False
+        try:
+            await aa.note_dm_result(user_id, True)
+        except Exception:
+            logger.debug("[anime-feed] couldn't record a DM success", exc_info=True)
+        return True
 
     def _fail(self, why: str) -> float:
         delay = backoff_delay(self.failures)
