@@ -246,28 +246,46 @@ async def bulk_preview(owner_id: int, clone_id, kind: str):
 
 
 async def bulk_care(owner_id: int, clone_id, kind: str) -> BulkResult:
-    """Feed / water / rent a bed for every cat that needs it. Each cat is its own safe single action, so a tap that runs
-    out of coins part-way keeps what it already did and says how many are left."""
-    action = {"feed": feed, "water": water, "bed": rent_bed}[kind]
-    ids = await _candidates(owner_id, clone_id, kind)
-    done = spent = skipped = 0
-    coins: Optional[int] = None
-    for n, cat_id in enumerate(ids):
-        try:
-            res = await action(cat_id, owner_id, clone_id)
-        except Exception:
-            logger.exception("[cat-care] bulk %s failed for cat %s", kind, cat_id)
-            skipped += 1
-            continue
-        if res.status == "ok":
-            done += 1
-            spent += res.cost
-            coins = res.coins
-        elif res.status == "poor":
-            return BulkResult(kind, done, spent, res.coins, short=len(ids) - n, skipped=skipped)
-        else:
-            skipped += 1
-    return BulkResult(kind, done, spent, coins, skipped=skipped)
+    """Feed / water / rent a bed for every cat that needs it, in ONE transaction and a handful of statements (it used to be
+    one transaction per cat: up to 100 sequential round trips, which was slow and made the screen feel stuck). Same rules and
+    prices as the single actions. Lock order is the same too: the cats first, then the wallet. The cats are taken most urgent
+    first and as many as the coins pay for; the rest are counted as `short`. Everything happens or nothing does."""
+    col, cost = BULK_KINDS[kind]         # fixed names only, never user input
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if kind == "feed":
+                rows = await conn.fetch(
+                    "SELECT a.id FROM cat_adoptions a WHERE a.owner_id = $1 AND COALESCE(a.clone_id, -1) = $2 "
+                    f"AND a.hungry_since IS NOT NULL AND {_NOT_FOR_SALE} ORDER BY a.hungry_since, a.id LIMIT $3 FOR UPDATE OF a",
+                    owner_id, _key(clone_id), BULK_LIMIT)
+            else:
+                edge = datetime.now(timezone.utc) + timedelta(hours=RENEW_WINDOW_HOURS)
+                rows = await conn.fetch(
+                    "SELECT a.id FROM cat_adoptions a WHERE a.owner_id = $1 AND COALESCE(a.clone_id, -1) = $2 "
+                    f"AND (a.{col} IS NULL OR a.{col} <= $4) AND {_NOT_FOR_SALE} ORDER BY a.id LIMIT $3 FOR UPDATE OF a",
+                    owner_id, _key(clone_id), BULK_LIMIT, edge)
+            ids = [int(r["id"]) for r in rows]
+            if not ids:
+                return BulkResult(kind)
+            coins = int(await conn.fetchval(
+                "SELECT coins FROM cat_wallets WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 FOR UPDATE", owner_id, -1) or 0)
+            n = min(len(ids), coins // cost)
+            if n <= 0:
+                return BulkResult(kind, 0, 0, coins, short=len(ids))
+            take, total = ids[:n], n * cost
+            left = await conn.fetchval(
+                "UPDATE cat_wallets SET coins = coins - $3, updated_at = NOW() "
+                "WHERE owner_id = $1 AND COALESCE(clone_id, -1) = $2 AND coins >= $3 RETURNING coins", owner_id, -1, total)
+            if left is None:                                         # can't happen (the row is locked); never half-do it
+                return BulkResult(kind, 0, 0, coins, short=len(ids))
+            if kind == "feed":
+                await conn.execute("UPDATE cat_adoptions SET hungry_since = NULL, hunger_warned = NULL, fed_at = NOW() "
+                                   "WHERE id = ANY($1::bigint[])", take)
+            else:
+                await conn.execute(f"UPDATE cat_adoptions SET {col} = GREATEST(NOW(), COALESCE({col}, NOW())) + make_interval(hours => $2) "
+                                   "WHERE id = ANY($1::bigint[])", take, COMFORT_HOURS)
+            return BulkResult(kind, n, total, int(left), short=len(ids) - n)
 
 
 async def get_cat_care(cat_id: int):
