@@ -642,7 +642,7 @@ class VerificationView(ServerPanelView):
     def body(self):
         c = self.data.get("cfg", {})
         return [
-            f"Gate: {_onoff(c.get('enabled'))} · mode `{c.get('mode', 'button')}`",
+            f"Gate: {_onoff(c.get('enabled'))} · mode `{c.get('mode', 'captcha')}`",
             f"Channel: {_chan(None, c.get('channel_id'))}",
             f"Verified role: {'<@&%s>' % c['verified_role_id'] if c.get('verified_role_id') else 'not set'}",
         ]
@@ -661,7 +661,7 @@ class VerificationView(ServerPanelView):
     async def _wizard(self, interaction: discord.Interaction):
         from discord_bot.cogs.verification import WizardView as VerificationWizard
         wiz = VerificationWizard(interaction.user.id, self.data.get("cfg", {}))
-        await interaction.response.send_message(embed=wiz.build_embed(), view=wiz, ephemeral=True)
+        await interaction.response.send_message(view=wiz, ephemeral=True)
 
     async def _toggle(self, interaction: discord.Interaction):
         turning_on = not self.data.get("cfg", {}).get("enabled")

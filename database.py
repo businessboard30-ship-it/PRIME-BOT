@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "121"
+SCHEMA_VERSION = "122"
+# "121" -> "122" adds 073_verification_pro.sql (8 nullable ADD COLUMN IF NOT EXISTS on discord_verification_config: panel look, log channel, auto-kick, min account age, welcome text) + a partial index. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "120" -> "121" adds 072_anime_follow_ping.sql (anime_feed_config.ping_role_id, anime_follows). ADD COLUMN / CREATE TABLE IF NOT EXISTS only.
 # "119" -> "120" adds 071_anime_feed_posting.sql (anime_feed_config.enabled_at, anime_feed_posted dedup table). ADD COLUMN / CREATE TABLE IF NOT EXISTS only.
 # "118" -> "119" adds 070_anime_feed.sql (anime_feed_config: per-server anime release feed channel + on/off). CREATE TABLE IF NOT EXISTS only.
@@ -5828,6 +5829,12 @@ class Database:
         if anime_follow_migration.exists():
             await conn.execute(anime_follow_migration.read_text())
 
+        # Join verification premium extras (panel look, log channel, auto-kick, min account age, welcome text).
+        # Additive/idempotent.
+        verification_pro_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "073_verification_pro.sql"
+        if verification_pro_migration.exists():
+            await conn.execute(verification_pro_migration.read_text())
+
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
         if cat_shared_wallet_migration.exists():
@@ -11362,6 +11369,12 @@ class Database:
             )
             return dict(row)
 
+    # Premium extras columns (073_verification_pro.sql). NULL = off / default look.
+    _VERIFICATION_PRO_FIELDS = (
+        "panel_title", "panel_text", "panel_color", "panel_image_url",
+        "log_channel_id", "kick_after_minutes", "min_account_age_days", "welcome_text",
+    )
+
     async def get_verification_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -11371,52 +11384,61 @@ class Database:
             )
             if row:
                 return dict(row)
-            return {
-                "guild_id": guild_id, "clone_id": clone_id, "mode": "button",
+            # Captcha is the default for a server that has never set this up.
+            default = {
+                "guild_id": guild_id, "clone_id": clone_id, "mode": "captcha",
                 "channel_id": None, "unverified_role_id": None, "verified_role_id": None,
                 "timeout_seconds": 300, "max_attempts": 3, "message_id": None,
                 "enabled": False,
                 "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
             }
+            default.update({k: None for k in self._VERIFICATION_PRO_FIELDS})
+            return default
 
     async def set_verification_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
         """fields may include mode, channel_id, unverified_role_id,
         verified_role_id, timeout_seconds, max_attempts, message_id,
-        enabled, wizard_channel_id, wizard_message_id, wizard_invoker_id —
-        any key omitted keeps its current value (upsert-merge), same
-        convention as set_ticket_config."""
+        enabled, wizard_channel_id, wizard_message_id, wizard_invoker_id,
+        and the premium extras (panel_title, panel_text, panel_color,
+        panel_image_url, log_channel_id, kick_after_minutes,
+        min_account_age_days, welcome_text) — any key omitted keeps its
+        current value (upsert-merge), same convention as set_ticket_config.
+        Pass an extra explicitly as None to clear it."""
         current = await self.get_verification_config(guild_id, clone_id=clone_id)
-        mode = fields.get("mode", current["mode"])
-        channel_id = fields.get("channel_id", current["channel_id"])
-        unverified_role_id = fields.get("unverified_role_id", current["unverified_role_id"])
-        verified_role_id = fields.get("verified_role_id", current["verified_role_id"])
-        timeout_seconds = fields.get("timeout_seconds", current["timeout_seconds"])
-        max_attempts = fields.get("max_attempts", current["max_attempts"])
-        message_id = fields.get("message_id", current["message_id"])
-        enabled = fields.get("enabled", current["enabled"])
-        wizard_channel_id = fields.get("wizard_channel_id", current.get("wizard_channel_id"))
-        wizard_message_id = fields.get("wizard_message_id", current.get("wizard_message_id"))
-        wizard_invoker_id = fields.get("wizard_invoker_id", current.get("wizard_invoker_id"))
+        base_cols = (
+            "mode", "channel_id", "unverified_role_id", "verified_role_id", "timeout_seconds", "max_attempts",
+            "message_id", "enabled", "wizard_channel_id", "wizard_message_id", "wizard_invoker_id",
+        )
+        cols = base_cols + self._VERIFICATION_PRO_FIELDS
+        values = [fields.get(c, current.get(c)) for c in cols]
+        names = ", ".join(("guild_id", "clone_id") + cols)
+        params = ", ".join(f"${i}" for i in range(1, len(cols) + 3))
+        updates = ", ".join(f"{c} = ${i}" for i, c in enumerate(cols, start=3))
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
-                INSERT INTO discord_verification_config
-                    (guild_id, clone_id, mode, channel_id, unverified_role_id, verified_role_id,
-                     timeout_seconds, max_attempts, message_id, enabled,
-                     wizard_channel_id, wizard_message_id, wizard_invoker_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                f"""
+                INSERT INTO discord_verification_config ({names})
+                VALUES ({params})
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
-                    SET mode = $3, channel_id = $4, unverified_role_id = $5, verified_role_id = $6,
-                        timeout_seconds = $7, max_attempts = $8, message_id = $9, enabled = $10,
-                        wizard_channel_id = $11, wizard_message_id = $12, wizard_invoker_id = $13
+                    SET {updates}
                 RETURNING *
                 """,
-                guild_id, clone_id, mode, channel_id, unverified_role_id, verified_role_id,
-                timeout_seconds, max_attempts, message_id, enabled,
-                wizard_channel_id, wizard_message_id, wizard_invoker_id
+                guild_id, clone_id, *values
             )
             return dict(row)
+
+    async def get_verification_kick_configs(self, clone_id: Optional[int] = None) -> list:
+        """Enabled verification setups that have auto-kick on, for this bot/clone. Premium is checked by the caller."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM discord_verification_config "
+                "WHERE enabled AND kick_after_minutes IS NOT NULL AND unverified_role_id IS NOT NULL "
+                "AND clone_id IS NOT DISTINCT FROM $1",
+                clone_id
+            )
+            return [dict(r) for r in rows]
 
     async def create_verification_pass(self, nonce: str, guild_id: int, clone_id: Optional[int], user_id: int) -> bool:
         """True if this challenge nonce was recorded now, False if already used."""
