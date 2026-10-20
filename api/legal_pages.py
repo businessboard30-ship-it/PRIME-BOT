@@ -267,6 +267,7 @@ auto-renew.</li>
 <ul>
 <li>Card plan: ${_USER_PLANS['card_plan']['price_usd']:g}/month, custom level-up card.</li>
 <li>Developer mode: ${_USER_PLANS['dev_monthly']['price_usd']:g}/month or ${_USER_PLANS['dev_yearly']['price_usd']:g}/year.</li>
+<li>Anime feed upgrade (Discord): ${_USER_PLANS['anime_plus']['price_usd']:g}/month, more follows, DM alerts and quiet hours.</li>
 <li>Renew automatically; cancel any time and keep access to the end of the period.</li>
 </ul>
 

@@ -618,6 +618,7 @@ UNLOCK_HANDLERS = {
     "card_plan": _make_unlock_user_plan("card_plan"),
     "dev_monthly": _make_unlock_user_plan("dev_monthly"),
     "dev_yearly": _make_unlock_user_plan("dev_yearly"),
+    "anime_plus": _make_unlock_user_plan("anime_plus"),
     "welcome_card_pack": _unlock_welcome_card_pack,
     "ultra_welcome_pack": _unlock_ultra_pack,
     "discord_clone": _unlock_discord_clone,

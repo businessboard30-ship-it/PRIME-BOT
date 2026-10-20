@@ -1,7 +1,7 @@
 # path: modules/entitlements.py
 """Per-user paid products (member dashboard). Pure functions: no I/O, so web and bot share one rule.
 
-Products: card_plan ($2/mo, custom level-up card), dev_monthly ($5/mo) and dev_yearly ($30/yr) (Developer mode).
+Products: card_plan ($2/mo, custom level-up card), dev_monthly ($5/mo) and dev_yearly ($30/yr) (Developer mode), anime_plus (monthly, anime feed upgrade).
 Status values: active | past_due | cancelled | expired.
 
 Access rules (the browser never decides these):
@@ -14,7 +14,7 @@ Only the payment webhook may write user_entitlements (database.entitlement_upser
 """
 from datetime import datetime, timedelta, timezone
 
-PRODUCTS = ("card_plan", "dev_monthly", "dev_yearly")
+PRODUCTS = ("card_plan", "dev_monthly", "dev_yearly", "anime_plus")
 DEV_PRODUCTS = ("dev_monthly", "dev_yearly")
 STATUSES = ("active", "past_due", "cancelled", "expired")
 PAST_DUE_GRACE = timedelta(days=3)

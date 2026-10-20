@@ -22,11 +22,15 @@ Idempotency is NOT decided here; the caller must claim the gateway event id firs
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import config as _config
+
 # product -> (price_usd, period_days). Prices come from here, never from the client.
 PLANS = {
     "card_plan": {"price_usd": 2.0, "period_days": 31, "label": "Custom level-up card"},
     "dev_monthly": {"price_usd": 5.0, "period_days": 31, "label": "Developer mode (monthly)"},
     "dev_yearly": {"price_usd": 30.0, "period_days": 366, "label": "Developer mode (yearly)"},
+    # Anime feed personal upgrade (discord_bot/cogs/_views_anime_plus.py). The price is one config value, never the client's.
+    "anime_plus": {"price_usd": float(_config.ANIME_PLUS_FEE_USD), "period_days": 31, "label": "Anime feed upgrade"},
 }
 KINDS = ("charge", "cancel", "ended", "failed")
 # Small slack so a charge that lands a little late never reads as underpaid by rounding.

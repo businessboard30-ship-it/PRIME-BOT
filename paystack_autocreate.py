@@ -39,6 +39,8 @@ PLAN_SPECS = {
                     "description": "Developer tools. Renews monthly, cancel any time."},
     "dev_yearly": {"name": "Developer Mode - Yearly", "interval": "annually",
                    "description": "Developer tools. Renews yearly, cancel any time."},
+    "anime_plus": {"name": "Anime Feed Upgrade - Monthly", "interval": "monthly",
+                   "description": "Anime feed upgrade. Renews monthly, cancel any time."},
 }
 CURRENCY = "GHS"        # the Paystack account only has GHS enabled
 

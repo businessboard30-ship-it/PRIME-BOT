@@ -74,6 +74,11 @@ class handler(BaseHTTPRequestHandler):
                 handled = asyncio.run(paystack_user_plans.handle(db, event_type, data))
                 if handled is None and event_type == 'charge.success':
                     asyncio.run(self._handle_charge_success(data))
+                elif (handled == 'ignored' and event_type == 'charge.success'
+                      and (data.get('metadata') or {}).get('type') == 'anime_plus'):
+                    # anime_plus is now a subscription plan, but a one-off checkout started before that change may still be paid:
+                    # the old completion path only acts on a row still pending in anime_plus_payments, so this is harmless otherwise.
+                    asyncio.run(self._handle_charge_success(data))
             elif event_type == 'charge.success':
                 asyncio.run(self._handle_charge_success(data))
             

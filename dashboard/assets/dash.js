@@ -1007,7 +1007,7 @@
     return ownerLoading;
   }
   /* ---------- member area (#/me): the signed-in user's own plans; server decides everything ---------- */
-  var PRODUCT_LABEL = { card_plan: "Custom level-up card", dev_monthly: "Developer mode (monthly)", dev_yearly: "Developer mode (yearly)" };
+  var PRODUCT_LABEL = { card_plan: "Custom level-up card", dev_monthly: "Developer mode (monthly)", dev_yearly: "Developer mode (yearly)", anime_plus: "Anime feed upgrade" };
   var STATE_LABEL = { active: "Active", cancelled: "Ends at period end", past_due: "Payment failed (grace period)", expired: "Expired", none: "None" };
   function section(title) { return h("div", { class: "card rv", style: "margin-bottom:16px" }, h("h3", { text: title })); }
   function fail(box, e) { box.appendChild(h("p", { class: "muted", text: (e && e.message) || "Couldn't load this." })); }
