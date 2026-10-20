@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 CACHE_TTL = 15 * 60
 WINDOW_HOURS = 48
 LOOKBACK_HOURS = 3                  # episodes that aired in the last 3 hours are still "just aired"; older ones are never posted
-MAX_ITEMS = 12
+MAX_ITEMS = 12                      # most titles a PREVIEW browser shows
+MAX_FETCH = 50                      # most airings kept from the provider (AniList's page limit); the worker posts from all of these
 SYNOPSIS_CHARS = 280
 SOURCE_NAME = "AniList"
 
@@ -108,7 +109,7 @@ def parse_airing(payload: dict) -> List[Preview]:
                                int(m["episodes"]) if m.get("episodes") else None))
         except (TypeError, ValueError, AttributeError):
             continue
-    return out[:MAX_ITEMS]
+    return out[:MAX_FETCH]
 
 
 def episode_label(p: Preview) -> str:
@@ -118,6 +119,11 @@ def episode_label(p: Preview) -> str:
 
 def upcoming(items: List[Preview], now: int) -> List[Preview]:
     return [p for p in items if p.airing_at > now]
+
+
+def for_preview(items: List[Preview], now: int) -> List[Preview]:
+    """What the preview browser shows: the soonest upcoming titles, capped."""
+    return upcoming(items, now)[:MAX_ITEMS]
 
 
 # ── provider (cached, shared across servers) ────────────────────────────
@@ -130,7 +136,7 @@ async def _fetch(now: int) -> Optional[dict]:
     from anime_service import get_session
     from config import ANILIST_ENDPOINT
     session = await get_session()
-    body = {"query": _QUERY, "variables": {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": 40}}
+    body = {"query": _QUERY, "variables": {"from": now - LOOKBACK_HOURS * 3600, "to": now + WINDOW_HOURS * 3600, "perPage": MAX_FETCH}}
     async with session.post(ANILIST_ENDPOINT, json=body) as resp:
         if resp.status != 200:
             logger.warning("[anime-feed] AniList answered %s", resp.status)

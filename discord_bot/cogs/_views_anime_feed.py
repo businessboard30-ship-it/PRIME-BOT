@@ -239,7 +239,7 @@ class AnimeSetupView(discord.ui.LayoutView):
     async def _on_preview(self, interaction: discord.Interaction):
         await interaction.response.defer()
         items, ok = await af.airing_soon()
-        items = af.upcoming(items, int(time.time()))
+        items = af.for_preview(items, int(time.time()))
         self.previews, self.index, self.screen = items, 0, "preview"
         self.note = None if ok else "😿 I can't reach AniList right now, so there's nothing to preview. Try again in a few minutes."
         await self._push(interaction)
