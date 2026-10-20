@@ -71,6 +71,16 @@ def _diagnose_role_failure(guild: discord.Guild, role: discord.Role | None) -> s
     return "something unexpected went wrong on Discord's end — a staff member should check the bot's audit log or try again shortly"
 
 
+async def _after_verified(member: discord.Member, config: dict) -> None:
+    """Premium follow-ups (log line, custom welcome DM). Never raises: a verified member stays verified."""
+    try:
+        from modules import verification_pro
+        cfg = await verification_pro.effective_for(member.guild.id, config.get("clone_id"), config)
+        await verification_pro.on_verified(member, cfg)
+    except Exception:
+        logger.exception("verification: premium follow-up failed for %s in guild %s", member.id, member.guild.id)
+
+
 async def do_verify(member: discord.Member, config: dict) -> tuple[bool, str | None]:
     """Swaps Unverified -> Verified (or just drops Unverified if no
     verified_role_id is configured). Returns (success, reason). Best-effort:
@@ -85,7 +95,6 @@ async def do_verify(member: discord.Member, config: dict) -> tuple[bool, str | N
             await member.remove_roles(unverified_role, reason="Passed join verification")
         if verified_role:
             await member.add_roles(verified_role, reason="Passed join verification")
-        return True, None
     except discord.Forbidden:
         # Figure out which of the two roles was actually the problem so the
         # staff-facing message points at the right one.
@@ -102,6 +111,8 @@ async def do_verify(member: discord.Member, config: dict) -> tuple[bool, str | N
     except discord.HTTPException as e:
         logger.warning("verification: role swap failed for %s in guild %s: %s", member.id, guild.id, e)
         return False, "Discord rejected the role update — a staff member should check the bot's permissions and try again"
+    await _after_verified(member, config)
+    return True, None
 
 
 class CaptchaModal(discord.ui.Modal, title="Verify you're human"):
@@ -160,10 +171,13 @@ async def apply_verification_pass(bot_or_client, pass_row: dict) -> bool:
         return False
     ok, _reason = await do_verify(member, cfg)
     if ok:
-        try:
-            await member.send(f"✅ You're verified in **{guild.name}** — welcome in!")
-        except discord.HTTPException:
-            pass
+        from modules import verification_pro
+        custom = (await verification_pro.effective_for(guild.id, clone_id, cfg)).get("welcome_text")
+        if not custom:      # a premium custom welcome was already sent by do_verify
+            try:
+                await member.send(f"✅ You're verified in **{guild.name}** — welcome in!")
+            except discord.HTTPException:
+                pass
     return ok
 
 
@@ -261,14 +275,21 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
             )
 
 
-def build_verify_panel_embed(guild_name: str, mode: str) -> discord.Embed:
-    desc = "Click the button below to verify you're a real person and unlock the rest of the server."
-    if mode == "captcha":
+def build_verify_panel_embed(guild_name: str, mode: str, look: dict | None = None) -> discord.Embed:
+    """`look` is the premium custom-look dict (modules.verification_pro.panel_look of an EFFECTIVE config).
+    Empty/None = the default look every server gets."""
+    look = look or {}
+    custom_text = look.get("panel_text")
+    desc = custom_text or "Click the button below to verify you're a real person and unlock the rest of the server."
+    if mode == "captcha" and not custom_text:
         # Deliberately generic: the check is a Cloudflare page when Turnstile is
         # configured, otherwise a short in-Discord question — the description
         # shouldn't promise one specific kind of challenge.
         desc += "\nYou'll be asked to pass a quick security check."
-    embed = discord.Embed(title=f"Welcome to {guild_name} 👋", description=desc, color=discord.Color.green())
+    color = discord.Color(look["panel_color"]) if look.get("panel_color") is not None else discord.Color.green()
+    embed = discord.Embed(title=look.get("panel_title") or f"Welcome to {guild_name} 👋", description=desc, color=color)
+    if look.get("panel_image_url"):
+        embed.set_image(url=look["panel_image_url"])
     return embed
 
 
