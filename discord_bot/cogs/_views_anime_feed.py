@@ -169,8 +169,13 @@ def _actions():
     return aa
 
 
+def _browse():
+    from discord_bot.cogs import _views_anime_browse as ab
+    return ab
+
+
 def _all_dynamic_items():
-    return (_FollowButton, _MoreButton) + tuple(_actions().ACTION_ITEMS)
+    return (_FollowButton, _MoreButton) + tuple(_actions().ACTION_ITEMS) + tuple(_browse().BROWSE_ITEMS)
 
 
 def __getattr__(name: str):
@@ -193,8 +198,10 @@ def build_card(p: af.Preview, *, tag: Optional[str] = None, extra_rows=(), ping:
     link = discord.ui.Button(label="Details on AniList", style=discord.ButtonStyle.link, url=p.url)
     if dm:                              # a DM alert: Mute is the one-tap way out
         box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), aa._MuteButton(p.anime_id), aa._AlertButton(p.anime_id), link))
-    else:
-        box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id), aa._AlertButton(p.anime_id), link))
+    else:                               # row 1: this anime; row 2: find more (Upgrade joins row 1 with the upgrade slice)
+        ab = _browse()
+        box.add_item(discord.ui.ActionRow(_MoreButton(p.anime_id), _FollowButton(p.anime_id), aa._AlertButton(p.anime_id)))
+        box.add_item(discord.ui.ActionRow(ab._SearchButton(), ab._CategoriesButton(), link))
     for row in extra_rows:
         box.add_item(row)
     return box

@@ -83,13 +83,13 @@ def test_every_new_item_is_registered_and_rebuilds_from_its_custom_id_alone():
         owners = [c for c in items if re.match(c.__discord_ui_compiled_template__, cid)]
         assert len(owners) == 1 and all(len(i) <= 100 for i in ids)
         item = run(owners[0].from_custom_id(None, None, owners[0].__discord_ui_compiled_template__.match(cid)))
-        assert item.anime_id == 42 and item.item.custom_id == cid
+        assert getattr(item, "anime_id", 42) == 42 and item.item.custom_id == cid       # Search / Categories carry no id
 
 
 def test_dm_card_swaps_follow_for_mute_and_both_cards_fit_the_limits():
     server = [getattr(k, "item", k).label for k in vf.post_view(P()).walk_children() if isinstance(getattr(k, "item", k), discord.ui.Button)]
     dm = [getattr(k, "item", k).label for k in vf.post_view(P(), dm=True).walk_children() if isinstance(getattr(k, "item", k), discord.ui.Button)]
-    assert server == ["Read more", "Follow", "Alert me", "Details on AniList"]
+    assert server == ["Read more", "Follow", "Alert me", "Search", "Categories", "Details on AniList"]
     assert dm == ["Read more", "Mute", "Alert me", "Details on AniList"]
     assert len(list(vf.post_view(P(), ping="<@1>").walk_children())) <= 40
 
