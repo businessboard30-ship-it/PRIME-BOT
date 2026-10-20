@@ -122,3 +122,10 @@ def test_migration_is_additive_and_wired():
     sql = (ROOT / "database/migrations/070_anime_feed.sql").read_text()
     assert "CREATE TABLE IF NOT EXISTS anime_feed_config" in sql and "DROP" not in sql.upper()
     assert "070_anime_feed.sql" in (ROOT / "database.py").read_text()
+
+
+def test_provider_list_is_not_cut_to_the_preview_size_but_previews_are():
+    items = af.parse_airing(payload(*[row(i, at=1_000 + i) for i in range(1, 41)]))
+    assert len(items) == 40                                  # the worker must see every episode, not just the first 12
+    shown = af.for_preview(items, now=1_000)
+    assert len(shown) == af.MAX_ITEMS and [p.anime_id for p in shown] == list(range(1, af.MAX_ITEMS + 1))
