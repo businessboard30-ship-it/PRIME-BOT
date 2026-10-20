@@ -60,8 +60,16 @@ async def _auth(interaction: discord.Interaction, guild_id: int, need: str, prem
     if guild is None:
         await _reply(interaction, "I'm not in that server anymore.")
         return None
-    member = guild.get_member(interaction.user.id)
-    is_owner = member is not None and member.id == guild.owner_id
+    # The owner is matched by id, and the member comes from the click itself (a guild click carries a real Member),
+    # then the cache, then the API. The cache alone is empty on a cold start, which used to lock the owner out.
+    is_owner = interaction.user.id == guild.owner_id
+    member = interaction.user if (isinstance(interaction.user, discord.Member) and interaction.user.guild.id == guild.id) \
+        else guild.get_member(interaction.user.id)
+    if member is None and not is_owner:
+        try:
+            member = await guild.fetch_member(interaction.user.id)
+        except discord.HTTPException:
+            member = None
     if need == "manage":
         ok = is_owner or bool(member and member.guild_permissions.manage_guild)
         why = "You need the **Manage Server** permission to use this."
@@ -85,6 +93,17 @@ async def _auth(interaction: discord.Interaction, guild_id: int, need: str, prem
         await send_premium_pitch(interaction, guild_id, clone_id)
         return None
     return guild
+
+
+async def _member_or_none(guild: discord.Guild, uid: int):
+    """Cache first, then the API; None only when they really left (or Discord can't be reached)."""
+    member = guild.get_member(uid)
+    if member is not None:
+        return member
+    try:
+        return await guild.fetch_member(uid)
+    except discord.HTTPException:
+        return None
 
 
 async def _save(interaction, guild: discord.Guild, clone_id, **fields) -> dict:
@@ -123,7 +142,7 @@ async def _show_next(interaction: discord.Interaction, guild: discord.Guild, clo
         if int(before[i]["user_id"]) in now_ids:
             row = before[i]
             await interaction.edit_original_response(
-                content=note, embed=pro.review_embed(guild, row, i + 1, len(before)),
+                content=note, embed=pro.review_embed(guild, row, i + 1, len(before), member=await _member_or_none(guild, int(row["user_id"]))),
                 view=review_view(guild.id, clone_id, int(row["user_id"])))
             return
     left = len(now_ids)
@@ -237,7 +256,7 @@ class ProButton(discord.ui.DynamicItem[discord.ui.Button],
                 await interaction.followup.send("Nobody is waiting for review. 🎉", ephemeral=True)
                 return
             await interaction.followup.send(
-                embed=pro.review_embed(guild, rows[0], 1, len(rows)),
+                embed=pro.review_embed(guild, rows[0], 1, len(rows), member=await _member_or_none(guild, int(rows[0]["user_id"]))),
                 view=review_view(guild.id, cid, int(rows[0]["user_id"])), ephemeral=True)
 
         elif k == "qrel":

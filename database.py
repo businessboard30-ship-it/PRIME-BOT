@@ -157,8 +157,12 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "118"
-# "117" -> "118" adds 069_verification_pro.sql (8 nullable ADD COLUMN IF NOT EXISTS on discord_verification_config: panel look, log channel, auto-kick, min account age, welcome text) + a partial index. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
+SCHEMA_VERSION = "122"
+# "121" -> "122" adds 073_verification_pro.sql (8 nullable ADD COLUMN IF NOT EXISTS on discord_verification_config: panel look, log channel, auto-kick, min account age, welcome text) + a partial index. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
+# "120" -> "121" adds 072_anime_follow_ping.sql (anime_feed_config.ping_role_id, anime_follows). ADD COLUMN / CREATE TABLE IF NOT EXISTS only.
+# "119" -> "120" adds 071_anime_feed_posting.sql (anime_feed_config.enabled_at, anime_feed_posted dedup table). ADD COLUMN / CREATE TABLE IF NOT EXISTS only.
+# "118" -> "119" adds 070_anime_feed.sql (anime_feed_config: per-server anime release feed channel + on/off). CREATE TABLE IF NOT EXISTS only.
+# "117" -> "118" adds 069_bot_profile_vote.sql (bot_profile_vote_unlocks: servers unlocked for Edit bot profile by a DiscordThings vote). CREATE TABLE IF NOT EXISTS only.
 # "116" -> "117" adds 068_primole.sql (cat_wallets.primole column). ADD COLUMN IF NOT EXISTS only.
 # "115" -> "116" adds 067_market_voice.sql (market_voice, market_voice_settings, market_reports). CREATE TABLE IF NOT EXISTS only.
 # "114" -> "115" adds 066_market_cat_migrate.sql (copies cat_listings into market_listings keeping ids, closes the old open rows). Idempotent.
@@ -203,8 +207,8 @@ SCHEMA_VERSION = "118"
 # "74" -> "75" adds idx_scam_shield_hits_user (scam_shield_hits by user_id + time) so the join-time "was this account caught in another server?" lookup (modules/scam_reputation.py) stays fast as the catch log grows. CREATE INDEX IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py fails if this changes without a bump.
 # "73" -> "74" adds ultra_trial_started_at, ultra_trial_admin_id and ultra_trial_notified to discord_welcome_config for the one-time 5-day Customize Card trial. ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "72" -> "73" adds auto_bump_enabled, auto_bump_by and auto_bump_checked_at (+ partial index) to bump_listings for Premium Auto Bump (4 bumps a day). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
-ULTRA_TRIAL_DAYS = 5  # free Customize Card trial length per server
-ULTRA_TRIAL_ENABLED = False  # owner decision: disable the one-time 5-day Customize Card trial.
+ULTRA_TRIAL_DAYS = 3  # free Customize Card trial length per server
+ULTRA_TRIAL_ENABLED = True  # owner decision: enable the one-time 3-day Customize Card trial.
 # "71" -> "72" creates dash_visits (one row per web-dashboard user per UTC day, written at most every ~10 minutes per person; kept 90 days; only the owner area reads it). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "70" -> "71" creates dev_jobs (Developer-mode scheduled jobs: reminder / note / AI prompt on allowlisted presets, claimed by the cron worker). Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "69" -> "70" adds display_name, avatar_url and show_on_board to dash_web_users (web leaderboard: signed-in members appear by name unless they opt out). ALTER TABLE ADD COLUMN IF NOT EXISTS. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5805,9 +5809,29 @@ class Database:
         if primole_migration.exists():
             await conn.execute(primole_migration.read_text())
 
+        # Edit bot profile vote gate: servers unlocked by a DiscordThings vote. Additive/idempotent.
+        bot_profile_vote_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "069_bot_profile_vote.sql"
+        if bot_profile_vote_migration.exists():
+            await conn.execute(bot_profile_vote_migration.read_text())
+
+        # Anime release feed setup (channel + on/off per server). Additive/idempotent.
+        anime_feed_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "070_anime_feed.sql"
+        if anime_feed_migration.exists():
+            await conn.execute(anime_feed_migration.read_text())
+
+        # Anime feed automatic posting: enabled_at + the posted-episodes dedup table. Additive/idempotent.
+        anime_feed_posting_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "071_anime_feed_posting.sql"
+        if anime_feed_posting_migration.exists():
+            await conn.execute(anime_feed_posting_migration.read_text())
+
+        # Anime feed follows + ping role. Additive/idempotent.
+        anime_follow_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "072_anime_follow_ping.sql"
+        if anime_follow_migration.exists():
+            await conn.execute(anime_follow_migration.read_text())
+
         # Join verification premium extras (panel look, log channel, auto-kick, min account age, welcome text).
         # Additive/idempotent.
-        verification_pro_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "069_verification_pro.sql"
+        verification_pro_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "073_verification_pro.sql"
         if verification_pro_migration.exists():
             await conn.execute(verification_pro_migration.read_text())
 
@@ -7998,6 +8022,20 @@ class Database:
                 )
                 return clone_id
 
+    async def is_bot_profile_unlocked(self, guild_id: int) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return bool(await conn.fetchval(
+                "SELECT 1 FROM bot_profile_vote_unlocks WHERE guild_id = $1", int(guild_id)))
+
+    async def unlock_bot_profile(self, guild_id: int, user_id: int) -> None:
+        """Idempotent: the first unlock is kept (who and when), later calls change nothing."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO bot_profile_vote_unlocks (guild_id, unlocked_by) VALUES ($1, $2) "
+                "ON CONFLICT (guild_id) DO NOTHING", int(guild_id), int(user_id))
+
     async def get_listing_token_encrypted(self, service: str, bot_id: int) -> Optional[str]:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -8468,9 +8506,9 @@ class Database:
     _AUTORESPONDERS_CACHE_TTL_SECONDS = 300
     _autoresponders_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (list_of_dicts, fetched_at_monotonic)
 
-    async def get_automod_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+    async def get_automod_config(self, guild_id: int, clone_id: Optional[int] = None, fresh: bool = False) -> Dict:
         cache_key = (guild_id, clone_id)
-        cached = self._automod_config_cache.get(cache_key)
+        cached = None if fresh else self._automod_config_cache.get(cache_key)
         if cached is not None:
             config, fetched_at = cached
             if time.monotonic() - fetched_at < self._AUTOMOD_CACHE_TTL_SECONDS:
@@ -8501,7 +8539,9 @@ class Database:
         it in place) so a failed/partial write, or a concurrent writer,
         can't leave a stale merged config cached — the next get_automod_config
         call re-reads from the DB and repopulates it fresh."""
-        current = await self.get_automod_config(guild_id, clone_id)
+        # fresh=True: this writes the WHOLE row back, so merging into a cached copy (up to 5 minutes old, and each
+        # bot/clone process has its own) could put old values back, e.g. undo a "Don't ask again" on the reminders.
+        current = await self.get_automod_config(guild_id, clone_id, fresh=True)
         merged = {**current, **fields}
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -11329,7 +11369,7 @@ class Database:
             )
             return dict(row)
 
-    # Premium extras columns (069_verification_pro.sql). NULL = off / default look.
+    # Premium extras columns (073_verification_pro.sql). NULL = off / default look.
     _VERIFICATION_PRO_FIELDS = (
         "panel_title", "panel_text", "panel_color", "panel_image_url",
         "log_channel_id", "kick_after_minutes", "min_account_age_days", "welcome_text",

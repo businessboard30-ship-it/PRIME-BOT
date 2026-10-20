@@ -2130,6 +2130,8 @@ class JoinDMMoreView(discord.ui.LayoutView):
              _AdvertiseButton(guild_id, clone_id)),
             ("🤖 **Bot profile**\nRename me and change my avatar, banner and bio in your server. Free.",
              _BotProfileButton(guild_id, clone_id)),
+            ("🎌 **Anime releases**\nPreview airing anime with real episode times and set up the anime channel. Free.",
+             _AnimeButton(guild_id, clone_id)),
         ):
             section = discord.ui.Section(accessory=button)
             section.add_item(text)
@@ -2187,6 +2189,46 @@ class _BotProfileButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^j
             return                                    # it already told the person why
         await interaction.response.defer(ephemeral=interaction.guild is not None)
         await open_profile_wizard(interaction, self.guild_id, self.clone_id)
+
+
+class _AnimeButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_anime:(\d+):(-|\d+)$"):
+    """Anime releases. Needs Manage Server (same gate as the other setup wizards). Posts the anime setup wizard (channel, live
+    previews, test post, on/off) in the server's default channel; the logic lives in _views_anime_feed.py."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Set up", style=discord.ButtonStyle.primary, emoji="🎌",
+            custom_id=_encode("anime", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_bot_profile import _check_access
+        if not await _check_access(interaction, self.guild_id):
+            return                                    # it already told the person why
+        await interaction.response.defer(ephemeral=interaction.guild is not None)
+        guild = interaction.client.get_guild(self.guild_id)
+        channel = _default_text_channel(guild) if guild is not None else None
+        if channel is None:
+            await interaction.followup.send("I couldn't find a channel I'm able to post in. Give me **Send Messages** and "
+                                            "**Embed Links** in one and tap Set up again.", ephemeral=True)
+            return
+        try:
+            from discord_bot.cogs._views_anime_feed import open_setup
+            await open_setup(interaction.client, guild, self.clone_id, interaction.user.id, channel)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("join_dm anime setup failed for guild %s", self.guild_id)
+            await interaction.followup.send("I couldn't post the anime setup. Make sure I can **Send Messages** and "
+                                            "**Embed Links** in your server.", ephemeral=True)
+            return
+        await interaction.followup.send(f"🎌 Anime setup is open in {channel.mention}. Preview what I'll post and pick the channel.",
+                                        ephemeral=True)
 
 
 class _MoreBackButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_more_back:(\d+):(-|\d+)$"):
@@ -2282,7 +2324,7 @@ DYNAMIC_ITEMS = (
     _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomeCustomizeCardButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
     _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton, _ApplyFormButton,
-    _MoreFeaturesButton, _MoreBackButton, _CatButton, _BotProfileButton,
+    _MoreFeaturesButton, _MoreBackButton, _CatButton, _BotProfileButton, _AnimeButton,
 )
 from discord_bot.cogs._views_bot_profile import DYNAMIC_ITEMS as _BOT_PROFILE_ITEMS  # noqa: E402
 DYNAMIC_ITEMS = DYNAMIC_ITEMS + _BOT_PROFILE_ITEMS
@@ -2294,3 +2336,7 @@ DYNAMIC_ITEMS = DYNAMIC_ITEMS + _SCAM_ITEMS
 # Compact quick-start message buttons (Open server panel / Full setup guide).
 from discord_bot.cogs._views_quickstart_pointer import DYNAMIC_ITEMS as _POINTER_ITEMS  # noqa: E402
 DYNAMIC_ITEMS = DYNAMIC_ITEMS + _POINTER_ITEMS
+
+# Anime Follow button on every anime card.
+from discord_bot.cogs._views_anime_feed import DYNAMIC_ITEMS as _ANIME_ITEMS  # noqa: E402
+DYNAMIC_ITEMS = DYNAMIC_ITEMS + _ANIME_ITEMS

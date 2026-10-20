@@ -113,10 +113,15 @@ async def _close_season(conn, season_id: int, key: int) -> None:
     by_div: dict = {}
     for r in rows:
         by_div.setdefault(int(r["division"]), []).append((int(r["owner_id"]), int(r["points"])))
+    owners, divs = [], []
     for div, ranked in by_div.items():
         for owner, new_div in moves(ranked, div).items():
-            await conn.execute("INSERT INTO cat_league_next (clone_key, owner_id, division) VALUES ($1, $2, $3) "
-                               "ON CONFLICT (clone_key, owner_id) DO UPDATE SET division = EXCLUDED.division", int(key), owner, new_div)
+            owners.append(owner)
+            divs.append(new_div)
+    if owners:                                       # ONE statement for everyone (it used to be one per player)
+        await conn.execute("INSERT INTO cat_league_next (clone_key, owner_id, division) "
+                           "SELECT $1, u, d FROM unnest($2::bigint[], $3::int[]) AS t(u, d) "
+                           "ON CONFLICT (clone_key, owner_id) DO UPDATE SET division = EXCLUDED.division", int(key), owners, divs)
 
 
 async def _current_season(conn, key: int) -> int:

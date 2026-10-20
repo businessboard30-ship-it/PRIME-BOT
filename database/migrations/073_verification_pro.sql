@@ -1,4 +1,4 @@
--- path: database/migrations/069_verification_pro.sql
+-- path: database/migrations/073_verification_pro.sql
 
 -- ============================================================================
 -- Migration 069: join verification premium extras

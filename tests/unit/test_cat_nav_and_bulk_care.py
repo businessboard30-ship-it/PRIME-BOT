@@ -184,33 +184,86 @@ def test_target_count_follows_the_single_cat_rules():
     assert cc.bulk_target_count(cats, "bed") == 4
 
 
-def test_bulk_care_charges_each_cat_and_stops_when_coins_run_out(monkeypatch):
-    monkeypatch.setattr(cc, "_candidates", AsyncMock(return_value=[1, 2, 3, 4]))
-    calls = []
+class BulkDB:
+    """Tiny in-memory stand-in: cats needing care (ids in order), a wallet, and rollback on error."""
 
-    async def feed(cat_id, owner, clone):
-        calls.append(cat_id)
-        if cat_id == 3:
-            return cc.CareResult("poor", coins=10, cost=80)
-        return cc.CareResult("ok", coins=500 - 80 * len(calls), cost=80)
-    monkeypatch.setattr(cc, "feed", feed)
-    res = run(cc.bulk_care(9, None, "feed"))
-    assert (res.done, res.spent, res.short, res.coins) == (2, 160, 2, 10)
-    assert calls == [1, 2, 3]                                 # it stopped at the first cat it couldn't pay for
+    def __init__(self, ids, coins, kind="feed"):
+        self.ids, self.coins, self.kind = list(ids), coins, kind
+        self.updated, self.statements = [], 0
+        self.fail = False
 
+    def acquire(self): return self
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
 
-def test_bulk_care_skips_cats_that_changed_and_survives_errors(monkeypatch):
-    monkeypatch.setattr(cc, "_candidates", AsyncMock(return_value=[1, 2, 3]))
+    def transaction(self):
+        db = self
 
-    async def water(cat_id, owner, clone):
-        if cat_id == 1:
-            return cc.CareResult("already", cost=30)
-        if cat_id == 2:
+        class T:
+            async def __aenter__(s):
+                s.snap = (list(db.ids), db.coins, list(db.updated))
+
+            async def __aexit__(s, et, ev, tb):
+                if et:
+                    db.ids, db.coins, db.updated = s.snap
+                return False
+        return T()
+
+    async def fetch(self, sql, *a):
+        self.statements += 1
+        return [{"id": i} for i in self.ids[:a[2]]]
+
+    async def fetchval(self, sql, *a):
+        self.statements += 1
+        if sql.startswith("SELECT coins"):
+            return self.coins
+        if sql.startswith("UPDATE cat_wallets"):
+            if self.coins < a[2]:
+                return None
+            self.coins -= a[2]
+            return self.coins
+
+    async def execute(self, sql, *a):
+        self.statements += 1
+        if self.fail:
             raise RuntimeError("boom")
-        return cc.CareResult("ok", coins=100, cost=30)
-    monkeypatch.setattr(cc, "water", water)
+        self.updated += list(a[0])
+
+
+def _bulk_db(monkeypatch, db):
+    async def pool():
+        return db
+    monkeypatch.setattr(cc, "_pool", pool)
+    return db
+
+
+def test_bulk_care_pays_for_as_many_cats_as_the_coins_allow_in_a_few_statements(monkeypatch):
+    db = _bulk_db(monkeypatch, BulkDB(range(1, 101), coins=80 * 60 + 10))
+    res = run(cc.bulk_care(9, None, "feed"))
+    assert (res.done, res.spent, res.short, res.coins) == (60, 4800, 40, 10)
+    assert db.updated == list(range(1, 61)) and db.coins == 10        # the most urgent 60 (list order), coins really taken
+    assert db.statements <= 5                                          # one pass, not one transaction per cat
+
+
+def test_bulk_care_with_no_coins_or_no_cats_changes_nothing(monkeypatch):
+    db = _bulk_db(monkeypatch, BulkDB([1, 2, 3], coins=79))
+    res = run(cc.bulk_care(9, None, "feed"))
+    assert (res.done, res.spent, res.short, res.coins) == (0, 0, 3, 79) and db.updated == [] and db.coins == 79
+    db = _bulk_db(monkeypatch, BulkDB([], coins=500))
     res = run(cc.bulk_care(9, None, "water"))
-    assert (res.done, res.spent, res.skipped, res.short) == (1, 30, 2, 0)
+    assert (res.done, res.short, res.coins) == (0, 0, None) and db.coins == 500
+
+
+def test_bulk_care_prices_match_the_single_actions_and_a_failure_rolls_everything_back(monkeypatch):
+    for kind, cost in (("feed", cc.FOOD_COST), ("water", cc.WATER_COST), ("bed", cc.BED_COST)):
+        db = _bulk_db(monkeypatch, BulkDB([1, 2], coins=1000))
+        res = run(cc.bulk_care(9, None, kind))
+        assert res.done == 2 and res.spent == 2 * cost and db.coins == 1000 - 2 * cost
+    db = _bulk_db(monkeypatch, BulkDB([1, 2, 3], coins=1000))
+    db.fail = True
+    with pytest.raises(RuntimeError):
+        run(cc.bulk_care(9, None, "water"))
+    assert db.coins == 1000 and db.updated == []                       # coins were taken, then the failure gave them back
 
 
 def _view(monkeypatch, cats):

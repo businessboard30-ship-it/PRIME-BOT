@@ -24,7 +24,9 @@ import time
 import aiohttp
 import discord
 
+import config
 from database import db
+from modules import dthings_vote
 from discord_bot.cogs._views_shared import check_wizard_access
 from modules import ai_name
 
@@ -194,6 +196,54 @@ async def archive_profile_image(interaction: discord.Interaction, guild_id: int,
         return False
 
 
+# ── vote gate: one DiscordThings vote unlocks the editor for the whole server ──
+# Any admin's verified vote (GET /bots/{id}/check-vote) marks the server unlocked for good (bot_profile_vote_unlocks), so
+# the vote is needed once per server, not once per person or per day. Reset and Done stay open. BOT_PROFILE_VOTE_GATE=0
+# turns it off; no DiscordThings token configured also lets people through (a vote can't be checked without it).
+
+async def _send_ephemeral(interaction: discord.Interaction, **kwargs) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(ephemeral=True, **kwargs)
+    else:
+        await interaction.response.send_message(ephemeral=True, **kwargs)
+
+
+async def _ensure_unlocked(interaction: discord.Interaction, guild_id: int, clone_id) -> bool:
+    """True = this server may edit. False = the person was told to vote (or to retry); nothing else to do."""
+    if not getattr(config, "BOT_PROFILE_VOTE_GATE", True):
+        return True
+    try:
+        if await db.is_bot_profile_unlocked(guild_id):
+            return True
+    except Exception:
+        logger.exception("[bot-profile] unlock lookup failed for guild %s", guild_id)
+        return True                                   # a DB hiccup must not lock people out
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=True)   # the vote lookup can take a few seconds
+    status = await dthings_vote.check_vote(interaction.user.id)
+    if status == dthings_vote.VOTED:
+        try:
+            await db.unlock_bot_profile(guild_id, interaction.user.id)
+        except Exception:
+            logger.exception("[bot-profile] couldn't save the unlock for guild %s", guild_id)
+        return True
+    if status == dthings_vote.NO_TOKEN:
+        logger.warning("[bot-profile] vote gate skipped: no DiscordThings token configured")
+        return True
+    if status == dthings_vote.ERROR:
+        text = "⚠️ I couldn't reach DiscordThings to check your vote. Try again in a moment."
+    else:
+        text = ("🗳️ **Edit profile is unlocked for your whole server with one vote.** Vote for me on DiscordThings, "
+                "then tap **I voted** and I'll check it. You only ever do this once per server.")
+    view = discord.ui.View(timeout=None)
+    if getattr(config, "DTHINGS_VOTE_URL", ""):
+        view.add_item(discord.ui.Button(label="Vote on DiscordThings", emoji="🗳️", style=discord.ButtonStyle.link,
+                                        url=config.DTHINGS_VOTE_URL))
+    view.add_item(_VoteCheckButton(guild_id, clone_id))
+    await _send_ephemeral(interaction, content=text, view=view)
+    return False
+
+
 # ── the panel ─────────────────────────────────────────────────────────────
 
 # ── premium gate: set it up first, pay when you tap Save ───────────────────
@@ -314,6 +364,8 @@ def build_profile_view(guild: "discord.Guild | None", guild_id: int, clone_id, o
 
 async def open_profile_wizard(interaction: discord.Interaction, guild_id: int, clone_id) -> None:
     """Called by the More-features button (already deferred). Sends the wizard as its own message, like Card options."""
+    if not await _ensure_unlocked(interaction, guild_id, clone_id):
+        return                                        # told to vote on DiscordThings first
     guild = interaction.client.get_guild(guild_id)
     owner = await is_clone_owner(clone_id, interaction.user.id)
     view = build_profile_view(guild, guild_id, clone_id, owner, draft=get_draft(guild_id, interaction.user.id),
@@ -495,6 +547,7 @@ class _Btn:
     label = ""
     emoji = None
     style = discord.ButtonStyle.secondary
+    gated = True          # needs the server's DiscordThings vote; Reset / Done / the vote check itself stay open
 
     def __init__(self, guild_id: int, clone_id=None):
         self.guild_id, self.clone_id = guild_id, clone_id
@@ -509,6 +562,13 @@ class _Btn:
         # Every action needs Manage Server in the target server; modals and edits come after this gate.
         if not await _check_access(interaction, self.guild_id):
             return
+        if self.gated:
+            if not await _ensure_unlocked(interaction, self.guild_id, self.clone_id):
+                return
+            if interaction.response.is_done():        # the vote was just verified on this tap; modals need a fresh one
+                await interaction.followup.send("✅ Thanks for voting! Edit profile is unlocked for this server. "
+                                                "Tap that button again.", ephemeral=True)
+                return
         await self.act(interaction)
 
     async def act(self, interaction: discord.Interaction):  # pragma: no cover
@@ -602,6 +662,7 @@ class _ApplyButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pa
 class _ResetButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat("reset")):
     action, label, emoji = "reset", "Reset to default", "♻️"
     style = discord.ButtonStyle.danger
+    gated = False
 
     async def act(self, interaction):
         await interaction.response.defer()
@@ -617,6 +678,7 @@ class _ResetButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pa
 class _DoneButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat("done")):
     action, label, emoji = "done", "Done", "✅"
     style = discord.ButtonStyle.success
+    gated = False
 
     async def act(self, interaction):
         await interaction.response.defer()
@@ -627,6 +689,17 @@ class _DoneButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat
         await interaction.edit_original_response(view=view)
 
 
+class _VoteCheckButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat("votecheck")):
+    action, label, emoji = "votecheck", "I voted", "✅"
+    style = discord.ButtonStyle.success
+    gated = False
+
+    async def act(self, interaction):
+        await interaction.response.defer(ephemeral=True)
+        if await _ensure_unlocked(interaction, self.guild_id, self.clone_id):
+            await open_profile_wizard(interaction, self.guild_id, self.clone_id)
+
+
 DYNAMIC_ITEMS = (_RenameButton, _AvatarButton, _BannerButton, _BioButton, _AiNameButton, _GlobalButton, _ApplyButton,
                  _ResetButton,
-                 _DoneButton)
+                 _DoneButton, _VoteCheckButton)
