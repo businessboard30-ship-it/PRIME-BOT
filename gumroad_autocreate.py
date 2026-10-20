@@ -88,6 +88,11 @@ PRODUCTS = {
         "price": lambda: _plan_price("dev_yearly"),
         "description": "Developer tools with a weekly AI chat allowance. Renews yearly, cancel any time.",
     },
+    "anime_plus": {
+        "name": "Anime Feed Upgrade - 30 days", "legacy": [], "kind": "one_time",
+        "price": lambda: float(config.ANIME_PLUS_FEE_USD),
+        "description": config.ANIME_PLUS_PRODUCT_DESCRIPTION + " One-time payment for 30 days, no subscription.",
+    },
     "disguild_boost_7d": {
         "name": "Disguild Boost - 7 days", "legacy": [], "kind": "one_time",
         "price": lambda: float(config.DISGUILD_BOOST_7D_FEE_USD),

@@ -51,6 +51,7 @@ _PRICE_ATTRS = {
     "premium_plus_yearly": "PREMIUM_PLUS_YEARLY_FEE_USD",
     "hardcore_roast": "HARDCORE_ROAST_FEE_USD",
     "ad_placement": "AD_PLACEMENT_FEE_USD",
+    "anime_plus": "ANIME_PLUS_FEE_USD",
 }
 
 

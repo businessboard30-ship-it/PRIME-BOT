@@ -42,6 +42,7 @@ _PRODUCT_LABELS = {
     "welcome_card_pack": "Welcome Card Pack",
     "ultra_welcome_pack": "Customize Card",
     "custom_role": "Custom Role",
+    "anime_plus": "Anime Feed Upgrade",
     "music_pro": "Music Pro",
     "premium": "Premium",
     "premium_yearly": "Premium (Yearly)",

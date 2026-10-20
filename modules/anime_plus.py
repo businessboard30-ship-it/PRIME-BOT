@@ -19,6 +19,7 @@ from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+PAYMENT_TYPE = "anime_plus"       # the key in payments_manual.UNLOCK_HANDLERS / gumroad products
 PLUS_DAYS = 30                      # one payment buys this many days; renewing extends from the later of now and the current expiry
 from modules.anime_feed import FREE_FOLLOW_LIMIT  # noqa: E402  (one source for the free limit)
 PLUS_FOLLOW_LIMIT = 50
@@ -81,44 +82,22 @@ async def follow_limit(user_id: int, guild_id=None, clone_id=None) -> int:
     return PLUS_FOLLOW_LIMIT if await has_anime_plus(user_id, guild_id, clone_id) else FREE_FOLLOW_LIMIT
 
 
-# ── checkout rows ───────────────────────────────────────────────────────
+# ── granting (called by the shared payment system's unlock handler) ──────
 
-async def start_payment(user_id: int, clone_id, reference: str, provider: str, days: int = PLUS_DAYS) -> None:
+async def grant(user_id: int, clone_id, days: int, reference: str) -> Optional[datetime]:
+    """Adds `days` of the personal upgrade (renewing extends from the later of now and the current expiry). Runs from
+    payments_manual.UNLOCK_HANDLERS['anime_plus'], i.e. after ANY provider (Gumroad ping, Paystack verify, admin approve) confirmed
+    the payment; those paths already claim a payment once. The same reference is also never applied twice here. Returns the new expiry."""
     pool = await _pool()
     async with pool.acquire() as conn:
-        await conn.execute("INSERT INTO anime_plus_payments (user_id, clone_id, payment_reference, provider, days) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (payment_reference) DO NOTHING",
-                           int(user_id), _clone(clone_id), reference, str(provider or "paystack"), int(days))
-
-
-async def payment_status(reference: str) -> Optional[str]:
-    pool = await _pool()
-    async with pool.acquire() as conn:
-        return await conn.fetchval("SELECT status FROM anime_plus_payments WHERE payment_reference = $1", reference)
-
-
-async def latest_payment(user_id: int, clone_id=None) -> Optional[dict]:
-    pool = await _pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM anime_plus_payments WHERE user_id = $1 AND clone_id = $2 ORDER BY id DESC LIMIT 1", int(user_id), _clone(clone_id))
-    return dict(row) if row else None
-
-
-async def complete_payment(reference: str) -> Optional[dict]:
-    """Marks a PENDING payment completed and grants (or extends) the upgrade, in ONE transaction. Only a row still 'pending' completes,
-    so the webhook and the person's Verify tap can both run and the days are added exactly once. Returns
-    {'user_id', 'clone_id', 'expires_at'} for the caller that completed it, or None when there was nothing pending."""
-    pool = await _pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow("UPDATE anime_plus_payments SET status = 'completed', completed_at = NOW() WHERE payment_reference = $1 AND status = 'pending' "
-                                      "RETURNING user_id, clone_id, days", reference)
-            if not row:
-                return None
-            exp = await conn.fetchval(
-                "INSERT INTO anime_plus_entitlements (user_id, clone_id, status, payment_reference, started_at, expires_at) "
-                "VALUES ($1, $2, 'active', $3, NOW(), NOW() + make_interval(days => $4)) "
-                "ON CONFLICT (user_id, clone_id) DO UPDATE SET status = 'active', payment_reference = EXCLUDED.payment_reference, "
-                "expires_at = GREATEST(anime_plus_entitlements.expires_at, NOW()) + make_interval(days => $4) RETURNING expires_at",
-                int(row["user_id"]), int(row["clone_id"]), reference, int(row["days"]))
-    _cache.pop((int(row["user_id"]), int(row["clone_id"])), None)           # the new upgrade shows on the next tap
-    return {"user_id": int(row["user_id"]), "clone_id": int(row["clone_id"]), "expires_at": exp}
+        exp = await conn.fetchval(
+            "INSERT INTO anime_plus_entitlements (user_id, clone_id, status, payment_reference, started_at, expires_at) "
+            "VALUES ($1, $2, 'active', $3, NOW(), NOW() + make_interval(days => $4)) "
+            "ON CONFLICT (user_id, clone_id) DO UPDATE SET status = 'active', payment_reference = EXCLUDED.payment_reference, "
+            "expires_at = GREATEST(anime_plus_entitlements.expires_at, NOW()) + make_interval(days => $4) "
+            "WHERE anime_plus_entitlements.payment_reference IS DISTINCT FROM EXCLUDED.payment_reference RETURNING expires_at",
+            int(user_id), _clone(clone_id), str(reference), int(days))
+        if exp is None:                                                        # this reference was already applied
+            exp = await conn.fetchval("SELECT expires_at FROM anime_plus_entitlements WHERE user_id = $1 AND clone_id = $2", int(user_id), _clone(clone_id))
+    _cache.pop((int(user_id), _clone(clone_id)), None)                         # the upgrade shows on the next tap
+    return exp

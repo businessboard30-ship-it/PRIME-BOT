@@ -606,6 +606,13 @@ async def _unlock_ad_placement(reference: str, buyer_id: int, guild_id: Optional
         logger.info(f"[unlock-ad] ad #{ad_id} auto-approved after payment (buyer {buyer_id}) ref={reference}")
 
 
+async def _unlock_anime_plus(reference: str, buyer_id: int, guild_id: Optional[int], clone_id: Optional[int]):
+    """Anime feed personal upgrade: adds 30 days for the buyer (account-level, never a server unlock). Fires after ANY provider
+    confirmed the payment (Gumroad ping, Paystack verify, admin approve)."""
+    from modules import anime_plus
+    await anime_plus.grant(buyer_id, clone_id or 0, anime_plus.PLUS_DAYS, reference)
+
+
 def _make_unlock_user_plan(product: str):
     async def _handler(reference: str, buyer_id: int, guild_id, clone_id):
         from modules import user_billing
@@ -637,6 +644,7 @@ UNLOCK_HANDLERS = {
     "xp_server_boost_month": _make_unlock_xp_server_boost_tier("xp_server_boost_month"),
     "hardcore_roast": _unlock_hardcore_roast,
     "ad_placement": _unlock_ad_placement,
+    "anime_plus": _unlock_anime_plus,
 }
 
 

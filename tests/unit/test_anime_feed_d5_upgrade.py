@@ -76,14 +76,23 @@ def test_a_broken_check_grants_nothing(monkeypatch):
     assert run(plus.server_premium(1, 0)) is False and run(plus.server_premium(None, 0)) is False
 
 
-# -- payments: exactly once ------------------------------------------------------------------
+# -- granting: one payment = 30 days, the same reference never twice ------------------------
 
-class FakeConn:
+class GrantConn:
     def __init__(self, db):
         self.db = db
 
-    def transaction(self):
-        return self
+    async def fetchval(self, sql, *args):
+        if sql.startswith("SELECT"):
+            return self.db["expiry"]
+        assert "GREATEST(anime_plus_entitlements.expires_at, NOW())" in sql            # renewing extends from the later of now and the expiry
+        assert "payment_reference IS DISTINCT FROM EXCLUDED.payment_reference" in sql   # same reference twice changes nothing
+        ref = args[2]
+        if ref in self.db["applied"]:
+            return None
+        self.db["applied"].add(ref)
+        self.db["grants"].append(args)
+        return FUTURE
 
     async def __aenter__(self):
         return self
@@ -91,52 +100,62 @@ class FakeConn:
     async def __aexit__(self, *a):
         return False
 
-    async def fetchrow(self, sql, *args):
-        assert "status = 'pending'" in sql
-        pay = self.db["payments"].get(args[0])
-        if pay and pay["status"] == "pending":
-            pay["status"] = "completed"
-            return {"user_id": pay["user_id"], "clone_id": pay["clone_id"], "days": pay["days"]}
-        return None
 
-    async def fetchval(self, sql, *args):
-        assert "GREATEST(anime_plus_entitlements.expires_at, NOW())" in sql         # renewing extends from the later of now and the expiry
-        self.db["grants"].append(args)
-        return FUTURE
-
-
-class FakePool:
+class GrantPool:
     def __init__(self, db):
         self.db = db
 
     def acquire(self):
-        return FakeConn(self.db)
+        return GrantConn(self.db)
 
 
-def test_webhook_and_verify_together_add_the_days_once(monkeypatch):
+def test_grant_adds_the_days_once_per_reference(monkeypatch):
     _reset()
-    db = {"payments": {"ref1": {"user_id": 7, "clone_id": 0, "days": 30, "status": "pending"}}, "grants": []}
+    db = {"applied": set(), "grants": [], "expiry": FUTURE}
 
     async def pool():
-        return FakePool(db)
+        return GrantPool(db)
     monkeypatch.setattr(plus, "_pool", pool)
-    first = run(plus.complete_payment("ref1"))
-    second = run(plus.complete_payment("ref1"))                                      # the other path arrives later
-    assert first == {"user_id": 7, "clone_id": 0, "expires_at": FUTURE} and second is None
+    assert run(plus.grant(7, 0, 30, "gum_1")) == FUTURE
+    assert run(plus.grant(7, 0, 30, "gum_1")) == FUTURE                               # replay: nothing added, still answers
     assert len(db["grants"]) == 1 and db["grants"][0][3] == 30
-    assert run(plus.complete_payment("nope")) is None
+    run(plus.grant(7, 0, 30, "gum_2"))
+    assert len(db["grants"]) == 2
+
+
+def test_the_shared_payment_system_knows_the_product_in_every_mode():
+    import payments_manual as pm
+    import gumroad_payments as gp
+    import gumroad_autocreate as ga
+    import config
+    assert plus.PAYMENT_TYPE in pm.UNLOCK_HANDLERS                                     # Gumroad ping, Paystack verify and admin approve all land here
+    assert gp.expected_price_usd(plus.PAYMENT_TYPE) == float(config.ANIME_PLUS_FEE_USD)
+    spec = ga.PRODUCTS[plus.PAYMENT_TYPE]                                              # the bot creates it, or DMs the owner this name/price once
+    assert spec["kind"] == "one_time" and spec["name"] and spec["price"]() == float(config.ANIME_PLUS_FEE_USD)
+    assert plus.PAYMENT_TYPE not in __import__("gumroad_payments")._GUILD_SCOPED_TYPES  # account-level: no server prompt
+
+
+def test_unlock_handler_grants_thirty_days_to_the_buyer(monkeypatch):
+    import payments_manual as pm
+    got = []
+
+    async def grant(user_id, clone_id, days, reference):
+        got.append((user_id, clone_id, days, reference))
+    monkeypatch.setattr(plus, "grant", grant)
+    run(pm.UNLOCK_HANDLERS["anime_plus"]("gum_anime_plus_5_ab", 5, None, None))
+    assert got == [(5, 0, 30, "gum_anime_plus_5_ab")]
 
 
 # -- the card and the buttons ----------------------------------------------------------------
 
 def test_upgrade_text_covers_each_case_and_lists_only_what_exists():
     from discord_bot.cogs import _views_anime_plus as v
-    none = v.upgrade_text("none", None, "$3 USD", False)
+    none = v.upgrade_text("none", None, "$3 USD")
     assert "$3 USD" in none and "DM alerts" in none and "Quiet hours" in none and "50" in none and "never makes a server premium" in none
-    server = v.upgrade_text("server", None, "$3 USD", False)
+    server = v.upgrade_text("server", None, "$3 USD")
     assert "This server is premium" in server and "Nothing to buy" in server
-    personal = v.upgrade_text("personal", FUTURE, "$3 USD", True)
-    assert "active until <t:" in personal and "I've paid" in personal
+    personal = v.upgrade_text("personal", FUTURE, "$3 USD")
+    assert "active until <t:" in personal
 
 
 def _buttons(view):
@@ -145,9 +164,9 @@ def _buttons(view):
 
 def test_server_premium_card_has_no_pay_button_and_free_card_does():
     from discord_bot.cogs import _views_anime_plus as v
-    assert [b.label for b in _buttons(v.upgrade_view("server", None, "$3 USD", False))] == []
-    assert [b.label for b in _buttons(v.upgrade_view("none", None, "$3 USD", False))] == ["Upgrade"]
-    assert [b.label for b in _buttons(v.upgrade_view("personal", FUTURE, "$3 USD", True))] == ["Add more days", "I've paid"]
+    assert [b.label for b in _buttons(v.upgrade_view("server", None, "$3 USD"))] == []
+    assert [b.label for b in _buttons(v.upgrade_view("none", None, "$3 USD"))] == ["Upgrade"]
+    assert [b.label for b in _buttons(v.upgrade_view("personal", FUTURE, "$3 USD"))] == ["Add more days"]
 
 
 def test_upgrade_buttons_are_persistent_registered_and_rebuild_from_the_custom_id_alone():
@@ -226,8 +245,7 @@ def test_migration_is_additive_wired_and_price_is_a_config_value():
     import config
     assert config.ANIME_PLUS_FEE_USD > 0 and config.ANIME_PLUS_PRODUCT_NAME and "anime_plus" not in config.PRICE_REGISTRY      # priced in USD, not GHS
     assert v_price() == f"${config.ANIME_PLUS_FEE_USD:g} USD"
-    hook = (ROOT / "api/paystack_webhook.py").read_text()
-    assert "payment_type == 'anime_plus'" in hook and "anime_plus.complete_payment(reference)" in hook
+    assert "payment_type == 'anime_plus'" not in (ROOT / "api/paystack_webhook.py").read_text()   # no private payment path any more
 
 
 def v_price():
@@ -235,31 +253,39 @@ def v_price():
     return v._price_text()
 
 
-def test_the_payment_is_checked_automatically_and_completed_once(monkeypatch):
+def test_pay_uses_the_shared_mode_aware_payment_entry_not_a_private_gateway(monkeypatch):
     from discord_bot.cogs import _views_anime_plus as v
-    import payments
-    monkeypatch.setattr(v, "WATCH_EVERY", 0)
-    states, completes, dms = ["pending", "pending"], [], []
+    import config
+    import payments_manual
+    patch_state(monkeypatch)
+    calls = []
 
-    async def status(ref):
-        return states.pop(0) if states else "completed"
+    async def fake_start(interaction, **kw):
+        calls.append(kw)
+    monkeypatch.setattr(payments_manual, "start_dual_mode_payment", fake_start)
 
-    async def complete(ref):
-        completes.append(ref)
-        return {"user_id": 1}
+    async def defer(**k):
+        pass
+    inter = SimpleNamespace(user=SimpleNamespace(id=3), guild=SimpleNamespace(id=9), client=SimpleNamespace(clone_id=0),
+                            response=SimpleNamespace(defer=defer, is_done=lambda: True), followup=SimpleNamespace(send=None))
+    run(v._PayButton().callback(inter))
+    assert len(calls) == 1
+    k = calls[0]
+    assert k["payment_type"] == "anime_plus" and k["price_usd"] == float(config.ANIME_PLUS_FEE_USD) and k["guild_id"] is None
+    assert k["product_title"] and k["product_description"] and "USD" in k["amount_display_manual"]
 
-    async def expiry(uid, clone=None):
-        return FUTURE
 
-    async def gw(clone, provider, platform=None):
-        return SimpleNamespace(verify_payment=lambda ref, api_key=None: {"status": "success" if completes == [] and len(states) == 0 else "pending"}), "k"
-    monkeypatch.setattr(plus, "payment_status", status)
-    monkeypatch.setattr(plus, "complete_payment", complete)
-    monkeypatch.setattr(plus, "personal_expiry", expiry)
-    monkeypatch.setattr(payments, "resolve_gateway_for_provider", gw)
+def test_old_ive_paid_buttons_still_answer_with_the_current_status(monkeypatch):
+    from discord_bot.cogs import _views_anime_plus as v
+    patch_state(monkeypatch, expiry=FUTURE)
+    sent = []
 
-    async def send(text):
-        dms.append(text)
-    user = SimpleNamespace(id=1, send=send)
-    run(v._watch(user, "refA", "stripe", 0))
-    assert completes == ["refA"] and len(dms) == 1 and "active until" in dms[0]
+    async def send(text, **k):
+        sent.append(text)
+
+    async def defer(**k):
+        pass
+    inter = SimpleNamespace(user=SimpleNamespace(id=3), guild=None, client=SimpleNamespace(clone_id=0),
+                            response=SimpleNamespace(defer=defer, is_done=lambda: True), followup=SimpleNamespace(send=send))
+    run(v._VerifyButton().callback(inter))
+    assert "active until" in sent[0]
