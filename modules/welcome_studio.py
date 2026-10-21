@@ -76,6 +76,19 @@ async def options_for_render(config: dict):
             return None
 
 
+async def avatar_shape_for_render(config: dict) -> str:
+    """The avatar shape to hand the card renderer: the stored one (never raises, unknown values fall back to circle).
+
+    Every place that draws a welcome card passes this next to `options_for_render`, so the shape picked in the wizard is
+    the shape that is drawn (join, /welcome preview, nudge post, test post, setup TV)."""
+    try:
+        from modules.welcome_card import AVATAR_SHAPES, DEFAULT_AVATAR_SHAPE
+        shape = (config or {}).get("avatar_shape")
+        return shape if shape in AVATAR_SHAPES else DEFAULT_AVATAR_SHAPE
+    except Exception:
+        return "circle"
+
+
 def effective_studio_options(options: dict, unlocked: bool, studio_keys: frozenset = frozenset()) -> dict:
     """Return `options` unchanged when unlocked, else a copy without the studio-only keys.
 
