@@ -384,6 +384,7 @@ async def _with_studio(config: dict, guild_id: int, clone_id, user_id=None) -> d
         return dict(config, _studio={
             "unlocked": True, "pictures": len(rows),
             "needs": [r["slot"] for r in rows if r.get("needs_new_picture")],
+            "slots": [r["slot"] for r in rows],
             "mode": wg.clean_mode(config.get("rotation_mode")),
         })
     except Exception:
@@ -403,6 +404,15 @@ def _gallery_line(studio: dict | None) -> str | None:
     n = int(studio.get("pictures") or 0)
     line = f"-# \U0001F4DA Gallery: {n} of {wg.MAX_PICTURES} pictures · {wg.MODE_LABELS[wg.clean_mode(studio.get('mode'))]}"
     needs = studio.get("needs") or []
+    slots = studio.get("slots")
+    if slots:
+        have = {int(x) for x in slots}
+        bad = {int(x) for x in needs}
+        # Numbered strip: 1 to 10, filled / empty / needs a new picture. Plain symbols, no jargon.
+        warn, full, empty = "\u26A0\uFE0F", "\u25CF", "\u25CB"
+        strip = " ".join(str(n) + (warn if n in bad else (full if n in have else empty))
+                         for n in range(1, wg.MAX_PICTURES + 1))
+        line += f"\n-# {strip}  (\u25CF has a picture, \u25CB empty)"
     if needs:
         line += "\n-# \u26A0\uFE0F Picture " + ", ".join(str(x) for x in needs) + " needs a new picture."
     return line
@@ -451,12 +461,20 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         bg_row.add_item(CardBackgroundButton(guild_id, clone_id, invoker_id))
         if has_bg:
             bg_row.add_item(CardClearBackgroundButton(guild_id, clone_id, invoker_id))
+        studio = raw_config.get("_studio")
+        if studio is not None and not studio.get("unlocked"):
+            bg_row.add_item(CardStudioPremiumButton(guild_id, clone_id, invoker_id))
         container.add_item(bg_row)
         extra = ()
         if more:
             extra = (CardFocusSelect, CardRotationSelect)
         for select_cls in (CardRatioSelect, CardDimSelect) + extra:
             _select_row(select_cls)
+        if more and studio is not None and (not studio.get("unlocked") or int(studio.get("pictures") or 0) > 0):
+            manage_row = discord.ui.ActionRow()
+            manage_row.add_item(CardPictureRemoveButton(guild_id, clone_id, invoker_id))
+            manage_row.add_item(CardPictureFirstButton(guild_id, clone_id, invoker_id))
+            container.add_item(manage_row)
     elif tab == "layout":
         for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect) + ((CardShapeSelect,) if more else ()):
             _select_row(select_cls)
@@ -1310,6 +1328,89 @@ class CardTestSendButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templa
             await interaction.followup.send("Couldn't draw the test card just now. Try again in a moment.", ephemeral=True)
 
 
+# ── Phase 2c-2: remove a picture / make a picture first / unlock ─────────
+
+class CardPictureNumberModal(discord.ui.Modal):
+    """Asks which picture (1 to 10) to remove or make first. The write is gated on Premium/Plus on the server."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, action: str):
+        super().__init__(title="Remove a picture" if action == "remove" else "Make a picture first")
+        self.guild_id, self.clone_id, self.invoker_id, self.action = guild_id, clone_id, invoker_id, action
+        self.number = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=2, placeholder="1 to 10")
+        self.add_item(discord.ui.Label(
+            text="Picture number",
+            description=("It is taken out of the gallery." if action == "remove"
+                         else "It becomes picture 1, the one used by \"Same picture every time\"."),
+            component=self.number))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from modules import welcome_gallery as wg
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        try:
+            n = int(str(self.number.value or "").strip())
+        except ValueError:
+            n = 0
+        if not 1 <= n <= wg.MAX_PICTURES:
+            await interaction.followup.send(f"\u26A0\uFE0F Type a number from 1 to {wg.MAX_PICTURES}.", ephemeral=True)
+            return
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            # Preview only: a server without Premium/Plus has no stored pictures, so there is nothing to change.
+            await interaction.followup.send(f"\U0001F512 Preview only: {LOCKED_LINE} Pictures are stored and managed with Premium.", ephemeral=True)
+            return
+        try:
+            if self.action == "remove":
+                done = await db.gallery_remove(self.guild_id, self.clone_id, n)
+            else:
+                done = await db.gallery_make_first(self.guild_id, self.clone_id, n)
+        except Exception:
+            logger.exception("[cardwz] gallery %s failed for guild %s", self.action, self.guild_id)
+            await interaction.followup.send("Couldn't do that just now. Try again in a moment.", ephemeral=True)
+            return
+        if not done:
+            msg = (f"Picture {n} is already first." if (self.action == "first" and n == 1)
+                   else f"There is no picture {n} in the gallery.")
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class _PictureButton(_Btn):
+    ACTION = ""
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        try:
+            await interaction.response.send_modal(CardPictureNumberModal(self.guild_id, self.clone_id, self.invoker_id, self.ACTION))
+        except discord.HTTPException as e:
+            if e.code != 40060:  # double-click: modal already open
+                raise
+
+
+class CardPictureRemoveButton(_PictureButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("picremove")):
+    FIELD, LABEL, ACTION = "picremove", "\U0001F5D1\uFE0F Remove a picture", "remove"
+
+
+class CardPictureFirstButton(_PictureButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("picfirst")):
+    FIELD, LABEL, ACTION = "picfirst", "\u2B50 Make first", "first"
+
+
+class CardStudioPremiumButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("studiogoprem")):
+    FIELD, STYLE = "studiogoprem", discord.ButtonStyle.primary
+
+    def label_text(self, *_):
+        from modules.welcome_studio import UNLOCK_BUTTON_LABEL
+        return f"\U0001F48E {UNLOCK_BUTTON_LABEL}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        from discord_bot.cogs._views_premium import send_premium_pitch
+        await interaction.response.defer(ephemeral=True)
+        await send_premium_pitch(interaction, self.guild_id, self.clone_id)
+
+
 DYNAMIC_ITEMS = (
     CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect, CardStyleSelect,
     CardLayoutSelect, CardFontSelect, CardBracketSelect, CardFocusSelect, CardRatioSelect,
@@ -1318,4 +1419,5 @@ DYNAMIC_ITEMS = (
     CardTabButton, CardPresetSelect,
     CardMoreButton, CardUndoButton, CardStepResetButton, CardTestSendButton,
     CardRotationSelect,
+    CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton,
 )

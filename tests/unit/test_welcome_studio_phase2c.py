@@ -184,7 +184,7 @@ def test_studio_summary_unlocked_locked_and_error(monkeypatch):
     monkeypatch.setattr(cc.db, "gallery_list", rows, raising=False)
     monkeypatch.setattr(ws, "studio_unlocked", yes)
     s = run(cc._with_studio({"rotation_mode": "pin"}, 1, None))["_studio"]
-    assert s == {"unlocked": True, "pictures": 2, "needs": [2], "mode": "pin"}
+    assert s == {"unlocked": True, "pictures": 2, "needs": [2], "slots": [1, 2], "mode": "pin"}
     monkeypatch.setattr(ws, "studio_unlocked", no)
     assert run(cc._with_studio({}, 1, None))["_studio"] == {"unlocked": False, "mode": "random"}
     monkeypatch.setattr(ws, "studio_unlocked", yes)
