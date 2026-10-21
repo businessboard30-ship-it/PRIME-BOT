@@ -92,3 +92,92 @@ def format_message(template: str, mentions: str, names: str, server: str) -> str
     """Fill {user} / {name} / {server}. Plain replace on purpose, so stray braces never crash it."""
     text = (template or DEFAULT_MESSAGE)
     return (text.replace("{user}", mentions).replace("{name}", names).replace("{server}", server))[:1900]
+
+
+# ---------------------------------------------------------------------------- v2: Premium perks
+#
+# Free servers get a plain-text announcement with one message. Premium servers can add:
+#   1. a styled embed (title, colour, banner, footer, avatar)
+#   2. a birthday role for the day (given on the day, removed the next day)
+#   3. up to MAX_EXTRA_MESSAGES more messages (one is picked at random each time)
+# Settings are saved for everyone, but only APPLIED while Premium is active (same idea as the
+# goodbye style), so if Premium lapses the server quietly goes back to the plain look.
+
+import random as _random
+from modules import goodbye_style as _gs
+
+MAX_EXTRA_MESSAGES = 5
+EXTRA_MESSAGE_LEN = 300
+TITLE_MAX = 80
+FOOTER_MAX = 100
+DEFAULT_COLOR = 0xEE79C2          # pink, same as the Birthday Pings role
+PREMIUM_PERKS = (
+    "🎨 Styled announcement: your own title, colour, banner and footer\n"
+    "🎭 Birthday role: a special role for the birthday person for the day\n"
+    f"🔁 Up to {MAX_EXTRA_MESSAGES} extra messages, picked at random"
+)
+
+
+def parse_extra_messages(text: Optional[str]):
+    """One message per line -> (list, error). Blank text clears them. Max 5 lines of 300 chars."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if len(lines) > MAX_EXTRA_MESSAGES:
+        return None, f"Up to {MAX_EXTRA_MESSAGES} messages, one per line (you sent {len(lines)})."
+    if any(len(ln) > EXTRA_MESSAGE_LEN for ln in lines):
+        return None, f"Each message can be at most {EXTRA_MESSAGE_LEN} characters."
+    return lines, None
+
+
+def parse_yes_no(text: Optional[str], default: bool = True) -> bool:
+    t = (text or "").strip().lower()
+    if t in ("n", "no", "off", "false", "0"):
+        return False
+    if t in ("y", "yes", "on", "true", "1"):
+        return True
+    return default
+
+
+def effective_style(cfg: dict, premium: bool) -> dict:
+    """The look to post. Non-premium (or nothing customised) -> {'styled': False}."""
+    if not premium:
+        return {"styled": False}
+    title = (cfg.get("embed_title") or "").strip()[:TITLE_MAX]
+    image = cfg.get("embed_image_url") or None
+    footer = (cfg.get("embed_footer") or "").strip()[:FOOTER_MAX]
+    color = cfg.get("embed_color")
+    show_avatar = cfg.get("show_avatar")
+    styled = bool(title or image or footer or color is not None or show_avatar is False)
+    if not styled:
+        return {"styled": False}
+    return {"styled": True, "title": title or "🎂 Happy Birthday!", "image_url": image, "footer": footer or None,
+            "color": int(color) if color is not None else DEFAULT_COLOR,
+            "show_avatar": True if show_avatar is None else bool(show_avatar)}
+
+
+def pick_message(cfg: dict, premium: bool, rng=None) -> str:
+    """The main message, or (Premium) a random one of main + extras."""
+    main = cfg.get("message") or DEFAULT_MESSAGE
+    extras = [m for m in (cfg.get("extra_messages") or []) if m and m.strip()] if premium else []
+    return (rng or _random).choice([main] + extras[:MAX_EXTRA_MESSAGES])
+
+
+def role_remove_after(local_date) -> date:
+    """The role is taken back at the start of the next local day."""
+    return local_date + timedelta(days=1)
+
+
+def role_grant_expired(remove_after: date, local_date: date) -> bool:
+    return local_date >= remove_after
+
+
+def style_summary(cfg: dict) -> str:
+    bits = []
+    if cfg.get("embed_title"):
+        bits.append("title")
+    if cfg.get("embed_color") is not None:
+        bits.append(f"colour {_gs.color_hex(cfg['embed_color'])}")
+    if cfg.get("embed_image_url"):
+        bits.append("banner")
+    if cfg.get("embed_footer"):
+        bits.append("footer")
+    return ", ".join(bits) if bits else "default pink"

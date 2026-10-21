@@ -16,7 +16,10 @@ from modules import birthdays as bd
 
 _ready = False
 
-_CONFIG_FIELDS = ("enabled", "channel_id", "ping_role_id", "message", "utc_offset_hours", "announce_hour")
+_CONFIG_FIELDS = ("enabled", "channel_id", "ping_role_id", "message", "utc_offset_hours", "announce_hour",
+                  # v2 (Premium perks; saved for everyone, only applied while Premium is active)
+                  "embed_title", "embed_color", "embed_image_url", "embed_footer", "show_avatar",
+                  "birthday_role_id", "extra_messages")
 
 
 async def ensure_tables() -> None:
@@ -51,6 +54,25 @@ async def ensure_tables() -> None:
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS discord_birthday_config_guild_clone_key
             ON discord_birthday_config (guild_id, COALESCE(clone_id, -1))
+        """)
+        # v2: Premium perks. ADD COLUMN IF NOT EXISTS keeps v1 servers working untouched.
+        for ddl in (
+            "embed_title TEXT", "embed_color INTEGER", "embed_image_url TEXT", "embed_footer TEXT",
+            "show_avatar BOOLEAN", "birthday_role_id BIGINT", "extra_messages TEXT[]",
+        ):
+            await conn.execute(f"ALTER TABLE discord_birthday_config ADD COLUMN IF NOT EXISTS {ddl}")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_birthday_role_grants (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                user_id BIGINT NOT NULL,
+                role_id BIGINT NOT NULL,
+                remove_after DATE NOT NULL
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_birthday_role_grants_key
+            ON discord_birthday_role_grants (guild_id, COALESCE(clone_id, -1), user_id, role_id)
         """)
     _ready = True
 
@@ -112,7 +134,8 @@ async def all_birthdays() -> List[Dict]:
 def _defaults(guild_id: int, clone_id: Optional[int]) -> Dict:
     return {"guild_id": guild_id, "clone_id": clone_id, "enabled": False, "channel_id": None,
             "ping_role_id": None, "message": None, "utc_offset_hours": 0, "announce_hour": 9,
-            "last_announced": None}
+            "last_announced": None, "embed_title": None, "embed_color": None, "embed_image_url": None,
+            "embed_footer": None, "show_avatar": None, "birthday_role_id": None, "extra_messages": None}
 
 
 async def get_config(guild_id: int, clone_id: Optional[int] = None) -> Dict:
@@ -127,23 +150,24 @@ async def get_config(guild_id: int, clone_id: Optional[int] = None) -> Dict:
 
 
 async def set_config(guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
-    """Upsert-merge: omitted fields keep their value. Pass None explicitly to clear channel/role/message."""
+    """Upsert-merge: omitted fields keep their value. Pass None explicitly to clear a field."""
+    unknown = set(fields) - set(_CONFIG_FIELDS)
+    if unknown:
+        raise ValueError(f"unknown birthday config field(s): {sorted(unknown)}")
     current = await get_config(guild_id, clone_id)
     merged = {k: (fields[k] if k in fields else current.get(k)) for k in _CONFIG_FIELDS}
+    cols = ", ".join(_CONFIG_FIELDS)
+    marks = ", ".join(f"${i + 3}" for i in range(len(_CONFIG_FIELDS)))
+    sets = ", ".join(f"{k} = ${i + 3}" for i, k in enumerate(_CONFIG_FIELDS))
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
-            INSERT INTO discord_birthday_config
-                (guild_id, clone_id, enabled, channel_id, ping_role_id, message, utc_offset_hours, announce_hour)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
-                enabled = $3, channel_id = $4, ping_role_id = $5, message = $6,
-                utc_offset_hours = $7, announce_hour = $8, updated_at = NOW()
+            f"""
+            INSERT INTO discord_birthday_config (guild_id, clone_id, {cols}) VALUES ($1, $2, {marks})
+            ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET {sets}, updated_at = NOW()
             RETURNING *
             """,
-            guild_id, clone_id, merged["enabled"], merged["channel_id"], merged["ping_role_id"],
-            merged["message"], merged["utc_offset_hours"], merged["announce_hour"],
+            guild_id, clone_id, *[merged[k] for k in _CONFIG_FIELDS],
         )
     return dict(row)
 
@@ -174,3 +198,36 @@ async def claim_day(guild_id: int, clone_id: Optional[int], local_date: date) ->
             guild_id, clone_id, local_date,
         )
     return row is not None
+
+
+# ---- v2: birthday role grants -----------------------------------------------------------
+
+async def add_role_grant(guild_id: int, clone_id: Optional[int], user_id: int, role_id: int, remove_after: date) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO discord_birthday_role_grants (guild_id, clone_id, user_id, role_id, remove_after)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (guild_id, (COALESCE(clone_id, -1)), user_id, role_id) DO UPDATE SET remove_after = $5
+            """,
+            guild_id, clone_id, user_id, role_id, remove_after,
+        )
+
+
+async def role_grants(clone_id: Optional[int] = None) -> List[Dict]:
+    await ensure_tables()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT guild_id, user_id, role_id, remove_after FROM discord_birthday_role_grants "
+            "WHERE clone_id IS NOT DISTINCT FROM $1", clone_id)
+    return [dict(r) for r in rows]
+
+
+async def delete_role_grant(guild_id: int, clone_id: Optional[int], user_id: int, role_id: int) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM discord_birthday_role_grants WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+            "AND user_id = $3 AND role_id = $4", guild_id, clone_id, user_id, role_id)

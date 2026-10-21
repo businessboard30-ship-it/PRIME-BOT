@@ -8,6 +8,10 @@ ONE slash command: /birthday. It opens a private wizard with buttons:
 Server setup lets admins pick the channel, optional ping role, message, time zone / hour,
 turn it on or off and send a test.
 
+v2 adds 💎 Premium perks, gated on the server's Premium (db.is_guild_premium_active, same check as every other
+Premium feature): styled embed, a birthday role for the day, and extra random messages. Settings are saved for
+everyone but only applied while Premium is active, so a lapse quietly returns the server to the plain look.
+
 A background loop checks once every 10 minutes with ONE query (enabled servers only) and posts
 at most once per server per local day. A birthday is stored as month + day only (no year).
 Birthdays are global per user, so a member sets theirs once and it works in every server
@@ -26,8 +30,29 @@ from discord.ext import commands, tasks
 
 from modules import birthday_store as store
 from modules import birthdays as bd
+from modules import goodbye_style as gs
 
 logger = logging.getLogger(__name__)
+
+async def _is_premium(guild_id: int, clone_id) -> bool:
+    """Whether this server has Premium right now. Never raises (a failed lookup = free look)."""
+    try:
+        from database import db
+        return bool(await db.is_guild_premium_active(guild_id, clone_id))
+    except Exception:
+        logger.exception("[birthdays] premium lookup failed for guild %s", guild_id)
+        return False
+
+
+async def _premium_gate(interaction: discord.Interaction, guild: discord.Guild, clone_id) -> bool:
+    """True if Premium. If not, shows the normal Go Premium checkout (same one every other feature uses)."""
+    if await _is_premium(guild.id, clone_id):
+        return True
+    from discord_bot.cogs._views_premium import send_premium_pitch
+    await interaction.response.defer(ephemeral=True)
+    await send_premium_pitch(interaction, guild.id, clone_id)
+    return False
+
 
 def _can_post(channel, guild: discord.Guild) -> bool:
     me = guild.me
@@ -35,7 +60,7 @@ def _can_post(channel, guild: discord.Guild) -> bool:
                 and channel.permissions_for(me).embed_links)
 
 
-def _config_embed(guild: discord.Guild, cfg: dict) -> discord.Embed:
+def _config_embed(guild: discord.Guild, cfg: dict, premium: bool = False) -> discord.Embed:
     ch = guild.get_channel(cfg["channel_id"]) if cfg.get("channel_id") else None
     role = guild.get_role(cfg["ping_role_id"]) if cfg.get("ping_role_id") else None
     on = bool(cfg.get("enabled") and ch)
@@ -51,8 +76,42 @@ def _config_embed(guild: discord.Guild, cfg: dict) -> discord.Embed:
     off = int(cfg.get("utc_offset_hours") or 0)
     embed.add_field(name="Announce at", value=f"{int(cfg.get('announce_hour', 9)):02d}:00 (UTC{off:+d})", inline=True)
     embed.add_field(name="Message", value=(cfg.get("message") or bd.DEFAULT_MESSAGE)[:500], inline=False)
+    if premium:
+        brole = guild.get_role(cfg["birthday_role_id"]) if cfg.get("birthday_role_id") else None
+        extra = len([m for m in (cfg.get("extra_messages") or []) if m])
+        embed.add_field(
+            name="💎 Premium perks (active)",
+            value=f"🎨 Style: {bd.style_summary(cfg)}\n🎭 Birthday role: {brole.mention if brole else 'none'}\n"
+                  f"🔁 Extra messages: {extra}", inline=False)
+    else:
+        embed.add_field(name="💎 Premium perks", value=bd.PREMIUM_PERKS + "\nTap a 💎 button to unlock them.", inline=False)
     embed.set_footer(text="Placeholders: {user} {name} {server}")
     return embed
+
+
+def _build_post(guild: discord.Guild, cfg: dict, premium: bool, members: List[discord.Member], test: bool = False):
+    """(content, embed_or_None, allowed_mentions) for one announcement."""
+    shown = members[:bd.MAX_MENTIONS]
+    extra = len(members) - len(shown)
+    mentions = ", ".join(m.mention for m in shown) + (f" and {extra} more" if extra > 0 else "")
+    names = ", ".join(m.display_name for m in shown)
+    text = bd.format_message(bd.pick_message(cfg, premium), mentions, names, guild.name)
+    ping_role = guild.get_role(cfg["ping_role_id"]) if cfg.get("ping_role_id") and not test else None
+    allowed = discord.AllowedMentions(users=[] if test else shown, roles=[ping_role] if ping_role else False, everyone=False)
+    style = bd.effective_style(cfg, premium)
+    prefix = "🧪 **Test message**\n" if test else ""
+    if not style["styled"]:
+        return f"{prefix}{ping_role.mention + ' ' if ping_role else ''}{text}", None, allowed
+    embed = discord.Embed(title=style["title"], description=text, color=discord.Color(style["color"]))
+    if style["show_avatar"] and len(shown) == 1:
+        embed.set_thumbnail(url=shown[0].display_avatar.url)
+    if style["image_url"]:
+        embed.set_image(url=style["image_url"])
+    if style["footer"]:
+        embed.set_footer(text=style["footer"])
+    # Mentions inside an embed never ping, so the pings go in the message text above it.
+    pings = ((ping_role.mention + " ") if ping_role else "") + ("" if test else ", ".join(m.mention for m in shown))
+    return (prefix + pings).strip() or None, embed, allowed
 
 
 # ---------------------------------------------------------------------------- setup panel
@@ -93,13 +152,68 @@ class _TimeModal(discord.ui.Modal, title="Announcement time"):
         await self.panel.save(interaction, utc_offset_hours=off, announce_hour=hr)
 
 
+class _StyleModal(discord.ui.Modal, title="💎 Announcement style"):
+    title_in = discord.ui.TextInput(label="Title", max_length=bd.TITLE_MAX, required=False, placeholder="🎂 Happy Birthday!")
+    color_in = discord.ui.TextInput(label="Colour (hex)", max_length=7, required=False, placeholder="#EE79C2")
+    image_in = discord.ui.TextInput(label="Banner image link (https, png/jpg/gif/webp)", max_length=500, required=False)
+    footer_in = discord.ui.TextInput(label="Footer", max_length=bd.FOOTER_MAX, required=False)
+    avatar_in = discord.ui.TextInput(label="Show their avatar? (yes / no)", max_length=3, required=False, placeholder="yes")
+
+    def __init__(self, panel: "SetupView"):
+        super().__init__()
+        self.panel = panel
+        c = panel.cfg
+        self.title_in.default = c.get("embed_title") or ""
+        self.color_in.default = gs.color_hex(c["embed_color"]) if c.get("embed_color") is not None else ""
+        self.image_in.default = c.get("embed_image_url") or ""
+        self.footer_in.default = c.get("embed_footer") or ""
+        self.avatar_in.default = "no" if c.get("show_avatar") is False else "yes"
+
+    async def on_submit(self, interaction: discord.Interaction):
+        color = None
+        if str(self.color_in.value).strip():
+            color = gs.parse_color(self.color_in.value)
+            if color is None:
+                return await interaction.response.send_message("That colour isn't valid. Use a hex code like `#EE79C2`.", ephemeral=True)
+        ok, image = gs.check_image_url(self.image_in.value)
+        if not ok:
+            return await interaction.response.send_message("The banner must be an **https** link ending in .png, .jpg, .gif or .webp.", ephemeral=True)
+        await self.panel.save(
+            interaction,
+            embed_title=str(self.title_in.value).strip() or None, embed_color=color, embed_image_url=image,
+            embed_footer=str(self.footer_in.value).strip() or None,
+            show_avatar=bd.parse_yes_no(self.avatar_in.value, True))
+
+
+class _ExtraMessagesModal(discord.ui.Modal, title="💎 More messages"):
+    lines = discord.ui.TextInput(
+        label=f"Up to {bd.MAX_EXTRA_MESSAGES}, one per line (random pick)", style=discord.TextStyle.paragraph,
+        max_length=1600, required=False, placeholder="Happy birthday {user}! 🥳\nAnother year older, {name}! 🎈")
+
+    def __init__(self, panel: "SetupView"):
+        super().__init__()
+        self.panel = panel
+        self.lines.default = "\n".join(panel.cfg.get("extra_messages") or [])
+
+    async def on_submit(self, interaction: discord.Interaction):
+        msgs, err = bd.parse_extra_messages(self.lines.value)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
+        await self.panel.save(interaction, extra_messages=msgs or None)
+
+
 class SetupView(discord.ui.View):
-    def __init__(self, cog: "BirthdayCog", guild: discord.Guild, cfg: dict, owner_id: int):
+    def __init__(self, cog: "BirthdayCog", guild: discord.Guild, cfg: dict, owner_id: int, premium: bool = False):
         super().__init__(timeout=600)
-        self.cog, self.guild, self.cfg, self.owner_id = cog, guild, cfg, owner_id
+        self.cog, self.guild, self.cfg, self.owner_id, self.premium = cog, guild, cfg, owner_id, premium
         self._sync_toggle()
 
     def _sync_toggle(self):
+        tag = "" if self.premium else " 💎"
+        self.style_btn.label = f"Style{tag}"
+        self.more_btn.label = f"More messages{tag}"
+        self.pick_birthday_role.placeholder = ("Birthday role for the day (optional)" if self.premium
+                                               else "💎 Birthday role for the day (Premium)")
         self.toggle.label = "Turn off" if self.cfg.get("enabled") else "Turn on"
         self.toggle.style = discord.ButtonStyle.danger if self.cfg.get("enabled") else discord.ButtonStyle.success
 
@@ -111,8 +225,9 @@ class SetupView(discord.ui.View):
 
     async def save(self, interaction: discord.Interaction, **fields):
         self.cfg = await store.set_config(self.guild.id, self.cog.clone_id, **fields)
+        self.premium = await _is_premium(self.guild.id, self.cog.clone_id)
         self._sync_toggle()
-        await interaction.response.edit_message(embed=_config_embed(self.guild, self.cfg), view=self)
+        await interaction.response.edit_message(embed=_config_embed(self.guild, self.cfg, self.premium), view=self)
 
     @discord.ui.select(cls=discord.ui.ChannelSelect, channel_types=[discord.ChannelType.text],
                        placeholder="Channel for birthday announcements", row=0)
@@ -151,9 +266,41 @@ class SetupView(discord.ui.View):
         ch = self.guild.get_channel(self.cfg["channel_id"]) if self.cfg.get("channel_id") else None
         if not _can_post(ch, self.guild):
             return await interaction.response.send_message("Pick a channel I can post in first.", ephemeral=True)
-        text = bd.format_message(self.cfg.get("message"), interaction.user.mention, interaction.user.display_name, self.guild.name)
-        await ch.send(f"🧪 **Test message**\n{text}", allowed_mentions=discord.AllowedMentions.none())
+        premium = await _is_premium(self.guild.id, self.cog.clone_id)
+        content, embed, allowed = _build_post(self.guild, self.cfg, premium, [interaction.user], test=True)
+        await ch.send(content=content, embed=embed, allowed_mentions=allowed)
         await interaction.response.send_message(f"Sent a test to {ch.mention} (nobody was pinged).", ephemeral=True)
+
+    # ---- 💎 Premium perks (each one checks Premium first and shows the checkout if the server doesn't have it) ----
+
+    @discord.ui.button(label="Style 💎", style=discord.ButtonStyle.primary, emoji="🎨", row=3)
+    async def style_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await _premium_gate(interaction, self.guild, self.cog.clone_id):
+            return
+        await interaction.response.send_modal(_StyleModal(self))
+
+    @discord.ui.button(label="More messages 💎", style=discord.ButtonStyle.primary, emoji="🔁", row=3)
+    async def more_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await _premium_gate(interaction, self.guild, self.cog.clone_id):
+            return
+        await interaction.response.send_modal(_ExtraMessagesModal(self))
+
+    @discord.ui.select(cls=discord.ui.RoleSelect, placeholder="💎 Birthday role for the day (Premium)",
+                       min_values=0, max_values=1, row=4)
+    async def pick_birthday_role(self, interaction: discord.Interaction, select: discord.ui.RoleSelect):
+        if not await _premium_gate(interaction, self.guild, self.cog.clone_id):
+            return
+        role = select.values[0] if select.values else None
+        if role is not None:
+            me = self.guild.me
+            real = self.guild.get_role(role.id)
+            if real is None or real.is_default() or real.managed:
+                return await interaction.response.send_message("Pick a normal role (not @everyone or a bot role).", ephemeral=True)
+            if not me.guild_permissions.manage_roles or real >= me.top_role:
+                return await interaction.response.send_message(
+                    f"I can't hand out {real.mention}. Give me **Manage Roles** and move my role above it in "
+                    "Server Settings → Roles, then pick it again.", ephemeral=True)
+        await self.save(interaction, birthday_role_id=role.id if role else None)
 
 
 # ---------------------------------------------------------------------------- member wizard
@@ -252,9 +399,10 @@ class MainView(discord.ui.View):
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need the **Manage Server** permission for this.", ephemeral=True)
         cfg = await store.get_config(self.guild.id, self.cog.clone_id)
+        premium = await _is_premium(self.guild.id, self.cog.clone_id)
         await interaction.response.send_message(
-            embed=_config_embed(self.guild, cfg),
-            view=SetupView(self.cog, self.guild, cfg, interaction.user.id), ephemeral=True)
+            embed=_config_embed(self.guild, cfg, premium),
+            view=SetupView(self.cog, self.guild, cfg, interaction.user.id, premium), ephemeral=True)
 
 
 def _main_embed(guild: discord.Guild) -> discord.Embed:
@@ -313,6 +461,7 @@ class BirthdayCog(commands.Cog):
                 await self._announce(guild, cfg, local.date())
             except Exception:
                 logger.exception("[birthdays] announcing failed in guild %s", cfg.get("guild_id"))
+        await self._expire_roles()
 
     @announce_loop.before_loop
     async def _before(self):
@@ -330,18 +479,53 @@ class BirthdayCog(commands.Cog):
                 members.append(m)
         if not members:
             return
-        shown = members[:bd.MAX_MENTIONS]
-        extra = len(members) - len(shown)
-        mentions = ", ".join(m.mention for m in shown) + (f" and {extra} more" if extra > 0 else "")
-        names = ", ".join(m.display_name for m in shown)
-        text = bd.format_message(cfg.get("message"), mentions, names, guild.name)
-        role = guild.get_role(cfg["ping_role_id"]) if cfg.get("ping_role_id") else None
-        if role:
-            text = f"{role.mention} {text}"
-        await channel.send(
-            text,
-            allowed_mentions=discord.AllowedMentions(users=shown, roles=[role] if role else False, everyone=False),
-        )
+        premium = await _is_premium(guild.id, self.clone_id)
+        content, embed, allowed = _build_post(guild, cfg, premium, members)
+        await channel.send(content=content, embed=embed, allowed_mentions=allowed)
+        if premium and cfg.get("birthday_role_id"):
+            await self._give_roles(guild, cfg, members, local_date)
+
+    async def _give_roles(self, guild: discord.Guild, cfg: dict, members: List[discord.Member], local_date) -> None:
+        """💎 Birthday role: given on the day, taken back at the start of the next local day."""
+        role = guild.get_role(cfg["birthday_role_id"])
+        me = guild.me
+        if role is None or role.managed or me is None or not me.guild_permissions.manage_roles or role >= me.top_role:
+            logger.info("[birthdays] can't hand out the birthday role in guild %s", guild.id)
+            return
+        remove_after = bd.role_remove_after(local_date)
+        for m in members:
+            try:
+                await m.add_roles(role, reason="Birthday role")
+                await store.add_role_grant(guild.id, self.clone_id, m.id, role.id, remove_after)
+            except (discord.Forbidden, discord.HTTPException):
+                logger.info("[birthdays] couldn't give the birthday role to %s in guild %s", m.id, guild.id)
+
+    async def _expire_roles(self) -> None:
+        """Runs even when Premium has lapsed, so a birthday role is never left on someone."""
+        try:
+            grants = await store.role_grants(self.clone_id)
+        except Exception:
+            logger.exception("[birthdays] couldn't read role grants")
+            return
+        offsets: dict = {}
+        for g in grants:
+            guild = self.bot.get_guild(g["guild_id"])
+            if guild is None:
+                continue
+            try:
+                if guild.id not in offsets:
+                    offsets[guild.id] = (await store.get_config(guild.id, self.clone_id)).get("utc_offset_hours") or 0
+                if not bd.role_grant_expired(g["remove_after"], bd.local_now(offsets[guild.id]).date()):
+                    continue
+                member, role = guild.get_member(g["user_id"]), guild.get_role(g["role_id"])
+                if member and role and role in member.roles:
+                    try:
+                        await member.remove_roles(role, reason="Birthday is over")
+                    except (discord.Forbidden, discord.HTTPException):
+                        logger.info("[birthdays] couldn't take back the birthday role in guild %s", guild.id)
+                await store.delete_role_grant(guild.id, self.clone_id, g["user_id"], g["role_id"])
+            except Exception:
+                logger.exception("[birthdays] role expiry failed in guild %s", g.get("guild_id"))
 
 
 async def setup(bot: commands.Bot):
