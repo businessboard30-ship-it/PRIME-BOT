@@ -9,7 +9,7 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 
 | Phase | State | Where |
 |---|---|---|
-| 0. Audit + premium gate helper (`studio_unlocked`) | **Not started** (owner said start Phase 1; the gate is only needed once Phase 2 adds studio-only features) | |
+| 0. Premium gate helper (`studio_unlocked`) | **Built, PR open, not merged** (stacked on the Phase 1 branch; audit part of Phase 0 still not done) | branch `feat/welcome-studio-phase0`, PR #424 |
 | 1. Wizard restructure | **Built, PR open, not merged** | branch `feat/welcome-studio-phase1` |
 | 2. Gallery + rotation | Not started | |
 | 3 to 7 | Not started | |
@@ -47,7 +47,7 @@ All in `discord_bot/cogs/_views_card_customize.py` (the `/welcome` wizard's "Cus
 ## What is next
 
 1. Owner reviews and merges the Phase 1 PR (not merged by me).
-2. **Phase 0 (gate helper)** then **Phase 2 (gallery + rotation)**: `studio_unlocked(guild, clone)` using `db.is_guild_premium_active(guild_id, clone_id)`, fail closed to the Ultra look with picture 1; tables `discord_welcome_backgrounds`, `discord_welcome_designs`, new `discord_welcome_config` columns (plan section 4); 10 pictures, multi-upload, thumbnails strip, 4 rotation modes, default Random-never-twice, migration of the single image (copy, never delete old columns). The Pictures step is where the gallery goes; keep it to 3 easy controls.
+2. **Phase 2 (gallery + rotation)**. The gate helper now exists: `modules/welcome_studio.py` `studio_unlocked(guild, clone)` (wraps `db.is_guild_premium_active`, fails closed; `effective_studio_options(options, unlocked, studio_keys)` strips studio-only keys, add each new key to `studio_keys`; 6 tests in `tests/unit/test_welcome_studio_gate.py`). Phase 2 must call it on Save/Apply AND at join render, falling back to the Ultra look with picture 1. Build: tables `discord_welcome_backgrounds`, `discord_welcome_designs`, new `discord_welcome_config` columns (plan section 4); 10 pictures, multi-upload, thumbnails strip, 4 rotation modes, default Random-never-twice, migration of the single image (copy, never delete old columns). The Pictures step is where the gallery goes; keep it to 3 easy controls.
 3. Still-open plan questions for the owner: Premium lifetime includes studio? Keep Phase 6 DM extras? Per-picture overrides in v1 or later?
 
 ## Gotchas
