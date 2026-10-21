@@ -12,7 +12,7 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 | 0. Premium gate helper (`studio_unlocked`) | **Built, PR open, not merged** (stacked on the Phase 1 branch; audit part of Phase 0 still not done) | branch `feat/welcome-studio-phase0`, PR #424 |
 | 1. Wizard restructure | **Built, PR open, not merged** | branch `feat/welcome-studio-phase1` |
 | 2a. Gallery data layer + rotation picker | **Built, PR open, not merged** (small slice, no UI yet) | branch `feat/welcome-studio-phase2a` (stacked on phase 0) |
-| 2b. Join render uses the gallery | Not started | |
+| 2b. Join render uses the gallery | **Built, PR open, not merged** (join only; previews unchanged) | branch `feat/welcome-studio-phase2b` (stacked on 2a) |
 | 2c. Pictures step UI (thumbnails, add/remove, rotation select) | Not started | |
 | 2d. Multi-upload + downscale + migrate old single picture | Not started | |
 | 3 to 7 | Not started | |
@@ -70,10 +70,34 @@ Small slice on purpose. **No wizard change, no render change, no behavior change
 
 ## Next small slices (each its own PR)
 
-- **2b**: join render picks a picture with `pick_slot`, gated by `studio_unlocked` (fail closed to the old single picture). Missing hosted message: `gallery_flag_missing`, skip to next. Golden test: untouched server pixel-identical.
+- ~~2b~~ done, see below.
 - **2c**: Pictures step shows the numbered strip + Add/Remove/Make first + rotation select (max 3 easy controls, rest under More). Locked servers see one line + "Unlock with Premium".
 - **2d**: multi-upload modal, downscale to 1536 px + JPEG/WebP, caption on host post (server name/ID, picture number), daily upload limit, copy old single picture in as picture 1 (never delete old columns).
 
 ## Not tested live
 
 Migration was not run against a real Postgres here (SQL is plain IF NOT EXISTS). `gallery_add` locking and `gallery_next_counter` need a staging DB check.
+
+## Phase 2b (2026-10-21): what it built
+
+Small slice on purpose. **Only the real join (`on_member_join`) changed.** Wizard, `/welcome preview`, the nudge post and the card-features announcement still use the old single picture, and `modules/welcome_card.py` is untouched.
+
+- `discord_bot/cogs/welcome.py`: new `_gallery_bg_bytes_for_render(session, config, bot, member_number)` and `_gallery_slot_url`.
+  - Not Premium/Plus (`studio_unlocked` false or errors), or no bot, or empty gallery: calls the old `_custom_bg_bytes_for_render`, so nothing changes for them.
+  - Unlocked with pictures: `pick_slot` using `rotation_mode` (default random), `last_slot_used`, the atomic counter (only fetched in "in order" mode with 2+ pictures) and the member number (`member.guild.member_count`).
+  - Hosted message deleted (Discord NotFound/Forbidden or no attachment): `gallery_flag_missing` marks the slot and the next picture is tried. A network blip or a picture that will not load is skipped for that join but **not** flagged.
+  - Random mode saves `last_slot_used`. Any error anywhere falls back to the old single picture. Never raises.
+- Tests: `tests/unit/test_welcome_studio_phase2b.py` (12): locked, unlocked, each mode, deleted, all deleted, will-not-load, flagged ignored, gate error, db error, no bot, only the join site uses it.
+
+### Test numbers (2b)
+Full unit suite: 5155 passed, 4 failed, 4 skipped. The same 4 fail on the 2a base without this change: `test_ultra_trial_off::test_new_ultra_trials_are_off` (env flag) and 3 in `test_uncached_member_fixes.py` (pass when run alone, fail in the full run: test-order pollution, not from the studio work).
+
+### Known gaps in 2b (on purpose, for later slices)
+- Nothing can put pictures in the gallery yet (that is 2c/2d), so no server sees a change today.
+- "Same picture every time" has no pinned-slot column yet; it uses the first picture until 2c adds "Make first" or a pin.
+- The admin line "slot needs a new picture" in the wizard is 2c.
+- Not tested against live Discord or a real Postgres.
+
+## Next small slices
+- **2c**: Pictures step: numbered strip + Add/Remove/Make first + rotation select (max 3 easy controls, rest under More). Locked servers: one line + "Unlock with Premium".
+- **2d**: multi-upload, downscale to 1536 px, caption on host post, daily upload limit, copy old single picture in as picture 1.
