@@ -3,24 +3,28 @@
 Repo: `github.com/businessboard30-ship-it/PRIME-BOT` (Discord bot, Python, discord.py 2.7.1, Postgres via asyncpg).
 Owner style: short plain updates, decisions given in chat, writes informally. **Update this file in every PR/push** (owner rule), and every push must say what is built and what is next.
 Source of truth for the design: `docs/WELCOME_CARD_STUDIO_PLAN.md` (copied from the owner's upload on 2026-10-21).
-Owner rules for this work: open a pull request, **never merge it**; no deploy without the owner's OK.
+Owner rules for this work: open every pull request against **`main`**; **merge only when the owner says so** (they did on 2026-10-21 for #423 to #433); no deploy without the owner's OK. Railway deployments have been paused for a long time (owner, 2026-10-21), so a merge to `main` does not reach production yet.
 
 ## Status (2026-10-21)
 
+> **2026-10-21: phases 0 to 3c were merged into `main` (PRs #423 to #433), in order, on the owner's instruction.** The older per-phase sections below still say "PR open, not merged" in their own text: that is history, the status table right below is current. Phase 3d (PR #434) and the render-site follow-up (PR #435) are the two open PRs; both are cut from the merged `main`, merge cleanly together, and are not merged yet.
+
 | Phase | State | Where |
 |---|---|---|
-| 0. Premium gate helper (`studio_unlocked`) | **Built, PR open, not merged** (stacked on the Phase 1 branch; audit part of Phase 0 still not done) | branch `feat/welcome-studio-phase0`, PR #424 |
-| 1. Wizard restructure | **Built, PR open, not merged** | branch `feat/welcome-studio-phase1` |
-| 2a. Gallery data layer + rotation picker | **Built, PR open, not merged** (small slice, no UI yet) | branch `feat/welcome-studio-phase2a` (stacked on phase 0) |
-| 2b. Join render uses the gallery | **Built, PR open, not merged** (join only; previews unchanged) | branch `feat/welcome-studio-phase2b` (stacked on 2a) |
-| 2c-1. Pictures step: gallery line + rotation select | **Built, PR open, not merged** (read-only line + rotation picker; stacked on 2b) | branch `feat/welcome-studio-phase2c` |
-| 2c-2. Numbered strip + Remove / Make first + "Unlock with Premium" button | **Built, PR open, not merged** (stacked on 2c-1; no Add yet, that is 2d) | branch `feat/welcome-studio-phase2c2` |
-| 2d. Multi-upload + downscale + caption + daily limit + migrate old single picture | **Built, PR open, not merged** (stacked on 2c-2). **This finishes Phase 2** | branch `feat/welcome-studio-phase2d` |
-| 2e. Phase 2 leftovers: Replace a picture, editor preview uses the gallery, Clear background note | **Built, PR open, not merged** (stacked on 2d) | branch `feat/welcome-studio-phase2e` |
-| 3a. Zoom + pan arrows, text size (first slice of Phase 3) | **Built, PR open, not merged** (stacked on 2e) | branch `feat/welcome-studio-phase3a` |
-| 3b. Picture frames (none, thin, thick, double, rounded) + frame color | **Built, PR open, not merged** (stacked on 3a) | branch `feat/welcome-studio-phase3b` |
-| 3c. Nudge the text block (arrows on the Text step) + safe-area guard | **Built, PR open, not merged** (stacked on 3b; PR opened against `main` on the owner's instruction, so its diff also carries the unmerged earlier phases) | branch `feat/welcome-studio-phase3c` |
-| 3d (3x3 position grid, avatar nudge), frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
+| 0. Premium gate helper (`studio_unlocked`) | **Built and merged into `main`** (stacked on the Phase 1 branch; audit part of Phase 0 still not done) | branch `feat/welcome-studio-phase0`, PR #424 |
+| 1. Wizard restructure | **Built and merged into `main`** | branch `feat/welcome-studio-phase1` |
+| 2a. Gallery data layer + rotation picker | **Built and merged into `main`** (small slice, no UI yet) | branch `feat/welcome-studio-phase2a` (stacked on phase 0) |
+| 2b. Join render uses the gallery | **Built and merged into `main`** (join only; previews unchanged) | branch `feat/welcome-studio-phase2b` (stacked on 2a) |
+| 2c-1. Pictures step: gallery line + rotation select | **Built and merged into `main`** (read-only line + rotation picker; stacked on 2b) | branch `feat/welcome-studio-phase2c` |
+| 2c-2. Numbered strip + Remove / Make first + "Unlock with Premium" button | **Built and merged into `main`** (stacked on 2c-1; no Add yet, that is 2d) | branch `feat/welcome-studio-phase2c2` |
+| 2d. Multi-upload + downscale + caption + daily limit + migrate old single picture | **Built and merged into `main`** (stacked on 2c-2). **This finishes Phase 2** | branch `feat/welcome-studio-phase2d` |
+| 2e. Phase 2 leftovers: Replace a picture, editor preview uses the gallery, Clear background note | **Built and merged into `main`** (stacked on 2d) | branch `feat/welcome-studio-phase2e` |
+| 3a. Zoom + pan arrows, text size (first slice of Phase 3) | **Built and merged into `main`** (stacked on 2e) | branch `feat/welcome-studio-phase3a` |
+| 3b. Picture frames (none, thin, thick, double, rounded) + frame color | **Built and merged into `main`** (stacked on 3a) | branch `feat/welcome-studio-phase3b` |
+| 3c. Nudge the text block (arrows on the Text step) + safe-area guard | **Built and merged into `main`** (stacked on 3b; PR opened against `main` on the owner's instruction, so its diff also carries the unmerged earlier phases) | branch `feat/welcome-studio-phase3c` |
+| 3d. 3x3 text position (one cycle button on the Text step) | **Built, PR #434 open, not merged** (cut from merged `main`) | branch `feat/welcome-studio-phase3d` |
+| Follow-up. Studio options gated at every place a card is drawn (preview, nudge, setup TV, test post) | **Built, PR #435 open, not merged** (cut from `main`, independent of #434) | branch `feat/welcome-studio-render-sites` |
+| 3e (avatar nudge), frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
 
 ## What Phase 1 built
 
@@ -294,8 +298,47 @@ All welcome/card unit test files (42 files): 830 passed, 2 failed. The 2 are `te
 - Taps past the guard limit keep storing up to +-300 with no visible change. If the owner finds that confusing, the wizard could read the guard limit and disable the arrow; needs the renderer's measured box, so it was left out.
 - Same render-site gap as 3a/3b: only the join applies `options_for_render`.
 
+## Render-site follow-up (2026-10-21): studio options are gated everywhere a card is drawn
+
+Small fix, cut from `main` (separate from the 3d PR). No new option, no table.
+
+- **Problem (known since 3a):** only the real join (`welcome.py` `on_member_join`) ran the stored options through `options_for_render`. Five other places handed the raw stored value to the renderer, so a server whose Premium lapsed (or a clone) would still see, and post, its studio look there while the join stripped it.
+- **Fixed:** `ultra_options=await options_for_render(config)` at all of them: `/welcome preview`, the nudge post and the "here's what you already have" heads-up card (`welcome.py`), the setup wizard TV and its Preview button (`_views_welcome.py`), and the test post (`welcome_extras.py`). Untouched servers (no studio keys) get their stored value back unchanged with no Premium lookup, so nothing changes for them. The gate never raises and fails closed.
+- **Left alone on purpose:** the Customize Card editor's own previews (`_views_card_customize.py`): they are meant to show studio options to Ultra-only servers as a try-before-you-buy preview (owner rule), and Save is what is gated.
+- Tests: `tests/unit/test_welcome_studio_render_sites.py` (6): a source guard (no file hands the raw stored options to the renderer again; every `ultra_options=` argument is gated), the setup wizard TV and the test post strip studio keys without Premium and keep other options, the TV keeps them with Premium, untouched options skip the lookup. 4 of the 6 fail without the fix (checked).
+- Test numbers: 483 tests in the welcome/card/server-panel/goodbye files: 482 passed, 1 failed (`test_server_panel_phase3.py::test_home_links_to_phase3`, an import error in this environment that fails the same way on `main`).
+- Not tested live. The goodbye card and other non-welcome cards are out of scope (they don't read `ultra_card_json`).
+- When a new studio option key is added (3d's `text_pos` is in PR #434), it only needs adding to `STUDIO_KEYS` / `STUDIO_DEFAULTS`: every site above picks it up through `options_for_render`.
+
 ## Next (updated after 3c)
 1. Owner reviews the stacked PRs in order: #423 ... #432 (3b), then 3c (opened against `main`, see the status table).
 2. **3d**: 3x3 position grid for the text block and avatar (replaces banner top/bottom + avatar left/right but keeps them as presets), avatar nudge. Polaroid / film strip frames need text-area changes, do with the grid. Ask the owner before any glow edge.
 3. Tiny follow-up: apply `options_for_render` at the other render sites (`/welcome preview`, `_views_welcome.py`, `welcome_extras.py`).
 4. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?
+
+
+## Phase 3d (2026-10-21): what it built (3x3 text position)
+
+Small slice, cut from the merged `main`. No table, no migration.
+
+- **New key** `text_pos`: `auto` (default, the layout decides, classic look) or one of nine cells `top-left top top-right left center right bottom-left bottom bottom-right` (`ULTRA_TEXT_POS`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus save and join; Ultra-only previews in memory), same gate as 3a to 3c.
+- **Renderer:** the whole text block is moved so it sits in the chosen cell (60 px from the card edge, or centered), then the 3c nudge (`text_dx` / `text_dy`) is added on top, then the **same safe-area guard** cuts it down (on the card, off the avatar). So asking for a cell next to the avatar stops beside the avatar instead of sliding under it. `auto` skips the code: pixel-identical to before (test).
+- **Wizard (Text step, More controls):** `📍 Text spot: ...` button cycles Automatic, then the nine cells in reading order (top left first). Class `CardTextPosButton`, id `textpos`, in `DYNAMIC_ITEMS`; "Reset this step" resets it; Undo covers it.
+- **Why a button and not a select (changed during the build):** a first version used a select, but it put the Text step at 6 selects and exactly 40 components with the preview attached, which breaks the Phase 1 rule (under 40 components, at most 5 selects; `test_more_mode_stays_inside_discord_limits_on_every_step` caught it). A button adds one component. To keep the Text step under 40 the separate "Move the text..." line from 3c was folded into the step hint line (Text More with preview: 39 components). Cost: up to 9 taps to reach the last cell. If the owner lifts the 5-select rule, a select would be nicer; or two buttons (row, column) would cut taps to 3 + 3.
+- Tests: `tests/unit/test_welcome_studio_phase3d.py` (14), including a pixel check that the text lands near the chosen corner and a check that it never overlaps the avatar.
+
+### Test numbers (3d)
+All welcome/card unit test files (the same file set as 3c plus the Phase 3d file): 397 passed, 0 failed. The full unit suite was not run (21 unrelated files fail to collect in this environment; the 2 `test_dash_card_assets.py` failures from 3c are not in this file set).
+
+### Known gaps in 3d (on purpose)
+- Not tested live: the new button on a phone; real taps on Premium vs Ultra-only.
+- Banner "top"/avatar side presets are **not** replaced by the grid (they still exist; the grid only places the text). Moving the avatar itself (avatar nudge) is not built: Look in More mode is at 35 of 40 components. Needs the same trick (a cycle button, or fold a hint line).
+- A cell above the banner puts text over the picture; legibility is the admin's call (auto contrast and shadow help).
+- Same render-site gap as 3a to 3c: only the join applies `options_for_render`.
+
+## Next (updated after 3d)
+1. Owner reviews / merges the 3d PR. Staging check (Railway deploys are paused, so there is no staging yet): the Phase 1 to 3d controls on a phone, Premium vs Ultra-only, wizards posted before these PRs still responding.
+2. **3e**: avatar nudge or position, polaroid / film strip frames (need text-area changes). Ask the owner before any glow edge.
+3. ~~Tiny follow-up: apply `options_for_render` at the other render sites~~ **Done in PR #435** (see the Render-site follow-up section).
+4. Phase 4 onward from `docs/WELCOME_CARD_STUDIO_PLAN.md`.
+5. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?
