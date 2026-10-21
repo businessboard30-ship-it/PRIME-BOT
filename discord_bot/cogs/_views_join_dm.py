@@ -1239,7 +1239,44 @@ class _WelcomeDeliveryButton(discord.ui.DynamicItem[discord.ui.Button], template
         guild = interaction.client.get_guild(self.guild_id)
         config["delivery_mode"] = new_mode
         container, file = await _welcome_preview_container(guild, config, interaction.user)
-        sub_view = build_welcome_sub_view(self.guild_id, self.clone_id, container, delivery_mode=new_mode)
+        sub_view = build_welcome_sub_view(self.guild_id, self.clone_id, container, delivery_mode=new_mode, dm_fallback=bool(config.get("dm_fallback_to_channel")))
+        await interaction.edit_original_response(view=sub_view, attachments=[file])
+
+
+class _WelcomeDmFallbackButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_wsub_dmfb:(\d+):(-|\d+)$"):
+    """Phase 6b: the same "DMs closed: post in channel" switch as the /welcome wizard, on the join DM's welcome
+    sub-screen. Only shown while delivery is DM. Needs a welcome channel to be turned on."""
+
+    def __init__(self, guild_id: int, clone_id=None, on: bool = False):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label=f"DMs closed: post in channel ({'on' if on else 'off'})",
+            style=discord.ButtonStyle.success if on else discord.ButtonStyle.secondary, emoji="📬",
+            custom_id=f"join_dm_wsub_dmfb:{guild_id}:{'-' if clone_id is None else clone_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        clone_part = match.group(2)
+        return cls(int(match.group(1)), None if clone_part == "-" else int(clone_part))
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        turning_on = not config.get("dm_fallback_to_channel")
+        if turning_on and not config.get("channel_id"):
+            await interaction.followup.send(
+                "Pick a welcome channel first (use **Change channel** or `/welcome setup`), so I know where to post "
+                "when someone's DMs are closed.", ephemeral=True)
+            return
+        await db.set_welcome_dm_fallback(self.guild_id, self.clone_id, turning_on)
+        guild = interaction.client.get_guild(self.guild_id)
+        config["dm_fallback_to_channel"] = turning_on
+        container, file = await _welcome_preview_container(guild, config, interaction.user)
+        sub_view = build_welcome_sub_view(self.guild_id, self.clone_id, container,
+                                          delivery_mode=config.get("delivery_mode") or "channel",
+                                          dm_fallback=turning_on)
         await interaction.edit_original_response(view=sub_view, attachments=[file])
 
 
@@ -1318,11 +1355,12 @@ class _WelcomePreviewRefreshButton(discord.ui.DynamicItem[discord.ui.Button], te
         guild = interaction.client.get_guild(self.guild_id)
         config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
         container, file = await _welcome_preview_container(guild, config, interaction.user)
-        sub_view = build_welcome_sub_view(self.guild_id, self.clone_id, container, delivery_mode=config.get("delivery_mode") or "channel")
+        sub_view = build_welcome_sub_view(self.guild_id, self.clone_id, container, delivery_mode=config.get("delivery_mode") or "channel", dm_fallback=bool(config.get("dm_fallback_to_channel")))
         await interaction.edit_original_response(view=sub_view, attachments=[file])
 
 
-def build_welcome_sub_view(guild_id: int, clone_id, welcome_container: discord.ui.Container, delivery_mode: str = "channel") -> "WelcomeSubLayoutView":
+def build_welcome_sub_view(guild_id: int, clone_id, welcome_container: discord.ui.Container, delivery_mode: str = "channel",
+                           dm_fallback: bool = False) -> "WelcomeSubLayoutView":
     """Wraps the already-built welcome-preview Container (see
     _welcome_preview_container) together with its action buttons into one
     LayoutView. Components V2, not the old classic View+embed: once the
@@ -1331,11 +1369,12 @@ def build_welcome_sub_view(guild_id: int, clone_id, welcome_container: discord.u
     on that message, even on a later edit — there is no opting back out.
     So this sub-screen has to be V2 too, or editing into it would be
     rejected by Discord outright."""
-    return WelcomeSubLayoutView(guild_id, clone_id, welcome_container, delivery_mode)
+    return WelcomeSubLayoutView(guild_id, clone_id, welcome_container, delivery_mode, dm_fallback)
 
 
 class WelcomeSubLayoutView(discord.ui.LayoutView):
-    def __init__(self, guild_id: int, clone_id, welcome_container: discord.ui.Container, delivery_mode: str):
+    def __init__(self, guild_id: int, clone_id, welcome_container: discord.ui.Container, delivery_mode: str,
+                 dm_fallback: bool = False):
         super().__init__(timeout=None)
         row = discord.ui.ActionRow(
             _WelcomeEditButton(guild_id, clone_id),
@@ -1346,6 +1385,8 @@ class WelcomeSubLayoutView(discord.ui.LayoutView):
         # the rest of the sub-screen's action-button phrasing.
         delivery_btn.item.label = "Switch to channel delivery" if delivery_mode == "dm" else "Switch to DM delivery"
         row.add_item(delivery_btn)
+        if delivery_mode == "dm":
+            row.add_item(_WelcomeDmFallbackButton(guild_id, clone_id, bool(dm_fallback)))     # Phase 6b
         welcome_container.add_item(row)
         row2 = discord.ui.ActionRow(
             _WelcomeCardOptionsButton(guild_id, clone_id),
@@ -2039,7 +2080,7 @@ class _FeatureToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=_
             # generic path below uses for everything else.
             config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
             container, file = await _welcome_preview_container(guild, config, interaction.user)
-            sub_view = build_welcome_sub_view(self.guild_id, self.clone_id, container, delivery_mode=config.get("delivery_mode", "channel"))
+            sub_view = build_welcome_sub_view(self.guild_id, self.clone_id, container, delivery_mode=config.get("delivery_mode", "channel"), dm_fallback=bool(config.get("dm_fallback_to_channel")))
             await interaction.edit_original_response(attachments=[file], view=sub_view)
             return
 
@@ -2345,7 +2386,7 @@ class _CatButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_
 
 DYNAMIC_ITEMS = (
     _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomeCustomizeCardButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
-    _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton,
+    _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton, _WelcomeDmFallbackButton,
     _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton, _ApplyFormButton,
     _MoreFeaturesButton, _MoreBackButton, _CatButton, _BotProfileButton, _AnimeButton,
 )

@@ -34,7 +34,8 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 5a. Saved designs, data layer only (table, migration 080, DB methods, pure helpers; no wizard UI yet) | **Built, PR open, not merged** (stacked on 4f) | branch `feat/welcome-studio-phase5a` |
 | 5b. Saved designs in the wizard (Send step): Save this look, Load, Rename, Delete | **Built, PR open, not merged** (stacked on 5a) | branch `feat/welcome-studio-phase5b` |
 | 6a. DM extra: "DMs closed: post in channel" toggle (Setup wizard, DM mode only), free for everyone | **Built, PR open, not merged** (stacked on 5b; migration 081, schema 130) | branch `feat/welcome-studio-phase6a` |
-| Polaroid / film strip frames, rest of Phase 6 (separate DM text, different design for the DM) and Phase 7 (scheduled designs) | Not started | |
+| 6b. DM extra: separate DM text (Setup wizard, DM mode only) + the DMs-closed switch also on the join-DM welcome sub-screen | **Built, PR open, not merged** (stacked on 6a; migration 082, schema 131) | branch `feat/welcome-studio-phase6b` |
+| Polaroid / film strip frames, Phase 7 (scheduled designs) | Not started | |
 
 ## What Phase 1 built
 
@@ -579,3 +580,25 @@ Schema guard + all `test_welcome_studio_*` files + `test_card_wizard_tv` + the s
 2. **Rest of Phase 6, needs the owner's answer first:** separate DM text (with the existing variables) and an optional different design for the DM. Ask which to keep.
 3. Phase 7: scheduled designs (will use `active_design_id`; reuse an existing daily loop). Optional: polaroid / film strip frames, avatar glow.
 4. Still-open plan questions for the owner: Per-picture overrides? Should Clear background also clear the gallery? Add the DM-closed toggle to the join-DM sub-screen too?
+
+
+## Phase 6b (2026-10-21): separate DM text + the DMs-closed switch on the join-DM screen
+
+Owner decisions this turn: build the **separate DM text**; **skip "a different design for the DM"** (it needs a second stored look and a second render path, big and risky for little); put the DMs-closed switch on the join-DM sub-screen too. **This closes Phase 6.**
+
+- **Migration 082** (`082_welcome_dm_text.sql`, registered, `SCHEMA_VERSION` 130 -> 131, guard pins updated): `discord_welcome_config.dm_message_template TEXT` (NULL = use the normal message). Nothing changes for any server until an admin sets it.
+- **DB:** `db.set_welcome_dm_text(guild_id, clone_id, text)` trims, caps at 300 characters, blank/None stores NULL; touches only that column. Default config dict has the key (None).
+- **Join (`welcome.py`):** in DM mode the DM carries `_dm_template(config)` (the DM text if it has real content, else the normal message; a whitespace-only value counts as blank). The plain-text retry in the error path uses it too. The **channel fallback from 6a and normal channel delivery always use the normal message**, never the DM text. Same variables as the normal message (`{member} {guild} {count}`).
+- **Wizard (`/welcome` setup):** `✉️ DM text` button (`WelcomeDmTextButton`, id `dmtext`, in `DYNAMIC_ITEMS`) in the same row as the card-mode and DMs-closed buttons, **only in DM mode**; label gets `(custom)` when set. Opens `WelcomeDmTextModal` (optional paragraph, 300 max, empty = use the normal message). The status text shows `(own DM text)`. Free for every server (not a studio key).
+- **Join-DM welcome sub-screen (`_views_join_dm.py`):** `_WelcomeDmFallbackButton` (id `join_dm_wsub_dmfb`, in `DYNAMIC_ITEMS`), DM mode only, label `DMs closed: post in channel (on|off)`; turning it on needs a welcome channel. `build_welcome_sub_view` / `WelcomeSubLayoutView` got an optional `dm_fallback` argument, and **all four existing rebuilds of that screen now pass the stored flag** (otherwise the button would show "off" after a refresh).
+- Tests: `tests/unit/test_welcome_studio_phase6b.py` (19). All welcome + join-DM test files: 412 passed, 0 failed (the known `test_card_wizard_tv` order-dependent test passed in this ordering).
+
+### Known gaps in 6b (on purpose)
+- Not tested live (phone taps, the modal, a real DM). Migrations 078 to 082 not run on a real Postgres: staging check needed.
+- No separate **design** for the DM (skipped on purpose, see above). The DM text has no live preview.
+- The DM text is not shown anywhere in the join-DM sub-screen (only set from `/welcome` setup).
+
+## Next (updated after 6b)
+1. **Phase 7: scheduled designs** (date-based design switch; will use `active_design_id`, reuse an existing daily loop, no new polling loop). Optional: polaroid / film strip frames, avatar glow.
+2. Staging check (no staging yet, Railway is paused): migrations 078 to 082, then every Phase 1 to 6b control on a phone, Premium vs Ultra-only.
+3. Still-open plan questions for the owner: per-picture overrides? Should Clear background also clear the gallery?

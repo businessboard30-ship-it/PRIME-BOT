@@ -147,6 +147,8 @@ def render_status_lines(config: dict) -> list:
 
     if delivery_mode == "dm" and config.get("dm_fallback_to_channel"):
         delivery_label += " (channel if DMs are closed)"
+    if delivery_mode == "dm" and (config.get("dm_message_template") or "").strip():
+        delivery_label += " (own DM text)"
 
     lines = [
         f"{step1} **Step 1: Channel** — {ch}",
@@ -325,6 +327,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, gree
     mode_row.add_item(WelcomeModeToggleButton(guild_id, clone_id, invoker_id, config))
     if config.get("delivery_mode") == "dm":
         mode_row.add_item(WelcomeDmFallbackButton(guild_id, clone_id, invoker_id, config))     # Phase 6a
+        mode_row.add_item(WelcomeDmTextButton(guild_id, clone_id, invoker_id, config))         # Phase 6b
 
     header_lines = ["### 🚩 Set up welcome cards", *perm_check.lines(guild_id, clone_id), *render_status_lines(config),
                     goodbye_status_line(goodbye)]
@@ -1273,6 +1276,53 @@ class WelcomeDmFallbackButton(discord.ui.DynamicItem[discord.ui.Button], templat
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+class WelcomeDmTextModal(discord.ui.Modal, title="DM welcome text"):
+    """Phase 6b: the text sent only in DMs. Same variables as the normal message. Empty = use the normal message."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, current: str):
+        super().__init__()
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        self.template = discord.ui.TextInput(
+            label="DM text ({member} {guild} {count}), empty = same",
+            style=discord.TextStyle.paragraph, default=current or "", max_length=300, required=False,
+        )
+        self.add_item(self.template)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await db.set_welcome_dm_text(self.guild_id, self.clone_id, str(self.template.value or ""))
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class WelcomeDmTextButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("dmtext")):
+    """Phase 6b: only shown while delivery is "DM the member". Opens the DM text box. Free for every server."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, config: dict):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        custom = bool((config.get("dm_message_template") or "").strip())
+        super().__init__(discord.ui.Button(
+            label="✉️ DM text" + (" (custom)" if custom else ""), style=discord.ButtonStyle.secondary,
+            custom_id=_encode("dmtext", guild_id, clone_id, invoker_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id, invoker_id = _decode(match)
+        return cls(guild_id, clone_id, invoker_id, {})
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        # send_modal must be the first response (3 s window): use the bounded cold-path fetch for the current text.
+        config = await _get_config_for_modal(self.guild_id, self.clone_id)
+        await interaction.response.send_modal(
+            WelcomeDmTextModal(self.guild_id, self.clone_id, self.invoker_id, config.get("dm_message_template")))
+
+
 class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("preview")):
     def __init__(self, guild_id: int, clone_id, invoker_id):
         self.guild_id = guild_id
@@ -1585,5 +1635,5 @@ DYNAMIC_ITEMS = (
     WelcomeChannelSelect, WelcomeCreateChannelButton, WelcomeDeliverySelect, WelcomeThemeSelect, WelcomeCardLookSelect,
     WelcomeCardStyleSelect, WelcomeAvatarShapeSelect, WelcomeStickerPresetSelect,
     WelcomeEditMessageButton, WelcomeToggleButton, WelcomePreviewButton, WelcomeModeToggleButton,
-    WelcomeUltraPackButton, WelcomeGoodbyeButton, WelcomeDmFallbackButton,
+    WelcomeUltraPackButton, WelcomeGoodbyeButton, WelcomeDmFallbackButton, WelcomeDmTextButton,
 )

@@ -324,6 +324,11 @@ async def _gallery_slot_url(bot: commands.Bot, row: dict) -> tuple[str | None, b
     return message.attachments[0].url, False
 
 
+def _dm_template(config: dict) -> str:
+    """Phase 6b: the text for a DM: the separate DM text when it has real content, else the normal message."""
+    return (config.get("dm_message_template") or "").strip() or config["message_template"]
+
+
 def _dm_is_closed(err) -> bool:
     """True only when Discord says the member cannot be DMed (403, or 400 with error code 50007).
     A rate limit or a 5xx is NOT "closed": those keep the old log-and-skip behavior (no surprise channel post)."""
@@ -1430,11 +1435,13 @@ class WelcomeCog(GuildOnlyCog):
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=__import__("io").BytesIO(card_bytes), filename=f"welcome.{ext}")
             content = _apply_template(config["message_template"], member)
+            # Phase 6b: a separate text for DMs (blank = the normal message). The channel fallback uses the normal one.
+            dm_content = _apply_template(_dm_template(config), member)
 
             if dm_mode:
                 try:
                     dm = await member.create_dm()
-                    await dm.send(content=content, file=file)
+                    await dm.send(content=dm_content, file=file)
                     sent = True
                 except (discord.Forbidden, discord.HTTPException) as dm_err:
                     # Member has DMs closed / blocks the bot — nothing we
@@ -1482,7 +1489,7 @@ class WelcomeCog(GuildOnlyCog):
                 fallback_text = _apply_template(config["message_template"], member)
                 if dm_mode:
                     dm = await member.create_dm()
-                    await dm.send(fallback_text)
+                    await dm.send(_apply_template(_dm_template(config), member))
                 else:
                     await channel.send(fallback_text)
             except (discord.Forbidden, discord.HTTPException):

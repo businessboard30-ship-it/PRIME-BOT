@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "130"
+SCHEMA_VERSION = "131"
+# "130" -> "131" adds 082_welcome_dm_text.sql (dm_message_template on discord_welcome_config: Welcome Card Studio Phase 6b). ADD COLUMN IF NOT EXISTS only.
 # "129" -> "130" adds 081_welcome_dm_fallback.sql (dm_fallback_to_channel on discord_welcome_config: Welcome Card Studio Phase 6a). ADD COLUMN IF NOT EXISTS only.
 # "128" -> "129" adds 080_welcome_designs.sql (discord_welcome_designs + active_design_id on discord_welcome_config: Welcome Card Studio Phase 5a). CREATE TABLE / ADD COLUMN / CREATE INDEX IF NOT EXISTS only.
 # "127" -> "128" adds 079_welcome_gallery_migrated.sql (gallery_migrated flag on discord_welcome_config: Welcome Card Studio Phase 2d). ADD COLUMN IF NOT EXISTS only.
@@ -5882,6 +5883,11 @@ class Database:
         welcome_dm_fallback_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "081_welcome_dm_fallback.sql"
         if welcome_dm_fallback_migration.exists():
             await conn.execute(welcome_dm_fallback_migration.read_text())
+
+        # Welcome Card Studio Phase 6b: separate DM welcome text. Additive/idempotent.
+        welcome_dm_text_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "082_welcome_dm_text.sql"
+        if welcome_dm_text_migration.exists():
+            await conn.execute(welcome_dm_text_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
@@ -12115,7 +12121,7 @@ class Database:
                 # backfilled to False, above.
                 "use_template": True,
                 "template_announced_at": None, "template_announce_status": None,
-                "delivery_mode": "channel", "dm_fallback_to_channel": False,
+                "delivery_mode": "channel", "dm_fallback_to_channel": False, "dm_message_template": None,
                 "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
                 "card_theme": "wolf", "card_pack_unlocked": False,
                 "ultra_pack_unlocked": False, "custom_background_url": None,
@@ -12523,6 +12529,17 @@ class Database:
             res = await conn.execute(
                 "UPDATE discord_welcome_config SET dm_fallback_to_channel = $3, updated_at = NOW() "
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, bool(on))
+        return res.endswith(" 1")
+
+    async def set_welcome_dm_text(self, guild_id: int, clone_id: Optional[int], text: Optional[str]) -> bool:
+        """Phase 6b: the welcome text used only when delivery is DM. Empty/blank clears it (NULL = same as the normal
+        message). Touches only that column. Returns True when a row changed."""
+        text = (text or "").strip()[:300] or None
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE discord_welcome_config SET dm_message_template = $3, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, text)
         return res.endswith(" 1")
 
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
