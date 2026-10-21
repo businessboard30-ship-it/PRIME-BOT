@@ -488,12 +488,15 @@ ULTRA_DEFAULTS = {
     "pan_x": 0,                # -100 (left end of the picture) .. 100 (right end), 0 = where the crop focus put it
     "pan_y": 0,                # -100 (top) .. 100 (bottom)
     "text_size": "medium",     # key of ULTRA_TEXT_SIZES
+    "frame": "none",           # key of ULTRA_FRAMES: picture frame around the whole card (studio 3b)
+    "frame_color": "white",    # key of ULTRA_TEXT_COLORS
 }
 ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast")
 ULTRA_LAYOUTS = ("banner", "centered")
 ULTRA_ZOOMS = (100, 125, 150, 200)
 ULTRA_PAN_LIMIT = 100
 ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
+ULTRA_FRAMES = ("none", "thin", "thick", "double", "rounded")   # glow / polaroid / film strip: later (glow needs the owner's OK)
 ULTRA_FOCUS = ("center", "top", "bottom", "left", "right", "auto")   # "auto" = smart crop (keeps the busiest part)
 # Bundled OFL fonts (assets/fonts). "classic" = the card's normal font.
 ULTRA_FONTS = {
@@ -640,6 +643,10 @@ def parse_ultra_options(raw) -> dict:
             opts[k] = max(-ULTRA_PAN_LIMIT, min(ULTRA_PAN_LIMIT, v))
     if raw.get("text_size") in ULTRA_TEXT_SIZES:
         opts["text_size"] = raw["text_size"]
+    if raw.get("frame") in ULTRA_FRAMES:
+        opts["frame"] = raw["frame"]
+    if raw.get("frame_color") in ULTRA_TEXT_COLORS:
+        opts["frame_color"] = raw["frame_color"]
     return opts
 
 
@@ -708,6 +715,28 @@ def _region_brightness(img: Image.Image, box: tuple) -> float:
         return sum(px) / len(px)
     except Exception:
         return 0.0
+
+
+def _draw_frame(img: Image.Image, frame: str, color) -> Image.Image:
+    """Studio 3b: a border around the whole card. Sizes are for the 1536 px wide card. Never changes the card size."""
+    if frame == "none" or frame not in ULTRA_FRAMES:
+        return img
+    W, H = img.size
+    col = tuple(color) + (255,)
+    d = ImageDraw.Draw(img)
+    if frame == "thin":
+        d.rectangle((0, 0, W - 1, H - 1), outline=col, width=6)
+    elif frame == "thick":
+        d.rectangle((0, 0, W - 1, H - 1), outline=col, width=22)
+    elif frame == "double":
+        d.rectangle((0, 0, W - 1, H - 1), outline=col, width=8)
+        d.rectangle((18, 18, W - 19, H - 19), outline=col, width=8)
+    elif frame == "rounded":
+        border, radius = 16, 48
+        mask = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((border, border, W - 1 - border, H - 1 - border), radius=radius, fill=255)
+        img = Image.composite(img, Image.new("RGBA", (W, H), col), mask)
+    return img
 
 
 def _zoom_pan_box(box, src_w: int, src_h: int, zoom: int, pan_x: int, pan_y: int):
@@ -971,6 +1000,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         draw = ImageDraw.Draw(bg)
     _draw_texts(draw, color, False, st=stroke)
 
+    if opts["frame"] != "none":
+        bg = _draw_frame(bg.convert("RGBA"), opts["frame"], ULTRA_TEXT_COLORS[opts["frame_color"]])
     return bg
 
 
