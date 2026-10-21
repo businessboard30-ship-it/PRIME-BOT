@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import List, Tuple
 
-from modules import cat_adopt, cat_arena, cat_care, cat_life, cat_market, cat_rank, cat_wallet, cat_wishlist
+from modules import cat_adopt, cat_arena, cat_care, cat_home, cat_life, cat_market, cat_rank, cat_wallet, cat_wishlist
 
 FOOTER = "Just for fun: play coins only, no real money."
 
@@ -52,6 +52,9 @@ def sections() -> List[Tuple[str, str]]:
          "Cats that are out can't be sold, traded or released until they're home. Heists only ever target pretend places, never real players."),
         ("⚔️ Arena",
          ARENA_LONG),
+        ("🏡 Home",
+         f"Tap **Home** on /cat to buy a home ({len(cat_home.TIERS)} tiers, the top three also cost 🔮). Moving up pays only the "
+         "difference. Each home has a vault for your coins."),
         ("🏷️ Market",
          f"Sell a cat for coins ({cat_market.MIN_PRICE:,} to {cat_market.MAX_PRICE:,}, up to "
          f"{cat_market.MAX_OPEN_PER_SELLER} for sale at once). Tap **Market** to browse and buy. "
@@ -108,6 +111,9 @@ def topics() -> List[Tuple[str, str, str, str]]:
         ("arena", "⚔️", "Arena",
          f"Turn **Arena** on, then challenge a player. They see the odds and must **Accept** first ({cat_arena.EXPIRE_MINUTES} min).\\n"
          f"Wagers {cat_arena.LADDER[0]:,} to {cat_arena.LADDER[-1]:,} {cat_wallet.COINS}, {cat_arena.FEE_PERCENT}% fee. Nobody loses a cat: the loser is just tired."),
+        ("home", "🏡", "Home",
+         f"Tap **Home** to buy one of {len(cat_home.TIERS)} homes ({cat_home.TIERS[0].name} to {cat_home.TIERS[-1].name}). Moving up pays only the difference.\n"
+         f"Each home has a vault for your {cat_wallet.COINS} coins. Rent in Cat Life stays as the cheap starter."),
         ("market", "🏷️", "Market",
          f"Sell a cat for {cat_market.MIN_PRICE:,} to {cat_market.MAX_PRICE:,} coins "
          f"({cat_market.MAX_OPEN_PER_SELLER} for sale at once, {cat_market.EXPIRY_DAYS} days each). Tap **Market** to browse and buy. "

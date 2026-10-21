@@ -146,7 +146,10 @@ def test_primole_is_account_bound_nothing_else_touches_it():
         if f.name == "cat_wallet.py":
             continue
         txt = f.read_text()
-        assert "primole" not in txt.lower() or f.name in ("cat_primole.py",), f.name
+        # cat_home.py is the one place Primole is spent (homes cost it); it only ever calls cw.spend_primole.
+        assert "primole" not in txt.lower() or f.name in ("cat_primole.py", "cat_home.py"), f.name
+    home = (ROOT / "modules/cat_home.py").read_text()
+    assert "primole = primole +" not in home and "primole + " not in home.replace("invested_primole + ", "")
     assert "primole" not in (ROOT / "modules/cat_market.py").read_text().lower()
 
 

@@ -1,6 +1,6 @@
 # PRIME-BOT — CAT FIGHTS, LEAGUE, HOMES, ITEMS & PRIMOLE: PLAN (v2)
 
-Repo: `businessboard30-ship-it/PRIME-BOT` (Python, `discord.py` 2.7.x). Status (19 Oct 2026): **Phases 1 to 7 built** (Phases 1 to 6 merged to main; Phase 7 is on branch `feat/cat-primole-phase7`, awaiting owner review and merge). **Phases 8 to 13 not built.** Builds on the Components V2 cat game.
+Repo: `businessboard30-ship-it/PRIME-BOT` (Python, `discord.py` 2.7.x). Status (19 Oct 2026): **Phases 1 to 7 merged; Phase 8 (Homes) built on branch `feat/cat-homes-phase8`, awaiting owner review.** **Phases 9 to 13 not built.** Builds on the Components V2 cat game.
 Everything is **virtual play currency**. No real money, ever.
 
 ## Build status (updated 19 Oct 2026)
@@ -14,8 +14,8 @@ Everything is **virtual play currency**. No real money, ever.
 | 4 Global Request Board, setup toggles, report/block | **Done, merged** | 4A to 4D: PRs #382, #384, #385 |
 | 5 League | **Done, merged** | 5A data, 5B points, season close, promotion/relegation, League screen (PR #387) |
 | 6 Market Challenge / Duel | **Done, merged** | PR #395. Shipped as **"Duel the seller"**: opens the Arena challenge with the seller preselected and a symmetric wager. The market is now the general marketplace (`market_listings`) |
-| 7 Primole | **Built, PR open, not merged** | Migration `068_cat_primole.sql`, `modules/cat_primole.py`, one-way diamond conversion with a second-tap confirm in My cats, wallet display, help text, 15 new tests, schema version 116 to 117 |
-| 8 Homes | Not built | Needs open item 5 (tiers, images) and the balance sheet |
+| 7 Primole | **Done, merged** (PR #397) | Migration `068_cat_primole.sql`, `modules/cat_primole.py`, one-way diamond conversion with a second-tap confirm in My cats, wallet display, help text, 15 new tests, schema version 116 to 117 |
+| 8 Homes | **Built, PR open, not merged** | Migration `077_cat_homes.sql`, `modules/cat_home.py`, `_views_cat_home.py`, Home entry in the Cat menu. **Five tiers from the owner's five images** (Beach Hut, Wooden Cottage, Sky Penthouse, Rocket Nest, Stone Castle), buy or move up (pay the difference), vault deposit/withdraw. Capacity, earnings bonus and defence are stored but **not wired yet**; balance sheet still pending, so prices are starting points |
 | 9 Upgrades, selling, exposure, raids | Not built | |
 | 10 Items shop | Not built | Primole spend helper is ready (`cat_primole.spend`) |
 | 11 Distress system | **ON HOLD** | Owner decision pending |
@@ -25,6 +25,8 @@ Everything is **virtual play currency**. No real money, ever.
 **Phase 7 as built:** 1 💎 = 100 🔮 (my proposal, used as is). `convert_diamonds` is one atomic UPDATE with a `diamonds >= n` guard, so a double tap cannot spend a diamond twice. `spend(conn, owner, amount)` runs inside the caller's transaction. `grant(conn, owner, amount)` exists only for league season rewards and top-tier quests and is **not wired to anything yet**. There is no function that turns Primole back into coins or diamonds, and tests check that the market, trade, arena, requests and life modules never mention Primole (account-bound). The wallet line shows Primole only when a player owns some. Only **one** diamond converts per confirmed tap (coins keep Convert 1 and Convert all).
 
 **Still to decide or wire for Primole:** league season reward amounts (Phase 5 rewards currently do not pay Primole), the final name and emoji (open item 2), and shop prices (Phase 10).
+
+**Phase 8 as built (tiers differ from the first proposal):** the owner sent five home pictures, so there are **five** tiers instead of six, named after the pictures: 🏖️ Beach Hut 150,000 · 🏡 Wooden Cottage 1,000,000 · 🌃 Sky Penthouse 8,000,000 + 50 🔮 · 🚀 Rocket Nest 60,000,000 + 300 🔮 · 🏰 Stone Castle 400,000,000 + 1,500 🔮. Vault sizes 50k / 400k / 3M / 25M / 150M. Renting in Cat Life is unchanged. Moving up pays only the difference; `invested_coins` / `invested_primole` on the home row hold the total paid (for the Phase 9 bank sale). Images are `assets/images/cat_homes/<key>.png` (cropped from the collage, scene backgrounds, not transparent) and are shown by URL (`CAT_HOME_IMAGE_BASE`, default the repo's raw GitHub path).
 
 ---
 

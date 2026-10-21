@@ -28,6 +28,7 @@ def _button_for(key: str):
     from discord_bot.cogs import _views_cat_adopt as adopt
     from discord_bot.cogs import _views_cat_arena as arena
     from discord_bot.cogs import _views_cat_features as feat
+    from discord_bot.cogs import _views_cat_home as home
     from discord_bot.cogs import _views_cat_life as life
     from discord_bot.cogs import _views_cat_market as market
     table = {
@@ -35,7 +36,7 @@ def _button_for(key: str):
         "market": market.MarketButton, "board": market.LeaderboardButton,
         "care": feat.CareButton, "quests": feat.QuestsButton, "badges": feat.BadgesButton,
         "wishlist": feat.WishlistButton, "profile": feat.ProfileButton, "cosmetics": feat.CosmeticsButton,
-        "life": life.CatLifeButton, "arena": arena.ArenaButton,
+        "life": life.CatLifeButton, "arena": arena.ArenaButton, "home": home.HomeButton,
     }
     cls = table.get(key)
     return cls() if cls else None
