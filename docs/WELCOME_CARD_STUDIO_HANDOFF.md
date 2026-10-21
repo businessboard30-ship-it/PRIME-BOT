@@ -294,6 +294,18 @@ All welcome/card unit test files (42 files): 830 passed, 2 failed. The 2 are `te
 - Taps past the guard limit keep storing up to +-300 with no visible change. If the owner finds that confusing, the wizard could read the guard limit and disable the arrow; needs the renderer's measured box, so it was left out.
 - Same render-site gap as 3a/3b: only the join applies `options_for_render`.
 
+## Render-site follow-up (2026-10-21): studio options are gated everywhere a card is drawn
+
+Small fix, cut from `main` (separate from the 3d PR). No new option, no table.
+
+- **Problem (known since 3a):** only the real join (`welcome.py` `on_member_join`) ran the stored options through `options_for_render`. Five other places handed the raw stored value to the renderer, so a server whose Premium lapsed (or a clone) would still see, and post, its studio look there while the join stripped it.
+- **Fixed:** `ultra_options=await options_for_render(config)` at all of them: `/welcome preview`, the nudge post and the "here's what you already have" heads-up card (`welcome.py`), the setup wizard TV and its Preview button (`_views_welcome.py`), and the test post (`welcome_extras.py`). Untouched servers (no studio keys) get their stored value back unchanged with no Premium lookup, so nothing changes for them. The gate never raises and fails closed.
+- **Left alone on purpose:** the Customize Card editor's own previews (`_views_card_customize.py`): they are meant to show studio options to Ultra-only servers as a try-before-you-buy preview (owner rule), and Save is what is gated.
+- Tests: `tests/unit/test_welcome_studio_render_sites.py` (6): a source guard (no file hands the raw stored options to the renderer again; every `ultra_options=` argument is gated), the setup wizard TV and the test post strip studio keys without Premium and keep other options, the TV keeps them with Premium, untouched options skip the lookup. 4 of the 6 fail without the fix (checked).
+- Test numbers: 483 tests in the welcome/card/server-panel/goodbye files: 482 passed, 1 failed (`test_server_panel_phase3.py::test_home_links_to_phase3`, an import error in this environment that fails the same way on `main`).
+- Not tested live. The goodbye card and other non-welcome cards are out of scope (they don't read `ultra_card_json`).
+- When a new studio option key is added (3d's `text_pos` is in PR #434), it only needs adding to `STUDIO_KEYS` / `STUDIO_DEFAULTS`: every site above picks it up through `options_for_render`.
+
 ## Next (updated after 3c)
 1. Owner reviews the stacked PRs in order: #423 ... #432 (3b), then 3c (opened against `main`, see the status table).
 2. **3d**: 3x3 position grid for the text block and avatar (replaces banner top/bottom + avatar left/right but keeps them as presets), avatar nudge. Polaroid / film strip frames need text-area changes, do with the grid. Ask the owner before any glow edge.

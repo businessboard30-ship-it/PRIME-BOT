@@ -43,6 +43,7 @@ from discord_bot import perm_check
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from modules.welcome_card import render_welcome_card
+from modules.welcome_studio import options_for_render
 from modules.text_styles import plain_name as _plain_name
 
 logger = logging.getLogger(__name__)
@@ -436,7 +437,7 @@ async def _render_setup_tv(client, guild, user, config: dict) -> bytes:
         guild_name=guild.name, use_template=config.get("use_template", True),
         avatar_shape=config.get("avatar_shape", "circle"),
         theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
-        ultra_options=config.get("ultra_card_json"),
+        ultra_options=await options_for_render(config),   # studio-only keys dropped unless Premium/Plus
     )
     return await asyncio.to_thread(_tv_png, card_bytes)
 
@@ -1275,7 +1276,7 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
                 use_template=config.get("use_template", True),
                 theme=config.get("card_theme", "wolf"),
                 custom_background_bytes=custom_bg_bytes,
-                ultra_options=config.get("ultra_card_json"),
+                ultra_options=await options_for_render(config),   # studio-only keys dropped unless Premium/Plus
             )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
