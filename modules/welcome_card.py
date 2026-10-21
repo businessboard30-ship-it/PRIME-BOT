@@ -38,7 +38,7 @@ import os
 import re
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageSequence
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageSequence
 
 logger = logging.getLogger(__name__)
 
@@ -491,6 +491,7 @@ ULTRA_DEFAULTS = {
     "frame": "none",           # key of ULTRA_FRAMES: picture frame around the whole card (studio 3b)
     "frame_color": "white",    # key of ULTRA_TEXT_COLORS
     # Welcome Card Studio phase 3e (Premium/Plus only at save and join): move the avatar to one of nine spots.
+    "effect": "none",          # key of ULTRA_EFFECTS: one look applied to the background picture (studio 4a)
     "avatar_pos": "auto",      # key of ULTRA_AVATAR_POS: "auto" = the layout decides; else one of nine cells
     # Welcome Card Studio phase 3c (Premium/Plus only at save and join): nudge the text block, in pixels at card width 1536.
     "text_dx": 0,              # -300 (left) .. 300 (right); the safe-area guard keeps the text on the card and off the avatar
@@ -502,6 +503,7 @@ ULTRA_ZOOMS = (100, 125, 150, 200)
 ULTRA_PAN_LIMIT = 100
 ULTRA_AVATAR_POS = ("auto", "top-left", "top", "top-right", "left", "center", "right",
                     "bottom-left", "bottom", "bottom-right")   # studio 3e: where the avatar goes ("auto" = layout decides)
+ULTRA_EFFECTS = ("none", "blur", "vignette", "bw", "warm", "cool", "fade")   # all cheap; glow/sparkle need the owner's OK
 ULTRA_AVATAR_EDGE = 60       # a chosen avatar spot sits this far from the card edge (ring included)
 ULTRA_NUDGE_LIMIT = 300
 ULTRA_NUDGE_MARGIN = 24      # the text block never gets closer than this to the card edge
@@ -655,6 +657,8 @@ def parse_ultra_options(raw) -> dict:
         opts["text_size"] = raw["text_size"]
     if raw.get("frame") in ULTRA_FRAMES:
         opts["frame"] = raw["frame"]
+    if raw.get("effect") in ULTRA_EFFECTS:
+        opts["effect"] = raw["effect"]
     if raw.get("avatar_pos") in ULTRA_AVATAR_POS:
         opts["avatar_pos"] = raw["avatar_pos"]
     if raw.get("frame_color") in ULTRA_TEXT_COLORS:
@@ -664,6 +668,38 @@ def parse_ultra_options(raw) -> dict:
         if isinstance(v, int) and not isinstance(v, bool):
             opts[k] = max(-ULTRA_NUDGE_LIMIT, min(ULTRA_NUDGE_LIMIT, v))
     return opts
+
+
+def _apply_effect(img, effect):
+    """Studio 4a: one look on the background picture only (never the text or avatar). Returns an RGBA image of the
+    same size; any unknown effect or error returns the picture unchanged. Each one is a few cheap whole-image ops."""
+    try:
+        img = img.convert("RGBA")
+        a = img.getchannel("A")
+        rgb = img.convert("RGB")
+        if effect == "blur":
+            rgb = rgb.filter(ImageFilter.GaussianBlur(7))
+        elif effect == "bw":
+            rgb = ImageOps.grayscale(rgb).convert("RGB")
+        elif effect == "fade":
+            rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (128, 128, 128)), 0.28)
+        elif effect in ("warm", "cool"):
+            r, g, b = rgb.split()
+            k = 1.12 if effect == "warm" else 0.88
+            r = r.point(lambda v: min(255, int(v * k)))
+            b = b.point(lambda v: min(255, int(v / k)))
+            rgb = Image.merge("RGB", (r, g, b))
+        elif effect == "vignette":
+            mask = Image.radial_gradient("L").resize(rgb.size)      # 0 in the middle, 255 at the corners
+            mask = mask.point(lambda v: max(0, v - 110) * 255 // 145 * 150 // 255)
+            rgb = Image.composite(Image.new("RGB", rgb.size, (0, 0, 0)), rgb, mask)
+        else:
+            return img
+        out = rgb.convert("RGBA")
+        out.putalpha(a)
+        return out
+    except Exception:
+        return img
 
 
 def _clamp_avatar_nudge(rect, dx, dy, W, H, text_boxes, margin=ULTRA_NUDGE_MARGIN, gap=24):
@@ -912,6 +948,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
 
     # Slight overall darkening so white text stays legible on bright uploads.
     bg = Image.alpha_composite(bg, Image.new("RGBA", bg.size, (0, 0, 0, 40)))
+    if opts["effect"] != "none":
+        bg = _apply_effect(bg, opts["effect"])      # studio 4a: default "none" skips this, pixel-identical
 
     # The band (banner) keeps the classic card's size on every ratio: short cards never get a band under 220 px
     # (the text needs that much room), tall cards never get a band over the classic height.

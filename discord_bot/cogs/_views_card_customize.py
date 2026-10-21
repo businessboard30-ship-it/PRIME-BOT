@@ -331,7 +331,7 @@ _STEP_HINTS = {
 # What "Reset this step" puts back to default (the picture is never touched). Shape lives in its own column.
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
-    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos"),
+    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos", "effect"),
     "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
@@ -538,6 +538,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
             border_row = discord.ui.ActionRow()
             border_row.add_item(CardFrameButton(guild_id, clone_id, invoker_id, opts["frame"]))
             border_row.add_item(CardAvatarPosButton(guild_id, clone_id, invoker_id, opts["avatar_pos"]))   # studio 3e
+            border_row.add_item(CardEffectButton(guild_id, clone_id, invoker_id, opts["effect"]))          # studio 4a
             if opts["frame"] != "none":
                 border_row.add_item(CardFrameColorButton(guild_id, clone_id, invoker_id, opts["frame_color"]))
             container.add_item(border_row)
@@ -1788,6 +1789,31 @@ class CardAvatarPosButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templ
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+_EFFECT_LABELS = {"none": "None", "blur": "Blur", "vignette": "Vignette", "bw": "Black & white",
+                  "warm": "Warm", "cool": "Cool", "fade": "Faded"}
+
+
+class CardEffectButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("effect")):
+    """Studio 4a: cycles one look for the background picture (None, Blur, Vignette, Black & white, Warm, Cool, Faded)."""
+    FIELD = "effect"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, effect: str = "none"):
+        super().__init__(guild_id, clone_id, invoker_id, effect)
+
+    def label_text(self, effect="none", *_):
+        return f"\u2728 Look: {_EFFECT_LABELS.get(effect, 'None')}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["effect"]
+        order = tuple(_EFFECT_LABELS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "none"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, effect=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 class CardFrameColorButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("framecolor")):
     """Cycles the frame color through the same short color list as the text."""
     FIELD = "framecolor"
@@ -2008,6 +2034,6 @@ DYNAMIC_ITEMS = (
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
-    CardFrameButton, CardFrameColorButton, CardAvatarPosButton,
+    CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton,
     CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )

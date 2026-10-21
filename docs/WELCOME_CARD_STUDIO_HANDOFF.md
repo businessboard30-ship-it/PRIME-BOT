@@ -25,7 +25,8 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 3d. 3x3 text position (one cycle button on the Text step) | **Built, PR #434 open, not merged** (cut from merged `main`) | branch `feat/welcome-studio-phase3d` |
 | Follow-up. Studio options gated at every place a card is drawn (preview, nudge, setup TV, test post) | **Built, PR #435 open, not merged** (cut from `main`, independent of #434) | branch `feat/welcome-studio-render-sites` |
 | 3e. Avatar spot (one cycle button on the Look step) | **Built, PR open, not merged** (cut from `main` plus the handoff-docs PR #436; independent of #434 and #435 in code) | branch `feat/welcome-studio-phase3e` |
-| Frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
+| 4a. Picture look (effect): blur, vignette, black & white, warm, cool, faded (one cycle button on the Look step) | **Built, PR open, not merged** (stacked on 3e, so its diff also carries 3e) | branch `feat/welcome-studio-phase4a` |
+| Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, font per element, new fonts, more effects) and 5 to 7 | Not started | |
 
 ## What Phase 1 built
 
@@ -369,3 +370,27 @@ Welcome/card/server-panel/goodbye unit test files: 1081 passed, 10 failed. The f
 2. Staging check (no staging yet, Railway is paused): the Phase 1 to 3e controls on a phone, Premium vs Ultra-only, wizards posted before these PRs still responding.
 3. Then polaroid / film strip frames (text-area changes), or move on to Phase 4 from `docs/WELCOME_CARD_STUDIO_PLAN.md`. Ask the owner before any glow edge.
 4. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?
+
+
+## Phase 4a (2026-10-21): what it built (picture look)
+
+Small slice, first of Phase 4. No table, no migration. Only the **background picture** changes; the avatar, text and banner are never touched.
+
+- **New key** `effect`: `none` (default) or `blur`, `vignette`, `bw` (black & white), `warm`, `cool`, `fade` (`ULTRA_EFFECTS`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS`, so it is Premium/Plus at save and join (Ultra-only previews in memory) and every render site gets it through `options_for_render`.
+- **Renderer:** `_apply_effect(img, effect)` (pure, never raises, keeps alpha and size) runs right after the picture is cropped and slightly darkened, before the banner. A few whole-image PIL ops each, no loops over pixels in Python except small per-channel lookup tables. `none` skips the call: pixel-identical (test). Glow and sparkle are NOT here: ask the owner first.
+- **Wizard (Look step, More controls):** `✨ Look: ...` cycles the 7 values, same row as the Frame and Avatar spot buttons (a row now holds up to 4 buttons, limit 5; Look More stays under 40 components with a frame chosen: test). Class `CardEffectButton`, id `effect`, in `DYNAMIC_ITEMS`; Reset this step and Undo cover it.
+- Tests: `tests/unit/test_welcome_studio_phase4a.py` (11). Looked at all seven by eye on a test photo.
+
+### Test numbers (4a)
+4a, 3e, Phase 1 and 3c test files: all pass. Not re-run: the whole welcome/card set (it takes ~3 minutes here; the last full run on 3e was 1081 passed, with only the known server-panel and dash-card failures).
+
+### Known gaps in 4a (on purpose)
+- Not tested live (phone taps, Premium vs Ultra-only). Timing was not measured on a real 1536 px photo; each effect is a handful of whole-image operations.
+- One effect at a time (a cycle, not stackable toggles). Strength is fixed. Brightness, tint color, film grain, soft gradient overlay are not built.
+- Does not apply to the plain flat-color card (no picture), only to a picture background.
+
+## Next (updated after 4a)
+1. Owner reviews / merges #434, #435, #436, the 3e PR (#437) and this one, in that order is easiest (this one stacks on #437 which stacks on #436).
+2. Rest of Phase 4: card border/outline thickness, font per element (name vs heading), more fonts (check licensing), brightness / grain. Look and Text steps are near Discord's 40-component limit: add each new control as a cycle button, or free components first.
+3. Staging check (no staging yet): all Phase 1 to 4a controls on a phone.
+4. Ask the owner before any glow or sparkle. Open questions: Phase 6 DM extras? Per-picture overrides? Should Clear background also clear the gallery?
