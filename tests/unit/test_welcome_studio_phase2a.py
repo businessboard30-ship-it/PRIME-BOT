@@ -76,5 +76,5 @@ def test_db_methods_never_raise_on_the_join_path():
 
 def test_old_render_and_wizard_untouched_by_this_slice():
     # Phase 2a ships data + picker only: the card renderer and the wizard do not import the gallery yet.
-    for f in ("modules/welcome_card.py", "discord_bot/cogs/_views_card_customize.py"):
-        assert "welcome_gallery" not in (ROOT / f).read_text(), f
+    # (Phase 2c lets the wizard import it on purpose; the renderer must still stay free of it.)
+    assert "welcome_gallery" not in (ROOT / "modules/welcome_card.py").read_text()
