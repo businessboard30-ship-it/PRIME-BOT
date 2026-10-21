@@ -506,14 +506,14 @@ ULTRA_ZOOMS = (100, 125, 150, 200)
 ULTRA_PAN_LIMIT = 100
 ULTRA_AVATAR_POS = ("auto", "top-left", "top", "top-right", "left", "center", "right",
                     "bottom-left", "bottom", "bottom-right")   # studio 3e: where the avatar goes ("auto" = layout decides)
-ULTRA_OUTLINES = {"none": 0, "thin": 2, "medium": 4, "thick": 6}   # px of dark stroke; "auto" keeps the old rule
+ULTRA_OUTLINES = {"none": 0, "thin": 2, "medium": 4, "thick": 6, "glow": 0}   # px of dark stroke; "auto" keeps the old rule
 ULTRA_BRIGHTNESS = {"darker": 0.65, "dark": 0.82, "normal": 1.0, "light": 1.18, "lighter": 1.35}   # multiplier on the picture only
-ULTRA_EFFECTS = ("none", "blur", "vignette", "bw", "warm", "cool", "fade", "grain")   # all cheap; glow/sparkle need the owner's OK
+ULTRA_EFFECTS = ("none", "blur", "vignette", "bw", "warm", "cool", "fade", "grain", "sparkle")   # all cheap; glow/sparkle need the owner's OK
 ULTRA_AVATAR_EDGE = 60       # a chosen avatar spot sits this far from the card edge (ring included)
 ULTRA_NUDGE_LIMIT = 300
 ULTRA_NUDGE_MARGIN = 24      # the text block never gets closer than this to the card edge
 ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
-ULTRA_FRAMES = ("none", "thin", "medium", "thick", "double", "rounded")   # glow / polaroid / film strip: later (glow needs the owner's OK)
+ULTRA_FRAMES = ("none", "thin", "medium", "thick", "double", "rounded", "glow")   # soft glow added in 4f with the owner's OK; polaroid / film strip: later
 ULTRA_FOCUS = ("center", "top", "bottom", "left", "right", "auto")   # "auto" = smart crop (keeps the busiest part)
 # Bundled OFL fonts (assets/fonts). "classic" = the card's normal font.
 ULTRA_FONTS = {
@@ -528,9 +528,14 @@ ULTRA_FONTS = {
     "comic": "Bangers-Regular.ttf",
     "horror": "Creepster-Regular.ttf",
     "round": "Righteous-Regular.ttf",
+    "cursive": "Lobster-Regular.ttf",       # studio 4f: four more open-license (SIL OFL) fonts, license files in assets/fonts
+    "poster": "Anton-Regular.ttf",
+    "wide": "Audiowide-Regular.ttf",
+    "marquee": "Monoton-Regular.ttf",
 }
 # Fonts that run large/small for their point size: multiplier on the username's max size.
-ULTRA_FONT_SCALE = {"tall": 1.25, "pixel": 0.6, "tech": 0.9, "elegant": 0.95, "gothic": 1.2, "comic": 1.1, "horror": 1.1}
+ULTRA_FONT_SCALE = {"tall": 1.25, "pixel": 0.6, "tech": 0.9, "elegant": 0.95, "gothic": 1.2, "comic": 1.1, "horror": 1.1,
+                    "cursive": 1.0, "poster": 1.15, "wide": 0.9, "marquee": 0.8}
 # Optional characters wrapped around the username (Latin-1 only so every card font can draw them).
 ULTRA_BRACKETS = {
     "none": ("", ""),
@@ -725,6 +730,17 @@ def _apply_effect(img, effect):
                 for tx in range(0, rgb.width, 256):
                     noise.paste(tile, (tx, ty))
             rgb = ImageChops.add(rgb, Image.merge("RGB", (noise, noise, noise)), 1.0, -128)
+        elif effect == "sparkle":   # studio 4f (owner approved): a few soft four-point stars, fixed seed, low opacity
+            import random
+            rng = random.Random(11)
+            layer = Image.new("RGBA", rgb.size, (0, 0, 0, 0))
+            ld = ImageDraw.Draw(layer)
+            for _ in range(max(6, rgb.width * rgb.height // 45000)):
+                x, y, r = rng.randrange(rgb.width), rng.randrange(rgb.height), rng.randrange(6, 16)
+                ld.line((x - r, y, x + r, y), fill=(255, 255, 255, 150), width=2)
+                ld.line((x, y - r, x, y + r), fill=(255, 255, 255, 150), width=2)
+                ld.ellipse((x - 2, y - 2, x + 2, y + 2), fill=(255, 255, 255, 190))
+            rgb = Image.alpha_composite(rgb.convert("RGBA"), layer.filter(ImageFilter.GaussianBlur(0.8))).convert("RGB")
         elif effect == "vignette":
             mask = Image.radial_gradient("L").resize(rgb.size)      # 0 in the middle, 255 at the corners
             mask = mask.point(lambda v: max(0, v - 110) * 255 // 145 * 150 // 255)
@@ -893,6 +909,11 @@ def _draw_frame(img: Image.Image, frame: str, color) -> Image.Image:
     elif frame == "double":
         d.rectangle((0, 0, W - 1, H - 1), outline=col, width=8)
         d.rectangle((18, 18, W - 19, H - 19), outline=col, width=8)
+    elif frame == "glow":   # studio 4f (owner approved): soft, muted glow along the edge plus a thin line
+        halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(halo).rectangle((0, 0, W - 1, H - 1), outline=tuple(color) + (170,), width=26)
+        img = Image.alpha_composite(img, halo.filter(ImageFilter.GaussianBlur(16)))
+        ImageDraw.Draw(img).rectangle((0, 0, W - 1, H - 1), outline=col, width=4)
     elif frame == "rounded":
         border, radius = 16, 48
         mask = Image.new("L", (W, H), 0)
@@ -1195,6 +1216,11 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         _draw_texts(ImageDraw.Draw(layer), (0, 0, 0, 235), True, off=(3, 4))
         layer = layer.filter(ImageFilter.GaussianBlur(4))
         bg = Image.alpha_composite(bg, layer)
+        draw = ImageDraw.Draw(bg)
+    if opts["text_outline"] == "glow":   # studio 4f (owner approved): soft glow in the text color behind the text
+        glow = Image.new("RGBA", bg.size, (0, 0, 0, 0))
+        _draw_texts(ImageDraw.Draw(glow), tuple(color[:3]) + (200,), True, st=3)
+        bg = Image.alpha_composite(bg, glow.filter(ImageFilter.GaussianBlur(9)))
         draw = ImageDraw.Draw(bg)
     _draw_texts(draw, color, False, st=stroke)
 

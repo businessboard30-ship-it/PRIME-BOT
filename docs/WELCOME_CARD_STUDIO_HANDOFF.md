@@ -30,6 +30,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 4c. Text outline: dark edge around the text, none / thin / medium / thick (one cycle button on the Text step) | **Built, PR open, not merged** (stacked on 4b, so its diff also carries 3e, 4a, 4b) | branch `feat/welcome-studio-phase4c` |
 | 4d. Picture brightness: darker / dark / normal / light / lighter (one cycle button on the Look step) | **Built, PR open, not merged** (stacked on 4c, so its diff also carries 3e, 4a, 4b, 4c) | branch `feat/welcome-studio-phase4d` |
 | 4e. Film grain (new value in the Look cycle) + medium frame (new value in the Frame cycle) | **Built, PR open, not merged** (stacked on 4d) | branch `feat/welcome-studio-phase4e` |
+| 4f. Owner-approved glow and fonts: soft glow edge frame, sparkle effect, text glow, four more fonts | **Built, PR open, not merged** (stacked on 4e) | branch `feat/welcome-studio-phase4f` |
 | Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, new fonts, more effects) and 5 to 7 | Not started | |
 
 ## What Phase 1 built
@@ -484,3 +485,24 @@ Small slice. **No new button, no new key, no migration:** both are new values of
 1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), #439 (4b), #440 (4c), #441 (4d), then the 4e PR.
 2. Owner decisions for the rest of Phase 4: glow/sparkle yes or no, which fonts.
 3. Phase 5 (saved designs) per the plan; staging check on a phone for Phase 1 to 4e.
+
+
+## Phase 4f (2026-10-21): glow, sparkle and more fonts (owner approved)
+
+**Owner decision (2026-10-21):** the owner dislikes neon personally but said the studio is not about their taste: build the glow/sparkle options and add fonts. So the earlier "ask before any glow" rule is **closed**. Kept soft and muted, and **off by default** (every new value sits at the end of an existing cycle, defaults unchanged).
+
+- **No new button, no new key, no migration:** all are new values of existing options (already studio-gated; Look and Text step component counts unchanged).
+- **Soft glow edge** = `frame` value `glow` (label "Soft glow"): a blurred halo along the card edge in the frame color (alpha 170, blur 16) plus a thin 4 px line.
+- **Sparkle** = `effect` value `sparkle`: a few soft four-point stars (fixed seed, low opacity, about one per 45,000 px, minimum 6). Picture only.
+- **Text glow** = `text_outline` value `glow` (label "Glow", last in the Outline cycle): a blurred copy of the text in the text color behind it (alpha 200, blur 9). The solid outline stroke is 0 in this mode.
+- **Four more fonts**, all SIL OFL (license files added next to the font files in `assets/fonts`, downloaded from google/fonts): `cursive` (Lobster), `poster` (Anton), `wide` (Audiowide), `marquee` (Monoton). Added to `ULTRA_FONTS`, `ULTRA_FONT_SCALE` (poster 1.15, wide 0.9, marquee 0.8) and the Font select labels. They also show in the Heading font cycle. The Font select now has 15 choices (limit 25). Latin only, like the others.
+- Tests: `tests/unit/test_welcome_studio_phase4f.py` (8). Two older tests pinned the previous cycle ends (3b: `glow` was the "unsupported frame" example, now `polaroid`; frame wrap now starts from `glow`; 4e label order). All `test_welcome_studio_*` files plus `test_card_fonts_brackets.py` and `test_card_wizard_tv.py`: 288 passed. Looked at a sample card with everything on: soft, not harsh.
+
+### Known gaps in 4f (on purpose)
+- **Avatar glow** (plan 3.5) is not built: it needs the avatar geometry for every layout and spot; do it as its own slice if wanted.
+- Not tested live (phone taps, Premium vs Ultra-only). Text glow in white on a bright picture is subtle; judged by eye on one card.
+- Monoton and Audiowide are display fonts and read poorly at small sizes; the font scale helps, check on a phone.
+
+## Next (updated after 4f)
+1. Owner reviews / merges in this order: #436, #437, #438, #439, #440, #441, #442, then the 4f PR.
+2. **Phase 4 is done** except avatar glow (optional). Next is Phase 5 (saved designs, up to 5 per server, new table + migration) per the plan; staging check on a phone for Phase 1 to 4f.

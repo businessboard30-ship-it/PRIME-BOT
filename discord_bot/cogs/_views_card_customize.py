@@ -260,7 +260,8 @@ _LAYOUT_LABELS = {"banner": "Banner layout (classic)", "centered": "Centered —
 _FONT_LABELS = {"classic": "Classic font (default)", "clean": "Clean — Poppins", "tall": "Tall — Bebas Neue", "script": "Handwritten — Pacifico",
                 "tech": "Tech — Orbitron", "elegant": "Elegant — Cinzel", "pixel": "Pixel — Press Start 2P",
                 "gothic": "Gothic — Pirata One", "comic": "Comic — Bangers", "horror": "Horror — Creepster",
-                "round": "Rounded — Righteous"}
+                "round": "Rounded — Righteous", "cursive": "Cursive — Lobster", "poster": "Poster — Anton",
+                "wide": "Wide — Audiowide", "marquee": "Marquee — Monoton"}
 _BRACKET_LABELS = {"none": "No brackets (default)", "square": "[ Name ] square", "round": "( Name ) round",
                    "curly": "{ Name } curly", "angle": "< Name > angle", "guillemet": "\u00ab Name \u00bb guillemets",
                    "slashes": "// Name // slashes", "stars": "* Name * stars"}
@@ -1666,7 +1667,7 @@ _PAN_STEP = 10
 _NUDGE_STEP = 20
 _ZOOM_ORDER = (100, 125, 150, 200)
 _TEXT_SIZE_ORDER = ("small", "medium", "large", "xl")
-_FRAME_LABELS = {"none": "None", "thin": "Thin", "medium": "Medium", "thick": "Thick", "double": "Double", "rounded": "Rounded"}
+_FRAME_LABELS = {"none": "None", "thin": "Thin", "medium": "Medium", "thick": "Thick", "double": "Double", "rounded": "Rounded", "glow": "Soft glow"}
 _TEXT_SIZE_LABELS = {"small": "Small", "medium": "Medium", "large": "Large", "xl": "Extra large"}
 
 
@@ -1796,7 +1797,7 @@ class CardAvatarPosButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templ
 
 
 _EFFECT_LABELS = {"none": "None", "blur": "Blur", "vignette": "Vignette", "bw": "Black & white",
-                  "warm": "Warm", "cool": "Cool", "fade": "Faded", "grain": "Film grain"}
+                  "warm": "Warm", "cool": "Cool", "fade": "Faded", "grain": "Film grain", "sparkle": "Sparkle"}
 
 
 class CardEffectButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("effect")):

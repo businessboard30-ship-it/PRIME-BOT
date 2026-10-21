@@ -82,7 +82,7 @@ def test_medium_frame_is_between_thin_and_thick():
 def test_labels_and_cycle_order():
     assert cc._FRAME_LABELS["medium"] == "Medium" and cc._EFFECT_LABELS["grain"] == "Film grain"
     assert list(cc._FRAME_LABELS)[:4] == ["none", "thin", "medium", "thick"]
-    assert list(cc._EFFECT_LABELS)[-1] == "grain"
+    assert list(cc._EFFECT_LABELS)[-2:] == ["grain", "sparkle"]
     assert "Film grain" in cc.CardEffectButton(1, None, 42, "grain").item.label
 
 
