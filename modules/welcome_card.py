@@ -483,9 +483,17 @@ ULTRA_DEFAULTS = {
     "focus": "center",         # crop anchor: center | top | bottom | left | right
     "bracket": "none",         # key of ULTRA_BRACKETS, wrapped around the username
     "ratio": "3:2",            # key of ULTRA_RATIOS: the card's shape (width is always 1536 px)
+    # Welcome Card Studio phase 3a (Premium/Plus only at save and join; defaults = the classic crop and text size).
+    "zoom": 100,               # percent, one of ULTRA_ZOOMS: how far in the crop window moves
+    "pan_x": 0,                # -100 (left end of the picture) .. 100 (right end), 0 = where the crop focus put it
+    "pan_y": 0,                # -100 (top) .. 100 (bottom)
+    "text_size": "medium",     # key of ULTRA_TEXT_SIZES
 }
 ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast")
 ULTRA_LAYOUTS = ("banner", "centered")
+ULTRA_ZOOMS = (100, 125, 150, 200)
+ULTRA_PAN_LIMIT = 100
+ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
 ULTRA_FOCUS = ("center", "top", "bottom", "left", "right", "auto")   # "auto" = smart crop (keeps the busiest part)
 # Bundled OFL fonts (assets/fonts). "classic" = the card's normal font.
 ULTRA_FONTS = {
@@ -623,6 +631,15 @@ def parse_ultra_options(raw) -> dict:
         opts["heading"] = raw["heading"].strip()[:ULTRA_HEADING_MAX]
     if isinstance(raw.get("show_number"), bool):
         opts["show_number"] = raw["show_number"]
+    z = raw.get("zoom")
+    if isinstance(z, int) and not isinstance(z, bool) and z in ULTRA_ZOOMS:
+        opts["zoom"] = z
+    for k in ("pan_x", "pan_y"):
+        v = raw.get(k)
+        if isinstance(v, int) and not isinstance(v, bool):
+            opts[k] = max(-ULTRA_PAN_LIMIT, min(ULTRA_PAN_LIMIT, v))
+    if raw.get("text_size") in ULTRA_TEXT_SIZES:
+        opts["text_size"] = raw["text_size"]
     return opts
 
 
@@ -693,6 +710,25 @@ def _region_brightness(img: Image.Image, box: tuple) -> float:
         return 0.0
 
 
+def _zoom_pan_box(box, src_w: int, src_h: int, zoom: int, pan_x: int, pan_y: int):
+    """Studio 3a: shrink the cover-crop window by `zoom` percent around its middle, then slide it toward an end of the
+    picture by pan (-100 = one end, 100 = the other). The window keeps the card's shape and never leaves the picture."""
+    l, t, r, b = box
+    w, h = r - l, b - t
+    nw, nh = max(1, int(w * 100 / zoom)), max(1, int(h * 100 / zoom))
+
+    def place(start, size, new, total, pan):
+        c0 = start + (size - new) // 2                    # window centered on the original crop
+        if pan > 0:
+            c0 += int((total - new - c0) * pan / ULTRA_PAN_LIMIT)
+        elif pan < 0:
+            c0 += int(c0 * pan / ULTRA_PAN_LIMIT)
+        return max(0, min(total - new, c0))
+
+    nl, nt = place(l, w, nw, src_w, pan_x), place(t, h, nh, src_h, pan_y)
+    return (nl, nt, nl + nw, nt + nh)
+
+
 def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
                           background_bytes: bytes,
                           guild_name: Optional[str] = None,
@@ -736,20 +772,25 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     target_ratio = W / H
     src_ratio = src_w / src_h
     focus = opts["focus"]
+    box = (0, 0, src_w, src_h)
     if src_ratio > target_ratio:
         new_w = int(src_h * target_ratio)
         if focus == "auto":
             left = _smart_crop_start(bg, 0, new_w)
         else:
             left = 0 if focus == "left" else (src_w - new_w if focus == "right" else (src_w - new_w) // 2)
-        bg = bg.crop((left, 0, left + new_w, src_h))
+        box = (left, 0, left + new_w, src_h)
     elif src_ratio < target_ratio:
         new_h = int(src_w / target_ratio)
         if focus == "auto":
             top = _smart_crop_start(bg, 1, new_h)
         else:
             top = 0 if focus == "top" else (src_h - new_h if focus == "bottom" else (src_h - new_h) // 2)
-        bg = bg.crop((0, top, src_w, top + new_h))
+        box = (0, top, src_w, top + new_h)
+    if opts["zoom"] != 100 or opts["pan_x"] or opts["pan_y"]:
+        box = _zoom_pan_box(box, src_w, src_h, opts["zoom"], opts["pan_x"], opts["pan_y"])
+    if box != (0, 0, src_w, src_h):
+        bg = bg.crop(box)
     bg = bg.resize((W, H))
 
     # Slight overall darkening so white text stays legible on bright uploads.
@@ -854,6 +895,12 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     font_key = opts["font"]
     name_max = (84 if centered else 72) if opts["big_name"] else (64 if centered else 52)
     name_max = int(name_max * ULTRA_FONT_SCALE.get(font_key, 1.0))   # some fonts run big/small for their size
+    size_k = ULTRA_TEXT_SIZES[opts["text_size"]]
+    if centered:
+        size_k = min(size_k, 1.2)     # safe-area guard: the centered stack must stay on the card
+    if compact:
+        size_k = min(size_k, 1.0)
+    name_max = int(name_max * size_k)
     if compact and centered:
         name_max = int(name_max * 0.7)
     b_l, b_r = ULTRA_BRACKETS[opts["bracket"]]
@@ -868,7 +915,7 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     username_size, username_text = name_fit
     heading_styled = False
     if heading:
-        head_max = (24 if compact else 34) if centered else 28
+        head_max = int(((24 if compact else 34) if centered else 28) * size_k)
         head_fit = _fit_styled(draw, heading, text_box_width, head_max, 14, font_key)
         if head_fit is None:
             head_fit = _fit_text_fallback(draw, heading, text_box_width, max_font_size=head_max, min_font_size=14)

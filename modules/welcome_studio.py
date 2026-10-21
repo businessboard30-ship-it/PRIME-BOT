@@ -39,6 +39,42 @@ async def studio_unlocked(guild_id: Optional[int], clone_id: Optional[int] = Non
         return False
 
 
+# Option keys (inside ultra_card_json) that only Premium/Plus servers may save or render. Add each new studio key here.
+STUDIO_KEYS = frozenset({"zoom", "pan_x", "pan_y", "text_size"})
+STUDIO_DEFAULTS = {"zoom": 100, "pan_x": 0, "pan_y": 0, "text_size": "medium"}
+
+
+def uses_studio_options(raw) -> bool:
+    """True when the stored options differ from the studio defaults. Never raises; untouched servers return False
+    so the join render does not even need a Premium lookup for them."""
+    try:
+        from modules.welcome_card import parse_ultra_options
+        o = parse_ultra_options(raw)
+        return any(o.get(k) != v for k, v in STUDIO_DEFAULTS.items())
+    except Exception:
+        return False
+
+
+async def options_for_render(config: dict):
+    """What to hand the card renderer at join time: the stored options, with studio-only keys dropped unless the server
+    has Premium/Plus (fails closed, never raises). Untouched servers get their stored value back unchanged."""
+    raw = (config or {}).get("ultra_card_json")
+    try:
+        if not uses_studio_options(raw):
+            return raw
+        if await studio_unlocked((config or {}).get("guild_id"), (config or {}).get("clone_id")):
+            return raw
+        from modules.welcome_card import parse_ultra_options
+        return effective_studio_options(parse_ultra_options(raw), False, STUDIO_KEYS)
+    except Exception:
+        logger.exception("[welcome-studio] option gate failed, using the stored options without studio keys")
+        try:
+            from modules.welcome_card import parse_ultra_options
+            return effective_studio_options(parse_ultra_options(raw), False, STUDIO_KEYS)
+        except Exception:
+            return None
+
+
 def effective_studio_options(options: dict, unlocked: bool, studio_keys: frozenset = frozenset()) -> dict:
     """Return `options` unchanged when unlocked, else a copy without the studio-only keys.
 

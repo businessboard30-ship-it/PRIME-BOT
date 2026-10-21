@@ -17,7 +17,8 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 | 2c-2. Numbered strip + Remove / Make first + "Unlock with Premium" button | **Built, PR open, not merged** (stacked on 2c-1; no Add yet, that is 2d) | branch `feat/welcome-studio-phase2c2` |
 | 2d. Multi-upload + downscale + caption + daily limit + migrate old single picture | **Built, PR open, not merged** (stacked on 2c-2). **This finishes Phase 2** | branch `feat/welcome-studio-phase2d` |
 | 2e. Phase 2 leftovers: Replace a picture, editor preview uses the gallery, Clear background note | **Built, PR open, not merged** (stacked on 2d) | branch `feat/welcome-studio-phase2e` |
-| 3 to 7 | Not started | |
+| 3a. Zoom + pan arrows, text size (first slice of Phase 3) | **Built, PR open, not merged** (stacked on 2e) | branch `feat/welcome-studio-phase3a` |
+| 3b+ (frames, 3x3 grid, nudge) and 4 to 7 | Not started | |
 
 ## What Phase 1 built
 
@@ -218,3 +219,32 @@ Full unit suite: 5225 passed, 4 failed, 4 skipped. Same 4 as 2b to 2d: `test_ult
 1. Owner reviews the stacked PRs in order: #423 (Phase 1), #424 to #428, 2d, then 2e. None merged by me.
 2. **Phase 3: framing and positioning** (pan/zoom arrows, picture frames, 3x3 position grid, nudge, text size). Keep every control available as a preview for free servers; gate saving and the join render with `studio_unlocked`. Add each new option key to `studio_keys` in `modules/welcome_studio.py`.
 3. Still-open plan questions for the owner: Premium lifetime includes studio? Keep Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery?
+
+
+## Phase 3a (2026-10-21): what it built (first slice of Phase 3)
+
+Small slice on purpose: **zoom + pan arrows for the picture, and text size.** No new table, no migration.
+
+- **New option keys** in `ultra_card_json` (`modules/welcome_card.py`): `zoom` (100/125/150/200), `pan_x`, `pan_y` (-100..100, clamped), `text_size` (small / medium / large / xl). Validated in `parse_ultra_options`; bad values fall back to the defaults. `_zoom_pan_box` shrinks the cover-crop window around its middle by the zoom, then slides it toward an end of the picture by the pan; the window keeps the card's shape and never leaves the picture. Text size scales the name and heading maximum; **safe-area guard:** centered layout caps at x1.2, the 3:1 strip at x1.0.
+- **Pixel-identical defaults:** default values take the old code path (`box` unchanged, scale 1.0). Checked by rendering 720 combinations (layouts, ratios, crop focus, big name, three fonts) with the old and new renderer: 0 differences. Test `test_default_options_render_pixel_identical_to_no_options` keeps that cheap check in the suite.
+- **Wizard (More controls only, Easy mode unchanged):** step 2 Look gets a row of `◀ ▲ ▼ ▶` (10 per tap) + `🔍 Zoom: N%` (cycles 100 > 125 > 150 > 200); step 3 Text gets `🔠 Text size: ...` (cycles). New classes: `CardPanLeft/Up/Down/RightButton`, `CardZoomButton`, `CardTextSizeButton`, ids `panleft panup pandown panright zoom textsize`, all in `DYNAMIC_ITEMS`. "Reset this step" now also resets them. Pan sits on Look (not Pictures) because Pictures More mode is already at Discord's 40-component limit.
+- **Gating (`modules/welcome_studio.py`):** `STUDIO_KEYS`, `STUDIO_DEFAULTS`, `uses_studio_options`, `options_for_render(config)`. **Join render** (`welcome.py` `on_member_join`) now passes `options_for_render(config)`: untouched servers get their stored value back with no Premium lookup; Premium/Plus keep the studio keys; anyone else (or a lookup error) gets them stripped, everything else kept.
+- **Saving:** `_save_option` and `_apply_style` call `_gate_studio_changes` (server-side `studio_unlocked`). Premium/Plus: written to the database. Ultra-only server: **preview only** — the values live in memory (`_STUDIO_PREVIEW`, per person, trimmed) and `_effective_config` overlays them so the editor preview shows them (owner rule: open to everyone, only saving is Premium). Unpaid draft servers: in-memory draft as before. `_undo_last` never writes studio values for a non-Premium server.
+- Tests: `tests/unit/test_welcome_studio_phase3a.py` (27).
+
+### Test numbers (3a)
+Full unit suite: 5252 passed, 4 failed, 4 skipped. Same 4 as 2b to 2e: `test_ultra_trial_off::test_new_ultra_trials_are_off` (env flag) and 3 in `test_uncached_member_fixes.py` (test-order pollution).
+
+### Known gaps in 3a (on purpose)
+- Not tested live: the arrow row and zoom/text-size buttons on a phone; real taps on a Premium vs Ultra-only server.
+- Only the real join applies `options_for_render`. `/welcome preview`, the setup-wizard previews (`_views_welcome.py`) and `welcome_extras.py` still pass the stored options straight to the renderer, so a lapsed Premium server would still see its studio look there (join strips it). Wire them with the same helper in a tiny follow-up.
+- Ultra-only preview-only values are not covered by Undo's memory beyond the snapshot restore (undo restores them, never stores them).
+- No "Unlock with Premium" line on the Look/Text steps yet (only on Pictures).
+- Pan is per-tap steps of 10, not per-picture; per-picture crop overrides are still not built.
+- Still to do in Phase 3: picture frames (border presets), 3x3 position grid for text/avatar, nudge buttons.
+
+## Next (updated after 3a)
+1. Owner reviews the stacked PRs in order: #423 (Phase 1) ... 2e (#430), then 3a. None merged by me.
+2. **Phase 3b**: picture frames (none, thin, thick, double, rounded, polaroid, film strip, glow edge: keep any glow soft/muted and ask before adding neon). Then 3c: 3x3 grid + nudge. Add each new key to `STUDIO_KEYS` / `STUDIO_DEFAULTS`.
+3. Tiny follow-up: apply `options_for_render` at the other render sites.
+4. Still-open plan questions for the owner: Premium lifetime includes studio? Keep Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery?
