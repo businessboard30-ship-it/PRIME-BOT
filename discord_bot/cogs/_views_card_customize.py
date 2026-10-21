@@ -61,7 +61,7 @@ from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from discord_bot.cogs import _views_welcome as vw
 from modules.welcome_card import (
-    ULTRA_AVATAR_SIDES, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_TEXT_COLORS,
+    ULTRA_AVATAR_SIDES, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_NUDGE_LIMIT, ULTRA_TEXT_COLORS,
     TEMPLATE_HEIGHT, TEMPLATE_WIDTH, parse_ultra_options, render_welcome_card,
 )
 
@@ -332,7 +332,7 @@ _STEP_HINTS = {
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
     "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color"),
-    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size"),
+    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
 _MORE_STATE: dict = {}       # (guild, clone, user) -> (set of steps showing "More controls", monotonic ts)
@@ -549,6 +549,12 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         if more:
             text_row.add_item(CardTextSizeButton(guild_id, clone_id, invoker_id, opts["text_size"]))
         container.add_item(text_row)
+        if more:   # Phase 3c: nudge the text block (arrows, never typed numbers); the guard keeps it on the card
+            container.add_item(discord.ui.TextDisplay("Move the text (it stops at the card edge and next to your avatar):"))
+            nudge_row = discord.ui.ActionRow()
+            for cls in (CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton):
+                nudge_row.add_item(cls(guild_id, clone_id, invoker_id))
+            container.add_item(nudge_row)
     else:
         container.add_item(discord.ui.TextDisplay(
             "Your card goes out the way your **/welcome** setup says (channel or DM). "
@@ -1649,6 +1655,7 @@ class CardPictureAddButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], temp
 # ── Phase 3a: zoom + pan arrows and text size ────────────────────────────
 
 _PAN_STEP = 10
+_NUDGE_STEP = 20
 _ZOOM_ORDER = (100, 125, 150, 200)
 _TEXT_SIZE_ORDER = ("small", "medium", "large", "xl")
 _FRAME_LABELS = {"none": "None", "thin": "Thin", "thick": "Thick", "double": "Double", "rounded": "Rounded"}
@@ -1915,6 +1922,52 @@ class CardStudioPremiumButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], t
         await send_premium_pitch(interaction, self.guild_id, self.clone_id)
 
 
+class _NudgeButton(_Btn):
+    """Studio 3c: moves the text block by _NUDGE_STEP px per tap. The stored value is clamped to +-300; the renderer's
+    safe-area guard then keeps the text on the card and off the avatar."""
+    AXIS, DELTA = "text_dx", 0
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))[self.AXIS]
+        new = max(-ULTRA_NUDGE_LIMIT, min(ULTRA_NUDGE_LIMIT, cur + self.DELTA))
+        if new != cur:
+            await _save_option(self.guild_id, self.clone_id, interaction.user.id, **{self.AXIS: new})
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardNudgeLeftButton(_NudgeButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("nudgeleft")):
+    FIELD, LABEL, AXIS, DELTA = "nudgeleft", "\u25C0", "text_dx", -_NUDGE_STEP
+
+
+class CardNudgeUpButton(_NudgeButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("nudgeup")):
+    FIELD, LABEL, AXIS, DELTA = "nudgeup", "\u25B2", "text_dy", -_NUDGE_STEP
+
+
+class CardNudgeDownButton(_NudgeButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("nudgedown")):
+    FIELD, LABEL, AXIS, DELTA = "nudgedown", "\u25BC", "text_dy", _NUDGE_STEP
+
+
+class CardNudgeRightButton(_NudgeButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("nudgeright")):
+    FIELD, LABEL, AXIS, DELTA = "nudgeright", "\u25B6", "text_dx", _NUDGE_STEP
+
+
+class CardNudgeCenterButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("nudgecenter")):
+    """Puts the text back where the layout puts it."""
+    FIELD, LABEL = "nudgecenter", "\u21BA Reset"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = await _current_opts(self.guild_id, self.clone_id, interaction.user.id)
+        if cur["text_dx"] or cur["text_dy"]:
+            await _save_option(self.guild_id, self.clone_id, interaction.user.id, text_dx=0, text_dy=0)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 DYNAMIC_ITEMS = (
     CardBannerSelect, CardDimSelect, CardSideSelect, CardColorSelect, CardShapeSelect, CardStyleSelect,
     CardLayoutSelect, CardFontSelect, CardBracketSelect, CardFocusSelect, CardRatioSelect,
@@ -1927,4 +1980,5 @@ DYNAMIC_ITEMS = (
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
     CardFrameButton, CardFrameColorButton,
+    CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )
