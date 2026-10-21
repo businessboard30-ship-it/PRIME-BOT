@@ -38,7 +38,7 @@ import os
 import re
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageSequence
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps, ImageSequence
 
 logger = logging.getLogger(__name__)
 
@@ -493,6 +493,7 @@ ULTRA_DEFAULTS = {
     # Welcome Card Studio phase 3e (Premium/Plus only at save and join): move the avatar to one of nine spots.
     "heading_font": "same",    # "same" (as the name) or a key of ULTRA_FONTS: the font of the heading line (studio 4b)
     "text_outline": "auto",    # "auto" (the old rule) or a key of ULTRA_OUTLINES: dark edge around the text (studio 4c)
+    "brightness": "normal",    # key of ULTRA_BRIGHTNESS: how light the background picture is (studio 4d)
     "effect": "none",          # key of ULTRA_EFFECTS: one look applied to the background picture (studio 4a)
     "avatar_pos": "auto",      # key of ULTRA_AVATAR_POS: "auto" = the layout decides; else one of nine cells
     # Welcome Card Studio phase 3c (Premium/Plus only at save and join): nudge the text block, in pixels at card width 1536.
@@ -506,6 +507,7 @@ ULTRA_PAN_LIMIT = 100
 ULTRA_AVATAR_POS = ("auto", "top-left", "top", "top-right", "left", "center", "right",
                     "bottom-left", "bottom", "bottom-right")   # studio 3e: where the avatar goes ("auto" = layout decides)
 ULTRA_OUTLINES = {"none": 0, "thin": 2, "medium": 4, "thick": 6}   # px of dark stroke; "auto" keeps the old rule
+ULTRA_BRIGHTNESS = {"darker": 0.65, "dark": 0.82, "normal": 1.0, "light": 1.18, "lighter": 1.35}   # multiplier on the picture only
 ULTRA_EFFECTS = ("none", "blur", "vignette", "bw", "warm", "cool", "fade")   # all cheap; glow/sparkle need the owner's OK
 ULTRA_AVATAR_EDGE = 60       # a chosen avatar spot sits this far from the card edge (ring included)
 ULTRA_NUDGE_LIMIT = 300
@@ -664,6 +666,8 @@ def parse_ultra_options(raw) -> dict:
         opts["heading_font"] = raw["heading_font"]
     if raw.get("text_outline") == "auto" or raw.get("text_outline") in ULTRA_OUTLINES:
         opts["text_outline"] = raw["text_outline"]
+    if raw.get("brightness") in ULTRA_BRIGHTNESS:
+        opts["brightness"] = raw["brightness"]
     if raw.get("effect") in ULTRA_EFFECTS:
         opts["effect"] = raw["effect"]
     if raw.get("avatar_pos") in ULTRA_AVATAR_POS:
@@ -675,6 +679,22 @@ def parse_ultra_options(raw) -> dict:
         if isinstance(v, int) and not isinstance(v, bool):
             opts[k] = max(-ULTRA_NUDGE_LIMIT, min(ULTRA_NUDGE_LIMIT, v))
     return opts
+
+
+def _apply_brightness(img, level):
+    """Studio 4d: lighten or darken the background picture only. Keeps alpha and size; never raises."""
+    try:
+        f = ULTRA_BRIGHTNESS.get(level, 1.0)
+        if f == 1.0:
+            return img
+        img = img.convert("RGBA")
+        a = img.getchannel("A")
+        rgb = ImageEnhance.Brightness(img.convert("RGB")).enhance(f)
+        out = rgb.convert("RGBA")
+        out.putalpha(a)
+        return out
+    except Exception:
+        return img
 
 
 def _apply_effect(img, effect):
@@ -957,6 +977,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     bg = Image.alpha_composite(bg, Image.new("RGBA", bg.size, (0, 0, 0, 40)))
     if opts["effect"] != "none":
         bg = _apply_effect(bg, opts["effect"])      # studio 4a: default "none" skips this, pixel-identical
+    if opts["brightness"] != "normal":
+        bg = _apply_brightness(bg, opts["brightness"])   # studio 4d: default "normal" skips this, pixel-identical
 
     # The band (banner) keeps the classic card's size on every ratio: short cards never get a band under 220 px
     # (the text needs that much room), tall cards never get a band over the classic height.

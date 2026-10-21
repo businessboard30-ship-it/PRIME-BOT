@@ -28,6 +28,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 4a. Picture look (effect): blur, vignette, black & white, warm, cool, faded (one cycle button on the Look step) | **Built, PR #438 open, not merged** (stacked on 3e, so its diff also carries 3e) | branch `feat/welcome-studio-phase4a` |
 | 4b. Heading font: the heading line gets its own font (one cycle button on the Text step) | **Built, PR #439 open, not merged** (stacked on 4a, so its diff also carries 3e and 4a) | branch `feat/welcome-studio-phase4b` |
 | 4c. Text outline: dark edge around the text, none / thin / medium / thick (one cycle button on the Text step) | **Built, PR open, not merged** (stacked on 4b, so its diff also carries 3e, 4a, 4b) | branch `feat/welcome-studio-phase4c` |
+| 4d. Picture brightness: darker / dark / normal / light / lighter (one cycle button on the Look step) | **Built, PR open, not merged** (stacked on 4c, so its diff also carries 3e, 4a, 4b, 4c) | branch `feat/welcome-studio-phase4d` |
 | Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, new fonts, more effects) and 5 to 7 | Not started | |
 
 ## What Phase 1 built
@@ -441,4 +442,25 @@ Small slice. No table, no migration. Plan 3.6 "text outline (new)", thickness on
 1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), #439 (4b), then the 4c PR.
 2. Rest of Phase 4: brightness / grain, more fonts (check licensing), card border thickness. Text and Look steps are full.
 3. Then Phase 5 (saved designs); staging check on a phone for Phase 1 to 4c.
+4. Ask the owner before any glow or sparkle.
+
+
+## Phase 4d (2026-10-21): what it built (picture brightness)
+
+Small slice. No table, no migration. Only the **background picture** changes (avatar, text, banner untouched).
+
+- **New key** `brightness`: `normal` (default) or `darker` (x0.65), `dark` (x0.82), `light` (x1.18), `lighter` (x1.35) (`ULTRA_BRIGHTNESS`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus at save and join, Ultra-only previews in memory, all render sites through `options_for_render`).
+- **Renderer:** `_apply_brightness(img, level)` (pure, never raises, keeps alpha and size) runs right after the 4a effect, before the banner. One PIL `ImageEnhance.Brightness` call. `normal` skips it: pixel-identical (test).
+- **Wizard (Look step, More controls):** `Brightness: ...` cycles the 5 levels, in the Frame / Avatar spot / Look row (a row can now hold 5 with a frame color chosen: the limit). Class `CardBrightnessButton`, id `bright`, in `DYNAMIC_ITEMS`; Reset this step and Undo cover it.
+- **Component budget:** the "Move the picture inside the card, or zoom in:" line was folded into the Look step hint (More mode) to free one component. Look More with a frame chosen: under 40 (test).
+- Tests: `tests/unit/test_welcome_studio_phase4d.py` (9). All `test_welcome_studio_*` files plus `test_card_wizard_tv.py`: 268 passed.
+
+### Known gaps in 4d (on purpose)
+- Not tested live (phone taps, Premium vs Ultra-only). One multiplier per level, no fine slider. Not applied to the flat-color card (no picture).
+- Brightness is applied after the 4a effect, so "Faded" plus "Lighter" can wash out; judged by eye only on a test card.
+
+## Next (updated after 4d)
+1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), #439 (4b), #440 (4c), then the 4d PR.
+2. Rest of Phase 4: film grain, more fonts (check licensing), card border thickness. Text and Look steps are full.
+3. Then Phase 5 (saved designs); staging check on a phone for Phase 1 to 4d.
 4. Ask the owner before any glow or sparkle.

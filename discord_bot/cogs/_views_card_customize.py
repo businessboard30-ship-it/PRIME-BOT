@@ -61,7 +61,7 @@ from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from discord_bot.cogs import _views_welcome as vw
 from modules.welcome_card import (
-    ULTRA_AVATAR_SIDES, ULTRA_FONTS, ULTRA_OUTLINES, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_NUDGE_LIMIT, ULTRA_TEXT_COLORS,
+    ULTRA_AVATAR_SIDES, ULTRA_FONTS, ULTRA_OUTLINES, ULTRA_BRIGHTNESS, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_NUDGE_LIMIT, ULTRA_TEXT_COLORS,
     TEMPLATE_HEIGHT, TEMPLATE_WIDTH, parse_ultra_options, render_welcome_card,
 )
 
@@ -331,7 +331,7 @@ _STEP_HINTS = {
 # What "Reset this step" puts back to default (the picture is never touched). Shape lives in its own column.
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
-    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos", "effect"),
+    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos", "effect", "brightness"),
     "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "heading_font", "text_outline"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
@@ -496,6 +496,8 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         container.add_item(row)
 
     hint = _STEP_HINTS[tab]
+    if tab == "layout" and more:   # fold the picture-move line into the hint: frees one component for brightness (4d)
+        hint += " Arrows move the picture inside the card; the magnifier zooms."
     if tab == "text" and more:   # fold the nudge line into the hint: frees one component for the outline button (4c)
         hint += " Arrows move the text; it stops at the card edge and next to your avatar."
     container.add_item(discord.ui.TextDisplay(f"-# {hint}"))
@@ -530,7 +532,6 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect) + ((CardShapeSelect,) if more else ()):
             _select_row(select_cls)
         if more:   # Phase 3a: move and zoom the picture inside the card (arrows, never typed numbers)
-            container.add_item(discord.ui.TextDisplay("Move the picture inside the card, or zoom in:"))
             frame_row = discord.ui.ActionRow()
             frame_row.add_item(CardPanLeftButton(guild_id, clone_id, invoker_id))
             frame_row.add_item(CardPanUpButton(guild_id, clone_id, invoker_id))
@@ -542,6 +543,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
             border_row.add_item(CardFrameButton(guild_id, clone_id, invoker_id, opts["frame"]))
             border_row.add_item(CardAvatarPosButton(guild_id, clone_id, invoker_id, opts["avatar_pos"]))   # studio 3e
             border_row.add_item(CardEffectButton(guild_id, clone_id, invoker_id, opts["effect"]))          # studio 4a
+            border_row.add_item(CardBrightnessButton(guild_id, clone_id, invoker_id, opts["brightness"]))  # studio 4d
             if opts["frame"] != "none":
                 border_row.add_item(CardFrameColorButton(guild_id, clone_id, invoker_id, opts["frame_color"]))
             container.add_item(border_row)
@@ -1818,6 +1820,27 @@ class CardEffectButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+class CardBrightnessButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("bright")):
+    """Studio 4d: how light the background picture is. Cycles Darker, Dark, Normal, Light, Lighter."""
+    FIELD = "bright"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, level: str = "normal"):
+        super().__init__(guild_id, clone_id, invoker_id, level)
+
+    def label_text(self, level="normal", *_):
+        return f"\U0001F506 Brightness: {level.title()}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["brightness"]
+        order = tuple(ULTRA_BRIGHTNESS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "normal"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, brightness=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 class CardHeadingFontButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("headfont")):
     """Studio 4b: the heading line gets its own font. Cycles Same as name, then every font in the Font select."""
     FIELD = "headfont"
@@ -2080,6 +2103,6 @@ DYNAMIC_ITEMS = (
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
-    CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton, CardHeadingFontButton, CardOutlineButton,
+    CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton, CardHeadingFontButton, CardOutlineButton, CardBrightnessButton,
     CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )
