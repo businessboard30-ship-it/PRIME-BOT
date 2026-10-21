@@ -157,7 +157,10 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "128"
+SCHEMA_VERSION = "131"
+# "130" -> "131" adds 082_welcome_dm_text.sql (dm_message_template on discord_welcome_config: Welcome Card Studio Phase 6b). ADD COLUMN IF NOT EXISTS only.
+# "129" -> "130" adds 081_welcome_dm_fallback.sql (dm_fallback_to_channel on discord_welcome_config: Welcome Card Studio Phase 6a). ADD COLUMN IF NOT EXISTS only.
+# "128" -> "129" adds 080_welcome_designs.sql (discord_welcome_designs + active_design_id on discord_welcome_config: Welcome Card Studio Phase 5a). CREATE TABLE / ADD COLUMN / CREATE INDEX IF NOT EXISTS only.
 # "127" -> "128" adds 079_welcome_gallery_migrated.sql (gallery_migrated flag on discord_welcome_config: Welcome Card Studio Phase 2d). ADD COLUMN IF NOT EXISTS only.
 # "126" -> "127" adds 078_welcome_gallery.sql (discord_welcome_backgrounds + rotation_mode/rotation_counter/last_slot_used on discord_welcome_config: Welcome Card Studio Phase 2a). CREATE TABLE / ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "125" -> "126" adds 077_cat_homes.sql (cat_homes: Phase 8 bought homes, vault, what was paid). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5870,6 +5873,21 @@ class Database:
         welcome_gallery_migrated = pathlib.Path(__file__).parent / "database" / "migrations" / "079_welcome_gallery_migrated.sql"
         if welcome_gallery_migrated.exists():
             await conn.execute(welcome_gallery_migrated.read_text())
+
+        # Welcome Card Studio Phase 5a: saved designs (look only). Additive/idempotent.
+        welcome_designs_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "080_welcome_designs.sql"
+        if welcome_designs_migration.exists():
+            await conn.execute(welcome_designs_migration.read_text())
+
+        # Welcome Card Studio Phase 6a: DM-closed fallback to the welcome channel. Additive/idempotent.
+        welcome_dm_fallback_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "081_welcome_dm_fallback.sql"
+        if welcome_dm_fallback_migration.exists():
+            await conn.execute(welcome_dm_fallback_migration.read_text())
+
+        # Welcome Card Studio Phase 6b: separate DM welcome text. Additive/idempotent.
+        welcome_dm_text_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "082_welcome_dm_text.sql"
+        if welcome_dm_text_migration.exists():
+            await conn.execute(welcome_dm_text_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
@@ -12103,7 +12121,7 @@ class Database:
                 # backfilled to False, above.
                 "use_template": True,
                 "template_announced_at": None, "template_announce_status": None,
-                "delivery_mode": "channel",
+                "delivery_mode": "channel", "dm_fallback_to_channel": False, "dm_message_template": None,
                 "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
                 "card_theme": "wolf", "card_pack_unlocked": False,
                 "ultra_pack_unlocked": False, "custom_background_url": None,
@@ -12245,6 +12263,99 @@ class Database:
                     "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                     int(guild_id), key, free, channel_id, message_id, url_cache, (label or None))
                 return free
+
+    # ---- Welcome Card Studio Phase 5a: saved designs (the look only, never the pictures) ----
+
+    async def design_list(self, guild_id: int, clone_id: Optional[int]) -> list:
+        """Saved designs of this server, oldest first: dicts with id, name, options_json, avatar_shape. [] on error."""
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT id, name, options_json, avatar_shape FROM discord_welcome_designs "
+                    "WHERE guild_id = $1 AND clone_key = $2 ORDER BY id",
+                    int(guild_id), -1 if clone_id is None else int(clone_id))
+            return [dict(r) for r in rows]
+        except Exception:
+            logger.exception("[welcome-designs] list failed for guild %s", guild_id)
+            return []
+
+    async def design_get(self, guild_id: int, clone_id: Optional[int], design_id: int) -> Optional[dict]:
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT id, name, options_json, avatar_shape FROM discord_welcome_designs "
+                    "WHERE id = $1 AND guild_id = $2 AND clone_key = $3",
+                    int(design_id), int(guild_id), -1 if clone_id is None else int(clone_id))
+            return dict(row) if row else None
+        except Exception:
+            logger.exception("[welcome-designs] get failed for guild %s", guild_id)
+            return None
+
+    async def design_save(self, guild_id: int, clone_id: Optional[int], name: str, options_json: str,
+                          avatar_shape: str, created_by: Optional[int], max_designs: int = 5) -> tuple:
+        """Save a design under `name`. Same name (any capitalisation) updates that design. Returns (status, id) with
+        status 'created', 'updated', 'full' (limit reached, nothing written) or 'error'. Never raises."""
+        key = -1 if clone_id is None else int(clone_id)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", int(guild_id) % 2147483647, (key + 7) % 2147483647)
+                    row = await conn.fetchrow(
+                        "SELECT id FROM discord_welcome_designs WHERE guild_id = $1 AND clone_key = $2 AND lower(name) = lower($3)",
+                        int(guild_id), key, name)
+                    if row:
+                        await conn.execute(
+                            "UPDATE discord_welcome_designs SET options_json = $1, avatar_shape = $2, updated_at = NOW() WHERE id = $3",
+                            options_json, avatar_shape, row["id"])
+                        return ("updated", int(row["id"]))
+                    count = await conn.fetchval(
+                        "SELECT COUNT(*) FROM discord_welcome_designs WHERE guild_id = $1 AND clone_key = $2", int(guild_id), key)
+                    if int(count or 0) >= int(max_designs):
+                        return ("full", None)
+                    new_id = await conn.fetchval(
+                        "INSERT INTO discord_welcome_designs (guild_id, clone_key, name, options_json, avatar_shape, created_by) "
+                        "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                        int(guild_id), key, name, options_json, avatar_shape, created_by)
+                    return ("created", int(new_id))
+        except Exception:
+            logger.exception("[welcome-designs] save failed for guild %s", guild_id)
+            return ("error", None)
+
+    async def design_rename(self, guild_id: int, clone_id: Optional[int], design_id: int, name: str) -> bool:
+        """Rename; False when the design is missing or another design already has that name. Never raises."""
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                res = await conn.execute(
+                    "UPDATE discord_welcome_designs SET name = $1, updated_at = NOW() WHERE id = $2 AND guild_id = $3 AND clone_key = $4",
+                    name, int(design_id), int(guild_id), -1 if clone_id is None else int(clone_id))
+            return res.endswith(" 1")
+        except Exception:
+            logger.exception("[welcome-designs] rename failed for guild %s", guild_id)
+            return False
+
+    async def design_delete(self, guild_id: int, clone_id: Optional[int], design_id: int) -> bool:
+        """Delete one design (never touches pictures or the live card). Clears active_design_id if it pointed here."""
+        key = -1 if clone_id is None else int(clone_id)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    res = await conn.execute(
+                        "DELETE FROM discord_welcome_designs WHERE id = $1 AND guild_id = $2 AND clone_key = $3",
+                        int(design_id), int(guild_id), key)
+                    if not res.endswith(" 1"):
+                        return False
+                    await conn.execute(
+                        "UPDATE discord_welcome_config SET active_design_id = NULL WHERE guild_id = $1 AND active_design_id = $2",
+                        int(guild_id), int(design_id))
+            return True
+        except Exception:
+            logger.exception("[welcome-designs] delete failed for guild %s", guild_id)
+            return False
 
     async def gallery_count_recent(self, guild_id: int, clone_id: Optional[int], hours: int = 24) -> int:
         """Pictures stored for this server in the last `hours` hours (daily upload limit). Never raises; 0 on error."""
@@ -12408,6 +12519,27 @@ class Database:
             res = await conn.execute(
                 "UPDATE discord_welcome_config SET rotation_mode = $3 "
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, mode)
+        return res.endswith(" 1")
+
+    async def set_welcome_dm_fallback(self, guild_id: int, clone_id: Optional[int], on: bool) -> bool:
+        """Phase 6a: turn "DMs closed -> post in the channel instead" on or off. Touches only that one column
+        (never the big upsert). Returns True when a row changed; False when the server has no welcome row yet."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE discord_welcome_config SET dm_fallback_to_channel = $3, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, bool(on))
+        return res.endswith(" 1")
+
+    async def set_welcome_dm_text(self, guild_id: int, clone_id: Optional[int], text: Optional[str]) -> bool:
+        """Phase 6b: the welcome text used only when delivery is DM. Empty/blank clears it (NULL = same as the normal
+        message). Touches only that column. Returns True when a row changed."""
+        text = (text or "").strip()[:300] or None
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE discord_welcome_config SET dm_message_template = $3, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, text)
         return res.endswith(" 1")
 
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:

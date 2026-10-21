@@ -38,7 +38,7 @@ import os
 import re
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageSequence
+from PIL import Image, ImageDraw, ImageEnhance, ImageChops, ImageFilter, ImageFont, ImageOps, ImageSequence
 
 logger = logging.getLogger(__name__)
 
@@ -490,6 +490,12 @@ ULTRA_DEFAULTS = {
     "text_size": "medium",     # key of ULTRA_TEXT_SIZES
     "frame": "none",           # key of ULTRA_FRAMES: picture frame around the whole card (studio 3b)
     "frame_color": "white",    # key of ULTRA_TEXT_COLORS
+    # Welcome Card Studio phase 3e (Premium/Plus only at save and join): move the avatar to one of nine spots.
+    "heading_font": "same",    # "same" (as the name) or a key of ULTRA_FONTS: the font of the heading line (studio 4b)
+    "text_outline": "auto",    # "auto" (the old rule) or a key of ULTRA_OUTLINES: dark edge around the text (studio 4c)
+    "brightness": "normal",    # key of ULTRA_BRIGHTNESS: how light the background picture is (studio 4d)
+    "effect": "none",          # key of ULTRA_EFFECTS: one look applied to the background picture (studio 4a)
+    "avatar_pos": "auto",      # key of ULTRA_AVATAR_POS: "auto" = the layout decides; else one of nine cells
     # Welcome Card Studio phase 3c (Premium/Plus only at save and join): nudge the text block, in pixels at card width 1536.
     "text_dx": 0,              # -300 (left) .. 300 (right); the safe-area guard keeps the text on the card and off the avatar
     "text_dy": 0,              # -300 (up) .. 300 (down)
@@ -500,6 +506,12 @@ ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_con
 ULTRA_LAYOUTS = ("banner", "centered")
 ULTRA_ZOOMS = (100, 125, 150, 200)
 ULTRA_PAN_LIMIT = 100
+ULTRA_AVATAR_POS = ("auto", "top-left", "top", "top-right", "left", "center", "right",
+                    "bottom-left", "bottom", "bottom-right")   # studio 3e: where the avatar goes ("auto" = layout decides)
+ULTRA_OUTLINES = {"none": 0, "thin": 2, "medium": 4, "thick": 6, "glow": 0}   # px of dark stroke; "auto" keeps the old rule
+ULTRA_BRIGHTNESS = {"darker": 0.65, "dark": 0.82, "normal": 1.0, "light": 1.18, "lighter": 1.35}   # multiplier on the picture only
+ULTRA_EFFECTS = ("none", "blur", "vignette", "bw", "warm", "cool", "fade", "grain", "sparkle")   # all cheap; glow/sparkle need the owner's OK
+ULTRA_AVATAR_EDGE = 60       # a chosen avatar spot sits this far from the card edge (ring included)
 ULTRA_NUDGE_LIMIT = 300
 ULTRA_TEXT_POS = {            # grid cell -> (row, column)
     "top-left": ("top", "left"), "top": ("top", "center"), "top-right": ("top", "right"),
@@ -509,7 +521,7 @@ ULTRA_TEXT_POS = {            # grid cell -> (row, column)
 ULTRA_TEXT_POS_PAD = 60      # how far from the card edge a grid cell puts the text block
 ULTRA_NUDGE_MARGIN = 24      # the text block never gets closer than this to the card edge
 ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
-ULTRA_FRAMES = ("none", "thin", "thick", "double", "rounded")   # glow / polaroid / film strip: later (glow needs the owner's OK)
+ULTRA_FRAMES = ("none", "thin", "medium", "thick", "double", "rounded", "glow")   # soft glow added in 4f with the owner's OK; polaroid / film strip: later
 ULTRA_FOCUS = ("center", "top", "bottom", "left", "right", "auto")   # "auto" = smart crop (keeps the busiest part)
 # Bundled OFL fonts (assets/fonts). "classic" = the card's normal font.
 ULTRA_FONTS = {
@@ -524,9 +536,14 @@ ULTRA_FONTS = {
     "comic": "Bangers-Regular.ttf",
     "horror": "Creepster-Regular.ttf",
     "round": "Righteous-Regular.ttf",
+    "cursive": "Lobster-Regular.ttf",       # studio 4f: four more open-license (SIL OFL) fonts, license files in assets/fonts
+    "poster": "Anton-Regular.ttf",
+    "wide": "Audiowide-Regular.ttf",
+    "marquee": "Monoton-Regular.ttf",
 }
 # Fonts that run large/small for their point size: multiplier on the username's max size.
-ULTRA_FONT_SCALE = {"tall": 1.25, "pixel": 0.6, "tech": 0.9, "elegant": 0.95, "gothic": 1.2, "comic": 1.1, "horror": 1.1}
+ULTRA_FONT_SCALE = {"tall": 1.25, "pixel": 0.6, "tech": 0.9, "elegant": 0.95, "gothic": 1.2, "comic": 1.1, "horror": 1.1,
+                    "cursive": 1.0, "poster": 1.15, "wide": 0.9, "marquee": 0.8}
 # Optional characters wrapped around the username (Latin-1 only so every card font can draw them).
 ULTRA_BRACKETS = {
     "none": ("", ""),
@@ -658,6 +675,16 @@ def parse_ultra_options(raw) -> dict:
         opts["text_size"] = raw["text_size"]
     if raw.get("frame") in ULTRA_FRAMES:
         opts["frame"] = raw["frame"]
+    if raw.get("heading_font") == "same" or raw.get("heading_font") in ULTRA_FONTS:
+        opts["heading_font"] = raw["heading_font"]
+    if raw.get("text_outline") == "auto" or raw.get("text_outline") in ULTRA_OUTLINES:
+        opts["text_outline"] = raw["text_outline"]
+    if raw.get("brightness") in ULTRA_BRIGHTNESS:
+        opts["brightness"] = raw["brightness"]
+    if raw.get("effect") in ULTRA_EFFECTS:
+        opts["effect"] = raw["effect"]
+    if raw.get("avatar_pos") in ULTRA_AVATAR_POS:
+        opts["avatar_pos"] = raw["avatar_pos"]
     if raw.get("frame_color") in ULTRA_TEXT_COLORS:
         opts["frame_color"] = raw["frame_color"]
     for k in ("text_dx", "text_dy"):
@@ -667,6 +694,122 @@ def parse_ultra_options(raw) -> dict:
     if raw.get("text_pos") in ULTRA_TEXT_POS:
         opts["text_pos"] = raw["text_pos"]
     return opts
+
+
+def _apply_brightness(img, level):
+    """Studio 4d: lighten or darken the background picture only. Keeps alpha and size; never raises."""
+    try:
+        f = ULTRA_BRIGHTNESS.get(level, 1.0)
+        if f == 1.0:
+            return img
+        img = img.convert("RGBA")
+        a = img.getchannel("A")
+        rgb = ImageEnhance.Brightness(img.convert("RGB")).enhance(f)
+        out = rgb.convert("RGBA")
+        out.putalpha(a)
+        return out
+    except Exception:
+        return img
+
+
+def _apply_effect(img, effect):
+    """Studio 4a: one look on the background picture only (never the text or avatar). Returns an RGBA image of the
+    same size; any unknown effect or error returns the picture unchanged. Each one is a few cheap whole-image ops."""
+    try:
+        img = img.convert("RGBA")
+        a = img.getchannel("A")
+        rgb = img.convert("RGB")
+        if effect == "blur":
+            rgb = rgb.filter(ImageFilter.GaussianBlur(7))
+        elif effect == "bw":
+            rgb = ImageOps.grayscale(rgb).convert("RGB")
+        elif effect == "fade":
+            rgb = Image.blend(rgb, Image.new("RGB", rgb.size, (128, 128, 128)), 0.28)
+        elif effect in ("warm", "cool"):
+            r, g, b = rgb.split()
+            k = 1.12 if effect == "warm" else 0.88
+            r = r.point(lambda v: min(255, int(v * k)))
+            b = b.point(lambda v: min(255, int(v / k)))
+            rgb = Image.merge("RGB", (r, g, b))
+        elif effect == "grain":   # studio 4e: fixed-seed noise tile, so the same card always renders the same
+            import random
+            tile = Image.frombytes("L", (256, 256), random.Random(7).randbytes(256 * 256))
+            tile = tile.point(lambda v: 128 + (v - 128) // 6)
+            noise = Image.new("L", rgb.size)
+            for ty in range(0, rgb.height, 256):
+                for tx in range(0, rgb.width, 256):
+                    noise.paste(tile, (tx, ty))
+            rgb = ImageChops.add(rgb, Image.merge("RGB", (noise, noise, noise)), 1.0, -128)
+        elif effect == "sparkle":   # studio 4f (owner approved): a few soft four-point stars, fixed seed, low opacity
+            import random
+            rng = random.Random(11)
+            layer = Image.new("RGBA", rgb.size, (0, 0, 0, 0))
+            ld = ImageDraw.Draw(layer)
+            for _ in range(max(6, rgb.width * rgb.height // 45000)):
+                x, y, r = rng.randrange(rgb.width), rng.randrange(rgb.height), rng.randrange(6, 16)
+                ld.line((x - r, y, x + r, y), fill=(255, 255, 255, 150), width=2)
+                ld.line((x, y - r, x, y + r), fill=(255, 255, 255, 150), width=2)
+                ld.ellipse((x - 2, y - 2, x + 2, y + 2), fill=(255, 255, 255, 190))
+            rgb = Image.alpha_composite(rgb.convert("RGBA"), layer.filter(ImageFilter.GaussianBlur(0.8))).convert("RGB")
+        elif effect == "vignette":
+            mask = Image.radial_gradient("L").resize(rgb.size)      # 0 in the middle, 255 at the corners
+            mask = mask.point(lambda v: max(0, v - 110) * 255 // 145 * 150 // 255)
+            rgb = Image.composite(Image.new("RGB", rgb.size, (0, 0, 0)), rgb, mask)
+        else:
+            return img
+        out = rgb.convert("RGBA")
+        out.putalpha(a)
+        return out
+    except Exception:
+        return img
+
+
+def _clamp_avatar_nudge(rect, dx, dy, W, H, text_boxes, margin=ULTRA_NUDGE_MARGIN, gap=24):
+    """Safe-area guard for the avatar nudge. `rect` is (x, y, size) of the avatar with its ring, as it sits now;
+    `text_boxes` are (x, y, w, h) boxes of the text lines. Returns (dx, dy) cut down so the avatar stays `margin` px
+    inside the card and never gets within `gap` px of the text. The avatar slides from where it is toward the
+    requested spot and stops at the first thing in its way (it cannot jump over the text). (0, 0) is always allowed.
+    Pure function, never raises."""
+    try:
+        x, y, size = rect
+        # 1. on the card (if the avatar already sits closer to an edge than the margin, that edge does not move it)
+        lo_x, hi_x = min(margin, x), max(W - margin - size, x)
+        lo_y, hi_y = min(margin, y), max(H - margin - size, y)
+        dx = max(lo_x - x, min(hi_x - x, dx))
+        dy = max(lo_y - y, min(hi_y - y, dy))
+        if not dx and not dy:
+            return 0, 0
+
+        def hits(ox, oy):
+            ax0, ay0, ax1, ay1 = x + ox - gap, y + oy - gap, x + ox + size + gap, y + oy + size + gap
+            for (bx, by, bw, bh) in text_boxes:
+                if ax0 < bx + bw and ax1 > bx and ay0 < by + bh and ay1 > by:
+                    return True
+            return False
+
+        # 2. off the text: walk three paths (straight, sideways then up/down, up/down then sideways) in small steps and
+        # stop each before its first hit, so the avatar can never jump over the text. The path that gets furthest wins.
+        steps = 48
+
+        def walk(segments):
+            """segments: list of (dx, dy) legs, each walked from where the last one stopped. Returns the end offset."""
+            cx = cy = 0
+            for (sx, sy) in segments:
+                ex, ey = cx + sx, cy + sy
+                best = (cx, cy)
+                for i in range(1, steps + 1):
+                    ox, oy = round(cx + sx * i / steps), round(cy + sy * i / steps)
+                    if hits(ox, oy):
+                        return best
+                    best = (ox, oy)
+                cx, cy = ex, ey
+            return cx, cy
+
+        paths = ([(dx, dy)], [(dx, 0), (0, dy)], [(0, dy), (dx, 0)])
+        ends = [walk(seg) for seg in paths]
+        return max(ends, key=lambda e: abs(e[0]) + abs(e[1]))
+    except Exception:
+        return 0, 0
 
 
 def _clamp_text_nudge(lines, dx, dy, W, H, avoid_left=None, avoid_right=None, avoid_above=None,
@@ -769,11 +912,18 @@ def _draw_frame(img: Image.Image, frame: str, color) -> Image.Image:
     d = ImageDraw.Draw(img)
     if frame == "thin":
         d.rectangle((0, 0, W - 1, H - 1), outline=col, width=6)
+    elif frame == "medium":   # studio 4e
+        d.rectangle((0, 0, W - 1, H - 1), outline=col, width=13)
     elif frame == "thick":
         d.rectangle((0, 0, W - 1, H - 1), outline=col, width=22)
     elif frame == "double":
         d.rectangle((0, 0, W - 1, H - 1), outline=col, width=8)
         d.rectangle((18, 18, W - 19, H - 19), outline=col, width=8)
+    elif frame == "glow":   # studio 4f (owner approved): soft, muted glow along the edge plus a thin line
+        halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(halo).rectangle((0, 0, W - 1, H - 1), outline=tuple(color) + (170,), width=26)
+        img = Image.alpha_composite(img, halo.filter(ImageFilter.GaussianBlur(16)))
+        ImageDraw.Draw(img).rectangle((0, 0, W - 1, H - 1), outline=col, width=4)
     elif frame == "rounded":
         border, radius = 16, 48
         mask = Image.new("L", (W, H), 0)
@@ -867,6 +1017,10 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
 
     # Slight overall darkening so white text stays legible on bright uploads.
     bg = Image.alpha_composite(bg, Image.new("RGBA", bg.size, (0, 0, 0, 40)))
+    if opts["effect"] != "none":
+        bg = _apply_effect(bg, opts["effect"])      # studio 4a: default "none" skips this, pixel-identical
+    if opts["brightness"] != "normal":
+        bg = _apply_brightness(bg, opts["brightness"])   # studio 4d: default "normal" skips this, pixel-identical
 
     # The band (banner) keeps the classic card's size on every ratio: short cards never get a band under 220 px
     # (the text needs that much room), tall cards never get a band over the classic height.
@@ -949,14 +1103,20 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     else:
         color = ULTRA_TEXT_COLORS[opts["text_color"]]
 
-    if opts["ring"]:
-        ring_w = 8
-        big = avatar_dim + ring_w * 2
-        ring_mask = Image.new("L", (big, big), 0)
-        shape_fn(ImageDraw.Draw(ring_mask), (0, 0, big, big), 255)
-        bg.paste(Image.new("RGBA", (big, big), color + (255,)),
-                 (avatar_x - ring_w, avatar_y - ring_w), ring_mask)
-    bg.paste(avatar, (avatar_x, avatar_y), mask)
+    def _paste_avatar(canvas, ax, ay):
+        if opts["ring"]:
+            ring_w = 8
+            big = avatar_dim + ring_w * 2
+            ring_mask = Image.new("L", (big, big), 0)
+            shape_fn(ImageDraw.Draw(ring_mask), (0, 0, big, big), 255)
+            canvas.paste(Image.new("RGBA", (big, big), color + (255,)), (ax - ring_w, ay - ring_w), ring_mask)
+        canvas.paste(avatar, (ax, ay), mask)
+
+    # Studio 3e: a nudged avatar is drawn after the text is placed (so the guard can keep it off the text);
+    # an un-nudged avatar is drawn right here, exactly as before.
+    avatar_nudged = opts["avatar_pos"] != "auto"
+    if not avatar_nudged:
+        _paste_avatar(bg, avatar_x, avatar_y)
 
     heading = opts["heading"]
     if heading:
@@ -965,6 +1125,7 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         heading = f"Welcome to {guild_name}!"
 
     font_key = opts["font"]
+    head_font = font_key if opts["heading_font"] == "same" else opts["heading_font"]   # studio 4b
     name_max = (84 if centered else 72) if opts["big_name"] else (64 if centered else 52)
     name_max = int(name_max * ULTRA_FONT_SCALE.get(font_key, 1.0))   # some fonts run big/small for their size
     size_k = ULTRA_TEXT_SIZES[opts["text_size"]]
@@ -988,7 +1149,7 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     heading_styled = False
     if heading:
         head_max = int(((24 if compact else 34) if centered else 28) * size_k)
-        head_fit = _fit_styled(draw, heading, text_box_width, head_max, 14, font_key)
+        head_fit = _fit_styled(draw, heading, text_box_width, head_max, 14, head_font)
         if head_fit is None:
             head_fit = _fit_text_fallback(draw, heading, text_box_width, max_font_size=head_max, min_font_size=14)
         else:
@@ -1004,39 +1165,42 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     else:
         name_y, head_y, num_y = band_top + 62, band_bottom - 50, band_top + 24
 
+    if opts["text_outline"] != "auto":   # studio 4c: the admin picked the edge; "auto" keeps the rule above
+        stroke = ULTRA_OUTLINES[opts["text_outline"]]
     from modules.level_card import _textlength_fallback as _tlf
 
-    def _x_for(d, text, size, styled):
+    def _x_for(d, text, size, styled, fk=None):
         """Left x of a line: text_x in banner layout, centered otherwise."""
         if not centered:
             return text_x
         if styled:
-            w = d.textlength(text, font=_style_font(font_key, size))
+            w = d.textlength(text, font=_style_font(fk or font_key, size))
         else:
             w = _tlf(d, text, size)
         return int((W - w) / 2)
 
-    def _put(d, x, y, text, size, styled, col, st):
+    def _put(d, x, y, text, size, styled, col, st, fk=None):
         if styled:
-            d.text((x, y), text, font=_style_font(font_key, size), fill=col,
+            d.text((x, y), text, font=_style_font(fk or font_key, size), fill=col,
                    stroke_width=st, stroke_fill=(0, 0, 0))
         else:
             _draw_text_fb(d, (x, y), text, size, col, stroke_width=st, stroke_fill=(0, 0, 0))
 
     tdx = tdy = 0
-    if opts["text_dx"] or opts["text_dy"] or opts["text_pos"] != "auto":
-        # Studio 3c/3d: anchor the text block to a grid cell, nudge it, then cut it down by the safe-area guard
-        # (on the card, off the avatar).
-        def _w_of(text, size, styled):
-            return draw.textlength(text, font=_style_font(font_key, size)) if styled else _tlf(draw, text, size)
-        boxes = []
+    boxes = []
+    if opts["text_dx"] or opts["text_dy"] or opts["text_pos"] != "auto" or avatar_nudged:
+        # Studio 3c/3d/3e: anchor the text block to a grid cell, nudge it, then cut it down by the safe-area guard
+        # (on the card, off the avatar). With only an avatar move the boxes are still measured (the avatar guard
+        # needs them) but the text itself stays where it was.
+        def _w_of(text, size, styled, fk=None):
+            return draw.textlength(text, font=_style_font(fk or font_key, size)) if styled else _tlf(draw, text, size)
         if number_text:
             boxes.append((_x_for(draw, number_text, 26, False), num_y, _w_of(number_text, 26, False), 34))
         boxes.append((_x_for(draw, username_text, username_size, name_styled), name_y,
                       _w_of(username_text, username_size, name_styled), int(username_size * 1.3)))
         if heading:
-            boxes.append((_x_for(draw, guild_text, guild_size, heading_styled), head_y,
-                          _w_of(guild_text, guild_size, heading_styled), int(guild_size * 1.3)))
+            boxes.append((_x_for(draw, guild_text, guild_size, heading_styled, head_font), head_y,
+                          _w_of(guild_text, guild_size, heading_styled, head_font), int(guild_size * 1.3)))
         ring_pad = 8 if opts["ring"] else 0
         if centered:
             guard = {"avoid_above": avatar_y + avatar_dim + ring_pad + 8}
@@ -1044,17 +1208,18 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
             guard = {"avoid_right": avatar_x - ring_pad - 24}
         else:
             guard = {"avoid_left": avatar_x + avatar_dim + ring_pad + 24}
-        want_dx, want_dy = opts["text_dx"], opts["text_dy"]
-        if opts["text_pos"] != "auto":
-            row, col = ULTRA_TEXT_POS[opts["text_pos"]]
-            b_left, b_right = min(b[0] for b in boxes), max(b[0] + b[2] for b in boxes)
-            b_top, b_bottom = min(b[1] for b in boxes), max(b[1] + b[3] for b in boxes)
-            pad = ULTRA_TEXT_POS_PAD
-            goal_x = {"left": pad, "center": (W - (b_right - b_left)) / 2, "right": W - pad - (b_right - b_left)}[col]
-            goal_y = {"top": pad, "middle": (H - (b_bottom - b_top)) / 2, "bottom": H - pad - (b_bottom - b_top)}[row]
-            want_dx += int(goal_x - b_left)
-            want_dy += int(goal_y - b_top)
-        tdx, tdy = _clamp_text_nudge(boxes, want_dx, want_dy, W, H, **guard)
+        if opts["text_dx"] or opts["text_dy"] or opts["text_pos"] != "auto":
+            want_dx, want_dy = opts["text_dx"], opts["text_dy"]
+            if opts["text_pos"] != "auto":
+                row, col = ULTRA_TEXT_POS[opts["text_pos"]]
+                b_left, b_right = min(b[0] for b in boxes), max(b[0] + b[2] for b in boxes)
+                b_top, b_bottom = min(b[1] for b in boxes), max(b[1] + b[3] for b in boxes)
+                pad = ULTRA_TEXT_POS_PAD
+                goal_x = {"left": pad, "center": (W - (b_right - b_left)) / 2, "right": W - pad - (b_right - b_left)}[col]
+                goal_y = {"top": pad, "middle": (H - (b_bottom - b_top)) / 2, "bottom": H - pad - (b_bottom - b_top)}[row]
+                want_dx += int(goal_x - b_left)
+                want_dy += int(goal_y - b_top)
+            tdx, tdy = _clamp_text_nudge(boxes, want_dx, want_dy, W, H, **guard)
 
     def _draw_texts(d, col, scol, off=(0, 0), st=0):
         ox, oy = off[0] + tdx, off[1] + tdy
@@ -1065,8 +1230,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         _put(d, _x_for(d, username_text, username_size, name_styled) + ox, name_y + oy,
              username_text, username_size, name_styled, col, st)
         if heading:
-            _put(d, _x_for(d, guild_text, guild_size, heading_styled) + ox, head_y + oy,
-                 guild_text, guild_size, heading_styled, col, st)
+            _put(d, _x_for(d, guild_text, guild_size, heading_styled, head_font) + ox, head_y + oy,
+                 guild_text, guild_size, heading_styled, col, st, head_font)
 
     if opts["shadow"]:
         layer = Image.new("RGBA", bg.size, (0, 0, 0, 0))
@@ -1074,7 +1239,29 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         layer = layer.filter(ImageFilter.GaussianBlur(4))
         bg = Image.alpha_composite(bg, layer)
         draw = ImageDraw.Draw(bg)
+    if opts["text_outline"] == "glow":   # studio 4f (owner approved): soft glow in the text color behind the text
+        glow = Image.new("RGBA", bg.size, (0, 0, 0, 0))
+        _draw_texts(ImageDraw.Draw(glow), tuple(color[:3]) + (200,), True, st=3)
+        bg = Image.alpha_composite(bg, glow.filter(ImageFilter.GaussianBlur(9)))
+        draw = ImageDraw.Draw(bg)
     _draw_texts(draw, color, False, st=stroke)
+
+    if avatar_nudged:
+        # Studio 3e: the guard sees the text where it really is drawn (after the 3c nudge) and keeps the avatar clear.
+        ring_pad = 8 if opts["ring"] else 0
+        placed = [(bx + tdx, by + tdy, bw, bh) for (bx, by, bw, bh) in boxes]
+        row, _, col = opts["avatar_pos"].partition("-") if "-" in opts["avatar_pos"] else (opts["avatar_pos"], "", "")
+        # cell -> wanted top-left of the avatar: "top-left", "top", "left", "center" ... (a lone word is a row or a column)
+        v = {"top": "top", "bottom": "bottom", "left": "mid", "right": "mid", "center": "mid"}.get(row, "mid")
+        h = col or ({"left": "left", "right": "right"}.get(row, "center"))
+        size = avatar_dim + 2 * ring_pad
+        edge = ULTRA_AVATAR_EDGE
+        want_x = {"left": edge, "center": (W - size) // 2, "right": W - edge - size}[h] + ring_pad
+        want_y = {"top": edge, "mid": (H - size) // 2, "bottom": H - edge - size}[v] + ring_pad
+        adx, ady = _clamp_avatar_nudge((avatar_x - ring_pad, avatar_y - ring_pad, size),
+                                       want_x - avatar_x, want_y - avatar_y, W, H, placed)
+        bg = bg.convert("RGBA")
+        _paste_avatar(bg, avatar_x + adx, avatar_y + ady)
 
     if opts["frame"] != "none":
         bg = _draw_frame(bg.convert("RGBA"), opts["frame"], ULTRA_TEXT_COLORS[opts["frame_color"]])

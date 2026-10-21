@@ -7,23 +7,37 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 
 ## Status (2026-10-21)
 
-> **2026-10-21: phases 0 to 3c were merged into `main` (PRs #423 to #433), in order, on the owner's instruction.** The "PR open, not merged" wording in the rows and sections below is history. Phase 3d is the first branch cut from the merged `main`.
+> **2026-10-21 (latest): everything built so far is merged into `main`**: #434 (3d) and #435 (render sites) earlier, then #436 to #447 (3e to 6b) on the owner's instruction, in order. `main` was merged into the tip branch once to resolve the 3d x 3e/4b/4c overlap (same renderer block and `STUDIO_KEYS` line; kept every key). One layout consequence: the **Text step in More mode** is the fullest screen (39 of 40 components), so its two plain divider lines are dropped there (`crowded` in `build_customize_view`); the text spot (3d) now has its own row under the Heading/Member #/Size/Heading font/Outline row. **PR #422** (an older "plan is UNDER DEVELOPMENT, nothing is built" banner on the plan doc) was left open on purpose: it conflicts with `main`'s copy and its banner is now false. Older per-phase sections still say "PR open, not merged" in their own text: that is history, the status table is current. Railway is still paused, so nothing here has reached production.
+
+> **2026-10-21: phases 0 to 3c were merged into `main` (PRs #423 to #433), in order, on the owner's instruction.** The older per-phase sections below still say "PR open, not merged" in their own text: that is history, the status table right below is current. **Open PRs, none merged:** #434 (3d, independent), #435 (render sites, independent), and a stacked chain, easiest to merge in this order: #436 (this handoff, docs only), #437 (3e avatar spot), #438 (4a picture look), #439 (4b heading font). Each in the chain is cut from the one before it, so its diff also shows the earlier ones until they merge. #434 and #437 both add a key on the same `STUDIO_KEYS` / `STUDIO_DEFAULTS` line: whichever merges second may need a one-line conflict fix, keep both keys.
 
 | Phase | State | Where |
 |---|---|---|
-| 0. Premium gate helper (`studio_unlocked`) | **Built, PR open, not merged** (stacked on the Phase 1 branch; audit part of Phase 0 still not done) | branch `feat/welcome-studio-phase0`, PR #424 |
-| 1. Wizard restructure | **Built, PR open, not merged** | branch `feat/welcome-studio-phase1` |
-| 2a. Gallery data layer + rotation picker | **Built, PR open, not merged** (small slice, no UI yet) | branch `feat/welcome-studio-phase2a` (stacked on phase 0) |
-| 2b. Join render uses the gallery | **Built, PR open, not merged** (join only; previews unchanged) | branch `feat/welcome-studio-phase2b` (stacked on 2a) |
-| 2c-1. Pictures step: gallery line + rotation select | **Built, PR open, not merged** (read-only line + rotation picker; stacked on 2b) | branch `feat/welcome-studio-phase2c` |
-| 2c-2. Numbered strip + Remove / Make first + "Unlock with Premium" button | **Built, PR open, not merged** (stacked on 2c-1; no Add yet, that is 2d) | branch `feat/welcome-studio-phase2c2` |
-| 2d. Multi-upload + downscale + caption + daily limit + migrate old single picture | **Built, PR open, not merged** (stacked on 2c-2). **This finishes Phase 2** | branch `feat/welcome-studio-phase2d` |
-| 2e. Phase 2 leftovers: Replace a picture, editor preview uses the gallery, Clear background note | **Built, PR open, not merged** (stacked on 2d) | branch `feat/welcome-studio-phase2e` |
-| 3a. Zoom + pan arrows, text size (first slice of Phase 3) | **Built, PR open, not merged** (stacked on 2e) | branch `feat/welcome-studio-phase3a` |
-| 3b. Picture frames (none, thin, thick, double, rounded) + frame color | **Built, PR open, not merged** (stacked on 3a) | branch `feat/welcome-studio-phase3b` |
-| 3c. Nudge the text block (arrows on the Text step) + safe-area guard | **Built, PR open, not merged** (stacked on 3b; PR opened against `main` on the owner's instruction, so its diff also carries the unmerged earlier phases) | branch `feat/welcome-studio-phase3c` |
-| 3d. 3x3 text position (one cycle button on the Text step) | **Built, PR open, not merged** (cut from merged `main`) | branch `feat/welcome-studio-phase3d` |
-| 3e (avatar nudge), frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
+| 0. Premium gate helper (`studio_unlocked`) | **Built and merged into `main`** (stacked on the Phase 1 branch; audit part of Phase 0 still not done) | branch `feat/welcome-studio-phase0`, PR #424 |
+| 1. Wizard restructure | **Built and merged into `main`** | branch `feat/welcome-studio-phase1` |
+| 2a. Gallery data layer + rotation picker | **Built and merged into `main`** (small slice, no UI yet) | branch `feat/welcome-studio-phase2a` (stacked on phase 0) |
+| 2b. Join render uses the gallery | **Built and merged into `main`** (join only; previews unchanged) | branch `feat/welcome-studio-phase2b` (stacked on 2a) |
+| 2c-1. Pictures step: gallery line + rotation select | **Built and merged into `main`** (read-only line + rotation picker; stacked on 2b) | branch `feat/welcome-studio-phase2c` |
+| 2c-2. Numbered strip + Remove / Make first + "Unlock with Premium" button | **Built and merged into `main`** (stacked on 2c-1; no Add yet, that is 2d) | branch `feat/welcome-studio-phase2c2` |
+| 2d. Multi-upload + downscale + caption + daily limit + migrate old single picture | **Built and merged into `main`** (stacked on 2c-2). **This finishes Phase 2** | branch `feat/welcome-studio-phase2d` |
+| 2e. Phase 2 leftovers: Replace a picture, editor preview uses the gallery, Clear background note | **Built and merged into `main`** (stacked on 2d) | branch `feat/welcome-studio-phase2e` |
+| 3a. Zoom + pan arrows, text size (first slice of Phase 3) | **Built and merged into `main`** (stacked on 2e) | branch `feat/welcome-studio-phase3a` |
+| 3b. Picture frames (none, thin, thick, double, rounded) + frame color | **Built and merged into `main`** (stacked on 3a) | branch `feat/welcome-studio-phase3b` |
+| 3c. Nudge the text block (arrows on the Text step) + safe-area guard | **Built and merged into `main`** (stacked on 3b; PR opened against `main` on the owner's instruction, so its diff also carries the unmerged earlier phases) | branch `feat/welcome-studio-phase3c` |
+| 3d. 3x3 text position (one cycle button on the Text step) | **Built and merged into `main`** (cut from merged `main`) | branch `feat/welcome-studio-phase3d` |
+| Follow-up. Studio options gated at every place a card is drawn (preview, nudge, setup TV, test post) | **Built and merged into `main`** (cut from `main`, independent of #434) | branch `feat/welcome-studio-render-sites` |
+| 3e. Avatar spot (one cycle button on the Look step) | **Built and merged into `main`** (cut from `main` plus the handoff-docs PR #436; independent of #434 and #435 in code) | branch `feat/welcome-studio-phase3e` |
+| 4a. Picture look (effect): blur, vignette, black & white, warm, cool, faded (one cycle button on the Look step) | **Built and merged into `main`** (stacked on 3e, so its diff also carries 3e) | branch `feat/welcome-studio-phase4a` |
+| 4b. Heading font: the heading line gets its own font (one cycle button on the Text step) | **Built and merged into `main`** (stacked on 4a, so its diff also carries 3e and 4a) | branch `feat/welcome-studio-phase4b` |
+| 4c. Text outline: dark edge around the text, none / thin / medium / thick (one cycle button on the Text step) | **Built and merged into `main`** (stacked on 4b, so its diff also carries 3e, 4a, 4b) | branch `feat/welcome-studio-phase4c` |
+| 4d. Picture brightness: darker / dark / normal / light / lighter (one cycle button on the Look step) | **Built and merged into `main`** (stacked on 4c, so its diff also carries 3e, 4a, 4b, 4c) | branch `feat/welcome-studio-phase4d` |
+| 4e. Film grain (new value in the Look cycle) + medium frame (new value in the Frame cycle) | **Built and merged into `main`** (stacked on 4d) | branch `feat/welcome-studio-phase4e` |
+| 4f. Owner-approved glow and fonts: soft glow edge frame, sparkle effect, text glow, four more fonts | **Built and merged into `main`** (stacked on 4e) | branch `feat/welcome-studio-phase4f` |
+| 5a. Saved designs, data layer only (table, migration 080, DB methods, pure helpers; no wizard UI yet) | **Built and merged into `main`** (stacked on 4f) | branch `feat/welcome-studio-phase5a` |
+| 5b. Saved designs in the wizard (Send step): Save this look, Load, Rename, Delete | **Built and merged into `main`** (stacked on 5a) | branch `feat/welcome-studio-phase5b` |
+| 6a. DM extra: "DMs closed: post in channel" toggle (Setup wizard, DM mode only), free for everyone | **Built and merged into `main`** (stacked on 5b; migration 081, schema 130) | branch `feat/welcome-studio-phase6a` |
+| 6b. DM extra: separate DM text (Setup wizard, DM mode only) + the DMs-closed switch also on the join-DM welcome sub-screen | **Built and merged into `main`** (stacked on 6a; migration 082, schema 131) | branch `feat/welcome-studio-phase6b` |
+| Polaroid / film strip frames, Phase 7 (scheduled designs) | Not started | |
 
 ## What Phase 1 built
 
@@ -338,6 +352,255 @@ All welcome/card unit test files (the same file set as 3c plus the Phase 3d file
 ## Next (updated after 3d)
 1. Owner reviews / merges the 3d PR. Staging check (Railway deploys are paused, so there is no staging yet): the Phase 1 to 3d controls on a phone, Premium vs Ultra-only, wizards posted before these PRs still responding.
 2. **3e**: avatar nudge or position, polaroid / film strip frames (need text-area changes). Ask the owner before any glow edge.
-3. Tiny follow-up: apply `options_for_render` at the other render sites (`/welcome preview`, `_views_welcome.py`, `welcome_extras.py`).
+3. ~~Tiny follow-up: apply `options_for_render` at the other render sites~~ **Done in PR #435** (see the Render-site follow-up section).
 4. Phase 4 onward from `docs/WELCOME_CARD_STUDIO_PLAN.md`.
 5. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?
+
+
+## Phase 3e (2026-10-21): what it built (avatar spot)
+
+Small slice. No table, no migration. Only the **avatar** moves; the text, banner and picture stay where they were.
+
+- **New key** `avatar_pos`: `auto` (default, the layout decides, classic look) or one of nine cells (`top-left top top-right left center right bottom-left bottom bottom-right`, `ULTRA_AVATAR_POS`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus save and join; Ultra-only previews in memory), same gate as 3a to 3d. Because `options_for_render` (PR #435) is the one gate, every render site picks it up.
+- **Renderer:** a chosen cell becomes a wanted spot (60 px from the card edge, ring included, or centered), then the new pure guard `_clamp_avatar_nudge` cuts the move down: the avatar stays 24 px inside the card and never gets within 24 px of the text. It tries three paths (straight, sideways then up/down, up/down then sideways) in small steps and takes the one that gets furthest, stopping before the first hit, so the avatar can never jump over the text. A spot that would land on the text stops beside it. `auto` skips the code and the avatar is pasted exactly where it always was: pixel-identical (test). A moved avatar is pasted after the text is placed, so the guard sees the text where it is really drawn (after the 3c nudge).
+- **Wizard (Look step, More controls):** `🧑 Avatar spot: ...` cycles Automatic, then the nine cells in reading order. Class `CardAvatarPosButton`, id `avatarpos`, in `DYNAMIC_ITEMS`; "Reset this step" on Look resets it; Undo covers it (it goes through `_save_option`). It sits in the same row as the Frame buttons.
+- **Why one cycle button and not arrows (changed during the build):** a first version used four 🧑 arrows like the text nudge, but the Look step then sat at exactly 40 components (the Phase 1 rule is under 40) and 41 as soon as a frame color was chosen. One button adds one component (Look More with a frame chosen stays within 40: test). Cost: up to 9 taps to reach the last cell. If the owner wants fine control, free a few components first (for example fold the Avatar frame shape select into a button) and add arrows.
+- Tests: `tests/unit/test_welcome_studio_phase3e.py` (18): parser, guard (edges, stops before text, cannot jump, junk input), pixel-identical `auto`, every spot in both layouts stays on the card and off the text, gate for Premium vs not, component limits with a frame chosen, cycling through all ten values, Ultra-only preview, Undo, step reset.
+
+### Test numbers (3e)
+Welcome/card/server-panel/goodbye unit test files: 1081 passed, 10 failed. The failures are `test_server_panel_*` tests and the two `test_dash_card_assets` ones from before; the server-panel files fail the same way on a clean `main` (16 failures there when run alone, same list on this branch). The full unit suite was not run (21 unrelated files fail to collect in this environment).
+
+### Known gaps in 3e (on purpose)
+- Not tested live: the new button on a phone; real taps on Premium vs Ultra-only.
+- Checked by eye on a test card (default, top-right, centered bottom-right, centered left with a ring); not on a real member avatar or every font.
+- Only a cell, not free arrows (see above). Taps stop at the guard silently: a cell that cannot be reached shows the nearest reachable spot.
+- Polaroid / film strip frames not built (they need text-area changes). Glow edge: **ask the owner first**.
+
+## Next (updated after 3e)
+1. Owner reviews / merges #434 (3d), #435 (render sites), #436 (handoff docs) and the 3e PR. #434 and 3e both add a key to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (one line each): whichever merges second may need a one-line conflict fix, keep both keys.
+2. Staging check (no staging yet, Railway is paused): the Phase 1 to 3e controls on a phone, Premium vs Ultra-only, wizards posted before these PRs still responding.
+3. Then polaroid / film strip frames (text-area changes), or move on to Phase 4 from `docs/WELCOME_CARD_STUDIO_PLAN.md`. Ask the owner before any glow edge.
+4. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?
+
+
+## Phase 4a (2026-10-21): what it built (picture look)
+
+Small slice, first of Phase 4. No table, no migration. Only the **background picture** changes; the avatar, text and banner are never touched.
+
+- **New key** `effect`: `none` (default) or `blur`, `vignette`, `bw` (black & white), `warm`, `cool`, `fade` (`ULTRA_EFFECTS`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS`, so it is Premium/Plus at save and join (Ultra-only previews in memory) and every render site gets it through `options_for_render`.
+- **Renderer:** `_apply_effect(img, effect)` (pure, never raises, keeps alpha and size) runs right after the picture is cropped and slightly darkened, before the banner. A few whole-image PIL ops each, no loops over pixels in Python except small per-channel lookup tables. `none` skips the call: pixel-identical (test). Glow and sparkle are NOT here: ask the owner first.
+- **Wizard (Look step, More controls):** `✨ Look: ...` cycles the 7 values, same row as the Frame and Avatar spot buttons (a row now holds up to 4 buttons, limit 5; Look More stays under 40 components with a frame chosen: test). Class `CardEffectButton`, id `effect`, in `DYNAMIC_ITEMS`; Reset this step and Undo cover it.
+- Tests: `tests/unit/test_welcome_studio_phase4a.py` (11). Looked at all seven by eye on a test photo.
+
+### Test numbers (4a)
+4a, 3e, Phase 1 and 3c test files: all pass. Not re-run: the whole welcome/card set (it takes ~3 minutes here; the last full run on 3e was 1081 passed, with only the known server-panel and dash-card failures).
+
+### Known gaps in 4a (on purpose)
+- Not tested live (phone taps, Premium vs Ultra-only). Timing was not measured on a real 1536 px photo; each effect is a handful of whole-image operations.
+- One effect at a time (a cycle, not stackable toggles). Strength is fixed. Brightness, tint color, film grain, soft gradient overlay are not built.
+- Does not apply to the plain flat-color card (no picture), only to a picture background.
+
+## Next (updated after 4a)
+1. Owner reviews / merges #434, #435, #436, the 3e PR (#437) and this one, in that order is easiest (this one stacks on #437 which stacks on #436).
+2. Rest of Phase 4: card border/outline thickness, font per element (name vs heading), more fonts (check licensing), brightness / grain. Look and Text steps are near Discord's 40-component limit: add each new control as a cycle button, or free components first.
+3. Staging check (no staging yet): all Phase 1 to 4a controls on a phone.
+4. Ask the owner before any glow or sparkle. Open questions: Phase 6 DM extras? Per-picture overrides? Should Clear background also clear the gallery?
+
+
+## Phase 4b (2026-10-21): what it built (heading font)
+
+Small slice. No table, no migration. Plan 3.4 "separate fonts for name and heading".
+
+- **New key** `heading_font`: `same` (default, the heading uses the name's font exactly as before) or any key of `ULTRA_FONTS`. Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus at save and join, Ultra-only previews in memory, all render sites through `options_for_render`).
+- **Renderer:** the heading line is fitted, measured, centered, drawn and put into the 3c/3e guard boxes with `head_font`; the name and member number are untouched. `same` (and a heading font equal to the name font) is pixel-identical (tests). A `classic` heading font next to a styled name font works too.
+- **Wizard (Text step, More controls):** `🔤 Heading font: ...` cycles Same as name, then every font in the Font select. Same row as Heading / Member # / Text size (4 buttons, limit 5). Text More: 39 components (limit: under 40). Class `CardHeadingFontButton`, id `headfont`, in `DYNAMIC_ITEMS`; Reset this step and Undo cover it.
+- Tests: `tests/unit/test_welcome_studio_phase4b.py` (11), including a pixel check that only the heading line changes.
+
+### Test numbers (4b)
+All `test_welcome_studio_*` files plus `test_card_wizard_tv.py`: 251 passed, 1 failed. The failure (`test_card_wizard_tv::test_opening_the_wizard_starts_the_trial_once_and_shows_the_tv`) passes when the file runs alone and also fails in the combined run without the 4b code: test-order pollution, same kind as the known `test_uncached_member_fixes` ones. Server-panel and dash-card failures are the old known ones (not re-run).
+
+### Known gaps in 4b (on purpose)
+- Not tested live (phone taps, Premium vs Ultra-only). Eyeballed only through pixel tests, not every font pairing.
+- Cycling through 11 fonts takes up to 11 taps; a select would be nicer but the Text step is at 39 of 40 components and already has 5 selects.
+- Heading size still follows the heading rules, not `ULTRA_FONT_SCALE` (that scale only applies to the name), so a very big or small font may look off; adjust if the owner notices.
+- Style fonts cover Latin letters only (existing limit); other scripts fall back to the normal font.
+
+## Next (updated after 4b)
+1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), the 4b PR (each stacks on the one before); #434 and #435 are independent.
+2. Rest of Phase 4: text outline thickness, brightness / grain, more fonts (check licensing). Text and Look steps are full: new controls need a cycle button in an existing row (each adds one component) or something removed first.
+3. Then Phase 5 (saved designs) per the plan; staging check on a phone for Phase 1 to 4b.
+4. Ask the owner before any glow or sparkle. Open questions: Phase 6 DM extras? Per-picture overrides? Should Clear background also clear the gallery?
+
+
+## Phase 4c (2026-10-21): what it built (text outline)
+
+Small slice. No table, no migration. Plan 3.6 "text outline (new)", thickness only (color stays black).
+
+- **New key** `text_outline`: `auto` (default, the old rule: 2 px without a solid banner or with a light one, 3 px with auto contrast on a bright strip, else 0) or `none` / `thin` (2) / `medium` (4) / `thick` (6) (`ULTRA_OUTLINES`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus at save and join, Ultra-only previews in memory, all render sites through `options_for_render`).
+- **Renderer:** one line after the auto-contrast block overrides `stroke` when the key is not `auto`. The shadow layer is unchanged. `auto` is pixel-identical (test).
+- **Wizard (Text step, More controls):** `\U0001F58B\uFE0F Outline: ...` cycles Auto, None, Thin, Medium, Thick. Class `CardOutlineButton`, id `outline`, in `DYNAMIC_ITEMS`; Reset this step and Undo cover it. Fifth button in the Heading / Member # / Text size / Heading font row (limit 5).
+- **Component budget:** the Text step was at 39 of 40. To make room, the separate "Move the text..." line was folded into the step hint line (shown in More mode). Text More: 39 components (test: under 40).
+- Tests: `tests/unit/test_welcome_studio_phase4c.py` (9): parser, auto pixel-identical, thicker means more dark pixels, gate, button placement and limits, label/registered/reset, cycle, Ultra-only preview + Undo.
+
+### Known gaps in 4c (on purpose)
+- Not tested live (phone taps, Premium vs Ultra-only). Outline color is always black; a color pick would need another control (steps are full).
+- Very thick outline on small text can fill letter gaps; judged by eye only on a test card.
+
+## Next (updated after 4c)
+1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), #439 (4b), then the 4c PR.
+2. Rest of Phase 4: brightness / grain, more fonts (check licensing), card border thickness. Text and Look steps are full.
+3. Then Phase 5 (saved designs); staging check on a phone for Phase 1 to 4c.
+4. Ask the owner before any glow or sparkle.
+
+
+## Phase 4d (2026-10-21): what it built (picture brightness)
+
+Small slice. No table, no migration. Only the **background picture** changes (avatar, text, banner untouched).
+
+- **New key** `brightness`: `normal` (default) or `darker` (x0.65), `dark` (x0.82), `light` (x1.18), `lighter` (x1.35) (`ULTRA_BRIGHTNESS`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus at save and join, Ultra-only previews in memory, all render sites through `options_for_render`).
+- **Renderer:** `_apply_brightness(img, level)` (pure, never raises, keeps alpha and size) runs right after the 4a effect, before the banner. One PIL `ImageEnhance.Brightness` call. `normal` skips it: pixel-identical (test).
+- **Wizard (Look step, More controls):** `Brightness: ...` cycles the 5 levels, in the Frame / Avatar spot / Look row (a row can now hold 5 with a frame color chosen: the limit). Class `CardBrightnessButton`, id `bright`, in `DYNAMIC_ITEMS`; Reset this step and Undo cover it.
+- **Component budget:** the "Move the picture inside the card, or zoom in:" line was folded into the Look step hint (More mode) to free one component. Look More with a frame chosen: under 40 (test).
+- Tests: `tests/unit/test_welcome_studio_phase4d.py` (9). All `test_welcome_studio_*` files plus `test_card_wizard_tv.py`: 268 passed.
+
+### Known gaps in 4d (on purpose)
+- Not tested live (phone taps, Premium vs Ultra-only). One multiplier per level, no fine slider. Not applied to the flat-color card (no picture).
+- Brightness is applied after the 4a effect, so "Faded" plus "Lighter" can wash out; judged by eye only on a test card.
+
+## Next (updated after 4d)
+1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), #439 (4b), #440 (4c), then the 4d PR.
+2. Rest of Phase 4: film grain, more fonts (check licensing), card border thickness. Text and Look steps are full.
+3. Then Phase 5 (saved designs); staging check on a phone for Phase 1 to 4d.
+4. Ask the owner before any glow or sparkle.
+
+
+## Phase 4e (2026-10-21): what it built (film grain + medium frame, closes the buildable part of Phase 4)
+
+Small slice. **No new button, no new key, no migration:** both are new values of existing options, so the Look step component count did not change.
+
+- **Film grain** = new `effect` value `grain` (`ULTRA_EFFECTS`, label "Film grain", last in the cycle). `_apply_effect` tiles a fixed-seed 256 px noise tile (amplitude about +-21) over the picture, so the same card always renders the same. Alpha and size kept; unknown input returns unchanged.
+- **Medium frame** = new `frame` value `medium` (13 px at 1536 wide), between `thin` (6) and `thick` (22). Cycle order is now none, thin, medium, thick, double, rounded. The 3b cycle test was updated for this; stored `thin`/`thick`/etc. values are unchanged.
+- Both are already studio-gated (they are values of `effect` and `frame`).
+- Tests: `tests/unit/test_welcome_studio_phase4e.py` (8). All `test_welcome_studio_*` files plus `test_card_wizard_tv.py`: 275 passed.
+
+### Phase 4 status
+- **Done:** effects (blur, vignette, B&W, warm, cool, faded, film grain), brightness, text outline thickness, card border thickness (thin / medium / thick, plus double and rounded), heading font.
+- **Not built, needs the owner:** avatar glow, sparkle overlay, glow edge frame (owner dislikes neon; ask first, keep soft and off by default). **More fonts:** needs a licensing check and a font file the owner approves; do not add fonts without it. Soft gradient overlay and tint color: not built (steps are full; would need to be new values of an existing cycle).
+
+## Next (updated after 4e)
+1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), #439 (4b), #440 (4c), #441 (4d), then the 4e PR.
+2. Owner decisions for the rest of Phase 4: glow/sparkle yes or no, which fonts.
+3. Phase 5 (saved designs) per the plan; staging check on a phone for Phase 1 to 4e.
+
+
+## Phase 4f (2026-10-21): glow, sparkle and more fonts (owner approved)
+
+**Owner decision (2026-10-21):** the owner dislikes neon personally but said the studio is not about their taste: build the glow/sparkle options and add fonts. So the earlier "ask before any glow" rule is **closed**. Kept soft and muted, and **off by default** (every new value sits at the end of an existing cycle, defaults unchanged).
+
+- **No new button, no new key, no migration:** all are new values of existing options (already studio-gated; Look and Text step component counts unchanged).
+- **Soft glow edge** = `frame` value `glow` (label "Soft glow"): a blurred halo along the card edge in the frame color (alpha 170, blur 16) plus a thin 4 px line.
+- **Sparkle** = `effect` value `sparkle`: a few soft four-point stars (fixed seed, low opacity, about one per 45,000 px, minimum 6). Picture only.
+- **Text glow** = `text_outline` value `glow` (label "Glow", last in the Outline cycle): a blurred copy of the text in the text color behind it (alpha 200, blur 9). The solid outline stroke is 0 in this mode.
+- **Four more fonts**, all SIL OFL (license files added next to the font files in `assets/fonts`, downloaded from google/fonts): `cursive` (Lobster), `poster` (Anton), `wide` (Audiowide), `marquee` (Monoton). Added to `ULTRA_FONTS`, `ULTRA_FONT_SCALE` (poster 1.15, wide 0.9, marquee 0.8) and the Font select labels. They also show in the Heading font cycle. The Font select now has 15 choices (limit 25). Latin only, like the others.
+- Tests: `tests/unit/test_welcome_studio_phase4f.py` (8). Two older tests pinned the previous cycle ends (3b: `glow` was the "unsupported frame" example, now `polaroid`; frame wrap now starts from `glow`; 4e label order). All `test_welcome_studio_*` files plus `test_card_fonts_brackets.py` and `test_card_wizard_tv.py`: 288 passed. Looked at a sample card with everything on: soft, not harsh.
+
+### Known gaps in 4f (on purpose)
+- **Avatar glow** (plan 3.5) is not built: it needs the avatar geometry for every layout and spot; do it as its own slice if wanted.
+- Not tested live (phone taps, Premium vs Ultra-only). Text glow in white on a bright picture is subtle; judged by eye on one card.
+- Monoton and Audiowide are display fonts and read poorly at small sizes; the font scale helps, check on a phone.
+
+## Next (updated after 4f)
+1. Owner reviews / merges in this order: #436, #437, #438, #439, #440, #441, #442, then the 4f PR.
+2. **Phase 4 is done** except avatar glow (optional). Next is Phase 5 (saved designs, up to 5 per server, new table + migration) per the plan; staging check on a phone for Phase 1 to 4f.
+
+
+## Phase 5a (2026-10-21): saved designs, data layer only
+
+Small slice on purpose, same shape as Phase 2a. **No wizard change, no render change, no behavior change for any server.** A design is the look only (validated card options + avatar shape); pictures are never part of it.
+
+- `database/migrations/080_welcome_designs.sql` (registered in `database.py`, `SCHEMA_VERSION` 128 -> 129, guard test pin updated to 129 / new hash): table `discord_welcome_designs` (`id`, `guild_id`, `clone_key` (-1 = main bot), `name`, `options_json`, `avatar_shape`, `created_by`, `created_at`, `updated_at`), unique index on (`guild_id`, `clone_key`, `lower(name)`), and column `discord_welcome_config.active_design_id` (for "Make live" / scheduling later; nothing writes it yet except `design_delete` clearing it). Additive only.
+- `modules/welcome_designs.py` (pure, never raises): `MAX_DESIGNS = 5`, `clean_name` (30 chars, single line, control characters dropped, `@` defanged), `snapshot_look` / `restore_look` (run the options through `parse_ultra_options`, so a stored design can never crash a render; unknown avatar shape falls back to circle).
+- `database.py` methods (none raise): `design_list`, `design_get`, `design_save` (same name in any capitalisation updates that design, new name past 5 returns `('full', None)` and writes nothing, advisory lock, per-server and per-clone limit), `design_rename` (False when missing or the name is taken), `design_delete` (only deletes the design row and clears `active_design_id`; never touches pictures or the live card).
+- Tests: `tests/unit/test_welcome_studio_phase5a.py` (10, DB methods run against a small in-memory fake): helpers, snapshot has no picture keys, migration additive and registered, limit/update/scoping per server and clone, rename conflicts, delete scope, never-raise. One test asserts the wizard and renderer do NOT import designs yet: **5b must update it.** Studio files plus fonts, wizard and schema-guard tests: all pass.
+
+### Known gaps in 5a (on purpose)
+- Not run against a real Postgres (plain `IF NOT EXISTS` SQL; the advisory lock and the `lower(name)` unique index need one staging check; run migration 080 first).
+- No UI: nothing can save or load a design yet (5b). The save-time premium gate lives in 5b (owner rule: the studio is open to everyone, only SAVING is Premium, so free servers get a preview-only note).
+
+## Next (updated after 5a)
+1. Owner reviews / merges in this order: #436, #437, #438, #439, #440, #441, #442, #443, then the 5a PR.
+2. **5b: wizard UI on the Send step** (the step has room): Save as... (name modal), a Load select, Rename, Delete, Make live. Make live writes the design through the same gate (`studio_unlocked`) and sets `active_design_id`; free servers see "Preview only ... saves with Premium". Update the 5a "not used yet" test.
+3. Then Phase 6 (DM extras) and 7 (scheduled designs) per the plan; optional avatar glow slice.
+
+
+## Phase 5b (2026-10-21): saved designs in the wizard (Send step)
+
+Small slice. No migration, no renderer change, the join never reads designs. Only the **Send step** and the studio summary changed.
+
+- **Send step (step 4):** one plain line (`-# 🎨 Saved designs (2 of 5): 1 Halloween · 2 Spring`, or "none yet", or for a free server "Preview only: Studio is part of Premium. Saved designs save with Premium."), then, when designs exist, a select `Load a saved design` (`CardDesignSelect`, id `designload`), then a button row: `💾 Save this look` (`CardDesignSaveButton`, `designsave`, always shown once the summary exists) plus `✏️ Rename a design` / `🗑️ Delete a design` (`designrename` / `designdelete`, only when designs exist). All in `DYNAMIC_ITEMS`. Send step stays well under 40 components. No design controls on the other steps.
+- **Save:** `CardDesignSaveModal` asks for a name, takes the look the editor shows right now (`_effective_config`: options + avatar shape, never a picture), runs it through `snapshot_look`, saves with `db.design_save` (limit 5; same name in any case replaces that design; a full server gets "Delete one first, or save under the name of one to replace it").
+- **Load:** the select reads the design with `db.design_get`, then calls the existing `_apply_style(...)` with the FULL validated options + avatar shape. That reuses the existing gate (studio keys), the **Undo snapshot** (Undo undoes a load) and the single DB write. A corrupt stored design falls back to defaults; a deleted one says "That design is gone".
+- **Rename / Delete:** `CardDesignNumberModal` asks for the design's number in the list (like the picture modals), re-reads the list on submit, rename also asks for the new name (`clean_name`; a taken name says so). Delete removes only the design row.
+- **Owner rule kept (studio open to everyone, only saving is Premium):** a free server can open Save and sees "Preview only ... Designs are saved with Premium"; nothing is stored. Every write re-checks `studio_unlocked` on the server. Designs are listed and loadable only while Premium/Plus is active (a lapsed server keeps its rows but the wizard hides them).
+- `_with_studio` now adds `designs` (id + name) to the Premium summary; failure of the list returns `[]`, never breaks the step.
+- Tests: `tests/unit/test_welcome_studio_phase5b.py` (19): Send step controls for premium / locked / no summary / other steps, limits, select options, line texts, registered and ids, save (snapshot, free, empty name, full, error), load (whole look through `_apply_style`, free, missing, junk, corrupt), rename/delete numbers and bad input, buttons open the right modals, summary. Updated: the 5a "wizard does not use designs yet" test (renderer and join still must not) and the 2c summary test (new `designs` key). All studio files plus fonts, wizard and schema-guard tests: 317 passed.
+
+### Known gaps in 5b (on purpose)
+- Not tested live (phone taps, the three modals, the select). Not run against a real Postgres (migration 080 still needs the staging check from 5a).
+- **`active_design_id` is still not written** (Load does not record which design is live); Phase 7 (scheduled designs) will set it. Editing the card after a load does not change the saved design.
+- No "Update this design" shortcut: save under the same name to replace it.
+- Rename/Delete use a number from the list line, not a picker; fine for 5 designs.
+- Load replaces the whole look including studio options and the heading text (they are part of the options). Pictures and the rotation mode are never touched.
+
+## Next (updated after 5b)
+1. Owner reviews / merges in this order: #436 to #443, #444 (5a), then the 5b PR. Staging check: migration 080, then Save / Load / Rename / Delete on a phone.
+2. **Phase 6: DM extras** (fall back to the channel when DMs are closed, separate DM text, optional different design for the DM; reuse `discord_bot/dm_send.py`). Needs the owner's answer on which extras to keep.
+3. Phase 7: scheduled designs (will use `active_design_id`); optional avatar glow slice.
+
+
+## Phase 6a (2026-10-21): what it built (DMs closed -> post in the channel)
+
+Small slice, first of Phase 6. The owner has not yet said which Phase 6 extras to keep, so only the first one in the plan (3.8) was built; the other two wait for an answer.
+
+- **Migration 081** (`081_welcome_dm_fallback.sql`, registered in `database.py`, `SCHEMA_VERSION` 129 -> 130, guard test pins updated): `discord_welcome_config.dm_fallback_to_channel BOOLEAN NOT NULL DEFAULT FALSE`. Off for every existing server, so nothing changes until an admin taps the button.
+- **DB:** `db.set_welcome_dm_fallback(guild_id, clone_id, on)` updates only that column (not the big `set_welcome_config` upsert); returns False if the server has no welcome row. The default config dict has the key (False).
+- **Join (`welcome.py`, DM mode only):** when the DM fails because it is really closed (`discord.Forbidden`, or error code 50007) AND the toggle is on AND a Step 1 channel is set, the same text and card are posted in that channel (`_post_dm_fallback`, never raises; `_dm_is_closed`). A rate limit or 5xx is NOT "closed": it keeps the old log-and-skip, so no surprise or double post. Channel mode is untouched. If the fallback post itself fails, it is logged and nothing else happens (the member is still treated as "handled", so no plain-text retry).
+- **Wizard (`/welcome` setup, `_views_welcome.py`):** `WelcomeDmFallbackButton` (id `dmfb`, in `DYNAMIC_ITEMS`) sits next to the card-mode toggle, **only while delivery is "DM the member"**. Label `📬 DMs closed: post in channel (on|off)`, green when on. Turning it ON needs a channel in Step 1 first (else a private "Pick a welcome channel in Step 1 first" note); turning it OFF always works. The status text shows "(channel if DMs are closed)" next to the delivery line while it is on. Free for every server (not a studio feature, so `STUDIO_KEYS` and the gate are not involved).
+- Tests: `tests/unit/test_welcome_studio_phase6a.py` (25): closed vs not closed, the fallback helper (channel missing, junk id, send failure), the real `on_member_join` in DM mode (DM ok, closed, forbidden, flag off, 5xx, no channel, fallback fails, channel mode), the wizard button (only in DM mode, label/color, registered, status line, taps, no channel, no access), migration/default/setter. Six of them fail without the join change (checked). Also changed: the 5a migration test now checks `SCHEMA_VERSION >= 129` instead of exactly 129.
+
+### Test numbers (6a)
+Schema guard + all `test_welcome_studio_*` files + `test_card_wizard_tv` + the setup-TV, custom-bg-wizard and cover-unlock files: 366 tests, 365 passed, 1 failed. The failure (`test_card_wizard_tv::test_opening_the_wizard_starts_the_trial_once_and_shows_the_tv`) passes when the file runs alone (27 passed): the known test-order pollution, same as 4b. The full unit suite was not run.
+
+### Known gaps in 6a (on purpose)
+- Not tested live (phone tap, a real member with DMs closed). Migration 081 not run against a real Postgres (staging check, together with 078 to 080).
+- The toggle is only in the `/welcome` setup wizard, not on the join-DM "welcome sub-screen" (`_views_join_dm.py`), which has its own delivery button. Add it there if the owner wants it in both.
+- No notice to the admin when a fallback post happens (it is logged at info level only). A "N members had DMs closed" counter would be a later extra.
+- Does not cover the case where the DM never errors but the member simply never sees it.
+
+## Next (updated after 6a)
+1. Owner reviews / merges the stacked chain in order: #436 (3e's docs) ... through 5b, then the 6a PR. #434 and #435 are already merged into `main`. Staging check: migrations 078 to 081, then the Phase 1 to 6a controls on a phone.
+2. **Rest of Phase 6, needs the owner's answer first:** separate DM text (with the existing variables) and an optional different design for the DM. Ask which to keep.
+3. Phase 7: scheduled designs (will use `active_design_id`; reuse an existing daily loop). Optional: polaroid / film strip frames, avatar glow.
+4. Still-open plan questions for the owner: Per-picture overrides? Should Clear background also clear the gallery? Add the DM-closed toggle to the join-DM sub-screen too?
+
+
+## Phase 6b (2026-10-21): separate DM text + the DMs-closed switch on the join-DM screen
+
+Owner decisions this turn: build the **separate DM text**; **skip "a different design for the DM"** (it needs a second stored look and a second render path, big and risky for little); put the DMs-closed switch on the join-DM sub-screen too. **This closes Phase 6.**
+
+- **Migration 082** (`082_welcome_dm_text.sql`, registered, `SCHEMA_VERSION` 130 -> 131, guard pins updated): `discord_welcome_config.dm_message_template TEXT` (NULL = use the normal message). Nothing changes for any server until an admin sets it.
+- **DB:** `db.set_welcome_dm_text(guild_id, clone_id, text)` trims, caps at 300 characters, blank/None stores NULL; touches only that column. Default config dict has the key (None).
+- **Join (`welcome.py`):** in DM mode the DM carries `_dm_template(config)` (the DM text if it has real content, else the normal message; a whitespace-only value counts as blank). The plain-text retry in the error path uses it too. The **channel fallback from 6a and normal channel delivery always use the normal message**, never the DM text. Same variables as the normal message (`{member} {guild} {count}`).
+- **Wizard (`/welcome` setup):** `✉️ DM text` button (`WelcomeDmTextButton`, id `dmtext`, in `DYNAMIC_ITEMS`) in the same row as the card-mode and DMs-closed buttons, **only in DM mode**; label gets `(custom)` when set. Opens `WelcomeDmTextModal` (optional paragraph, 300 max, empty = use the normal message). The status text shows `(own DM text)`. Free for every server (not a studio key).
+- **Join-DM welcome sub-screen (`_views_join_dm.py`):** `_WelcomeDmFallbackButton` (id `join_dm_wsub_dmfb`, in `DYNAMIC_ITEMS`), DM mode only, label `DMs closed: post in channel (on|off)`; turning it on needs a welcome channel. `build_welcome_sub_view` / `WelcomeSubLayoutView` got an optional `dm_fallback` argument, and **all four existing rebuilds of that screen now pass the stored flag** (otherwise the button would show "off" after a refresh).
+- Tests: `tests/unit/test_welcome_studio_phase6b.py` (19). All welcome + join-DM test files: 412 passed, 0 failed (the known `test_card_wizard_tv` order-dependent test passed in this ordering).
+
+### Known gaps in 6b (on purpose)
+- Not tested live (phone taps, the modal, a real DM). Migrations 078 to 082 not run on a real Postgres: staging check needed.
+- No separate **design** for the DM (skipped on purpose, see above). The DM text has no live preview.
+- The DM text is not shown anywhere in the join-DM sub-screen (only set from `/welcome` setup).
+
+## Next (updated after 6b)
+1. **Phase 7: scheduled designs** (date-based design switch; will use `active_design_id`, reuse an existing daily loop, no new polling loop). Optional: polaroid / film strip frames, avatar glow.
+2. Staging check (no staging yet, Railway is paused): migrations 078 to 082, then every Phase 1 to 6b control on a phone, Premium vs Ultra-only.
+3. Still-open plan questions for the owner: per-picture overrides? Should Clear background also clear the gallery?

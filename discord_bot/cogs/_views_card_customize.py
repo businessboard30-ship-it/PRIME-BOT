@@ -61,7 +61,7 @@ from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from discord_bot.cogs import _views_welcome as vw
 from modules.welcome_card import (
-    ULTRA_AVATAR_SIDES, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_NUDGE_LIMIT, ULTRA_TEXT_COLORS,
+    ULTRA_AVATAR_SIDES, ULTRA_FONTS, ULTRA_OUTLINES, ULTRA_BRIGHTNESS, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_NUDGE_LIMIT, ULTRA_TEXT_COLORS,
     TEMPLATE_HEIGHT, TEMPLATE_WIDTH, parse_ultra_options, render_welcome_card,
 )
 
@@ -260,7 +260,8 @@ _LAYOUT_LABELS = {"banner": "Banner layout (classic)", "centered": "Centered —
 _FONT_LABELS = {"classic": "Classic font (default)", "clean": "Clean — Poppins", "tall": "Tall — Bebas Neue", "script": "Handwritten — Pacifico",
                 "tech": "Tech — Orbitron", "elegant": "Elegant — Cinzel", "pixel": "Pixel — Press Start 2P",
                 "gothic": "Gothic — Pirata One", "comic": "Comic — Bangers", "horror": "Horror — Creepster",
-                "round": "Rounded — Righteous"}
+                "round": "Rounded — Righteous", "cursive": "Cursive — Lobster", "poster": "Poster — Anton",
+                "wide": "Wide — Audiowide", "marquee": "Marquee — Monoton"}
 _BRACKET_LABELS = {"none": "No brackets (default)", "square": "[ Name ] square", "round": "( Name ) round",
                    "curly": "{ Name } curly", "angle": "< Name > angle", "guillemet": "\u00ab Name \u00bb guillemets",
                    "slashes": "// Name // slashes", "stars": "* Name * stars"}
@@ -334,8 +335,8 @@ _STEP_HINTS = {
 # What "Reset this step" puts back to default (the picture is never touched). Shape lives in its own column.
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
-    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color"),
-    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "text_pos"),
+    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos", "effect", "brightness"),
+    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "heading_font", "text_outline", "text_pos"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
 _MORE_STATE: dict = {}       # (guild, clone, user) -> (set of steps showing "More controls", monotonic ts)
@@ -434,6 +435,7 @@ async def _with_studio(config: dict, guild_id: int, clone_id, user_id=None) -> d
             "needs": [r["slot"] for r in rows if r.get("needs_new_picture")],
             "slots": [r["slot"] for r in rows],
             "mode": wg.clean_mode(config.get("rotation_mode")),
+            "designs": [{"id": d["id"], "name": d["name"]} for d in await db.design_list(guild_id, clone_id)],   # studio 5b
         })
     except Exception:
         logger.exception("[cardwz] studio summary failed for guild %s", guild_id)
@@ -477,12 +479,16 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
     opts = parse_ultra_options(config.get("ultra_card_json"))
     has_bg = bool(config.get("custom_background_url"))
 
+    # The Text step with More controls is the fullest screen (Discord allows 40 components, we keep it under 40). The two
+    # plain divider lines are the only thing there that does no work, so they are the first thing dropped (3d + 4c + 4b).
+    crowded = tab == "text" and more
     view = discord.ui.LayoutView(timeout=None)
     container = discord.ui.Container(accent_colour=discord.Color.blurple())
     container.add_item(discord.ui.TextDisplay(_caption(unlocked, note, has_tv, raw_config)))
     if has_tv:
         container.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{tv_name}")))
-    container.add_item(discord.ui.Separator())
+    if not crowded:
+        container.add_item(discord.ui.Separator())
 
     preset_row = discord.ui.ActionRow()
     preset_row.add_item(CardPresetSelect(guild_id, clone_id, invoker_id))
@@ -499,7 +505,9 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         container.add_item(row)
 
     hint = _STEP_HINTS[tab]
-    if tab == "text" and more:
+    if tab == "layout" and more:   # fold the picture-move line into the hint: frees one component for brightness (4d)
+        hint += " Arrows move the picture inside the card; the magnifier zooms."
+    if tab == "text" and more:   # fold the nudge line into the hint: frees one component for the outline button (4c)
         hint += " Spot and arrows move the text; it stops at the card edge and next to your avatar."
     container.add_item(discord.ui.TextDisplay(f"-# {hint}"))
 
@@ -533,7 +541,6 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect) + ((CardShapeSelect,) if more else ()):
             _select_row(select_cls)
         if more:   # Phase 3a: move and zoom the picture inside the card (arrows, never typed numbers)
-            container.add_item(discord.ui.TextDisplay("Move the picture inside the card, or zoom in:"))
             frame_row = discord.ui.ActionRow()
             frame_row.add_item(CardPanLeftButton(guild_id, clone_id, invoker_id))
             frame_row.add_item(CardPanUpButton(guild_id, clone_id, invoker_id))
@@ -543,6 +550,9 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
             container.add_item(frame_row)
             border_row = discord.ui.ActionRow()
             border_row.add_item(CardFrameButton(guild_id, clone_id, invoker_id, opts["frame"]))
+            border_row.add_item(CardAvatarPosButton(guild_id, clone_id, invoker_id, opts["avatar_pos"]))   # studio 3e
+            border_row.add_item(CardEffectButton(guild_id, clone_id, invoker_id, opts["effect"]))          # studio 4a
+            border_row.add_item(CardBrightnessButton(guild_id, clone_id, invoker_id, opts["brightness"]))  # studio 4d
             if opts["frame"] != "none":
                 border_row.add_item(CardFrameColorButton(guild_id, clone_id, invoker_id, opts["frame_color"]))
             container.add_item(border_row)
@@ -554,8 +564,13 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         text_row.add_item(CardNumberToggleButton(guild_id, clone_id, invoker_id, opts["show_number"]))
         if more:
             text_row.add_item(CardTextSizeButton(guild_id, clone_id, invoker_id, opts["text_size"]))
-            text_row.add_item(CardTextPosButton(guild_id, clone_id, invoker_id, opts["text_pos"]))
+            text_row.add_item(CardHeadingFontButton(guild_id, clone_id, invoker_id, opts["heading_font"]))   # studio 4b
+            text_row.add_item(CardOutlineButton(guild_id, clone_id, invoker_id, opts["text_outline"]))     # studio 4c
         container.add_item(text_row)
+        if more:   # studio 3d: the text spot (nine cells). Own row: the buttons above already fill a row (5 is Discord's limit)
+            spot_row = discord.ui.ActionRow()
+            spot_row.add_item(CardTextPosButton(guild_id, clone_id, invoker_id, opts["text_pos"]))
+            container.add_item(spot_row)
         if more:   # Phase 3c: nudge the text block (arrows, never typed numbers); the guard keeps it on the card
             nudge_row = discord.ui.ActionRow()
             for cls in (CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton):
@@ -565,8 +580,26 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         container.add_item(discord.ui.TextDisplay(
             "Your card goes out the way your **/welcome** setup says (channel or DM). "
             "**Send me a test** shows you the real, full-size card, only you see it."))
+        # Studio 5b: saved designs (the look only, never the pictures). Open to everyone as a preview; saving is Premium.
+        dstudio = raw_config.get("_studio")
+        dline = _designs_line(dstudio)
+        if dline:
+            container.add_item(discord.ui.TextDisplay(dline))
+        designs = (dstudio or {}).get("designs") or []
+        if designs:
+            drow = discord.ui.ActionRow()
+            drow.add_item(CardDesignSelect(guild_id, clone_id, invoker_id, designs))
+            container.add_item(drow)
+        if dstudio is not None:
+            dbtn = discord.ui.ActionRow()
+            dbtn.add_item(CardDesignSaveButton(guild_id, clone_id, invoker_id))
+            if designs:
+                dbtn.add_item(CardDesignRenameButton(guild_id, clone_id, invoker_id))
+                dbtn.add_item(CardDesignDeleteButton(guild_id, clone_id, invoker_id))
+            container.add_item(dbtn)
 
-    container.add_item(discord.ui.Separator())
+    if not crowded:
+        container.add_item(discord.ui.Separator())
     act_row = discord.ui.ActionRow()
     if tab == "send":
         act_row.add_item(CardTestSendButton(guild_id, clone_id, invoker_id))
@@ -1490,6 +1523,169 @@ class CardPictureNumberModal(discord.ui.Modal):
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+# ── saved designs (studio 5b) ─────────────────────────────────────────────
+
+def _designs_line(studio: dict | None) -> str | None:
+    """One plain line about saved designs on the Send step. None when the summary is missing."""
+    from modules import welcome_designs as wd
+    from modules.welcome_studio import LOCKED_LINE
+    if not studio:
+        return None
+    if not studio.get("unlocked"):
+        return f"-# \U0001F512 Preview only: {LOCKED_LINE} Saved designs save with Premium."
+    designs = studio.get("designs") or []
+    if not designs:
+        return f"-# \U0001F3A8 Saved designs: none yet (up to {wd.MAX_DESIGNS}). Save this look to reuse it later."
+    names = " \u00b7 ".join(f"{i} {d['name']}" for i, d in enumerate(designs, 1))
+    return f"-# \U0001F3A8 Saved designs ({len(designs)} of {wd.MAX_DESIGNS}): {names}"
+
+
+class CardDesignSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("designload")):
+    """Studio 5b: load a saved design onto the card (look only, pictures stay). Undo covers it."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, designs: list | None = None):
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        options = [discord.SelectOption(label=str(d["name"])[:100], value=str(d["id"])) for d in (designs or [])[:25]]
+        super().__init__(discord.ui.Select(
+            placeholder="Load a saved design", options=options or [discord.SelectOption(label="No designs", value="0")],
+            custom_id=_encode("designload", guild_id, clone_id, invoker_id)))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        g, c, i = _decode(match)
+        return cls(g, c, i, [])
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        from modules import welcome_designs as wd
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            await interaction.followup.send(f"\U0001F512 Preview only: {LOCKED_LINE} Saved designs load with Premium.", ephemeral=True)
+            return
+        try:
+            design = await db.design_get(self.guild_id, self.clone_id, int(self.item.values[0]))
+        except (ValueError, TypeError):
+            design = None
+        if not design:
+            await interaction.followup.send("That design is gone. Pick another one.", ephemeral=True)
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+            return
+        opts_json, shape = wd.restore_look(design.get("options_json"), design.get("avatar_shape"))
+        await _apply_style(self.guild_id, self.clone_id, interaction.user.id, json.loads(opts_json), shape)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardDesignSaveModal(discord.ui.Modal, title="Save this look"):
+    """Asks for a name and saves the look the editor shows right now. The write is gated on Premium/Plus on the server."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        super().__init__()
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        self.name = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=30, placeholder="Halloween")
+        self.add_item(discord.ui.Label(
+            text="Design name",
+            description="Saves the look only (layout, fonts, colors, effects). Your pictures are not part of it.",
+            component=self.name))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from modules import welcome_designs as wd
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        name = wd.clean_name(self.name.value)
+        if not name:
+            await interaction.followup.send("\u26A0\uFE0F Type a name for the design.", ephemeral=True)
+            return
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            await interaction.followup.send(f"\U0001F512 Preview only: {LOCKED_LINE} Designs are saved with Premium.", ephemeral=True)
+            return
+        cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        eff = _effective_config(cfg, self.guild_id, self.clone_id, interaction.user.id)
+        opts_json, shape = wd.snapshot_look(eff.get("ultra_card_json"), eff.get("avatar_shape"))
+        status, _ = await db.design_save(self.guild_id, self.clone_id, name, opts_json, shape, interaction.user.id, wd.MAX_DESIGNS)
+        if status == "full":
+            await interaction.followup.send(
+                f"You already have {wd.MAX_DESIGNS} designs. Delete one first, or save under the name of one to replace it.", ephemeral=True)
+            return
+        if status == "error":
+            await interaction.followup.send("Couldn't save that just now. Try again in a moment.", ephemeral=True)
+            return
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardDesignNumberModal(discord.ui.Modal):
+    """Asks which saved design (by its number in the list) to rename or delete."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, action: str):
+        super().__init__(title="Rename a design" if action == "rename" else "Delete a design")
+        self.guild_id, self.clone_id, self.invoker_id, self.action = guild_id, clone_id, invoker_id, action
+        self.number = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=2, placeholder="1")
+        self.add_item(discord.ui.Label(text="Design number", description="The number in the list above the buttons.", component=self.number))
+        self.new_name = None
+        if action == "rename":
+            self.new_name = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=30, placeholder="New name")
+            self.add_item(discord.ui.Label(text="New name", component=self.new_name))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from modules import welcome_designs as wd
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            await interaction.followup.send(f"\U0001F512 Preview only: {LOCKED_LINE} Designs are saved and managed with Premium.", ephemeral=True)
+            return
+        designs = await db.design_list(self.guild_id, self.clone_id)
+        try:
+            n = int(str(self.number.value or "").strip())
+        except ValueError:
+            n = 0
+        if not 1 <= n <= len(designs):
+            await interaction.followup.send(f"\u26A0\uFE0F Type a number from 1 to {len(designs) or 1}.", ephemeral=True)
+            return
+        target = designs[n - 1]
+        if self.action == "delete":
+            done = await db.design_delete(self.guild_id, self.clone_id, target["id"])
+            msg = "That design is already gone."
+        else:
+            name = wd.clean_name(self.new_name.value)
+            if not name:
+                await interaction.followup.send("\u26A0\uFE0F Type a new name.", ephemeral=True)
+                return
+            done = await db.design_rename(self.guild_id, self.clone_id, target["id"], name)
+            msg = "Couldn't rename it. Another design may already have that name."
+        if not done:
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class _DesignButton(_Btn):
+    ACTION = ""
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        modal = (CardDesignSaveModal(self.guild_id, self.clone_id, self.invoker_id) if self.ACTION == "save"
+                 else CardDesignNumberModal(self.guild_id, self.clone_id, self.invoker_id, self.ACTION))
+        try:
+            await interaction.response.send_modal(modal)
+        except discord.HTTPException as e:
+            if e.code != 40060:  # double-click: modal already open
+                raise
+
+
+class CardDesignSaveButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("designsave")):
+    FIELD, LABEL, ACTION = "designsave", "\U0001F4BE Save this look", "save"
+
+
+class CardDesignRenameButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("designrename")):
+    FIELD, LABEL, ACTION = "designrename", "\u270F\uFE0F Rename a design", "rename"
+
+
+class CardDesignDeleteButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("designdelete")):
+    FIELD, LABEL, ACTION = "designdelete", "\U0001F5D1\uFE0F Delete a design", "delete"
+
+
 class _PictureButton(_Btn):
     ACTION = ""
 
@@ -1664,7 +1860,7 @@ _PAN_STEP = 10
 _NUDGE_STEP = 20
 _ZOOM_ORDER = (100, 125, 150, 200)
 _TEXT_SIZE_ORDER = ("small", "medium", "large", "xl")
-_FRAME_LABELS = {"none": "None", "thin": "Thin", "thick": "Thick", "double": "Double", "rounded": "Rounded"}
+_FRAME_LABELS = {"none": "None", "thin": "Thin", "medium": "Medium", "thick": "Thick", "double": "Double", "rounded": "Rounded", "glow": "Soft glow"}
 _TEXT_SIZE_LABELS = {"small": "Small", "medium": "Medium", "large": "Large", "xl": "Extra large"}
 
 
@@ -1762,6 +1958,122 @@ class CardFrameButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=
         order = tuple(_FRAME_LABELS)
         nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "none"
         await _save_option(self.guild_id, self.clone_id, interaction.user.id, frame=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+_AVATAR_POS_LABELS = {
+    "auto": "Automatic", "top-left": "Top left", "top": "Top", "top-right": "Top right", "left": "Left",
+    "center": "Center", "right": "Right", "bottom-left": "Bottom left", "bottom": "Bottom", "bottom-right": "Bottom right",
+}
+
+
+class CardAvatarPosButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("avatarpos")):
+    """Studio 3e: cycles the avatar through Automatic and the nine spots (reading order). The renderer's guard keeps it on
+    the card and clear of the text, so a spot that would land on the text stops beside it."""
+    FIELD = "avatarpos"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, pos: str = "auto"):
+        super().__init__(guild_id, clone_id, invoker_id, pos)
+
+    def label_text(self, pos="auto", *_):
+        return f"\U0001F9D1 Avatar spot: {_AVATAR_POS_LABELS.get(pos, 'Automatic')}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["avatar_pos"]
+        order = tuple(_AVATAR_POS_LABELS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, avatar_pos=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+_EFFECT_LABELS = {"none": "None", "blur": "Blur", "vignette": "Vignette", "bw": "Black & white",
+                  "warm": "Warm", "cool": "Cool", "fade": "Faded", "grain": "Film grain", "sparkle": "Sparkle"}
+
+
+class CardEffectButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("effect")):
+    """Studio 4a: cycles one look for the background picture (None, Blur, Vignette, Black & white, Warm, Cool, Faded)."""
+    FIELD = "effect"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, effect: str = "none"):
+        super().__init__(guild_id, clone_id, invoker_id, effect)
+
+    def label_text(self, effect="none", *_):
+        return f"\u2728 Look: {_EFFECT_LABELS.get(effect, 'None')}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["effect"]
+        order = tuple(_EFFECT_LABELS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "none"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, effect=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardBrightnessButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("bright")):
+    """Studio 4d: how light the background picture is. Cycles Darker, Dark, Normal, Light, Lighter."""
+    FIELD = "bright"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, level: str = "normal"):
+        super().__init__(guild_id, clone_id, invoker_id, level)
+
+    def label_text(self, level="normal", *_):
+        return f"\U0001F506 Brightness: {level.title()}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["brightness"]
+        order = tuple(ULTRA_BRIGHTNESS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "normal"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, brightness=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardHeadingFontButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("headfont")):
+    """Studio 4b: the heading line gets its own font. Cycles Same as name, then every font in the Font select."""
+    FIELD = "headfont"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, font: str = "same"):
+        super().__init__(guild_id, clone_id, invoker_id, font)
+
+    def label_text(self, font="same", *_):
+        return f"\U0001F524 Heading font: {'Same as name' if font == 'same' else font.title()}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["heading_font"]
+        order = ("same",) + tuple(ULTRA_FONTS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "same"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, heading_font=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardOutlineButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("outline")):
+    """Studio 4c: dark edge around the text. Cycles Auto > None > Thin > Medium > Thick."""
+    FIELD = "outline"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, outline: str = "auto"):
+        super().__init__(guild_id, clone_id, invoker_id, outline)
+
+    def label_text(self, outline="auto", *_):
+        return f"\U0001F58B\uFE0F Outline: {outline.title()}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["text_outline"]
+        order = ("auto",) + tuple(ULTRA_OUTLINES)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, text_outline=nxt)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
@@ -2007,7 +2319,8 @@ DYNAMIC_ITEMS = (
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
-    CardFrameButton, CardFrameColorButton,
+    CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton, CardHeadingFontButton, CardOutlineButton, CardBrightnessButton,
+    CardDesignSelect, CardDesignSaveButton, CardDesignRenameButton, CardDesignDeleteButton,
     CardTextPosButton,
     CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )
