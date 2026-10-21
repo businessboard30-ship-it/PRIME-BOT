@@ -432,6 +432,7 @@ async def _with_studio(config: dict, guild_id: int, clone_id, user_id=None) -> d
             "needs": [r["slot"] for r in rows if r.get("needs_new_picture")],
             "slots": [r["slot"] for r in rows],
             "mode": wg.clean_mode(config.get("rotation_mode")),
+            "designs": [{"id": d["id"], "name": d["name"]} for d in await db.design_list(guild_id, clone_id)],   # studio 5b
         })
     except Exception:
         logger.exception("[cardwz] studio summary failed for guild %s", guild_id)
@@ -568,6 +569,23 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         container.add_item(discord.ui.TextDisplay(
             "Your card goes out the way your **/welcome** setup says (channel or DM). "
             "**Send me a test** shows you the real, full-size card, only you see it."))
+        # Studio 5b: saved designs (the look only, never the pictures). Open to everyone as a preview; saving is Premium.
+        dstudio = raw_config.get("_studio")
+        dline = _designs_line(dstudio)
+        if dline:
+            container.add_item(discord.ui.TextDisplay(dline))
+        designs = (dstudio or {}).get("designs") or []
+        if designs:
+            drow = discord.ui.ActionRow()
+            drow.add_item(CardDesignSelect(guild_id, clone_id, invoker_id, designs))
+            container.add_item(drow)
+        if dstudio is not None:
+            dbtn = discord.ui.ActionRow()
+            dbtn.add_item(CardDesignSaveButton(guild_id, clone_id, invoker_id))
+            if designs:
+                dbtn.add_item(CardDesignRenameButton(guild_id, clone_id, invoker_id))
+                dbtn.add_item(CardDesignDeleteButton(guild_id, clone_id, invoker_id))
+            container.add_item(dbtn)
 
     container.add_item(discord.ui.Separator())
     act_row = discord.ui.ActionRow()
@@ -1493,6 +1511,169 @@ class CardPictureNumberModal(discord.ui.Modal):
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+# ── saved designs (studio 5b) ─────────────────────────────────────────────
+
+def _designs_line(studio: dict | None) -> str | None:
+    """One plain line about saved designs on the Send step. None when the summary is missing."""
+    from modules import welcome_designs as wd
+    from modules.welcome_studio import LOCKED_LINE
+    if not studio:
+        return None
+    if not studio.get("unlocked"):
+        return f"-# \U0001F512 Preview only: {LOCKED_LINE} Saved designs save with Premium."
+    designs = studio.get("designs") or []
+    if not designs:
+        return f"-# \U0001F3A8 Saved designs: none yet (up to {wd.MAX_DESIGNS}). Save this look to reuse it later."
+    names = " \u00b7 ".join(f"{i} {d['name']}" for i, d in enumerate(designs, 1))
+    return f"-# \U0001F3A8 Saved designs ({len(designs)} of {wd.MAX_DESIGNS}): {names}"
+
+
+class CardDesignSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("designload")):
+    """Studio 5b: load a saved design onto the card (look only, pictures stay). Undo covers it."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, designs: list | None = None):
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        options = [discord.SelectOption(label=str(d["name"])[:100], value=str(d["id"])) for d in (designs or [])[:25]]
+        super().__init__(discord.ui.Select(
+            placeholder="Load a saved design", options=options or [discord.SelectOption(label="No designs", value="0")],
+            custom_id=_encode("designload", guild_id, clone_id, invoker_id)))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        g, c, i = _decode(match)
+        return cls(g, c, i, [])
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        from modules import welcome_designs as wd
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            await interaction.followup.send(f"\U0001F512 Preview only: {LOCKED_LINE} Saved designs load with Premium.", ephemeral=True)
+            return
+        try:
+            design = await db.design_get(self.guild_id, self.clone_id, int(self.item.values[0]))
+        except (ValueError, TypeError):
+            design = None
+        if not design:
+            await interaction.followup.send("That design is gone. Pick another one.", ephemeral=True)
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+            return
+        opts_json, shape = wd.restore_look(design.get("options_json"), design.get("avatar_shape"))
+        await _apply_style(self.guild_id, self.clone_id, interaction.user.id, json.loads(opts_json), shape)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardDesignSaveModal(discord.ui.Modal, title="Save this look"):
+    """Asks for a name and saves the look the editor shows right now. The write is gated on Premium/Plus on the server."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        super().__init__()
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        self.name = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=30, placeholder="Halloween")
+        self.add_item(discord.ui.Label(
+            text="Design name",
+            description="Saves the look only (layout, fonts, colors, effects). Your pictures are not part of it.",
+            component=self.name))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from modules import welcome_designs as wd
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        name = wd.clean_name(self.name.value)
+        if not name:
+            await interaction.followup.send("\u26A0\uFE0F Type a name for the design.", ephemeral=True)
+            return
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            await interaction.followup.send(f"\U0001F512 Preview only: {LOCKED_LINE} Designs are saved with Premium.", ephemeral=True)
+            return
+        cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        eff = _effective_config(cfg, self.guild_id, self.clone_id, interaction.user.id)
+        opts_json, shape = wd.snapshot_look(eff.get("ultra_card_json"), eff.get("avatar_shape"))
+        status, _ = await db.design_save(self.guild_id, self.clone_id, name, opts_json, shape, interaction.user.id, wd.MAX_DESIGNS)
+        if status == "full":
+            await interaction.followup.send(
+                f"You already have {wd.MAX_DESIGNS} designs. Delete one first, or save under the name of one to replace it.", ephemeral=True)
+            return
+        if status == "error":
+            await interaction.followup.send("Couldn't save that just now. Try again in a moment.", ephemeral=True)
+            return
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardDesignNumberModal(discord.ui.Modal):
+    """Asks which saved design (by its number in the list) to rename or delete."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, action: str):
+        super().__init__(title="Rename a design" if action == "rename" else "Delete a design")
+        self.guild_id, self.clone_id, self.invoker_id, self.action = guild_id, clone_id, invoker_id, action
+        self.number = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=2, placeholder="1")
+        self.add_item(discord.ui.Label(text="Design number", description="The number in the list above the buttons.", component=self.number))
+        self.new_name = None
+        if action == "rename":
+            self.new_name = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=30, placeholder="New name")
+            self.add_item(discord.ui.Label(text="New name", component=self.new_name))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from modules import welcome_designs as wd
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            await interaction.followup.send(f"\U0001F512 Preview only: {LOCKED_LINE} Designs are saved and managed with Premium.", ephemeral=True)
+            return
+        designs = await db.design_list(self.guild_id, self.clone_id)
+        try:
+            n = int(str(self.number.value or "").strip())
+        except ValueError:
+            n = 0
+        if not 1 <= n <= len(designs):
+            await interaction.followup.send(f"\u26A0\uFE0F Type a number from 1 to {len(designs) or 1}.", ephemeral=True)
+            return
+        target = designs[n - 1]
+        if self.action == "delete":
+            done = await db.design_delete(self.guild_id, self.clone_id, target["id"])
+            msg = "That design is already gone."
+        else:
+            name = wd.clean_name(self.new_name.value)
+            if not name:
+                await interaction.followup.send("\u26A0\uFE0F Type a new name.", ephemeral=True)
+                return
+            done = await db.design_rename(self.guild_id, self.clone_id, target["id"], name)
+            msg = "Couldn't rename it. Another design may already have that name."
+        if not done:
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class _DesignButton(_Btn):
+    ACTION = ""
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        modal = (CardDesignSaveModal(self.guild_id, self.clone_id, self.invoker_id) if self.ACTION == "save"
+                 else CardDesignNumberModal(self.guild_id, self.clone_id, self.invoker_id, self.ACTION))
+        try:
+            await interaction.response.send_modal(modal)
+        except discord.HTTPException as e:
+            if e.code != 40060:  # double-click: modal already open
+                raise
+
+
+class CardDesignSaveButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("designsave")):
+    FIELD, LABEL, ACTION = "designsave", "\U0001F4BE Save this look", "save"
+
+
+class CardDesignRenameButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("designrename")):
+    FIELD, LABEL, ACTION = "designrename", "\u270F\uFE0F Rename a design", "rename"
+
+
+class CardDesignDeleteButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("designdelete")):
+    FIELD, LABEL, ACTION = "designdelete", "\U0001F5D1\uFE0F Delete a design", "delete"
+
+
 class _PictureButton(_Btn):
     ACTION = ""
 
@@ -2105,5 +2286,6 @@ DYNAMIC_ITEMS = (
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
     CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton, CardHeadingFontButton, CardOutlineButton, CardBrightnessButton,
+    CardDesignSelect, CardDesignSaveButton, CardDesignRenameButton, CardDesignDeleteButton,
     CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )

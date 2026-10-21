@@ -32,6 +32,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 4e. Film grain (new value in the Look cycle) + medium frame (new value in the Frame cycle) | **Built, PR open, not merged** (stacked on 4d) | branch `feat/welcome-studio-phase4e` |
 | 4f. Owner-approved glow and fonts: soft glow edge frame, sparkle effect, text glow, four more fonts | **Built, PR open, not merged** (stacked on 4e) | branch `feat/welcome-studio-phase4f` |
 | 5a. Saved designs, data layer only (table, migration 080, DB methods, pure helpers; no wizard UI yet) | **Built, PR open, not merged** (stacked on 4f) | branch `feat/welcome-studio-phase5a` |
+| 5b. Saved designs in the wizard (Send step): Save this look, Load, Rename, Delete | **Built, PR open, not merged** (stacked on 5a) | branch `feat/welcome-studio-phase5b` |
 | Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, new fonts, more effects) and 5 to 7 | Not started | |
 
 ## What Phase 1 built
@@ -526,3 +527,28 @@ Small slice on purpose, same shape as Phase 2a. **No wizard change, no render ch
 1. Owner reviews / merges in this order: #436, #437, #438, #439, #440, #441, #442, #443, then the 5a PR.
 2. **5b: wizard UI on the Send step** (the step has room): Save as... (name modal), a Load select, Rename, Delete, Make live. Make live writes the design through the same gate (`studio_unlocked`) and sets `active_design_id`; free servers see "Preview only ... saves with Premium". Update the 5a "not used yet" test.
 3. Then Phase 6 (DM extras) and 7 (scheduled designs) per the plan; optional avatar glow slice.
+
+
+## Phase 5b (2026-10-21): saved designs in the wizard (Send step)
+
+Small slice. No migration, no renderer change, the join never reads designs. Only the **Send step** and the studio summary changed.
+
+- **Send step (step 4):** one plain line (`-# 🎨 Saved designs (2 of 5): 1 Halloween · 2 Spring`, or "none yet", or for a free server "Preview only: Studio is part of Premium. Saved designs save with Premium."), then, when designs exist, a select `Load a saved design` (`CardDesignSelect`, id `designload`), then a button row: `💾 Save this look` (`CardDesignSaveButton`, `designsave`, always shown once the summary exists) plus `✏️ Rename a design` / `🗑️ Delete a design` (`designrename` / `designdelete`, only when designs exist). All in `DYNAMIC_ITEMS`. Send step stays well under 40 components. No design controls on the other steps.
+- **Save:** `CardDesignSaveModal` asks for a name, takes the look the editor shows right now (`_effective_config`: options + avatar shape, never a picture), runs it through `snapshot_look`, saves with `db.design_save` (limit 5; same name in any case replaces that design; a full server gets "Delete one first, or save under the name of one to replace it").
+- **Load:** the select reads the design with `db.design_get`, then calls the existing `_apply_style(...)` with the FULL validated options + avatar shape. That reuses the existing gate (studio keys), the **Undo snapshot** (Undo undoes a load) and the single DB write. A corrupt stored design falls back to defaults; a deleted one says "That design is gone".
+- **Rename / Delete:** `CardDesignNumberModal` asks for the design's number in the list (like the picture modals), re-reads the list on submit, rename also asks for the new name (`clean_name`; a taken name says so). Delete removes only the design row.
+- **Owner rule kept (studio open to everyone, only saving is Premium):** a free server can open Save and sees "Preview only ... Designs are saved with Premium"; nothing is stored. Every write re-checks `studio_unlocked` on the server. Designs are listed and loadable only while Premium/Plus is active (a lapsed server keeps its rows but the wizard hides them).
+- `_with_studio` now adds `designs` (id + name) to the Premium summary; failure of the list returns `[]`, never breaks the step.
+- Tests: `tests/unit/test_welcome_studio_phase5b.py` (19): Send step controls for premium / locked / no summary / other steps, limits, select options, line texts, registered and ids, save (snapshot, free, empty name, full, error), load (whole look through `_apply_style`, free, missing, junk, corrupt), rename/delete numbers and bad input, buttons open the right modals, summary. Updated: the 5a "wizard does not use designs yet" test (renderer and join still must not) and the 2c summary test (new `designs` key). All studio files plus fonts, wizard and schema-guard tests: 317 passed.
+
+### Known gaps in 5b (on purpose)
+- Not tested live (phone taps, the three modals, the select). Not run against a real Postgres (migration 080 still needs the staging check from 5a).
+- **`active_design_id` is still not written** (Load does not record which design is live); Phase 7 (scheduled designs) will set it. Editing the card after a load does not change the saved design.
+- No "Update this design" shortcut: save under the same name to replace it.
+- Rename/Delete use a number from the list line, not a picker; fine for 5 designs.
+- Load replaces the whole look including studio options and the heading text (they are part of the options). Pictures and the rotation mode are never touched.
+
+## Next (updated after 5b)
+1. Owner reviews / merges in this order: #436 to #443, #444 (5a), then the 5b PR. Staging check: migration 080, then Save / Load / Rename / Delete on a phone.
+2. **Phase 6: DM extras** (fall back to the channel when DMs are closed, separate DM text, optional different design for the DM; reuse `discord_bot/dm_send.py`). Needs the owner's answer on which extras to keep.
+3. Phase 7: scheduled designs (will use `active_design_id`); optional avatar glow slice.

@@ -63,8 +63,9 @@ def test_migration_is_additive_and_registered_and_version_bumped():
     assert re.search(r'^SCHEMA_VERSION = "129"', src, re.M)
 
 
-def test_wizard_and_renderer_do_not_use_designs_yet():
-    for f in ("modules/welcome_card.py", "discord_bot/cogs/_views_card_customize.py", "discord_bot/cogs/welcome.py"):
+def test_renderer_and_join_do_not_use_designs():
+    # 5b put saved designs in the wizard (Send step); the renderer and the join must still never read them.
+    for f in ("modules/welcome_card.py", "discord_bot/cogs/welcome.py"):
         assert "welcome_designs" not in (ROOT / f).read_text(), f
 
 
