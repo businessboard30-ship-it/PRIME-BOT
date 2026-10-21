@@ -90,6 +90,7 @@ async def _enabled_feature_keys(guild_id: int, clone_id) -> set:
         ("starboard", lambda: db.get_starboard_config(guild_id, clone_id=clone_id), "channel_id"),
         ("suggestions", lambda: db.get_suggestion_config(guild_id, clone_id=clone_id), "approved_log_channel_id"),
         ("downloadhub", lambda: db.get_download_config(guild_id, clone_id=clone_id), "channel_id"),
+        ("birthdays", lambda: _birthday_config(guild_id, clone_id), "enabled"),
     )
 
     async def _check_one(fetch, field):
@@ -1714,6 +1715,23 @@ async def _enable_starboard(interaction: discord.Interaction, guild: discord.Gui
     return True, f"Starboard is on in {channel.mention} — posts hitting 5 ⭐ get pinned there. Adjust with `/starboard setup`."
 
 
+async def _birthday_config(guild_id: int, clone_id):
+    from modules import birthday_store
+    return await birthday_store.get_config(guild_id, clone_id)
+
+
+async def _enable_birthdays(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    # One tap: announce in the default channel at 09:00 UTC. Members add theirs with
+    # /birthday; admins fine-tune channel, ping role, message and time from the Server setup button there.
+    from modules import birthday_store
+    channel = _default_text_channel(guild)
+    if channel is None:
+        return False, "I couldn't find a channel I'm able to post in — create one and run `/birthday`."
+    await birthday_store.set_config(guild.id, clone_id, enabled=True, channel_id=channel.id)
+    return True, (f"Birthdays are on — I'll announce them in {channel.mention} at 09:00 UTC. "
+                  "Members add theirs with `/birthday`; admins change the channel, message or time from its **Server setup** button.")
+
+
 async def _enable_suggestions(interaction: discord.Interaction, guild: discord.Guild, clone_id):
     # /suggest already works with zero config — this just points approved
     # suggestions somewhere so they don't only live as reaction state on
@@ -1906,6 +1924,8 @@ FEATURE_TOGGLES = {
                      "Let members submit ideas for staff and members to vote on."),
     "automod": ("Auto-moderation", "🛡️", _enable_automod, _AutomodOptionsView,
                 "Filter spam, invite links, and mass-mention raids."),
+    "birthdays": ("Birthdays", "🎂", _enable_birthdays, None,
+                  "Members add their birthday and I announce it in a channel on the day."),
     "catch": ("Creature catching", "🐾", _enable_catch, None,
               "Wild creatures appear while your members chat — they catch, collect and trade them with /catch."),
 }
