@@ -12248,6 +12248,41 @@ class Database:
                 int(guild_id), -1 if clone_id is None else int(clone_id), int(slot))
         return res.endswith(" 1")
 
+    async def gallery_make_first(self, guild_id: int, clone_id: Optional[int], slot: int) -> bool:
+        """Make the picture in `slot` picture 1 (what 'Same picture every time' uses). Returns True when something moved.
+
+        If slot 1 is empty the picture just moves there. Otherwise the two pictures swap their CONTENT (the slot
+        numbers stay put), so the unique (server, slot) key is never violated. `last_slot_used` is cleared because
+        it pointed at the old arrangement. Pictures are never deleted here.
+        """
+        key = -1 if clone_id is None else int(clone_id)
+        slot = int(slot)
+        if not 1 <= slot <= 10:
+            return False
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", int(guild_id) % 2147483647, key % 2147483647)
+                rows = {r["slot"]: r for r in await conn.fetch(
+                    "SELECT id, slot, channel_id, message_id, url_cache, label, options_override_json, needs_new_picture "
+                    "FROM discord_welcome_backgrounds WHERE guild_id = $1 AND clone_key = $2 AND slot IN (1, $3)",
+                    int(guild_id), key, slot)}
+                if slot == 1 or slot not in rows:
+                    return False
+                if 1 not in rows:
+                    await conn.execute("UPDATE discord_welcome_backgrounds SET slot = 1 WHERE id = $1", rows[slot]["id"])
+                else:
+                    cols = "channel_id = $2, message_id = $3, url_cache = $4, label = $5, options_override_json = $6, needs_new_picture = $7"
+                    for target, src in ((rows[1], rows[slot]), (rows[slot], rows[1])):
+                        await conn.execute(
+                            f"UPDATE discord_welcome_backgrounds SET {cols} WHERE id = $1", target["id"],
+                            src["channel_id"], src["message_id"], src["url_cache"], src["label"],
+                            src["options_override_json"], src["needs_new_picture"])
+                await conn.execute(
+                    "UPDATE discord_welcome_config SET last_slot_used = NULL "
+                    "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id)
+        return True
+
     async def gallery_flag_missing(self, guild_id: int, clone_id: Optional[int], slot: int) -> None:
         """The hosted message was deleted: mark the slot 'needs a new picture'. Never raises."""
         try:

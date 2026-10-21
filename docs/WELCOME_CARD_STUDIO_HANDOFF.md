@@ -14,7 +14,7 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 | 2a. Gallery data layer + rotation picker | **Built, PR open, not merged** (small slice, no UI yet) | branch `feat/welcome-studio-phase2a` (stacked on phase 0) |
 | 2b. Join render uses the gallery | **Built, PR open, not merged** (join only; previews unchanged) | branch `feat/welcome-studio-phase2b` (stacked on 2a) |
 | 2c-1. Pictures step: gallery line + rotation select | **Built, PR open, not merged** (read-only line + rotation picker; stacked on 2b) | branch `feat/welcome-studio-phase2c` |
-| 2c-2. Add / Remove / Make first + numbered strip + "Unlock with Premium" button | Not started | |
+| 2c-2. Numbered strip + Remove / Make first + "Unlock with Premium" button | **Built, PR open, not merged** (stacked on 2c-1; no Add yet, that is 2d) | branch `feat/welcome-studio-phase2c2` |
 | 2d. Multi-upload + downscale + migrate old single picture | Not started | |
 | 3 to 7 | Not started | |
 
@@ -136,3 +136,29 @@ Applied in 2c-1 (follow-up commit on PR #427):
 - Premium/Plus server: the pick is saved with `db.gallery_set_rotation_mode` (still re-checked on the server).
 - Join render is unchanged: only Premium/Plus gets the gallery at join (2b).
 - For 2c-2 and later: Add/Remove/Make first, frames, effects etc. should work as an in-memory preview for free servers (nothing hosted or stored), and the save/apply path checks `studio_unlocked`. "Unlock with Premium" button still to add.
+
+## Phase 2c-2 (2026-10-21): what it built
+
+Small slice on purpose. **Only the Pictures step (step 1) and the gallery DB layer changed.** No render change, no upload (Add is 2d).
+
+- **Numbered strip** under the gallery line: `1● 2● 3⚠️ 4○ ... 10○` (● has a picture, ○ empty, ⚠️ needs a new picture). Shown for Premium/Plus servers that have the `slots` list in the `_studio` summary (`_with_studio` now adds `slots`).
+- **More controls** on Pictures gets one more row: `🗑️ Remove a picture` and `⭐ Make first` (`CardPictureRemoveButton`, `CardPictureFirstButton`, ids `picremove` / `picfirst`). Each opens a tiny modal asking for the picture number 1 to 10 (`CardPictureNumberModal`). A modal instead of a select because More mode already has the maximum 5 selects. Hidden for a Premium server with 0 pictures (nothing to manage); visible to free servers.
+- **`Unlock with Premium`** button (`CardStudioPremiumButton`, id `studiogoprem`) on the Pictures step for servers without Premium/Plus. Sits in the existing upload row, so Easy mode is still 3 control rows. Opens the existing Premium pitch (`send_premium_pitch`).
+- **Owner rule kept (studio open to everyone, only saving is Premium):** free servers can open the buttons; the modal's write re-checks `studio_unlocked` on the server and a free server just gets an ephemeral "Preview only ... Pictures are stored and managed with Premium" (a free server has no stored pictures, so there is nothing to preview-change yet; real in-memory preview of added pictures comes with 2d).
+- **`db.gallery_make_first(guild, clone, slot)`**: if slot 1 is empty the picture moves there; otherwise the two pictures swap their CONTENT (slot numbers stay put, so the unique key is never hit). One transaction + advisory lock. Clears `last_slot_used`. Never deletes. "Same picture every time" uses picture 1, so Make first is now the pin.
+- Remove uses the existing `db.gallery_remove`.
+- Tests: `tests/unit/test_welcome_studio_phase2c2.py` (17). Updated the 2c-1 test that asserted the exact `_studio` dict (now includes `slots`).
+
+### Test numbers (2c-2)
+Full unit suite: 5188 passed, 4 failed, 4 skipped. Same 4 as 2b/2c-1: `test_ultra_trial_off::test_new_ultra_trials_are_off` (env flag) and 3 in `test_uncached_member_fixes.py` (test-order pollution).
+
+### Known gaps in 2c-2 (on purpose)
+- **Remove does not delete the hosted image message** in the image-host channel (the owner reviews that channel; an orphaned image stays there). Delete it best-effort when 2d adds hosting code, or leave it for the owner's review.
+- Still no way to ADD a picture, so the gallery reads 0 for everyone until 2d.
+- No Undo for Remove / Make first (Undo only covers look changes). Remove is permanent for that slot.
+- Not tested against live Discord (modal on a phone, the Unlock pitch from a DM copy of the wizard) or a real Postgres (the swap SQL needs one staging check).
+
+## Next small slices
+- **2d**: multi-upload modal, downscale to 1536 px + JPEG/WebP, caption on host post (server name/ID, picture number), daily upload limit, copy the old single picture in as picture 1 (never delete old columns). Free servers: in-memory preview only.
+- Then Phase 3 (framing and positioning).
+
