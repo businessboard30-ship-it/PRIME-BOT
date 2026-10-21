@@ -18,7 +18,8 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 | 2d. Multi-upload + downscale + caption + daily limit + migrate old single picture | **Built, PR open, not merged** (stacked on 2c-2). **This finishes Phase 2** | branch `feat/welcome-studio-phase2d` |
 | 2e. Phase 2 leftovers: Replace a picture, editor preview uses the gallery, Clear background note | **Built, PR open, not merged** (stacked on 2d) | branch `feat/welcome-studio-phase2e` |
 | 3a. Zoom + pan arrows, text size (first slice of Phase 3) | **Built, PR open, not merged** (stacked on 2e) | branch `feat/welcome-studio-phase3a` |
-| 3b+ (frames, 3x3 grid, nudge) and 4 to 7 | Not started | |
+| 3b. Picture frames (none, thin, thick, double, rounded) + frame color | **Built, PR open, not merged** (stacked on 3a) | branch `feat/welcome-studio-phase3b` |
+| 3c (3x3 grid, nudge), frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
 
 ## What Phase 1 built
 
@@ -248,3 +249,24 @@ Full unit suite: 5252 passed, 4 failed, 4 skipped. Same 4 as 2b to 2e: `test_ult
 2. **Phase 3b**: picture frames (none, thin, thick, double, rounded, polaroid, film strip, glow edge: keep any glow soft/muted and ask before adding neon). Then 3c: 3x3 grid + nudge. Add each new key to `STUDIO_KEYS` / `STUDIO_DEFAULTS`.
 3. Tiny follow-up: apply `options_for_render` at the other render sites.
 4. Still-open plan questions for the owner: Premium lifetime includes studio? Keep Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery?
+
+
+## Phase 3b (2026-10-21): what it built (picture frames)
+
+Small slice. No table, no migration.
+
+- **New keys** `frame` (none / thin / thick / double / rounded) and `frame_color` (the 6 text colors) in `ultra_card_json`, validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` so the join render strips them for non-Premium (same gate as 3a) and saves are Premium-only (Ultra-only servers preview in memory).
+- **Renderer:** `_draw_frame` draws the border over the finished card (after text), size unchanged. `rounded` is a border with a rounded inner picture (output is converted to RGB, so no transparent corners). Default `none` skips the code entirely: pixel-identical to before (test).
+- **Wizard (Look step, More controls):** `🖼️ Frame: ...` cycles the 5 frames; `🎨 Frame color: ...` cycles colors and only appears once a frame is chosen. Classes `CardFrameButton` (id `frame`), `CardFrameColorButton` (id `framecolor`), registered; "Reset this step" resets them. Component count checked (<= 40, <= 5 buttons per row).
+- **Left out on purpose:** **glow edge** (plan says ask the owner before any glow/neon), polaroid and film strip (they need layout changes to the text area; do with 3c's position work).
+- Tests: `tests/unit/test_welcome_studio_phase3b.py` (12). Full unit suite: 5264 passed, same 4 known failures (env flag + 3 order-pollution tests).
+- Not tested live (phone taps). Same render-site gap as 3a (only the join applies the gate).
+
+## Next (updated after 3b)
+1. Owner reviews the stacked PRs in order: #423 ... #430 (2e), #431 (3a), then 3b.
+2. **3c**: 3x3 position grid for text/avatar + nudge buttons; maybe polaroid/film strip; ask the owner about glow edge.
+3. Tiny follow-up: apply `options_for_render` at the other render sites.
+
+## Owner decision (2026-10-21): Premium lifetime and yearly include the studio
+
+Monthly, yearly and lifetime Premium (and Premium Plus) all unlock every studio feature. **No code change needed:** `studio_unlocked` uses `db.is_guild_premium_active`, which only checks that the server's Premium has not expired (plus the grace period), so every plan that sets an expiry date is covered, lifetime included. The earlier open question "Premium lifetime includes studio?" is closed. Still open: Phase 6 DM extras, per-picture overrides, Clear background vs gallery, glow edge frame.

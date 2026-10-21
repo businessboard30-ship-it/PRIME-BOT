@@ -331,7 +331,7 @@ _STEP_HINTS = {
 # What "Reset this step" puts back to default (the picture is never touched). Shape lives in its own column.
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
-    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y"),
+    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color"),
     "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
@@ -535,6 +535,11 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
             frame_row.add_item(CardPanRightButton(guild_id, clone_id, invoker_id))
             frame_row.add_item(CardZoomButton(guild_id, clone_id, invoker_id, opts["zoom"]))
             container.add_item(frame_row)
+            border_row = discord.ui.ActionRow()
+            border_row.add_item(CardFrameButton(guild_id, clone_id, invoker_id, opts["frame"]))
+            if opts["frame"] != "none":
+                border_row.add_item(CardFrameColorButton(guild_id, clone_id, invoker_id, opts["frame_color"]))
+            container.add_item(border_row)
     elif tab == "text":
         for select_cls in (CardColorSelect, CardFontSelect) + ((CardBracketSelect, CardStyleSelect) if more else ()):
             _select_row(select_cls)
@@ -1646,6 +1651,7 @@ class CardPictureAddButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], temp
 _PAN_STEP = 10
 _ZOOM_ORDER = (100, 125, 150, 200)
 _TEXT_SIZE_ORDER = ("small", "medium", "large", "xl")
+_FRAME_LABELS = {"none": "None", "thin": "Thin", "thick": "Thick", "double": "Double", "rounded": "Rounded"}
 _TEXT_SIZE_LABELS = {"small": "Small", "medium": "Medium", "large": "Large", "xl": "Extra large"}
 
 
@@ -1722,6 +1728,48 @@ class CardTextSizeButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templa
         cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["text_size"]
         nxt = _TEXT_SIZE_ORDER[(_TEXT_SIZE_ORDER.index(cur) + 1) % len(_TEXT_SIZE_ORDER)] if cur in _TEXT_SIZE_ORDER else "medium"
         await _save_option(self.guild_id, self.clone_id, interaction.user.id, text_size=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardFrameButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("frame")):
+    """Cycles None > Thin > Thick > Double > Rounded."""
+    FIELD = "frame"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, frame: str = "none"):
+        super().__init__(guild_id, clone_id, invoker_id, frame)
+
+    def label_text(self, frame="none", *_):
+        return f"\U0001F5BC\uFE0F Frame: {_FRAME_LABELS.get(frame, 'None')}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["frame"]
+        order = tuple(_FRAME_LABELS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "none"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, frame=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardFrameColorButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("framecolor")):
+    """Cycles the frame color through the same short color list as the text."""
+    FIELD = "framecolor"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, color: str = "white"):
+        super().__init__(guild_id, clone_id, invoker_id, color)
+
+    def label_text(self, color="white", *_):
+        return f"\U0001F3A8 Frame color: {str(color).title()}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["frame_color"]
+        order = tuple(ULTRA_TEXT_COLORS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "white"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, frame_color=nxt)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
@@ -1878,4 +1926,5 @@ DYNAMIC_ITEMS = (
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
+    CardFrameButton, CardFrameColorButton,
 )
