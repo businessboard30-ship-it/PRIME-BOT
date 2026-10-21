@@ -12303,6 +12303,29 @@ class Database:
                 int(guild_id), -1 if clone_id is None else int(clone_id), int(slot))
         return res.endswith(" 1")
 
+    async def gallery_replace(self, guild_id: int, clone_id: Optional[int], slot: int, channel_id: Optional[int],
+                              message_id: Optional[int], url_cache: Optional[str] = None,
+                              label: Optional[str] = None) -> Optional[tuple]:
+        """Phase 2e: put a new hosted picture into an existing slot (same slot number, same order). Clears the
+        'needs a new picture' flag. Returns the OLD (channel_id, message_id) so the caller can delete the old hosted
+        post best-effort, or None when that slot is empty (nothing is changed)."""
+        key = -1 if clone_id is None else int(clone_id)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", int(guild_id) % 2147483647, key % 2147483647)
+                old = await conn.fetchrow(
+                    "SELECT channel_id, message_id FROM discord_welcome_backgrounds "
+                    "WHERE guild_id = $1 AND clone_key = $2 AND slot = $3", int(guild_id), key, int(slot))
+                if old is None:
+                    return None
+                await conn.execute(
+                    "UPDATE discord_welcome_backgrounds SET channel_id = $4, message_id = $5, url_cache = $6, "
+                    "label = COALESCE($7, label), needs_new_picture = FALSE "
+                    "WHERE guild_id = $1 AND clone_key = $2 AND slot = $3",
+                    int(guild_id), key, int(slot), channel_id, message_id, url_cache, (label or None))
+                return (old["channel_id"], old["message_id"])
+
     async def gallery_make_first(self, guild_id: int, clone_id: Optional[int], slot: int) -> bool:
         """Make the picture in `slot` picture 1 (what 'Same picture every time' uses). Returns True when something moved.
 

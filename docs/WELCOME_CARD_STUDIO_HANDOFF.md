@@ -16,6 +16,7 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 | 2c-1. Pictures step: gallery line + rotation select | **Built, PR open, not merged** (read-only line + rotation picker; stacked on 2b) | branch `feat/welcome-studio-phase2c` |
 | 2c-2. Numbered strip + Remove / Make first + "Unlock with Premium" button | **Built, PR open, not merged** (stacked on 2c-1; no Add yet, that is 2d) | branch `feat/welcome-studio-phase2c2` |
 | 2d. Multi-upload + downscale + caption + daily limit + migrate old single picture | **Built, PR open, not merged** (stacked on 2c-2). **This finishes Phase 2** | branch `feat/welcome-studio-phase2d` |
+| 2e. Phase 2 leftovers: Replace a picture, editor preview uses the gallery, Clear background note | **Built, PR open, not merged** (stacked on 2d) | branch `feat/welcome-studio-phase2e` |
 | 3 to 7 | Not started | |
 
 ## What Phase 1 built
@@ -190,3 +191,30 @@ Full unit suite: 5207 passed, 4 failed, 4 skipped. Same 4 as 2b/2c: `test_ultra_
 2. **Phase 3: framing and positioning** (pan/zoom arrows, picture frames, 3x3 position grid, nudge, text size). Keep every control available as a preview for free servers; gate saving and the join render with `studio_unlocked`. Add each new option key to `studio_keys` in `modules/welcome_studio.py`.
 3. Small leftovers that could be their own tiny PR: wizard preview uses the gallery, merge old Upload/Clear with the gallery, per-picture overrides, Phase 0 audit (render timing at 1536 px, host-channel limits).
 4. Still-open plan questions for the owner: Premium lifetime includes studio? Keep Phase 6 DM extras? Per-picture overrides in v1 or later?
+
+## Phase 2e (2026-10-21): what it built (Phase 2 leftovers)
+
+Small slice on purpose. **Only the Pictures step, the editor preview and one DB method changed.** No migration, `modules/welcome_card.py` and the join render are untouched.
+
+- **`🔁 Replace a picture`** (`CardPictureReplaceButton`, id `picreplace`, registered in `DYNAMIC_ITEMS`): in the More-controls manage row on Pictures, next to Remove / Make first (hidden for a Premium gallery with 0 pictures; visible to free servers). Opens `CardPictureReplaceModal`: picture number (1 to 10), one file or one link. The picture keeps its slot number and place in the order.
+- **Premium/Plus:** `_replace_picture(...)` checks the slot exists and the daily limit (a replace counts like an Add), downscales to 1536 px JPEG, posts to the hosting channel with caption `Studio picture N (replaced) ...`, then `db.gallery_replace` swaps the row (clears `needs_new_picture`, so a deleted hosted image is fixed this way) and the OLD hosted post is deleted best-effort. Raced/removed slot deletes the new orphan. Never raises.
+- **Free server (owner rule):** nothing hosted or stored; the new picture shows as the card background in memory with the usual "Preview only ... Premium" note.
+- **`db.gallery_replace(guild, clone, slot, channel_id, message_id, url_cache, label)`**: one transaction + advisory lock, returns the old `(channel_id, message_id)` or `None` for an empty slot (nothing changed). No DELETE.
+- **Editor preview uses the gallery:** `_gallery_preview_bytes` in `_render_tv` shows gallery picture 1 for Premium/Plus servers (stable, the real join still rotates); skips flagged/deleted pictures, caches per message id, returns `None` on any error so the old single-picture path runs exactly as before. Free servers: unchanged (draft picture).
+- **Clear background** still only clears the old single picture and never touches the gallery; when gallery pictures exist it now tells the admin so ("use Remove a picture"). Decision kept non-destructive on purpose: wiping up to 10 pictures from one button, with no Undo, felt wrong. Ask the owner if Clear should mean "clear everything".
+- Tests: `tests/unit/test_welcome_studio_phase2e.py` (18).
+
+### Test numbers (2e)
+Full unit suite: 5225 passed, 4 failed, 4 skipped. Same 4 as 2b to 2d: `test_ultra_trial_off::test_new_ultra_trials_are_off` (env flag) and 3 in `test_uncached_member_fixes.py` (test-order pollution).
+
+### Known gaps in 2e (on purpose)
+- Not tested live: the Replace modal on a phone, a real hosting-channel post/delete, a real Postgres for `gallery_replace` (needs one staging check).
+- Preview shows picture 1 only. "Preview each picture" / "preview as a different member" (plan 3.9) is not built.
+- Per-picture overrides (own crop / text color per picture) are still not built (owner question 3).
+- `/welcome preview` and the nudge post still use the single picture.
+- Remove still leaves its hosted message for the owner's review.
+
+## Next (updated after 2e)
+1. Owner reviews the stacked PRs in order: #423 (Phase 1), #424 to #428, 2d, then 2e. None merged by me.
+2. **Phase 3: framing and positioning** (pan/zoom arrows, picture frames, 3x3 position grid, nudge, text size). Keep every control available as a preview for free servers; gate saving and the join render with `studio_unlocked`. Add each new option key to `studio_keys` in `modules/welcome_studio.py`.
+3. Still-open plan questions for the owner: Premium lifetime includes studio? Keep Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery?

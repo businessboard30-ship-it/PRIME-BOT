@@ -474,6 +474,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
             manage_row = discord.ui.ActionRow()
             manage_row.add_item(CardPictureAddButton(guild_id, clone_id, invoker_id))
             if not studio.get("unlocked") or int(studio.get("pictures") or 0) > 0:
+                manage_row.add_item(CardPictureReplaceButton(guild_id, clone_id, invoker_id))
                 manage_row.add_item(CardPictureRemoveButton(guild_id, clone_id, invoker_id))
                 manage_row.add_item(CardPictureFirstButton(guild_id, clone_id, invoker_id))
             container.add_item(manage_row)
@@ -537,6 +538,35 @@ async def _avatar_bytes(session: aiohttp.ClientSession, user) -> bytes:
     return data
 
 
+async def _gallery_preview_bytes(session, client, guild_id: int, clone_id):
+    """Phase 2e: the editor preview shows gallery picture 1 for Premium/Plus servers (the real join rotates; the preview
+    stays stable so the admin can judge the look). None for everyone else, for an empty gallery, or on any error, so the
+    old single picture path runs exactly as before. Never raises."""
+    try:
+        from modules.welcome_studio import studio_unlocked
+        if client is None or not await studio_unlocked(guild_id, clone_id):
+            return None
+        from discord_bot.cogs.welcome import _gallery_slot_url, _fetch_custom_bg_bytes
+        rows = [r for r in await db.gallery_list(guild_id, clone_id) if not r.get("needs_new_picture")]
+        for row in rows[:3]:
+            key = f"gal:{guild_id}:{clone_id}:{row.get('message_id')}"
+            hit = _BG_CACHE.get(key)
+            if hit is not None and time.monotonic() - hit[0] < _BG_TTL:
+                return hit[1]
+            url, gone = await _gallery_slot_url(client, row)
+            if gone or not url:
+                continue
+            data, _why = await _fetch_custom_bg_bytes(session, url)
+            if data is not None:
+                _BG_CACHE[key] = (time.monotonic(), data)
+                _trim(_BG_CACHE, _BG_MAX)
+                return data
+        return None
+    except Exception:
+        logger.exception("[cardwz] gallery preview failed for guild %s", guild_id)
+        return None
+
+
 async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = False):
     """Draw the real card for the editor. Returns (png_bytes, caption_note). Raises on failure.
     No rate limit: unpaid servers get the same watermarked draft preview, as often as they like."""
@@ -549,9 +579,12 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = 
     async with aiohttp.ClientSession() as session:
         avatar = await _avatar_bytes(session, user)
         if unlocked:
+            bg_bytes = await _gallery_preview_bytes(session, client, guild_id, clone_id)
             url = str(cfg.get("custom_background_url") or "")
             hit = _BG_CACHE.get(url)
-            if hit is not None and time.monotonic() - hit[0] < _BG_TTL:
+            if bg_bytes is not None:
+                pass   # Phase 2e: Premium/Plus servers see picture 1 of the gallery, like the real welcome
+            elif hit is not None and time.monotonic() - hit[0] < _BG_TTL:
                 bg_bytes = hit[1]
             else:
                 bg_bytes = await _custom_bg_bytes_for_render(session, cfg, client)
@@ -1024,6 +1057,13 @@ class CardClearBackgroundButton(_Btn, discord.ui.DynamicItem[discord.ui.Button],
             self.guild_id, clone_id=self.clone_id,
             custom_background_url=None, custom_bg_channel_id=None, custom_bg_message_id=None,
         )
+        try:   # Phase 2e: say it plainly when gallery pictures still exist (Clear never deletes them)
+            if await db.gallery_list(self.guild_id, self.clone_id):
+                await interaction.followup.send(
+                    "ℹ️ The single background is cleared, but your gallery pictures are still used. "
+                    "Open More controls and use Remove a picture to take those out.", ephemeral=True)
+        except Exception:
+            logger.exception("[cardwz] clear-background gallery note failed for guild %s", self.guild_id)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
@@ -1545,6 +1585,133 @@ class CardPictureAddButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], temp
                 raise
 
 
+# ── Phase 2e: replace one picture in place ───────────────────────────────
+
+async def _replace_picture(bot, guild, guild_id: int, clone_id, slot: int, data: bytes):
+    """Swap the picture in `slot` for a new one (same slot number, same place in the order). Returns (ok, reason).
+    Never raises. Counts toward the daily upload limit like an Add does; the old hosted post is deleted best-effort."""
+    from modules import welcome_gallery as wg, image_host
+    try:
+        rows = await db.gallery_list(guild_id, clone_id)
+        if slot not in {int(r["slot"]) for r in rows}:
+            return False, f"there is no picture {slot} in the gallery"
+        if wg.uploads_left(guild_id, clone_id, await db.gallery_count_recent(guild_id, clone_id)) <= 0:
+            return False, f"daily limit of {wg.DAILY_UPLOAD_LIMIT} pictures reached, try tomorrow"
+        small = await asyncio.to_thread(wg.prepare_picture, data)
+        if small is None:
+            return False, "not a readable image"
+        gname = getattr(guild, "name", "?")
+        hosted = await image_host.post_to_host(bot, small, f"Studio picture {slot} (replaced) — guild `{guild_id}` ({gname})")
+        if hosted is None:
+            return False, "picture hosting is not available right now"
+        old = await db.gallery_replace(guild_id, clone_id, slot, hosted[0], hosted[1], hosted[2])
+        if old is None:   # the slot was removed while we were hosting: do not leave an orphan
+            try:
+                ch = bot.get_channel(int(hosted[0]))
+                if ch is not None:
+                    await ch.get_partial_message(int(hosted[1])).delete()
+            except Exception:
+                pass
+            return False, f"there is no picture {slot} in the gallery"
+        wg.note_upload(guild_id, clone_id)
+        if old[0] and old[1]:
+            try:
+                ch = bot.get_channel(int(old[0]))
+                if ch is not None:
+                    await ch.get_partial_message(int(old[1])).delete()
+            except Exception:
+                pass   # already gone, or no permission: the owner reviews the hosting channel anyway
+        return True, ""
+    except Exception:
+        logger.exception("[cardwz] replacing picture %s failed for guild %s", slot, guild_id)
+        return False, "something went wrong, try again"
+
+
+class CardPictureReplaceModal(discord.ui.Modal, title="Replace a picture"):
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        super().__init__()
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        self.number = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=2, placeholder="1 to 10")
+        self.upload = discord.ui.FileUpload(required=False, min_values=0, max_values=1)
+        self.url = discord.ui.TextInput(
+            style=discord.TextStyle.short, required=False, max_length=500, placeholder="https://…/image.png",
+        )
+        self.add_item(discord.ui.Label(text="Picture number", description="It keeps its place in the order.", component=self.number))
+        self.add_item(discord.ui.Label(text="New picture", description="png or jpg, 8MB", component=self.upload))
+        self.add_item(discord.ui.Label(text="…or paste a direct image link", component=self.url))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from discord_bot.cogs.welcome import (
+            CUSTOM_BG_ALLOWED_CONTENT_TYPES, CUSTOM_BG_MAX_BYTES, _fetch_custom_bg_bytes,
+        )
+        from modules import welcome_gallery as wg
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        try:
+            n = int(str(self.number.value or "").strip())
+        except ValueError:
+            n = 0
+        if not 1 <= n <= wg.MAX_PICTURES:
+            await interaction.followup.send(f"⚠️ Type a number from 1 to {wg.MAX_PICTURES}.", ephemeral=True)
+            return
+        files = list(self.upload.values or [])[:1]
+        url = str(self.url.value or "").strip()
+        data, why = None, None
+        if files:
+            f = files[0]
+            ct = (f.content_type or "").split(";")[0].strip().lower()
+            if ct not in CUSTOM_BG_ALLOWED_CONTENT_TYPES:
+                why = "not a png/jpg"
+            elif f.size > CUSTOM_BG_MAX_BYTES:
+                why = "over 8MB"
+            else:
+                try:
+                    data = await f.read()
+                except Exception:
+                    why = "could not be read"
+        elif url:
+            async with aiohttp.ClientSession() as session:
+                data, why = await _fetch_custom_bg_bytes(session, url)
+        else:
+            await interaction.followup.send("⚠️ Upload a picture or paste a link first.", ephemeral=True)
+            return
+        if data is None:
+            await interaction.followup.send(f"⚠️ Couldn't use that picture ({why or 'could not be read'}).", ephemeral=True)
+            return
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            # Preview only: show the new picture on the card in memory. Nothing is hosted or stored.
+            small = await asyncio.to_thread(_shrink_bg, data)
+            if small is None:
+                await interaction.followup.send("⚠️ Couldn't read that picture. Use png or jpg under 8MB.", ephemeral=True)
+                return
+            _get_draft(self.guild_id, self.clone_id, interaction.user.id, create=True)["bg"] = small
+            await interaction.followup.send(
+                f"\U0001F512 Preview only: {LOCKED_LINE} Pictures are stored and managed with Premium.", ephemeral=True)
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+            return
+        ok, reason = await _replace_picture(
+            interaction.client, interaction.guild or interaction.client.get_guild(self.guild_id),
+            self.guild_id, self.clone_id, n, data)
+        if not ok:
+            await interaction.followup.send(f"⚠️ Picture {n} was not replaced: {reason}.", ephemeral=True)
+            return
+        await interaction.followup.send(f"✅ Picture {n} replaced.", ephemeral=True)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardPictureReplaceButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("picreplace")):
+    FIELD, LABEL = "picreplace", "\U0001F501 Replace a picture"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        try:
+            await interaction.response.send_modal(CardPictureReplaceModal(self.guild_id, self.clone_id, self.invoker_id))
+        except discord.HTTPException as e:
+            if e.code != 40060:  # double-click: modal already open
+                raise
+
+
 class CardStudioPremiumButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("studiogoprem")):
     FIELD, STYLE = "studiogoprem", discord.ButtonStyle.primary
 
@@ -1569,4 +1736,5 @@ DYNAMIC_ITEMS = (
     CardMoreButton, CardUndoButton, CardStepResetButton, CardTestSendButton,
     CardRotationSelect,
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
+    CardPictureReplaceButton,
 )
