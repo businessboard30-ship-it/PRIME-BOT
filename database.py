@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "129"
+SCHEMA_VERSION = "130"
+# "129" -> "130" adds 081_welcome_dm_fallback.sql (dm_fallback_to_channel on discord_welcome_config: Welcome Card Studio Phase 6a). ADD COLUMN IF NOT EXISTS only.
 # "128" -> "129" adds 080_welcome_designs.sql (discord_welcome_designs + active_design_id on discord_welcome_config: Welcome Card Studio Phase 5a). CREATE TABLE / ADD COLUMN / CREATE INDEX IF NOT EXISTS only.
 # "127" -> "128" adds 079_welcome_gallery_migrated.sql (gallery_migrated flag on discord_welcome_config: Welcome Card Studio Phase 2d). ADD COLUMN IF NOT EXISTS only.
 # "126" -> "127" adds 078_welcome_gallery.sql (discord_welcome_backgrounds + rotation_mode/rotation_counter/last_slot_used on discord_welcome_config: Welcome Card Studio Phase 2a). CREATE TABLE / ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5876,6 +5877,11 @@ class Database:
         welcome_designs_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "080_welcome_designs.sql"
         if welcome_designs_migration.exists():
             await conn.execute(welcome_designs_migration.read_text())
+
+        # Welcome Card Studio Phase 6a: DM-closed fallback to the welcome channel. Additive/idempotent.
+        welcome_dm_fallback_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "081_welcome_dm_fallback.sql"
+        if welcome_dm_fallback_migration.exists():
+            await conn.execute(welcome_dm_fallback_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
@@ -12109,7 +12115,7 @@ class Database:
                 # backfilled to False, above.
                 "use_template": True,
                 "template_announced_at": None, "template_announce_status": None,
-                "delivery_mode": "channel",
+                "delivery_mode": "channel", "dm_fallback_to_channel": False,
                 "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
                 "card_theme": "wolf", "card_pack_unlocked": False,
                 "ultra_pack_unlocked": False, "custom_background_url": None,
@@ -12507,6 +12513,16 @@ class Database:
             res = await conn.execute(
                 "UPDATE discord_welcome_config SET rotation_mode = $3 "
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, mode)
+        return res.endswith(" 1")
+
+    async def set_welcome_dm_fallback(self, guild_id: int, clone_id: Optional[int], on: bool) -> bool:
+        """Phase 6a: turn "DMs closed -> post in the channel instead" on or off. Touches only that one column
+        (never the big upsert). Returns True when a row changed; False when the server has no welcome row yet."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE discord_welcome_config SET dm_fallback_to_channel = $3, updated_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, bool(on))
         return res.endswith(" 1")
 
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:

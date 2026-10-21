@@ -33,7 +33,8 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 4f. Owner-approved glow and fonts: soft glow edge frame, sparkle effect, text glow, four more fonts | **Built, PR open, not merged** (stacked on 4e) | branch `feat/welcome-studio-phase4f` |
 | 5a. Saved designs, data layer only (table, migration 080, DB methods, pure helpers; no wizard UI yet) | **Built, PR open, not merged** (stacked on 4f) | branch `feat/welcome-studio-phase5a` |
 | 5b. Saved designs in the wizard (Send step): Save this look, Load, Rename, Delete | **Built, PR open, not merged** (stacked on 5a) | branch `feat/welcome-studio-phase5b` |
-| Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, new fonts, more effects) and 5 to 7 | Not started | |
+| 6a. DM extra: "DMs closed: post in channel" toggle (Setup wizard, DM mode only), free for everyone | **Built, PR open, not merged** (stacked on 5b; migration 081, schema 130) | branch `feat/welcome-studio-phase6a` |
+| Polaroid / film strip frames, rest of Phase 6 (separate DM text, different design for the DM) and Phase 7 (scheduled designs) | Not started | |
 
 ## What Phase 1 built
 
@@ -552,3 +553,29 @@ Small slice. No migration, no renderer change, the join never reads designs. Onl
 1. Owner reviews / merges in this order: #436 to #443, #444 (5a), then the 5b PR. Staging check: migration 080, then Save / Load / Rename / Delete on a phone.
 2. **Phase 6: DM extras** (fall back to the channel when DMs are closed, separate DM text, optional different design for the DM; reuse `discord_bot/dm_send.py`). Needs the owner's answer on which extras to keep.
 3. Phase 7: scheduled designs (will use `active_design_id`); optional avatar glow slice.
+
+
+## Phase 6a (2026-10-21): what it built (DMs closed -> post in the channel)
+
+Small slice, first of Phase 6. The owner has not yet said which Phase 6 extras to keep, so only the first one in the plan (3.8) was built; the other two wait for an answer.
+
+- **Migration 081** (`081_welcome_dm_fallback.sql`, registered in `database.py`, `SCHEMA_VERSION` 129 -> 130, guard test pins updated): `discord_welcome_config.dm_fallback_to_channel BOOLEAN NOT NULL DEFAULT FALSE`. Off for every existing server, so nothing changes until an admin taps the button.
+- **DB:** `db.set_welcome_dm_fallback(guild_id, clone_id, on)` updates only that column (not the big `set_welcome_config` upsert); returns False if the server has no welcome row. The default config dict has the key (False).
+- **Join (`welcome.py`, DM mode only):** when the DM fails because it is really closed (`discord.Forbidden`, or error code 50007) AND the toggle is on AND a Step 1 channel is set, the same text and card are posted in that channel (`_post_dm_fallback`, never raises; `_dm_is_closed`). A rate limit or 5xx is NOT "closed": it keeps the old log-and-skip, so no surprise or double post. Channel mode is untouched. If the fallback post itself fails, it is logged and nothing else happens (the member is still treated as "handled", so no plain-text retry).
+- **Wizard (`/welcome` setup, `_views_welcome.py`):** `WelcomeDmFallbackButton` (id `dmfb`, in `DYNAMIC_ITEMS`) sits next to the card-mode toggle, **only while delivery is "DM the member"**. Label `📬 DMs closed: post in channel (on|off)`, green when on. Turning it ON needs a channel in Step 1 first (else a private "Pick a welcome channel in Step 1 first" note); turning it OFF always works. The status text shows "(channel if DMs are closed)" next to the delivery line while it is on. Free for every server (not a studio feature, so `STUDIO_KEYS` and the gate are not involved).
+- Tests: `tests/unit/test_welcome_studio_phase6a.py` (25): closed vs not closed, the fallback helper (channel missing, junk id, send failure), the real `on_member_join` in DM mode (DM ok, closed, forbidden, flag off, 5xx, no channel, fallback fails, channel mode), the wizard button (only in DM mode, label/color, registered, status line, taps, no channel, no access), migration/default/setter. Six of them fail without the join change (checked). Also changed: the 5a migration test now checks `SCHEMA_VERSION >= 129` instead of exactly 129.
+
+### Test numbers (6a)
+Schema guard + all `test_welcome_studio_*` files + `test_card_wizard_tv` + the setup-TV, custom-bg-wizard and cover-unlock files: 366 tests, 365 passed, 1 failed. The failure (`test_card_wizard_tv::test_opening_the_wizard_starts_the_trial_once_and_shows_the_tv`) passes when the file runs alone (27 passed): the known test-order pollution, same as 4b. The full unit suite was not run.
+
+### Known gaps in 6a (on purpose)
+- Not tested live (phone tap, a real member with DMs closed). Migration 081 not run against a real Postgres (staging check, together with 078 to 080).
+- The toggle is only in the `/welcome` setup wizard, not on the join-DM "welcome sub-screen" (`_views_join_dm.py`), which has its own delivery button. Add it there if the owner wants it in both.
+- No notice to the admin when a fallback post happens (it is logged at info level only). A "N members had DMs closed" counter would be a later extra.
+- Does not cover the case where the DM never errors but the member simply never sees it.
+
+## Next (updated after 6a)
+1. Owner reviews / merges the stacked chain in order: #436 (3e's docs) ... through 5b, then the 6a PR. #434 and #435 are already merged into `main`. Staging check: migrations 078 to 081, then the Phase 1 to 6a controls on a phone.
+2. **Rest of Phase 6, needs the owner's answer first:** separate DM text (with the existing variables) and an optional different design for the DM. Ask which to keep.
+3. Phase 7: scheduled designs (will use `active_design_id`; reuse an existing daily loop). Optional: polaroid / film strip frames, avatar glow.
+4. Still-open plan questions for the owner: Per-picture overrides? Should Clear background also clear the gallery? Add the DM-closed toggle to the join-DM sub-screen too?

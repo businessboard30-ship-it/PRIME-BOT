@@ -324,6 +324,29 @@ async def _gallery_slot_url(bot: commands.Bot, row: dict) -> tuple[str | None, b
     return message.attachments[0].url, False
 
 
+def _dm_is_closed(err) -> bool:
+    """True only when Discord says the member cannot be DMed (403, or 400 with error code 50007).
+    A rate limit or a 5xx is NOT "closed": those keep the old log-and-skip behavior (no surprise channel post)."""
+    return isinstance(err, discord.Forbidden) or getattr(err, "code", None) == 50007
+
+
+async def _post_dm_fallback(member, config: dict, card_bytes: bytes, ext: str, content: str) -> bool:
+    """Phase 6a: the member's DMs are closed and the admin turned on the fallback, so post the same card and text in
+    the welcome channel. Never raises. False when there is no usable channel or the post failed."""
+    try:
+        raw = config.get("channel_id")
+        if not raw:
+            return False
+        channel = member.guild.get_channel(int(raw))
+        if channel is None:
+            return False
+        await channel.send(content=content, file=discord.File(fp=io.BytesIO(card_bytes), filename=f"welcome.{ext}"))
+        return True
+    except (discord.Forbidden, discord.HTTPException, ValueError, TypeError) as e:
+        logger.info(f"[v0] DM-closed fallback post failed for guild {getattr(member.guild, 'id', '?')}: {e}")
+        return False
+
+
 async def _gallery_bg_bytes_for_render(
     session: aiohttp.ClientSession, config_row: dict, bot: commands.Bot | None, member_number: int | None = None
 ) -> bytes | None:
@@ -1425,6 +1448,9 @@ class WelcomeCog(GuildOnlyCog):
                     # the on_member_join listener.
                     logger.info(f"[v0] Couldn't DM welcome card to {member.id} in guild {member.guild.id} (DMs closed): {dm_err}")
                     sent = True
+                    # Phase 6a (off by default): DMs closed and the admin asked for it -> post in the channel instead.
+                    if config.get("dm_fallback_to_channel") and _dm_is_closed(dm_err):
+                        await _post_dm_fallback(member, config, card_bytes, ext, content)
             else:
                 await channel.send(content=content, file=file)
                 sent = True

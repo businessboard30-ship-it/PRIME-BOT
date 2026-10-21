@@ -60,7 +60,8 @@ def test_migration_is_additive_and_registered_and_version_bumped():
     assert not re.search(r"\bDROP\b|\bTRUNCATE\b|\bDELETE\b", sql, re.I)
     src = (ROOT / "database.py").read_text()
     assert "080_welcome_designs.sql" in src
-    assert re.search(r'^SCHEMA_VERSION = "129"', src, re.M)
+    # 5a bumped it to 129; later phases bump it again, so this only checks "at least 129".
+    assert int(re.search(r'^SCHEMA_VERSION = "(\d+)"', src, re.M).group(1)) >= 129
 
 
 def test_renderer_and_join_do_not_use_designs():
