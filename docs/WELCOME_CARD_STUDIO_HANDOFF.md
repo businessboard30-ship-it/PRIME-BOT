@@ -125,3 +125,14 @@ Full unit suite: 5170 passed, 4 failed, 4 skipped. Same 4 as 2b: `test_ultra_tri
 ## Next small slices
 - **2c-2**: numbered strip + Remove / Make first (no upload needed) + "Unlock with Premium" button.
 - **2d**: multi-upload, downscale to 1536 px, caption on host post, daily upload limit, copy old single picture in as picture 1.
+
+## Rule from the owner (2026-10-21): the studio is open to everyone, only SAVING is Premium
+
+Same idea as Ultra preview mode: anyone can open the studio and play with every control; nothing is stored unless the server has Premium/Plus. **Do not hide studio controls from free servers in later slices; gate the save and the join render instead.**
+
+Applied in 2c-1 (follow-up commit on PR #427):
+- The rotation select shows in More controls for **every** server.
+- Free server: the pick is kept in memory only (`_ROTATION_DRAFT`, per person, trimmed like the other state) and shown as a "Preview only ... saves with Premium" line. Nothing goes to the database.
+- Premium/Plus server: the pick is saved with `db.gallery_set_rotation_mode` (still re-checked on the server).
+- Join render is unchanged: only Premium/Plus gets the gallery at join (2b).
+- For 2c-2 and later: Add/Remove/Make first, frames, effects etc. should work as an in-memory preview for free servers (nothing hosted or stored), and the save/apply path checks `studio_unlocked`. "Unlock with Premium" button still to add.

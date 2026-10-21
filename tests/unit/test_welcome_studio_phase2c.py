@@ -37,14 +37,16 @@ def run(c):
 UNLOCKED = {"unlocked": True, "pictures": 3, "needs": [], "mode": "random"}
 
 
-def test_no_summary_means_the_step_looks_exactly_as_before():
-    v = build(None, more=True)
-    assert "rotation" not in kinds(v) and "Gallery" not in texts(v) and "Premium" not in texts(v)
+def test_no_summary_means_no_gallery_line_but_the_picker_is_still_there():
+    v = build(None, more=True)          # summary lookup failed: wizard must not break
+    assert "rotation" in kinds(v) and "Gallery" not in texts(v) and "Premium" not in texts(v)
 
 
-def test_locked_server_sees_one_line_and_no_rotation_select():
-    v = build({"unlocked": False}, more=True)
-    assert "Studio is part of Premium." in texts(v) and "rotation" not in kinds(v)
+def test_free_server_can_open_the_picker_and_is_told_it_is_preview_only():
+    v = build({"unlocked": False, "mode": "random"}, more=True)
+    assert "rotation" in kinds(v)
+    t = texts(v)
+    assert "Preview only" in t and "Studio is part of Premium." in t and "saves with Premium" in t
 
 
 def test_premium_sees_count_and_mode_in_plain_words():
@@ -52,9 +54,10 @@ def test_premium_sees_count_and_mode_in_plain_words():
     assert "3 of 10" in t and wg.MODE_LABELS["random"] in t
 
 
-def test_rotation_select_only_in_more_mode_and_only_when_unlocked():
-    assert "rotation" not in kinds(build(UNLOCKED))
-    assert "rotation" in kinds(build(UNLOCKED, more=True))
+def test_rotation_select_only_in_more_mode_but_for_everyone():
+    for studio in (UNLOCKED, {"unlocked": False}):
+        assert "rotation" not in kinds(build(studio))
+        assert "rotation" in kinds(build(studio, more=True))
 
 
 def test_easy_mode_still_three_controls_or_fewer():
@@ -138,11 +141,26 @@ def _select(monkeypatch, unlocked, value="order"):
     return s, saved, rerendered
 
 
-def test_locked_server_cannot_save_a_mode_even_with_a_stale_button(monkeypatch):
-    s, saved, rer = _select(monkeypatch, unlocked=False)
+def test_free_server_can_try_it_but_nothing_is_saved(monkeypatch):
+    cc._ROTATION_DRAFT.clear()
+    s, saved, rer = _select(monkeypatch, unlocked=False, value="order")
     i = FakeInter()
     run(s.callback(i))
-    assert saved == [] and rer == [] and i.followup.sent == ["Studio is part of Premium."]
+    assert saved == [] and rer == [1] and i.followup.sent == []
+    assert cc._ROTATION_DRAFT[cc._draft_key(1, None, 5)] == "order"      # memory only
+
+
+def test_preview_pick_shows_in_the_summary_and_the_select(monkeypatch):
+    import modules.welcome_studio as ws
+
+    async def no(g, c=None): return False
+    monkeypatch.setattr(ws, "studio_unlocked", no)
+    cc._ROTATION_DRAFT[cc._draft_key(1, None, 5)] = "member"
+    cfg = run(cc._with_studio({}, 1, None, 5))
+    assert cfg["_studio"] == {"unlocked": False, "mode": "member"}
+    assert [o.value for o in cc.CardRotationSelect(1, None, 5, cfg).item.options if o.default] == ["member"]
+    assert run(cc._with_studio({}, 1, None, 99))["_studio"]["mode"] == "random"   # other people are not affected
+    cc._ROTATION_DRAFT.clear()
 
 
 def test_unlocked_server_saves_the_mode_and_redraws(monkeypatch):
@@ -168,7 +186,7 @@ def test_studio_summary_unlocked_locked_and_error(monkeypatch):
     s = run(cc._with_studio({"rotation_mode": "pin"}, 1, None))["_studio"]
     assert s == {"unlocked": True, "pictures": 2, "needs": [2], "mode": "pin"}
     monkeypatch.setattr(ws, "studio_unlocked", no)
-    assert run(cc._with_studio({}, 1, None))["_studio"] == {"unlocked": False}
+    assert run(cc._with_studio({}, 1, None))["_studio"] == {"unlocked": False, "mode": "random"}
     monkeypatch.setattr(ws, "studio_unlocked", yes)
     monkeypatch.setattr(cc.db, "gallery_list", boom, raising=False)
     cfg = {"x": 1}

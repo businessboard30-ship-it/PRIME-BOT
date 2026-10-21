@@ -368,14 +368,18 @@ def _caption(unlocked: bool, note, tv_ok: bool, config=None) -> str:
     return "\n".join(lines)
 
 
-async def _with_studio(config: dict, guild_id: int, clone_id) -> dict:
+_ROTATION_DRAFT: dict = {}   # (guild, clone, user) -> rotation mode picked in preview by a server without Premium (memory only, never saved)
+
+
+async def _with_studio(config: dict, guild_id: int, clone_id, user_id=None) -> dict:
     """Phase 2c: add a small read-only `_studio` summary (Premium?, picture count, rotation, slots needing a picture)
     so the sync view builder can show the gallery line. Never raises; on any error the Pictures step looks as before."""
     try:
         from modules import welcome_gallery as wg
         from modules.welcome_studio import studio_unlocked
         if not await studio_unlocked(guild_id, clone_id):
-            return dict(config, _studio={"unlocked": False})
+            mode = wg.clean_mode(_ROTATION_DRAFT.get(_draft_key(guild_id, clone_id, user_id)))
+            return dict(config, _studio={"unlocked": False, "mode": mode})
         rows = await db.gallery_list(guild_id, clone_id)
         return dict(config, _studio={
             "unlocked": True, "pictures": len(rows),
@@ -394,7 +398,8 @@ def _gallery_line(studio: dict | None) -> str | None:
     if not studio:
         return None
     if not studio.get("unlocked"):
-        return f"-# \U0001F512 {LOCKED_LINE}"
+        return (f"-# \U0001F512 Preview only: {LOCKED_LINE} Try it here, it saves with Premium.\n"
+                f"-# \U0001F4DA Change picture: {wg.MODE_LABELS[wg.clean_mode(studio.get('mode'))]}")
     n = int(studio.get("pictures") or 0)
     line = f"-# \U0001F4DA Gallery: {n} of {wg.MAX_PICTURES} pictures · {wg.MODE_LABELS[wg.clean_mode(studio.get('mode'))]}"
     needs = studio.get("needs") or []
@@ -449,9 +454,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         container.add_item(bg_row)
         extra = ()
         if more:
-            extra = (CardFocusSelect,)
-            if (raw_config.get("_studio") or {}).get("unlocked"):
-                extra += (CardRotationSelect,)
+            extra = (CardFocusSelect, CardRotationSelect)
         for select_cls in (CardRatioSelect, CardDimSelect) + extra:
             _select_row(select_cls)
     elif tab == "layout":
@@ -585,7 +588,7 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
                 ultra_card_json=json.dumps(d["opts"]), avatar_shape=d["shape"],
             )
             config = await db.get_welcome_config(guild_id, clone_id=clone_id)
-    config = await _with_studio(config, guild_id, clone_id)
+    config = await _with_studio(config, guild_id, clone_id, interaction.user.id)
     key = _draft_key(guild_id, clone_id, interaction.user.id)
     _set_tab(key, "bg")
     tv = None
@@ -640,7 +643,7 @@ async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, i
     async with lock:
         if _GEN.get(key) != gen:
             return
-        config = await _with_studio(await db.get_welcome_config(guild_id, clone_id=clone_id), guild_id, clone_id)
+        config = await _with_studio(await db.get_welcome_config(guild_id, clone_id=clone_id), guild_id, clone_id, interaction.user.id)
         tv = None
         try:
             tv = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(guild_id),
@@ -818,12 +821,14 @@ class CardShapeSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Sele
 
 
 class CardRotationSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("rotation")):
-    """Phase 2c: how pictures change for each newcomer. Premium/Plus only, re-checked on the server."""
+    """Phase 2c: how pictures change for each newcomer. Open to everyone as a preview; only Premium/Plus
+    servers can SAVE it (re-checked on the server when tapped)."""
 
     def __init__(self, guild_id: int, clone_id, invoker_id, config: dict | None = None):
         from modules import welcome_gallery as wg
         self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
-        current = wg.clean_mode((config or {}).get("rotation_mode") or ((config or {}).get("_studio") or {}).get("mode"))
+        studio = (config or {}).get("_studio") or {}
+        current = wg.clean_mode(studio.get("mode") or (config or {}).get("rotation_mode"))
         super().__init__(discord.ui.Select(
             placeholder="Change picture for each newcomer",
             options=[discord.SelectOption(label=label, value=value, default=(value == current))
@@ -839,9 +844,12 @@ class CardRotationSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id
         if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
-        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        from modules.welcome_studio import studio_unlocked
         if not await studio_unlocked(self.guild_id, self.clone_id):
-            await interaction.followup.send(LOCKED_LINE, ephemeral=True)
+            # Preview only: remember the pick in memory so they can try it, store nothing.
+            _ROTATION_DRAFT[_draft_key(self.guild_id, self.clone_id, interaction.user.id)] = self.item.values[0]
+            _trim(_ROTATION_DRAFT, _STATE_MAX)
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
             return
         await db.gallery_set_rotation_mode(self.guild_id, self.clone_id, self.item.values[0])
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
@@ -1184,7 +1192,7 @@ async def _show_step(interaction: discord.Interaction, guild_id: int, clone_id, 
     key = _draft_key(guild_id, clone_id, interaction.user.id)
     config = await db.get_welcome_config(guild_id, clone_id=clone_id)
     if tab == "bg":
-        config = await _with_studio(config, guild_id, clone_id)
+        config = await _with_studio(config, guild_id, clone_id, interaction.user.id)
     name = _TV_STATE.get(key)
     if name is None and key not in _TV_STATE:        # state lost (bot restarted): fall back to what is on the message
         msg = interaction.message
