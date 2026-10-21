@@ -7,6 +7,8 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 
 ## Status (2026-10-21)
 
+> **2026-10-21 (latest): everything built so far is merged into `main`**: #434 (3d) and #435 (render sites) earlier, then #436 to #447 (3e to 6b) on the owner's instruction, in order. `main` was merged into the tip branch once to resolve the 3d x 3e/4b/4c overlap (same renderer block and `STUDIO_KEYS` line; kept every key). One layout consequence: the **Text step in More mode** is the fullest screen (39 of 40 components), so its two plain divider lines are dropped there (`crowded` in `build_customize_view`); the text spot (3d) now has its own row under the Heading/Member #/Size/Heading font/Outline row. **PR #422** (an older "plan is UNDER DEVELOPMENT, nothing is built" banner on the plan doc) was left open on purpose: it conflicts with `main`'s copy and its banner is now false. Older per-phase sections still say "PR open, not merged" in their own text: that is history, the status table is current. Railway is still paused, so nothing here has reached production.
+
 > **2026-10-21: phases 0 to 3c were merged into `main` (PRs #423 to #433), in order, on the owner's instruction.** The older per-phase sections below still say "PR open, not merged" in their own text: that is history, the status table right below is current. **Open PRs, none merged:** #434 (3d, independent), #435 (render sites, independent), and a stacked chain, easiest to merge in this order: #436 (this handoff, docs only), #437 (3e avatar spot), #438 (4a picture look), #439 (4b heading font). Each in the chain is cut from the one before it, so its diff also shows the earlier ones until they merge. #434 and #437 both add a key on the same `STUDIO_KEYS` / `STUDIO_DEFAULTS` line: whichever merges second may need a one-line conflict fix, keep both keys.
 
 | Phase | State | Where |
@@ -22,19 +24,19 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 3a. Zoom + pan arrows, text size (first slice of Phase 3) | **Built and merged into `main`** (stacked on 2e) | branch `feat/welcome-studio-phase3a` |
 | 3b. Picture frames (none, thin, thick, double, rounded) + frame color | **Built and merged into `main`** (stacked on 3a) | branch `feat/welcome-studio-phase3b` |
 | 3c. Nudge the text block (arrows on the Text step) + safe-area guard | **Built and merged into `main`** (stacked on 3b; PR opened against `main` on the owner's instruction, so its diff also carries the unmerged earlier phases) | branch `feat/welcome-studio-phase3c` |
-| 3d. 3x3 text position (one cycle button on the Text step) | **Built, PR #434 open, not merged** (cut from merged `main`) | branch `feat/welcome-studio-phase3d` |
-| Follow-up. Studio options gated at every place a card is drawn (preview, nudge, setup TV, test post) | **Built, PR #435 open, not merged** (cut from `main`, independent of #434) | branch `feat/welcome-studio-render-sites` |
-| 3e. Avatar spot (one cycle button on the Look step) | **Built, PR #437 open, not merged** (cut from `main` plus the handoff-docs PR #436; independent of #434 and #435 in code) | branch `feat/welcome-studio-phase3e` |
-| 4a. Picture look (effect): blur, vignette, black & white, warm, cool, faded (one cycle button on the Look step) | **Built, PR #438 open, not merged** (stacked on 3e, so its diff also carries 3e) | branch `feat/welcome-studio-phase4a` |
-| 4b. Heading font: the heading line gets its own font (one cycle button on the Text step) | **Built, PR #439 open, not merged** (stacked on 4a, so its diff also carries 3e and 4a) | branch `feat/welcome-studio-phase4b` |
-| 4c. Text outline: dark edge around the text, none / thin / medium / thick (one cycle button on the Text step) | **Built, PR open, not merged** (stacked on 4b, so its diff also carries 3e, 4a, 4b) | branch `feat/welcome-studio-phase4c` |
-| 4d. Picture brightness: darker / dark / normal / light / lighter (one cycle button on the Look step) | **Built, PR open, not merged** (stacked on 4c, so its diff also carries 3e, 4a, 4b, 4c) | branch `feat/welcome-studio-phase4d` |
-| 4e. Film grain (new value in the Look cycle) + medium frame (new value in the Frame cycle) | **Built, PR open, not merged** (stacked on 4d) | branch `feat/welcome-studio-phase4e` |
-| 4f. Owner-approved glow and fonts: soft glow edge frame, sparkle effect, text glow, four more fonts | **Built, PR open, not merged** (stacked on 4e) | branch `feat/welcome-studio-phase4f` |
-| 5a. Saved designs, data layer only (table, migration 080, DB methods, pure helpers; no wizard UI yet) | **Built, PR open, not merged** (stacked on 4f) | branch `feat/welcome-studio-phase5a` |
-| 5b. Saved designs in the wizard (Send step): Save this look, Load, Rename, Delete | **Built, PR open, not merged** (stacked on 5a) | branch `feat/welcome-studio-phase5b` |
-| 6a. DM extra: "DMs closed: post in channel" toggle (Setup wizard, DM mode only), free for everyone | **Built, PR open, not merged** (stacked on 5b; migration 081, schema 130) | branch `feat/welcome-studio-phase6a` |
-| 6b. DM extra: separate DM text (Setup wizard, DM mode only) + the DMs-closed switch also on the join-DM welcome sub-screen | **Built, PR open, not merged** (stacked on 6a; migration 082, schema 131) | branch `feat/welcome-studio-phase6b` |
+| 3d. 3x3 text position (one cycle button on the Text step) | **Built and merged into `main`** (cut from merged `main`) | branch `feat/welcome-studio-phase3d` |
+| Follow-up. Studio options gated at every place a card is drawn (preview, nudge, setup TV, test post) | **Built and merged into `main`** (cut from `main`, independent of #434) | branch `feat/welcome-studio-render-sites` |
+| 3e. Avatar spot (one cycle button on the Look step) | **Built and merged into `main`** (cut from `main` plus the handoff-docs PR #436; independent of #434 and #435 in code) | branch `feat/welcome-studio-phase3e` |
+| 4a. Picture look (effect): blur, vignette, black & white, warm, cool, faded (one cycle button on the Look step) | **Built and merged into `main`** (stacked on 3e, so its diff also carries 3e) | branch `feat/welcome-studio-phase4a` |
+| 4b. Heading font: the heading line gets its own font (one cycle button on the Text step) | **Built and merged into `main`** (stacked on 4a, so its diff also carries 3e and 4a) | branch `feat/welcome-studio-phase4b` |
+| 4c. Text outline: dark edge around the text, none / thin / medium / thick (one cycle button on the Text step) | **Built and merged into `main`** (stacked on 4b, so its diff also carries 3e, 4a, 4b) | branch `feat/welcome-studio-phase4c` |
+| 4d. Picture brightness: darker / dark / normal / light / lighter (one cycle button on the Look step) | **Built and merged into `main`** (stacked on 4c, so its diff also carries 3e, 4a, 4b, 4c) | branch `feat/welcome-studio-phase4d` |
+| 4e. Film grain (new value in the Look cycle) + medium frame (new value in the Frame cycle) | **Built and merged into `main`** (stacked on 4d) | branch `feat/welcome-studio-phase4e` |
+| 4f. Owner-approved glow and fonts: soft glow edge frame, sparkle effect, text glow, four more fonts | **Built and merged into `main`** (stacked on 4e) | branch `feat/welcome-studio-phase4f` |
+| 5a. Saved designs, data layer only (table, migration 080, DB methods, pure helpers; no wizard UI yet) | **Built and merged into `main`** (stacked on 4f) | branch `feat/welcome-studio-phase5a` |
+| 5b. Saved designs in the wizard (Send step): Save this look, Load, Rename, Delete | **Built and merged into `main`** (stacked on 5a) | branch `feat/welcome-studio-phase5b` |
+| 6a. DM extra: "DMs closed: post in channel" toggle (Setup wizard, DM mode only), free for everyone | **Built and merged into `main`** (stacked on 5b; migration 081, schema 130) | branch `feat/welcome-studio-phase6a` |
+| 6b. DM extra: separate DM text (Setup wizard, DM mode only) + the DMs-closed switch also on the join-DM welcome sub-screen | **Built and merged into `main`** (stacked on 6a; migration 082, schema 131) | branch `feat/welcome-studio-phase6b` |
 | Polaroid / film strip frames, Phase 7 (scheduled designs) | Not started | |
 
 ## What Phase 1 built

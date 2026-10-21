@@ -40,9 +40,9 @@ async def studio_unlocked(guild_id: Optional[int], clone_id: Optional[int] = Non
 
 
 # Option keys (inside ultra_card_json) that only Premium/Plus servers may save or render. Add each new studio key here.
-STUDIO_KEYS = frozenset({"zoom", "pan_x", "pan_y", "text_size", "frame", "frame_color", "text_dx", "text_dy", "avatar_pos", "effect", "heading_font", "text_outline", "brightness"})
+STUDIO_KEYS = frozenset({"zoom", "pan_x", "pan_y", "text_size", "frame", "frame_color", "text_dx", "text_dy", "avatar_pos", "effect", "heading_font", "text_outline", "brightness", "text_pos"})
 STUDIO_DEFAULTS = {"zoom": 100, "pan_x": 0, "pan_y": 0, "text_size": "medium", "frame": "none", "frame_color": "white",
-                   "text_dx": 0, "text_dy": 0, "avatar_pos": "auto", "effect": "none", "heading_font": "same", "text_outline": "auto", "brightness": "normal"}
+                   "text_dx": 0, "text_dy": 0, "avatar_pos": "auto", "effect": "none", "heading_font": "same", "text_outline": "auto", "brightness": "normal", "text_pos": "auto"}
 
 
 def uses_studio_options(raw) -> bool:

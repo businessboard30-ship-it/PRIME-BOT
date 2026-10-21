@@ -499,6 +499,8 @@ ULTRA_DEFAULTS = {
     # Welcome Card Studio phase 3c (Premium/Plus only at save and join): nudge the text block, in pixels at card width 1536.
     "text_dx": 0,              # -300 (left) .. 300 (right); the safe-area guard keeps the text on the card and off the avatar
     "text_dy": 0,              # -300 (up) .. 300 (down)
+    # Welcome Card Studio phase 3d (Premium/Plus only): which cell of a 3x3 grid the text block sits in; the nudge adds on top.
+    "text_pos": "auto",        # key of ULTRA_TEXT_POS; "auto" = wherever the layout puts it (the classic look)
 }
 ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast")
 ULTRA_LAYOUTS = ("banner", "centered")
@@ -511,6 +513,12 @@ ULTRA_BRIGHTNESS = {"darker": 0.65, "dark": 0.82, "normal": 1.0, "light": 1.18, 
 ULTRA_EFFECTS = ("none", "blur", "vignette", "bw", "warm", "cool", "fade", "grain", "sparkle")   # all cheap; glow/sparkle need the owner's OK
 ULTRA_AVATAR_EDGE = 60       # a chosen avatar spot sits this far from the card edge (ring included)
 ULTRA_NUDGE_LIMIT = 300
+ULTRA_TEXT_POS = {            # grid cell -> (row, column)
+    "top-left": ("top", "left"), "top": ("top", "center"), "top-right": ("top", "right"),
+    "left": ("middle", "left"), "center": ("middle", "center"), "right": ("middle", "right"),
+    "bottom-left": ("bottom", "left"), "bottom": ("bottom", "center"), "bottom-right": ("bottom", "right"),
+}
+ULTRA_TEXT_POS_PAD = 60      # how far from the card edge a grid cell puts the text block
 ULTRA_NUDGE_MARGIN = 24      # the text block never gets closer than this to the card edge
 ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
 ULTRA_FRAMES = ("none", "thin", "medium", "thick", "double", "rounded", "glow")   # soft glow added in 4f with the owner's OK; polaroid / film strip: later
@@ -683,6 +691,8 @@ def parse_ultra_options(raw) -> dict:
         v = raw.get(k)
         if isinstance(v, int) and not isinstance(v, bool):
             opts[k] = max(-ULTRA_NUDGE_LIMIT, min(ULTRA_NUDGE_LIMIT, v))
+    if raw.get("text_pos") in ULTRA_TEXT_POS:
+        opts["text_pos"] = raw["text_pos"]
     return opts
 
 
@@ -1178,8 +1188,10 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
 
     tdx = tdy = 0
     boxes = []
-    if opts["text_dx"] or opts["text_dy"] or avatar_nudged:
-        # Studio 3c: nudge the whole text block, cut down by the safe-area guard (on the card, off the avatar).
+    if opts["text_dx"] or opts["text_dy"] or opts["text_pos"] != "auto" or avatar_nudged:
+        # Studio 3c/3d/3e: anchor the text block to a grid cell, nudge it, then cut it down by the safe-area guard
+        # (on the card, off the avatar). With only an avatar move the boxes are still measured (the avatar guard
+        # needs them) but the text itself stays where it was.
         def _w_of(text, size, styled, fk=None):
             return draw.textlength(text, font=_style_font(fk or font_key, size)) if styled else _tlf(draw, text, size)
         if number_text:
@@ -1196,8 +1208,18 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
             guard = {"avoid_right": avatar_x - ring_pad - 24}
         else:
             guard = {"avoid_left": avatar_x + avatar_dim + ring_pad + 24}
-        if opts["text_dx"] or opts["text_dy"]:
-            tdx, tdy = _clamp_text_nudge(boxes, opts["text_dx"], opts["text_dy"], W, H, **guard)
+        if opts["text_dx"] or opts["text_dy"] or opts["text_pos"] != "auto":
+            want_dx, want_dy = opts["text_dx"], opts["text_dy"]
+            if opts["text_pos"] != "auto":
+                row, col = ULTRA_TEXT_POS[opts["text_pos"]]
+                b_left, b_right = min(b[0] for b in boxes), max(b[0] + b[2] for b in boxes)
+                b_top, b_bottom = min(b[1] for b in boxes), max(b[1] + b[3] for b in boxes)
+                pad = ULTRA_TEXT_POS_PAD
+                goal_x = {"left": pad, "center": (W - (b_right - b_left)) / 2, "right": W - pad - (b_right - b_left)}[col]
+                goal_y = {"top": pad, "middle": (H - (b_bottom - b_top)) / 2, "bottom": H - pad - (b_bottom - b_top)}[row]
+                want_dx += int(goal_x - b_left)
+                want_dy += int(goal_y - b_top)
+            tdx, tdy = _clamp_text_nudge(boxes, want_dx, want_dy, W, H, **guard)
 
     def _draw_texts(d, col, scol, off=(0, 0), st=0):
         ox, oy = off[0] + tdx, off[1] + tdy
