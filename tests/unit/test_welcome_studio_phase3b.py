@@ -152,7 +152,7 @@ def press(monkeypatch, button, premium, cfg):
 
 def test_frame_button_cycles_and_wraps(monkeypatch):
     fake = press(monkeypatch, cc.CardFrameButton(1, None, 42), True,
-                 {"ultra_pack_unlocked": True, "ultra_card_json": json.dumps({"frame": "thin"})})
+                 {"ultra_pack_unlocked": True, "ultra_card_json": json.dumps({"frame": "medium"})})
     assert json.loads(fake.writes[-1]["ultra_card_json"])["frame"] == "thick"
     fake = press(monkeypatch, cc.CardFrameButton(1, None, 42), True,
                  {"ultra_pack_unlocked": True, "ultra_card_json": json.dumps({"frame": "rounded"})})

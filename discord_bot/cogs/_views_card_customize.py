@@ -1666,7 +1666,7 @@ _PAN_STEP = 10
 _NUDGE_STEP = 20
 _ZOOM_ORDER = (100, 125, 150, 200)
 _TEXT_SIZE_ORDER = ("small", "medium", "large", "xl")
-_FRAME_LABELS = {"none": "None", "thin": "Thin", "thick": "Thick", "double": "Double", "rounded": "Rounded"}
+_FRAME_LABELS = {"none": "None", "thin": "Thin", "medium": "Medium", "thick": "Thick", "double": "Double", "rounded": "Rounded"}
 _TEXT_SIZE_LABELS = {"small": "Small", "medium": "Medium", "large": "Large", "xl": "Extra large"}
 
 
@@ -1796,7 +1796,7 @@ class CardAvatarPosButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templ
 
 
 _EFFECT_LABELS = {"none": "None", "blur": "Blur", "vignette": "Vignette", "bw": "Black & white",
-                  "warm": "Warm", "cool": "Cool", "fade": "Faded"}
+                  "warm": "Warm", "cool": "Cool", "fade": "Faded", "grain": "Film grain"}
 
 
 class CardEffectButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("effect")):

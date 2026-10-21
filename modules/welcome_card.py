@@ -38,7 +38,7 @@ import os
 import re
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps, ImageSequence
+from PIL import Image, ImageDraw, ImageEnhance, ImageChops, ImageFilter, ImageFont, ImageOps, ImageSequence
 
 logger = logging.getLogger(__name__)
 
@@ -508,12 +508,12 @@ ULTRA_AVATAR_POS = ("auto", "top-left", "top", "top-right", "left", "center", "r
                     "bottom-left", "bottom", "bottom-right")   # studio 3e: where the avatar goes ("auto" = layout decides)
 ULTRA_OUTLINES = {"none": 0, "thin": 2, "medium": 4, "thick": 6}   # px of dark stroke; "auto" keeps the old rule
 ULTRA_BRIGHTNESS = {"darker": 0.65, "dark": 0.82, "normal": 1.0, "light": 1.18, "lighter": 1.35}   # multiplier on the picture only
-ULTRA_EFFECTS = ("none", "blur", "vignette", "bw", "warm", "cool", "fade")   # all cheap; glow/sparkle need the owner's OK
+ULTRA_EFFECTS = ("none", "blur", "vignette", "bw", "warm", "cool", "fade", "grain")   # all cheap; glow/sparkle need the owner's OK
 ULTRA_AVATAR_EDGE = 60       # a chosen avatar spot sits this far from the card edge (ring included)
 ULTRA_NUDGE_LIMIT = 300
 ULTRA_NUDGE_MARGIN = 24      # the text block never gets closer than this to the card edge
 ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
-ULTRA_FRAMES = ("none", "thin", "thick", "double", "rounded")   # glow / polaroid / film strip: later (glow needs the owner's OK)
+ULTRA_FRAMES = ("none", "thin", "medium", "thick", "double", "rounded")   # glow / polaroid / film strip: later (glow needs the owner's OK)
 ULTRA_FOCUS = ("center", "top", "bottom", "left", "right", "auto")   # "auto" = smart crop (keeps the busiest part)
 # Bundled OFL fonts (assets/fonts). "classic" = the card's normal font.
 ULTRA_FONTS = {
@@ -716,6 +716,15 @@ def _apply_effect(img, effect):
             r = r.point(lambda v: min(255, int(v * k)))
             b = b.point(lambda v: min(255, int(v / k)))
             rgb = Image.merge("RGB", (r, g, b))
+        elif effect == "grain":   # studio 4e: fixed-seed noise tile, so the same card always renders the same
+            import random
+            tile = Image.frombytes("L", (256, 256), random.Random(7).randbytes(256 * 256))
+            tile = tile.point(lambda v: 128 + (v - 128) // 6)
+            noise = Image.new("L", rgb.size)
+            for ty in range(0, rgb.height, 256):
+                for tx in range(0, rgb.width, 256):
+                    noise.paste(tile, (tx, ty))
+            rgb = ImageChops.add(rgb, Image.merge("RGB", (noise, noise, noise)), 1.0, -128)
         elif effect == "vignette":
             mask = Image.radial_gradient("L").resize(rgb.size)      # 0 in the middle, 255 at the corners
             mask = mask.point(lambda v: max(0, v - 110) * 255 // 145 * 150 // 255)
@@ -877,6 +886,8 @@ def _draw_frame(img: Image.Image, frame: str, color) -> Image.Image:
     d = ImageDraw.Draw(img)
     if frame == "thin":
         d.rectangle((0, 0, W - 1, H - 1), outline=col, width=6)
+    elif frame == "medium":   # studio 4e
+        d.rectangle((0, 0, W - 1, H - 1), outline=col, width=13)
     elif frame == "thick":
         d.rectangle((0, 0, W - 1, H - 1), outline=col, width=22)
     elif frame == "double":

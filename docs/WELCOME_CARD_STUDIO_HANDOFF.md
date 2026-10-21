@@ -29,6 +29,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 4b. Heading font: the heading line gets its own font (one cycle button on the Text step) | **Built, PR #439 open, not merged** (stacked on 4a, so its diff also carries 3e and 4a) | branch `feat/welcome-studio-phase4b` |
 | 4c. Text outline: dark edge around the text, none / thin / medium / thick (one cycle button on the Text step) | **Built, PR open, not merged** (stacked on 4b, so its diff also carries 3e, 4a, 4b) | branch `feat/welcome-studio-phase4c` |
 | 4d. Picture brightness: darker / dark / normal / light / lighter (one cycle button on the Look step) | **Built, PR open, not merged** (stacked on 4c, so its diff also carries 3e, 4a, 4b, 4c) | branch `feat/welcome-studio-phase4d` |
+| 4e. Film grain (new value in the Look cycle) + medium frame (new value in the Frame cycle) | **Built, PR open, not merged** (stacked on 4d) | branch `feat/welcome-studio-phase4e` |
 | Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, new fonts, more effects) and 5 to 7 | Not started | |
 
 ## What Phase 1 built
@@ -464,3 +465,22 @@ Small slice. No table, no migration. Only the **background picture** changes (av
 2. Rest of Phase 4: film grain, more fonts (check licensing), card border thickness. Text and Look steps are full.
 3. Then Phase 5 (saved designs); staging check on a phone for Phase 1 to 4d.
 4. Ask the owner before any glow or sparkle.
+
+
+## Phase 4e (2026-10-21): what it built (film grain + medium frame, closes the buildable part of Phase 4)
+
+Small slice. **No new button, no new key, no migration:** both are new values of existing options, so the Look step component count did not change.
+
+- **Film grain** = new `effect` value `grain` (`ULTRA_EFFECTS`, label "Film grain", last in the cycle). `_apply_effect` tiles a fixed-seed 256 px noise tile (amplitude about +-21) over the picture, so the same card always renders the same. Alpha and size kept; unknown input returns unchanged.
+- **Medium frame** = new `frame` value `medium` (13 px at 1536 wide), between `thin` (6) and `thick` (22). Cycle order is now none, thin, medium, thick, double, rounded. The 3b cycle test was updated for this; stored `thin`/`thick`/etc. values are unchanged.
+- Both are already studio-gated (they are values of `effect` and `frame`).
+- Tests: `tests/unit/test_welcome_studio_phase4e.py` (8). All `test_welcome_studio_*` files plus `test_card_wizard_tv.py`: 275 passed.
+
+### Phase 4 status
+- **Done:** effects (blur, vignette, B&W, warm, cool, faded, film grain), brightness, text outline thickness, card border thickness (thin / medium / thick, plus double and rounded), heading font.
+- **Not built, needs the owner:** avatar glow, sparkle overlay, glow edge frame (owner dislikes neon; ask first, keep soft and off by default). **More fonts:** needs a licensing check and a font file the owner approves; do not add fonts without it. Soft gradient overlay and tint color: not built (steps are full; would need to be new values of an existing cycle).
+
+## Next (updated after 4e)
+1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), #439 (4b), #440 (4c), #441 (4d), then the 4e PR.
+2. Owner decisions for the rest of Phase 4: glow/sparkle yes or no, which fonts.
+3. Phase 5 (saved designs) per the plan; staging check on a phone for Phase 1 to 4e.
