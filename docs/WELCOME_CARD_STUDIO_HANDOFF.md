@@ -89,6 +89,9 @@ Small slice on purpose. **Only the real join (`on_member_join`) changed.** Wizar
   - Random mode saves `last_slot_used`. Any error anywhere falls back to the old single picture. Never raises.
 - Tests: `tests/unit/test_welcome_studio_phase2b.py` (12): locked, unlocked, each mode, deleted, all deleted, will-not-load, flagged ignored, gate error, db error, no bot, only the join site uses it.
 
+### Test numbers (2b)
+Full unit suite: 5155 passed, 4 failed, 4 skipped. The same 4 fail on the 2a base without this change: `test_ultra_trial_off::test_new_ultra_trials_are_off` (env flag) and 3 in `test_uncached_member_fixes.py` (pass when run alone, fail in the full run: test-order pollution, not from the studio work).
+
 ### Known gaps in 2b (on purpose, for later slices)
 - Nothing can put pictures in the gallery yet (that is 2c/2d), so no server sees a change today.
 - "Same picture every time" has no pinned-slot column yet; it uses the first picture until 2c adds "Make first" or a pin.

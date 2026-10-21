@@ -13,7 +13,7 @@ CFG = {"guild_id": 1, "clone_id": None, "rotation_mode": "order", "last_slot_use
 
 
 def run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 class FakeDb:
