@@ -306,6 +306,65 @@ async def _custom_bg_bytes_for_render(
     return data
 
 
+async def _gallery_slot_url(bot: commands.Bot, row: dict) -> tuple[str | None, bool]:
+    """Live attachment URL for one gallery picture. Returns (url, gone). `gone` is True ONLY when Discord says the
+    hosting message/channel no longer exists (the owner deleted the image); a network blip is (None, False)."""
+    channel_id, message_id = row.get("channel_id"), row.get("message_id")
+    if not channel_id or not message_id:
+        return ((row.get("url_cache") or "").strip() or None), False
+    try:
+        channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+        message = await channel.fetch_message(int(message_id))
+    except (discord.NotFound, discord.Forbidden):
+        return None, True
+    except Exception:
+        return ((row.get("url_cache") or "").strip() or None), False
+    if not message.attachments:
+        return None, True
+    return message.attachments[0].url, False
+
+
+async def _gallery_bg_bytes_for_render(
+    session: aiohttp.ClientSession, config_row: dict, bot: commands.Bot | None, member_number: int | None = None
+) -> bytes | None:
+    """Welcome Card Studio 2b: the join picture. Premium/Plus servers with gallery pictures rotate through them;
+    anyone else (or any error, or an empty gallery) gets exactly the old single picture. Never raises."""
+    try:
+        if bot is None:
+            return await _custom_bg_bytes_for_render(session, config_row, bot)
+        from modules.welcome_studio import studio_unlocked
+        from modules import welcome_gallery as wg
+        guild_id, clone_id = config_row.get("guild_id"), config_row.get("clone_id")
+        if not await studio_unlocked(guild_id, clone_id):
+            return await _custom_bg_bytes_for_render(session, config_row, bot)
+        rows = {int(r["slot"]): r for r in await db.gallery_list(guild_id, clone_id) if not r.get("needs_new_picture")}
+        mode = wg.clean_mode(config_row.get("rotation_mode"))
+        counter = await db.gallery_next_counter(guild_id, clone_id) if mode == wg.MODE_ORDER and len(rows) > 1 else 0
+        for _ in range(wg.MAX_PICTURES):
+            slot = wg.pick_slot(mode, list(rows), member_number=member_number,
+                                last_slot=config_row.get("last_slot_used"), counter=counter)
+            if slot is None:
+                break
+            url, gone = await _gallery_slot_url(bot, rows[slot])
+            if gone:
+                await db.gallery_flag_missing(guild_id, clone_id, slot)
+                rows.pop(slot, None)
+                continue
+            data, _reason = await _fetch_custom_bg_bytes(session, url) if url else (None, "no url")
+            if data is not None:
+                if mode == wg.MODE_RANDOM and len(rows) > 1:
+                    await db.gallery_set_last_slot(guild_id, clone_id, slot)
+                return data
+            rows.pop(slot, None)   # this one would not load right now: try another for this join, keep the slot
+        return await _custom_bg_bytes_for_render(session, config_row, bot)
+    except Exception:
+        logger.exception("[welcome-gallery] join picture failed, using the old single picture")
+        try:
+            return await _custom_bg_bytes_for_render(session, config_row, bot)
+        except Exception:
+            return None
+
+
 def _suggested_channel(guild: discord.Guild) -> discord.TextChannel | None:
     """Best-effort guess for where to post welcome cards, so the nudge DM
     can propose a concrete channel instead of asking the owner to pick one
@@ -1332,7 +1391,8 @@ class WelcomeCog(GuildOnlyCog):
                 async with session.get(str(member.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
-                custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, self.bot)
+                custom_bg_bytes = await _gallery_bg_bytes_for_render(
+                    session, config, self.bot, member.guild.member_count)
             card_bytes, image_format = await asyncio.to_thread(
                 render_welcome_card,
                 avatar_bytes, member.display_name, f"Member #{member.guild.member_count}",
