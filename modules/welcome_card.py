@@ -491,6 +491,7 @@ ULTRA_DEFAULTS = {
     "frame": "none",           # key of ULTRA_FRAMES: picture frame around the whole card (studio 3b)
     "frame_color": "white",    # key of ULTRA_TEXT_COLORS
     # Welcome Card Studio phase 3e (Premium/Plus only at save and join): move the avatar to one of nine spots.
+    "heading_font": "same",    # "same" (as the name) or a key of ULTRA_FONTS: the font of the heading line (studio 4b)
     "effect": "none",          # key of ULTRA_EFFECTS: one look applied to the background picture (studio 4a)
     "avatar_pos": "auto",      # key of ULTRA_AVATAR_POS: "auto" = the layout decides; else one of nine cells
     # Welcome Card Studio phase 3c (Premium/Plus only at save and join): nudge the text block, in pixels at card width 1536.
@@ -657,6 +658,8 @@ def parse_ultra_options(raw) -> dict:
         opts["text_size"] = raw["text_size"]
     if raw.get("frame") in ULTRA_FRAMES:
         opts["frame"] = raw["frame"]
+    if raw.get("heading_font") == "same" or raw.get("heading_font") in ULTRA_FONTS:
+        opts["heading_font"] = raw["heading_font"]
     if raw.get("effect") in ULTRA_EFFECTS:
         opts["effect"] = raw["effect"]
     if raw.get("avatar_pos") in ULTRA_AVATAR_POS:
@@ -1054,6 +1057,7 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         heading = f"Welcome to {guild_name}!"
 
     font_key = opts["font"]
+    head_font = font_key if opts["heading_font"] == "same" else opts["heading_font"]   # studio 4b
     name_max = (84 if centered else 72) if opts["big_name"] else (64 if centered else 52)
     name_max = int(name_max * ULTRA_FONT_SCALE.get(font_key, 1.0))   # some fonts run big/small for their size
     size_k = ULTRA_TEXT_SIZES[opts["text_size"]]
@@ -1077,7 +1081,7 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     heading_styled = False
     if heading:
         head_max = int(((24 if compact else 34) if centered else 28) * size_k)
-        head_fit = _fit_styled(draw, heading, text_box_width, head_max, 14, font_key)
+        head_fit = _fit_styled(draw, heading, text_box_width, head_max, 14, head_font)
         if head_fit is None:
             head_fit = _fit_text_fallback(draw, heading, text_box_width, max_font_size=head_max, min_font_size=14)
         else:
@@ -1095,19 +1099,19 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
 
     from modules.level_card import _textlength_fallback as _tlf
 
-    def _x_for(d, text, size, styled):
+    def _x_for(d, text, size, styled, fk=None):
         """Left x of a line: text_x in banner layout, centered otherwise."""
         if not centered:
             return text_x
         if styled:
-            w = d.textlength(text, font=_style_font(font_key, size))
+            w = d.textlength(text, font=_style_font(fk or font_key, size))
         else:
             w = _tlf(d, text, size)
         return int((W - w) / 2)
 
-    def _put(d, x, y, text, size, styled, col, st):
+    def _put(d, x, y, text, size, styled, col, st, fk=None):
         if styled:
-            d.text((x, y), text, font=_style_font(font_key, size), fill=col,
+            d.text((x, y), text, font=_style_font(fk or font_key, size), fill=col,
                    stroke_width=st, stroke_fill=(0, 0, 0))
         else:
             _draw_text_fb(d, (x, y), text, size, col, stroke_width=st, stroke_fill=(0, 0, 0))
@@ -1116,15 +1120,15 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     boxes = []
     if opts["text_dx"] or opts["text_dy"] or avatar_nudged:
         # Studio 3c: nudge the whole text block, cut down by the safe-area guard (on the card, off the avatar).
-        def _w_of(text, size, styled):
-            return draw.textlength(text, font=_style_font(font_key, size)) if styled else _tlf(draw, text, size)
+        def _w_of(text, size, styled, fk=None):
+            return draw.textlength(text, font=_style_font(fk or font_key, size)) if styled else _tlf(draw, text, size)
         if number_text:
             boxes.append((_x_for(draw, number_text, 26, False), num_y, _w_of(number_text, 26, False), 34))
         boxes.append((_x_for(draw, username_text, username_size, name_styled), name_y,
                       _w_of(username_text, username_size, name_styled), int(username_size * 1.3)))
         if heading:
-            boxes.append((_x_for(draw, guild_text, guild_size, heading_styled), head_y,
-                          _w_of(guild_text, guild_size, heading_styled), int(guild_size * 1.3)))
+            boxes.append((_x_for(draw, guild_text, guild_size, heading_styled, head_font), head_y,
+                          _w_of(guild_text, guild_size, heading_styled, head_font), int(guild_size * 1.3)))
         ring_pad = 8 if opts["ring"] else 0
         if centered:
             guard = {"avoid_above": avatar_y + avatar_dim + ring_pad + 8}
@@ -1144,8 +1148,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         _put(d, _x_for(d, username_text, username_size, name_styled) + ox, name_y + oy,
              username_text, username_size, name_styled, col, st)
         if heading:
-            _put(d, _x_for(d, guild_text, guild_size, heading_styled) + ox, head_y + oy,
-                 guild_text, guild_size, heading_styled, col, st)
+            _put(d, _x_for(d, guild_text, guild_size, heading_styled, head_font) + ox, head_y + oy,
+                 guild_text, guild_size, heading_styled, col, st, head_font)
 
     if opts["shadow"]:
         layer = Image.new("RGBA", bg.size, (0, 0, 0, 0))

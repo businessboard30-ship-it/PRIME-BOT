@@ -26,7 +26,8 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | Follow-up. Studio options gated at every place a card is drawn (preview, nudge, setup TV, test post) | **Built, PR #435 open, not merged** (cut from `main`, independent of #434) | branch `feat/welcome-studio-render-sites` |
 | 3e. Avatar spot (one cycle button on the Look step) | **Built, PR open, not merged** (cut from `main` plus the handoff-docs PR #436; independent of #434 and #435 in code) | branch `feat/welcome-studio-phase3e` |
 | 4a. Picture look (effect): blur, vignette, black & white, warm, cool, faded (one cycle button on the Look step) | **Built, PR open, not merged** (stacked on 3e, so its diff also carries 3e) | branch `feat/welcome-studio-phase4a` |
-| Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, font per element, new fonts, more effects) and 5 to 7 | Not started | |
+| 4b. Heading font: the heading line gets its own font (one cycle button on the Text step) | **Built, PR open, not merged** (stacked on 4a, so its diff also carries 3e and 4a) | branch `feat/welcome-studio-phase4b` |
+| Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, new fonts, more effects) and 5 to 7 | Not started | |
 
 ## What Phase 1 built
 
@@ -393,4 +394,29 @@ Small slice, first of Phase 4. No table, no migration. Only the **background pic
 1. Owner reviews / merges #434, #435, #436, the 3e PR (#437) and this one, in that order is easiest (this one stacks on #437 which stacks on #436).
 2. Rest of Phase 4: card border/outline thickness, font per element (name vs heading), more fonts (check licensing), brightness / grain. Look and Text steps are near Discord's 40-component limit: add each new control as a cycle button, or free components first.
 3. Staging check (no staging yet): all Phase 1 to 4a controls on a phone.
+4. Ask the owner before any glow or sparkle. Open questions: Phase 6 DM extras? Per-picture overrides? Should Clear background also clear the gallery?
+
+
+## Phase 4b (2026-10-21): what it built (heading font)
+
+Small slice. No table, no migration. Plan 3.4 "separate fonts for name and heading".
+
+- **New key** `heading_font`: `same` (default, the heading uses the name's font exactly as before) or any key of `ULTRA_FONTS`. Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus at save and join, Ultra-only previews in memory, all render sites through `options_for_render`).
+- **Renderer:** the heading line is fitted, measured, centered, drawn and put into the 3c/3e guard boxes with `head_font`; the name and member number are untouched. `same` (and a heading font equal to the name font) is pixel-identical (tests). A `classic` heading font next to a styled name font works too.
+- **Wizard (Text step, More controls):** `🔤 Heading font: ...` cycles Same as name, then every font in the Font select. Same row as Heading / Member # / Text size (4 buttons, limit 5). Text More: 39 components (limit: under 40). Class `CardHeadingFontButton`, id `headfont`, in `DYNAMIC_ITEMS`; Reset this step and Undo cover it.
+- Tests: `tests/unit/test_welcome_studio_phase4b.py` (11), including a pixel check that only the heading line changes.
+
+### Test numbers (4b)
+All `test_welcome_studio_*` files plus `test_card_wizard_tv.py`: 251 passed, 1 failed. The failure (`test_card_wizard_tv::test_opening_the_wizard_starts_the_trial_once_and_shows_the_tv`) passes when the file runs alone and also fails in the combined run without the 4b code: test-order pollution, same kind as the known `test_uncached_member_fixes` ones. Server-panel and dash-card failures are the old known ones (not re-run).
+
+### Known gaps in 4b (on purpose)
+- Not tested live (phone taps, Premium vs Ultra-only). Eyeballed only through pixel tests, not every font pairing.
+- Cycling through 11 fonts takes up to 11 taps; a select would be nicer but the Text step is at 39 of 40 components and already has 5 selects.
+- Heading size still follows the heading rules, not `ULTRA_FONT_SCALE` (that scale only applies to the name), so a very big or small font may look off; adjust if the owner notices.
+- Style fonts cover Latin letters only (existing limit); other scripts fall back to the normal font.
+
+## Next (updated after 4b)
+1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), the 4b PR (each stacks on the one before); #434 and #435 are independent.
+2. Rest of Phase 4: text outline thickness, brightness / grain, more fonts (check licensing). Text and Look steps are full: new controls need a cycle button in an existing row (each adds one component) or something removed first.
+3. Then Phase 5 (saved designs) per the plan; staging check on a phone for Phase 1 to 4b.
 4. Ask the owner before any glow or sparkle. Open questions: Phase 6 DM extras? Per-picture overrides? Should Clear background also clear the gallery?

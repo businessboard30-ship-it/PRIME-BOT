@@ -61,7 +61,7 @@ from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from discord_bot.cogs import _views_welcome as vw
 from modules.welcome_card import (
-    ULTRA_AVATAR_SIDES, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_NUDGE_LIMIT, ULTRA_TEXT_COLORS,
+    ULTRA_AVATAR_SIDES, ULTRA_FONTS, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_NUDGE_LIMIT, ULTRA_TEXT_COLORS,
     TEMPLATE_HEIGHT, TEMPLATE_WIDTH, parse_ultra_options, render_welcome_card,
 )
 
@@ -332,7 +332,7 @@ _STEP_HINTS = {
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
     "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos", "effect"),
-    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy"),
+    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "heading_font"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
 _MORE_STATE: dict = {}       # (guild, clone, user) -> (set of steps showing "More controls", monotonic ts)
@@ -550,6 +550,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         text_row.add_item(CardNumberToggleButton(guild_id, clone_id, invoker_id, opts["show_number"]))
         if more:
             text_row.add_item(CardTextSizeButton(guild_id, clone_id, invoker_id, opts["text_size"]))
+            text_row.add_item(CardHeadingFontButton(guild_id, clone_id, invoker_id, opts["heading_font"]))   # studio 4b
         container.add_item(text_row)
         if more:   # Phase 3c: nudge the text block (arrows, never typed numbers); the guard keeps it on the card
             container.add_item(discord.ui.TextDisplay("Move the text (it stops at the card edge and next to your avatar):"))
@@ -1814,6 +1815,27 @@ class CardEffectButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+class CardHeadingFontButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("headfont")):
+    """Studio 4b: the heading line gets its own font. Cycles Same as name, then every font in the Font select."""
+    FIELD = "headfont"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, font: str = "same"):
+        super().__init__(guild_id, clone_id, invoker_id, font)
+
+    def label_text(self, font="same", *_):
+        return f"\U0001F524 Heading font: {'Same as name' if font == 'same' else font.title()}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["heading_font"]
+        order = ("same",) + tuple(ULTRA_FONTS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "same"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, heading_font=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 class CardFrameColorButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("framecolor")):
     """Cycles the frame color through the same short color list as the text."""
     FIELD = "framecolor"
@@ -2034,6 +2056,6 @@ DYNAMIC_ITEMS = (
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
-    CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton,
+    CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton, CardHeadingFontButton,
     CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )
