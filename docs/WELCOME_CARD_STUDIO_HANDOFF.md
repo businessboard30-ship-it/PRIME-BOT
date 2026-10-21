@@ -266,3 +266,7 @@ Small slice. No table, no migration.
 1. Owner reviews the stacked PRs in order: #423 ... #430 (2e), #431 (3a), then 3b.
 2. **3c**: 3x3 position grid for text/avatar + nudge buttons; maybe polaroid/film strip; ask the owner about glow edge.
 3. Tiny follow-up: apply `options_for_render` at the other render sites.
+
+## Owner decision (2026-10-21): Premium lifetime and yearly include the studio
+
+Monthly, yearly and lifetime Premium (and Premium Plus) all unlock every studio feature. **No code change needed:** `studio_unlocked` uses `db.is_guild_premium_active`, which only checks that the server's Premium has not expired (plus the grace period), so every plan that sets an expiry date is covered, lifetime included. The earlier open question "Premium lifetime includes studio?" is closed. Still open: Phase 6 DM extras, per-picture overrides, Clear background vs gallery, glow edge frame.
