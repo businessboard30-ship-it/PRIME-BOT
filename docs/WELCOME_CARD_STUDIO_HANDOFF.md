@@ -15,7 +15,7 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 | 2b. Join render uses the gallery | **Built, PR open, not merged** (join only; previews unchanged) | branch `feat/welcome-studio-phase2b` (stacked on 2a) |
 | 2c-1. Pictures step: gallery line + rotation select | **Built, PR open, not merged** (read-only line + rotation picker; stacked on 2b) | branch `feat/welcome-studio-phase2c` |
 | 2c-2. Numbered strip + Remove / Make first + "Unlock with Premium" button | **Built, PR open, not merged** (stacked on 2c-1; no Add yet, that is 2d) | branch `feat/welcome-studio-phase2c2` |
-| 2d. Multi-upload + downscale + migrate old single picture | Not started | |
+| 2d. Multi-upload + downscale + caption + daily limit + migrate old single picture | **Built, PR open, not merged** (stacked on 2c-2). **This finishes Phase 2** | branch `feat/welcome-studio-phase2d` |
 | 3 to 7 | Not started | |
 
 ## What Phase 1 built
@@ -162,3 +162,31 @@ Full unit suite: 5188 passed, 4 failed, 4 skipped. Same 4 as 2b/2c-1: `test_ultr
 - **2d**: multi-upload modal, downscale to 1536 px + JPEG/WebP, caption on host post (server name/ID, picture number), daily upload limit, copy the old single picture in as picture 1 (never delete old columns). Free servers: in-memory preview only.
 - Then Phase 3 (framing and positioning).
 
+
+## Phase 2d (2026-10-21): what it built (finishes Phase 2)
+
+Small slice on purpose. **Only the Pictures step, the gallery DB layer and one tiny migration changed.** `modules/welcome_card.py` and the join render are untouched.
+
+- **`➕ Add pictures`** (`CardPictureAddButton`, id `picadd`, registered in `DYNAMIC_ITEMS`): first button in the More-controls manage row on Pictures, shown to **every** server (owner rule: studio open to everyone, only saving is Premium). Remove / Make first still hide when a Premium gallery is empty. Opens `CardPicturesAddModal`: a file field taking **up to 10 files at once** plus one optional link (adds one picture).
+- **Premium/Plus server:** `_add_pictures(...)` runs per file, never raises, and reports each skipped file by name: copy the old single picture in as picture 1 (once) then, per file, check room (10 cap), the daily limit, **downscale to 1536 px wide JPEG (q88, never upscales, honors camera rotation, refuses >40 MP before decoding)**, post to the hosting channel via `image_host.post_to_host` with the caption `Studio picture N — guild <id> (<name>)`, then `db.gallery_add`. If hosting is down it stops and stores nothing. If the gallery raced to full after hosting, the orphan post is deleted best-effort.
+- **Free server:** nothing is hosted or stored. The first readable picture is shown as the card background in memory (existing draft) with a "Preview only ... a gallery of up to 10 pictures is stored with Premium" note.
+- **Daily upload limit:** 20 pictures per server per rolling 24 h (`wg.DAILY_UPLOAD_LIMIT`). Counted as the larger of stored rows from the last 24 h (`db.gallery_count_recent`) and an in-memory list (`wg.note_upload`, catches add-then-remove loops; resets on restart, so it is a best-effort flood guard, not a hard quota).
+- **Migration of the old single picture:** `db.gallery_migrate_single` copies `custom_bg_channel_id/message_id/url` into slot 1 once, only if the gallery is empty and the old picture is a hosted message. Old `custom_bg_*` columns are never touched. New column `discord_welcome_config.gallery_migrated` (migration `079_welcome_gallery_migrated.sql`, `SCHEMA_VERSION` 127 -> 128, guard test pin updated) makes sure emptying the gallery later does not bring the old picture back. Pasted-link pictures with no hosted copy are not migrated (nothing to copy); they keep working through the old fallback.
+- Tests: `tests/unit/test_welcome_studio_phase2d.py` (19): resize/no upscale/garbage/pixel cap, daily limit (memory + DB + expiry + per server/clone), Add button visibility and Discord limits, modal takes 10 files, caption + migrate-first, 10 cap, daily limit, bad files named, hosting down, raced-full orphan delete, error never raised, migration additive + once.
+
+### Test numbers (2d)
+Full unit suite: 5207 passed, 4 failed, 4 skipped. Same 4 as 2b/2c: `test_ultra_trial_off::test_new_ultra_trials_are_off` (env flag) and 3 in `test_uncached_member_fixes.py` (test-order pollution).
+
+### Known gaps in 2d (on purpose)
+- **Not tested live:** the real multi-file modal on a phone (Discord's max files per modal field must be confirmed, plan 3.1), real hosting-channel posts, and a real Postgres for `gallery_migrate_single` / `gallery_count_recent` (needs one staging check; run migration 079 first).
+- The old "Upload image" / "Clear background" buttons still write only the old single picture. After migration, **Clear background does not remove the gallery copy** (use Remove). A later slice can merge the two flows.
+- Free-server preview shows only the first picture; no in-memory multi-picture preview or rotation preview yet.
+- Remove still leaves the hosted message in the hosting channel for the owner's review.
+- Only the join render uses the gallery; wizard previews and `/welcome preview` still use the single picture.
+- Per-picture overrides (own crop / text color) and "Replace" are not built (plan 3.1, still-open owner question 3).
+
+## Next
+1. Owner reviews the stacked PRs in order: #423 (Phase 1), #424, #425, #426, #427, #428, then this one. None merged by me.
+2. **Phase 3: framing and positioning** (pan/zoom arrows, picture frames, 3x3 position grid, nudge, text size). Keep every control available as a preview for free servers; gate saving and the join render with `studio_unlocked`. Add each new option key to `studio_keys` in `modules/welcome_studio.py`.
+3. Small leftovers that could be their own tiny PR: wizard preview uses the gallery, merge old Upload/Clear with the gallery, per-picture overrides, Phase 0 audit (render timing at 1536 px, host-channel limits).
+4. Still-open plan questions for the owner: Premium lifetime includes studio? Keep Phase 6 DM extras? Per-picture overrides in v1 or later?

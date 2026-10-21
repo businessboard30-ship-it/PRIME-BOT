@@ -470,10 +470,12 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
             extra = (CardFocusSelect, CardRotationSelect)
         for select_cls in (CardRatioSelect, CardDimSelect) + extra:
             _select_row(select_cls)
-        if more and studio is not None and (not studio.get("unlocked") or int(studio.get("pictures") or 0) > 0):
+        if more and studio is not None:
             manage_row = discord.ui.ActionRow()
-            manage_row.add_item(CardPictureRemoveButton(guild_id, clone_id, invoker_id))
-            manage_row.add_item(CardPictureFirstButton(guild_id, clone_id, invoker_id))
+            manage_row.add_item(CardPictureAddButton(guild_id, clone_id, invoker_id))
+            if not studio.get("unlocked") or int(studio.get("pictures") or 0) > 0:
+                manage_row.add_item(CardPictureRemoveButton(guild_id, clone_id, invoker_id))
+                manage_row.add_item(CardPictureFirstButton(guild_id, clone_id, invoker_id))
             container.add_item(manage_row)
     elif tab == "layout":
         for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect) + ((CardShapeSelect,) if more else ()):
@@ -1396,6 +1398,153 @@ class CardPictureFirstButton(_PictureButton, discord.ui.DynamicItem[discord.ui.B
     FIELD, LABEL, ACTION = "picfirst", "\u2B50 Make first", "first"
 
 
+class CardPicturesAddModal(discord.ui.Modal, title="Add pictures"):
+    """Phase 2d: up to 10 files at once, or one link. Free servers preview the first picture only (nothing hosted)."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        super().__init__()
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        self.invoker_id = invoker_id
+        from modules import welcome_gallery as wg
+        self.upload = discord.ui.FileUpload(required=False, min_values=0, max_values=wg.MAX_PER_UPLOAD)
+        self.url = discord.ui.TextInput(
+            style=discord.TextStyle.short, required=False, max_length=500, placeholder="https://\u2026/image.png",
+        )
+        self.add_item(discord.ui.Label(
+            text="Upload pictures", description=f"png or jpg, up to {wg.MAX_PER_UPLOAD} at once, 8MB each", component=self.upload,
+        ))
+        self.add_item(discord.ui.Label(
+            text="\u2026or paste one direct image link", description="Adds one picture", component=self.url,
+        ))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from discord_bot.cogs.welcome import (
+            CUSTOM_BG_ALLOWED_CONTENT_TYPES, CUSTOM_BG_MAX_BYTES, _fetch_custom_bg_bytes,
+        )
+        from modules import welcome_gallery as wg
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+
+        files = list(self.upload.values or [])[:wg.MAX_PER_UPLOAD]
+        url = str(self.url.value or "").strip()
+        if not files and not url:
+            await interaction.followup.send("\u26A0\uFE0F Upload a picture or paste a link first.", ephemeral=True)
+            return
+
+        # One list of (name, bytes-or-None, reason-or-None). Downloads happen here so a bad one is reported by name.
+        incoming: list = []
+        for f in files:
+            ct = (f.content_type or "").split(";")[0].strip().lower()
+            if ct not in CUSTOM_BG_ALLOWED_CONTENT_TYPES:
+                incoming.append((f.filename, None, "not a png/jpg"))
+            elif f.size > CUSTOM_BG_MAX_BYTES:
+                incoming.append((f.filename, None, "over 8MB"))
+            else:
+                try:
+                    incoming.append((f.filename, await f.read(), None))
+                except Exception:
+                    incoming.append((f.filename, None, "could not be read"))
+        if url:
+            async with aiohttp.ClientSession() as session:
+                data, reason = await _fetch_custom_bg_bytes(session, url)
+            incoming.append(("link", data, None if data else reason))
+
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            # Preview only: show the first good picture as the card background in memory. Nothing is hosted or stored.
+            for _name, data, _why in incoming:
+                small = await asyncio.to_thread(_shrink_bg, data) if data else None
+                if small is not None:
+                    _get_draft(self.guild_id, self.clone_id, interaction.user.id, create=True)["bg"] = small
+                    break
+            else:
+                await interaction.followup.send("\u26A0\uFE0F Couldn't read those pictures. Use png or jpg under 8MB.", ephemeral=True)
+                return
+            await interaction.followup.send(
+                f"\U0001F512 Preview only: {LOCKED_LINE} The first picture is shown on the card. "
+                "A gallery of up to 10 pictures is stored with Premium.", ephemeral=True)
+            await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+            return
+
+        added, skipped = await _add_pictures(
+            interaction.client, interaction.guild or interaction.client.get_guild(self.guild_id),
+            self.guild_id, self.clone_id, incoming)
+        bits = []
+        if added:
+            bits.append(f"\u2705 Added {len(added)} picture{'s' if len(added) != 1 else ''} (picture {', '.join(str(n) for n in added)}).")
+        if skipped:
+            bits.append("\u26A0\uFE0F Skipped: " + "; ".join(f"{n} ({why})" for n, why in skipped[:6])
+                        + (f"; and {len(skipped) - 6} more" if len(skipped) > 6 else "") + ".")
+        await interaction.followup.send("\n".join(bits) or "Nothing was added.", ephemeral=True)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+async def _add_pictures(bot, guild, guild_id: int, clone_id, incoming: list):
+    """Host and store prepared pictures for a Premium/Plus server. Returns (added_slots, [(name, reason)]). Never raises.
+
+    Order: copy the old single picture in as picture 1 (once), then for each file check room and the daily limit,
+    downscale to 1536 px JPEG, post to the hosting channel with a caption, store the slot.
+    """
+    from modules import welcome_gallery as wg, image_host
+    added: list = []
+    skipped: list = []
+    try:
+        await db.gallery_migrate_single(guild_id, clone_id)
+        left = wg.uploads_left(guild_id, clone_id, await db.gallery_count_recent(guild_id, clone_id))
+        gname = getattr(guild, "name", "?")
+        for name, data, why in incoming:
+            if why or data is None:
+                skipped.append((name, why or "could not be read"))
+                continue
+            rows = await db.gallery_list(guild_id, clone_id)
+            used = {int(r["slot"]) for r in rows}
+            if len(used) >= wg.MAX_PICTURES:
+                skipped.append((name, f"gallery is full, {wg.MAX_PICTURES} pictures"))
+                continue
+            if left <= 0:
+                skipped.append((name, f"daily limit of {wg.DAILY_UPLOAD_LIMIT} pictures reached, try tomorrow"))
+                continue
+            small = await asyncio.to_thread(wg.prepare_picture, data)
+            if small is None:
+                skipped.append((name, "not a readable image"))
+                continue
+            nxt = next((n for n in range(1, wg.MAX_PICTURES + 1) if n not in used), None)
+            hosted = await image_host.post_to_host(bot, small, f"Studio picture {nxt} \u2014 guild `{guild_id}` ({gname})")
+            if hosted is None:
+                skipped.append((name, "picture hosting is not available right now"))
+                break
+            slot = await db.gallery_add(guild_id, clone_id, hosted[0], hosted[1], hosted[2], label=name[:80])
+            if slot is None:
+                try:   # raced to full: do not leave an orphan in the hosting channel
+                    ch = bot.get_channel(int(hosted[0]))
+                    if ch is not None:
+                        await ch.get_partial_message(int(hosted[1])).delete()
+                except Exception:
+                    pass
+                skipped.append((name, "gallery is full"))
+                continue
+            wg.note_upload(guild_id, clone_id)
+            left -= 1
+            added.append(slot)
+    except Exception:
+        logger.exception("[cardwz] adding pictures failed for guild %s", guild_id)
+        skipped.append(("the rest", "something went wrong, try again"))
+    return added, skipped
+
+
+class CardPictureAddButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("picadd")):
+    FIELD, LABEL, STYLE = "picadd", "\u2795 Add pictures", discord.ButtonStyle.success
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        try:
+            await interaction.response.send_modal(CardPicturesAddModal(self.guild_id, self.clone_id, self.invoker_id))
+        except discord.HTTPException as e:
+            if e.code != 40060:  # double-click: modal already open
+                raise
+
+
 class CardStudioPremiumButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("studiogoprem")):
     FIELD, STYLE = "studiogoprem", discord.ButtonStyle.primary
 
@@ -1419,5 +1568,5 @@ DYNAMIC_ITEMS = (
     CardTabButton, CardPresetSelect,
     CardMoreButton, CardUndoButton, CardStepResetButton, CardTestSendButton,
     CardRotationSelect,
-    CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton,
+    CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
 )
