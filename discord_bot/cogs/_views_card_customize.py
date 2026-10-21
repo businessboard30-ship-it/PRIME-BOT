@@ -20,7 +20,7 @@ designed — one ephemeral message (only the admin who tapped sees it):
                  itself after every change (a sample backdrop is used until a
                  background is set); reset puts the layout back to default
 
-A "Style presets" dropdown above the tabs sets banner / darkness / avatar side / text colour / member # /
+Welcome Card Studio, Phase 1: the three tabs became FOUR numbered steps (1 Pictures, 2 Look, 3 Text, 4 Send). Each\nstep shows at most 3 controls ("Easy"); "More controls" reveals that step's extra ones. Every step has Undo and\n"Reset this step"; step 4 has "Send me a test". The internal step keys stay bg/layout/text (+ send) so wizards posted\nbefore this change keep working. No new card features, the stored options and the renderer are untouched.\n\nA "Style presets" dropdown above the tabs sets banner / darkness / avatar side / text colour / member # /
 avatar shape in one tap (heading and background are never touched); then fine-tune on the tabs.
 The controls are split into three tabs under the TV (Background / Layout / Text) so only
 2-3 controls show at a time. There is NO preview rate limit here (the old Preview button
@@ -159,10 +159,45 @@ def _watermark(card_bytes: bytes) -> bytes:
         return card_bytes
 
 
+# ── undo (look options only; the picture is not part of it) ───────────────
+
+_UNDO_MAX = 10
+_UNDO: dict = {}             # (guild, clone, user) -> list of (ultra_card_json str|None, avatar_shape), newest last
+
+
+def _push_undo(guild_id: int, clone_id, user_id, cfg: dict) -> None:
+    """Remember the look as it is NOW (what the editor shows: the draft for unpaid servers, the DB row otherwise)."""
+    if user_id is None:
+        return
+    eff = _effective_config(cfg, guild_id, clone_id, user_id)
+    snap = (eff.get("ultra_card_json"), eff.get("avatar_shape", "circle"))
+    stack = _UNDO.setdefault(_draft_key(guild_id, clone_id, user_id), [])
+    stack.append(snap)
+    del stack[:-_UNDO_MAX]
+    _trim(_UNDO, _STATE_MAX)
+
+
+async def _undo_last(guild_id: int, clone_id, user_id) -> bool:
+    """Put the look back one step. False when there is nothing to undo. Gated server-side like every write."""
+    stack = _UNDO.get(_draft_key(guild_id, clone_id, user_id))
+    if not stack:
+        return False
+    raw, shape = stack.pop()
+    cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    if not cfg.get("ultra_pack_unlocked"):
+        d = _get_draft(guild_id, clone_id, user_id, create=True)
+        d["opts"] = parse_ultra_options(raw)
+        d["shape"] = shape or "circle"
+        return True
+    await db.set_welcome_config(guild_id, clone_id=clone_id, ultra_card_json=raw, avatar_shape=shape or "circle")
+    return True
+
+
 # ── option storage ────────────────────────────────────────────────────────
 
 async def _save_option(guild_id: int, clone_id, user_id=None, **changes) -> None:
     cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    _push_undo(guild_id, clone_id, user_id, cfg)
     if not cfg.get("ultra_pack_unlocked"):
         d = _get_draft(guild_id, clone_id, user_id, create=True)
         d["opts"].update(changes)
@@ -218,23 +253,46 @@ STYLE_PRESETS = {
 }
 
 
-async def _apply_style(guild_id: int, clone_id, user_id, opts: dict, shape: str) -> None:
-    """Apply a preset in ONE write. Unpaid servers only touch the in-memory draft (same gate as every other edit)."""
+async def _apply_style(guild_id: int, clone_id, user_id, opts: dict, shape) -> None:
+    """Apply a preset (or a step reset) in ONE write. `shape` None leaves the avatar shape alone. Unpaid servers only
+    touch the in-memory draft (same gate as every other edit). Pushes an undo snapshot first."""
     cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    _push_undo(guild_id, clone_id, user_id, cfg)
     if not cfg.get("ultra_pack_unlocked"):
         d = _get_draft(guild_id, clone_id, user_id, create=True)
         d["opts"].update(opts)
-        d["shape"] = shape
+        if shape is not None:
+            d["shape"] = shape
         return
     cur = parse_ultra_options(cfg.get("ultra_card_json"))
     cur.update(opts)
-    await db.set_welcome_config(guild_id, clone_id=clone_id, ultra_card_json=json.dumps(cur), avatar_shape=shape)
+    changes = {"ultra_card_json": json.dumps(cur)}
+    if shape is not None:
+        changes["avatar_shape"] = shape
+    await db.set_welcome_config(guild_id, clone_id=clone_id, **changes)
 
 
 # -- the TV: live preview drawn inside the wizard message ---------------------
 
-_TABS = ("bg", "layout", "text")
-_TAB_LABELS = {"bg": "\U0001F5BC\uFE0F Background", "layout": "\U0001F4D0 Layout", "text": "\U0001F524 Text"}
+_TABS = ("bg", "layout", "text", "send")     # steps 1-4; the keys stay as they were so old wizard messages keep working
+_TAB_LABELS = {"bg": "1 \U0001F5BC\uFE0F Pictures", "layout": "2 \U0001F4D0 Look", "text": "3 \U0001F524 Text",
+               "send": "4 \U0001F4E8 Send"}
+_STEP_HINTS = {
+    "bg": "**Step 1 of 4 · Pictures** — add your picture and choose the card shape.",
+    "layout": "**Step 2 of 4 · Look** — where the banner and avatar sit.",
+    "text": "**Step 3 of 4 · Text** — color, font and wording.",
+    "send": "**Step 4 of 4 · Send** — send yourself a test, then tap Done.",
+}
+# What "Reset this step" puts back to default (the picture is never touched). Shape lives in its own column.
+_STEP_RESET_FIELDS = {
+    "bg": ("ratio", "dim", "focus"),
+    "layout": ("layout", "banner", "avatar_side"),
+    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast"),
+}
+_STEP_RESET_SHAPE = {"layout": "circle"}
+_MORE_STATE: dict = {}       # (guild, clone, user) -> (set of steps showing "More controls", monotonic ts)
+_TEST_LAST: dict = {}        # same key -> monotonic time of the last "Send me a test"
+_TEST_COOLDOWN = 5.0
 _TAB_TTL = 30 * 60
 _STATE_MAX = 1000
 _TAB_STATE: dict = {}        # (guild, clone, user) -> (tab, monotonic ts)
@@ -269,6 +327,24 @@ def _set_tab(key, tab: str) -> None:
     _trim(_TAB_STATE, _STATE_MAX)
 
 
+def _more_open(key, tab: str) -> bool:
+    st = _MORE_STATE.get(key)
+    if st is None or time.monotonic() - st[1] > _TAB_TTL:
+        return False
+    return tab in st[0]
+
+
+def _toggle_more(key, tab: str) -> bool:
+    """Flip "More controls" for ONE step. Returns the new state."""
+    st = _MORE_STATE.get(key)
+    steps = set(st[0]) if st is not None and time.monotonic() - st[1] <= _TAB_TTL else set()
+    now_open = tab not in steps
+    steps.symmetric_difference_update({tab})
+    _MORE_STATE[key] = (steps, time.monotonic())
+    _trim(_MORE_STATE, _STATE_MAX)
+    return now_open
+
+
 def _caption(unlocked: bool, note, tv_ok: bool, config=None) -> str:
     lines = ["### \U0001F3A8 Customize your welcome card"]
     config = config or {}
@@ -293,7 +369,8 @@ def _caption(unlocked: bool, note, tv_ok: bool, config=None) -> str:
 
 
 def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab: str = "bg",
-                         has_tv: bool = False, note=None, tv_name: str = "card.png") -> discord.ui.LayoutView:
+                         has_tv: bool = False, note=None, tv_name: str = "card.png",
+                         more: bool = False) -> discord.ui.LayoutView:
     unlocked = bool(config.get("ultra_pack_unlocked"))
     raw_config = config
     config = _effective_config(config, guild_id, clone_id, invoker_id)
@@ -323,28 +400,41 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         row.add_item(select_cls(guild_id, clone_id, invoker_id, config))
         container.add_item(row)
 
+    container.add_item(discord.ui.TextDisplay(f"-# {_STEP_HINTS[tab]}"))
+
+    # Easy mode shows at most 3 controls per step; "More controls" adds that step's extra ones (never more than 5 selects).
     if tab == "bg":
         bg_row = discord.ui.ActionRow()
         bg_row.add_item(CardBackgroundButton(guild_id, clone_id, invoker_id))
         if has_bg:
             bg_row.add_item(CardClearBackgroundButton(guild_id, clone_id, invoker_id))
         container.add_item(bg_row)
-        for select_cls in (CardRatioSelect, CardDimSelect, CardFocusSelect):
+        for select_cls in (CardRatioSelect, CardDimSelect) + ((CardFocusSelect,) if more else ()):
             _select_row(select_cls)
     elif tab == "layout":
-        for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect, CardShapeSelect):
+        for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect) + ((CardShapeSelect,) if more else ()):
             _select_row(select_cls)
-    else:
-        for select_cls in (CardColorSelect, CardFontSelect, CardBracketSelect, CardStyleSelect):
+    elif tab == "text":
+        for select_cls in (CardColorSelect, CardFontSelect) + ((CardBracketSelect, CardStyleSelect) if more else ()):
             _select_row(select_cls)
         text_row = discord.ui.ActionRow()
         text_row.add_item(CardHeadingButton(guild_id, clone_id, invoker_id))
         text_row.add_item(CardNumberToggleButton(guild_id, clone_id, invoker_id, opts["show_number"]))
         container.add_item(text_row)
+    else:
+        container.add_item(discord.ui.TextDisplay(
+            "Your card goes out the way your **/welcome** setup says (channel or DM). "
+            "**Send me a test** shows you the real, full-size card, only you see it."))
 
     container.add_item(discord.ui.Separator())
     act_row = discord.ui.ActionRow()
-    act_row.add_item(CardResetButton(guild_id, clone_id, invoker_id))
+    if tab == "send":
+        act_row.add_item(CardTestSendButton(guild_id, clone_id, invoker_id))
+        act_row.add_item(CardResetButton(guild_id, clone_id, invoker_id))
+    else:
+        act_row.add_item(CardUndoButton(guild_id, clone_id, invoker_id))
+        act_row.add_item(CardStepResetButton(guild_id, clone_id, invoker_id))
+        act_row.add_item(CardMoreButton(guild_id, clone_id, invoker_id, more))
     if unlocked:
         act_row.add_item(CardDoneButton(guild_id, clone_id, invoker_id))
         if raw_config.get("ultra_trial_active"):
@@ -357,10 +447,10 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
     return view
 
 
-def _tv_finish(card_bytes: bytes, watermark: bool) -> bytes:
-    """Downscaled PNG copy for the TV (the card the bot posts on joins is never touched)."""
+def _tv_finish(card_bytes: bytes, watermark: bool, full: bool = False) -> bytes:
+    """Downscaled PNG copy for the TV (the card the bot posts on joins is never touched). `full` keeps the real size."""
     img = Image.open(io.BytesIO(card_bytes)).convert("RGB")
-    if img.width > _TV_WIDTH:
+    if img.width > _TV_WIDTH and not full:
         img.thumbnail((_TV_WIDTH, _TV_WIDTH * 4))
     out = io.BytesIO()
     img.save(out, format="PNG")
@@ -381,7 +471,7 @@ async def _avatar_bytes(session: aiohttp.ClientSession, user) -> bytes:
     return data
 
 
-async def _render_tv(client, guild, guild_id: int, clone_id, user):
+async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = False):
     """Draw the real card for the editor. Returns (png_bytes, caption_note). Raises on failure.
     No rate limit: unpaid servers get the same watermarked draft preview, as often as they like."""
     from discord_bot.cogs.welcome import _custom_bg_bytes_for_render
@@ -416,7 +506,7 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user):
         custom_background_bytes=bg_bytes,
         ultra_options=cfg.get("ultra_card_json"),
     )
-    png = await asyncio.to_thread(_tv_finish, card_bytes, not unlocked)
+    png = await asyncio.to_thread(_tv_finish, card_bytes, not unlocked, full)
     note = "Sample backdrop \u2014 tap Upload image to use your own" if using_sample else "Your background"
     return png, note
 
@@ -466,7 +556,8 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
     _TV_NOTES[key] = tv[1] if tv else None
     _trim(_TV_NOTES, _STATE_MAX)
     view = build_customize_view(guild_id, clone_id, interaction.user.id, config, tab="bg",
-                                has_tv=tv is not None, note=_TV_NOTES[key], tv_name=tv_name or "card.png")
+                                has_tv=tv is not None, note=_TV_NOTES[key], tv_name=tv_name or "card.png",
+                                more=_more_open(key, "bg"))
     if trial_started:
         await interaction.followup.send(
             f"\U0001F381 **You have a free 5-day trial of Customize Card!** Design it and it goes live on every "
@@ -516,7 +607,8 @@ async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, i
         if tv:
             name = _new_tv_name()
             _TV_NOTES[key] = tv[1]
-            view = build_customize_view(guild_id, clone_id, invoker_id, config, tab=tab, has_tv=True, note=tv[1], tv_name=name)
+            view = build_customize_view(guild_id, clone_id, invoker_id, config, tab=tab, has_tv=True, note=tv[1], tv_name=name,
+                                        more=_more_open(key, tab))
             await interaction.edit_original_response(view=view, attachments=[_tv_file(tv[0], name)])
             _TV_STATE[key] = name                   # only after Discord accepted the edit
         else:
@@ -524,7 +616,7 @@ async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, i
             note = "Couldn't refresh the preview just now. Your change is saved; tap anything to try again." if keep else None
             _TV_NOTES[key] = note
             view = build_customize_view(guild_id, clone_id, invoker_id, config, tab=tab, has_tv=bool(keep), note=note,
-                                        tv_name=keep or "card.png")
+                                        tv_name=keep or "card.png", more=_more_open(key, tab))
             if keep:
                 await interaction.edit_original_response(view=view)              # attachments untouched: the old picture stays
             else:
@@ -674,6 +766,7 @@ class CardShapeSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Sele
 
     async def _save(self, value: str, user_id=None):
         cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        _push_undo(self.guild_id, self.clone_id, user_id, cfg)
         if not cfg.get("ultra_pack_unlocked"):
             _get_draft(self.guild_id, self.clone_id, user_id, create=True)["shape"] = value
             return
@@ -912,13 +1005,14 @@ class CardNumberToggleButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], te
 
 
 class CardResetButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("reset")):
-    FIELD, LABEL = "reset", "↩️ Reset layout"
+    FIELD, LABEL = "reset", "↩️ Reset all"
 
     async def callback(self, interaction: discord.Interaction):
         if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
         cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+        _push_undo(self.guild_id, self.clone_id, interaction.user.id, cfg)
         if not cfg.get("ultra_pack_unlocked"):
             _DRAFTS.pop(_draft_key(self.guild_id, self.clone_id, interaction.user.id), None)
             await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
@@ -1011,8 +1105,21 @@ class CardPresetSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_p
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
-class CardTabButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cardwz_tab(bg|layout|text):(\d+):(-|\d+):(-|\d+)$"):
-    """Switches which group of controls shows under the TV. Does not redraw the card."""
+async def _show_step(interaction: discord.Interaction, guild_id: int, clone_id, invoker_id, tab: str) -> None:
+    """Redraw only the controls for `tab` (the card picture is not redrawn). Interaction must already be deferred."""
+    key = _draft_key(guild_id, clone_id, interaction.user.id)
+    config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    name = _TV_STATE.get(key)
+    if name is None and key not in _TV_STATE:        # state lost (bot restarted): fall back to what is on the message
+        msg = interaction.message
+        name = next((a.filename for a in (msg.attachments if msg else []) if a.filename.startswith("card") and a.filename.endswith(".png")), None)
+    await interaction.edit_original_response(view=build_customize_view(
+        guild_id, clone_id, invoker_id, config, tab=tab, has_tv=bool(name), note=_TV_NOTES.get(key),
+        tv_name=name or "card.png", more=_more_open(key, tab)))
+
+
+class CardTabButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cardwz_tab(bg|layout|text|send):(\d+):(-|\d+):(-|\d+)$"):
+    """Switches which step shows under the TV. Does not redraw the card."""
 
     def __init__(self, tab: str, guild_id: int, clone_id, invoker_id, active: bool = False):
         self.tab = tab
@@ -1035,16 +1142,88 @@ class CardTabButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cardw
         if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         await interaction.response.defer()
+        _set_tab(_draft_key(self.guild_id, self.clone_id, interaction.user.id), self.tab)
+        await _show_step(interaction, self.guild_id, self.clone_id, self.invoker_id, self.tab)
+
+
+class CardMoreButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("more")):
+    """Show or hide the extra controls for the step you are on. Does not redraw the card."""
+    FIELD = "more"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, shown: bool = False):
+        super().__init__(guild_id, clone_id, invoker_id, shown)
+
+    def label_text(self, shown=False, *_):
+        return "➖ Fewer controls" if shown else "➕ More controls"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
         key = _draft_key(self.guild_id, self.clone_id, interaction.user.id)
-        _set_tab(key, self.tab)
-        config = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
-        name = _TV_STATE.get(key)
-        if name is None and key not in _TV_STATE:        # state lost (bot restarted): fall back to what is on the message
-            msg = interaction.message
-            name = next((a.filename for a in (msg.attachments if msg else []) if a.filename.startswith("card") and a.filename.endswith(".png")), None)
-        await interaction.edit_original_response(view=build_customize_view(
-            self.guild_id, self.clone_id, self.invoker_id, config, tab=self.tab, has_tv=bool(name), note=_TV_NOTES.get(key),
-            tv_name=name or "card.png"))
+        tab = _get_tab(key)
+        _toggle_more(key, tab)
+        await _show_step(interaction, self.guild_id, self.clone_id, self.invoker_id, tab)
+
+
+class CardUndoButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("undo")):
+    """Takes back the last change to the look (up to 10). The picture is not part of undo."""
+    FIELD, LABEL = "undo", "↩️ Undo"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        if not await _undo_last(self.guild_id, self.clone_id, interaction.user.id):
+            await interaction.followup.send("Nothing to undo yet.", ephemeral=True)
+            return
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardStepResetButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("stepreset")):
+    """Puts the controls of the step you are on back to default. The picture and the other steps are untouched."""
+    FIELD, LABEL = "stepreset", "🔄 Reset this step"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        tab = _get_tab(_draft_key(self.guild_id, self.clone_id, interaction.user.id))
+        fields = _STEP_RESET_FIELDS.get(tab)
+        if fields:
+            defaults = parse_ultra_options(None)
+            await _apply_style(self.guild_id, self.clone_id, interaction.user.id,
+                               {k: defaults[k] for k in fields}, _STEP_RESET_SHAPE.get(tab))
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardTestSendButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("testsend")):
+    """Step 4: the real card, full size, shown only to the admin (watermarked while the server is unpaid)."""
+    FIELD, LABEL, STYLE = "testsend", "📨 Send me a test", discord.ButtonStyle.primary
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        key = _draft_key(self.guild_id, self.clone_id, interaction.user.id)
+        now = time.monotonic()
+        if now - _TEST_LAST.get(key, -_TEST_COOLDOWN) < _TEST_COOLDOWN:
+            await interaction.response.send_message("One moment, then try again.", ephemeral=True)
+            return
+        _TEST_LAST[key] = now
+        _trim(_TEST_LAST, _STATE_MAX)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            real_cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+            unlocked = bool(real_cfg.get("ultra_pack_unlocked"))
+            png, _note = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(self.guild_id),
+                                          self.guild_id, self.clone_id, interaction.user, full=True)
+            await interaction.followup.send(
+                content="**Test welcome card** — only visible to you" + ("" if unlocked else " — unlock to save it and remove the watermark"),
+                file=discord.File(fp=io.BytesIO(png), filename="test-card.png"), ephemeral=True,
+            )
+        except Exception as e:
+            logger.warning(f"[cardwz] test send failed for guild {self.guild_id}: {type(e).__name__}: {e}")
+            await interaction.followup.send("Couldn't draw the test card just now. Try again in a moment.", ephemeral=True)
 
 
 DYNAMIC_ITEMS = (
@@ -1053,4 +1232,5 @@ DYNAMIC_ITEMS = (
     CardBackgroundButton, CardClearBackgroundButton, CardUnlockButton,
     CardHeadingButton, CardNumberToggleButton, CardResetButton, CardPreviewButton, CardDoneButton,
     CardTabButton, CardPresetSelect,
+    CardMoreButton, CardUndoButton, CardStepResetButton, CardTestSendButton,
 )

@@ -1,4 +1,4 @@
-"""Customize Card wizard: TV preview on top, three tabs, redraw after every change, NO preview limit."""
+"""Customize Card wizard: TV preview on top, four steps, redraw after every change, NO preview limit."""
 import asyncio
 import io
 import re
@@ -28,10 +28,13 @@ def build(tab="bg", tv=False, unlocked=False):
 
 
 def test_each_tab_shows_only_its_own_controls():
-    common = {"tabbg", "tablayout", "tabtext", "reset", "unlock", "preset"}
-    assert kinds(build("bg")) == common | {"setbg", "ratio", "dim", "focus"}
-    assert kinds(build("layout")) == common | {"layout", "banner", "side", "shape"}
-    assert kinds(build("text")) == common | {"color", "font", "bracket", "style", "heading", "number"}
+    # Easy mode (the default): at most 3 controls per step. "More controls" adds the rest (see test_welcome_studio_phase1).
+    common = {"tabbg", "tablayout", "tabtext", "tabsend", "unlock", "preset"}
+    step = common | {"undo", "stepreset", "more"}
+    assert kinds(build("bg")) == step | {"setbg", "ratio", "dim"}
+    assert kinds(build("layout")) == step | {"layout", "banner", "side"}
+    assert kinds(build("text")) == step | {"color", "font", "heading", "number"}
+    assert kinds(build("send")) == common | {"testsend", "reset"}
 
 
 def test_unlocked_server_gets_done_not_unlock_and_clear_only_with_a_background():
