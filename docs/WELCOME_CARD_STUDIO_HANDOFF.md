@@ -13,7 +13,8 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 | 1. Wizard restructure | **Built, PR open, not merged** | branch `feat/welcome-studio-phase1` |
 | 2a. Gallery data layer + rotation picker | **Built, PR open, not merged** (small slice, no UI yet) | branch `feat/welcome-studio-phase2a` (stacked on phase 0) |
 | 2b. Join render uses the gallery | **Built, PR open, not merged** (join only; previews unchanged) | branch `feat/welcome-studio-phase2b` (stacked on 2a) |
-| 2c. Pictures step UI (thumbnails, add/remove, rotation select) | Not started | |
+| 2c-1. Pictures step: gallery line + rotation select | **Built, PR open, not merged** (read-only line + rotation picker; stacked on 2b) | branch `feat/welcome-studio-phase2c` |
+| 2c-2. Add / Remove / Make first + numbered strip + "Unlock with Premium" button | Not started | |
 | 2d. Multi-upload + downscale + migrate old single picture | Not started | |
 | 3 to 7 | Not started | |
 
@@ -100,4 +101,27 @@ Full unit suite: 5155 passed, 4 failed, 4 skipped. The same 4 fail on the 2a bas
 
 ## Next small slices
 - **2c**: Pictures step: numbered strip + Add/Remove/Make first + rotation select (max 3 easy controls, rest under More). Locked servers: one line + "Unlock with Premium".
+- **2d**: multi-upload, downscale to 1536 px, caption on host post, daily upload limit, copy old single picture in as picture 1.
+
+## Phase 2c-1 (2026-10-21): what it built
+
+Small slice on purpose. **Only the Pictures step (step 1) changed.** No render change, no upload, nothing stored except the rotation mode.
+
+- Pictures step shows one plain line: `Gallery: N of 10 pictures · <rotation in plain words>`, plus `Picture 2, 5 needs a new picture.` when hosted images were deleted (flags set by 2b). Locked servers (no Premium/Plus) see one line: `Studio is part of Premium.`
+- **More controls** on Pictures now also holds a rotation select (`CardRotationSelect`, id field `rotation`, registered in `DYNAMIC_ITEMS`), Premium/Plus only. Easy mode is unchanged (still max 3 controls); More mode is 4 selects + presets = 5, under the limit (test).
+- The callback re-checks `studio_unlocked` on the server, then saves with new `db.gallery_set_rotation_mode` (only the 4 known modes are stored) and redraws.
+- `_with_studio(config, guild, clone)` adds a read-only `_studio` summary to the config before the view is built (open wizard, redraw, step switch to Pictures). Never raises; on any error the step looks exactly as before.
+- Tests: `tests/unit/test_welcome_studio_phase2c.py` (15). Updated the 2a test that said the wizard must not import the gallery (renderer still must not).
+
+### Test numbers (2c-1)
+Full unit suite: 5170 passed, 4 failed, 4 skipped. Same 4 as 2b: `test_ultra_trial_off::test_new_ultra_trials_are_off` (env flag) and 3 in `test_uncached_member_fixes.py` (test-order pollution).
+
+### Known gaps in 2c-1 (on purpose)
+- Still no way to put pictures in the gallery (2c-2 / 2d), so the count reads 0 for everyone today.
+- "Same picture every time" still uses picture 1 (no pinned-slot column yet; "Make first" in 2c-2 solves it).
+- No "Unlock with Premium" button yet, only the line. Needs the existing Premium purchase flow wired in (2c-2).
+- Not tested against live Discord (select shows in More mode on a phone, saving, redraw).
+
+## Next small slices
+- **2c-2**: numbered strip + Remove / Make first (no upload needed) + "Unlock with Premium" button.
 - **2d**: multi-upload, downscale to 1536 px, caption on host post, daily upload limit, copy old single picture in as picture 1.

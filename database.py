@@ -12285,6 +12285,18 @@ class Database:
         except Exception:
             logger.exception("[welcome-gallery] last slot save failed for guild %s", guild_id)
 
+    async def gallery_set_rotation_mode(self, guild_id: int, clone_id: Optional[int], mode: str) -> bool:
+        """Save how pictures rotate (Phase 2c). Only a known mode is stored. Returns True when a row changed."""
+        from modules.welcome_gallery import MODES
+        if mode not in MODES:
+            return False
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE discord_welcome_config SET rotation_mode = $3 "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, mode)
+        return res.endswith(" 1")
+
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Marks the premium welcome-card pack as purchased for this guild
         (whole-guild, one-time — see card_pack_unlocked's schema comment

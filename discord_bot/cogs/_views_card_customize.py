@@ -368,6 +368,41 @@ def _caption(unlocked: bool, note, tv_ok: bool, config=None) -> str:
     return "\n".join(lines)
 
 
+async def _with_studio(config: dict, guild_id: int, clone_id) -> dict:
+    """Phase 2c: add a small read-only `_studio` summary (Premium?, picture count, rotation, slots needing a picture)
+    so the sync view builder can show the gallery line. Never raises; on any error the Pictures step looks as before."""
+    try:
+        from modules import welcome_gallery as wg
+        from modules.welcome_studio import studio_unlocked
+        if not await studio_unlocked(guild_id, clone_id):
+            return dict(config, _studio={"unlocked": False})
+        rows = await db.gallery_list(guild_id, clone_id)
+        return dict(config, _studio={
+            "unlocked": True, "pictures": len(rows),
+            "needs": [r["slot"] for r in rows if r.get("needs_new_picture")],
+            "mode": wg.clean_mode(config.get("rotation_mode")),
+        })
+    except Exception:
+        logger.exception("[cardwz] studio summary failed for guild %s", guild_id)
+        return config
+
+
+def _gallery_line(studio: dict | None) -> str | None:
+    """One plain line under the Pictures hint. None when there is nothing to say (summary missing)."""
+    from modules import welcome_gallery as wg
+    from modules.welcome_studio import LOCKED_LINE
+    if not studio:
+        return None
+    if not studio.get("unlocked"):
+        return f"-# \U0001F512 {LOCKED_LINE}"
+    n = int(studio.get("pictures") or 0)
+    line = f"-# \U0001F4DA Gallery: {n} of {wg.MAX_PICTURES} pictures · {wg.MODE_LABELS[wg.clean_mode(studio.get('mode'))]}"
+    needs = studio.get("needs") or []
+    if needs:
+        line += "\n-# \u26A0\uFE0F Picture " + ", ".join(str(x) for x in needs) + " needs a new picture."
+    return line
+
+
 def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab: str = "bg",
                          has_tv: bool = False, note=None, tv_name: str = "card.png",
                          more: bool = False) -> discord.ui.LayoutView:
@@ -404,12 +439,20 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
 
     # Easy mode shows at most 3 controls per step; "More controls" adds that step's extra ones (never more than 5 selects).
     if tab == "bg":
+        gline = _gallery_line(raw_config.get("_studio"))
+        if gline:
+            container.add_item(discord.ui.TextDisplay(gline))
         bg_row = discord.ui.ActionRow()
         bg_row.add_item(CardBackgroundButton(guild_id, clone_id, invoker_id))
         if has_bg:
             bg_row.add_item(CardClearBackgroundButton(guild_id, clone_id, invoker_id))
         container.add_item(bg_row)
-        for select_cls in (CardRatioSelect, CardDimSelect) + ((CardFocusSelect,) if more else ()):
+        extra = ()
+        if more:
+            extra = (CardFocusSelect,)
+            if (raw_config.get("_studio") or {}).get("unlocked"):
+                extra += (CardRotationSelect,)
+        for select_cls in (CardRatioSelect, CardDimSelect) + extra:
             _select_row(select_cls)
     elif tab == "layout":
         for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect) + ((CardShapeSelect,) if more else ()):
@@ -542,6 +585,7 @@ async def open_customize_wizard(interaction: discord.Interaction, guild_id: int,
                 ultra_card_json=json.dumps(d["opts"]), avatar_shape=d["shape"],
             )
             config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    config = await _with_studio(config, guild_id, clone_id)
     key = _draft_key(guild_id, clone_id, interaction.user.id)
     _set_tab(key, "bg")
     tv = None
@@ -596,7 +640,7 @@ async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, i
     async with lock:
         if _GEN.get(key) != gen:
             return
-        config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+        config = await _with_studio(await db.get_welcome_config(guild_id, clone_id=clone_id), guild_id, clone_id)
         tv = None
         try:
             tv = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(guild_id),
@@ -771,6 +815,36 @@ class CardShapeSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Sele
             _get_draft(self.guild_id, self.clone_id, user_id, create=True)["shape"] = value
             return
         await db.set_welcome_config(self.guild_id, clone_id=self.clone_id, avatar_shape=value)
+
+
+class CardRotationSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("rotation")):
+    """Phase 2c: how pictures change for each newcomer. Premium/Plus only, re-checked on the server."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, config: dict | None = None):
+        from modules import welcome_gallery as wg
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        current = wg.clean_mode((config or {}).get("rotation_mode") or ((config or {}).get("_studio") or {}).get("mode"))
+        super().__init__(discord.ui.Select(
+            placeholder="Change picture for each newcomer",
+            options=[discord.SelectOption(label=label, value=value, default=(value == current))
+                     for value, label in wg.MODE_LABELS.items()],
+            custom_id=_encode("rotation", guild_id, clone_id, invoker_id)))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        g, c, i = _decode(match)
+        return cls(g, c, i, {})
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            await interaction.followup.send(LOCKED_LINE, ephemeral=True)
+            return
+        await db.gallery_set_rotation_mode(self.guild_id, self.clone_id, self.item.values[0])
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
 # ── custom background ─────────────────────────────────────────────────────
@@ -1109,6 +1183,8 @@ async def _show_step(interaction: discord.Interaction, guild_id: int, clone_id, 
     """Redraw only the controls for `tab` (the card picture is not redrawn). Interaction must already be deferred."""
     key = _draft_key(guild_id, clone_id, interaction.user.id)
     config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    if tab == "bg":
+        config = await _with_studio(config, guild_id, clone_id)
     name = _TV_STATE.get(key)
     if name is None and key not in _TV_STATE:        # state lost (bot restarted): fall back to what is on the message
         msg = interaction.message
@@ -1233,4 +1309,5 @@ DYNAMIC_ITEMS = (
     CardHeadingButton, CardNumberToggleButton, CardResetButton, CardPreviewButton, CardDoneButton,
     CardTabButton, CardPresetSelect,
     CardMoreButton, CardUndoButton, CardStepResetButton, CardTestSendButton,
+    CardRotationSelect,
 )
