@@ -490,6 +490,8 @@ ULTRA_DEFAULTS = {
     "text_size": "medium",     # key of ULTRA_TEXT_SIZES
     "frame": "none",           # key of ULTRA_FRAMES: picture frame around the whole card (studio 3b)
     "frame_color": "white",    # key of ULTRA_TEXT_COLORS
+    # Welcome Card Studio phase 3e (Premium/Plus only at save and join): move the avatar to one of nine spots.
+    "avatar_pos": "auto",      # key of ULTRA_AVATAR_POS: "auto" = the layout decides; else one of nine cells
     # Welcome Card Studio phase 3c (Premium/Plus only at save and join): nudge the text block, in pixels at card width 1536.
     "text_dx": 0,              # -300 (left) .. 300 (right); the safe-area guard keeps the text on the card and off the avatar
     "text_dy": 0,              # -300 (up) .. 300 (down)
@@ -498,6 +500,9 @@ ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_con
 ULTRA_LAYOUTS = ("banner", "centered")
 ULTRA_ZOOMS = (100, 125, 150, 200)
 ULTRA_PAN_LIMIT = 100
+ULTRA_AVATAR_POS = ("auto", "top-left", "top", "top-right", "left", "center", "right",
+                    "bottom-left", "bottom", "bottom-right")   # studio 3e: where the avatar goes ("auto" = layout decides)
+ULTRA_AVATAR_EDGE = 60       # a chosen avatar spot sits this far from the card edge (ring included)
 ULTRA_NUDGE_LIMIT = 300
 ULTRA_NUDGE_MARGIN = 24      # the text block never gets closer than this to the card edge
 ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
@@ -650,6 +655,8 @@ def parse_ultra_options(raw) -> dict:
         opts["text_size"] = raw["text_size"]
     if raw.get("frame") in ULTRA_FRAMES:
         opts["frame"] = raw["frame"]
+    if raw.get("avatar_pos") in ULTRA_AVATAR_POS:
+        opts["avatar_pos"] = raw["avatar_pos"]
     if raw.get("frame_color") in ULTRA_TEXT_COLORS:
         opts["frame_color"] = raw["frame_color"]
     for k in ("text_dx", "text_dy"):
@@ -657,6 +664,54 @@ def parse_ultra_options(raw) -> dict:
         if isinstance(v, int) and not isinstance(v, bool):
             opts[k] = max(-ULTRA_NUDGE_LIMIT, min(ULTRA_NUDGE_LIMIT, v))
     return opts
+
+
+def _clamp_avatar_nudge(rect, dx, dy, W, H, text_boxes, margin=ULTRA_NUDGE_MARGIN, gap=24):
+    """Safe-area guard for the avatar nudge. `rect` is (x, y, size) of the avatar with its ring, as it sits now;
+    `text_boxes` are (x, y, w, h) boxes of the text lines. Returns (dx, dy) cut down so the avatar stays `margin` px
+    inside the card and never gets within `gap` px of the text. The avatar slides from where it is toward the
+    requested spot and stops at the first thing in its way (it cannot jump over the text). (0, 0) is always allowed.
+    Pure function, never raises."""
+    try:
+        x, y, size = rect
+        # 1. on the card (if the avatar already sits closer to an edge than the margin, that edge does not move it)
+        lo_x, hi_x = min(margin, x), max(W - margin - size, x)
+        lo_y, hi_y = min(margin, y), max(H - margin - size, y)
+        dx = max(lo_x - x, min(hi_x - x, dx))
+        dy = max(lo_y - y, min(hi_y - y, dy))
+        if not dx and not dy:
+            return 0, 0
+
+        def hits(ox, oy):
+            ax0, ay0, ax1, ay1 = x + ox - gap, y + oy - gap, x + ox + size + gap, y + oy + size + gap
+            for (bx, by, bw, bh) in text_boxes:
+                if ax0 < bx + bw and ax1 > bx and ay0 < by + bh and ay1 > by:
+                    return True
+            return False
+
+        # 2. off the text: walk three paths (straight, sideways then up/down, up/down then sideways) in small steps and
+        # stop each before its first hit, so the avatar can never jump over the text. The path that gets furthest wins.
+        steps = 48
+
+        def walk(segments):
+            """segments: list of (dx, dy) legs, each walked from where the last one stopped. Returns the end offset."""
+            cx = cy = 0
+            for (sx, sy) in segments:
+                ex, ey = cx + sx, cy + sy
+                best = (cx, cy)
+                for i in range(1, steps + 1):
+                    ox, oy = round(cx + sx * i / steps), round(cy + sy * i / steps)
+                    if hits(ox, oy):
+                        return best
+                    best = (ox, oy)
+                cx, cy = ex, ey
+            return cx, cy
+
+        paths = ([(dx, dy)], [(dx, 0), (0, dy)], [(0, dy), (dx, 0)])
+        ends = [walk(seg) for seg in paths]
+        return max(ends, key=lambda e: abs(e[0]) + abs(e[1]))
+    except Exception:
+        return 0, 0
 
 
 def _clamp_text_nudge(lines, dx, dy, W, H, avoid_left=None, avoid_right=None, avoid_above=None,
@@ -939,14 +994,20 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     else:
         color = ULTRA_TEXT_COLORS[opts["text_color"]]
 
-    if opts["ring"]:
-        ring_w = 8
-        big = avatar_dim + ring_w * 2
-        ring_mask = Image.new("L", (big, big), 0)
-        shape_fn(ImageDraw.Draw(ring_mask), (0, 0, big, big), 255)
-        bg.paste(Image.new("RGBA", (big, big), color + (255,)),
-                 (avatar_x - ring_w, avatar_y - ring_w), ring_mask)
-    bg.paste(avatar, (avatar_x, avatar_y), mask)
+    def _paste_avatar(canvas, ax, ay):
+        if opts["ring"]:
+            ring_w = 8
+            big = avatar_dim + ring_w * 2
+            ring_mask = Image.new("L", (big, big), 0)
+            shape_fn(ImageDraw.Draw(ring_mask), (0, 0, big, big), 255)
+            canvas.paste(Image.new("RGBA", (big, big), color + (255,)), (ax - ring_w, ay - ring_w), ring_mask)
+        canvas.paste(avatar, (ax, ay), mask)
+
+    # Studio 3e: a nudged avatar is drawn after the text is placed (so the guard can keep it off the text);
+    # an un-nudged avatar is drawn right here, exactly as before.
+    avatar_nudged = opts["avatar_pos"] != "auto"
+    if not avatar_nudged:
+        _paste_avatar(bg, avatar_x, avatar_y)
 
     heading = opts["heading"]
     if heading:
@@ -1014,11 +1075,11 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
             _draw_text_fb(d, (x, y), text, size, col, stroke_width=st, stroke_fill=(0, 0, 0))
 
     tdx = tdy = 0
-    if opts["text_dx"] or opts["text_dy"]:
+    boxes = []
+    if opts["text_dx"] or opts["text_dy"] or avatar_nudged:
         # Studio 3c: nudge the whole text block, cut down by the safe-area guard (on the card, off the avatar).
         def _w_of(text, size, styled):
             return draw.textlength(text, font=_style_font(font_key, size)) if styled else _tlf(draw, text, size)
-        boxes = []
         if number_text:
             boxes.append((_x_for(draw, number_text, 26, False), num_y, _w_of(number_text, 26, False), 34))
         boxes.append((_x_for(draw, username_text, username_size, name_styled), name_y,
@@ -1033,7 +1094,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
             guard = {"avoid_right": avatar_x - ring_pad - 24}
         else:
             guard = {"avoid_left": avatar_x + avatar_dim + ring_pad + 24}
-        tdx, tdy = _clamp_text_nudge(boxes, opts["text_dx"], opts["text_dy"], W, H, **guard)
+        if opts["text_dx"] or opts["text_dy"]:
+            tdx, tdy = _clamp_text_nudge(boxes, opts["text_dx"], opts["text_dy"], W, H, **guard)
 
     def _draw_texts(d, col, scol, off=(0, 0), st=0):
         ox, oy = off[0] + tdx, off[1] + tdy
@@ -1054,6 +1116,23 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         bg = Image.alpha_composite(bg, layer)
         draw = ImageDraw.Draw(bg)
     _draw_texts(draw, color, False, st=stroke)
+
+    if avatar_nudged:
+        # Studio 3e: the guard sees the text where it really is drawn (after the 3c nudge) and keeps the avatar clear.
+        ring_pad = 8 if opts["ring"] else 0
+        placed = [(bx + tdx, by + tdy, bw, bh) for (bx, by, bw, bh) in boxes]
+        row, _, col = opts["avatar_pos"].partition("-") if "-" in opts["avatar_pos"] else (opts["avatar_pos"], "", "")
+        # cell -> wanted top-left of the avatar: "top-left", "top", "left", "center" ... (a lone word is a row or a column)
+        v = {"top": "top", "bottom": "bottom", "left": "mid", "right": "mid", "center": "mid"}.get(row, "mid")
+        h = col or ({"left": "left", "right": "right"}.get(row, "center"))
+        size = avatar_dim + 2 * ring_pad
+        edge = ULTRA_AVATAR_EDGE
+        want_x = {"left": edge, "center": (W - size) // 2, "right": W - edge - size}[h] + ring_pad
+        want_y = {"top": edge, "mid": (H - size) // 2, "bottom": H - edge - size}[v] + ring_pad
+        adx, ady = _clamp_avatar_nudge((avatar_x - ring_pad, avatar_y - ring_pad, size),
+                                       want_x - avatar_x, want_y - avatar_y, W, H, placed)
+        bg = bg.convert("RGBA")
+        _paste_avatar(bg, avatar_x + adx, avatar_y + ady)
 
     if opts["frame"] != "none":
         bg = _draw_frame(bg.convert("RGBA"), opts["frame"], ULTRA_TEXT_COLORS[opts["frame_color"]])

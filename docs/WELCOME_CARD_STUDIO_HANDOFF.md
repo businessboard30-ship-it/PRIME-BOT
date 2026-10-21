@@ -24,7 +24,8 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 3c. Nudge the text block (arrows on the Text step) + safe-area guard | **Built and merged into `main`** (stacked on 3b; PR opened against `main` on the owner's instruction, so its diff also carries the unmerged earlier phases) | branch `feat/welcome-studio-phase3c` |
 | 3d. 3x3 text position (one cycle button on the Text step) | **Built, PR #434 open, not merged** (cut from merged `main`) | branch `feat/welcome-studio-phase3d` |
 | Follow-up. Studio options gated at every place a card is drawn (preview, nudge, setup TV, test post) | **Built, PR #435 open, not merged** (cut from `main`, independent of #434) | branch `feat/welcome-studio-render-sites` |
-| 3e (avatar nudge), frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
+| 3e. Avatar spot (one cycle button on the Look step) | **Built, PR open, not merged** (cut from `main` plus the handoff-docs PR #436; independent of #434 and #435 in code) | branch `feat/welcome-studio-phase3e` |
+| Frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
 
 ## What Phase 1 built
 
@@ -342,3 +343,29 @@ All welcome/card unit test files (the same file set as 3c plus the Phase 3d file
 3. ~~Tiny follow-up: apply `options_for_render` at the other render sites~~ **Done in PR #435** (see the Render-site follow-up section).
 4. Phase 4 onward from `docs/WELCOME_CARD_STUDIO_PLAN.md`.
 5. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?
+
+
+## Phase 3e (2026-10-21): what it built (avatar spot)
+
+Small slice. No table, no migration. Only the **avatar** moves; the text, banner and picture stay where they were.
+
+- **New key** `avatar_pos`: `auto` (default, the layout decides, classic look) or one of nine cells (`top-left top top-right left center right bottom-left bottom bottom-right`, `ULTRA_AVATAR_POS`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus save and join; Ultra-only previews in memory), same gate as 3a to 3d. Because `options_for_render` (PR #435) is the one gate, every render site picks it up.
+- **Renderer:** a chosen cell becomes a wanted spot (60 px from the card edge, ring included, or centered), then the new pure guard `_clamp_avatar_nudge` cuts the move down: the avatar stays 24 px inside the card and never gets within 24 px of the text. It tries three paths (straight, sideways then up/down, up/down then sideways) in small steps and takes the one that gets furthest, stopping before the first hit, so the avatar can never jump over the text. A spot that would land on the text stops beside it. `auto` skips the code and the avatar is pasted exactly where it always was: pixel-identical (test). A moved avatar is pasted after the text is placed, so the guard sees the text where it is really drawn (after the 3c nudge).
+- **Wizard (Look step, More controls):** `🧑 Avatar spot: ...` cycles Automatic, then the nine cells in reading order. Class `CardAvatarPosButton`, id `avatarpos`, in `DYNAMIC_ITEMS`; "Reset this step" on Look resets it; Undo covers it (it goes through `_save_option`). It sits in the same row as the Frame buttons.
+- **Why one cycle button and not arrows (changed during the build):** a first version used four 🧑 arrows like the text nudge, but the Look step then sat at exactly 40 components (the Phase 1 rule is under 40) and 41 as soon as a frame color was chosen. One button adds one component (Look More with a frame chosen stays within 40: test). Cost: up to 9 taps to reach the last cell. If the owner wants fine control, free a few components first (for example fold the Avatar frame shape select into a button) and add arrows.
+- Tests: `tests/unit/test_welcome_studio_phase3e.py` (18): parser, guard (edges, stops before text, cannot jump, junk input), pixel-identical `auto`, every spot in both layouts stays on the card and off the text, gate for Premium vs not, component limits with a frame chosen, cycling through all ten values, Ultra-only preview, Undo, step reset.
+
+### Test numbers (3e)
+Welcome/card/server-panel/goodbye unit test files: 1081 passed, 10 failed. The failures are `test_server_panel_*` tests and the two `test_dash_card_assets` ones from before; the server-panel files fail the same way on a clean `main` (16 failures there when run alone, same list on this branch). The full unit suite was not run (21 unrelated files fail to collect in this environment).
+
+### Known gaps in 3e (on purpose)
+- Not tested live: the new button on a phone; real taps on Premium vs Ultra-only.
+- Checked by eye on a test card (default, top-right, centered bottom-right, centered left with a ring); not on a real member avatar or every font.
+- Only a cell, not free arrows (see above). Taps stop at the guard silently: a cell that cannot be reached shows the nearest reachable spot.
+- Polaroid / film strip frames not built (they need text-area changes). Glow edge: **ask the owner first**.
+
+## Next (updated after 3e)
+1. Owner reviews / merges #434 (3d), #435 (render sites), #436 (handoff docs) and the 3e PR. #434 and 3e both add a key to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (one line each): whichever merges second may need a one-line conflict fix, keep both keys.
+2. Staging check (no staging yet, Railway is paused): the Phase 1 to 3e controls on a phone, Premium vs Ultra-only, wizards posted before these PRs still responding.
+3. Then polaroid / film strip frames (text-area changes), or move on to Phase 4 from `docs/WELCOME_CARD_STUDIO_PLAN.md`. Ask the owner before any glow edge.
+4. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?

@@ -331,7 +331,7 @@ _STEP_HINTS = {
 # What "Reset this step" puts back to default (the picture is never touched). Shape lives in its own column.
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
-    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color"),
+    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos"),
     "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
@@ -537,6 +537,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
             container.add_item(frame_row)
             border_row = discord.ui.ActionRow()
             border_row.add_item(CardFrameButton(guild_id, clone_id, invoker_id, opts["frame"]))
+            border_row.add_item(CardAvatarPosButton(guild_id, clone_id, invoker_id, opts["avatar_pos"]))   # studio 3e
             if opts["frame"] != "none":
                 border_row.add_item(CardFrameColorButton(guild_id, clone_id, invoker_id, opts["frame_color"]))
             container.add_item(border_row)
@@ -1759,6 +1760,34 @@ class CardFrameButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+_AVATAR_POS_LABELS = {
+    "auto": "Automatic", "top-left": "Top left", "top": "Top", "top-right": "Top right", "left": "Left",
+    "center": "Center", "right": "Right", "bottom-left": "Bottom left", "bottom": "Bottom", "bottom-right": "Bottom right",
+}
+
+
+class CardAvatarPosButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("avatarpos")):
+    """Studio 3e: cycles the avatar through Automatic and the nine spots (reading order). The renderer's guard keeps it on
+    the card and clear of the text, so a spot that would land on the text stops beside it."""
+    FIELD = "avatarpos"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, pos: str = "auto"):
+        super().__init__(guild_id, clone_id, invoker_id, pos)
+
+    def label_text(self, pos="auto", *_):
+        return f"\U0001F9D1 Avatar spot: {_AVATAR_POS_LABELS.get(pos, 'Automatic')}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["avatar_pos"]
+        order = tuple(_AVATAR_POS_LABELS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, avatar_pos=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 class CardFrameColorButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("framecolor")):
     """Cycles the frame color through the same short color list as the text."""
     FIELD = "framecolor"
@@ -1979,6 +2008,6 @@ DYNAMIC_ITEMS = (
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
-    CardFrameButton, CardFrameColorButton,
+    CardFrameButton, CardFrameColorButton, CardAvatarPosButton,
     CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )
