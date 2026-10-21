@@ -62,3 +62,66 @@ def pick_slot(
         return (rng or random).choice(choices)
     except Exception:
         return None
+
+
+# ── Phase 2d: picture preparation and the daily upload limit ──────────────────────────────────────────────
+import io
+import time
+from collections import deque
+
+CARD_WIDTH = 1536                 # pictures are stored no wider than this (plan 3.1)
+MAX_HEIGHT = 3072                 # a very tall picture is still limited
+MAX_SOURCE_PIXELS = 40_000_000    # refuse decompression bombs before decoding
+JPEG_QUALITY = 88
+DAILY_UPLOAD_LIMIT = 20           # pictures a server may add per rolling 24 hours (flood guard for the hosting channel)
+MAX_PER_UPLOAD = 10               # Discord's file field takes up to 10 files
+
+
+def prepare_picture(data: bytes) -> Optional[bytes]:
+    """Downscale to the card width and re-encode as JPEG. None when it is not a usable image. Never raises.
+
+    Cuts hosting storage and render time (plan 3.1). Never upscales. Honors the camera rotation flag.
+    """
+    try:
+        from PIL import Image, ImageOps
+        img = Image.open(io.BytesIO(data))
+        w, h = img.size
+        if w < 1 or h < 1 or w * h > MAX_SOURCE_PIXELS:
+            return None
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        img.thumbnail((CARD_WIDTH, MAX_HEIGHT))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+_RECENT: dict = {}   # (guild_id, clone_key) -> deque of upload times; catches add/remove loops inside one process
+
+
+def uploads_left(guild_id: int, clone_id: Optional[int], db_recent: int = 0, now: Optional[float] = None) -> int:
+    """How many more pictures this server may add right now. `db_recent` is the stored count from the last 24 hours;
+    the in-memory count covers pictures added then removed. The larger of the two counts."""
+    try:
+        now = time.time() if now is None else now
+        q = _RECENT.get((int(guild_id), -1 if clone_id is None else int(clone_id)))
+        mem = 0
+        if q is not None:
+            while q and now - q[0] > 86400:
+                q.popleft()
+            mem = len(q)
+        return max(0, DAILY_UPLOAD_LIMIT - max(int(db_recent or 0), mem))
+    except Exception:
+        return 0
+
+
+def note_upload(guild_id: int, clone_id: Optional[int], now: Optional[float] = None) -> None:
+    try:
+        key = (int(guild_id), -1 if clone_id is None else int(clone_id))
+        _RECENT.setdefault(key, deque(maxlen=DAILY_UPLOAD_LIMIT * 2)).append(time.time() if now is None else now)
+        if len(_RECENT) > 5000:       # keep memory bounded
+            for k in list(_RECENT)[:1000]:
+                _RECENT.pop(k, None)
+    except Exception:
+        pass

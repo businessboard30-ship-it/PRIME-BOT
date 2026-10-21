@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "127"
+SCHEMA_VERSION = "128"
+# "127" -> "128" adds 079_welcome_gallery_migrated.sql (gallery_migrated flag on discord_welcome_config: Welcome Card Studio Phase 2d). ADD COLUMN IF NOT EXISTS only.
 # "126" -> "127" adds 078_welcome_gallery.sql (discord_welcome_backgrounds + rotation_mode/rotation_counter/last_slot_used on discord_welcome_config: Welcome Card Studio Phase 2a). CREATE TABLE / ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "125" -> "126" adds 077_cat_homes.sql (cat_homes: Phase 8 bought homes, vault, what was paid). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "124" -> "125" adds 076_anime_plus.sql (anime_plus_entitlements + anime_plus_payments, CREATE TABLE IF NOT EXISTS only).
@@ -5864,6 +5865,11 @@ class Database:
         welcome_gallery_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "078_welcome_gallery.sql"
         if welcome_gallery_migration.exists():
             await conn.execute(welcome_gallery_migration.read_text())
+
+        # Welcome Card Studio Phase 2d: "old single picture copied into the gallery" flag. Additive/idempotent.
+        welcome_gallery_migrated = pathlib.Path(__file__).parent / "database" / "migrations" / "079_welcome_gallery_migrated.sql"
+        if welcome_gallery_migrated.exists():
+            await conn.execute(welcome_gallery_migrated.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
@@ -12239,6 +12245,55 @@ class Database:
                     "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                     int(guild_id), key, free, channel_id, message_id, url_cache, (label or None))
                 return free
+
+    async def gallery_count_recent(self, guild_id: int, clone_id: Optional[int], hours: int = 24) -> int:
+        """Pictures stored for this server in the last `hours` hours (daily upload limit). Never raises; 0 on error."""
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                n = await conn.fetchval(
+                    "SELECT COUNT(*) FROM discord_welcome_backgrounds WHERE guild_id = $1 AND clone_key = $2 "
+                    "AND created_at > NOW() - make_interval(hours => $3)",
+                    int(guild_id), -1 if clone_id is None else int(clone_id), int(hours))
+            return int(n or 0)
+        except Exception:
+            logger.exception("[welcome-gallery] recent count failed for guild %s", guild_id)
+            return 0
+
+    async def gallery_migrate_single(self, guild_id: int, clone_id: Optional[int]) -> bool:
+        """Copy the old single custom picture into the gallery as picture 1, once. The old columns are never touched.
+        Only when the gallery is empty, the old picture is a hosted message, and it was not copied before.
+        Returns True when a copy was made. Never raises."""
+        key = -1 if clone_id is None else int(clone_id)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", int(guild_id) % 2147483647, key % 2147483647)
+                    cfg = await conn.fetchrow(
+                        "SELECT custom_bg_channel_id, custom_bg_message_id, custom_background_url, gallery_migrated "
+                        "FROM discord_welcome_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                        int(guild_id), clone_id)
+                    if cfg is None or cfg["gallery_migrated"]:
+                        return False
+                    have = await conn.fetchval(
+                        "SELECT COUNT(*) FROM discord_welcome_backgrounds WHERE guild_id = $1 AND clone_key = $2",
+                        int(guild_id), key)
+                    copied = False
+                    if not have and cfg["custom_bg_channel_id"] and cfg["custom_bg_message_id"]:
+                        await conn.execute(
+                            "INSERT INTO discord_welcome_backgrounds (guild_id, clone_key, slot, channel_id, message_id, url_cache, label) "
+                            "VALUES ($1, $2, 1, $3, $4, $5, 'migrated from the old single picture')",
+                            int(guild_id), key, cfg["custom_bg_channel_id"], cfg["custom_bg_message_id"],
+                            cfg["custom_background_url"])
+                        copied = True
+                    await conn.execute(
+                        "UPDATE discord_welcome_config SET gallery_migrated = TRUE WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                        int(guild_id), clone_id)
+                    return copied
+        except Exception:
+            logger.exception("[welcome-gallery] migrate failed for guild %s", guild_id)
+            return False
 
     async def gallery_remove(self, guild_id: int, clone_id: Optional[int], slot: int) -> bool:
         pool = await get_pool()
