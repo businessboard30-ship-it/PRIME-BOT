@@ -7,7 +7,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 
 ## Status (2026-10-21)
 
-> **2026-10-21: phases 0 to 3c were merged into `main` (PRs #423 to #433), in order, on the owner's instruction.** The older per-phase sections below still say "PR open, not merged" in their own text: that is history, the status table right below is current. Phase 3d (PR #434) and the render-site follow-up (PR #435) are the two open PRs; both are cut from the merged `main`, merge cleanly together, and are not merged yet.
+> **2026-10-21: phases 0 to 3c were merged into `main` (PRs #423 to #433), in order, on the owner's instruction.** The older per-phase sections below still say "PR open, not merged" in their own text: that is history, the status table right below is current. **Open PRs, none merged:** #434 (3d, independent), #435 (render sites, independent), and a stacked chain, easiest to merge in this order: #436 (this handoff, docs only), #437 (3e avatar spot), #438 (4a picture look), #439 (4b heading font). Each in the chain is cut from the one before it, so its diff also shows the earlier ones until they merge. #434 and #437 both add a key on the same `STUDIO_KEYS` / `STUDIO_DEFAULTS` line: whichever merges second may need a one-line conflict fix, keep both keys.
 
 | Phase | State | Where |
 |---|---|---|
@@ -24,9 +24,9 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 3c. Nudge the text block (arrows on the Text step) + safe-area guard | **Built and merged into `main`** (stacked on 3b; PR opened against `main` on the owner's instruction, so its diff also carries the unmerged earlier phases) | branch `feat/welcome-studio-phase3c` |
 | 3d. 3x3 text position (one cycle button on the Text step) | **Built, PR #434 open, not merged** (cut from merged `main`) | branch `feat/welcome-studio-phase3d` |
 | Follow-up. Studio options gated at every place a card is drawn (preview, nudge, setup TV, test post) | **Built, PR #435 open, not merged** (cut from `main`, independent of #434) | branch `feat/welcome-studio-render-sites` |
-| 3e. Avatar spot (one cycle button on the Look step) | **Built, PR open, not merged** (cut from `main` plus the handoff-docs PR #436; independent of #434 and #435 in code) | branch `feat/welcome-studio-phase3e` |
-| 4a. Picture look (effect): blur, vignette, black & white, warm, cool, faded (one cycle button on the Look step) | **Built, PR open, not merged** (stacked on 3e, so its diff also carries 3e) | branch `feat/welcome-studio-phase4a` |
-| 4b. Heading font: the heading line gets its own font (one cycle button on the Text step) | **Built, PR open, not merged** (stacked on 4a, so its diff also carries 3e and 4a) | branch `feat/welcome-studio-phase4b` |
+| 3e. Avatar spot (one cycle button on the Look step) | **Built, PR #437 open, not merged** (cut from `main` plus the handoff-docs PR #436; independent of #434 and #435 in code) | branch `feat/welcome-studio-phase3e` |
+| 4a. Picture look (effect): blur, vignette, black & white, warm, cool, faded (one cycle button on the Look step) | **Built, PR #438 open, not merged** (stacked on 3e, so its diff also carries 3e) | branch `feat/welcome-studio-phase4a` |
+| 4b. Heading font: the heading line gets its own font (one cycle button on the Text step) | **Built, PR #439 open, not merged** (stacked on 4a, so its diff also carries 3e and 4a) | branch `feat/welcome-studio-phase4b` |
 | Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, new fonts, more effects) and 5 to 7 | Not started | |
 
 ## What Phase 1 built
