@@ -61,7 +61,7 @@ from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from discord_bot.cogs import _views_welcome as vw
 from modules.welcome_card import (
-    ULTRA_AVATAR_SIDES, ULTRA_FONTS, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_NUDGE_LIMIT, ULTRA_TEXT_COLORS,
+    ULTRA_AVATAR_SIDES, ULTRA_FONTS, ULTRA_OUTLINES, ULTRA_BANNERS, ULTRA_DIM_ALPHA, ULTRA_HEADING_MAX, ULTRA_NUDGE_LIMIT, ULTRA_TEXT_COLORS,
     TEMPLATE_HEIGHT, TEMPLATE_WIDTH, parse_ultra_options, render_welcome_card,
 )
 
@@ -332,7 +332,7 @@ _STEP_HINTS = {
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
     "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos", "effect"),
-    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "heading_font"),
+    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "heading_font", "text_outline"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
 _MORE_STATE: dict = {}       # (guild, clone, user) -> (set of steps showing "More controls", monotonic ts)
@@ -495,7 +495,10 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         row.add_item(select_cls(guild_id, clone_id, invoker_id, config))
         container.add_item(row)
 
-    container.add_item(discord.ui.TextDisplay(f"-# {_STEP_HINTS[tab]}"))
+    hint = _STEP_HINTS[tab]
+    if tab == "text" and more:   # fold the nudge line into the hint: frees one component for the outline button (4c)
+        hint += " Arrows move the text; it stops at the card edge and next to your avatar."
+    container.add_item(discord.ui.TextDisplay(f"-# {hint}"))
 
     # Easy mode shows at most 3 controls per step; "More controls" adds that step's extra ones (never more than 5 selects).
     if tab == "bg":
@@ -551,9 +554,9 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         if more:
             text_row.add_item(CardTextSizeButton(guild_id, clone_id, invoker_id, opts["text_size"]))
             text_row.add_item(CardHeadingFontButton(guild_id, clone_id, invoker_id, opts["heading_font"]))   # studio 4b
+            text_row.add_item(CardOutlineButton(guild_id, clone_id, invoker_id, opts["text_outline"]))     # studio 4c
         container.add_item(text_row)
         if more:   # Phase 3c: nudge the text block (arrows, never typed numbers); the guard keeps it on the card
-            container.add_item(discord.ui.TextDisplay("Move the text (it stops at the card edge and next to your avatar):"))
             nudge_row = discord.ui.ActionRow()
             for cls in (CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton):
                 nudge_row.add_item(cls(guild_id, clone_id, invoker_id))
@@ -1836,6 +1839,27 @@ class CardHeadingFontButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], tem
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+class CardOutlineButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("outline")):
+    """Studio 4c: dark edge around the text. Cycles Auto > None > Thin > Medium > Thick."""
+    FIELD = "outline"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, outline: str = "auto"):
+        super().__init__(guild_id, clone_id, invoker_id, outline)
+
+    def label_text(self, outline="auto", *_):
+        return f"\U0001F58B\uFE0F Outline: {outline.title()}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["text_outline"]
+        order = ("auto",) + tuple(ULTRA_OUTLINES)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, text_outline=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 class CardFrameColorButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("framecolor")):
     """Cycles the frame color through the same short color list as the text."""
     FIELD = "framecolor"
@@ -2056,6 +2080,6 @@ DYNAMIC_ITEMS = (
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
-    CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton, CardHeadingFontButton,
+    CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton, CardHeadingFontButton, CardOutlineButton,
     CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )

@@ -27,6 +27,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 3e. Avatar spot (one cycle button on the Look step) | **Built, PR #437 open, not merged** (cut from `main` plus the handoff-docs PR #436; independent of #434 and #435 in code) | branch `feat/welcome-studio-phase3e` |
 | 4a. Picture look (effect): blur, vignette, black & white, warm, cool, faded (one cycle button on the Look step) | **Built, PR #438 open, not merged** (stacked on 3e, so its diff also carries 3e) | branch `feat/welcome-studio-phase4a` |
 | 4b. Heading font: the heading line gets its own font (one cycle button on the Text step) | **Built, PR #439 open, not merged** (stacked on 4a, so its diff also carries 3e and 4a) | branch `feat/welcome-studio-phase4b` |
+| 4c. Text outline: dark edge around the text, none / thin / medium / thick (one cycle button on the Text step) | **Built, PR open, not merged** (stacked on 4b, so its diff also carries 3e, 4a, 4b) | branch `feat/welcome-studio-phase4c` |
 | Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, new fonts, more effects) and 5 to 7 | Not started | |
 
 ## What Phase 1 built
@@ -420,3 +421,24 @@ All `test_welcome_studio_*` files plus `test_card_wizard_tv.py`: 251 passed, 1 f
 2. Rest of Phase 4: text outline thickness, brightness / grain, more fonts (check licensing). Text and Look steps are full: new controls need a cycle button in an existing row (each adds one component) or something removed first.
 3. Then Phase 5 (saved designs) per the plan; staging check on a phone for Phase 1 to 4b.
 4. Ask the owner before any glow or sparkle. Open questions: Phase 6 DM extras? Per-picture overrides? Should Clear background also clear the gallery?
+
+
+## Phase 4c (2026-10-21): what it built (text outline)
+
+Small slice. No table, no migration. Plan 3.6 "text outline (new)", thickness only (color stays black).
+
+- **New key** `text_outline`: `auto` (default, the old rule: 2 px without a solid banner or with a light one, 3 px with auto contrast on a bright strip, else 0) or `none` / `thin` (2) / `medium` (4) / `thick` (6) (`ULTRA_OUTLINES`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus at save and join, Ultra-only previews in memory, all render sites through `options_for_render`).
+- **Renderer:** one line after the auto-contrast block overrides `stroke` when the key is not `auto`. The shadow layer is unchanged. `auto` is pixel-identical (test).
+- **Wizard (Text step, More controls):** `\U0001F58B\uFE0F Outline: ...` cycles Auto, None, Thin, Medium, Thick. Class `CardOutlineButton`, id `outline`, in `DYNAMIC_ITEMS`; Reset this step and Undo cover it. Fifth button in the Heading / Member # / Text size / Heading font row (limit 5).
+- **Component budget:** the Text step was at 39 of 40. To make room, the separate "Move the text..." line was folded into the step hint line (shown in More mode). Text More: 39 components (test: under 40).
+- Tests: `tests/unit/test_welcome_studio_phase4c.py` (9): parser, auto pixel-identical, thicker means more dark pixels, gate, button placement and limits, label/registered/reset, cycle, Ultra-only preview + Undo.
+
+### Known gaps in 4c (on purpose)
+- Not tested live (phone taps, Premium vs Ultra-only). Outline color is always black; a color pick would need another control (steps are full).
+- Very thick outline on small text can fill letter gaps; judged by eye only on a test card.
+
+## Next (updated after 4c)
+1. Owner reviews / merges in this order: #436, #437 (3e), #438 (4a), #439 (4b), then the 4c PR.
+2. Rest of Phase 4: brightness / grain, more fonts (check licensing), card border thickness. Text and Look steps are full.
+3. Then Phase 5 (saved designs); staging check on a phone for Phase 1 to 4c.
+4. Ask the owner before any glow or sparkle.

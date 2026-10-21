@@ -492,6 +492,7 @@ ULTRA_DEFAULTS = {
     "frame_color": "white",    # key of ULTRA_TEXT_COLORS
     # Welcome Card Studio phase 3e (Premium/Plus only at save and join): move the avatar to one of nine spots.
     "heading_font": "same",    # "same" (as the name) or a key of ULTRA_FONTS: the font of the heading line (studio 4b)
+    "text_outline": "auto",    # "auto" (the old rule) or a key of ULTRA_OUTLINES: dark edge around the text (studio 4c)
     "effect": "none",          # key of ULTRA_EFFECTS: one look applied to the background picture (studio 4a)
     "avatar_pos": "auto",      # key of ULTRA_AVATAR_POS: "auto" = the layout decides; else one of nine cells
     # Welcome Card Studio phase 3c (Premium/Plus only at save and join): nudge the text block, in pixels at card width 1536.
@@ -504,6 +505,7 @@ ULTRA_ZOOMS = (100, 125, 150, 200)
 ULTRA_PAN_LIMIT = 100
 ULTRA_AVATAR_POS = ("auto", "top-left", "top", "top-right", "left", "center", "right",
                     "bottom-left", "bottom", "bottom-right")   # studio 3e: where the avatar goes ("auto" = layout decides)
+ULTRA_OUTLINES = {"none": 0, "thin": 2, "medium": 4, "thick": 6}   # px of dark stroke; "auto" keeps the old rule
 ULTRA_EFFECTS = ("none", "blur", "vignette", "bw", "warm", "cool", "fade")   # all cheap; glow/sparkle need the owner's OK
 ULTRA_AVATAR_EDGE = 60       # a chosen avatar spot sits this far from the card edge (ring included)
 ULTRA_NUDGE_LIMIT = 300
@@ -660,6 +662,8 @@ def parse_ultra_options(raw) -> dict:
         opts["frame"] = raw["frame"]
     if raw.get("heading_font") == "same" or raw.get("heading_font") in ULTRA_FONTS:
         opts["heading_font"] = raw["heading_font"]
+    if raw.get("text_outline") == "auto" or raw.get("text_outline") in ULTRA_OUTLINES:
+        opts["text_outline"] = raw["text_outline"]
     if raw.get("effect") in ULTRA_EFFECTS:
         opts["effect"] = raw["effect"]
     if raw.get("avatar_pos") in ULTRA_AVATAR_POS:
@@ -1097,6 +1101,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     else:
         name_y, head_y, num_y = band_top + 62, band_bottom - 50, band_top + 24
 
+    if opts["text_outline"] != "auto":   # studio 4c: the admin picked the edge; "auto" keeps the rule above
+        stroke = ULTRA_OUTLINES[opts["text_outline"]]
     from modules.level_card import _textlength_fallback as _tlf
 
     def _x_for(d, text, size, styled, fk=None):
