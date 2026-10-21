@@ -312,6 +312,19 @@ class AdminCog(commands.Cog):
             embed.add_field(name=name, value="✅ set" if ok else "❌ missing", inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @admin.command(name="shards", description="[Owner] Show shard health: shard count, guilds per shard, latency")
+    async def shards(self, interaction: discord.Interaction):
+        if not _is_bot_admin(interaction.user.id):
+            await _deny(interaction)
+            return
+        from modules import sharding
+        try:
+            cfg = sharding.resolve_shard_config(clone_id=getattr(self.bot, "clone_id", None))
+        except sharding.ShardConfigError:
+            cfg = None  # the bot is already running; just don't show the setting line
+        text = sharding.format_report(sharding.snapshot(self.bot), cfg)
+        await interaction.response.send_message(text, ephemeral=True)
+
     @admin.command(name="aidebug", description="[Owner] Send a test prompt to Groq and show the real error if it fails")
     async def aidebug(self, interaction: discord.Interaction):
         if not _is_bot_admin(interaction.user.id):

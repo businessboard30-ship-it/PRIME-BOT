@@ -121,6 +121,7 @@ from discord_bot.cogs._views_leveling_wallet import DYNAMIC_ITEMS as LEVELING_WA
 from discord_bot.cogs._views_leveling_leaderboard import DYNAMIC_ITEMS as LEVELING_LEADERBOARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_pending_payments import DYNAMIC_ITEMS as PENDING_PAYMENTS_DYNAMIC_ITEMS
 from discord_bot.cogs._views_gumroad_claim import DYNAMIC_ITEMS as GUMROAD_CLAIM_DYNAMIC_ITEMS
+from modules import sharding
 from utils.guild_owner import resolve_guild_owner
 from discord_bot.cogs._views_payment_card import DYNAMIC_ITEMS as PAYMENT_CARD_DYNAMIC_ITEMS
 
@@ -153,7 +154,11 @@ intents.members = True
 intents.message_content = True
 
 
-class AnimeBotDiscord(commands.Bot):
+class AnimeBotDiscord(commands.AutoShardedBot):
+    # AutoShardedBot runs every shard inside this ONE process. discord.py asks Discord for the recommended
+    # shard count at startup, so all cogs, background loops, caches and persistent views behave exactly as
+    # they did unsharded (nothing can run twice). With one shard it behaves like a plain Bot.
+    # See docs/SHARDING.md and modules/sharding.py.
     def __init__(self, clone_id: int = None):
         # Tree-wide *default* install/context scope: DM-and-guild-friendly.
         # Individual guild-dependent commands/groups override this back down
@@ -166,6 +171,8 @@ class AnimeBotDiscord(commands.Bot):
         super().__init__(
             command_prefix="!",
             intents=intents,
+            # None = automatic (Discord's recommended count). Only the main bot honours PRIME_SHARD_COUNT.
+            shard_count=sharding.resolve_shard_config(clone_id=clone_id).shard_count,
             # Clones used to request member chunks for every guild at startup,
             # a burst of gateway sends that trips discord.py's 120/60s send
             # limiter ("WebSocket ... is ratelimited, waiting ~60s", repeated
@@ -413,14 +420,20 @@ class AnimeBotDiscord(commands.Bot):
         # no guarantee (and usually no reason) to be a member of that guild,
         # so guild-scoped sync there raises 403 Missing Access and crashes
         # the clone on every startup. Clones always sync globally instead.
-        if DISCORD_DEV_GUILD_ID and self.clone_id is None:
-            guild = discord.Object(id=DISCORD_DEV_GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            logger.info(f"Synced {len(synced)} slash commands to dev guild {DISCORD_DEV_GUILD_ID}")
-        else:
-            synced = await self.tree.sync()
-            logger.info(f"Synced {len(synced)} slash commands globally")
+        # setup_hook runs once per process (not once per shard), so this is one sync per start. A temporary
+        # Discord API failure is logged and skipped: commands already registered keep working, and the bot
+        # still starts instead of crash-looping into a login rate limit.
+        try:
+            if DISCORD_DEV_GUILD_ID and self.clone_id is None:
+                guild = discord.Object(id=DISCORD_DEV_GUILD_ID)
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                logger.info(f"Synced {len(synced)} slash commands to dev guild {DISCORD_DEV_GUILD_ID}")
+            else:
+                synced = await self.tree.sync()
+                logger.info(f"Synced {len(synced)} slash commands globally")
+        except discord.HTTPException as e:
+            logger.error("[startup] Slash command sync failed (HTTP %s); continuing with the commands Discord already has.", e.status)
 
         if self.clone_id is not None:
             self._heartbeat_loop.start()
@@ -576,6 +589,31 @@ class AnimeBotDiscord(commands.Bot):
 
         return None
 
+    # ---- shard diagnostics (counts and ids only; never tokens or exception text) ----
+    def _log_shard_summary(self):
+        statuses = sharding.snapshot(self)
+        info = sharding.health_summary(statuses)
+        logger.info("[shards] %d shard(s), %d guild(s) total, down=%s",
+                    info["shard_count"], info["total_guilds"], info["down_shards"] or "none")
+        if info["shard_count"] > 1:
+            logger.info("[shards] guilds per shard: %s", {st.shard_id: st.guilds for st in statuses})
+        warn = sharding.capacity_warning(info["total_guilds"], info["shard_count"])
+        if warn:
+            logger.warning("[shards] %s", warn)
+
+    async def on_shard_connect(self, shard_id: int):
+        logger.info("[shards] shard %s connected", shard_id)
+
+    async def on_shard_ready(self, shard_id: int):
+        count = sum(1 for g in self.guilds if g.shard_id == shard_id)
+        logger.info("[shards] shard %s ready (%d guild(s))", shard_id, count)
+
+    async def on_shard_resumed(self, shard_id: int):
+        logger.info("[shards] shard %s resumed its session", shard_id)
+
+    async def on_shard_disconnect(self, shard_id: int):
+        logger.warning("[shards] shard %s disconnected; discord.py will reconnect it", shard_id)
+
     async def on_ready(self):
         label = "main bot" if self.clone_id is None else f"clone #{self.clone_id}"
         # Random per-process id + OS pid, logged once per connection. If
@@ -587,6 +625,7 @@ class AnimeBotDiscord(commands.Bot):
         instance_id = secrets.token_hex(4)
         logger.info(f"Logged in as {self.user} (id={self.user.id}) — {label} — instance={instance_id} pid={os.getpid()}")
         logger.info(f"In {len(self.guilds)} guild(s)")
+        self._log_shard_summary()
         if self.clone_id is not None:
             await db.touch_discord_clone_heartbeat(self.clone_id)
         # Catches up discord_guilds for any server joined while the bot was
@@ -1171,6 +1210,10 @@ async def main():
         help="Run as this registered clone instead of the main bot (see discord_cloned_bots).",
     )
     args = parser.parse_args()
+
+    # Fail fast with a clear, non-secret message if PRIME_SHARD_COUNT is set to something invalid.
+    shard_cfg = sharding.resolve_shard_config(clone_id=args.clone_id)
+    logger.info("[startup] shard count setting: %s", shard_cfg.describe())
 
     token = await _resolve_token(args.clone_id)
 
