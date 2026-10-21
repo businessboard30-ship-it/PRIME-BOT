@@ -3,9 +3,11 @@
 Repo: `github.com/businessboard30-ship-it/PRIME-BOT` (Discord bot, Python, discord.py 2.7.1, Postgres via asyncpg).
 Owner style: short plain updates, decisions given in chat, writes informally. **Update this file in every PR/push** (owner rule), and every push must say what is built and what is next.
 Source of truth for the design: `docs/WELCOME_CARD_STUDIO_PLAN.md` (copied from the owner's upload on 2026-10-21).
-Owner rules for this work: open a pull request, **never merge it**; no deploy without the owner's OK.
+Owner rules for this work: open every pull request against **`main`**; **merge only when the owner says so** (they did on 2026-10-21 for #423 to #433); no deploy without the owner's OK. Railway deployments have been paused for a long time (owner, 2026-10-21), so a merge to `main` does not reach production yet.
 
 ## Status (2026-10-21)
+
+> **2026-10-21: phases 0 to 3c were merged into `main` (PRs #423 to #433), in order, on the owner's instruction.** The "PR open, not merged" wording in the rows and sections below is history. Phase 3d is the first branch cut from the merged `main`.
 
 | Phase | State | Where |
 |---|---|---|
@@ -20,7 +22,8 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 | 3a. Zoom + pan arrows, text size (first slice of Phase 3) | **Built, PR open, not merged** (stacked on 2e) | branch `feat/welcome-studio-phase3a` |
 | 3b. Picture frames (none, thin, thick, double, rounded) + frame color | **Built, PR open, not merged** (stacked on 3a) | branch `feat/welcome-studio-phase3b` |
 | 3c. Nudge the text block (arrows on the Text step) + safe-area guard | **Built, PR open, not merged** (stacked on 3b; PR opened against `main` on the owner's instruction, so its diff also carries the unmerged earlier phases) | branch `feat/welcome-studio-phase3c` |
-| 3d (3x3 position grid, avatar nudge), frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
+| 3d. 3x3 text position (one cycle button on the Text step) | **Built, PR open, not merged** (cut from merged `main`) | branch `feat/welcome-studio-phase3d` |
+| 3e (avatar nudge), frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
 
 ## What Phase 1 built
 
@@ -311,3 +314,30 @@ Small fix, cut from `main` (separate from the 3d PR). No new option, no table.
 2. **3d**: 3x3 position grid for the text block and avatar (replaces banner top/bottom + avatar left/right but keeps them as presets), avatar nudge. Polaroid / film strip frames need text-area changes, do with the grid. Ask the owner before any glow edge.
 3. Tiny follow-up: apply `options_for_render` at the other render sites (`/welcome preview`, `_views_welcome.py`, `welcome_extras.py`).
 4. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?
+
+
+## Phase 3d (2026-10-21): what it built (3x3 text position)
+
+Small slice, cut from the merged `main`. No table, no migration.
+
+- **New key** `text_pos`: `auto` (default, the layout decides, classic look) or one of nine cells `top-left top top-right left center right bottom-left bottom bottom-right` (`ULTRA_TEXT_POS`). Validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS` (Premium/Plus save and join; Ultra-only previews in memory), same gate as 3a to 3c.
+- **Renderer:** the whole text block is moved so it sits in the chosen cell (60 px from the card edge, or centered), then the 3c nudge (`text_dx` / `text_dy`) is added on top, then the **same safe-area guard** cuts it down (on the card, off the avatar). So asking for a cell next to the avatar stops beside the avatar instead of sliding under it. `auto` skips the code: pixel-identical to before (test).
+- **Wizard (Text step, More controls):** `📍 Text spot: ...` button cycles Automatic, then the nine cells in reading order (top left first). Class `CardTextPosButton`, id `textpos`, in `DYNAMIC_ITEMS`; "Reset this step" resets it; Undo covers it.
+- **Why a button and not a select (changed during the build):** a first version used a select, but it put the Text step at 6 selects and exactly 40 components with the preview attached, which breaks the Phase 1 rule (under 40 components, at most 5 selects; `test_more_mode_stays_inside_discord_limits_on_every_step` caught it). A button adds one component. To keep the Text step under 40 the separate "Move the text..." line from 3c was folded into the step hint line (Text More with preview: 39 components). Cost: up to 9 taps to reach the last cell. If the owner lifts the 5-select rule, a select would be nicer; or two buttons (row, column) would cut taps to 3 + 3.
+- Tests: `tests/unit/test_welcome_studio_phase3d.py` (14), including a pixel check that the text lands near the chosen corner and a check that it never overlaps the avatar.
+
+### Test numbers (3d)
+All welcome/card unit test files (the same file set as 3c plus the Phase 3d file): 397 passed, 0 failed. The full unit suite was not run (21 unrelated files fail to collect in this environment; the 2 `test_dash_card_assets.py` failures from 3c are not in this file set).
+
+### Known gaps in 3d (on purpose)
+- Not tested live: the new button on a phone; real taps on Premium vs Ultra-only.
+- Banner "top"/avatar side presets are **not** replaced by the grid (they still exist; the grid only places the text). Moving the avatar itself (avatar nudge) is not built: Look in More mode is at 35 of 40 components. Needs the same trick (a cycle button, or fold a hint line).
+- A cell above the banner puts text over the picture; legibility is the admin's call (auto contrast and shadow help).
+- Same render-site gap as 3a to 3c: only the join applies `options_for_render`.
+
+## Next (updated after 3d)
+1. Owner reviews / merges the 3d PR. Staging check (Railway deploys are paused, so there is no staging yet): the Phase 1 to 3d controls on a phone, Premium vs Ultra-only, wizards posted before these PRs still responding.
+2. **3e**: avatar nudge or position, polaroid / film strip frames (need text-area changes). Ask the owner before any glow edge.
+3. Tiny follow-up: apply `options_for_render` at the other render sites (`/welcome preview`, `_views_welcome.py`, `welcome_extras.py`).
+4. Phase 4 onward from `docs/WELCOME_CARD_STUDIO_PLAN.md`.
+5. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?

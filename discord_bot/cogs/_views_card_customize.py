@@ -268,6 +268,9 @@ _FOCUS_LABELS = {"auto": "Crop: smart (keeps the busiest part)", "center": "Crop
                  "left": "Crop: keep the left", "right": "Crop: keep the right"}
 _RATIO_LABELS = {"auto": "Card shape: Auto (match my image)", "3:2": "Card shape: 3:2 classic (default)", "16:9": "Card shape: 16:9 widescreen", "2:1": "Card shape: 2:1 wide",
                  "3:1": "Card shape: 3:1 strip (slim)", "4:3": "Card shape: 4:3 tall", "1:1": "Card shape: 1:1 square"}
+_TEXT_POS_LABELS = {"auto": "Automatic", "top-left": "Top left", "top": "Top middle", "top-right": "Top right",
+                    "left": "Middle left", "center": "Center", "right": "Middle right",
+                    "bottom-left": "Bottom left", "bottom": "Bottom middle", "bottom-right": "Bottom right"}
 _COLOR_LABELS = {"white": "White (default)", "gold": "Gold", "cyan": "Cyan", "pink": "Pink", "green": "Green", "red": "Red", "avatar": "Match my avatar (each member differs)"}
 
 
@@ -332,7 +335,7 @@ _STEP_HINTS = {
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
     "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color"),
-    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy"),
+    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "text_pos"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
 _MORE_STATE: dict = {}       # (guild, clone, user) -> (set of steps showing "More controls", monotonic ts)
@@ -495,7 +498,10 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         row.add_item(select_cls(guild_id, clone_id, invoker_id, config))
         container.add_item(row)
 
-    container.add_item(discord.ui.TextDisplay(f"-# {_STEP_HINTS[tab]}"))
+    hint = _STEP_HINTS[tab]
+    if tab == "text" and more:
+        hint += " Spot and arrows move the text; it stops at the card edge and next to your avatar."
+    container.add_item(discord.ui.TextDisplay(f"-# {hint}"))
 
     # Easy mode shows at most 3 controls per step; "More controls" adds that step's extra ones (never more than 5 selects).
     if tab == "bg":
@@ -548,9 +554,9 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
         text_row.add_item(CardNumberToggleButton(guild_id, clone_id, invoker_id, opts["show_number"]))
         if more:
             text_row.add_item(CardTextSizeButton(guild_id, clone_id, invoker_id, opts["text_size"]))
+            text_row.add_item(CardTextPosButton(guild_id, clone_id, invoker_id, opts["text_pos"]))
         container.add_item(text_row)
         if more:   # Phase 3c: nudge the text block (arrows, never typed numbers); the guard keeps it on the card
-            container.add_item(discord.ui.TextDisplay("Move the text (it stops at the card edge and next to your avatar):"))
             nudge_row = discord.ui.ActionRow()
             for cls in (CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton):
                 nudge_row.add_item(cls(guild_id, clone_id, invoker_id))
@@ -1922,6 +1928,28 @@ class CardStudioPremiumButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], t
         await send_premium_pitch(interaction, self.guild_id, self.clone_id)
 
 
+class CardTextPosButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("textpos")):
+    """Studio 3d: cycles the text block through Automatic, then the nine cells of a 3x3 grid (top left ... bottom right).
+    A button, not a select: the Text step is already at the 5-select / 40-component budget in More mode."""
+    FIELD = "textpos"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, pos: str = "auto"):
+        super().__init__(guild_id, clone_id, invoker_id, pos)
+
+    def label_text(self, pos="auto", *_):
+        return f"\U0001F4CD Text spot: {_TEXT_POS_LABELS.get(pos, 'Automatic')}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["text_pos"]
+        order = tuple(_TEXT_POS_LABELS)
+        nxt = order[(order.index(cur) + 1) % len(order)] if cur in order else "auto"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, text_pos=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 class _NudgeButton(_Btn):
     """Studio 3c: moves the text block by _NUDGE_STEP px per tap. The stored value is clamped to +-300; the renderer's
     safe-area guard then keeps the text on the card and off the avatar."""
@@ -1980,5 +2008,6 @@ DYNAMIC_ITEMS = (
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
     CardFrameButton, CardFrameColorButton,
+    CardTextPosButton,
     CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )
