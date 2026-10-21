@@ -1728,6 +1728,9 @@ async def _enable_birthdays(interaction: discord.Interaction, guild: discord.Gui
     if channel is None:
         return False, "I couldn't find a channel I'm able to post in — create one and run `/birthday`."
     await birthday_store.set_config(guild.id, clone_id, enabled=True, channel_id=channel.id)
+    cog = interaction.client.get_cog("BirthdayCog")
+    if cog is not None:
+        cog.wake()        # the announcer sleeps until a server turns birthdays on
     return True, (f"Birthdays are on — I'll announce them in {channel.mention} at 09:00 UTC. "
                   "Members add theirs with `/birthday`; admins change the channel, message or time from its **Server setup** button.")
 

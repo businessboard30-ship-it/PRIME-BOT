@@ -12,21 +12,23 @@ v2 adds 💎 Premium perks, gated on the server's Premium (db.is_guild_premium_a
 Premium feature): styled embed, a birthday role for the day, and extra random messages. Settings are saved for
 everyone but only applied while Premium is active, so a lapse quietly returns the server to the plain look.
 
-A background loop checks once every 10 minutes with ONE query (enabled servers only) and posts
-at most once per server per local day. A birthday is stored as month + day only (no year).
+An on-demand worker checks every 10 minutes with ONE query (enabled servers only) and posts
+at most once per server per local day. It only runs while at least one server has birthdays on (or a birthday
+role is waiting to be removed) and stops itself otherwise, so an unused feature costs nothing. A birthday is stored as month + day only (no year).
 Birthdays are global per user, so a member sets theirs once and it works in every server
 that has the feature on.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import List, Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 
 from modules import birthday_store as store
 from modules import birthdays as bd
@@ -226,6 +228,8 @@ class SetupView(discord.ui.View):
     async def save(self, interaction: discord.Interaction, **fields):
         self.cfg = await store.set_config(self.guild.id, self.cog.clone_id, **fields)
         self.premium = await _is_premium(self.guild.id, self.cog.clone_id)
+        if self.cfg.get("enabled"):
+            self.cog.wake()          # make sure the announcer is running for this server
         self._sync_toggle()
         await interaction.response.edit_message(embed=_config_embed(self.guild, self.cfg, self.premium), view=self)
 
@@ -379,7 +383,10 @@ class MainView(discord.ui.View):
         now = time.monotonic()
         if now < self.cog._upcoming_cooldown.get(interaction.user.id, 0):
             return await interaction.response.send_message("Slow down, try again in a few seconds.", ephemeral=True)
-        self.cog._upcoming_cooldown[interaction.user.id] = now + 10
+        cd = self.cog._upcoming_cooldown
+        if len(cd) > 500:
+            cd.clear()
+        cd[interaction.user.id] = now + 10
         await interaction.response.defer(ephemeral=True)
         today = discord.utils.utcnow().date()
         rows = sorted(
@@ -422,15 +429,58 @@ class BirthdayCog(commands.Cog):
         self.clone_id: Optional[int] = getattr(bot, "clone_id", None)
         self._upcoming_cooldown: dict = {}
 
+    # ---- on-demand worker -------------------------------------------------------------------
+    #
+    # Nothing runs for birthdays until a server sets them up. At startup ONE cheap query decides
+    # whether to start the worker at all; /birthday, "Set my birthday", etc. never start it.
+    # The worker wakes when a server turns birthdays on (wake()), checks every 10 minutes, and
+    # shuts itself down again as soon as no server has birthdays on and no birthday role is pending.
+
+    CHECK_SECONDS = 600
+
     async def cog_load(self):
-        try:
-            await store.ensure_tables()
-        except Exception:
-            logger.exception("[birthdays] couldn't create tables")
-        self.announce_loop.start()
+        self._task: Optional[asyncio.Task] = None
+        self._dirty = False
+        asyncio.create_task(self._startup_check())
 
     async def cog_unload(self):
-        self.announce_loop.cancel()
+        if self._task and not self._task.done():
+            self._task.cancel()
+
+    async def _startup_check(self):
+        try:
+            await self.bot.wait_until_ready()
+            if await store.has_work(self.clone_id):
+                self.wake()
+            else:
+                logger.info("[birthdays] no server uses birthdays yet; staying idle")
+        except Exception:
+            logger.exception("[birthdays] startup check failed; starting the worker to be safe")
+            self.wake()          # it shuts itself down again if there turns out to be nothing to do
+
+    def wake(self) -> None:
+        """Start the worker if it isn't running. Cheap and safe to call any time."""
+        self._dirty = True
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run())
+
+    async def _run(self):
+        try:
+            await self.bot.wait_until_ready()
+            while True:
+                self._dirty = False
+                busy = await self._tick()
+                if not busy and not self._dirty:
+                    self._task = None       # no await between this check and returning: no missed wake-ups
+                    logger.info("[birthdays] nothing set up; worker stopped")
+                    return
+                if not self._dirty:
+                    await asyncio.sleep(self.CHECK_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[birthdays] worker crashed")
+            self._task = None
 
     @app_commands.command(name="birthday", description="Set your birthday, see who's next, or set up announcements")
     @app_commands.guild_only()
@@ -441,13 +491,13 @@ class BirthdayCog(commands.Cog):
 
     # ---- daily announcer ----
 
-    @tasks.loop(minutes=10)
-    async def announce_loop(self):
+    async def _tick(self) -> bool:
+        """One pass. Returns True while there is still something to watch (so the worker keeps running)."""
         try:
             configs = await store.enabled_configs(self.clone_id)
         except Exception:
             logger.exception("[birthdays] couldn't read configs")
-            return
+            return True              # transient problem: keep going and retry next time
         for cfg in configs:
             guild = self.bot.get_guild(cfg["guild_id"])
             if guild is None:
@@ -461,11 +511,8 @@ class BirthdayCog(commands.Cog):
                 await self._announce(guild, cfg, local.date())
             except Exception:
                 logger.exception("[birthdays] announcing failed in guild %s", cfg.get("guild_id"))
-        await self._expire_roles()
-
-    @announce_loop.before_loop
-    async def _before(self):
-        await self.bot.wait_until_ready()
+        pending_roles = await self._expire_roles()
+        return bool(configs) or pending_roles
 
     async def _announce(self, guild: discord.Guild, cfg: dict, local_date) -> None:
         channel = guild.get_channel(cfg["channel_id"])
@@ -500,13 +547,14 @@ class BirthdayCog(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 logger.info("[birthdays] couldn't give the birthday role to %s in guild %s", m.id, guild.id)
 
-    async def _expire_roles(self) -> None:
+    async def _expire_roles(self) -> bool:
         """Runs even when Premium has lapsed, so a birthday role is never left on someone."""
         try:
             grants = await store.role_grants(self.clone_id)
         except Exception:
             logger.exception("[birthdays] couldn't read role grants")
-            return
+            return True
+        remaining = False
         offsets: dict = {}
         for g in grants:
             guild = self.bot.get_guild(g["guild_id"])
@@ -516,6 +564,7 @@ class BirthdayCog(commands.Cog):
                 if guild.id not in offsets:
                     offsets[guild.id] = (await store.get_config(guild.id, self.clone_id)).get("utc_offset_hours") or 0
                 if not bd.role_grant_expired(g["remove_after"], bd.local_now(offsets[guild.id]).date()):
+                    remaining = True
                     continue
                 member, role = guild.get_member(g["user_id"]), guild.get_role(g["role_id"])
                 if member and role and role in member.roles:
@@ -526,6 +575,8 @@ class BirthdayCog(commands.Cog):
                 await store.delete_role_grant(guild.id, self.clone_id, g["user_id"], g["role_id"])
             except Exception:
                 logger.exception("[birthdays] role expiry failed in guild %s", g.get("guild_id"))
+                remaining = True
+        return remaining
 
 
 async def setup(bot: commands.Bot):

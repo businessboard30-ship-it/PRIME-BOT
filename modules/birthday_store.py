@@ -231,3 +231,24 @@ async def delete_role_grant(guild_id: int, clone_id: Optional[int], user_id: int
         await conn.execute(
             "DELETE FROM discord_birthday_role_grants WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
             "AND user_id = $3 AND role_id = $4", guild_id, clone_id, user_id, role_id)
+
+
+async def has_work(clone_id: Optional[int] = None) -> bool:
+    """True if any server has birthdays turned on, or a birthday role is waiting to be taken back.
+
+    Used once at startup (and by the worker) so the bot does NOTHING for birthdays until a server sets
+    it up. If the tables don't exist yet, nobody has ever used the feature: answer False without
+    creating anything.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if await conn.fetchval("SELECT to_regclass('discord_birthday_config')") is None:
+            return False
+    await ensure_tables()      # v1 -> v2 upgrade: make sure the newer table/columns exist before querying
+    async with pool.acquire() as conn:
+        return bool(await conn.fetchval(
+            """
+            SELECT EXISTS (SELECT 1 FROM discord_birthday_config
+                           WHERE enabled AND channel_id IS NOT NULL AND clone_id IS NOT DISTINCT FROM $1)
+                OR EXISTS (SELECT 1 FROM discord_birthday_role_grants WHERE clone_id IS NOT DISTINCT FROM $1)
+            """, clone_id))
