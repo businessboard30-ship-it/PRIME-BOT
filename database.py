@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "126"
+SCHEMA_VERSION = "127"
+# "126" -> "127" adds 078_welcome_gallery.sql (discord_welcome_backgrounds + rotation_mode/rotation_counter/last_slot_used on discord_welcome_config: Welcome Card Studio Phase 2a). CREATE TABLE / ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "125" -> "126" adds 077_cat_homes.sql (cat_homes: Phase 8 bought homes, vault, what was paid). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "124" -> "125" adds 076_anime_plus.sql (anime_plus_entitlements + anime_plus_payments, CREATE TABLE IF NOT EXISTS only).
 # "123" -> "124" adds 075_anime_feed_kinds.sql (anime_feed_config.content_kinds TEXT NOT NULL DEFAULT 'both'). ADD COLUMN IF NOT EXISTS only.
@@ -5858,6 +5859,11 @@ class Database:
         cat_homes_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "077_cat_homes.sql"
         if cat_homes_migration.exists():
             await conn.execute(cat_homes_migration.read_text())
+
+        # Welcome Card Studio Phase 2a: picture gallery + rotation state. Additive/idempotent.
+        welcome_gallery_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "078_welcome_gallery.sql"
+        if welcome_gallery_migration.exists():
+            await conn.execute(welcome_gallery_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
@@ -12197,6 +12203,87 @@ class Database:
                      AND custom_bg_message_id IS NOT DISTINCT FROM $3 AND custom_background_url IS NOT DISTINCT FROM $4""",
                 int(guild_id), clone_id, old_message_id, old_url, int(channel_id), int(message_id), url)
         return res.endswith(" 1")
+
+    # ---- Welcome Card Studio Phase 2a: picture gallery (data layer only, no wizard yet) ----
+    async def gallery_list(self, guild_id: int, clone_id: Optional[int] = None) -> list:
+        """Gallery pictures for this server, by slot. Never raises (a join must not fail here)."""
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT id, slot, channel_id, message_id, url_cache, label, options_override_json, needs_new_picture "
+                    "FROM discord_welcome_backgrounds WHERE guild_id = $1 AND clone_key = $2 ORDER BY slot",
+                    int(guild_id), -1 if clone_id is None else int(clone_id))
+            return [dict(r) for r in rows]
+        except Exception:
+            logger.exception("[welcome-gallery] list failed for guild %s", guild_id)
+            return []
+
+    async def gallery_add(self, guild_id: int, clone_id: Optional[int], channel_id: Optional[int],
+                          message_id: Optional[int], url_cache: Optional[str] = None,
+                          label: Optional[str] = None) -> Optional[int]:
+        """Put a picture in the lowest free slot (1 to 10). Returns the slot, or None when the gallery is full."""
+        key = -1 if clone_id is None else int(clone_id)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", int(guild_id) % 2147483647, key % 2147483647)
+                used = {r["slot"] for r in await conn.fetch(
+                    "SELECT slot FROM discord_welcome_backgrounds WHERE guild_id = $1 AND clone_key = $2",
+                    int(guild_id), key)}
+                free = next((n for n in range(1, 11) if n not in used), None)
+                if free is None:
+                    return None
+                await conn.execute(
+                    "INSERT INTO discord_welcome_backgrounds (guild_id, clone_key, slot, channel_id, message_id, url_cache, label) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                    int(guild_id), key, free, channel_id, message_id, url_cache, (label or None))
+                return free
+
+    async def gallery_remove(self, guild_id: int, clone_id: Optional[int], slot: int) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "DELETE FROM discord_welcome_backgrounds WHERE guild_id = $1 AND clone_key = $2 AND slot = $3",
+                int(guild_id), -1 if clone_id is None else int(clone_id), int(slot))
+        return res.endswith(" 1")
+
+    async def gallery_flag_missing(self, guild_id: int, clone_id: Optional[int], slot: int) -> None:
+        """The hosted message was deleted: mark the slot 'needs a new picture'. Never raises."""
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE discord_welcome_backgrounds SET needs_new_picture = TRUE "
+                    "WHERE guild_id = $1 AND clone_key = $2 AND slot = $3",
+                    int(guild_id), -1 if clone_id is None else int(clone_id), int(slot))
+        except Exception:
+            logger.exception("[welcome-gallery] flag failed for guild %s slot %s", guild_id, slot)
+
+    async def gallery_next_counter(self, guild_id: int, clone_id: Optional[int] = None) -> int:
+        """Atomic round-robin counter for 'in order' mode: returns the value BEFORE the increment. Never raises."""
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "UPDATE discord_welcome_config SET rotation_counter = rotation_counter + 1 "
+                    "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 RETURNING rotation_counter - 1 AS used",
+                    int(guild_id), clone_id)
+            return int(row["used"]) if row else 0
+        except Exception:
+            logger.exception("[welcome-gallery] counter failed for guild %s", guild_id)
+            return 0
+
+    async def gallery_set_last_slot(self, guild_id: int, clone_id: Optional[int], slot: int) -> None:
+        """Remember the last picture used (for 'never the same twice'). Never raises."""
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE discord_welcome_config SET last_slot_used = $3 "
+                    "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, int(slot))
+        except Exception:
+            logger.exception("[welcome-gallery] last slot save failed for guild %s", guild_id)
 
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Marks the premium welcome-card pack as purchased for this guild

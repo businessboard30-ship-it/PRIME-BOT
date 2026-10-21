@@ -11,7 +11,10 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 |---|---|---|
 | 0. Premium gate helper (`studio_unlocked`) | **Built, PR open, not merged** (stacked on the Phase 1 branch; audit part of Phase 0 still not done) | branch `feat/welcome-studio-phase0`, PR #424 |
 | 1. Wizard restructure | **Built, PR open, not merged** | branch `feat/welcome-studio-phase1` |
-| 2. Gallery + rotation | Not started | |
+| 2a. Gallery data layer + rotation picker | **Built, PR open, not merged** (small slice, no UI yet) | branch `feat/welcome-studio-phase2a` (stacked on phase 0) |
+| 2b. Join render uses the gallery | Not started | |
+| 2c. Pictures step UI (thumbnails, add/remove, rotation select) | Not started | |
+| 2d. Multi-upload + downscale + migrate old single picture | Not started | |
 | 3 to 7 | Not started | |
 
 ## What Phase 1 built
@@ -55,3 +58,22 @@ All in `discord_bot/cogs/_views_card_customize.py` (the `/welcome` wizard's "Cus
 - Wizard ids are `cardwz_<field>:<guild>:<clone|->:<invoker|->`; new fields added here: `more`, `undo`, `stepreset`, `testsend`, tab `send`. Register any new class in `DYNAMIC_ITEMS` (bot.py imports it).
 - A fresh file name per TV render (`_new_tv_name`) avoids the picture blinking out; keep it.
 - The test fakes for `_render_tv` in older tests have no `full` argument; `_rerender` never passes it. Only the test-send path does.
+
+## Phase 2a (2026-10-21): what it built
+
+Small slice on purpose. **No wizard change, no render change, no behavior change for any server.**
+
+- `database/migrations/078_welcome_gallery.sql` (registered in `database.py`, `SCHEMA_VERSION` 126 -> 127, guard test pin updated): table `discord_welcome_backgrounds` (slot 1 to 10, unique per server+clone, `needs_new_picture` flag for deleted hosted images) and 3 new columns on `discord_welcome_config`: `rotation_mode`, `rotation_counter`, `last_slot_used`. Uses `clone_key` (-1 = main bot) instead of nullable `clone_id` so the unique key works. Old `custom_bg_*` columns untouched.
+- `modules/welcome_gallery.py`: pure `pick_slot(...)` for the 4 modes (pin, random never-twice default, in order, by member number), `clean_mode`, `MODE_LABELS` (plain words for the select), `MAX_PICTURES = 10`. Never raises.
+- `database.py` methods: `gallery_list`, `gallery_add` (lowest free slot, 10 cap, advisory lock), `gallery_remove`, `gallery_flag_missing`, `gallery_next_counter` (atomic `UPDATE ... RETURNING`), `gallery_set_last_slot`. Join-path ones never raise.
+- Tests: `tests/unit/test_welcome_studio_phase2a.py`. A test also asserts the renderer and wizard do NOT import the gallery yet.
+
+## Next small slices (each its own PR)
+
+- **2b**: join render picks a picture with `pick_slot`, gated by `studio_unlocked` (fail closed to the old single picture). Missing hosted message: `gallery_flag_missing`, skip to next. Golden test: untouched server pixel-identical.
+- **2c**: Pictures step shows the numbered strip + Add/Remove/Make first + rotation select (max 3 easy controls, rest under More). Locked servers see one line + "Unlock with Premium".
+- **2d**: multi-upload modal, downscale to 1536 px + JPEG/WebP, caption on host post (server name/ID, picture number), daily upload limit, copy old single picture in as picture 1 (never delete old columns).
+
+## Not tested live
+
+Migration was not run against a real Postgres here (SQL is plain IF NOT EXISTS). `gallery_add` locking and `gallery_next_counter` need a staging DB check.
