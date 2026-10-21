@@ -117,11 +117,24 @@ def _get_draft(guild_id: int, clone_id, user_id, create: bool = False):
     return d
 
 
+_STUDIO_PREVIEW: dict = {}   # (guild, clone, user) -> {studio option: value} for Ultra-only servers: preview, never stored
+
+
+def _studio_overlay(config: dict, guild_id: int, clone_id, user_id) -> dict:
+    """Ultra-only servers (not Premium/Plus) can try studio options in the editor; they live in memory only."""
+    pv = _STUDIO_PREVIEW.get(_draft_key(guild_id, clone_id, user_id)) if user_id is not None else None
+    if not pv:
+        return config
+    cur = parse_ultra_options(config.get("ultra_card_json"))
+    cur.update(pv)
+    return dict(config, ultra_card_json=json.dumps(cur))
+
+
 def _effective_config(config: dict, guild_id: int, clone_id, user_id) -> dict:
     """Config as the editor should display/preview it: the DB row for
     unlocked servers, DB row overlaid with the user's draft otherwise."""
     if config.get("ultra_pack_unlocked"):
-        return config
+        return _studio_overlay(config, guild_id, clone_id, user_id)
     d = _get_draft(guild_id, clone_id, user_id)
     if d is None:
         return dict(config, custom_background_url=None)
@@ -189,6 +202,15 @@ async def _undo_last(guild_id: int, clone_id, user_id) -> bool:
         d["opts"] = parse_ultra_options(raw)
         d["shape"] = shape or "circle"
         return True
+    from modules.welcome_studio import STUDIO_KEYS, studio_unlocked
+    if not await studio_unlocked(guild_id, clone_id):
+        # the snapshot may carry preview-only studio values: put them back in memory, never in the database
+        parsed = parse_ultra_options(raw)
+        key = _draft_key(guild_id, clone_id, user_id)
+        _STUDIO_PREVIEW[key] = {k: parsed[k] for k in STUDIO_KEYS}
+        stored = parse_ultra_options(cfg.get("ultra_card_json"))
+        parsed.update({k: stored[k] for k in STUDIO_KEYS})
+        raw = json.dumps(parsed)
     await db.set_welcome_config(guild_id, clone_id=clone_id, ultra_card_json=raw, avatar_shape=shape or "circle")
     return True
 
@@ -202,9 +224,31 @@ async def _save_option(guild_id: int, clone_id, user_id=None, **changes) -> None
         d = _get_draft(guild_id, clone_id, user_id, create=True)
         d["opts"].update(changes)
         return
+    changes = await _gate_studio_changes(guild_id, clone_id, user_id, changes)
+    if not changes:
+        return
     opts = parse_ultra_options(cfg.get("ultra_card_json"))
     opts.update(changes)
     await db.set_welcome_config(guild_id, clone_id=clone_id, ultra_card_json=json.dumps(opts))
+
+
+async def _gate_studio_changes(guild_id: int, clone_id, user_id, changes: dict) -> dict:
+    """Studio keys (zoom, pan, text size) are saved only for Premium/Plus (checked here, on the server). An Ultra-only
+    server keeps them in memory so the preview still shows them. Returns the changes that go to the database."""
+    from modules.welcome_studio import STUDIO_KEYS, studio_unlocked
+    studio = {k: v for k, v in changes.items() if k in STUDIO_KEYS}
+    if not studio:
+        return changes
+    key = _draft_key(guild_id, clone_id, user_id) if user_id is not None else None
+    if await studio_unlocked(guild_id, clone_id):
+        if key is not None and key in _STUDIO_PREVIEW:
+            for k in studio:
+                _STUDIO_PREVIEW[key].pop(k, None)
+        return changes
+    if key is not None:
+        _STUDIO_PREVIEW.setdefault(key, {}).update(studio)
+        _trim(_STUDIO_PREVIEW, _STATE_MAX)
+    return {k: v for k, v in changes.items() if k not in STUDIO_KEYS}
 
 
 # ── rendering the wizard ──────────────────────────────────────────────────
@@ -264,6 +308,7 @@ async def _apply_style(guild_id: int, clone_id, user_id, opts: dict, shape) -> N
         if shape is not None:
             d["shape"] = shape
         return
+    opts = await _gate_studio_changes(guild_id, clone_id, user_id, opts)
     cur = parse_ultra_options(cfg.get("ultra_card_json"))
     cur.update(opts)
     changes = {"ultra_card_json": json.dumps(cur)}
@@ -286,8 +331,8 @@ _STEP_HINTS = {
 # What "Reset this step" puts back to default (the picture is never touched). Shape lives in its own column.
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
-    "layout": ("layout", "banner", "avatar_side"),
-    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast"),
+    "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y"),
+    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
 _MORE_STATE: dict = {}       # (guild, clone, user) -> (set of steps showing "More controls", monotonic ts)
@@ -481,12 +526,23 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
     elif tab == "layout":
         for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect) + ((CardShapeSelect,) if more else ()):
             _select_row(select_cls)
+        if more:   # Phase 3a: move and zoom the picture inside the card (arrows, never typed numbers)
+            container.add_item(discord.ui.TextDisplay("Move the picture inside the card, or zoom in:"))
+            frame_row = discord.ui.ActionRow()
+            frame_row.add_item(CardPanLeftButton(guild_id, clone_id, invoker_id))
+            frame_row.add_item(CardPanUpButton(guild_id, clone_id, invoker_id))
+            frame_row.add_item(CardPanDownButton(guild_id, clone_id, invoker_id))
+            frame_row.add_item(CardPanRightButton(guild_id, clone_id, invoker_id))
+            frame_row.add_item(CardZoomButton(guild_id, clone_id, invoker_id, opts["zoom"]))
+            container.add_item(frame_row)
     elif tab == "text":
         for select_cls in (CardColorSelect, CardFontSelect) + ((CardBracketSelect, CardStyleSelect) if more else ()):
             _select_row(select_cls)
         text_row = discord.ui.ActionRow()
         text_row.add_item(CardHeadingButton(guild_id, clone_id, invoker_id))
         text_row.add_item(CardNumberToggleButton(guild_id, clone_id, invoker_id, opts["show_number"]))
+        if more:
+            text_row.add_item(CardTextSizeButton(guild_id, clone_id, invoker_id, opts["text_size"]))
         container.add_item(text_row)
     else:
         container.add_item(discord.ui.TextDisplay(
@@ -1585,6 +1641,90 @@ class CardPictureAddButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], temp
                 raise
 
 
+# ── Phase 3a: zoom + pan arrows and text size ────────────────────────────
+
+_PAN_STEP = 10
+_ZOOM_ORDER = (100, 125, 150, 200)
+_TEXT_SIZE_ORDER = ("small", "medium", "large", "xl")
+_TEXT_SIZE_LABELS = {"small": "Small", "medium": "Medium", "large": "Large", "xl": "Extra large"}
+
+
+async def _current_opts(guild_id: int, clone_id, user_id) -> dict:
+    cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    cfg = _effective_config(cfg, guild_id, clone_id, user_id)
+    return parse_ultra_options(cfg.get("ultra_card_json"))
+
+
+class _PanButton(_Btn):
+    AXIS, DELTA = "pan_x", 0
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))[self.AXIS]
+        new = max(-100, min(100, cur + self.DELTA))
+        if new != cur:
+            await _save_option(self.guild_id, self.clone_id, interaction.user.id, **{self.AXIS: new})
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardPanLeftButton(_PanButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("panleft")):
+    FIELD, LABEL, AXIS, DELTA = "panleft", "\u25C0", "pan_x", -_PAN_STEP
+
+
+class CardPanUpButton(_PanButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("panup")):
+    FIELD, LABEL, AXIS, DELTA = "panup", "\u25B2", "pan_y", -_PAN_STEP
+
+
+class CardPanDownButton(_PanButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("pandown")):
+    FIELD, LABEL, AXIS, DELTA = "pandown", "\u25BC", "pan_y", _PAN_STEP
+
+
+class CardPanRightButton(_PanButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("panright")):
+    FIELD, LABEL, AXIS, DELTA = "panright", "\u25B6", "pan_x", _PAN_STEP
+
+
+class CardZoomButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("zoom")):
+    """Cycles 100% > 125% > 150% > 200% > 100%."""
+    FIELD = "zoom"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, zoom: int = 100):
+        super().__init__(guild_id, clone_id, invoker_id, zoom)
+
+    def label_text(self, zoom=100, *_):
+        return f"\U0001F50D Zoom: {zoom}%"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["zoom"]
+        nxt = _ZOOM_ORDER[(_ZOOM_ORDER.index(cur) + 1) % len(_ZOOM_ORDER)] if cur in _ZOOM_ORDER else 100
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, zoom=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardTextSizeButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("textsize")):
+    """Cycles Small > Medium > Large > Extra large > Small."""
+    FIELD = "textsize"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, size: str = "medium"):
+        super().__init__(guild_id, clone_id, invoker_id, size)
+
+    def label_text(self, size="medium", *_):
+        return f"\U0001F520 Text size: {_TEXT_SIZE_LABELS.get(size, 'Medium')}"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        await interaction.response.defer()
+        cur = (await _current_opts(self.guild_id, self.clone_id, interaction.user.id))["text_size"]
+        nxt = _TEXT_SIZE_ORDER[(_TEXT_SIZE_ORDER.index(cur) + 1) % len(_TEXT_SIZE_ORDER)] if cur in _TEXT_SIZE_ORDER else "medium"
+        await _save_option(self.guild_id, self.clone_id, interaction.user.id, text_size=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
 # ── Phase 2e: replace one picture in place ───────────────────────────────
 
 async def _replace_picture(bot, guild, guild_id: int, clone_id, slot: int, data: bytes):
@@ -1737,4 +1877,5 @@ DYNAMIC_ITEMS = (
     CardRotationSelect,
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
     CardPictureReplaceButton,
+    CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
 )
