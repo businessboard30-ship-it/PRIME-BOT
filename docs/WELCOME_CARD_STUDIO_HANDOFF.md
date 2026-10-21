@@ -31,6 +31,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 4d. Picture brightness: darker / dark / normal / light / lighter (one cycle button on the Look step) | **Built, PR open, not merged** (stacked on 4c, so its diff also carries 3e, 4a, 4b, 4c) | branch `feat/welcome-studio-phase4d` |
 | 4e. Film grain (new value in the Look cycle) + medium frame (new value in the Frame cycle) | **Built, PR open, not merged** (stacked on 4d) | branch `feat/welcome-studio-phase4e` |
 | 4f. Owner-approved glow and fonts: soft glow edge frame, sparkle effect, text glow, four more fonts | **Built, PR open, not merged** (stacked on 4e) | branch `feat/welcome-studio-phase4f` |
+| 5a. Saved designs, data layer only (table, migration 080, DB methods, pure helpers; no wizard UI yet) | **Built, PR open, not merged** (stacked on 4f) | branch `feat/welcome-studio-phase5a` |
 | Frame extras (polaroid, film strip, glow), rest of Phase 4 (border/outline, new fonts, more effects) and 5 to 7 | Not started | |
 
 ## What Phase 1 built
@@ -506,3 +507,22 @@ Small slice. **No new button, no new key, no migration:** both are new values of
 ## Next (updated after 4f)
 1. Owner reviews / merges in this order: #436, #437, #438, #439, #440, #441, #442, then the 4f PR.
 2. **Phase 4 is done** except avatar glow (optional). Next is Phase 5 (saved designs, up to 5 per server, new table + migration) per the plan; staging check on a phone for Phase 1 to 4f.
+
+
+## Phase 5a (2026-10-21): saved designs, data layer only
+
+Small slice on purpose, same shape as Phase 2a. **No wizard change, no render change, no behavior change for any server.** A design is the look only (validated card options + avatar shape); pictures are never part of it.
+
+- `database/migrations/080_welcome_designs.sql` (registered in `database.py`, `SCHEMA_VERSION` 128 -> 129, guard test pin updated to 129 / new hash): table `discord_welcome_designs` (`id`, `guild_id`, `clone_key` (-1 = main bot), `name`, `options_json`, `avatar_shape`, `created_by`, `created_at`, `updated_at`), unique index on (`guild_id`, `clone_key`, `lower(name)`), and column `discord_welcome_config.active_design_id` (for "Make live" / scheduling later; nothing writes it yet except `design_delete` clearing it). Additive only.
+- `modules/welcome_designs.py` (pure, never raises): `MAX_DESIGNS = 5`, `clean_name` (30 chars, single line, control characters dropped, `@` defanged), `snapshot_look` / `restore_look` (run the options through `parse_ultra_options`, so a stored design can never crash a render; unknown avatar shape falls back to circle).
+- `database.py` methods (none raise): `design_list`, `design_get`, `design_save` (same name in any capitalisation updates that design, new name past 5 returns `('full', None)` and writes nothing, advisory lock, per-server and per-clone limit), `design_rename` (False when missing or the name is taken), `design_delete` (only deletes the design row and clears `active_design_id`; never touches pictures or the live card).
+- Tests: `tests/unit/test_welcome_studio_phase5a.py` (10, DB methods run against a small in-memory fake): helpers, snapshot has no picture keys, migration additive and registered, limit/update/scoping per server and clone, rename conflicts, delete scope, never-raise. One test asserts the wizard and renderer do NOT import designs yet: **5b must update it.** Studio files plus fonts, wizard and schema-guard tests: all pass.
+
+### Known gaps in 5a (on purpose)
+- Not run against a real Postgres (plain `IF NOT EXISTS` SQL; the advisory lock and the `lower(name)` unique index need one staging check; run migration 080 first).
+- No UI: nothing can save or load a design yet (5b). The save-time premium gate lives in 5b (owner rule: the studio is open to everyone, only SAVING is Premium, so free servers get a preview-only note).
+
+## Next (updated after 5a)
+1. Owner reviews / merges in this order: #436, #437, #438, #439, #440, #441, #442, #443, then the 5a PR.
+2. **5b: wizard UI on the Send step** (the step has room): Save as... (name modal), a Load select, Rename, Delete, Make live. Make live writes the design through the same gate (`studio_unlocked`) and sets `active_design_id`; free servers see "Preview only ... saves with Premium". Update the 5a "not used yet" test.
+3. Then Phase 6 (DM extras) and 7 (scheduled designs) per the plan; optional avatar glow slice.
