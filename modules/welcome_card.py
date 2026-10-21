@@ -490,11 +490,16 @@ ULTRA_DEFAULTS = {
     "text_size": "medium",     # key of ULTRA_TEXT_SIZES
     "frame": "none",           # key of ULTRA_FRAMES: picture frame around the whole card (studio 3b)
     "frame_color": "white",    # key of ULTRA_TEXT_COLORS
+    # Welcome Card Studio phase 3c (Premium/Plus only at save and join): nudge the text block, in pixels at card width 1536.
+    "text_dx": 0,              # -300 (left) .. 300 (right); the safe-area guard keeps the text on the card and off the avatar
+    "text_dy": 0,              # -300 (up) .. 300 (down)
 }
 ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast")
 ULTRA_LAYOUTS = ("banner", "centered")
 ULTRA_ZOOMS = (100, 125, 150, 200)
 ULTRA_PAN_LIMIT = 100
+ULTRA_NUDGE_LIMIT = 300
+ULTRA_NUDGE_MARGIN = 24      # the text block never gets closer than this to the card edge
 ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
 ULTRA_FRAMES = ("none", "thin", "thick", "double", "rounded")   # glow / polaroid / film strip: later (glow needs the owner's OK)
 ULTRA_FOCUS = ("center", "top", "bottom", "left", "right", "auto")   # "auto" = smart crop (keeps the busiest part)
@@ -647,7 +652,35 @@ def parse_ultra_options(raw) -> dict:
         opts["frame"] = raw["frame"]
     if raw.get("frame_color") in ULTRA_TEXT_COLORS:
         opts["frame_color"] = raw["frame_color"]
+    for k in ("text_dx", "text_dy"):
+        v = raw.get(k)
+        if isinstance(v, int) and not isinstance(v, bool):
+            opts[k] = max(-ULTRA_NUDGE_LIMIT, min(ULTRA_NUDGE_LIMIT, v))
     return opts
+
+
+def _clamp_text_nudge(lines, dx, dy, W, H, avoid_left=None, avoid_right=None, avoid_above=None,
+                      margin=ULTRA_NUDGE_MARGIN):
+    """Safe-area guard for the text nudge. `lines` are (x, y, w, h) boxes of the text lines as they sit now.
+    Returns (dx, dy) cut down so the whole block stays `margin` px inside the card and clear of the avatar:
+    avoid_left = x the block must stay right of, avoid_right = x it must stay left of, avoid_above = y it must stay
+    below. The no-move position is always allowed, so the guard can never push a default card anywhere."""
+    if not lines:
+        return 0, 0
+    left = min(x for x, y, w, h in lines)
+    right = max(x + w for x, y, w, h in lines)
+    top = min(y for x, y, w, h in lines)
+    bottom = max(y + h for x, y, w, h in lines)
+    dx_lo, dx_hi = margin - left, W - margin - right
+    dy_lo, dy_hi = margin - top, H - margin - bottom
+    if avoid_left is not None:
+        dx_lo = max(dx_lo, avoid_left - left)
+    if avoid_right is not None:
+        dx_hi = min(dx_hi, avoid_right - right)
+    if avoid_above is not None:
+        dy_lo = max(dy_lo, avoid_above - top)
+    dx_lo, dx_hi, dy_lo, dy_hi = min(dx_lo, 0), max(dx_hi, 0), min(dy_lo, 0), max(dy_hi, 0)
+    return int(max(dx_lo, min(dx_hi, dx))), int(max(dy_lo, min(dy_hi, dy)))
 
 
 def _avatar_dominant_color(avatar: Image.Image) -> tuple:
@@ -980,8 +1013,30 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         else:
             _draw_text_fb(d, (x, y), text, size, col, stroke_width=st, stroke_fill=(0, 0, 0))
 
+    tdx = tdy = 0
+    if opts["text_dx"] or opts["text_dy"]:
+        # Studio 3c: nudge the whole text block, cut down by the safe-area guard (on the card, off the avatar).
+        def _w_of(text, size, styled):
+            return draw.textlength(text, font=_style_font(font_key, size)) if styled else _tlf(draw, text, size)
+        boxes = []
+        if number_text:
+            boxes.append((_x_for(draw, number_text, 26, False), num_y, _w_of(number_text, 26, False), 34))
+        boxes.append((_x_for(draw, username_text, username_size, name_styled), name_y,
+                      _w_of(username_text, username_size, name_styled), int(username_size * 1.3)))
+        if heading:
+            boxes.append((_x_for(draw, guild_text, guild_size, heading_styled), head_y,
+                          _w_of(guild_text, guild_size, heading_styled), int(guild_size * 1.3)))
+        ring_pad = 8 if opts["ring"] else 0
+        if centered:
+            guard = {"avoid_above": avatar_y + avatar_dim + ring_pad + 8}
+        elif opts["avatar_side"] == "right":
+            guard = {"avoid_right": avatar_x - ring_pad - 24}
+        else:
+            guard = {"avoid_left": avatar_x + avatar_dim + ring_pad + 24}
+        tdx, tdy = _clamp_text_nudge(boxes, opts["text_dx"], opts["text_dy"], W, H, **guard)
+
     def _draw_texts(d, col, scol, off=(0, 0), st=0):
-        ox, oy = off
+        ox, oy = off[0] + tdx, off[1] + tdy
         if number_text:
             nx = _x_for(d, number_text, 26, False)
             d.text((nx + ox, num_y + oy), number_text, font=_load_font(26),

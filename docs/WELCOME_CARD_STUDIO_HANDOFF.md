@@ -19,7 +19,8 @@ Owner rules for this work: open a pull request, **never merge it**; no deploy wi
 | 2e. Phase 2 leftovers: Replace a picture, editor preview uses the gallery, Clear background note | **Built, PR open, not merged** (stacked on 2d) | branch `feat/welcome-studio-phase2e` |
 | 3a. Zoom + pan arrows, text size (first slice of Phase 3) | **Built, PR open, not merged** (stacked on 2e) | branch `feat/welcome-studio-phase3a` |
 | 3b. Picture frames (none, thin, thick, double, rounded) + frame color | **Built, PR open, not merged** (stacked on 3a) | branch `feat/welcome-studio-phase3b` |
-| 3c (3x3 grid, nudge), frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
+| 3c. Nudge the text block (arrows on the Text step) + safe-area guard | **Built, PR open, not merged** (stacked on 3b; PR opened against `main` on the owner's instruction, so its diff also carries the unmerged earlier phases) | branch `feat/welcome-studio-phase3c` |
+| 3d (3x3 position grid, avatar nudge), frame extras (polaroid, film strip, glow) and 4 to 7 | Not started | |
 
 ## What Phase 1 built
 
@@ -270,3 +271,31 @@ Small slice. No table, no migration.
 ## Owner decision (2026-10-21): Premium lifetime and yearly include the studio
 
 Monthly, yearly and lifetime Premium (and Premium Plus) all unlock every studio feature. **No code change needed:** `studio_unlocked` uses `db.is_guild_premium_active`, which only checks that the server's Premium has not expired (plus the grace period), so every plan that sets an expiry date is covered, lifetime included. The earlier open question "Premium lifetime includes studio?" is closed. Still open: Phase 6 DM extras, per-picture overrides, Clear background vs gallery, glow edge frame.
+
+
+## Phase 3c (2026-10-21): what it built (nudge the text block)
+
+Small slice. No table, no migration. Only the **text block** (member number, name, heading) moves; the avatar and the banner stay where the layout puts them. The 3x3 grid and an avatar nudge are the next slice (3d).
+
+- **New keys** `text_dx` and `text_dy` (whole pixels at card width 1536, clamped to -300..300) in `ultra_card_json`, validated in `parse_ultra_options`; added to `STUDIO_KEYS` / `STUDIO_DEFAULTS`, so the join render strips them for non-Premium and saves are Premium-only (Ultra-only servers preview in memory), same gate as 3a/3b.
+- **Renderer:** `_draw_texts` adds the nudge to every line (and to the shadow layer). Default 0/0 adds nothing: pixel-identical to before (test).
+- **Safe-area guard** (`_clamp_text_nudge`, pure function): the whole block stays 24 px inside the card edge; banner layout cannot push the text into the avatar (24 px gap, ring included, left or right side); centered layout cannot climb over the avatar. The no-move position is always allowed, so the guard never shifts a default card. The stored value is only clamped to +-300; the guard cuts it at render time, so extra taps past a limit store but show nothing (the hint line says "it stops at the card edge and next to your avatar").
+- **Wizard (Text step, More controls only):** a row `◀ ▲ ▼ ▶ ↺ Reset`, 20 px per tap. Classes `CardNudgeLeft/Up/Down/Right/CenterButton`, ids `nudgeleft nudgeup nudgedown nudgeright nudgecenter`, all in `DYNAMIC_ITEMS`. "Reset this step" on Text also clears the nudge. Undo covers it (it goes through `_save_option`). Easy mode unchanged.
+- **Why Text and not Look:** Look in More mode is already at 35 of Discord's 40 components (a nudge row would make 41). Text More went from 29 to 35.
+- Tests: `tests/unit/test_welcome_studio_phase3c.py` (18).
+
+### Test numbers (3c)
+All welcome/card unit test files (42 files): 830 passed, 2 failed. The 2 are `test_dash_card_assets.py::test_missing_key_means_pending_and_key_is_never_logged` and `::test_request_goes_to_free_endpoint_with_image_input`; they fail the same way without this change (checked by stashing) and are not welcome code. The full unit suite was not run this time: 21 unrelated files (cat, scam shield) fail to collect in this environment. The handoff's usual 4 known failures were not re-checked for the same reason.
+
+### Known gaps in 3c (on purpose)
+- Not tested live: the arrow row on a phone, real taps on Premium vs Ultra-only.
+- Rendered and checked by eye on a test card (default, nudged, pushed past the guard, centered); not checked against a real member avatar or on every font.
+- No avatar nudge, no 3x3 grid yet (3d). No "Unlock with Premium" line on the Text step yet.
+- Taps past the guard limit keep storing up to +-300 with no visible change. If the owner finds that confusing, the wizard could read the guard limit and disable the arrow; needs the renderer's measured box, so it was left out.
+- Same render-site gap as 3a/3b: only the join applies `options_for_render`.
+
+## Next (updated after 3c)
+1. Owner reviews the stacked PRs in order: #423 ... #432 (3b), then 3c (opened against `main`, see the status table).
+2. **3d**: 3x3 position grid for the text block and avatar (replaces banner top/bottom + avatar left/right but keeps them as presets), avatar nudge. Polaroid / film strip frames need text-area changes, do with the grid. Ask the owner before any glow edge.
+3. Tiny follow-up: apply `options_for_render` at the other render sites (`/welcome preview`, `_views_welcome.py`, `welcome_extras.py`).
+4. Still-open plan questions for the owner: Phase 6 DM extras? Per-picture overrides in v1 or later? Should Clear background also clear the gallery? Glow edge frame?
