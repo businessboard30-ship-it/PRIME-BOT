@@ -402,6 +402,21 @@ async def _gallery_bg_bytes_for_render(
     return (await _gallery_pick_for_render(session, config_row, bot, member_number))[0]
 
 
+_JOIN_RENDER_LIMIT = 4
+_JOIN_RENDER_SEM: dict = {}
+
+
+def _join_render_slots() -> asyncio.Semaphore:
+    """Studio 8d: at most a few welcome cards are drawn at the same time per event loop, so a raid of joins queues
+    instead of piling up heavy image work. Joins wait their turn; none is dropped."""
+    loop = asyncio.get_running_loop()
+    sem = _JOIN_RENDER_SEM.get(loop)
+    if sem is None:
+        _JOIN_RENDER_SEM.clear()
+        sem = _JOIN_RENDER_SEM[loop] = asyncio.Semaphore(_JOIN_RENDER_LIMIT)
+    return sem
+
+
 def _suggested_channel(guild: discord.Guild) -> discord.TextChannel | None:
     """Best-effort guess for where to post welcome cards, so the nudge DM
     can propose a concrete channel instead of asking the owner to pick one
@@ -1438,15 +1453,16 @@ class WelcomeCog(GuildOnlyCog):
                 from modules.welcome_card import parse_ultra_options
                 ultra_opts = {**parse_ultra_options(ultra_opts), **pic_tweak}
             shape_for_card = await avatar_shape_for_render(config)
-            card_bytes, image_format = await asyncio.to_thread(
-                render_welcome_card,
-                avatar_bytes, member.display_name, f"Member #{member.guild.member_count}",
-                background_color=config["background_color"], accent_color=config["accent_color"],
-                sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
-                guild_name=member.guild.name, use_template=config.get("use_template", True),
-                theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
-                ultra_options=ultra_opts, avatar_shape=shape_for_card,
-            )
+            async with _join_render_slots():   # studio 8d: a raid renders a few cards at a time, the rest wait
+                card_bytes, image_format = await asyncio.to_thread(
+                    render_welcome_card,
+                    avatar_bytes, member.display_name, f"Member #{member.guild.member_count}",
+                    background_color=config["background_color"], accent_color=config["accent_color"],
+                    sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
+                    guild_name=member.guild.name, use_template=config.get("use_template", True),
+                    theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
+                    ultra_options=ultra_opts, avatar_shape=shape_for_card,
+                )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=__import__("io").BytesIO(card_bytes), filename=f"welcome.{ext}")
             content = _apply_template(config["message_template"], member)

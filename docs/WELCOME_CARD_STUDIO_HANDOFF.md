@@ -697,6 +697,10 @@ No migration: uses the existing `options_override_json` column.
 - The gallery strip does not mark which pictures have a tweak.
 - Not built: render-cost audit and a concurrent-render cap for raids, non-Latin-name note, side-by-side compare. Export = Send me a test (full-size PNG). Open owner question: should Clear background also clear the gallery?
 
+## Phase 8d (2026-10-22): raid guard on the join render
+
+`on_member_join` now draws the card inside `_join_render_slots()` (an asyncio semaphore, 4 at a time per event loop). A raid queues; no join is dropped. Tests: `test_welcome_studio_phase8d.py` (2). Not measured on a real 1536 px burst.
+
 ## Next (updated after 8c)
 1. Owner reviews / merges in order: #448, #449, #450, then 8a, 8b/8c (this branch stack). Staging check: migrations 078 to 083, then every control on a phone.
-2. Render-cost audit + raid render cap; non-Latin note.
+2. Real timing of a 1536 px render under load (needs a live box); non-Latin-name note in the wizard.
