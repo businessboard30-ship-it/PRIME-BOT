@@ -435,11 +435,21 @@ async def _with_studio(config: dict, guild_id: int, clone_id, user_id=None) -> d
             "needs": [r["slot"] for r in rows if r.get("needs_new_picture")],
             "slots": [r["slot"] for r in rows],
             "mode": wg.clean_mode(config.get("rotation_mode")),
-            "designs": [{"id": d["id"], "name": d["name"]} for d in await db.design_list(guild_id, clone_id)],   # studio 5b
+            **await _design_summary(guild_id, clone_id),                          # studio 5b + 7b: designs, schedules, live today
         })
     except Exception:
         logger.exception("[cardwz] studio summary failed for guild %s", guild_id)
         return config
+
+
+async def _design_summary(guild_id: int, clone_id) -> dict:
+    """Saved designs (id, name, schedule in words) plus the name of the scheduled design that is live today, if any."""
+    from modules import welcome_schedule as sch
+    from modules.welcome_studio import _today_utc
+    rows = await db.design_list(guild_id, clone_id)
+    live = sch.pick_scheduled(rows, _today_utc())
+    return {"designs": [{"id": d["id"], "name": d["name"], "when": sch.describe(d)} for d in rows],
+            "live_now": live["name"] if live else None}
 
 
 def _gallery_line(studio: dict | None) -> str | None:
@@ -595,6 +605,7 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
             dbtn.add_item(CardDesignSaveButton(guild_id, clone_id, invoker_id))
             if designs:
                 dbtn.add_item(CardDesignRenameButton(guild_id, clone_id, invoker_id))
+                dbtn.add_item(CardDesignScheduleButton(guild_id, clone_id, invoker_id))
                 dbtn.add_item(CardDesignDeleteButton(guild_id, clone_id, invoker_id))
             container.add_item(dbtn)
 
@@ -1537,7 +1548,14 @@ def _designs_line(studio: dict | None) -> str | None:
     if not designs:
         return f"-# \U0001F3A8 Saved designs: none yet (up to {wd.MAX_DESIGNS}). Save this look to reuse it later."
     names = " \u00b7 ".join(f"{i} {d['name']}" for i, d in enumerate(designs, 1))
-    return f"-# \U0001F3A8 Saved designs ({len(designs)} of {wd.MAX_DESIGNS}): {names}"
+    line = f"-# \U0001F3A8 Saved designs ({len(designs)} of {wd.MAX_DESIGNS}): {names}"
+    whens = " \u00b7 ".join(f"{i} {d['name']}: {d['when']}" for i, d in enumerate(designs, 1) if d.get("when"))
+    if whens:
+        line += f"\n-# \U0001F4C5 Scheduled (UTC): {whens}"
+    if studio.get("live_now"):
+        line += (f"\n-# \u2728 Today new members get **{studio['live_now']}** (scheduled). "
+                 "Your regular look comes back when it ends; the test button shows the regular look.")
+    return line
 
 
 class CardDesignSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_pattern("designload")):
@@ -1574,6 +1592,7 @@ class CardDesignSelect(discord.ui.DynamicItem[discord.ui.Select], template=_id_p
             return
         opts_json, shape = wd.restore_look(design.get("options_json"), design.get("avatar_shape"))
         await _apply_style(self.guild_id, self.clone_id, interaction.user.id, json.loads(opts_json), shape)
+        await db.set_active_design(self.guild_id, self.clone_id, design["id"])      # 7b: remember which design was last made live
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
@@ -1611,6 +1630,8 @@ class CardDesignSaveModal(discord.ui.Modal, title="Save this look"):
         if status == "error":
             await interaction.followup.send("Couldn't save that just now. Try again in a moment.", ephemeral=True)
             return
+        from modules.welcome_studio import forget_schedule_cache
+        forget_schedule_cache(self.guild_id, self.clone_id)       # 7b: saving over a scheduled design changes what it renders
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
@@ -1656,6 +1677,61 @@ class CardDesignNumberModal(discord.ui.Modal):
         if not done:
             await interaction.followup.send(msg, ephemeral=True)
             return
+        from modules.welcome_studio import forget_schedule_cache
+        forget_schedule_cache(self.guild_id, self.clone_id)       # 7b: a deleted/renamed design must not linger in the render cache
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardDesignScheduleModal(discord.ui.Modal, title="Schedule a design"):
+    """Studio 7b: pick a saved design (by its number) and the days it should be live. Leave 'From' empty to remove its schedule.
+    Dates are UTC. `25 Oct` repeats every year; `2026-10-25` happens once."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        super().__init__()
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        self.number = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=2, placeholder="1")
+        self.add_item(discord.ui.Label(text="Design number", description="The number in the list above the buttons.", component=self.number))
+        self.date_from = discord.ui.TextInput(style=discord.TextStyle.short, required=False, max_length=20, placeholder="25 Oct")
+        self.add_item(discord.ui.Label(text="From", description="25 Oct = every year. 2026-10-25 = once. Empty = remove schedule.", component=self.date_from))
+        self.date_to = discord.ui.TextInput(style=discord.TextStyle.short, required=False, max_length=20, placeholder="1 Nov")
+        self.add_item(discord.ui.Label(text="Until (included)", description="Same style as From. Empty = just that one day. Dates are UTC.", component=self.date_to))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from modules import welcome_schedule as sch
+        from modules.welcome_studio import studio_unlocked, forget_schedule_cache, LOCKED_LINE
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            await interaction.followup.send(f"\U0001F512 Preview only: {LOCKED_LINE} Designs are scheduled with Premium.", ephemeral=True)
+            return
+        designs = await db.design_list(self.guild_id, self.clone_id)
+        try:
+            n = int(str(self.number.value or "").strip())
+        except ValueError:
+            n = 0
+        if not 1 <= n <= len(designs):
+            await interaction.followup.send(f"\u26A0\uFE0F Type a number from 1 to {len(designs) or 1}.", ephemeral=True)
+            return
+        target = designs[n - 1]
+        if not str(self.date_from.value or "").strip():
+            done = await db.design_clear_schedule(self.guild_id, self.clone_id, target["id"])
+            note = "Couldn't remove that schedule just now."
+        else:
+            status, a, b, yearly = sch.build_range(self.date_from.value, self.date_to.value)
+            problems = {
+                "bad_from": "I couldn't read the From day. Try `25 Oct` (every year) or `2026-10-25` (once).",
+                "bad_to": "I couldn't read the Until day. Try `1 Nov` (every year) or `2026-11-01` (once).",
+                "mixed": "Write both days the same way: both like `25 Oct` (every year) or both like `2026-10-25` (once).",
+                "backwards": "Until comes before From. Swap them.",
+            }
+            if status != "ok":
+                await interaction.followup.send(f"\u26A0\uFE0F {problems[status]}", ephemeral=True)
+                return
+            done = await db.design_set_schedule(self.guild_id, self.clone_id, target["id"], a, b, yearly)
+            note = "Couldn't save that schedule just now. Try again in a moment."
+        if not done:
+            await interaction.followup.send(note, ephemeral=True)
+            return
+        forget_schedule_cache(self.guild_id, self.clone_id)
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
@@ -1666,6 +1742,7 @@ class _DesignButton(_Btn):
         if not await _check_access(interaction, self.invoker_id, self.guild_id):
             return
         modal = (CardDesignSaveModal(self.guild_id, self.clone_id, self.invoker_id) if self.ACTION == "save"
+                 else CardDesignScheduleModal(self.guild_id, self.clone_id, self.invoker_id) if self.ACTION == "schedule"
                  else CardDesignNumberModal(self.guild_id, self.clone_id, self.invoker_id, self.ACTION))
         try:
             await interaction.response.send_modal(modal)
@@ -1680,6 +1757,10 @@ class CardDesignSaveButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Butt
 
 class CardDesignRenameButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("designrename")):
     FIELD, LABEL, ACTION = "designrename", "\u270F\uFE0F Rename a design", "rename"
+
+
+class CardDesignScheduleButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("designsched")):
+    FIELD, LABEL, ACTION = "designsched", "\U0001F4C5 Schedule a design", "schedule"
 
 
 class CardDesignDeleteButton(_DesignButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("designdelete")):
@@ -2320,7 +2401,7 @@ DYNAMIC_ITEMS = (
     CardPictureReplaceButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
     CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton, CardHeadingFontButton, CardOutlineButton, CardBrightnessButton,
-    CardDesignSelect, CardDesignSaveButton, CardDesignRenameButton, CardDesignDeleteButton,
+    CardDesignSelect, CardDesignSaveButton, CardDesignRenameButton, CardDesignDeleteButton, CardDesignScheduleButton,
     CardTextPosButton,
     CardNudgeLeftButton, CardNudgeUpButton, CardNudgeDownButton, CardNudgeRightButton, CardNudgeCenterButton,
 )

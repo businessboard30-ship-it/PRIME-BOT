@@ -39,6 +39,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 6b. DM extra: separate DM text (Setup wizard, DM mode only) + the DMs-closed switch also on the join-DM welcome sub-screen | **Built and merged into `main`** (stacked on 6a; migration 082, schema 131) | branch `feat/welcome-studio-phase6b` |
 | Fix. Avatar shape is drawn at every render site (real join, /welcome preview, refresh, nudge post, test post) | **Built, PR open, not merged** (cut from `main`; found while starting Phase 7) | branch `fix/welcome-avatar-shape-at-render` |
 | 7a. Scheduled designs, data layer + render-time resolver (migration 083, schema 132; no wizard UI yet) | **Built, PR open, not merged** (stacked on the avatar-shape fix) | branch `feat/welcome-studio-phase7a` |
+| 7b. Scheduled designs in the wizard (Send step): Schedule a design button + modal, "live today" line, `active_design_id` written on Load. **Closes Phase 7** | **Built, PR open, not merged** (stacked on 7a) | branch `feat/welcome-studio-phase7b` |
 | Polaroid / film strip frames, Phase 7 (scheduled designs) | Not started | |
 
 ## What Phase 1 built
@@ -642,3 +643,23 @@ Plan 3.7 / Phase 7. First slice: **no wizard UI**, nothing changes for any serve
 1. Owner reviews / merges the avatar-shape fix, then this PR.
 2. 7b: Send step button + modal to schedule / clear a design, a "Live now" line, write `active_design_id` on Load.
 3. Then polaroid / film strip frames, avatar glow, preview-as-member and per-picture preview, render-cost audit, per-picture overrides.
+
+
+## Phase 7b (2026-10-21): scheduled designs in the wizard (closes Phase 7)
+
+No table, no migration (7a has them). All on the Send step, next to the saved-design controls from 5b.
+
+- **`📅 Schedule a design`** (`CardDesignScheduleButton`, id `designsched`, in `DYNAMIC_ITEMS`), only when the server has designs; the button row is Save, Rename, Schedule, Delete (4 of 5). Opens `CardDesignScheduleModal`: design number (from the list line), **From**, **Until (included)**. `25 Oct` repeats every year, `2026-10-25` happens once, blank Until = one day, **blank From removes that design's schedule** (the design stays). Dates are **UTC**, said in the field text and the line.
+- Plain error messages for each mistake (can't read From / Until, one with a year and one without, Until before From, bad number). Premium/Plus re-checked on the server; a free server gets the usual "Preview only" note and nothing is stored. A failed write says so and does not redraw.
+- The **Send step line** now also shows `Scheduled (UTC): 1 Halloween: 25 Oct to 1 Nov every year` and, when a scheduled design covers today, `Today new members get **Halloween** (scheduled). Your regular look comes back when it ends; the test button shows the regular look.` (the editor and **Send me a test** keep showing the regular look, on purpose: they edit the live look).
+- **`active_design_id`** is now written when a design is loaded (Load select calls `db.set_active_design`). Nothing reads it yet; it is there for a future "which design is live" label.
+- The render cache from 7a is dropped (`forget_schedule_cache`) after a schedule change, a save over a design and a delete/rename, so a change shows on the next join, not a minute later.
+- Tests: `tests/unit/test_welcome_studio_phase7b.py` (16). Updated: 5b `FakeDB` (+ `set_active_design`, summary now has `when`), 2c summary test (+ `live_now`). Studio + wizard + schema tests: 476 passed.
+
+### Known gaps in 7b (on purpose)
+- Numbers, not a picker (like Rename/Delete), fine for 5 designs. No calendar preview. No "schedule a pair of looks for different days in one go".
+- Not tested live (phone taps, the modal). Not run on a real Postgres.
+
+## Next (updated after 7b)
+1. Owner reviews / merges in order: #448 (avatar-shape fix), #449 (7a), the 7b PR. Staging check: migrations 078 to 083, then Save / Schedule / join on the day.
+2. Then polaroid / film strip frames, avatar glow, preview-as-member and per-picture preview, render-cost audit, per-picture overrides.
