@@ -13,6 +13,12 @@ keep (giveaways, scheduled messages, anti-raid, verification, bump, reminders) m
 Memory: one float per server. Stored as ONE JSON value per bot in bot_global_settings (no schema change), written
 at most every 10 minutes and only when something changed. Fails open: any problem means 'not dormant'.
 Switch off with GUILD_DORMANCY=0; threshold with GUILD_DORMANT_DAYS (1-365).
+
+SIZE MATTERS: a 10-member server that goes quiet has little to lose, a big server almost always has someone talking.
+When the caller passes the server's member count, the quiet time that counts as dormant scales with it (SIZE_TIERS:
+3 days up to 20 members, 7 days up to 200, 14 days above). Activity, not size, is still what decides: a small server
+that keeps chatting never sleeps. GUILD_DORMANT_DAYS, when set, is one flat value for every size (the old behaviour).
+Calls that don't pass a member count keep the flat default, so nothing changes for them.
 """
 
 import json
@@ -36,6 +42,26 @@ def dormant_days() -> int:
         return min(365, max(1, int(os.getenv("GUILD_DORMANT_DAYS", "14"))))
     except ValueError:
         return 14
+
+
+SIZE_TIERS = ((20, 3), (200, 7))      # (up to this many members, days of quiet) -- anything bigger uses the default
+DEFAULT_DAYS = 14
+
+
+def dormant_days_for(member_count: Optional[int] = None) -> int:
+    """Days of quiet after which a server of this size is dormant. GUILD_DORMANT_DAYS (flat) wins when it is set."""
+    if os.getenv("GUILD_DORMANT_DAYS"):
+        return dormant_days()
+    try:
+        n = int(member_count) if member_count is not None else None
+    except (TypeError, ValueError):
+        n = None
+    if not n or n < 0:
+        return DEFAULT_DAYS
+    for limit, days in SIZE_TIERS:
+        if n <= limit:
+            return days
+    return DEFAULT_DAYS
 
 
 def setting_key(clone_id: Optional[int]) -> str:
@@ -73,14 +99,15 @@ class ActivityTracker:
         if gone:
             self.dirty = True
 
-    def is_dormant(self, guild_id: int, days: Optional[int] = None) -> bool:
+    def is_dormant(self, guild_id: int, days: Optional[int] = None, member_count: Optional[int] = None) -> bool:
         try:
             if not enabled():
                 return False
             last = self._last.get(guild_id)
             if last is None:
                 return False
-            return self._clock() - last > (days or dormant_days()) * 86400
+            limit = days or (dormant_days_for(member_count) if member_count else dormant_days())
+            return self._clock() - last > limit * 86400
         except Exception:
             return False
 
@@ -103,5 +130,5 @@ class ActivityTracker:
 tracker = ActivityTracker()
 
 
-def is_dormant(guild_id: int) -> bool:
-    return tracker.is_dormant(guild_id)
+def is_dormant(guild_id: int, member_count: Optional[int] = None) -> bool:
+    return tracker.is_dormant(guild_id, member_count=member_count)

@@ -642,8 +642,8 @@ class CatCog(commands.Cog):
             guild = self.bot.get_guild(cfg.guild_id)
             if guild is None:
                 continue
-            if guild_activity.is_dormant(guild.id):
-                # nobody has talked here for weeks: no cat for an empty room; look again in an hour (activity wakes it)
+            if guild_activity.is_dormant(guild.id, getattr(guild, "member_count", None)):
+                # nobody has talked here for a while (days scale with server size): no cat for an empty room; look again in an hour (activity wakes it)
                 await cat_setup.defer(cfg.guild_id, clone_id, datetime.now(timezone.utc) + timedelta(hours=1))
                 continue
             if not cfg.is_open():
