@@ -49,7 +49,7 @@ MODULES: List[dict] = [
             F("accent_color", "Accent colour", "color", "Used by the plain colour card."),
             F("background_color", "Background colour", "color", "Used by the plain colour card."),
             F("delivery_mode", "Delivery", "select", "Post the welcome in the channel, or DM it to the new member.",
-              options=opts(("channel", "Post in the channel"), ("dm", "DM the member"))),
+              options=opts(("channel", "Post in the channel"), ("dm", "DM the member")), default="channel"),
             F("dm_fallback_to_channel", "If DMs are closed", "toggle", "Only for DM delivery: post in the welcome channel when the member's DMs are closed."),
             F("dm_message_template", "DM text", "textarea", "Only for DM delivery. Same placeholders. Empty uses the normal message.", maxlen=300),
         ],
@@ -382,6 +382,8 @@ def export_values(module: dict, cfg: dict) -> dict:
             v = list(v or [])
         elif f["type"] == "toggle":
             v = bool(v)
+        elif f["type"] == "select" and v is None and "default" in f:
+            v = f["default"]
         out[f["key"]] = v
     return out
 
