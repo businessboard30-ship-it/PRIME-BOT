@@ -10,6 +10,9 @@ from typing import Dict, List
 
 MAX_TOOLS = 12
 MAX_TOOL_TOKENS = 3000        # rough budget for the whole tool list (len(json)/4)
+PER_CLAUSE_TOOLS = 3          # tools kept for each part of a many-demands sentence
+MAX_TOOLS_MULTI = 16          # all parts together
+MAX_TOOL_TOKENS_MULTI = 4200  # a little more room when one sentence holds several demands
 
 _STOP = frozenset("""the and for you your can could would please with that this what when where how why who are was were
 has have had not but all any get got let lets make just like want need then them they its out off now run use using
@@ -64,3 +67,31 @@ def select_tools(tools: List[Dict], message: str, limit: int = MAX_TOOLS) -> Lis
         chosen.append(tool)
         used += cost
     return chosen
+
+
+_CLAUSE_SPLIT = re.compile(r"[.;!?\n]+|,|\b(?:and then|after that|and also|and|then|also|plus|next)\b", re.I)
+
+
+def split_clauses(message: str) -> List[str]:
+    return [c.strip() for c in _CLAUSE_SPLIT.split(message or "") if c and _words(c)]
+
+
+def select_tools_multi(tools: List[Dict], message: str) -> List[Dict]:
+    """Like select_tools, but for a message holding several demands: each part of the sentence gets its own best
+    tools, so the 10th demand is not crowded out by the first three. One-part messages behave exactly as before."""
+    clauses = split_clauses(message)
+    if len(clauses) < 2:
+        return select_tools(tools, message)
+    chosen, seen, used = [], set(), 0
+    for clause in clauses:
+        for tool in select_tools(tools, clause, limit=PER_CLAUSE_TOOLS):
+            name = tool.get("function", {}).get("name")
+            if name in seen:
+                continue
+            cost = len(json.dumps(tool)) // 4
+            if len(chosen) >= MAX_TOOLS_MULTI or (chosen and used + cost > MAX_TOOL_TOKENS_MULTI):
+                continue
+            seen.add(name)
+            chosen.append(tool)
+            used += cost
+    return chosen or select_tools(tools, message)

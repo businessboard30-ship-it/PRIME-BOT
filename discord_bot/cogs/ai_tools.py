@@ -42,7 +42,7 @@ import asyncio
 import logging
 import io
 from modules import ai_bulk
-from modules.ai_tool_select import select_tools
+from modules.ai_tool_select import select_tools, select_tools_multi
 from typing import Optional
 
 import discord
@@ -71,6 +71,8 @@ from modules.ai_command_guard import (
     AICommandDenied, send_cap_reached_prompt, AIConfirmView,
 )
 from modules.ai_command_allowlist import needs_confirmation, runnable_labels
+from modules import ai_choice, ai_tool_args
+from discord_bot.cogs._views_ai_choice import AIChoiceView
 from discord_bot.cogs._ai_interaction_proxy import ProxyInteraction
 from discord_bot.cogs._views_shared import ActionButton, NavView, NavCardView, refresh_button
 from discord_clone_service import build_invite_url
@@ -769,11 +771,69 @@ class AIToolsCog(commands.Cog):
         """The model's arguments, with any runaway string cut down (bulk commands take lists, not essays)."""
         return {k: (v[:1000] if isinstance(v, str) else v) for k, v in (args or {}).items()}
 
-    async def _run_tool_calls(self, ctx, calls: list, *, real_interaction: bool) -> None:
+    @staticmethod
+    def _with_choice_tool(tools, command_context, choice_depth: int):
+        """Adds the 'ask the person to choose' tool and the command rules, only when real command tools are in play
+        (a plain chat message still goes out with no tools) and the question chain isn't already too deep."""
+        if not tools or choice_depth >= ai_choice.MAX_CHOICE_DEPTH:
+            return tools, command_context
+        rules = ai_choice.TOOL_RULES
+        return (list(tools) + [ai_choice.choice_tool_schema()],
+                f"{command_context}\n\n{rules}" if command_context else rules)
+
+    async def _ask_choice(self, ctx, args: dict, *, origin_message: str, real_interaction: bool, choice_depth: int) -> None:
+        spec = ai_choice.sanitize(args)
+        if spec is None:
+            await ctx.followup.send("I wasn't sure what you meant -- could you say it again with a bit more detail?",
+                                    ephemeral=True)
+            return
+
+        async def _on_submit(interaction: discord.Interaction, answers: dict) -> None:
+            await self._continue_after_choice(interaction, ai_choice.followup_message(spec, answers, origin_message),
+                                              choice_depth + 1)
+
+        await ctx.followup.send(view=AIChoiceView(spec, ctx.user.id, _on_submit), ephemeral=real_interaction)
+
+    async def _continue_after_choice(self, interaction: discord.Interaction, text: str, depth: int) -> None:
+        """The person picked: hand the pick back to the AI as its next message (a real interaction, so commands it
+        then chooses go through the normal checks and Confirm prompts)."""
+        try:
+            out, _w, _sid = await self._run_chat_turn(
+                interaction.user.id, text, perms=interaction.permissions if interaction.guild else None,
+                guild=interaction.guild, interaction=interaction, choice_depth=depth)
+        except Exception:
+            logger.exception("[ai_choice] follow-up turn failed")
+            await interaction.followup.send("Something went wrong carrying on -- please ask again.", ephemeral=True)
+            return
+        if out:
+            await interaction.followup.send(str(out)[:1900], suppress_embeds=True)
+
+    def _validate_tool_args(self, spec, command, raw: dict):
+        """(clean_args, None) when the model's arguments fit the command, or (None, message) when something required
+        is missing or invalid. Never blocks on its own failure: if the schema can't be built, the old path runs."""
+        try:
+            params = self._command_tool_schema(spec, command)["function"]["parameters"]
+        except Exception:
+            return raw, None
+        res = ai_tool_args.clean_args(raw, params)
+        if res.problems:
+            return None, res.message(spec.command_path)
+        return res.args, None
+
+    async def _run_tool_calls(self, ctx, calls: list, *, real_interaction: bool,
+                              origin_message: str = "", choice_depth: int = 0) -> None:
         """Runs what the model asked for in ONE reply: up to ai_bulk.MAX_COMMANDS_PER_MESSAGE different commands.
         One command goes the normal way. Several run as a batch: read-only ones right away, in order, and every
         command that needs confirming is gathered under ONE Confirm prompt (one click runs them all, in order,
         with a pause between). Each command is still re-checked (allowlist, real permission, daily cap)."""
+        calls = [c for c in (calls or []) if isinstance(c, dict)]
+        asks = [c for c in calls if c.get("name") == ai_choice.CHOICE_TOOL_NAME]
+        if asks:
+            # The AI needs an answer first; anything else it asked for in the same reply may depend on that answer, so it
+            # is re-planned from the person's pick (the original request travels with it) instead of run half-blind.
+            await self._ask_choice(ctx, asks[0].get("arguments") or {}, origin_message=origin_message,
+                                   real_interaction=real_interaction, choice_depth=choice_depth)
+            return
         picked, dropped = ai_bulk.pick_tool_calls(calls)
         if not picked:
             return
@@ -802,6 +862,10 @@ class AIToolsCog(commands.Cog):
                     await send_cap_reached_prompt(ctx)
                     break                                   # daily cap hit: nothing after this one can run either
                 notes.append(f"\u2022 `{name}` skipped: {reason}")
+                continue
+            raw, problem = self._validate_tool_args(spec, command, raw)
+            if problem:
+                notes.append(f"\u2022 {problem}")
                 continue
             args = self._resolve_tool_args(ctx, command, raw)
             if not needs_confirmation(spec, args):
@@ -882,6 +946,10 @@ class AIToolsCog(commands.Cog):
                 await ctx.followup.send(reason, ephemeral=True)
             return
 
+        raw_args, problem = self._validate_tool_args(spec, command, raw_args)
+        if problem:
+            await ctx.followup.send(problem, ephemeral=True)
+            return
         resolved_args = self._resolve_tool_args(ctx, command, raw_args)
 
         async def _run(confirm_interaction: discord.Interaction):
@@ -945,7 +1013,8 @@ class AIToolsCog(commands.Cog):
                               guild: Optional[discord.Guild] = None,
                               interaction: Optional[discord.Interaction] = None,
                               voice: Optional[str] = None,
-                              attachments: Optional[list] = None) -> tuple[str, str, Optional[int]]:
+                              attachments: Optional[list] = None,
+                              choice_depth: int = 0) -> tuple[str, str, Optional[int]]:
         """Shared by /aichat and the reply-to-continue listener. Returns
         (reply_text, warning, session_id). session_id is None only if
         usage was denied (caller should stop before sending anything).
@@ -969,9 +1038,10 @@ class AIToolsCog(commands.Cog):
 
         file_block, image_urls = await ai_attachments.build_attachment_context(attachments) if attachments else (None, [])
         tools = await self._build_command_tools(interaction) if (interaction is not None and not attachments) else None
-        tools = select_tools(tools, message) if tools else None   # only commands that look relevant (Groq token cap)
+        tools = select_tools_multi(tools, message) if tools else None   # best tools for EACH part of the sentence (Groq token cap)
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(message, user_id, perms, guild, runnable=runnable)
+        tools, command_context = self._with_choice_tool(tools, command_context, choice_depth)
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
                                   session_id=session_id, command_context=command_context, tools=tools or None,
                                   voice=voice, file_block=file_block, image_urls=image_urls or None)
@@ -979,7 +1049,8 @@ class AIToolsCog(commands.Cog):
             return "AI service error. Try again later.", warning, session_id
 
         if isinstance(response, dict):
-            await self._run_tool_calls(interaction, response["tool_calls"], real_interaction=True)
+            await self._run_tool_calls(interaction, response["tool_calls"], real_interaction=True,
+                                       origin_message=message, choice_depth=choice_depth)
             return "", warning, session_id
 
         prefix = f"⚠️ {warning}\n\n" if warning else ""
@@ -1272,9 +1343,10 @@ class AIToolsCog(commands.Cog):
 
         proxy = ProxyInteraction(message, self.bot) if guild else None
         tools = await self._build_command_tools(proxy) if proxy is not None else []
-        tools = select_tools(tools, content) if tools else []     # only commands that look relevant (Groq token cap)
+        tools = select_tools_multi(tools, content) if tools else []     # best tools for EACH part of the sentence
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(content, user_id, perms, guild, runnable=runnable)
+        tools, command_context = self._with_choice_tool(tools, command_context, 0)
         atts = await _message_attachments(message)
         file_block, image_urls = await ai_attachments.build_attachment_context(atts) if atts else (None, [])
         response = await ai_chat(
@@ -1285,7 +1357,7 @@ class AIToolsCog(commands.Cog):
             file_block=file_block, image_urls=image_urls or None,
         )
         if isinstance(response, dict):
-            await self._run_tool_calls(proxy, response["tool_calls"], real_interaction=False)
+            await self._run_tool_calls(proxy, response["tool_calls"], real_interaction=False, origin_message=content)
             return "", None
         return (response or "AI service error. Try again later."), None
 
