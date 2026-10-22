@@ -223,3 +223,47 @@ def test_card_look_setter_merges_and_gates(monkeypatch):
     with __import__("pytest").raises(ValidationError):                                           # no Customize Card
         asyncio.run(d.set_welcome_card_look(1, None, font="script"))
     asyncio.run(d.set_welcome_card_look(1, None, font="classic", frame="none"))                    # defaults always allowed (reset)
+
+
+def test_write_values_routes_own_setters(monkeypatch):
+    import asyncio
+    from utils import dash_schema as S
+    calls = []
+
+    class DB:
+        async def set_welcome_config(self, gid, cid, **kw): calls.append(("main", kw))
+        async def set_welcome_dm_fallback(self, gid, cid, val): calls.append(("fallback", val))
+        async def set_welcome_dm_text(self, gid, cid, val): calls.append(("text", val))
+        async def get_welcome_config(self, gid, cid=None): return {}
+        async def dash_audit_add(self, *a, **k): pass
+
+    monkeypatch.setattr(dash, "db", DB())
+    sess = {"user": {"id": 1, "username": "u"}}
+    asyncio.run(dash._write_values(sess, 5, S.BY_ID["welcome"],
+                                   {"delivery_mode": "dm", "dm_fallback_to_channel": True, "dm_message_template": "hi"}, {}))
+    assert ("main", {"delivery_mode": "dm"}) in calls and ("fallback", True) in calls and ("text", "hi") in calls
+
+
+def test_birthday_setter_guards_and_saves(monkeypatch):
+    import asyncio
+    import database
+    from modules import birthday_store as bs
+    from utils.dash_schema import ValidationError
+    saved = []
+    store = {"cfg": bs._defaults(1, None)}
+
+    async def get_config(gid, cid=None): return store["cfg"]
+    async def set_config(gid, cid=None, **kw): saved.append(kw); store["cfg"] = {**store["cfg"], **kw}; return store["cfg"]
+    monkeypatch.setattr(bs, "get_config", get_config)
+    monkeypatch.setattr(bs, "set_config", set_config)
+    d = database.Database.__new__(database.Database)
+    pytest = __import__("pytest")
+
+    with pytest.raises(ValidationError):                                   # on without a channel
+        asyncio.run(d.set_birthday_config(1, None, enabled=True))
+    asyncio.run(d.set_birthday_config(1, None, channel_id=100, enabled=True))
+    assert saved[-1] == {"channel_id": 100, "enabled": True}
+    with pytest.raises(ValidationError):                                   # same banner rule as the wizard
+        asyncio.run(d.set_birthday_config(1, None, embed_image_url="https://x.test/page.html"))
+    asyncio.run(d.set_birthday_config(1, None, embed_image_url="https://x.test/a.png", extra_messages=[]))
+    assert saved[-1] == {"embed_image_url": "https://x.test/a.png", "extra_messages": None}   # empty list clears

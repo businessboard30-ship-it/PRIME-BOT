@@ -140,3 +140,97 @@ def test_card_look_validation_and_studio_gate():
     assert errs and "Premium" in errs[0]
     clean, errs = v("cardlook", {"frame": "film", "zoom": 200, "pan_x": -20, "text_pos": "bottom"}, premium=True)
     assert not errs and clean == {"frame": "film", "zoom": 200, "pan_x": -20, "text_pos": "bottom"}
+
+
+# ───────── welcome: DM delivery options ─────────
+
+def test_welcome_dm_options_validate():
+    clean, errs = v("welcome", {"delivery_mode": "dm", "dm_fallback_to_channel": True, "dm_message_template": "Hi {member}"})
+    assert not errs and clean == {"delivery_mode": "dm", "dm_fallback_to_channel": True, "dm_message_template": "Hi {member}"}
+    assert v("welcome", {"delivery_mode": "carrier pigeon"})[1]
+    assert v("welcome", {"dm_message_template": "x" * 301})[1]
+    clean, errs = v("welcome", {"dm_message_template": "   "})
+    assert not errs and clean["dm_message_template"] is None
+
+
+def test_welcome_dm_fields_use_their_own_setters():
+    m = S.BY_ID["welcome"]
+    assert set(m["own_setters"]) == {"dm_fallback_to_channel", "dm_message_template"}
+    keys = {f["key"] for f in m["fields"]}
+    assert set(m["own_setters"]) <= keys
+
+
+# ───────── join verification: premium extras ─────────
+
+def test_verification_extras_need_premium():
+    for key, val in (("panel_title", "Hi"), ("panel_color", "#ff0000"), ("kick_after_minutes", 30),
+                     ("min_account_age_days", 3), ("log_channel_id", "100"), ("welcome_text", "Welcome {user}")):
+        clean, errs = v("verification", {key: val})
+        assert not clean and errs and "Premium" in errs[0], key
+        clean, errs = v("verification", {key: val}, premium=True)
+        assert not errs and key in clean, key
+
+
+def test_verification_color_is_stored_as_int_and_shown_as_hex():
+    clean, errs = v("verification", {"panel_color": "#5865F2"}, premium=True)
+    assert not errs and clean["panel_color"] == 0x5865F2
+    clean, errs = v("verification", {"panel_color": ""}, premium=True)
+    assert not errs and clean["panel_color"] is None
+    assert v("verification", {"panel_color": "red"}, premium=True)[1]
+    m = S.BY_ID["verification"]
+    assert S.export_values(m, {"panel_color": 0x5865F2})["panel_color"] == "#5865f2"
+    assert S.export_values(m, {"panel_color": None})["panel_color"] is None
+
+
+def test_verification_off_choices_are_stored_as_null():
+    clean, errs = v("verification", {"kick_after_minutes": 0, "min_account_age_days": 0}, premium=True)
+    assert not errs and clean == {"kick_after_minutes": None, "min_account_age_days": None}
+    clean, _ = v("verification", {"kick_after_minutes": 60, "min_account_age_days": 7}, premium=True)
+    assert clean == {"kick_after_minutes": 60, "min_account_age_days": 7}
+    assert v("verification", {"kick_after_minutes": 5}, premium=True)[1]
+    m = S.BY_ID["verification"]
+    ex = S.export_values(m, {"kick_after_minutes": None, "min_account_age_days": 3})
+    assert ex["kick_after_minutes"] == 0 and ex["min_account_age_days"] == 3
+
+
+def test_verification_banner_must_be_https():
+    assert v("verification", {"panel_image_url": "https://x.test/a.png"}, premium=True)[0]
+    for bad in ("http://x.test/a.png", "javascript:alert(1)", "https://x.test/a b.png"):
+        assert v("verification", {"panel_image_url": bad}, premium=True)[1], bad
+    clean, errs = v("verification", {"panel_image_url": ""}, premium=True)
+    assert not errs and clean["panel_image_url"] is None
+
+
+def test_verification_reset_defaults_clear_extras():
+    m = S.BY_ID["verification"]
+    vals, left = S.default_values(m, {"mode": "captcha", "timeout_seconds": 300, "max_attempts": 3, "enabled": False,
+                                      "panel_title": None, "panel_color": None, "kick_after_minutes": None})
+    assert vals["panel_color"] is None and vals["kick_after_minutes"] is None and vals["panel_title"] is None
+
+
+# ───────── birthdays ─────────
+
+def test_birthday_fields_match_the_bot():
+    from modules import birthday_store as BS, birthdays as BD
+    m = S.BY_ID["birthdays"]
+    keys = {f["key"] for f in m["fields"]}
+    assert keys <= set(BS._CONFIG_FIELDS) and keys == set(BS._CONFIG_FIELDS)
+    lim = {f["key"]: f for f in m["fields"]}
+    assert (lim["utc_offset_hours"]["min"], lim["utc_offset_hours"]["max"]) == (BD.MIN_OFFSET, BD.MAX_OFFSET)
+    assert (lim["extra_messages"]["maxitems"], lim["extra_messages"]["maxlen"]) == (BD.MAX_EXTRA_MESSAGES, BD.EXTRA_MESSAGE_LEN)
+    assert (lim["embed_title"]["maxlen"], lim["embed_footer"]["maxlen"], lim["message"]["maxlen"]) == (BD.TITLE_MAX, BD.FOOTER_MAX, BD.MAX_MESSAGE_LEN)
+    free = {f["key"] for f in m["fields"] if not f.get("premium")}
+    assert free == {"enabled", "channel_id", "ping_role_id", "message", "utc_offset_hours", "announce_hour"}
+
+
+def test_birthday_validation():
+    clean, errs = v("birthdays", {"enabled": True, "channel_id": "100", "utc_offset_hours": 0, "announce_hour": 9, "message": "Happy {user}!"})
+    assert not errs and clean["announce_hour"] == 9 and clean["channel_id"] == 100
+    assert v("birthdays", {"announce_hour": 24})[1] and v("birthdays", {"utc_offset_hours": 15})[1]
+    assert v("birthdays", {"embed_title": "Yay"})[1]                                     # Premium
+    clean, errs = v("birthdays", {"embed_color": "#EE79C2", "show_avatar": False, "extra_messages": ["a", "b"]}, premium=True)
+    assert not errs and clean == {"embed_color": 0xEE79C2, "show_avatar": False, "extra_messages": ["a", "b"]}
+    assert v("birthdays", {"extra_messages": list("abcdef")}, premium=True)[1]          # max 5
+    m = S.BY_ID["birthdays"]
+    assert S.export_values(m, {"show_avatar": None})["show_avatar"] is True              # unset means shown
+    assert S.export_values(m, {"show_avatar": False})["show_avatar"] is False
