@@ -6,7 +6,8 @@ Anime feed worker (slice B): ONE shared background task per bot process, not one
 Lifecycle (from the plan): STOPPED = nobody has the feed on, so it waits on an event with NO timer and makes no provider
 requests; SLEEPING = feeds are on, waiting until the next episode is due (or at most 30 minutes, to refresh the schedule);
 RUNNING = posting a bounded batch; BACKOFF = the provider or database failed, wait with exponential backoff and jitter.
-A settings change calls `wake_all()` so it takes effect at once. One cached AniList request serves every server. Each post
+Servers get a SPAWN (a random anime card) on the interval their admin picked; a server that never set anime up is never touched, and with no
+server set up and no DM alerts the worker is STOPPED. A settings change calls `wake_all()` so it takes effect at once. One cached AniList request serves every server. Each post
 is claimed in the database BEFORE sending, so restarts and retries never double post. Only episodes that air after a feed
 was switched on are posted (never a backlog), and only ones that aired within the last 3 hours.
 """
@@ -22,6 +23,7 @@ from typing import List, Optional
 
 from modules import anime_feed as af
 from modules import anime_feed_alerts as alerts
+from modules import anime_feed_spawn as spawn
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,17 @@ def next_wait(items: List[af.Preview], now: int) -> int:
     future = [p.airing_at for p in items if p.airing_at > now]
     wait = (min(future) - now + 5) if future else MAX_SLEEP
     return max(MIN_SLEEP, min(MAX_SLEEP, wait))
+
+
+def spawn_wait(guilds, items: List[af.Preview], now: float) -> int:
+    """Seconds to sleep: until the soonest server spawn (or DM-relevant episode), never less than 30 s or more than 30 min. Pure."""
+    waits = []
+    for cfg in guilds:
+        at = af.spawn_due_at(cfg)
+        waits.append(0 if at is None else max(0, at - now) + 1)
+    if items:
+        waits.append(next_wait(items, int(now)))
+    return int(max(MIN_SLEEP, min(MAX_SLEEP, min(waits)))) if waits else MAX_SLEEP
 
 
 def backoff_delay(attempt: int, rng=random) -> float:
@@ -172,23 +185,27 @@ class Worker:
                 logger.debug("[anime-feed] couldn't read the DM alerts", exc_info=True)
         if not guilds and not dm_work:
             return None
-        items, ok = await af.airing_soon()
-        if not ok:
-            return self._fail("AniList is unreachable")
+        now = int(time.time())
+        items: List[af.Preview] = []
+        if dm_work:                                                   # airing times are only needed for the DM alerts now
+            items, ok = await af.airing_soon()
+            if not ok and not guilds:
+                return self._fail("AniList is unreachable")
+            if not ok:
+                dm_work = False
         self.failures = 0
         self._set(RUNNING)
-        now = int(time.time())
         posted = 0
         stats = PassStats(servers=len(guilds))
         for cfg in guilds:
-            since = cfg.enabled_at.timestamp() if cfg.enabled_at else None
-            for p in due(af.filter_kinds(items, cfg.content_kinds), now, since):
-                stats.due += 1
-                if posted >= MAX_POSTS_PER_CYCLE:
-                    break
-                if await self._post(cfg, p):
-                    posted += 1
-                    await asyncio.sleep(self.post_gap)
+            if not af.spawn_is_due(cfg, now):
+                continue
+            stats.due += 1
+            if posted >= MAX_POSTS_PER_CYCLE:
+                break
+            if await self._spawn(cfg):
+                posted += 1
+                await asyncio.sleep(self.post_gap)
         self.posted_total += posted
         dms, backlog = 0, False
         if dm_work:
@@ -200,7 +217,7 @@ class Worker:
                 logger.exception("[anime-feed] DM pass crashed")
         self.dms_total += dms
         self._set(SLEEPING)
-        wait = MIN_SLEEP if backlog else next_wait(items, now)       # a capped DM queue is finished on the next short pass
+        wait = MIN_SLEEP if backlog else spawn_wait(guilds, items if dm_work else [], now)   # a capped DM queue is finished on the next short pass
         stats.posted, stats.dms, stats.dm_backlog = posted, dms, backlog
         stats.ms = int((time.monotonic() - started) * 1000)
         self.last_pass = stats
@@ -215,24 +232,41 @@ class Worker:
         logger.warning("[anime-feed] %s; backing off %.0fs", why, delay)
         return delay
 
-    async def _post(self, cfg: af.FeedConfig, p: af.Preview) -> bool:
+    async def _spawn(self, cfg: af.FeedConfig) -> bool:
+        """Drops one anime card in the server's channel. The interval is claimed in the database BEFORE sending, so restarts and
+        retries never double spawn; a send that fails for a retryable reason gives the interval back."""
         import discord
         from discord_bot.cogs._views_anime_feed import post_view
-        try:
-            if not await af.claim(cfg.guild_id, self.clone_id, p.anime_id, p.episode):
-                return False                              # already posted (or another worker has it)
-        except Exception:
-            logger.warning("[anime-feed] couldn't claim a post", exc_info=True)
-            return False
         guild = self.bot.get_guild(cfg.guild_id)
         channel = guild.get_channel(cfg.channel_id) if guild else None
+        if guild is None:
+            return False
         if channel is None:
             try:
                 await af.disable(cfg.guild_id, self.clone_id)         # the channel was deleted: stop instead of failing forever
             except Exception:
                 logger.debug("[anime-feed] couldn't switch a feed off", exc_info=True)
             return False
-        follower_ids = [u for u in await af.followers_of(p.anime_id) if guild.get_member(u) is not None]
+        try:
+            prev_at = await af.claim_spawn(cfg)
+        except Exception:
+            logger.warning("[anime-feed] couldn't claim a spawn", exc_info=True)
+            return False
+        if prev_at is None:
+            return False                                              # not due any more (or another worker has it)
+        try:
+            recent = await af.recent_spawned(cfg.guild_id, self.clone_id)
+        except Exception:
+            recent = []
+        p, ok = await spawn.pick(cfg.content_kinds, recent)
+        if p is None:                                                 # nothing to show (AniList down or all seen): try again next pass
+            await self._give_back(cfg, prev_at)
+            return False
+        try:
+            follower_ids = [u for u in await af.followers_of(p.anime_id) if guild.get_member(u) is not None]
+        except Exception:
+            follower_ids = []
+            logger.debug("[anime-feed] couldn't read followers; spawning without mentions", exc_info=True)
         try:                                                          # people in their quiet hours are not mentioned (they still see the post)
             follower_ids = alerts.split_mentions(follower_ids, await alerts.get_prefs_many(follower_ids), int(time.time()))
         except Exception:
@@ -242,17 +276,24 @@ class Worker:
                                            everyone=False)
         try:
             await channel.send(view=post_view(p, ping=line), allowed_mentions=mentions)
-            return True
         except discord.Forbidden:
-            logger.info("[anime-feed] no permission to post in guild %s", cfg.guild_id)   # keep the claim: don't retry forever
+            logger.info("[anime-feed] no permission to post in guild %s", cfg.guild_id)   # keep the interval: don't retry every pass
             return False
         except discord.HTTPException:
-            logger.warning("[anime-feed] post failed in guild %s, will retry", cfg.guild_id, exc_info=True)
-            try:
-                await af.release(cfg.guild_id, self.clone_id, p.anime_id, p.episode)
-            except Exception:
-                logger.debug("[anime-feed] couldn't release a claim", exc_info=True)
+            logger.warning("[anime-feed] spawn failed in guild %s, will retry", cfg.guild_id, exc_info=True)
+            await self._give_back(cfg, prev_at)
             return False
+        try:
+            await af.note_spawned(cfg.guild_id, self.clone_id, p.anime_id)
+        except Exception:
+            logger.debug("[anime-feed] couldn't remember a spawn", exc_info=True)
+        return True
+
+    async def _give_back(self, cfg: af.FeedConfig, prev_at) -> None:
+        try:
+            await af.release_spawn(cfg, prev_at)
+        except Exception:
+            logger.debug("[anime-feed] couldn't release a spawn interval", exc_info=True)
 
     async def _dm_alerts(self, items: List[af.Preview], now: int):
         """Sends the opt-in DMs for episodes that just aired. Bounded: at most MAX_DMS_PER_CYCLE per pass, DM_GAP apart, one per
