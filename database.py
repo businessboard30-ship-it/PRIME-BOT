@@ -12621,6 +12621,28 @@ class Database:
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, text)
         return res.endswith(" 1")
 
+    async def get_birthday_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Dashboard 'Birthdays' page: the server's birthday settings (modules/birthday_store.py owns the table)."""
+        from modules import birthday_store as bs
+        return await bs.get_config(guild_id, clone_id)
+
+    async def set_birthday_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
+        """Same store the /birthday wizard saves to. Omitted keys keep their value; empty text and an empty list clear."""
+        from modules import birthday_store as bs
+        from modules import goodbye_style as gs
+        from utils.dash_schema import ValidationError
+        cur = await bs.get_config(guild_id, clone_id)
+        if "embed_image_url" in fields:
+            ok, url = gs.check_image_url(fields["embed_image_url"])
+            if not ok:
+                raise ValidationError("Banner image: use an https link ending in .png, .jpg, .gif or .webp.")
+            fields["embed_image_url"] = url
+        if "extra_messages" in fields:
+            fields["extra_messages"] = list(fields["extra_messages"] or []) or None
+        if fields.get("enabled", cur.get("enabled")) and not fields.get("channel_id", cur.get("channel_id")):
+            raise ValidationError("Pick an announcement channel before turning birthdays on.")
+        await bs.set_config(guild_id, clone_id, **fields)
+
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Marks the premium welcome-card pack as purchased for this guild
         (whole-guild, one-time — see card_pack_unlocked's schema comment

@@ -144,3 +144,31 @@ def test_verification_reset_defaults_clear_extras():
     vals, left = S.default_values(m, {"mode": "captcha", "timeout_seconds": 300, "max_attempts": 3, "enabled": False,
                                       "panel_title": None, "panel_color": None, "kick_after_minutes": None})
     assert vals["panel_color"] is None and vals["kick_after_minutes"] is None and vals["panel_title"] is None
+
+
+# ───────── birthdays ─────────
+
+def test_birthday_fields_match_the_bot():
+    from modules import birthday_store as BS, birthdays as BD
+    m = S.BY_ID["birthdays"]
+    keys = {f["key"] for f in m["fields"]}
+    assert keys <= set(BS._CONFIG_FIELDS) and keys == set(BS._CONFIG_FIELDS)
+    lim = {f["key"]: f for f in m["fields"]}
+    assert (lim["utc_offset_hours"]["min"], lim["utc_offset_hours"]["max"]) == (BD.MIN_OFFSET, BD.MAX_OFFSET)
+    assert (lim["extra_messages"]["maxitems"], lim["extra_messages"]["maxlen"]) == (BD.MAX_EXTRA_MESSAGES, BD.EXTRA_MESSAGE_LEN)
+    assert (lim["embed_title"]["maxlen"], lim["embed_footer"]["maxlen"], lim["message"]["maxlen"]) == (BD.TITLE_MAX, BD.FOOTER_MAX, BD.MAX_MESSAGE_LEN)
+    free = {f["key"] for f in m["fields"] if not f.get("premium")}
+    assert free == {"enabled", "channel_id", "ping_role_id", "message", "utc_offset_hours", "announce_hour"}
+
+
+def test_birthday_validation():
+    clean, errs = v("birthdays", {"enabled": True, "channel_id": "100", "utc_offset_hours": 0, "announce_hour": 9, "message": "Happy {user}!"})
+    assert not errs and clean["announce_hour"] == 9 and clean["channel_id"] == 100
+    assert v("birthdays", {"announce_hour": 24})[1] and v("birthdays", {"utc_offset_hours": 15})[1]
+    assert v("birthdays", {"embed_title": "Yay"})[1]                                     # Premium
+    clean, errs = v("birthdays", {"embed_color": "#EE79C2", "show_avatar": False, "extra_messages": ["a", "b"]}, premium=True)
+    assert not errs and clean == {"embed_color": 0xEE79C2, "show_avatar": False, "extra_messages": ["a", "b"]}
+    assert v("birthdays", {"extra_messages": list("abcdef")}, premium=True)[1]          # max 5
+    m = S.BY_ID["birthdays"]
+    assert S.export_values(m, {"show_avatar": None})["show_avatar"] is True              # unset means shown
+    assert S.export_values(m, {"show_avatar": False})["show_avatar"] is False
