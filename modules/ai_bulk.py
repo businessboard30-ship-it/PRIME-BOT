@@ -32,6 +32,8 @@ PAUSE_SECONDS = 1.2             # between two channel create/delete calls
 CALL_TIMEOUT = 15               # seconds a single Discord call may take before the job stops
 JOB_COOLDOWN_SECONDS = 20       # after a job, the same server waits this long before the next one
 MAX_RUNNING_JOBS = 3            # across the whole bot
+MAX_COMMANDS_PER_MESSAGE = 10   # different commands the AI may run from ONE sentence
+BATCH_PAUSE_SECONDS = 0.8       # between two commands of one batch (keeps Discord's rate limiter calm)
 MAX_BULK_ASSIGN = 3000          # members one 'give/remove a role to many' request may touch
 ASSIGN_PAUSE_SECONDS = 0.6      # between two role changes (discord.py also honours Discord's own rate limits)
 # A role holding any of these is never handed out in bulk (give it to people one at a time, on purpose).
@@ -228,6 +230,27 @@ def pick_tool_call(calls: List[dict]) -> Tuple[Optional[dict], int]:
     if not calls:
         return None, 0
     return calls[0], len(calls) - 1
+
+
+def pick_tool_calls(calls: List[dict], limit: int = MAX_COMMANDS_PER_MESSAGE) -> Tuple[List[dict], int]:
+    """Up to `limit` distinct commands from one model reply, in the order asked, and how many were dropped.
+    Identical (name, arguments) repeats inside the reply are merged, not counted as dropped."""
+    seen, picked, dropped = set(), [], 0
+    for c in (calls or []):
+        if not (isinstance(c, dict) and c.get("name")):
+            continue
+        try:
+            key = (c["name"], json.dumps(c.get("arguments") or {}, sort_keys=True, default=str))
+        except (TypeError, ValueError):
+            key = (c["name"], repr(c.get("arguments")))
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(picked) < limit:
+            picked.append(c)
+        else:
+            dropped += 1
+    return picked, dropped
 
 
 def summarize(items: List[str], limit: int = 12) -> str:
