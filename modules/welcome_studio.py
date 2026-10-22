@@ -13,7 +13,9 @@ Rules (see docs/WELCOME_CARD_STUDIO_PLAN.md):
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -56,11 +58,72 @@ def uses_studio_options(raw) -> bool:
         return False
 
 
+# ---- Phase 7a: scheduled designs. Decided at render time from today's date (UTC): no loop, nothing to miss. ----
+_SCHED_CACHE: dict = {}          # (guild, clone_key, today) -> (expires_monotonic, design dict or None)
+SCHED_TTL = 60.0                 # seconds; a raid of joins asks the database once a minute, not once per join
+_SCHED_CACHE_MAX = 500
+
+
+def _today_utc() -> _dt.date:
+    return _dt.datetime.now(_dt.timezone.utc).date()
+
+
+def forget_schedule_cache(guild_id=None, clone_id=None) -> None:
+    """Drop the cached answer for one server (after its schedules change). No arguments clears everything."""
+    try:
+        if guild_id is None:
+            _SCHED_CACHE.clear()
+            return
+        ck = -1 if clone_id is None else int(clone_id)
+        for k in [k for k in _SCHED_CACHE if k[0] == int(guild_id) and k[1] == ck]:
+            _SCHED_CACHE.pop(k, None)
+    except Exception:
+        _SCHED_CACHE.clear()
+
+
+async def scheduled_design(config: dict, today: Optional[_dt.date] = None) -> Optional[dict]:
+    """The saved design whose schedule covers today, for a Premium/Plus server only; None otherwise. Never raises.
+
+    Servers that never scheduled anything have `design_schedule_on` False and cost nothing here (no Premium lookup, no
+    designs query). A lapsed Premium, a lookup error or a bad row all mean None: the live look is used, nothing is deleted."""
+    try:
+        if not config or not config.get("design_schedule_on"):
+            return None
+        gid, cid = config.get("guild_id"), config.get("clone_id")
+        if not gid:
+            return None
+        today = today or _today_utc()
+        key = (int(gid), -1 if cid is None else int(cid), today)
+        hit = _SCHED_CACHE.get(key)
+        now = time.monotonic()
+        if hit and hit[0] > now:
+            return hit[1]
+        result = None
+        if await studio_unlocked(gid, cid):
+            from database import db
+            from modules.welcome_schedule import pick_scheduled
+            picked = pick_scheduled(await db.design_list(int(gid), cid), today)
+            result = dict(picked) if picked else None
+        if len(_SCHED_CACHE) >= _SCHED_CACHE_MAX:
+            _SCHED_CACHE.clear()
+        _SCHED_CACHE[key] = (now + SCHED_TTL, result)
+        return result
+    except Exception:
+        logger.exception("[welcome-studio] scheduled design lookup failed, using the live look")
+        return None
+
+
 async def options_for_render(config: dict):
     """What to hand the card renderer at join time: the stored options, with studio-only keys dropped unless the server
-    has Premium/Plus (fails closed, never raises). Untouched servers get their stored value back unchanged."""
+    has Premium/Plus (fails closed, never raises). Untouched servers get their stored value back unchanged.
+
+    Phase 7a: while a scheduled design covers today, its look replaces the stored one (Premium/Plus only)."""
     raw = (config or {}).get("ultra_card_json")
     try:
+        sched = await scheduled_design(config)
+        if sched:
+            from modules.welcome_designs import restore_look
+            return restore_look(sched.get("options_json"), sched.get("avatar_shape"))[0]
         if not uses_studio_options(raw):
             return raw
         if await studio_unlocked((config or {}).get("guild_id"), (config or {}).get("clone_id")):
@@ -80,10 +143,12 @@ async def avatar_shape_for_render(config: dict) -> str:
     """The avatar shape to hand the card renderer: the stored one (never raises, unknown values fall back to circle).
 
     Every place that draws a welcome card passes this next to `options_for_render`, so the shape picked in the wizard is
-    the shape that is drawn (join, /welcome preview, nudge post, test post, setup TV)."""
+    the shape that is drawn (join, /welcome preview, nudge post, test post, setup TV). Phase 7a: a scheduled design that
+    covers today brings its own shape, the same way it brings its own options."""
     try:
         from modules.welcome_card import AVATAR_SHAPES, DEFAULT_AVATAR_SHAPE
-        shape = (config or {}).get("avatar_shape")
+        sched = await scheduled_design(config)
+        shape = (sched or {}).get("avatar_shape") or (config or {}).get("avatar_shape")
         return shape if shape in AVATAR_SHAPES else DEFAULT_AVATAR_SHAPE
     except Exception:
         return "circle"
