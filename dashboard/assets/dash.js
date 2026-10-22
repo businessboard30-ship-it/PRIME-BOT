@@ -217,6 +217,7 @@
     nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
     nav.appendChild(link(gpath(gid, "autoresponders"), "bulb", "Auto-responders", modId === "autoresponders"));
+    nav.appendChild(link(gpath(gid, "quarantine"), "shield-check", "Quarantine role", modId === "quarantine"));
     nav.appendChild(link(gpath(gid, "applications"), "scroll", "Applications", modId === "applications"));
     nav.appendChild(link(gpath(gid, "tickethistory"), "ticket", "Ticket history", modId === "tickethistory"));
     S.schema.categories.forEach(function (cat) {
@@ -801,6 +802,24 @@
       h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
       h("div", { class: "card rv" }, h("h2", { text: "Forms" }), formsBox),
       h("div", { class: "card rv" }, h("h2", { text: "Applications" }), h("div", { class: "action" }, formSel, statSel), subsBox, moreBtn)]);
+  }
+
+  /* ---------- quarantine role ---------- */
+  function renderQuarantine(gid, main) {
+    var sel = h("select", { "aria-label": "Quarantine role" }, [h("option", { value: "", text: "Pick a role" })].concat(S.meta.roles.map(function (r) { return h("option", { value: r.id, text: r.name }); })));
+    var warn = h("p", { class: "help", text: "" }), save = h("button", { class: "btn sm primary", text: "Save role" });
+    api("quarantine", { guild_id: gid }).then(function (r) { if (r.role_id) sel.value = r.role_id; warn.textContent = r.problem ? "Problem: " + r.problem : (r.role_id ? "This role is ready to use." : ""); })
+      .catch(function (e) { warn.textContent = e.message; });
+    save.addEventListener("click", function () {
+      save.classList.add("busy"); save.disabled = true;
+      api("quarantine_role_set", {}, { guild_id: gid, role_id: sel.value }).then(function () { toast("Quarantine role saved", "ok"); warn.textContent = "This role is ready to use."; })
+        .catch(function (e) { toast(e.message, "bad"); }).then(function () { save.classList.remove("busy"); save.disabled = false; });
+    });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Quarantine role" }),
+      h("p", { class: "muted", text: "The role a quarantined member is moved to. Quarantining and releasing people stays in Discord. The role must be a normal role below my highest role, and I need Manage Roles." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card fields rv" }, h("h2", { text: "Role" }), h("div", { class: "field" }, h("div", null, h("label", { text: "Quarantine role" }), warn), sel),
+        h("div", { class: "action" }, h("div", { class: "grow" }), save))]);
   }
 
   /* ---------- analytics (read-only) ---------- */
@@ -2034,7 +2053,7 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, autoresponders: renderAutoresponders, applications: renderApplications, tickethistory: renderTickets, billing: renderBilling };
+      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, autoresponders: renderAutoresponders, applications: renderApplications, quarantine: renderQuarantine, tickethistory: renderTickets, billing: renderBilling };
       if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
