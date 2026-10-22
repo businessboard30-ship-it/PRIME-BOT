@@ -11381,6 +11381,26 @@ class Database:
             d["allowed_domains"] = list(d.get("allowed_domains") or [])
             return d
 
+    # Anime feed settings live in modules/anime_feed.py (a dataclass + save_config that stamps
+    # `enabled_at`). Dict-shaped wrappers so the web dashboard can address them like any other pair.
+    async def get_anime_feed_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        from modules import anime_feed
+        cfg = await anime_feed.get_config(guild_id, clone_id)
+        return {"enabled": bool(cfg.enabled and cfg.channel_id), "channel_id": cfg.channel_id,
+                "ping_role_id": cfg.ping_role_id, "content_kinds": anime_feed.clean_kinds(cfg.content_kinds)}
+
+    async def set_anime_feed_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        from modules import anime_feed
+        allowed = {"enabled", "channel_id", "ping_role_id", "content_kinds"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unknown anime feed field(s): {sorted(unknown)}")
+        cfg = await anime_feed.get_config(guild_id, clone_id)
+        for k, v in fields.items():
+            setattr(cfg, k, v)
+        await anime_feed.save_config(cfg)          # turns on only with a channel, stamps enabled_at
+        return await self.get_anime_feed_config(guild_id, clone_id)
+
     async def get_ticket_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -11622,6 +11642,11 @@ class Database:
                 guild_id, clone_id, channel_id, message_id, host_id, prize, winner_count, ends_at, role_requirement_id
             )
             return dict(row)
+
+    async def list_application_submissions(self, guild_id: int, clone_id: Optional[int] = None, form_id: Optional[int] = None,
+                                           status: Optional[str] = None, before: Optional[int] = None, limit: int = 31) -> List[Dict]:
+        from modules import applications
+        return await applications.list_submissions(guild_id, clone_id, form_id, status, before, limit)
 
     async def get_application_forms(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
         """Non-draft application forms of a server with pending-review counts (server panel screen)."""
@@ -12621,6 +12646,28 @@ class Database:
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, text)
         return res.endswith(" 1")
 
+    async def get_birthday_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Dashboard 'Birthdays' page: the server's birthday settings (modules/birthday_store.py owns the table)."""
+        from modules import birthday_store as bs
+        return await bs.get_config(guild_id, clone_id)
+
+    async def set_birthday_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
+        """Same store the /birthday wizard saves to. Omitted keys keep their value; empty text and an empty list clear."""
+        from modules import birthday_store as bs
+        from modules import goodbye_style as gs
+        from utils.dash_schema import ValidationError
+        cur = await bs.get_config(guild_id, clone_id)
+        if "embed_image_url" in fields:
+            ok, url = gs.check_image_url(fields["embed_image_url"])
+            if not ok:
+                raise ValidationError("Banner image: use an https link ending in .png, .jpg, .gif or .webp.")
+            fields["embed_image_url"] = url
+        if "extra_messages" in fields:
+            fields["extra_messages"] = list(fields["extra_messages"] or []) or None
+        if fields.get("enabled", cur.get("enabled")) and not fields.get("channel_id", cur.get("channel_id")):
+            raise ValidationError("Pick an announcement channel before turning birthdays on.")
+        await bs.set_config(guild_id, clone_id, **fields)
+
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Marks the premium welcome-card pack as purchased for this guild
         (whole-guild, one-time — see card_pack_unlocked's schema comment
@@ -12862,6 +12909,86 @@ class Database:
         if "enabled" in fields:
             await self.set_custom_role_feature_disabled(guild_id, not bool(fields["enabled"]), clone_id=clone_id)
         return await self.get_custom_role_config(guild_id, clone_id=clone_id)
+
+    async def get_ai_chat_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Web dashboard view of the server's AI chat settings: the reply switch (discord_ai_reply_config, on by
+        default) and the AI's name for this server (ai_guild_names; main bot and clones share it)."""
+        from modules import ai_features, ai_name
+        return {"reply_chat": bool(await ai_features.is_reply_chat_enabled(guild_id)),
+                "ai_name": await ai_name.get_name(guild_id)}
+
+    async def set_ai_chat_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        from modules import ai_features, ai_name
+        if "ai_name" in fields:
+            value, problem = ai_name.clean_name(str(fields["ai_name"] or ""))       # same cleaner as the Discord wizard
+            if problem:
+                from utils.dash_schema import ValidationError
+                raise ValidationError(problem)
+            # Same vote gate as Edit profile in Discord: one DiscordThings vote unlocks the whole server.
+            import config as _config
+            if value and getattr(_config, "BOT_PROFILE_VOTE_GATE", True):      # clearing the name is never gated
+                from modules import dthings_vote
+                try:
+                    unlocked = await self.is_bot_profile_unlocked(guild_id)
+                    if not unlocked and await dthings_vote._token() == "":
+                        unlocked = True                                             # no token: a vote can't be checked
+                except Exception:
+                    unlocked = True                                                 # a DB hiccup must not lock people out
+                if not unlocked:
+                    from utils.dash_schema import ValidationError
+                    raise ValidationError("Naming the AI is unlocked with one DiscordThings vote per server. Run the "
+                                          "bot profile editor in Discord once to vote, then come back.")
+            if not await ai_name.set_name(guild_id, value):
+                from utils.dash_schema import ValidationError
+                raise ValidationError("Couldn't save the AI's name right now. Try again in a moment.")
+        if "reply_chat" in fields:
+            await ai_features.set_reply_chat_enabled(guild_id, bool(fields["reply_chat"]))
+        return await self.get_ai_chat_config(guild_id, clone_id)
+    async def get_cat_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Web dashboard view of the Cat game setup (the same cat_guild_config row /catsetup writes).
+        The spawn channel list is shown as three slots; the 2nd and 3rd are Premium-only."""
+        from modules import cat_setup as cs
+        cfg = await cs.get_config(guild_id, clone_id)
+        slots = (list(cfg.channel_ids) + [None, None, None])[:3]
+        return {
+            "enabled": bool(cfg.enabled),
+            "channel_1": slots[0], "channel_2": slots[1], "channel_3": slots[2],
+            "pace_percent": cs.clamp_pace(cfg.pace_percent),
+            "active_start": cs.clamp_hour(cfg.active_start, 0) % 24,
+            "active_end": cs.clamp_hour(cfg.active_end, 24),
+            "announce_mode": cs.clamp_announce(cfg.announce_mode),
+            "fights_cross_server": bool(cfg.fights_cross_server),
+            "fights_show_server": bool(cfg.fights_show_server),
+        }
+
+    async def set_cat_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        """Only the keys passed are changed. Goes through the same helpers as the Discord wizard
+        (channel limit of the server's CURRENT plan, `after_change` scheduling, one save function)."""
+        from dataclasses import replace
+        from modules import cat_setup as cs
+        old = await cs.get_config(guild_id, clone_id)
+        changes: Dict[str, Any] = {}
+        for key in ("enabled", "fights_cross_server", "fights_show_server"):
+            if key in fields:
+                changes[key] = bool(fields[key])
+        if "pace_percent" in fields:
+            changes["pace_percent"] = cs.clamp_pace(fields["pace_percent"])
+        if "active_start" in fields:
+            changes["active_start"] = cs.clamp_hour(fields["active_start"], 0) % 24
+        if "active_end" in fields:
+            changes["active_end"] = cs.clamp_hour(fields["active_end"], 24)
+        if "announce_mode" in fields:
+            changes["announce_mode"] = cs.clamp_announce(fields["announce_mode"])
+        if any(k in fields for k in ("channel_1", "channel_2", "channel_3")):
+            slots = (list(old.channel_ids) + [None, None, None])[:3]
+            for i, key in enumerate(("channel_1", "channel_2", "channel_3")):
+                if key in fields:
+                    slots[i] = fields[key]
+            premium = await cs.is_premium(guild_id, clone_id)
+            changes["channel_ids"] = cs.clamp_channels([c for c in slots if c], cs.tier_for(premium))
+        new = cs.after_change(old, replace(old, **changes))
+        await cs.save_config(new)
+        return await self.get_cat_config(guild_id, clone_id)
 
     async def get_custom_role_panel(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[dict]:
         """Returns {"panel_channel_id", "panel_message_id"} (or None) —

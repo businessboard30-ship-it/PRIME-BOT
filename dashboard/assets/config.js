@@ -8,3 +8,13 @@ window.DASH_CONFIG = {
   INVITE_URL: "https://discord.com/api/oauth2/authorize?client_id=1534579332528472246&permissions=1100317453398&scope=bot%20applications.commands",
   SUPPORT_URL: "https://discord.gg/DYfajXrP9B"
 };
+
+// Start the TLS handshake with the API now, while the rest of the scripts are still loading,
+// so the first request (`me`) doesn't pay for it. connect-src already allows this origin.
+(function () {
+  try {
+    var l = document.createElement("link");
+    l.rel = "preconnect"; l.href = window.DASH_CONFIG.API_BASE; l.crossOrigin = "anonymous";
+    document.head.appendChild(l);
+  } catch (e) { /* purely an optimisation */ }
+})();
