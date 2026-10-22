@@ -217,6 +217,7 @@
     nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
     nav.appendChild(link(gpath(gid, "autoresponders"), "bulb", "Auto-responders", modId === "autoresponders"));
+    nav.appendChild(link(gpath(gid, "applications"), "scroll", "Applications", modId === "applications"));
     nav.appendChild(link(gpath(gid, "tickethistory"), "ticket", "Ticket history", modId === "tickethistory"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
@@ -761,6 +762,45 @@
         h("div", { class: "field" }, h("div", null, h("label", { text: "Reply" })), reply),
         h("div", { class: "action" }, h("div", { class: "grow" }), addBtn)),
       h("div", { class: "card rv" }, h("h2", { text: "Your auto-responders" }), note, list)]);
+  }
+
+  /* ---------- applications (read-only) ---------- */
+  function renderApplications(gid, main) {
+    var formsBox = h("div", { class: "audit" }), subsBox = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
+    var formSel = h("select", { "aria-label": "Form" }, [h("option", { value: "", text: "All forms" })]);
+    var statSel = h("select", { "aria-label": "Status" }, [["", "Any status"], ["pending", "Pending"], ["accepted", "Accepted"], ["declined", "Declined"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var last = null;
+    function loadSubs(append) {
+      var q = { guild_id: gid }; if (formSel.value) q.form_id = formSel.value; if (statSel.value) q.status = statSel.value; if (append && last) q.before = last;
+      api("application_submissions", q).then(function (r) {
+        if (!append) subsBox.textContent = "";
+        if (!r.submissions.length && !append) subsBox.appendChild(h("p", { class: "muted", text: "No applications." }));
+        r.submissions.forEach(function (sb) {
+          last = sb.id;
+          var det = h("div", null, sb.answers.map(function (a) { return h("div", null, h("b", { text: a.q }), h("p", { text: a.a, style: "white-space:pre-wrap;word-break:break-word" })); }));
+          subsBox.appendChild(h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: "User " + sb.user_id + " · " + sb.status }), h("p", { class: "help", text: fmtWhen(sb.created_at) }), det)));
+        });
+        moreBtn.hidden = !r.more;
+      }).catch(function (e) { subsBox.textContent = ""; subsBox.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    formSel.addEventListener("change", function () { last = null; loadSubs(false); });
+    statSel.addEventListener("change", function () { last = null; loadSubs(false); });
+    moreBtn.addEventListener("click", function () { loadSubs(true); });
+    api("applications", { guild_id: gid }).then(function (r) {
+      formsBox.textContent = "";
+      if (!r.forms.length) formsBox.appendChild(h("p", { class: "muted", text: "No application forms yet. Create one with /application in Discord." }));
+      r.forms.forEach(function (f) {
+        formSel.appendChild(h("option", { value: f.id, text: f.title }));
+        formsBox.appendChild(h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: f.title + " · " + f.status }),
+          h("p", { class: "help", text: f.pending + " waiting for review · " + f.questions.length + " question(s)" }))));
+      });
+    }).catch(function (e) { formsBox.textContent = ""; formsBox.appendChild(h("p", { class: "muted", text: e.message })); });
+    loadSubs(false);
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Applications" }),
+      h("p", { class: "muted", text: "Read-only. Create forms and accept or decline applicants in Discord (/application); answers are private to people who can manage this server." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card rv" }, h("h2", { text: "Forms" }), formsBox),
+      h("div", { class: "card rv" }, h("h2", { text: "Applications" }), h("div", { class: "action" }, formSel, statSel), subsBox, moreBtn)]);
   }
 
   /* ---------- analytics (read-only) ---------- */
@@ -1994,7 +2034,7 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, autoresponders: renderAutoresponders, tickethistory: renderTickets, billing: renderBilling };
+      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, autoresponders: renderAutoresponders, applications: renderApplications, tickethistory: renderTickets, billing: renderBilling };
       if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);

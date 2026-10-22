@@ -207,3 +207,23 @@ async def list_forms(guild_id: int, clone_id) -> List[dict]:
             "WHERE f.guild_id = $1 AND f.clone_id IS NOT DISTINCT FROM $2 AND f.status <> 'draft' "
             "ORDER BY f.id DESC LIMIT 25", guild_id, clone_id)
     return [_form(r) for r in rows]
+
+
+async def list_submissions(guild_id: int, clone_id, form_id: Optional[int] = None, status: Optional[str] = None,
+                           before: Optional[int] = None, limit: int = 31) -> List[dict]:
+    """Newest first, scoped to this server AND this bot (via the form's clone_id). Read-only."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT s.* FROM discord_application_submissions s JOIN discord_application_forms f ON f.id = s.form_id "
+            "WHERE s.guild_id = $1 AND f.clone_id IS NOT DISTINCT FROM $2 "
+            "AND ($3::bigint IS NULL OR s.form_id = $3) AND ($4::text IS NULL OR s.status = $4) "
+            "AND ($5::bigint IS NULL OR s.id < $5) ORDER BY s.id DESC LIMIT $6",
+            guild_id, clone_id, form_id, status, before, limit)
+    out = []
+    for r in rows:
+        d = dict(r)
+        a = d.get("answers")
+        d["answers"] = json.loads(a) if isinstance(a, str) else (a or [])
+        out.append(d)
+    return out

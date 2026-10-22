@@ -937,3 +937,28 @@ def autoresponder_row_view(row: dict) -> dict:
     return {"id": str(row["id"]), "trigger": str(row.get("trigger") or "")[:AUTORESPONDER_TRIGGER_MAX],
             "response": str(row.get("response") or "")[:AUTORESPONDER_RESPONSE_MAX],
             "created_by": str(row["created_by"]) if row.get("created_by") else None}
+
+
+# ───────────────────────── applications (read-only) ─────────────────────────
+
+APPLICATION_STATUSES = ("pending", "accepted", "declined")
+APPLICATION_ANSWER_MAX = 1000
+
+
+def application_form_view(f: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(f["id"]), "title": str(f.get("title") or "")[:100], "status": f.get("status"),
+            "pending": int(f.get("pending") or 0), "questions": [str(q)[:100] for q in (f.get("questions") or [])][:10],
+            "review_channel_id": str(f["review_channel_id"]) if f.get("review_channel_id") else None,
+            "accept_role_id": str(f["accept_role_id"]) if f.get("accept_role_id") else None,
+            "updated_at": iso(f.get("updated_at"))}
+
+
+def application_submission_view(r: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(r["id"]), "form_id": str(r["form_id"]), "user_id": str(r["user_id"]),
+            "status": r.get("status") if r.get("status") in APPLICATION_STATUSES else "pending",
+            "answers": [{"q": str(a.get("q", ""))[:100], "a": str(a.get("a", ""))[:APPLICATION_ANSWER_MAX]}
+                        for a in (r.get("answers") or []) if isinstance(a, dict)][:10],
+            "decided_by": str(r["decided_by"]) if r.get("decided_by") else None,
+            "created_at": iso(r.get("created_at")), "decided_at": iso(r.get("decided_at"))}

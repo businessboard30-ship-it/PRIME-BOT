@@ -23,6 +23,7 @@ Routes (all on /api/dash):
   GET  ?action=meta&guild_id            -> channels and roles
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
+  GET  ?action=applications&guild_id -> forms + pending counts (read-only); ?action=application_submissions&guild_id[&form_id&status&before] -> applicants' answers (Manage Server only, read-only; accept/decline stays in Discord)
   GET  ?action=autoresponders&guild_id / POST {action: autoresponder_add|autoresponder_delete, guild_id, trigger, response|id} -> same list as /autoresponder (audited, 30 writes/min, max 25, no mass mentions)
   GET  ?action=announcements&guild_id   -> upcoming /announce posts for this server (same page as Scheduled messages)
   POST {action: announcement_add, guild_id, channel_id, content, mode, minutes|time_utc} / {action: announcement_delete, guild_id, id} -> audited, 30 writes/min
@@ -1523,6 +1524,26 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(404, "That schedule no longer exists.")
         await _schedule_audit(sess, gid, "Scheduled message removed", f"#{sid}")
         raise _Reply(200, {"ok": True})
+    if method == "GET" and action == "applications":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        _owner_rate(sess, "applications_read", 60, 60)
+        rows = await db.get_application_forms(gid, _cid())
+        raise _Reply(200, {"ok": True, "forms": [S.application_form_view(r) for r in rows[:25]]})
+
+    if method == "GET" and action == "application_submissions":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        _owner_rate(sess, "application_submissions_read", 60, 60)
+        status = q("status")
+        if status and status not in S.APPLICATION_STATUSES:
+            _fail(400, "Unknown status.")
+        try:
+            form_id = int(q("form_id")) if q("form_id") else None
+            before = int(q("before")) if q("before") else None
+        except ValueError:
+            _fail(400, "Invalid request.")
+        rows = await db.list_application_submissions(gid, _cid(), form_id, status or None, before, 31)
+        raise _Reply(200, {"ok": True, "submissions": [S.application_submission_view(r) for r in rows[:30]], "more": len(rows) > 30})
+
     if method == "GET" and action == "autoresponders":
         gid = await _authorised_guild(sess, q("guild_id"))
         _owner_rate(sess, "autoresponders_read", 60, 60)
