@@ -49,7 +49,7 @@ def kinds(v):
 def test_defaults_and_bad_values():
     o = wc.parse_ultra_options(None)
     assert o["frame"] == "none" and o["frame_color"] == "white"
-    o = wc.parse_ultra_options({"frame": "polaroid", "frame_color": "purple"})
+    o = wc.parse_ultra_options({"frame": "sparkly", "frame_color": "purple"})
     assert o["frame"] == "none" and o["frame_color"] == "white"
     o = wc.parse_ultra_options({"frame": "double", "frame_color": "gold"})
     assert o["frame"] == "double" and o["frame_color"] == "gold"
@@ -155,7 +155,7 @@ def test_frame_button_cycles_and_wraps(monkeypatch):
                  {"ultra_pack_unlocked": True, "ultra_card_json": json.dumps({"frame": "medium"})})
     assert json.loads(fake.writes[-1]["ultra_card_json"])["frame"] == "thick"
     fake = press(monkeypatch, cc.CardFrameButton(1, None, 42), True,
-                 {"ultra_pack_unlocked": True, "ultra_card_json": json.dumps({"frame": "glow"})})
+                 {"ultra_pack_unlocked": True, "ultra_card_json": json.dumps({"frame": "film"})})
     assert json.loads(fake.writes[-1]["ultra_card_json"])["frame"] == "none"
 
 

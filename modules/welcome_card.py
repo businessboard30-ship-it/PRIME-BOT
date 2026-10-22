@@ -472,6 +472,7 @@ ULTRA_DEFAULTS = {
     # Optional style extras — all OFF by default so an untouched card keeps
     # the classic look; the wizard's "Style extras" menu turns them on.
     "ring": False,             # colored frame around the avatar
+    "avatar_glow": False,      # soft halo behind the avatar in the text color (studio 8a)
     "soft_edge": False,        # banner fades into the image instead of a hard edge
     "shadow": False,           # soft shadow under the text
     "big_name": False,         # larger username
@@ -502,7 +503,7 @@ ULTRA_DEFAULTS = {
     # Welcome Card Studio phase 3d (Premium/Plus only): which cell of a 3x3 grid the text block sits in; the nudge adds on top.
     "text_pos": "auto",        # key of ULTRA_TEXT_POS; "auto" = wherever the layout puts it (the classic look)
 }
-ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast")
+ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "avatar_glow")
 ULTRA_LAYOUTS = ("banner", "centered")
 ULTRA_ZOOMS = (100, 125, 150, 200)
 ULTRA_PAN_LIMIT = 100
@@ -521,7 +522,7 @@ ULTRA_TEXT_POS = {            # grid cell -> (row, column)
 ULTRA_TEXT_POS_PAD = 60      # how far from the card edge a grid cell puts the text block
 ULTRA_NUDGE_MARGIN = 24      # the text block never gets closer than this to the card edge
 ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
-ULTRA_FRAMES = ("none", "thin", "medium", "thick", "double", "rounded", "glow")   # soft glow added in 4f with the owner's OK; polaroid / film strip: later
+ULTRA_FRAMES = ("none", "thin", "medium", "thick", "double", "rounded", "glow", "polaroid", "film")   # soft glow added in 4f with the owner's OK; polaroid / film strip: later
 ULTRA_FOCUS = ("center", "top", "bottom", "left", "right", "auto")   # "auto" = smart crop (keeps the busiest part)
 # Bundled OFL fonts (assets/fonts). "classic" = the card's normal font.
 ULTRA_FONTS = {
@@ -929,7 +930,50 @@ def _draw_frame(img: Image.Image, frame: str, color) -> Image.Image:
         mask = Image.new("L", (W, H), 0)
         ImageDraw.Draw(mask).rounded_rectangle((border, border, W - 1 - border, H - 1 - border), radius=radius, fill=255)
         img = Image.composite(img, Image.new("RGBA", (W, H), col), mask)
+    elif frame == "polaroid":   # studio 8a: the finished card shrinks into a photo-print border, size unchanged
+        return _shrink_into_border(img, color, side=36, top=36, bottom=110, line=True)
+    elif frame == "film":   # studio 8a: dark film strip with sprocket holes left and right (holes use the frame color)
+        return _film_strip(img, color)
     return img
+
+
+def _shrink_into_border(img: Image.Image, color, side: int, top: int, bottom: int, line: bool = False) -> Image.Image:
+    """Studio 8a: scale the whole card down (same proportions, so nothing is cut or covered) and paste it inside a
+    border of `color`. Output has exactly the input size. Never raises: on any error the card is returned as is."""
+    try:
+        W, H = img.size
+        aw, ah = max(1, W - 2 * side), max(1, H - top - bottom)
+        s = min(aw / W, ah / H)
+        nw, nh = max(1, int(W * s)), max(1, int(H * s))
+        inner = img.convert("RGBA").resize((nw, nh), Image.LANCZOS)
+        out = Image.new("RGBA", (W, H), tuple(color) + (255,))
+        x, y = side + (aw - nw) // 2, top
+        out.paste(inner, (x, y))
+        if line:
+            ImageDraw.Draw(out).rectangle((x - 1, y - 1, x + nw, y + nh), outline=(0, 0, 0, 60), width=2)
+        return out
+    except Exception:
+        logger.exception("[welcome-studio] border frame failed")
+        return img
+
+
+def _film_strip(img: Image.Image, color) -> Image.Image:
+    """Studio 8a: film look. Dark strip with sprocket holes on both sides; the card shrinks to fit between them."""
+    try:
+        W, H = img.size
+        strip, vpad = 72, 18
+        out = _shrink_into_border(img, (24, 24, 24), side=strip, top=vpad, bottom=vpad)
+        d = ImageDraw.Draw(out)
+        hole = tuple(color) + (255,)
+        y = 22
+        while y + 34 < H:
+            for hx in (strip // 2 - 13, W - strip // 2 - 13):
+                d.rounded_rectangle((hx, y, hx + 26, y + 34), radius=7, fill=hole)
+            y += 70
+        return out
+    except Exception:
+        logger.exception("[welcome-studio] film frame failed")
+        return img
 
 
 def _zoom_pan_box(box, src_w: int, src_h: int, zoom: int, pan_x: int, pan_y: int):
@@ -1104,6 +1148,16 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         color = ULTRA_TEXT_COLORS[opts["text_color"]]
 
     def _paste_avatar(canvas, ax, ay):
+        if opts["avatar_glow"]:   # studio 8a: a soft halo in the text color, drawn under the avatar
+            try:
+                pad = 44
+                big = avatar_dim + pad * 2
+                halo = Image.new("L", (big, big), 0)
+                shape_fn(ImageDraw.Draw(halo), (pad - 6, pad - 6, pad + avatar_dim + 6, pad + avatar_dim + 6), 190)
+                halo = halo.filter(ImageFilter.GaussianBlur(16))
+                canvas.paste(Image.new("RGBA", (big, big), tuple(color) + (255,)), (ax - pad, ay - pad), halo)
+            except Exception:
+                logger.exception("[welcome-studio] avatar glow failed")
         if opts["ring"]:
             ring_w = 8
             big = avatar_dim + ring_w * 2

@@ -95,7 +95,7 @@ def test_new_fonts_are_bundled_licensed_labelled_and_render():
 
 
 def test_labels_and_cycle_order():
-    assert cc._FRAME_LABELS["glow"] == "Soft glow" and list(cc._FRAME_LABELS)[-1] == "glow"
+    assert cc._FRAME_LABELS["glow"] == "Soft glow" and list(cc._FRAME_LABELS)[6] == "glow"
     assert cc._EFFECT_LABELS["sparkle"] == "Sparkle"
     assert "Glow" in cc.CardOutlineButton(1, None, 42, "glow").item.label
     assert list(wc.ULTRA_OUTLINES)[-1] == "glow"

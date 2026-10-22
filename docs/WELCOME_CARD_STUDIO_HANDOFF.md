@@ -663,3 +663,16 @@ No table, no migration (7a has them). All on the Send step, next to the saved-de
 ## Next (updated after 7b)
 1. Owner reviews / merges in order: #448 (avatar-shape fix), #449 (7a), the 7b PR. Staging check: migrations 078 to 083, then Save / Schedule / join on the day.
 2. Then polaroid / film strip frames, avatar glow, preview-as-member and per-picture preview, render-cost audit, per-picture overrides.
+
+
+## Phase 8a (2026-10-22): photo-print frame, film-strip frame, avatar glow
+
+Built on top of the 7b branch (so the stack is #448 > #449 > #450 > this). No table, no migration.
+
+- **Frames `polaroid` ("Photo print") and `film` ("Film strip")** are new values at the end of the existing Frame cycle. They do NOT draw over the card: the finished card is scaled down (same proportions) and pasted inside the border, so nothing is covered or cut and the card size is unchanged (`_shrink_into_border`, `_film_strip`). Photo print: 36 px border, 110 px bottom, border in the frame color. Film strip: dark strip, holes in the frame color. Never raise; on error the card is returned as is.
+- **Avatar glow** = new bool `avatar_glow` (in `ULTRA_BOOL_KEYS`, `STUDIO_KEYS`, `STUDIO_DEFAULTS`). A soft halo in the text color under the avatar, drawn inside `_paste_avatar` so it follows every layout and avatar spot. It lives in the existing **Style extras** select on the Text step (`Avatar glow`), so **no new component** (Look and Text steps stay at their old counts). Reset this step on Text clears it. Premium/Plus at save and join, Ultra-only previews in memory.
+- Tests: `tests/unit/test_welcome_studio_phase8a.py` (10). Two older pins updated (3b parser test used `polaroid` as the "unsupported" example; 3b wrap test and 4f cycle-end test now point at the new last frame).
+
+### Known gaps in 8a
+- Not tested live (phone taps). Looked at by eye on a test card only.
+- A photo-print/film card has a smaller picture area (that is the cost of never covering text).

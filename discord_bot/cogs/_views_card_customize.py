@@ -336,7 +336,7 @@ _STEP_HINTS = {
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
     "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos", "effect", "brightness"),
-    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "heading_font", "text_outline", "text_pos"),
+    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "avatar_glow", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "heading_font", "text_outline", "text_pos"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
 _MORE_STATE: dict = {}       # (guild, clone, user) -> (set of steps showing "More controls", monotonic ts)
@@ -932,6 +932,7 @@ class CardColorSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Sele
 
 _STYLE_EXTRAS = {
     "ring": ("Avatar ring", "Colored frame around the avatar"),
+    "avatar_glow": ("Avatar glow", "Soft halo behind the avatar (Premium)"),
     "soft_edge": ("Soft banner edge", "Banner fades into your image"),
     "shadow": ("Text shadow", "Soft shadow so text pops on busy images"),
     "big_name": ("Large username", "Bigger name, smaller heading emphasis"),
@@ -1941,7 +1942,7 @@ _PAN_STEP = 10
 _NUDGE_STEP = 20
 _ZOOM_ORDER = (100, 125, 150, 200)
 _TEXT_SIZE_ORDER = ("small", "medium", "large", "xl")
-_FRAME_LABELS = {"none": "None", "thin": "Thin", "medium": "Medium", "thick": "Thick", "double": "Double", "rounded": "Rounded", "glow": "Soft glow"}
+_FRAME_LABELS = {"none": "None", "thin": "Thin", "medium": "Medium", "thick": "Thick", "double": "Double", "rounded": "Rounded", "glow": "Soft glow", "polaroid": "Photo print", "film": "Film strip"}
 _TEXT_SIZE_LABELS = {"small": "Small", "medium": "Medium", "large": "Large", "xl": "Extra large"}
 
 
