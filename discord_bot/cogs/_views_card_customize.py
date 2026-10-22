@@ -336,7 +336,7 @@ _STEP_HINTS = {
 _STEP_RESET_FIELDS = {
     "bg": ("ratio", "dim", "focus"),
     "layout": ("layout", "banner", "avatar_side", "zoom", "pan_x", "pan_y", "frame", "frame_color", "avatar_pos", "effect", "brightness"),
-    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "heading_font", "text_outline", "text_pos"),
+    "text": ("text_color", "font", "bracket", "heading", "show_number", "ring", "avatar_glow", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "text_size", "text_dx", "text_dy", "heading_font", "text_outline", "text_pos"),
 }
 _STEP_RESET_SHAPE = {"layout": "circle"}
 _MORE_STATE: dict = {}       # (guild, clone, user) -> (set of steps showing "More controls", monotonic ts)
@@ -417,6 +417,7 @@ def _caption(unlocked: bool, note, tv_ok: bool, config=None) -> str:
     return "\n".join(lines)
 
 
+_PREVIEW_AS: dict = {}       # (guild, clone, user) -> {"slot", "name", "number"}: what the editor preview pretends (studio 8b), memory only
 _ROTATION_DRAFT: dict = {}   # (guild, clone, user) -> rotation mode picked in preview by a server without Premium (memory only, never saved)
 
 
@@ -546,7 +547,12 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
                 manage_row.add_item(CardPictureReplaceButton(guild_id, clone_id, invoker_id))
                 manage_row.add_item(CardPictureRemoveButton(guild_id, clone_id, invoker_id))
                 manage_row.add_item(CardPictureFirstButton(guild_id, clone_id, invoker_id))
+                manage_row.add_item(CardPictureTweakButton(guild_id, clone_id, invoker_id))   # studio 8c
             container.add_item(manage_row)
+        if more:   # studio 8b: preview another picture or member (own row; the manage row above can be full)
+            pv_row = discord.ui.ActionRow()
+            pv_row.add_item(CardPreviewAsButton(guild_id, clone_id, invoker_id))
+            container.add_item(pv_row)
     elif tab == "layout":
         for select_cls in (CardLayoutSelect, CardBannerSelect, CardSideSelect) + ((CardShapeSelect,) if more else ()):
             _select_row(select_cls)
@@ -655,21 +661,24 @@ async def _avatar_bytes(session: aiohttp.ClientSession, user) -> bytes:
     return data
 
 
-async def _gallery_preview_bytes(session, client, guild_id: int, clone_id):
+async def _gallery_preview_pick(session, client, guild_id: int, clone_id, slot=None):
     """Phase 2e: the editor preview shows gallery picture 1 for Premium/Plus servers (the real join rotates; the preview
     stays stable so the admin can judge the look). None for everyone else, for an empty gallery, or on any error, so the
-    old single picture path runs exactly as before. Never raises."""
+    old single picture path runs exactly as before. Studio 8c: returns (bytes, that picture's own tweak). Never raises."""
     try:
         from modules.welcome_studio import studio_unlocked
         if client is None or not await studio_unlocked(guild_id, clone_id):
-            return None
+            return None, {}
         from discord_bot.cogs.welcome import _gallery_slot_url, _fetch_custom_bg_bytes
         rows = [r for r in await db.gallery_list(guild_id, clone_id) if not r.get("needs_new_picture")]
+        if slot is not None:   # studio 8b: the admin asked to preview one picture; only that one (nothing else is tried)
+            rows = [r for r in rows if int(r.get("slot") or 0) == int(slot)]
         for row in rows[:3]:
             key = f"gal:{guild_id}:{clone_id}:{row.get('message_id')}"
             hit = _BG_CACHE.get(key)
+            tweak = _wg_clean_override(row.get("options_override_json"))
             if hit is not None and time.monotonic() - hit[0] < _BG_TTL:
-                return hit[1]
+                return hit[1], tweak
             url, gone = await _gallery_slot_url(client, row)
             if gone or not url:
                 continue
@@ -677,11 +686,21 @@ async def _gallery_preview_bytes(session, client, guild_id: int, clone_id):
             if data is not None:
                 _BG_CACHE[key] = (time.monotonic(), data)
                 _trim(_BG_CACHE, _BG_MAX)
-                return data
-        return None
+                return data, tweak
+        return None, {}
     except Exception:
         logger.exception("[cardwz] gallery preview failed for guild %s", guild_id)
-        return None
+        return None, {}
+
+
+def _wg_clean_override(raw) -> dict:
+    from modules import welcome_gallery as wg
+    return wg.clean_override(raw)
+
+
+async def _gallery_preview_bytes(session, client, guild_id: int, clone_id, slot=None):
+    """Phase 2e: just the picture of `_gallery_preview_pick`. None when there is nothing to show. Never raises."""
+    return (await _gallery_preview_pick(session, client, guild_id, clone_id, slot=slot))[0]
 
 
 async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = False):
@@ -693,10 +712,12 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = 
     real_cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
     unlocked = bool(real_cfg.get("ultra_pack_unlocked"))
     cfg = _effective_config(real_cfg, guild_id, clone_id, user.id)
+    pv = _PREVIEW_AS.get((guild_id, clone_id, user.id)) or {}   # studio 8b
+    pic_tweak = {}   # studio 8c: the shown picture's own crop / text color (Premium/Plus gallery pictures only)
     async with aiohttp.ClientSession() as session:
         avatar = await _avatar_bytes(session, user)
         if unlocked:
-            bg_bytes = await _gallery_preview_bytes(session, client, guild_id, clone_id)
+            bg_bytes, pic_tweak = await _gallery_preview_pick(session, client, guild_id, clone_id, slot=pv.get("slot"))
             url = str(cfg.get("custom_background_url") or "")
             hit = _BG_CACHE.get(url)
             if bg_bytes is not None:
@@ -716,14 +737,18 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = 
         bg_bytes = _sample_backdrop()
     card_bytes, _fmt = await asyncio.to_thread(
         render_welcome_card,
-        avatar, user.display_name, f"Member #{guild.member_count}",
+        avatar, pv.get("name") or user.display_name, f"Member #{pv.get('number') or guild.member_count}",
         avatar_shape=cfg.get("avatar_shape", "circle"),
         guild_name=guild.name, use_template=True,
         custom_background_bytes=bg_bytes,
-        ultra_options=cfg.get("ultra_card_json"),
+        ultra_options=({**parse_ultra_options(cfg.get("ultra_card_json")), **pic_tweak} if pic_tweak
+                       else cfg.get("ultra_card_json")),
     )
     png = await asyncio.to_thread(_tv_finish, card_bytes, not unlocked, full)
     note = "Sample backdrop \u2014 tap Upload image to use your own" if using_sample else "Your background"
+    tag = _preview_as_line(pv)
+    if tag:
+        note = f"{note} \u00b7 {tag}"
     return png, note
 
 
@@ -932,6 +957,7 @@ class CardColorSelect(_OptionSelectMixin, discord.ui.DynamicItem[discord.ui.Sele
 
 _STYLE_EXTRAS = {
     "ring": ("Avatar ring", "Colored frame around the avatar"),
+    "avatar_glow": ("Avatar glow", "Soft halo behind the avatar (Premium)"),
     "soft_edge": ("Soft banner edge", "Banner fades into your image"),
     "shadow": ("Text shadow", "Soft shadow so text pops on busy images"),
     "big_name": ("Large username", "Bigger name, smaller heading emphasis"),
@@ -1534,6 +1560,179 @@ class CardPictureNumberModal(discord.ui.Modal):
         await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
 
 
+# ── studio 8c: per-picture tweaks (own crop and text color for one picture) ─
+
+_KEEP = "keep"
+
+
+def _tweak_line(slot: int, tweak: dict) -> str:
+    if not tweak:
+        return f"Picture {slot} follows the card's look again."
+    bits = []
+    if tweak.get("focus"):
+        bits.append("crop: " + _FOCUS_LABELS.get(tweak["focus"], tweak["focus"]).split(":", 1)[-1].strip().split(" (")[0])
+    if tweak.get("text_color"):
+        bits.append("text color: " + _COLOR_LABELS.get(tweak["text_color"], tweak["text_color"]).split(" (")[0].lower())
+    return f"Picture {slot} now has its own " + " and ".join(bits) + "."
+
+
+class CardPictureTweakModal(discord.ui.Modal, title="Tweak one picture"):
+    """Own crop and own text color for ONE gallery picture (for example a picture too bright for white text).
+    Everything else follows the card. Stored only for Premium/Plus (checked on the server)."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        super().__init__()
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        from modules import welcome_gallery as wg
+        self.number = discord.ui.TextInput(style=discord.TextStyle.short, required=True, max_length=2, placeholder=f"1 to {wg.MAX_PICTURES}")
+        self.focus = discord.ui.Select(options=[discord.SelectOption(label="Same as the card", value=_KEEP, default=True)] + [
+            discord.SelectOption(label=lbl[:100], value=k) for k, lbl in _FOCUS_LABELS.items()])
+        self.color = discord.ui.Select(options=[discord.SelectOption(label="Same as the card", value=_KEEP, default=True)] + [
+            discord.SelectOption(label=lbl[:100], value=k) for k, lbl in _COLOR_LABELS.items()])
+        self.add_item(discord.ui.Label(text="Picture number", description="Pick the picture to tweak.", component=self.number))
+        self.add_item(discord.ui.Label(text="Crop for this picture", description="Which part of the picture stays on the card.", component=self.focus))
+        self.add_item(discord.ui.Label(text="Text color for this picture", description="Both \"Same as the card\" = remove this picture's tweak.", component=self.color))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from modules import welcome_gallery as wg
+        from modules.welcome_studio import studio_unlocked, LOCKED_LINE
+        try:
+            n = int(str(self.number.value or "").strip())
+        except ValueError:
+            n = 0
+        if not 1 <= n <= wg.MAX_PICTURES:
+            await interaction.followup.send(f"\u26A0\uFE0F Type a number from 1 to {wg.MAX_PICTURES}.", ephemeral=True)
+            return
+        if not await studio_unlocked(self.guild_id, self.clone_id):
+            await interaction.followup.send(f"\U0001F512 Preview only: {LOCKED_LINE} Own crop and text color per picture are stored with Premium.", ephemeral=True)
+            return
+        pick = {"focus": (self.focus.values or [_KEEP])[0], "text_color": (self.color.values or [_KEEP])[0]}
+        tweak = wg.clean_override({k: v for k, v in pick.items() if v != _KEEP})
+        try:
+            done = await db.gallery_set_override(self.guild_id, self.clone_id, n, wg.override_json(tweak))
+        except Exception:
+            logger.exception("[cardwz] picture tweak failed for guild %s", self.guild_id)
+            await interaction.followup.send("Couldn't do that just now. Try again in a moment.", ephemeral=True)
+            return
+        if not done:
+            await interaction.followup.send(f"There is no picture {n} in the gallery.", ephemeral=True)
+            return
+        _PREVIEW_AS.setdefault((self.guild_id, self.clone_id, self.invoker_id), {})
+        pv = _PREVIEW_AS[(self.guild_id, self.clone_id, self.invoker_id)]
+        if not any(pv.values()):
+            _PREVIEW_AS.pop((self.guild_id, self.clone_id, self.invoker_id), None)
+            pv = {}
+        # show the picture that was just tweaked, so the admin sees the result right away
+        _PREVIEW_AS[(self.guild_id, self.clone_id, self.invoker_id)] = {**pv, "slot": n}
+        _trim(_PREVIEW_AS, _STATE_MAX)
+        await interaction.followup.send(_tweak_line(n, tweak) + " The preview shows it.", ephemeral=True)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardPictureTweakButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("pictweak")):
+    """Studio 8c. Open to every server; the modal's write is Premium/Plus only."""
+    FIELD, LABEL = "pictweak", "\U0001F39A\uFE0F Tweak a picture"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        try:
+            await interaction.response.send_modal(CardPictureTweakModal(self.guild_id, self.clone_id, self.invoker_id))
+        except discord.HTTPException as e:
+            if e.code != 40060:
+                raise
+
+
+# ── studio 8b: preview as another picture / another member ───────────────
+
+def _preview_as_line(pv: dict) -> str:
+    """Plain words for what the preview is pretending, or an empty string."""
+    bits = []
+    if pv.get("slot"):
+        bits.append(f"picture {pv['slot']}")
+    if pv.get("name") or pv.get("number"):
+        who = pv.get("name") or "you"
+        bits.append(f"as {who}" + (f" #{pv['number']}" if pv.get("number") else ""))
+    return ("Previewing " + ", ".join(bits)) if bits else ""
+
+
+class CardPreviewAsModal(discord.ui.Modal, title="Preview as\u2026"):
+    """Only changes the editor preview (and Send me a test). Nothing is saved, the live card is untouched.
+    All three fields blank = back to the normal preview."""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id):
+        super().__init__()
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        cur = _PREVIEW_AS.get((guild_id, clone_id, invoker_id)) or {}
+        from modules import welcome_gallery as wg
+        self.slot = discord.ui.TextInput(style=discord.TextStyle.short, required=False, max_length=2,
+                                         placeholder=f"1 to {wg.MAX_PICTURES}", default=str(cur.get("slot") or "") or None)
+        self.name = discord.ui.TextInput(style=discord.TextStyle.short, required=False, max_length=32,
+                                         placeholder="A long name, to check it fits", default=cur.get("name") or None)
+        self.number = discord.ui.TextInput(style=discord.TextStyle.short, required=False, max_length=7,
+                                           placeholder="For example 1200", default=str(cur.get("number") or "") or None)
+        self.add_item(discord.ui.Label(text="Picture number", description="Which gallery picture to show (Premium).", component=self.slot))
+        self.add_item(discord.ui.Label(text="Member name", description="Show the card for this name instead of yours.", component=self.name))
+        self.add_item(discord.ui.Label(text="Member number", description="Show this MEMBER # on the card.", component=self.number))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        from modules import welcome_gallery as wg
+        raw_slot, raw_num = str(self.slot.value or "").strip(), str(self.number.value or "").strip()
+        name = " ".join(str(self.name.value or "").split())[:32]
+        slot = number = None
+        if raw_slot:
+            try:
+                slot = int(raw_slot)
+            except ValueError:
+                slot = 0
+            if not 1 <= slot <= wg.MAX_PICTURES:
+                await interaction.followup.send(f"\u26A0\uFE0F Picture number: type 1 to {wg.MAX_PICTURES}, or leave it empty.", ephemeral=True)
+                return
+        if raw_num:
+            try:
+                number = int(raw_num)
+            except ValueError:
+                number = 0
+            if not 1 <= number <= 9_999_999:
+                await interaction.followup.send("\u26A0\uFE0F Member number: type a whole number from 1 up, or leave it empty.", ephemeral=True)
+                return
+        key = (self.guild_id, self.clone_id, self.invoker_id)
+        if slot is None and number is None and not name:
+            _PREVIEW_AS.pop(key, None)
+        else:
+            if slot is not None:
+                try:
+                    have = {int(r.get("slot") or 0) for r in await db.gallery_list(self.guild_id, self.clone_id)}
+                except Exception:
+                    have = {slot}
+                if slot not in have:
+                    await interaction.followup.send(
+                        f"There is no picture {slot} in the gallery, so the preview keeps the normal picture. "
+                        "(A server without Premium previews its own draft picture only.)", ephemeral=True)
+                    slot = None
+            _PREVIEW_AS[key] = {"slot": slot, "name": name or None, "number": number}
+            _trim(_PREVIEW_AS, _STATE_MAX)
+            if slot is None and number is None and not name:
+                _PREVIEW_AS.pop(key, None)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class CardPreviewAsButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("previewas")):
+    """Studio 8b. Open to every server (preview only, nothing stored)."""
+    FIELD, LABEL = "previewas", "\U0001F441\uFE0F Preview as\u2026"
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        try:
+            await interaction.response.send_modal(CardPreviewAsModal(self.guild_id, self.clone_id, self.invoker_id))
+        except discord.HTTPException as e:
+            if e.code != 40060:
+                raise
+
+
 # ── saved designs (studio 5b) ─────────────────────────────────────────────
 
 def _designs_line(studio: dict | None) -> str | None:
@@ -1941,7 +2140,7 @@ _PAN_STEP = 10
 _NUDGE_STEP = 20
 _ZOOM_ORDER = (100, 125, 150, 200)
 _TEXT_SIZE_ORDER = ("small", "medium", "large", "xl")
-_FRAME_LABELS = {"none": "None", "thin": "Thin", "medium": "Medium", "thick": "Thick", "double": "Double", "rounded": "Rounded", "glow": "Soft glow"}
+_FRAME_LABELS = {"none": "None", "thin": "Thin", "medium": "Medium", "thick": "Thick", "double": "Double", "rounded": "Rounded", "glow": "Soft glow", "polaroid": "Photo print", "film": "Film strip"}
 _TEXT_SIZE_LABELS = {"small": "Small", "medium": "Medium", "large": "Large", "xl": "Extra large"}
 
 
@@ -2398,7 +2597,7 @@ DYNAMIC_ITEMS = (
     CardMoreButton, CardUndoButton, CardStepResetButton, CardTestSendButton,
     CardRotationSelect,
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
-    CardPictureReplaceButton,
+    CardPictureReplaceButton, CardPreviewAsButton, CardPictureTweakButton,
     CardPanLeftButton, CardPanUpButton, CardPanDownButton, CardPanRightButton, CardZoomButton, CardTextSizeButton,
     CardFrameButton, CardFrameColorButton, CardAvatarPosButton, CardEffectButton, CardHeadingFontButton, CardOutlineButton, CardBrightnessButton,
     CardDesignSelect, CardDesignSaveButton, CardDesignRenameButton, CardDesignDeleteButton, CardDesignScheduleButton,

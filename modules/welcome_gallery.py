@@ -125,3 +125,34 @@ def note_upload(guild_id: int, clone_id: Optional[int], now: Optional[float] = N
                 _RECENT.pop(k, None)
     except Exception:
         pass
+
+
+# ---- Phase 8c: per-picture tweaks (own crop and text color for one picture) ----
+OVERRIDE_KEYS = ("focus", "text_color")
+
+
+def clean_override(raw) -> dict:
+    """Validate a stored per-picture tweak (JSON text or dict). Only a known crop focus and a known text color survive;
+    anything else is dropped, so a bad row can never change or break a card. Never raises."""
+    try:
+        import json
+        if isinstance(raw, (str, bytes)):
+            raw = json.loads(raw)
+        if not isinstance(raw, dict):
+            return {}
+        from modules.welcome_card import ULTRA_FOCUS, ULTRA_TEXT_COLORS, ULTRA_AVATAR_COLOR
+        out = {}
+        if raw.get("focus") in ULTRA_FOCUS:
+            out["focus"] = raw["focus"]
+        if raw.get("text_color") in ULTRA_TEXT_COLORS or raw.get("text_color") == ULTRA_AVATAR_COLOR:
+            out["text_color"] = raw["text_color"]
+        return out
+    except Exception:
+        return {}
+
+
+def override_json(d) -> Optional[str]:
+    """What gets stored: JSON of the cleaned tweak, or None when there is nothing to store."""
+    import json
+    c = clean_override(d)
+    return json.dumps(c, sort_keys=True) if c else None

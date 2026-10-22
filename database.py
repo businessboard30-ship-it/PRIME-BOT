@@ -12552,6 +12552,17 @@ class Database:
         except Exception:
             logger.exception("[welcome-gallery] flag failed for guild %s slot %s", guild_id, slot)
 
+    async def gallery_set_override(self, guild_id: int, clone_id: Optional[int], slot: int, override_json: Optional[str]) -> bool:
+        """Studio 8c: store (or clear, with None) the own crop / text color of one picture. Touches only that column of
+        that slot. True when the slot exists. The picture itself is never touched."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE discord_welcome_backgrounds SET options_override_json = $4 "
+                "WHERE guild_id = $1 AND clone_key = $2 AND slot = $3 RETURNING id",
+                int(guild_id), -1 if clone_id is None else int(clone_id), int(slot), override_json)
+        return row is not None
+
     async def gallery_next_counter(self, guild_id: int, clone_id: Optional[int] = None) -> int:
         """Atomic round-robin counter for 'in order' mode: returns the value BEFORE the increment. Never raises."""
         try:

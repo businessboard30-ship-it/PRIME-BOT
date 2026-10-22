@@ -130,6 +130,6 @@ def test_no_bot_means_old_path(setup):
 
 def test_only_the_real_join_uses_the_gallery():
     src = (ROOT / "discord_bot/cogs/welcome.py").read_text()
-    assert src.count("_gallery_bg_bytes_for_render(") == 2      # the definition + on_member_join
+    assert src.count("_gallery_pick_for_render(") == 3      # the definition, the 2b wrapper, on_member_join (8c)
     join = src.split("async def on_member_join")[1].split("\n    async def ")[0]
-    assert "_gallery_bg_bytes_for_render(" in join and "_custom_bg_bytes_for_render(" not in join
+    assert "_gallery_pick_for_render(" in join and "_custom_bg_bytes_for_render(" not in join

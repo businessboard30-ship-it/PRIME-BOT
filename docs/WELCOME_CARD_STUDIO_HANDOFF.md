@@ -663,3 +663,44 @@ No table, no migration (7a has them). All on the Send step, next to the saved-de
 ## Next (updated after 7b)
 1. Owner reviews / merges in order: #448 (avatar-shape fix), #449 (7a), the 7b PR. Staging check: migrations 078 to 083, then Save / Schedule / join on the day.
 2. Then polaroid / film strip frames, avatar glow, preview-as-member and per-picture preview, render-cost audit, per-picture overrides.
+
+
+## Phase 8a (2026-10-22): photo-print frame, film-strip frame, avatar glow
+
+Built on top of the 7b branch (so the stack is #448 > #449 > #450 > this). No table, no migration.
+
+- **Frames `polaroid` ("Photo print") and `film` ("Film strip")** are new values at the end of the existing Frame cycle. They do NOT draw over the card: the finished card is scaled down (same proportions) and pasted inside the border, so nothing is covered or cut and the card size is unchanged (`_shrink_into_border`, `_film_strip`). Photo print: 36 px border, 110 px bottom, border in the frame color. Film strip: dark strip, holes in the frame color. Never raise; on error the card is returned as is.
+- **Avatar glow** = new bool `avatar_glow` (in `ULTRA_BOOL_KEYS`, `STUDIO_KEYS`, `STUDIO_DEFAULTS`). A soft halo in the text color under the avatar, drawn inside `_paste_avatar` so it follows every layout and avatar spot. It lives in the existing **Style extras** select on the Text step (`Avatar glow`), so **no new component** (Look and Text steps stay at their old counts). Reset this step on Text clears it. Premium/Plus at save and join, Ultra-only previews in memory.
+- Tests: `tests/unit/test_welcome_studio_phase8a.py` (10). Two older pins updated (3b parser test used `polaroid` as the "unsupported" example; 3b wrap test and 4f cycle-end test now point at the new last frame).
+
+### Known gaps in 8a
+- Not tested live (phone taps). Looked at by eye on a test card only.
+- A photo-print/film card has a smaller picture area (that is the cost of never covering text).
+
+
+## Phase 8b (2026-10-22): "Preview as..." (another picture, another member)
+
+No table, no migration. Pictures step, More controls: `👁️ Preview as…` (`CardPreviewAsButton`, id `previewas`, own row, open to every server). The modal (`CardPreviewAsModal`) takes a picture number, a member name and a member number; all blank = back to normal. State is memory only (`_PREVIEW_AS`, per person). `_render_tv` uses it for the editor preview and **Send me a test**; the caption says "Previewing picture N, as Name #M". Nothing is stored and the live card is untouched. A picture number that is not in the gallery is said plainly and ignored. `_gallery_preview_bytes` takes an optional `slot` (only that picture is tried). Tests: `test_welcome_studio_phase8b.py` (12).
+
+## Phase 8c (2026-10-22): per-picture tweaks (own crop and text color)
+
+No migration: uses the existing `options_override_json` column.
+- `wg.clean_override` / `wg.override_json`: only a valid crop focus and text color survive; junk gives `{}`.
+- `db.gallery_set_override(guild, clone, slot, json|None)`: touches only that column of that slot.
+- **Join:** new `_gallery_pick_for_render` returns (picture, tweak); `_gallery_bg_bytes_for_render` is a thin wrapper. `on_member_join` merges the tweak over the gated options. Locked servers, errors and the old single picture always give an empty tweak.
+- **Editor:** `🎚️ Tweak a picture` (`CardPictureTweakButton`, id `pictweak`) in the Pictures manage row (5 of 5 buttons; hidden for a Premium gallery with 0 pictures). Modal: picture number, crop select, text color select ("Same as the card" for both removes the tweak). Premium/Plus only, re-checked on the server; free servers get the usual "Preview only" note. After saving, the preview shows that picture. `_gallery_preview_pick` returns the tweak, `_render_tv` applies it.
+- Make first swaps tweaks along with the pictures (already did); Replace keeps the slot's tweak.
+- Tests: `test_welcome_studio_phase8c.py` (13). The 2b source-guard test now points at `_gallery_pick_for_render`.
+
+### Known gaps in 8b/8c
+- Not tested live (modals with selects on a phone), not run on a real Postgres.
+- The gallery strip does not mark which pictures have a tweak.
+- Not built: render-cost audit and a concurrent-render cap for raids, non-Latin-name note, side-by-side compare. Export = Send me a test (full-size PNG). Open owner question: should Clear background also clear the gallery?
+
+## Phase 8d (2026-10-22): raid guard on the join render
+
+`on_member_join` now draws the card inside `_join_render_slots()` (an asyncio semaphore, 4 at a time per event loop). A raid queues; no join is dropped. Tests: `test_welcome_studio_phase8d.py` (2). Not measured on a real 1536 px burst.
+
+## Next (updated after 8c)
+1. Owner reviews / merges in order: #448, #449, #450, then 8a, 8b/8c (this branch stack). Staging check: migrations 078 to 083, then every control on a phone.
+2. Real timing of a 1536 px render under load (needs a live box); non-Latin-name note in the wizard.
