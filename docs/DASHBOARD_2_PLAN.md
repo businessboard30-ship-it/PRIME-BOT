@@ -63,10 +63,10 @@ Routine-action coverage: not yet measured.
 | Moderation cases | /warn /kick /ban /timeout | moderation API | Partial | Warning management to verify |
 | Giveaways | giveaway wizard | giveaways API | Partial | Reroll/cancel to verify |
 | Analytics | /serveranalytics | analytics API | Partial | Rollup history to verify |
-| Language | /language | - | Missing | Not in schema |
-| Applications | /application | - | Missing | Not in schema |
-| Scam Shield | /scamshield | - | Missing | Not in schema |
-| Birthdays | /birthday | - | Missing | Not in schema |
+| Language | /language | member dashboard (per-user, already built) | Complete (member) | Not a server setting |
+| Applications | /application | PR #461 read-only | Partial | Forms/accept/decline stay in Discord (bot-process actions) |
+| Scam Shield | /scamshield | PR #457 | Complete* (pending merge) | |
+| Birthdays | /birthday | PR #457 (server config) | Partial (pending merge) | Colour/banner/avatar styling not in dashboard |
 | Bot profile | /botprofile | - | Missing | Not in schema |
 | Cat/Catch/Heist games | /cat /catch /heist | - | Missing | Needs web-appropriateness review |
 | Music Pro | /activate-pro | - | Missing | Premium activation |
@@ -75,3 +75,14 @@ Routine-action coverage: not yet measured.
 | Clones | /myclones /removeclone | clone access API | Partial | Isolation tests exist; compatibility registry to audit |
 
 Still missing from matrix columns: DB tables, Premium flag, required Discord perms, per-feature test names, final verification method.
+
+## Added since v1 (open PRs)
+- #457 Scam Shield, Birthdays, Anime feed pages + backend speed-up (repo owner)
+- #460 Auto-responders (list/add/delete, mass-mention refused, max 25)
+- #461 Applications (read-only)
+
+## Known blocked / needs bot-process work
+- Reaction roles: web-posted panels would have dead persistent buttons until restart; needs a bot-process action queue.
+- Quarantine role: bot checks role hierarchy before saving; needs custom handler.
+- Roast Arena: consent flow must not be bypassed by a toggle.
+- Media storage channel: owner-only by design.
