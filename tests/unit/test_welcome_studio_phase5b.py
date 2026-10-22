@@ -114,6 +114,7 @@ class FakeDB:
     async def design_save(self, g, c, name, oj, sh, by, mx=5): self.saves.append((name, oj, sh, by, mx)); return self.save_result
     async def design_delete(self, g, c, did): self.deleted.append(did); return True
     async def design_rename(self, g, c, did, name): self.renamed.append((did, name)); return True
+    async def set_active_design(self, g, c, did): self.active = did; return True
 
 
 def setup(monkeypatch, db, unlocked=True):
@@ -267,7 +268,7 @@ def test_studio_summary_lists_designs_only_for_premium(monkeypatch):
     db.gallery_list = lambda g, c: _async([])
     setup(monkeypatch, db, unlocked=True)
     out = run(cc._with_studio({"ultra_pack_unlocked": True}, 1, None, 5))
-    assert out["_studio"]["designs"] == [{"id": 11, "name": "A"}]
+    assert out["_studio"]["designs"] == [{"id": 11, "name": "A", "when": None}]
     setup(monkeypatch, db, unlocked=False)
     out = run(cc._with_studio({"ultra_pack_unlocked": True}, 1, None, 5))
     assert "designs" not in out["_studio"]
