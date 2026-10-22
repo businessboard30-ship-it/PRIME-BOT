@@ -38,6 +38,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 6a. DM extra: "DMs closed: post in channel" toggle (Setup wizard, DM mode only), free for everyone | **Built and merged into `main`** (stacked on 5b; migration 081, schema 130) | branch `feat/welcome-studio-phase6a` |
 | 6b. DM extra: separate DM text (Setup wizard, DM mode only) + the DMs-closed switch also on the join-DM welcome sub-screen | **Built and merged into `main`** (stacked on 6a; migration 082, schema 131) | branch `feat/welcome-studio-phase6b` |
 | Fix. Avatar shape is drawn at every render site (real join, /welcome preview, refresh, nudge post, test post) | **Built, PR open, not merged** (cut from `main`; found while starting Phase 7) | branch `fix/welcome-avatar-shape-at-render` |
+| 7a. Scheduled designs, data layer + render-time resolver (migration 083, schema 132; no wizard UI yet) | **Built, PR open, not merged** (stacked on the avatar-shape fix) | branch `feat/welcome-studio-phase7a` |
 | Polaroid / film strip frames, Phase 7 (scheduled designs) | Not started | |
 
 ## What Phase 1 built
@@ -619,3 +620,25 @@ Found while starting Phase 7: `welcome.py` (real join, `/welcome preview`, its r
 ## Next (updated after the avatar-shape fix)
 1. Owner reviews / merges this one first (the rest of this session's PRs are stacked on it).
 2. Phase 7 (scheduled designs), then polaroid / film strip frames, avatar glow, preview-as-member / per-picture preview, the render-cost audit, per-picture overrides.
+
+
+## Phase 7a (2026-10-21): scheduled designs, data layer + resolver
+
+Plan 3.7 / Phase 7. First slice: **no wizard UI**, nothing changes for any server until 7b lets an admin set a schedule.
+
+- **Migration 083** (`083_welcome_design_schedule.sql`, registered, `SCHEMA_VERSION` 131 -> 132, guard pins updated): `sched_from DATE`, `sched_to DATE`, `sched_yearly BOOLEAN` on `discord_welcome_designs`; `design_schedule_on BOOLEAN` on `discord_welcome_config` (a cheap flag so servers that never scheduled anything cost nothing at join; kept in step by the db methods, never by hand).
+- **No polling loop (plan said: reuse a daily loop or be event-driven).** The choice is made **at render time from today's date (UTC)**: nothing to miss if the bot was down on the day, nothing to run. `modules/welcome_studio.py::scheduled_design(config)` returns the design whose window covers today (Premium/Plus only; lapsed Premium, a lookup error or a bad row all mean "use the live look", nothing is deleted). A 60 s cache keyed by (server, clone, day) means a raid of joins asks the database once. `forget_schedule_cache` clears it when a schedule changes (7b calls it).
+- **One gate for every render site:** `options_for_render(config)` and `avatar_shape_for_render(config)` (the helper from the avatar-shape fix) now swap in the scheduled design's options and avatar shape. So join, `/welcome preview`, refresh, nudge, test post and setup TV all show the same scheduled look. The Customize Card editor's own previews are not touched (they edit the live look).
+- **Pure helpers** (`modules/welcome_schedule.py`): `parse_when` (`2026-10-25` once; `25 Oct`, `Oct 25`, `25th October`, `10-25` yearly; month first for numbers), `build_range` (ok / bad_from / bad_to / mixed / backwards; blank end = one day), `is_active` (inclusive; yearly ignores the stored year, may wrap New Year, 29 Feb ok), `pick_scheduled` (one-off beats yearly, then latest start, then lowest id), `describe`.
+- **DB:** `design_list` / `design_get` also return the schedule columns; `design_set_schedule`, `design_clear_schedule` (design itself stays), `set_active_design` (used by 7b); `design_delete` re-syncs the flag. All never raise, all scoped by server + clone.
+- Tests: `tests/unit/test_welcome_studio_phase7a.py` (47). The 5a fake DB learned the one new flag statement. Welcome/card/join-DM/schema tests: 1247 passed, 2 skipped, 0 failed.
+
+### Known gaps in 7a (on purpose)
+- Dates are UTC (a server far from UTC may see the switch a few hours early/late). Say so in the wizard (7b).
+- A scheduled design replaces the **look only** (options + avatar shape); pictures and rotation are untouched, as for any saved design.
+- Not run against a real Postgres (migration 083 joins the 078 to 082 staging check). Not tested live.
+
+## Next (updated after 7a)
+1. Owner reviews / merges the avatar-shape fix, then this PR.
+2. 7b: Send step button + modal to schedule / clear a design, a "Live now" line, write `active_design_id` on Load.
+3. Then polaroid / film strip frames, avatar glow, preview-as-member and per-picture preview, render-cost audit, per-picture overrides.

@@ -109,6 +109,8 @@ class FakeConn:
         if sql.startswith("UPDATE discord_welcome_config SET active_design_id = NULL"):
             self.s["cleared"].append(a)
             return "UPDATE 1"
+        if sql.startswith("UPDATE discord_welcome_config SET design_schedule_on"):      # Phase 7a flag sync
+            return "UPDATE 1"
         raise AssertionError(sql)
 
     async def fetchrow(self, sql, *a):

@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "131"
+SCHEMA_VERSION = "132"
+# "131" -> "132" adds 083_welcome_design_schedule.sql (sched_* on discord_welcome_designs + design_schedule_on on discord_welcome_config: Welcome Card Studio Phase 7a). ADD COLUMN IF NOT EXISTS only.
 # "130" -> "131" adds 082_welcome_dm_text.sql (dm_message_template on discord_welcome_config: Welcome Card Studio Phase 6b). ADD COLUMN IF NOT EXISTS only.
 # "129" -> "130" adds 081_welcome_dm_fallback.sql (dm_fallback_to_channel on discord_welcome_config: Welcome Card Studio Phase 6a). ADD COLUMN IF NOT EXISTS only.
 # "128" -> "129" adds 080_welcome_designs.sql (discord_welcome_designs + active_design_id on discord_welcome_config: Welcome Card Studio Phase 5a). CREATE TABLE / ADD COLUMN / CREATE INDEX IF NOT EXISTS only.
@@ -5888,6 +5889,11 @@ class Database:
         welcome_dm_text_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "082_welcome_dm_text.sql"
         if welcome_dm_text_migration.exists():
             await conn.execute(welcome_dm_text_migration.read_text())
+
+        # Welcome Card Studio Phase 7a: scheduled designs. Additive/idempotent.
+        welcome_design_schedule_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "083_welcome_design_schedule.sql"
+        if welcome_design_schedule_migration.exists():
+            await conn.execute(welcome_design_schedule_migration.read_text())
 
         # Cat wallets shared by every bot: merges per-bot balances into one. Idempotent.
         cat_shared_wallet_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "049_cat_shared_wallet.sql"
@@ -12122,6 +12128,7 @@ class Database:
                 "use_template": True,
                 "template_announced_at": None, "template_announce_status": None,
                 "delivery_mode": "channel", "dm_fallback_to_channel": False, "dm_message_template": None,
+                "design_schedule_on": False, "active_design_id": None,
                 "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
                 "card_theme": "wolf", "card_pack_unlocked": False,
                 "ultra_pack_unlocked": False, "custom_background_url": None,
@@ -12272,7 +12279,7 @@ class Database:
             pool = await get_pool()
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
-                    "SELECT id, name, options_json, avatar_shape FROM discord_welcome_designs "
+                    "SELECT id, name, options_json, avatar_shape, sched_from, sched_to, sched_yearly FROM discord_welcome_designs "
                     "WHERE guild_id = $1 AND clone_key = $2 ORDER BY id",
                     int(guild_id), -1 if clone_id is None else int(clone_id))
             return [dict(r) for r in rows]
@@ -12285,7 +12292,7 @@ class Database:
             pool = await get_pool()
             async with pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT id, name, options_json, avatar_shape FROM discord_welcome_designs "
+                    "SELECT id, name, options_json, avatar_shape, sched_from, sched_to, sched_yearly FROM discord_welcome_designs "
                     "WHERE id = $1 AND guild_id = $2 AND clone_key = $3",
                     int(design_id), int(guild_id), -1 if clone_id is None else int(clone_id))
             return dict(row) if row else None
@@ -12352,9 +12359,70 @@ class Database:
                     await conn.execute(
                         "UPDATE discord_welcome_config SET active_design_id = NULL WHERE guild_id = $1 AND active_design_id = $2",
                         int(guild_id), int(design_id))
+                    await self._sync_design_schedule_flag(conn, guild_id, clone_id)
             return True
         except Exception:
             logger.exception("[welcome-designs] delete failed for guild %s", guild_id)
+            return False
+
+    async def _sync_design_schedule_flag(self, conn, guild_id: int, clone_id: Optional[int]) -> None:
+        """Keep discord_welcome_config.design_schedule_on true exactly while some design of this server has a schedule."""
+        key = -1 if clone_id is None else int(clone_id)
+        await conn.execute(
+            "UPDATE discord_welcome_config SET design_schedule_on = EXISTS ("
+            "SELECT 1 FROM discord_welcome_designs WHERE guild_id = $1 AND clone_key = $3 AND sched_from IS NOT NULL) "
+            "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, key)
+
+    async def design_set_schedule(self, guild_id: int, clone_id: Optional[int], design_id: int,
+                                  date_from, date_to, yearly: bool) -> bool:
+        """Phase 7a: schedule a design (UTC dates; yearly uses month and day only). False when the design is missing.
+        Touches only the schedule columns and the config flag. Never raises."""
+        key = -1 if clone_id is None else int(clone_id)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    res = await conn.execute(
+                        "UPDATE discord_welcome_designs SET sched_from = $1, sched_to = $2, sched_yearly = $3, updated_at = NOW() "
+                        "WHERE id = $4 AND guild_id = $5 AND clone_key = $6",
+                        date_from, date_to, bool(yearly), int(design_id), int(guild_id), key)
+                    if not res.endswith(" 1"):
+                        return False
+                    await self._sync_design_schedule_flag(conn, guild_id, clone_id)
+            return True
+        except Exception:
+            logger.exception("[welcome-designs] schedule failed for guild %s", guild_id)
+            return False
+
+    async def design_clear_schedule(self, guild_id: int, clone_id: Optional[int], design_id: int) -> bool:
+        """Phase 7a: remove a design's schedule (the design itself stays). False when the design is missing."""
+        key = -1 if clone_id is None else int(clone_id)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    res = await conn.execute(
+                        "UPDATE discord_welcome_designs SET sched_from = NULL, sched_to = NULL, sched_yearly = FALSE, updated_at = NOW() "
+                        "WHERE id = $1 AND guild_id = $2 AND clone_key = $3", int(design_id), int(guild_id), key)
+                    if not res.endswith(" 1"):
+                        return False
+                    await self._sync_design_schedule_flag(conn, guild_id, clone_id)
+            return True
+        except Exception:
+            logger.exception("[welcome-designs] clear schedule failed for guild %s", guild_id)
+            return False
+
+    async def set_active_design(self, guild_id: int, clone_id: Optional[int], design_id: Optional[int]) -> bool:
+        """Phase 7b: remember which saved design was last loaded as the live look (None clears it). Touches one column."""
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                res = await conn.execute(
+                    "UPDATE discord_welcome_config SET active_design_id = $3 WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                    int(guild_id), clone_id, design_id)
+            return res.endswith(" 1")
+        except Exception:
+            logger.exception("[welcome-designs] set active design failed for guild %s", guild_id)
             return False
 
     async def gallery_count_recent(self, guild_id: int, clone_id: Optional[int], hours: int = 24) -> int:
