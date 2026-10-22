@@ -85,14 +85,13 @@ class GuildActivityCog(commands.Cog):
             logger.warning("[guild-activity] save failed, will retry", exc_info=True)
 
     def _report_dormancy(self) -> None:
-        days = ga.dormant_days()
-        now_dormant = {g.id for g in self.bot.guilds if ga.tracker.is_dormant(g.id)}
+        now_dormant = {g.id for g in self.bot.guilds if ga.tracker.is_dormant(g.id, member_count=getattr(g, "member_count", None))}
         prev, self._dormant_prev = self._dormant_prev, now_dormant
         if prev is None:
             return
         for gid in now_dormant - prev:
             g = self.bot.get_guild(gid)
-            se.emit("dormant", str(gid), f"🌙 **{g.name if g else gid}** went dormant: no activity for {days} days, "
+            se.emit("dormant", str(gid), f"🌙 **{g.name if g else gid}** went dormant: no activity for {ga.dormant_days_for(getattr(g, 'member_count', None))} days, "
                                           "so cat spawns and Ship are paused there.")
         for gid in prev - now_dormant:
             g = self.bot.get_guild(gid)

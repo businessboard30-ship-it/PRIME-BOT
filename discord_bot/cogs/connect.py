@@ -21,6 +21,7 @@ from discord.ext import commands, tasks
 from discord_bot.cogs import _connect_core as core
 from discord_bot.cogs._views_connect import open_hub, sync_roblox_role
 from modules import connections_api as api
+from modules import guild_activity as ga
 from modules.connections_api import ConnectError
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,18 @@ class ConnectCog(commands.Cog):
             pass
         return None
 
+    def _all_quiet(self, rows: list) -> bool:
+        """True when every server that follows this feed is drowsy or dormant (size-aware, see modules.guild_activity).
+        One active server, or one we can't see, means the feed is polled at the normal pace."""
+        try:
+            for f in rows:
+                g = self.bot.get_guild(int(f["guild_id"]))
+                if g is None or not ga.tracker.is_quiet(g.id, getattr(g, "member_count", None)):
+                    return False
+            return bool(rows)
+        except Exception:
+            return False
+
     # ── YouTube uploads ──────────────────────────────────────────────────
     @tasks.loop(minutes=POLL_MINUTES)
     async def _poll_youtube(self):
@@ -94,6 +107,8 @@ class ConnectCog(commands.Cog):
         for f in feeds:
             by_channel.setdefault(f["external_id"], []).append(f)
         for channel_id, rows in by_channel.items():
+            if not ga.quiet_poll_due(f"yt:{channel_id}", self._all_quiet(rows)):
+                continue          # only quiet servers follow this channel: fetched one poll in four, never lost
             try:
                 entries = await api.fetch_channel_feed(channel_id)
             except ConnectError:
@@ -152,6 +167,8 @@ class ConnectCog(commands.Cog):
         for f in feeds:
             by_universe.setdefault(f["external_id"], []).append(f)
         for universe, rows in by_universe.items():
+            if not ga.quiet_poll_due(f"rbx:{universe}", self._all_quiet(rows)):
+                continue
             try:
                 now = await api.rbx_game_state(int(universe))
             except ConnectError:

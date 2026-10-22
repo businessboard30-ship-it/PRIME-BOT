@@ -1,6 +1,6 @@
 import os
 
-from modules.guild_activity import ActivityTracker, setting_key
+from modules.guild_activity import ActivityTracker, CycleThrottle, dormant_days_for, quiet_poll_due, setting_key
 
 DAY = 86400
 
@@ -66,3 +66,50 @@ def test_forget_missing_and_switch_off(monkeypatch):
 
 def test_setting_keys_are_per_bot():
     assert setting_key(None) != setting_key(5) and setting_key(5) == "guild_activity:5"
+
+
+def test_quiet_time_that_counts_as_dormant_scales_with_server_size(monkeypatch):
+    monkeypatch.delenv("GUILD_DORMANT_DAYS", raising=False)
+    assert [dormant_days_for(n) for n in (2, 10, 20, 21, 200, 201, 5000)] == [3, 3, 3, 7, 7, 14, 14]
+    assert dormant_days_for(None) == 14 and dormant_days_for(0) == 14 and dormant_days_for("x") == 14
+
+
+def test_a_small_quiet_server_sleeps_sooner_than_a_big_one_and_activity_still_wakes_it(monkeypatch):
+    monkeypatch.delenv("GUILD_DORMANT_DAYS", raising=False)
+    now, t = _t()
+    t.seed([1, 2])
+    now[0] += 4 * DAY
+    assert t.is_dormant(1, member_count=10) and not t.is_dormant(2, member_count=5000)
+    assert not t.is_dormant(1)                       # no member count: the flat 14-day default, as before
+    t.touch(1)
+    assert not t.is_dormant(1, member_count=10)      # any activity wakes it at once
+
+
+def test_flat_env_threshold_overrides_size_tiers(monkeypatch):
+    monkeypatch.setenv("GUILD_DORMANT_DAYS", "30")
+    assert dormant_days_for(2) == dormant_days_for(9999) == 30
+    now, t = _t()
+    t.seed([1])
+    now[0] += 20 * DAY
+    assert not t.is_dormant(1, member_count=2)
+
+
+def test_drowsy_starts_at_a_third_of_the_dormant_time_and_activity_clears_it(monkeypatch):
+    monkeypatch.delenv("GUILD_DORMANT_DAYS", raising=False)
+    now, t = _t()
+    t.seed([1, 2])
+    now[0] += 1.5 * DAY
+    assert t.is_quiet(1, member_count=10) and not t.is_dormant(1, member_count=10)     # small: drowsy after 1 day
+    assert not t.is_quiet(2, member_count=5000)                                         # big: not for ~4.7 days
+    assert not t.is_quiet(3, member_count=10)                                           # never seen: fails open
+    t.touch(1)
+    assert not t.is_quiet(1, member_count=10)
+
+
+def test_quiet_polls_run_one_cycle_in_four_and_wake_up_at_once():
+    th = CycleThrottle(every=4)
+    assert [th.should_run("a") for _ in range(8)] == [True, False, False, False, True, False, False, False]
+    assert quiet_poll_due("k", False) and quiet_poll_due("k", False)                    # not quiet: always runs
+    runs = [quiet_poll_due("q", True) for _ in range(5)]
+    assert runs == [True, False, False, False, True]
+    assert quiet_poll_due("q", False) and quiet_poll_due("q", True)                      # woke up, then quiet again: counter restarted

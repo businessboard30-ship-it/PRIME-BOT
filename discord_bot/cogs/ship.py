@@ -289,8 +289,8 @@ class ShipCog(GuildOnlyCog):
         self._gate.record(found_something=any(r["enabled"] and r["channel_id"] for r in config_rows))
 
         for guild in list(self.bot.guilds):
-            if guild_activity.is_dormant(guild.id):
-                continue    # nobody has talked here for weeks: nothing to ship
+            if guild_activity.is_dormant(guild.id, getattr(guild, "member_count", None)):
+                continue    # nobody has talked here for a while (days scale with server size): nothing to ship
             try:
                 config = configs_by_guild.get(guild.id) or {
                     "guild_id": guild.id,
