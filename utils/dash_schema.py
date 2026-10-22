@@ -251,6 +251,17 @@ MODULES: List[dict] = [
         ],
     },
     {
+        "id": "aichat", "title": "AI chat", "category": "Fun", "icon": "bulb",
+        "desc": "Whether people can chat with the AI here, and what it is called.",
+        "get": "get_ai_chat_config", "set": "set_ai_chat_config",
+        "note": "Same settings as the bot profile editor. Everyone's own character and voice choice is changed by chatting with the AI.",
+        "fields": [
+            F("reply_chat", "Chat with the AI", "toggle", "On: members can mention the bot or reply to its messages to chat. Off: it stays quiet in this server."),
+            F("ai_name", "AI name", "text", "What the AI calls itself here. Leave empty for the default. Letters, numbers, spaces, dots, dashes and apostrophes only. Needs the one-time DiscordThings vote that unlocks Edit profile.",
+              maxlen=24, check="ai_name"),
+        ],
+    },
+    {
         "id": "autopost", "title": "Auto-post", "category": "Community", "icon": "scroll", "no_quick": True,
         "desc": "Post a rotating tip about the bot's features on a schedule.",
         "get": "get_autopost_settings_config", "set": "set_autopost_settings_config",
@@ -414,6 +425,11 @@ def _coerce(f: dict, raw: Any, channels: Dict[str, set], roles: set) -> Any:
         s = raw.strip()
         if len(s) > f.get("maxlen", 200):
             raise ValidationError(f"{label}: keep it under {f.get('maxlen', 200)} characters.")
+        if f.get("check") == "ai_name":                      # the same rules the Discord wizard applies
+            from modules import ai_name
+            s, problem = ai_name.clean_name(s)
+            if problem:
+                raise ValidationError(f"{label}: {problem}")
         return s if s else None
     if t == "color":
         if not isinstance(raw, str) or not _HEX.match(raw):

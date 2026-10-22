@@ -12863,6 +12863,41 @@ class Database:
             await self.set_custom_role_feature_disabled(guild_id, not bool(fields["enabled"]), clone_id=clone_id)
         return await self.get_custom_role_config(guild_id, clone_id=clone_id)
 
+    async def get_ai_chat_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Web dashboard view of the server's AI chat settings: the reply switch (discord_ai_reply_config, on by
+        default) and the AI's name for this server (ai_guild_names; main bot and clones share it)."""
+        from modules import ai_features, ai_name
+        return {"reply_chat": bool(await ai_features.is_reply_chat_enabled(guild_id)),
+                "ai_name": await ai_name.get_name(guild_id)}
+
+    async def set_ai_chat_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        from modules import ai_features, ai_name
+        if "ai_name" in fields:
+            value, problem = ai_name.clean_name(str(fields["ai_name"] or ""))       # same cleaner as the Discord wizard
+            if problem:
+                from utils.dash_schema import ValidationError
+                raise ValidationError(problem)
+            # Same vote gate as Edit profile in Discord: one DiscordThings vote unlocks the whole server.
+            import config as _config
+            if value and getattr(_config, "BOT_PROFILE_VOTE_GATE", True):      # clearing the name is never gated
+                from modules import dthings_vote
+                try:
+                    unlocked = await self.is_bot_profile_unlocked(guild_id)
+                    if not unlocked and await dthings_vote._token() == "":
+                        unlocked = True                                             # no token: a vote can't be checked
+                except Exception:
+                    unlocked = True                                                 # a DB hiccup must not lock people out
+                if not unlocked:
+                    from utils.dash_schema import ValidationError
+                    raise ValidationError("Naming the AI is unlocked with one DiscordThings vote per server. Run the "
+                                          "bot profile editor in Discord once to vote, then come back.")
+            if not await ai_name.set_name(guild_id, value):
+                from utils.dash_schema import ValidationError
+                raise ValidationError("Couldn't save the AI's name right now. Try again in a moment.")
+        if "reply_chat" in fields:
+            await ai_features.set_reply_chat_enabled(guild_id, bool(fields["reply_chat"]))
+        return await self.get_ai_chat_config(guild_id, clone_id)
+
     async def get_custom_role_panel(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[dict]:
         """Returns {"panel_channel_id", "panel_message_id"} (or None) —
         used by _enable_custom_role_panel to avoid creating a second
