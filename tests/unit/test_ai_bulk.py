@@ -77,6 +77,13 @@ def test_only_the_first_tool_call_is_ever_picked():
     assert ai_bulk.pick_tool_call([]) == (None, 0) and ai_bulk.pick_tool_call(None) == (None, 0)
 
 
+def test_pick_tool_calls_keeps_up_to_ten_distinct_and_merges_repeats():
+    calls = [{"name": f"cmd{i}", "arguments": {"a": i}} for i in range(12)] + [{"name": "cmd0", "arguments": {"a": 0}}, "junk"]
+    picked, dropped = ai_bulk.pick_tool_calls(calls)
+    assert [c["name"] for c in picked] == [f"cmd{i}" for i in range(10)] and dropped == 2
+    assert ai_bulk.pick_tool_calls(None) == ([], 0)
+
+
 # ── allowlist entries ─────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("name,perm", [("setup_bulk_create", "manage_channels"), ("setup_bulk_delete", "manage_channels"),
@@ -383,16 +390,25 @@ def _ai_cog():
     return cog
 
 
-def test_ai_runs_only_the_first_of_several_tool_calls_and_says_so():
+def test_ai_runs_several_tool_calls_as_one_batch_up_to_ten_and_says_what_was_skipped():
     cog = _ai_cog()
+    cog._run_command_batch = AsyncMock()
     ctx = SimpleNamespace(followup=SimpleNamespace(send=AsyncMock()))
-    calls = [{"name": "setup_bulk_create", "arguments": {"names": "a,b"}},
-             {"name": "setup_bulk_delete", "arguments": {"names": "c"}},
-             {"name": "kick", "arguments": {}}]
+    calls = [{"name": f"cmd{i}", "arguments": {"n": i}} for i in range(12)]
     run(cog._run_tool_calls(ctx, calls, real_interaction=True))
-    cog._dispatch_tool_call.assert_awaited_once()
-    assert cog._dispatch_tool_call.await_args.args[1] == "setup_bulk_create"
+    cog._dispatch_tool_call.assert_not_awaited()
+    assert len(cog._run_command_batch.await_args.args[1]) == 10
     assert "skipped 2" in ctx.followup.send.await_args.args[0]
+
+
+def test_ai_one_tool_call_still_goes_the_single_command_way():
+    cog = _ai_cog()
+    cog._run_command_batch = AsyncMock()
+    ctx = SimpleNamespace(followup=SimpleNamespace(send=AsyncMock()))
+    run(cog._run_tool_calls(ctx, [{"name": "kick", "arguments": {}}], real_interaction=True))
+    cog._dispatch_tool_call.assert_awaited_once()
+    cog._run_command_batch.assert_not_awaited()
+    ctx.followup.send.assert_not_awaited()
 
 
 def test_ai_clips_runaway_string_arguments():

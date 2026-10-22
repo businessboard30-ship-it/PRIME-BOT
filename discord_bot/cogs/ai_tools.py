@@ -38,6 +38,7 @@ Characters, voice and links (all without any new command):
 i18n: bot-authored strings go through discord_bot.i18n_helpers.tr().
 """
 
+import asyncio
 import logging
 import io
 from modules import ai_bulk
@@ -769,22 +770,91 @@ class AIToolsCog(commands.Cog):
         return {k: (v[:1000] if isinstance(v, str) else v) for k, v in (args or {}).items()}
 
     async def _run_tool_calls(self, ctx, calls: list, *, real_interaction: bool) -> None:
-        """Runs what the model asked for in ONE reply -- at most one command. A mutating command needs its own
-        Confirm click, so a second command in the same reply could never be confirmed alongside it; and sending
-        several at once is how a confused model floods Discord's API. Extra calls are reported, never run."""
-        call, dropped = ai_bulk.pick_tool_call(calls)
-        if call is None:
+        """Runs what the model asked for in ONE reply: up to ai_bulk.MAX_COMMANDS_PER_MESSAGE different commands.
+        One command goes the normal way. Several run as a batch: read-only ones right away, in order, and every
+        command that needs confirming is gathered under ONE Confirm prompt (one click runs them all, in order,
+        with a pause between). Each command is still re-checked (allowlist, real permission, daily cap)."""
+        picked, dropped = ai_bulk.pick_tool_calls(calls)
+        if not picked:
             return
-        await self._dispatch_tool_call(ctx, call["name"], self._clip_args(call.get("arguments") or {}),
-                                       real_interaction=real_interaction)
+        if len(picked) == 1:
+            call = picked[0]
+            await self._dispatch_tool_call(ctx, call["name"], self._clip_args(call.get("arguments") or {}),
+                                           real_interaction=real_interaction)
+        else:
+            await self._run_command_batch(ctx, picked, real_interaction=real_interaction)
         if dropped:
             try:
                 await ctx.followup.send(
-                    f"\u2139\ufe0f I run one command at a time -- I skipped {dropped} other request(s) from that "
-                    "message. Ask for them separately once this one is done (for several channels or members, "
-                    "give me the whole list in one request).", ephemeral=True)
+                    f"\u2139\ufe0f I can run up to {ai_bulk.MAX_COMMANDS_PER_MESSAGE} commands per message -- I skipped "
+                    f"{dropped} other request(s). Ask for them in a new message.", ephemeral=True)
             except Exception:
                 logger.debug("[ai_command] couldn't send the skipped-calls note", exc_info=True)
+
+    async def _run_command_batch(self, ctx, picked: list, *, real_interaction: bool) -> None:
+        immediate, confirm, notes = [], [], []
+        for call in picked:
+            name = call["name"]
+            raw = self._clip_args(call.get("arguments") or {})
+            spec, command, reason, cap_reached = await resolve_and_check(ctx, name, raw)
+            if spec is None:
+                if cap_reached:
+                    await send_cap_reached_prompt(ctx)
+                    break                                   # daily cap hit: nothing after this one can run either
+                notes.append(f"\u2022 `{name}` skipped: {reason}")
+                continue
+            args = self._resolve_tool_args(ctx, command, raw)
+            if not needs_confirmation(spec, args):
+                immediate.append((name, raw))
+                continue
+            if ai_bulk.DEDUPER.is_duplicate(ctx.user.id, name, args):
+                notes.append(f"\u2022 `{name}` skipped: I already asked you to confirm exactly that.")
+                continue
+            line = f"**/{spec.command_path}** `{args}`"
+            hook = ((getattr(command.binding, "AI_CONFIRM_PROMPTS", None) or {}).get(name)
+                    if command.binding is not None else None)
+            if hook:
+                ok, text = await getattr(command.binding, hook)(ctx, **args)
+                if not ok:
+                    notes.append(f"\u2022 `{name}` skipped: {text}")
+                    continue
+                line = text
+            confirm.append((spec, name, args, line))
+
+        for name, raw in immediate:                         # read-only commands: run now, one after another
+            await self._dispatch_tool_call(ctx, name, raw, real_interaction=real_interaction)
+            await asyncio.sleep(ai_bulk.BATCH_PAUSE_SECONDS)
+
+        if confirm:
+            async def _run_all(ci: discord.Interaction):
+                results = []
+                for i, (spec, name, args, _line) in enumerate(confirm, 1):
+                    label = f"{i}. /{spec.command_path}"
+                    try:
+                        await execute_ai_command(ci, name, **args)
+                        results.append(f"\u2705 {label}")
+                    except AICommandDenied as exc:
+                        if exc.cap_reached:
+                            await send_cap_reached_prompt(ci)
+                            results.append(f"\u26d4 {label} -- daily limit reached, the rest were not run")
+                            break
+                        results.append(f"\u274c {label} -- {exc}")
+                    except Exception:
+                        logger.exception("[ai_command] batch step '%s' failed", name)
+                        results.append(f"\u274c {label} -- failed (see logs)")
+                    await asyncio.sleep(ai_bulk.BATCH_PAUSE_SECONDS)
+                await ci.followup.send("Batch finished:\n" + "\n".join(results), ephemeral=True)
+
+            body = "\n".join(f"{i}. {line}" for i, (_s, _n, _a, line) in enumerate(confirm, 1))
+            prompt = f"I'd run these {len(confirm)} commands, in order -- confirm?\n{body}"
+            if len(prompt) > 1900:
+                prompt = prompt[:1890] + "\n\u2026"
+            await ctx.followup.send(prompt, view=AIConfirmView(ctx.user.id, _run_all, timeout=120), ephemeral=True)
+        if notes:
+            try:
+                await ctx.followup.send("\n".join(notes)[:1900], ephemeral=True)
+            except Exception:
+                logger.debug("[ai_command] couldn't send the batch notes", exc_info=True)
 
     async def _dispatch_tool_call(self, ctx, name: str, raw_args: dict, *, real_interaction: bool) -> None:
         """Runs one AI-chosen command end to end, from either a real
