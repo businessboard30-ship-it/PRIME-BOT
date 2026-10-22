@@ -11381,6 +11381,36 @@ class Database:
             d["allowed_domains"] = list(d.get("allowed_domains") or [])
             return d
 
+    # Anime feed settings live in modules/anime_feed.py (a dataclass + save_config that stamps
+    # `enabled_at`). Dict-shaped wrappers so the web dashboard can address them like any other pair.
+    async def get_anime_feed_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        from modules import anime_feed
+        cfg = await anime_feed.get_config(guild_id, clone_id)
+        return {"enabled": bool(cfg.enabled and cfg.channel_id), "channel_id": cfg.channel_id,
+                "ping_role_id": cfg.ping_role_id, "content_kinds": anime_feed.clean_kinds(cfg.content_kinds)}
+
+    async def set_anime_feed_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        from modules import anime_feed
+        allowed = {"enabled", "channel_id", "ping_role_id", "content_kinds"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError(f"unknown anime feed field(s): {sorted(unknown)}")
+        cfg = await anime_feed.get_config(guild_id, clone_id)
+        for k, v in fields.items():
+            setattr(cfg, k, v)
+        await anime_feed.save_config(cfg)          # turns on only with a channel, stamps enabled_at
+        return await self.get_anime_feed_config(guild_id, clone_id)
+
+    # Birthday settings live in modules/birthday_store.py (module-level functions, own table setup).
+    # These thin wrappers let the web dashboard's schema address them like every other get_/set_ pair.
+    async def get_birthday_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        from modules import birthday_store
+        return await birthday_store.get_config(guild_id, clone_id)
+
+    async def set_birthday_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        from modules import birthday_store
+        return await birthday_store.set_config(guild_id, clone_id, **fields)
+
     async def get_ticket_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:

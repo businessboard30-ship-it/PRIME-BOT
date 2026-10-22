@@ -171,37 +171,73 @@ class DiscordError(Exception):
         self.status = status
 
 
+# One keep-alive HTTP session per event loop. Opening a fresh ClientSession for every Discord call
+# meant a new TCP + TLS handshake each time, and a cold server open makes several of these in a
+# row. aiohttp sessions are bound to the loop that made them, so a session whose loop has gone
+# away (per-request asyncio.run on serverless) is replaced rather than reused.
+_http_state: dict = {"loop": None, "session": None}
+
+
+def _http() -> aiohttp.ClientSession:
+    loop = asyncio.get_running_loop()
+    sess = _http_state["session"]
+    if sess is None or sess.closed or _http_state["loop"] is not loop:
+        _http_state["loop"] = loop
+        _http_state["session"] = sess = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=50, ttl_dns_cache=300, enable_cleanup_closed=True))
+    return sess
+
+
+# Single-flight: when several requests miss the same cache entry at once (the browser fires
+# `guild` and `meta` together, and both need the same Discord data), only one does the work and
+# the rest wait for its answer. Keyed by loop too, because a future can't cross event loops.
+_inflight: dict = {}
+
+
+async def _once(key, factory):
+    loop = asyncio.get_running_loop()
+    k = (id(loop), key)
+    task = _inflight.get(k)
+    if task is None:
+        task = loop.create_task(factory())
+        _inflight[k] = task
+        task.add_done_callback(lambda _t, _k=k: _inflight.pop(_k, None))
+    return await asyncio.shield(task)
+
+
 async def _bot_get(path: str):
     headers = {"Authorization": f"Bot {_token()}"}
     timeout = aiohttp.ClientTimeout(total=10)
-    async with aiohttp.ClientSession(timeout=timeout) as s:
-        for attempt in range(2):
-            async with s.get(f"{DISCORD_API}{path}", headers=headers) as r:
-                if r.status == 429 and attempt == 0:
-                    retry = float((await r.json(content_type=None)).get("retry_after", 1))
-                    await asyncio.sleep(min(retry, 3))
-                    continue
-                if r.status in (500, 502, 503, 504) and attempt == 0:
-                    await asyncio.sleep(0.6)  # transient Discord hiccup: one quiet retry
-                    continue
-                if r.status != 200:
-                    raise DiscordError(r.status)
-                return await r.json(content_type=None)
+    s = _http()
+    for attempt in range(2):
+        async with s.get(f"{DISCORD_API}{path}", headers=headers, timeout=timeout) as r:
+            if r.status == 429 and attempt == 0:
+                retry = float((await r.json(content_type=None)).get("retry_after", 1))
+                await asyncio.sleep(min(retry, 3))
+                continue
+            if r.status in (500, 502, 503, 504) and attempt == 0:
+                await asyncio.sleep(0.6)  # transient Discord hiccup: one quiet retry
+                continue
+            if r.status != 200:
+                raise DiscordError(r.status)
+            return await r.json(content_type=None)
 
 
 async def _bot_guild_ids() -> set:
     hit = _cached("botguilds", 60)
     if hit is not None:
         return hit
-    ids, after = set(), None
-    for _ in range(25):
-        q = "/users/@me/guilds?limit=200" + (f"&after={after}" if after else "")
-        page = await _bot_get(q)
-        ids.update(str(g["id"]) for g in page)
-        if len(page) < 200:
-            break
-        after = page[-1]["id"]
-    return _store("botguilds", 60, ids)
+    async def fetch():
+        ids, after = set(), None
+        for _ in range(25):
+            q = "/users/@me/guilds?limit=200" + (f"&after={after}" if after else "")
+            page = await _bot_get(q)
+            ids.update(str(g["id"]) for g in page)
+            if len(page) < 200:
+                break
+            after = page[-1]["id"]
+        return _store("botguilds", 60, ids)
+    return await _once("botguilds", fetch)
 
 
 async def _guild_info(guild_id: int) -> dict:
@@ -209,7 +245,10 @@ async def _guild_info(guild_id: int) -> dict:
     hit = _cached(key, 45)
     if hit is not None:
         return hit
-    return _store(key, 45, await _bot_get(f"/guilds/{guild_id}?with_counts=true"))
+
+    async def fetch():
+        return _store(key, 45, await _bot_get(f"/guilds/{guild_id}?with_counts=true"))
+    return await _once(key, fetch)
 
 
 async def _user_can_manage(guild_id: int, user_id: int) -> bool:
@@ -217,14 +256,18 @@ async def _user_can_manage(guild_id: int, user_id: int) -> bool:
     hit = _cached(key, 60)
     if hit is not None:
         return hit
-    try:
-        info = await _guild_info(guild_id)
-        member = await _bot_get(f"/guilds/{guild_id}/members/{user_id}")
-    except DiscordError:
-        return _store(key, 15, False)
-    roles = {int(r["id"]): int(r.get("permissions") or 0) for r in info.get("roles", [])}
-    ok = S.can_manage(int(info["owner_id"]), user_id, [int(x) for x in member.get("roles", [])], roles, guild_id)
-    return _store(key, 60, ok)
+
+    async def compute():
+        try:
+            # guild info and the member lookup don't depend on each other
+            info, member = await asyncio.gather(_guild_info(guild_id),
+                                                _bot_get(f"/guilds/{guild_id}/members/{user_id}"))
+        except DiscordError:
+            return _store(key, 15, False)
+        roles = {int(r["id"]): int(r.get("permissions") or 0) for r in info.get("roles", [])}
+        ok = S.can_manage(int(info["owner_id"]), user_id, [int(x) for x in member.get("roles", [])], roles, guild_id)
+        return _store(key, 60, ok)
+    return await _once(key, compute)
 
 
 async def _meta(guild_id: int) -> dict:
@@ -232,18 +275,20 @@ async def _meta(guild_id: int) -> dict:
     hit = _cached(key, 30)
     if hit is not None:
         return hit
-    info = await _guild_info(guild_id)
-    chans = await _bot_get(f"/guilds/{guild_id}/channels")
-    kind_of = {0: "text", 5: "text", 4: "category", 2: "voice", 13: "voice"}
-    channels = {"text": [], "category": [], "voice": []}
-    for c in sorted(chans, key=lambda c: (c.get("position", 0), int(c["id"]))):
-        k = kind_of.get(c.get("type"))
-        if k:
-            channels[k].append({"id": str(c["id"]), "name": c.get("name", "")})
-    roles = [{"id": str(r["id"]), "name": r.get("name", ""), "color": r.get("color", 0)}
-             for r in sorted(info.get("roles", []), key=lambda r: -r.get("position", 0))
-             if str(r["id"]) != str(guild_id) and not r.get("managed")]
-    return _store(key, 30, {"channels": channels, "roles": roles})
+
+    async def compute():
+        info, chans = await asyncio.gather(_guild_info(guild_id), _bot_get(f"/guilds/{guild_id}/channels"))
+        kind_of = {0: "text", 5: "text", 4: "category", 2: "voice", 13: "voice"}
+        channels = {"text": [], "category": [], "voice": []}
+        for c in sorted(chans, key=lambda c: (c.get("position", 0), int(c["id"]))):
+            k = kind_of.get(c.get("type"))
+            if k:
+                channels[k].append({"id": str(c["id"]), "name": c.get("name", "")})
+        roles = [{"id": str(r["id"]), "name": r.get("name", ""), "color": r.get("color", 0)}
+                 for r in sorted(info.get("roles", []), key=lambda r: -r.get("position", 0))
+                 if str(r["id"]) != str(guild_id) and not r.get("managed")]
+        return _store(key, 30, {"channels": channels, "roles": roles})
+    return await _once(key, compute)
 
 
 def _id_sets(meta: dict):
@@ -272,6 +317,9 @@ async def _write_values(sess: dict, gid: int, module: dict, clean: dict, before_
 
 
 # ───────────────────────── request handling ─────────────────────────
+
+_SKIP = object()      # a status read that failed: leave that module out of the overview
+
 
 class _Reply(Exception):
     def __init__(self, status, payload=None, location=None):
@@ -1211,24 +1259,32 @@ async def _route(method: str, query: dict, headers, body: dict):
         await _enter_clone(body.get("clone_id") if method == "POST" else q("clone_id"))
 
     if method == "GET" and action == "me":
+        present_task = asyncio.ensure_future(_bot_guild_ids())     # slowest on a cold cache: start it first
+        uid = str(sess["user"]["id"])
+
+        async def _dropbox_unread():
+            try:
+                return sum(1 for m in await db.dropbox_list(uid) if not m["read"])
+            except Exception:
+                logger.exception("dashboard: dropbox unread count failed")
+                return 0
+
+        from api import dash_msg
+        # None of these depend on each other: run them together.
+        clones, unread, msg_unread = await asyncio.gather(
+            _clone_presence({g["id"] for g in sess.get("guilds", [])}, sess["user"]["id"]),
+            _dropbox_unread(),
+            dash_msg.unread_total(uid, db))
         try:
-            present = await _bot_guild_ids()
+            present = await present_task
         except DiscordError:
             _fail(502, "Couldn't reach Discord. Try again in a moment.")
-        clones = await _clone_presence({g["id"] for g in sess.get("guilds", [])}, sess["user"]["id"])
         servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present, "clones": clones.get(g["id"], [])}
                    for g in sess.get("guilds", [])]
         servers.sort(key=lambda g: (not (g["bot_present"] or g["clones"]), g["name"].lower()))
-        uid = str(sess["user"]["id"])
-        try:
-            unread = sum(1 for m in await db.dropbox_list(uid) if not m["read"])
-        except Exception:
-            logger.exception("dashboard: dropbox unread count failed")
-            unread = 0
-        from api import dash_msg
         raise _Reply(200, {"ok": True, "user": sess["user"], "servers": servers,
                            "is_owner": _is_owner(sess), "unread": unread, "member": True,
-                           "msg_unread": await dash_msg.unread_total(uid, db),
+                           "msg_unread": msg_unread,
                            "owner_sections": sorted(_owner_sections(sess))})
 
     if method == "GET" and action in _member_routes():
@@ -1338,16 +1394,20 @@ async def _route(method: str, query: dict, headers, body: dict):
 
     if method == "GET" and action == "guild":
         gid = await _authorised_guild(sess, q("guild_id"))
-        info = await _guild_info(gid)
-        premium = bool(await db.is_guild_premium_active(gid, _cid()))
-        status = {}
-        for m in S.MODULES:
+        # Info, the premium check and every module's status read are independent, so run them
+        # together instead of one after another (this used to be ~20 sequential DB round trips).
+        async def _status_of(m):
             try:
                 vals = S.export_values(m, await _get_cfg(m, gid))
             except Exception:
                 logger.exception("dashboard: status read failed for %s", m["id"])
-                continue
-            status[m["id"]] = vals.get("enabled") if "enabled" in vals else None
+                return m["id"], _SKIP
+            return m["id"], (vals.get("enabled") if "enabled" in vals else None)
+
+        info, premium_raw, *pairs = await asyncio.gather(
+            _guild_info(gid), db.is_guild_premium_active(gid, _cid()), *[_status_of(m) for m in S.MODULES])
+        premium = bool(premium_raw)
+        status = {mid: v for mid, v in pairs if v is not _SKIP}
         raise _Reply(200, {"ok": True, "guild": {
             "id": str(gid), "name": info.get("name"), "icon_url": _icon(info),
             "members": info.get("approximate_member_count"), "online": info.get("approximate_presence_count"),

@@ -149,6 +149,21 @@ MODULES: List[dict] = [
         ],
     },
     {
+        "id": "scamshield", "title": "Scam Shield", "category": "Security", "icon": "shield-check",
+        "desc": "Catch scam and phishing links and deal with whoever posted them.",
+        "get": "get_scam_shield_guild", "set": "set_scam_shield_guild",
+        "note": "The bot reads these settings every few minutes, so a change can take up to 5 minutes to apply. "
+                "Quarantine needs a quarantine role set up in Discord first (Server Panel).",
+        "fields": [
+            F("enabled", "Scam Shield", "toggle", "Scan messages for known scam and phishing links."),
+            F("punish_action", "When a scam is caught", "select", "What happens to the person who posted it. The message is always deleted.",
+              options=opts(("delete", "Delete the message only"), ("timeout", "Delete and time out (24h)"),
+                           ("quarantine", "Delete and quarantine"), ("kick", "Delete and kick"), ("ban", "Delete and ban"))),
+            F("allowed_domains", "Allowed domains", "list", "Links to these domains are never flagged (for example example.com). Up to 50.",
+              maxlen=100, maxitems=50),
+        ],
+    },
+    {
         "id": "joingate", "title": "Join gate", "category": "Security", "icon": "door",
         "desc": "Screen accounts at the door by age and avatar.",
         "get": "get_join_gate_config", "set": "set_join_gate_config",
@@ -232,6 +247,21 @@ MODULES: List[dict] = [
         ],
     },
     {
+        "id": "birthdays", "title": "Birthdays", "category": "Community", "icon": "heart",
+        "desc": "Announce member birthdays in a channel.",
+        "get": "get_birthday_config", "set": "set_birthday_config",
+        "note": "Members add their own birthday with /birthday. Banner, footer and extra messages are still set in Discord.",
+        "fields": [
+            F("enabled", "Birthday announcements", "toggle", "Post a message on each member's birthday."),
+            F("channel_id", "Announcement channel", "channel", "Where birthdays are announced.", kind="text"),
+            F("message", "Message", "textarea", "Leave empty for the default message.", maxlen=500),
+            F("ping_role_id", "Role to ping", "role", "Optional. Mentioned in the announcement."),
+            F("birthday_role_id", "Birthday role", "role", "Given for the day, then removed.", premium=True),
+            F("utc_offset_hours", "Time zone (UTC offset)", "number", "Whole hours from UTC. Ghana is 0.", min=-12, max=14),
+            F("announce_hour", "Announce at (hour, 0-23)", "number", "Local hour in the time zone above.", min=0, max=23),
+        ],
+    },
+    {
         "id": "economy", "title": "Economy", "category": "Fun", "icon": "coins",
         "desc": "Your server's currency and how people earn it.",
         "get": "get_economy_config", "set": "set_economy_config",
@@ -259,6 +289,20 @@ MODULES: List[dict] = [
             F("enabled", "Auto-post", "toggle", "Post a bot tip in the channel below on a schedule."),
             F("channel_id", "Channel", "channel", "Where the tips are posted. Needed before it can be turned on.", kind="text"),
             F("interval_hours", "Post every (hours)", "number", "1 to 720 hours.", min=1, max=720),
+        ],
+    },
+    {
+        "id": "animefeed", "title": "Anime feed", "category": "Fun", "icon": "mega",
+        "desc": "Post new anime and donghua episodes in a channel as they air.",
+        "get": "get_anime_feed_config", "set": "set_anime_feed_config",
+        "note": "Only episodes that air after you turn this on are posted. The bot needs Send Messages and Embed Links in the channel, "
+                "and a ping role must be mentionable. Changes can take up to 30 minutes to reach the posting worker.",
+        "fields": [
+            F("enabled", "Anime feed", "toggle", "Needs a channel. Stays off until one is saved."),
+            F("channel_id", "Feed channel", "channel", "Where new episodes are posted.", kind="text"),
+            F("ping_role_id", "Role to ping", "role", "Optional. Mentioned on each new episode."),
+            F("content_kinds", "What to post", "select", "Which kinds of shows appear.",
+              options=opts(("both", "Anime and donghua"), ("anime", "Anime only"), ("donghua", "Donghua only"))),
         ],
     },
     {
