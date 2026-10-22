@@ -23,6 +23,7 @@ Routes (all on /api/dash):
   GET  ?action=meta&guild_id            -> channels and roles
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
+  GET  ?action=autoresponders&guild_id / POST {action: autoresponder_add|autoresponder_delete, guild_id, trigger, response|id} -> same list as /autoresponder (audited, 30 writes/min, max 25, no mass mentions)
   GET  ?action=announcements&guild_id   -> upcoming /announce posts for this server (same page as Scheduled messages)
   POST {action: announcement_add, guild_id, channel_id, content, mode, minutes|time_utc} / {action: announcement_delete, guild_id, id} -> audited, 30 writes/min
   POST {action: logout}
@@ -1522,6 +1523,40 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(404, "That schedule no longer exists.")
         await _schedule_audit(sess, gid, "Scheduled message removed", f"#{sid}")
         raise _Reply(200, {"ok": True})
+    if method == "GET" and action == "autoresponders":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        _owner_rate(sess, "autoresponders_read", 60, 60)
+        rows = await db.get_autoresponders(gid, clone_id=_cid())
+        raise _Reply(200, {"ok": True, "items": [S.autoresponder_row_view(r) for r in rows[:S.AUTORESPONDER_MAX + 5]],
+                           "limit": S.AUTORESPONDER_MAX})
+
+    if method == "POST" and action == "autoresponder_add":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        _owner_rate(sess, "autoresponder_add", 30, 60)
+        rows = await db.get_autoresponders(gid, clone_id=_cid())
+        if len(rows) >= S.AUTORESPONDER_MAX:
+            _fail(422, f"You can have up to {S.AUTORESPONDER_MAX} auto-responders. Delete one first.")
+        clean, err = S.validate_autoresponder(body, [r["trigger"] for r in rows])
+        if err:
+            _fail(422, err)
+        new_id = await db.add_autoresponder(gid, clean["trigger"], clean["response"], int(sess["user"]["id"]), clone_id=_cid())
+        await _schedule_audit(sess, gid, "Auto-responder added", f"{clean['trigger'][:40]} -> {clean['response'][:60]}")
+        logger.info("dashboard autoresponder_add guild=%s user=%s id=%s", gid, sess["user"]["id"], new_id)
+        raise _Reply(200, {"ok": True, "item": S.autoresponder_row_view({"id": new_id, **clean, "created_by": sess["user"]["id"]}),
+                           "note": "The bot can take up to 5 minutes to start using it."})
+
+    if method == "POST" and action == "autoresponder_delete":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        _owner_rate(sess, "autoresponder_delete", 30, 60)
+        try:
+            rid = int(str(body.get("id")))
+        except ValueError:
+            _fail(400, "Invalid auto-responder.")
+        if not await db.remove_autoresponder(gid, rid, clone_id=_cid()):
+            _fail(404, "That auto-responder no longer exists.")
+        await _schedule_audit(sess, gid, "Auto-responder removed", f"#{rid}")
+        raise _Reply(200, {"ok": True})
+
     if method == "GET" and action == "announcements":
         gid = await _authorised_guild(sess, q("guild_id"))
         _owner_rate(sess, "announcements_read", 60, 60)
