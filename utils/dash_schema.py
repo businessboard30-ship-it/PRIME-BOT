@@ -57,7 +57,7 @@ MODULES: List[dict] = [
         "id": "verification", "title": "Join verification", "category": "Onboarding", "icon": "shield-check",
         "desc": "Hold new members in an Unverified role until they pass a check.",
         "get": "get_verification_config", "set": "set_verification_config", "no_quick": True,
-        "note": "The verify button message is posted by the bot. Run /setupverification in Discord once, then fine-tune everything here.",
+        "note": "The verify button message is posted by the bot. Run /setupverification in Discord once, then fine-tune everything here. Premium servers also get a custom panel, log channel, auto-kick, minimum account age and an after-verify message.",
         "fields": [
             F("enabled", "Verification", "toggle", "Turn the join check on or off."),
             F("mode", "Check type", "select", "Captcha sends members to a Cloudflare Turnstile page.",
@@ -67,6 +67,21 @@ MODULES: List[dict] = [
             F("verified_role_id", "Verified role", "role", "Given after passing."),
             F("timeout_seconds", "Time limit (seconds)", "number", "How long a member has to verify.", min=30, max=3600),
             F("max_attempts", "Max attempts", "number", "Wrong answers allowed before a kick.", min=1, max=10),
+            F("panel_title", "Panel title", "text", "Premium: your own title on the verify message.", maxlen=100, premium=True),
+            F("panel_text", "Panel text", "textarea", "Premium: your own text on the verify message.", maxlen=600, premium=True),
+            F("panel_color", "Panel colour", "color", "Premium: colour stripe of the verify message. Clear the box to go back to the default.",
+              as_int=True, premium=True),
+            F("panel_image_url", "Panel banner", "text", "Premium: a direct https:// link to a banner image.",
+              maxlen=300, https_only=True, premium=True),
+            F("log_channel_id", "Verification log", "channel", "Premium: posts who verified and who was kicked.", kind="text", premium=True),
+            F("kick_after_minutes", "Kick if not verified", "select", "Premium: remove members who never verify.",
+              options=opts((0, "Off"), (10, "10 minutes"), (30, "30 minutes"), (60, "1 hour"), (360, "6 hours"), (1440, "24 hours")),
+              numeric=True, null_zero=True, premium=True),
+            F("min_account_age_days", "Minimum account age", "select", "Premium: turn away accounts younger than this.",
+              options=opts((0, "Off"), (1, "1 day"), (3, "3 days"), (7, "7 days"), (30, "30 days")),
+              numeric=True, null_zero=True, premium=True),
+            F("welcome_text", "Message after verifying", "textarea", "Premium: DM sent once a member passes. Placeholders: {user}, {server}.",
+              maxlen=500, premium=True),
         ],
         "actions": [{"id": "verify_panel", "label": "Post verify panel",
                      "help": "Posts the verify button message in the verify channel (needs the channel and Unverified role saved). Does not lock any channels; /setupverification does that."}],
@@ -377,6 +392,10 @@ def export_values(module: dict, cfg: dict) -> dict:
             v = list(v or [])
         elif f["type"] == "toggle":
             v = bool(v)
+        elif f["type"] == "color" and f.get("as_int"):
+            v = "#%06x" % int(v) if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 0xFFFFFF else None
+        elif f["type"] == "select" and f.get("null_zero") and v is None:
+            v = 0
         out[f["key"]] = v
     return out
 
@@ -404,7 +423,8 @@ def _coerce(f: dict, raw: Any, channels: Dict[str, set], roles: set) -> Any:
     if t == "select":
         for value, _ in f["options"]:
             if str(value) == str(raw):
-                return int(value) if f.get("numeric") else value
+                n = int(value) if f.get("numeric") else value
+                return None if (f.get("null_zero") and n == 0) else n
         raise ValidationError(f"{label}: pick one of the listed options.")
     if t in ("text", "textarea"):
         if raw is None:
@@ -414,8 +434,16 @@ def _coerce(f: dict, raw: Any, channels: Dict[str, set], roles: set) -> Any:
         s = raw.strip()
         if len(s) > f.get("maxlen", 200):
             raise ValidationError(f"{label}: keep it under {f.get('maxlen', 200)} characters.")
+        if s and f.get("https_only") and (not s.lower().startswith("https://") or any(c.isspace() for c in s)):
+            raise ValidationError(f"{label}: use a direct https:// link.")
         return s if s else None
     if t == "color":
+        if f.get("as_int"):
+            if raw in (None, ""):
+                return None
+            if not isinstance(raw, str) or not _HEX.match(raw):
+                raise ValidationError(f"{label}: use a colour like #5865F2.")
+            return int(raw[1:], 16)
         if not isinstance(raw, str) or not _HEX.match(raw):
             raise ValidationError(f"{label}: use a colour like #5865F2.")
         return raw.lower()
