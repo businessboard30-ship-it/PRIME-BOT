@@ -192,3 +192,28 @@ def test_me_lists_clones_present_in_server(env, monkeypatch):
     _clone_env(env, monkeypatch)
     st, p, _ = call("GET", {"action": "me"})
     assert st == 200 and p["servers"][0]["clones"] == [{"clone_id": 7, "name": "Cloney"}]
+
+
+def test_anime_feed_setter_uses_the_wizard_save(monkeypatch):
+    import asyncio
+    import database
+    from modules import anime_feed as af
+    from utils.dash_schema import ValidationError
+    saved = []
+    store = {"cfg": af.FeedConfig(1, None, False, None, None, None, "both")}
+
+    async def get_config(gid, cid=None): return store["cfg"]
+    async def save_config(cfg, updated_by=None): saved.append(cfg); store["cfg"] = cfg
+    monkeypatch.setattr(af, "get_config", get_config)
+    monkeypatch.setattr(af, "save_config", save_config)
+    d = database.Database.__new__(database.Database)
+
+    with __import__("pytest").raises(ValidationError):                       # on without a channel
+        asyncio.run(d.set_anime_feed_config(1, None, enabled=True))
+    assert not saved
+    asyncio.run(d.set_anime_feed_config(1, None, channel_id=100, content_kinds="anime"))
+    asyncio.run(d.set_anime_feed_config(1, None, enabled=True, ping_role_id=500))
+    c = saved[-1]
+    assert (c.enabled, c.channel_id, c.ping_role_id, c.content_kinds) == (True, 100, 500, "anime")   # merged, nothing lost
+    asyncio.run(d.set_anime_feed_config(1, None, ping_role_id=None))
+    assert saved[-1].ping_role_id is None and saved[-1].enabled is True

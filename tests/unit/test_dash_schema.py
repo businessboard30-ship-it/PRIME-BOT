@@ -96,3 +96,18 @@ def test_export_stringifies_snowflakes():
     out = S.export_values(S.BY_ID["welcome"], {"enabled": 1, "channel_id": 123456789012345678, "message_template": "hi"})
     assert out["channel_id"] == "123456789012345678" and out["enabled"] is True and out["accent_color"] is None
     assert S.export_values(S.BY_ID["automod"], {"banned_words": None})["banned_words"] == []
+
+
+# ───────── anime feed ─────────
+
+def test_anime_feed_fields_match_the_bot():
+    from modules import anime_feed as AF
+    m = S.BY_ID["animefeed"]
+    assert {f["key"] for f in m["fields"]} == {"enabled", "channel_id", "content_kinds", "ping_role_id"}
+    kinds = next(f for f in m["fields"] if f["key"] == "content_kinds")
+    assert {val for val, _ in kinds["options"]} == set(AF.KINDS)
+    clean, errs = v("animefeed", {"enabled": True, "channel_id": "100", "content_kinds": "donghua", "ping_role_id": "500"})
+    assert not errs and clean == {"enabled": True, "channel_id": 100, "content_kinds": "donghua", "ping_role_id": 500}
+    assert v("animefeed", {"content_kinds": "movies"})[1]
+    assert v("animefeed", {"channel_id": "999"})[1]            # not a channel of this server
+    assert not any(f.get("premium") for f in m["fields"])      # free for everyone, like the Discord wizard

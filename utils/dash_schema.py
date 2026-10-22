@@ -279,6 +279,22 @@ MODULES: List[dict] = [
     },
 ]
 
+
+ANIME_FEED_MODULE: dict = {
+    "id": "animefeed", "title": "Anime feed", "category": "Community", "icon": "star",
+    "desc": "Post new anime and donghua episodes in a channel when they air.",
+    "get": "get_anime_feed_config", "set": "set_anime_feed_config",
+    "note": "Only episodes that air after you switch the feed on are posted. Member follows, alerts and the Anime+ upgrade are handled in Discord.",
+    "fields": [
+        F("enabled", "Anime feed", "toggle", "Post new episodes as they air."),
+        F("channel_id", "Feed channel", "channel", "Where episodes are posted. Pick this before turning the feed on.", kind="text"),
+        F("content_kinds", "What to post", "select", "Anime from Japan, donghua from China, or both.",
+          options=opts(("both", "Anime and donghua"), ("anime", "Anime only"), ("donghua", "Donghua only"))),
+        F("ping_role_id", "Role to ping", "role", "Pinged on each new episode. Members can also follow single shows from Discord."),
+    ],
+}
+MODULES.append(ANIME_FEED_MODULE)
+
 BY_ID: Dict[str, dict] = {m["id"]: m for m in MODULES}
 CATEGORIES = ["Onboarding", "Security", "Community", "Fun"]
 

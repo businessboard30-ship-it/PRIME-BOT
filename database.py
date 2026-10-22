@@ -12621,6 +12621,31 @@ class Database:
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, text)
         return res.endswith(" 1")
 
+    async def get_anime_feed_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Dashboard 'Anime feed' page: the per-server feed settings (modules/anime_feed.py owns the table)."""
+        from modules import anime_feed as af
+        c = await af.get_config(guild_id, clone_id)
+        return {"enabled": bool(c.enabled), "channel_id": c.channel_id, "ping_role_id": c.ping_role_id,
+                "content_kinds": c.content_kinds}
+
+    async def set_anime_feed_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
+        """Same save the Discord wizard uses (af.save_config), so the on-time stamp and worker wake-up behave identically.
+        Any key left out keeps its value. The feed can't be on without a channel."""
+        from modules import anime_feed as af
+        from utils.dash_schema import ValidationError
+        c = await af.get_config(guild_id, clone_id)
+        if "enabled" in fields:
+            c.enabled = bool(fields["enabled"])
+        if "channel_id" in fields:
+            c.channel_id = int(fields["channel_id"]) if fields["channel_id"] else None
+        if "ping_role_id" in fields:
+            c.ping_role_id = int(fields["ping_role_id"]) if fields["ping_role_id"] else None
+        if "content_kinds" in fields:
+            c.content_kinds = af.clean_kinds(fields["content_kinds"])
+        if c.enabled and not c.channel_id:
+            raise ValidationError("Pick a feed channel before turning the anime feed on.")
+        await af.save_config(c)
+
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Marks the premium welcome-card pack as purchased for this guild
         (whole-guild, one-time — see card_pack_unlocked's schema comment
