@@ -134,6 +134,20 @@ MODULES: List[dict] = [
         ],
     },
     {
+        "id": "scamshield", "title": "Scam Shield", "category": "Security", "icon": "shield-check",
+        "desc": "Delete known scam messages and choose what happens to the person who posted one.",
+        "get": "get_scam_shield_guild", "set": "set_scam_shield_guild",
+        "note": "Changes can take up to 5 minutes to reach the bot (its settings cache). Owner-level scam rules stay in Discord.",
+        "fields": [
+            F("enabled", "Scam Shield", "toggle", "Delete caught scam messages in this server."),
+            F("punish_action", "Action on the poster", "select", "What happens to the person who posted a caught scam.",
+              options=opts(("delete", "Delete only"), ("timeout", "Timeout"), ("quarantine", "Quarantine"),
+                           ("kick", "Kick"), ("ban", "Ban"))),
+            F("allowed_domains", "Allowed domains", "list", "One per line. Links to these sites are never treated as scams.",
+              maxitems=50, maxlen=100, normalize="domain"),
+        ],
+    },
+    {
         "id": "honeypot", "title": "Honeypot", "category": "Security", "icon": "bug",
         "desc": "A trap channel that catches spam bots and hacked accounts.",
         "get": "get_honeypot_config", "set": "set_honeypot_config",
@@ -427,6 +441,12 @@ def _coerce(f: dict, raw: Any, channels: Dict[str, set], roles: set) -> Any:
             if not isinstance(x, str):
                 raise ValidationError(f"{label}: entries must be text.")
             s = x.strip()
+            if f.get("normalize") == "domain" and s:
+                from modules.scam_shield import parse_domain   # same parser the Discord flow uses
+                dom = parse_domain(s)
+                if dom is None:
+                    raise ValidationError(f"{label}: '{s[:40]}' isn't a website like example.com.")
+                s = dom
             if not s or s.lower() in seen:
                 continue
             if len(s) > f.get("maxlen", 60):
