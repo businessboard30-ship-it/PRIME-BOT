@@ -57,7 +57,7 @@ MODULES: List[dict] = [
         "id": "verification", "title": "Join verification", "category": "Onboarding", "icon": "shield-check",
         "desc": "Hold new members in an Unverified role until they pass a check.",
         "get": "get_verification_config", "set": "set_verification_config", "no_quick": True,
-        "note": "The verify button message is posted by the bot. Run /setupverification in Discord once, then fine-tune everything here.",
+        "note": "The verify button message is posted by the bot. Run /setupverification in Discord once, then fine-tune everything here. Premium servers also get a custom panel, log channel, auto-kick, minimum account age and an after-verify message.",
         "fields": [
             F("enabled", "Verification", "toggle", "Turn the join check on or off."),
             F("mode", "Check type", "select", "Captcha sends members to a Cloudflare Turnstile page.",
@@ -67,6 +67,21 @@ MODULES: List[dict] = [
             F("verified_role_id", "Verified role", "role", "Given after passing."),
             F("timeout_seconds", "Time limit (seconds)", "number", "How long a member has to verify.", min=30, max=3600),
             F("max_attempts", "Max attempts", "number", "Wrong answers allowed before a kick.", min=1, max=10),
+            F("panel_title", "Panel title", "text", "Premium: your own title on the verify message.", maxlen=100, premium=True),
+            F("panel_text", "Panel text", "textarea", "Premium: your own text on the verify message.", maxlen=600, premium=True),
+            F("panel_color", "Panel colour", "color", "Premium: colour stripe of the verify message. Clear the box to go back to the default.",
+              as_int=True, premium=True),
+            F("panel_image_url", "Panel banner", "text", "Premium: a direct https:// link to a banner image.",
+              maxlen=300, https_only=True, premium=True),
+            F("log_channel_id", "Verification log", "channel", "Premium: posts who verified and who was kicked.", kind="text", premium=True),
+            F("kick_after_minutes", "Kick if not verified", "select", "Premium: remove members who never verify.",
+              options=opts((0, "Off"), (10, "10 minutes"), (30, "30 minutes"), (60, "1 hour"), (360, "6 hours"), (1440, "24 hours")),
+              numeric=True, null_zero=True, premium=True),
+            F("min_account_age_days", "Minimum account age", "select", "Premium: turn away accounts younger than this.",
+              options=opts((0, "Off"), (1, "1 day"), (3, "3 days"), (7, "7 days"), (30, "30 days")),
+              numeric=True, null_zero=True, premium=True),
+            F("welcome_text", "Message after verifying", "textarea", "Premium: DM sent once a member passes. Placeholders: {user}, {server}.",
+              maxlen=500, premium=True),
         ],
         "actions": [{"id": "verify_panel", "label": "Post verify panel",
                      "help": "Posts the verify button message in the verify channel (needs the channel and Unverified role saved). Does not lock any channels; /setupverification does that."}],
@@ -146,6 +161,21 @@ MODULES: List[dict] = [
               numeric=True, premium=True),
             F("log_channel_id", "Log channel", "channel", "", kind="text"),
             F("alert_role_id", "Role to ping", "role", ""),
+        ],
+    },
+    {
+        "id": "scamshield", "title": "Scam Shield", "category": "Security", "icon": "shield-check",
+        "desc": "Catch scam and phishing links and deal with whoever posted them.",
+        "get": "get_scam_shield_guild", "set": "set_scam_shield_guild",
+        "note": "The bot reads these settings every few minutes, so a change can take up to 5 minutes to apply. "
+                "Quarantine needs a quarantine role set up in Discord first (Server Panel).",
+        "fields": [
+            F("enabled", "Scam Shield", "toggle", "Scan messages for known scam and phishing links."),
+            F("punish_action", "When a scam is caught", "select", "What happens to the person who posted it. The message is always deleted.",
+              options=opts(("delete", "Delete the message only"), ("timeout", "Delete and time out (24h)"),
+                           ("quarantine", "Delete and quarantine"), ("kick", "Delete and kick"), ("ban", "Delete and ban"))),
+            F("allowed_domains", "Allowed domains", "list", "Links to these domains are never flagged (for example example.com). Up to 50.",
+              maxlen=100, maxitems=50),
         ],
     },
     {
@@ -262,6 +292,28 @@ MODULES: List[dict] = [
         ],
     },
     {
+        "id": "cat", "title": "Cat game", "category": "Fun", "icon": "paw",
+        "desc": "Cats that appear in your server for members to adopt, plus cat fights.",
+        "get": "get_cat_config", "set": "set_cat_config",
+        "note": "Same settings as /catsetup. Free servers get 1 spawn channel and about 120-140 cats a day; Premium gets up to 3 channels and 250-300. Pace can only lower that amount.",
+        "fields": [
+            F("enabled", "Cat game", "toggle", "Turn automatic cats on or off in this server."),
+            F("channel_1", "Spawn channel", "channel", "Where cats appear. The bot needs View Channel, Send Messages and Embed Links there.", kind="text"),
+            F("channel_2", "Second spawn channel", "channel", "Premium. Cats rotate between your channels.", kind="text", premium=True),
+            F("channel_3", "Third spawn channel", "channel", "Premium.", kind="text", premium=True),
+            F("pace_percent", "Cats per day", "select", "A share of your plan's daily amount. You can ask for fewer cats, never more.",
+              options=opts(("100", "100% (full amount)"), ("75", "75%"), ("50", "50%"), ("25", "25%"), ("10", "10%")), numeric=True),
+            F("active_start", "Cats start at (UTC)", "select", "Spawn hours. The daily amount is squeezed into this window.",
+              options=opts(("0", "00:00 UTC"), ("1", "01:00 UTC"), ("2", "02:00 UTC"), ("3", "03:00 UTC"), ("4", "04:00 UTC"), ("5", "05:00 UTC"), ("6", "06:00 UTC"), ("7", "07:00 UTC"), ("8", "08:00 UTC"), ("9", "09:00 UTC"), ("10", "10:00 UTC"), ("11", "11:00 UTC"), ("12", "12:00 UTC"), ("13", "13:00 UTC"), ("14", "14:00 UTC"), ("15", "15:00 UTC"), ("16", "16:00 UTC"), ("17", "17:00 UTC"), ("18", "18:00 UTC"), ("19", "19:00 UTC"), ("20", "20:00 UTC"), ("21", "21:00 UTC"), ("22", "22:00 UTC"), ("23", "23:00 UTC")), numeric=True),
+            F("active_end", "Cats stop at (UTC)", "select", "Same as start for the whole day (00:00 to 24:00).",
+              options=opts(("1", "01:00 UTC"), ("2", "02:00 UTC"), ("3", "03:00 UTC"), ("4", "04:00 UTC"), ("5", "05:00 UTC"), ("6", "06:00 UTC"), ("7", "07:00 UTC"), ("8", "08:00 UTC"), ("9", "09:00 UTC"), ("10", "10:00 UTC"), ("11", "11:00 UTC"), ("12", "12:00 UTC"), ("13", "13:00 UTC"), ("14", "14:00 UTC"), ("15", "15:00 UTC"), ("16", "16:00 UTC"), ("17", "17:00 UTC"), ("18", "18:00 UTC"), ("19", "19:00 UTC"), ("20", "20:00 UTC"), ("21", "21:00 UTC"), ("22", "22:00 UTC"), ("23", "23:00 UTC"), ("24", "24:00 UTC")), numeric=True),
+            F("announce_mode", "Public posts", "select", "How much the bot announces in the channel (adoptions, big moments).",
+              options=opts(("all", "Everything"), ("milestones", "Only big moments"), ("off", "Nothing"))),
+            F("fights_cross_server", "Cross-server fights", "toggle", "Let requests on your server's fight board be answered from other servers. Play coins only."),
+            F("fights_show_server", "Show server name on the board", "toggle", "Show this server's name on the public fight board."),
+        ],
+    },
+    {
         "id": "autopost", "title": "Auto-post", "category": "Community", "icon": "scroll", "no_quick": True,
         "desc": "Post a rotating tip about the bot's features on a schedule.",
         "get": "get_autopost_settings_config", "set": "set_autopost_settings_config",
@@ -270,6 +322,20 @@ MODULES: List[dict] = [
             F("enabled", "Auto-post", "toggle", "Post a bot tip in the channel below on a schedule."),
             F("channel_id", "Channel", "channel", "Where the tips are posted. Needed before it can be turned on.", kind="text"),
             F("interval_hours", "Post every (hours)", "number", "1 to 720 hours.", min=1, max=720),
+        ],
+    },
+    {
+        "id": "animefeed", "title": "Anime feed", "category": "Fun", "icon": "mega",
+        "desc": "Post new anime and donghua episodes in a channel as they air.",
+        "get": "get_anime_feed_config", "set": "set_anime_feed_config",
+        "note": "Only episodes that air after you turn this on are posted. The bot needs Send Messages and Embed Links in the channel, "
+                "and a ping role must be mentionable. Changes can take up to 30 minutes to reach the posting worker.",
+        "fields": [
+            F("enabled", "Anime feed", "toggle", "Needs a channel. Stays off until one is saved."),
+            F("channel_id", "Feed channel", "channel", "Where new episodes are posted.", kind="text"),
+            F("ping_role_id", "Role to ping", "role", "Optional. Mentioned on each new episode."),
+            F("content_kinds", "What to post", "select", "Which kinds of shows appear.",
+              options=opts(("both", "Anime and donghua"), ("anime", "Anime only"), ("donghua", "Donghua only"))),
         ],
     },
     {
@@ -289,6 +355,30 @@ MODULES: List[dict] = [
         ],
     },
 ]
+
+
+BIRTHDAY_MODULE: dict = {
+    "id": "birthdays", "title": "Birthdays", "category": "Community", "icon": "star",
+    "desc": "Announce member birthdays once a day. Members add their own date with /birthday.",
+    "get": "get_birthday_config", "set": "set_birthday_config",
+    "note": "Members set their own birthday in Discord (month and day only, no year). Premium adds a styled announcement, a birthday role and extra messages.",
+    "fields": [
+        F("enabled", "Birthday announcements", "toggle", "Needs a channel."),
+        F("channel_id", "Announcement channel", "channel", "Where birthdays are announced.", kind="text"),
+        F("ping_role_id", "Role to ping", "role", "Optional. Pinged with the announcement."),
+        F("message", "Message", "textarea", "Placeholders: {user}, {name}, {server}. Empty uses the default.", maxlen=500),
+        F("utc_offset_hours", "Time zone (UTC offset)", "number", "Whole hours, -12 to 14. Ghana is 0.", min=-12, max=14),
+        F("announce_hour", "Announce at hour", "number", "Local hour of day, 0 to 23.", min=0, max=23),
+        F("embed_title", "Title", "text", "Premium: title of the styled announcement.", maxlen=80, premium=True),
+        F("embed_color", "Colour", "color", "Premium. Clear the box for the default pink.", as_int=True, premium=True),
+        F("embed_image_url", "Banner image", "text", "Premium: an https link ending in .png, .jpg, .gif or .webp.", maxlen=300, https_only=True, premium=True),
+        F("embed_footer", "Footer", "text", "Premium.", maxlen=100, premium=True),
+        F("show_avatar", "Show their avatar", "toggle", "Premium: the birthday person's picture on the announcement.", null_true=True, premium=True),
+        F("birthday_role_id", "Birthday role", "role", "Premium: given for the day, removed the next day. The bot's role must sit above it.", premium=True),
+        F("extra_messages", "More messages", "list", "Premium: up to 5, one per line. One is picked at random each day.", maxlen=300, maxitems=5, premium=True),
+    ],
+}
+MODULES.append(BIRTHDAY_MODULE)
 
 BY_ID: Dict[str, dict] = {m["id"]: m for m in MODULES}
 CATEGORIES = ["Onboarding", "Security", "Community", "Fun"]
@@ -387,7 +477,11 @@ def export_values(module: dict, cfg: dict) -> dict:
         elif f["type"] == "list":
             v = list(v or [])
         elif f["type"] == "toggle":
-            v = bool(v)
+            v = True if (v is None and f.get("null_true")) else bool(v)
+        elif f["type"] == "color" and f.get("as_int"):
+            v = "#%06x" % int(v) if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 0xFFFFFF else None
+        elif f["type"] == "select" and f.get("null_zero") and v is None:
+            v = 0
         out[f["key"]] = v
     return out
 
@@ -415,7 +509,8 @@ def _coerce(f: dict, raw: Any, channels: Dict[str, set], roles: set) -> Any:
     if t == "select":
         for value, _ in f["options"]:
             if str(value) == str(raw):
-                return int(value) if f.get("numeric") else value
+                n = int(value) if f.get("numeric") else value
+                return None if (f.get("null_zero") and n == 0) else n
         raise ValidationError(f"{label}: pick one of the listed options.")
     if t in ("text", "textarea"):
         if raw is None:
@@ -430,8 +525,16 @@ def _coerce(f: dict, raw: Any, channels: Dict[str, set], roles: set) -> Any:
             s, problem = ai_name.clean_name(s)
             if problem:
                 raise ValidationError(f"{label}: {problem}")
+        if s and f.get("https_only") and (not s.lower().startswith("https://") or any(c.isspace() for c in s)):
+            raise ValidationError(f"{label}: use a direct https:// link.")
         return s if s else None
     if t == "color":
+        if f.get("as_int"):
+            if raw in (None, ""):
+                return None
+            if not isinstance(raw, str) or not _HEX.match(raw):
+                raise ValidationError(f"{label}: use a colour like #5865F2.")
+            return int(raw[1:], 16)
         if not isinstance(raw, str) or not _HEX.match(raw):
             raise ValidationError(f"{label}: use a colour like #5865F2.")
         return raw.lower()
@@ -873,3 +976,95 @@ def giveaway_view(row: dict) -> dict:
             "winner_ids": [str(w) for w in (row.get("winner_ids") or [])][:50],
             "status": row.get("status") if row.get("status") in GIVEAWAY_STATUSES else "ended",
             "ends_at": iso(row.get("ends_at"))}
+
+
+# ───────────────────────── autoresponders (trigger -> reply pairs) ─────────────────────────
+
+AUTORESPONDER_MAX = 25            # the command has no cap; the dashboard is stricter to keep the per-message scan short
+AUTORESPONDER_TRIGGER_MAX = 100
+AUTORESPONDER_RESPONSE_MAX = 1500
+_MASS_MENTION_RE = re.compile(r"@(everyone|here)\b|<@&\d+>", re.IGNORECASE)
+
+
+def validate_autoresponder(raw: Any, existing_triggers=()) -> Tuple[Optional[dict], Optional[str]]:
+    """-> ({trigger, response}, None) or (None, error). The trigger is stored lower-case, like /autoresponder add.
+    Mass mentions (@everyone, @here, role pings) are refused so a reply can't be used to ping a whole server."""
+    if not isinstance(raw, dict):
+        return None, "Nothing to save."
+    trigger, response = raw.get("trigger"), raw.get("response")
+    if not isinstance(trigger, str) or not isinstance(response, str):
+        return None, "Enter a trigger and a reply."
+    trigger, response = trigger.strip().lower(), response.strip()
+    if not trigger or not response:
+        return None, "Enter a trigger and a reply."
+    if len(trigger) > AUTORESPONDER_TRIGGER_MAX:
+        return None, f"The trigger must be under {AUTORESPONDER_TRIGGER_MAX} characters."
+    if len(response) > AUTORESPONDER_RESPONSE_MAX:
+        return None, f"The reply must be under {AUTORESPONDER_RESPONSE_MAX} characters."
+    if _MASS_MENTION_RE.search(response):
+        return None, "Replies can't contain @everyone, @here or role mentions."
+    if trigger in {str(t).lower() for t in existing_triggers}:
+        return None, "That trigger already exists."
+    return {"trigger": trigger, "response": response}, None
+
+
+def autoresponder_row_view(row: dict) -> dict:
+    return {"id": str(row["id"]), "trigger": str(row.get("trigger") or "")[:AUTORESPONDER_TRIGGER_MAX],
+            "response": str(row.get("response") or "")[:AUTORESPONDER_RESPONSE_MAX],
+            "created_by": str(row["created_by"]) if row.get("created_by") else None}
+
+
+# ───────────────────────── applications (read-only) ─────────────────────────
+
+APPLICATION_STATUSES = ("pending", "accepted", "declined")
+APPLICATION_ANSWER_MAX = 1000
+
+
+def application_form_view(f: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(f["id"]), "title": str(f.get("title") or "")[:100], "status": f.get("status"),
+            "pending": int(f.get("pending") or 0), "questions": [str(q)[:100] for q in (f.get("questions") or [])][:10],
+            "review_channel_id": str(f["review_channel_id"]) if f.get("review_channel_id") else None,
+            "accept_role_id": str(f["accept_role_id"]) if f.get("accept_role_id") else None,
+            "updated_at": iso(f.get("updated_at"))}
+
+
+def application_submission_view(r: dict) -> dict:
+    iso = lambda d: d.isoformat() if hasattr(d, "isoformat") else None
+    return {"id": str(r["id"]), "form_id": str(r["form_id"]), "user_id": str(r["user_id"]),
+            "status": r.get("status") if r.get("status") in APPLICATION_STATUSES else "pending",
+            "answers": [{"q": str(a.get("q", ""))[:100], "a": str(a.get("a", ""))[:APPLICATION_ANSWER_MAX]}
+                        for a in (r.get("answers") or []) if isinstance(a, dict)][:10],
+            "decided_by": str(r["decided_by"]) if r.get("decided_by") else None,
+            "created_at": iso(r.get("created_at")), "decided_at": iso(r.get("decided_at"))}
+
+
+# ───────────────────────── quarantine role (needs the bot's role hierarchy) ─────────────────────────
+
+MANAGE_ROLES = 0x10000000
+
+
+def quarantine_role_problem(guild_id, role_id, roles: list, bot_role_ids: list):
+    """Same rules as modules.server_panel_quarantine.role_problem, from Discord's raw role objects.
+    roles: [{id, position, managed, permissions}]; bot_role_ids: the bot member's role ids. -> reason or None."""
+    by_id = {str(r["id"]): r for r in roles}
+    role = by_id.get(str(role_id))
+    if role is None:
+        return "The quarantine role was deleted. Pick a new one."
+    mine = [by_id[str(i)] for i in bot_role_ids if str(i) in by_id]
+    everyone = by_id.get(str(guild_id))
+    perms = 0
+    for r in mine + ([everyone] if everyone else []):
+        try:
+            perms |= int(r.get("permissions") or 0)
+        except (TypeError, ValueError):
+            pass
+    if not (perms & MANAGE_ROLES or perms & ADMINISTRATOR):
+        return "I need the Manage Roles permission to quarantine anyone."
+    if role.get("managed") or str(role_id) == str(guild_id):
+        return "That role can't be handed out by the bot. Pick a normal role."
+    if not mine:
+        return "Move my role above the quarantine role in Server Settings > Roles."
+    top = max(mine, key=lambda r: (int(r.get("position") or 0), -int(r["id"])))
+    below = (int(role.get("position") or 0), -int(role["id"])) < (int(top.get("position") or 0), -int(top["id"]))
+    return None if below else "Move my role above the quarantine role in Server Settings > Roles."

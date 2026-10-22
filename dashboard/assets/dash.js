@@ -60,6 +60,7 @@
     ticket: "M4 7h16v3a2 2 0 0 0 0 4v3H4v-3a2 2 0 0 0 0-4z M14 7v10",
     bulb: "M9 18h6 M10 21h4 M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z",
     link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
+    paw: "M12 20c-3 0-5-1.8-5-4 0-2.4 2.4-4.5 5-4.5s5 2.1 5 4.5c0 2.2-2 4-5 4z M5 11h.01 M9 6h.01 M15 6h.01 M19 11h.01",
     coins: "M12 4c4.4 0 8 1.3 8 3s-3.6 3-8 3-8-1.3-8-3 3.6-3 8-3z M4 7v5c0 1.7 3.6 3 8 3s8-1.3 8-3V7 M4 12v5c0 1.7 3.6 3 8 3s8-1.3 8-3v-5"
   };
   function icon(name) {
@@ -216,6 +217,9 @@
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
     nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
+    nav.appendChild(link(gpath(gid, "autoresponders"), "bulb", "Auto-responders", modId === "autoresponders"));
+    nav.appendChild(link(gpath(gid, "quarantine"), "shield-check", "Quarantine role", modId === "quarantine"));
+    nav.appendChild(link(gpath(gid, "applications"), "scroll", "Applications", modId === "applications"));
     nav.appendChild(link(gpath(gid, "tickethistory"), "ticket", "Ticket history", modId === "tickethistory"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
@@ -719,6 +723,104 @@
     add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Scheduled messages" }),
       h("p", { class: "muted", text: "Post a message later, or on repeat. Scheduled messages are the same as /schedule in Discord and announcements are the same as /announce. Times are UTC." })),
       h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" }))].concat(sched, ann));
+  }
+
+  /* ---------- auto-responders ---------- */
+  function renderAutoresponders(gid, main) {
+    var list = h("div", { class: "audit" }), note = h("p", { class: "help", text: "" });
+    var trig = h("input", { type: "text", maxlength: "100", placeholder: "e.g. rules", "aria-label": "Trigger" });
+    var reply = h("textarea", { rows: "3", maxlength: "1500", placeholder: "What should I say?", "aria-label": "Reply" });
+    var addBtn = h("button", { class: "btn sm primary", text: "Add auto-responder" });
+    function load() {
+      api("autoresponders", { guild_id: gid }).then(function (r) {
+        list.textContent = "";
+        note.textContent = r.items.length + " of " + r.limit + " used.";
+        if (!r.items.length) { list.appendChild(h("p", { class: "muted", text: "No auto-responders yet." })); return; }
+        r.items.forEach(function (it) {
+          var del = h("button", { class: "btn sm ghost", text: "Delete" });
+          del.addEventListener("click", function () {
+            if (!window.confirm("Delete this auto-responder?")) return;
+            del.disabled = true;
+            api("autoresponder_delete", {}, { guild_id: gid, id: it.id }).then(function () { toast("Deleted. The bot can take up to 5 minutes to stop using it.", "ok"); load(); })
+              .catch(function (e) { toast(e.message, "bad"); del.disabled = false; });
+          });
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: "When a message contains: " + it.trigger }),
+            h("p", { text: it.response, style: "white-space:pre-wrap;word-break:break-word" })), del));
+        });
+      }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    addBtn.addEventListener("click", function () {
+      addBtn.classList.add("busy"); addBtn.disabled = true;
+      api("autoresponder_add", {}, { guild_id: gid, trigger: trig.value, response: reply.value }).then(function (r) { toast(r.note || "Added", "ok"); trig.value = ""; reply.value = ""; load(); })
+        .catch(function (e) { toast(e.message, "bad"); }).then(function () { addBtn.classList.remove("busy"); addBtn.disabled = false; });
+    });
+    load();
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Auto-responders" }),
+      h("p", { class: "muted", text: "When a message contains the trigger, I reply with your text. Same as /autoresponder in Discord. Only the first match replies. @everyone, @here and role mentions aren't allowed." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card fields rv" }, h("h2", { text: "New auto-responder" }),
+        h("div", { class: "field" }, h("div", null, h("label", { text: "Trigger" }), h("p", { class: "help", text: "Not case sensitive. Matches anywhere in a message." })), trig),
+        h("div", { class: "field" }, h("div", null, h("label", { text: "Reply" })), reply),
+        h("div", { class: "action" }, h("div", { class: "grow" }), addBtn)),
+      h("div", { class: "card rv" }, h("h2", { text: "Your auto-responders" }), note, list)]);
+  }
+
+  /* ---------- applications (read-only) ---------- */
+  function renderApplications(gid, main) {
+    var formsBox = h("div", { class: "audit" }), subsBox = h("div", { class: "audit" }), moreBtn = h("button", { class: "btn sm ghost", text: "Load more", hidden: true });
+    var formSel = h("select", { "aria-label": "Form" }, [h("option", { value: "", text: "All forms" })]);
+    var statSel = h("select", { "aria-label": "Status" }, [["", "Any status"], ["pending", "Pending"], ["accepted", "Accepted"], ["declined", "Declined"]].map(function (o) { return h("option", { value: o[0], text: o[1] }); }));
+    var last = null;
+    function loadSubs(append) {
+      var q = { guild_id: gid }; if (formSel.value) q.form_id = formSel.value; if (statSel.value) q.status = statSel.value; if (append && last) q.before = last;
+      api("application_submissions", q).then(function (r) {
+        if (!append) subsBox.textContent = "";
+        if (!r.submissions.length && !append) subsBox.appendChild(h("p", { class: "muted", text: "No applications." }));
+        r.submissions.forEach(function (sb) {
+          last = sb.id;
+          var det = h("div", null, sb.answers.map(function (a) { return h("div", null, h("b", { text: a.q }), h("p", { text: a.a, style: "white-space:pre-wrap;word-break:break-word" })); }));
+          subsBox.appendChild(h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: "User " + sb.user_id + " · " + sb.status }), h("p", { class: "help", text: fmtWhen(sb.created_at) }), det)));
+        });
+        moreBtn.hidden = !r.more;
+      }).catch(function (e) { subsBox.textContent = ""; subsBox.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    formSel.addEventListener("change", function () { last = null; loadSubs(false); });
+    statSel.addEventListener("change", function () { last = null; loadSubs(false); });
+    moreBtn.addEventListener("click", function () { loadSubs(true); });
+    api("applications", { guild_id: gid }).then(function (r) {
+      formsBox.textContent = "";
+      if (!r.forms.length) formsBox.appendChild(h("p", { class: "muted", text: "No application forms yet. Create one with /application in Discord." }));
+      r.forms.forEach(function (f) {
+        formSel.appendChild(h("option", { value: f.id, text: f.title }));
+        formsBox.appendChild(h("div", { class: "action" }, h("div", { class: "grow" }, h("b", { text: f.title + " · " + f.status }),
+          h("p", { class: "help", text: f.pending + " waiting for review · " + f.questions.length + " question(s)" }))));
+      });
+    }).catch(function (e) { formsBox.textContent = ""; formsBox.appendChild(h("p", { class: "muted", text: e.message })); });
+    loadSubs(false);
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Applications" }),
+      h("p", { class: "muted", text: "Read-only. Create forms and accept or decline applicants in Discord (/application); answers are private to people who can manage this server." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card rv" }, h("h2", { text: "Forms" }), formsBox),
+      h("div", { class: "card rv" }, h("h2", { text: "Applications" }), h("div", { class: "action" }, formSel, statSel), subsBox, moreBtn)]);
+  }
+
+  /* ---------- quarantine role ---------- */
+  function renderQuarantine(gid, main) {
+    var sel = h("select", { "aria-label": "Quarantine role" }, [h("option", { value: "", text: "Pick a role" })].concat(S.meta.roles.map(function (r) { return h("option", { value: r.id, text: r.name }); })));
+    var warn = h("p", { class: "help", text: "" }), save = h("button", { class: "btn sm primary", text: "Save role" });
+    api("quarantine", { guild_id: gid }).then(function (r) { if (r.role_id) sel.value = r.role_id; warn.textContent = r.problem ? "Problem: " + r.problem : (r.role_id ? "This role is ready to use." : ""); })
+      .catch(function (e) { warn.textContent = e.message; });
+    save.addEventListener("click", function () {
+      save.classList.add("busy"); save.disabled = true;
+      api("quarantine_role_set", {}, { guild_id: gid, role_id: sel.value }).then(function () { toast("Quarantine role saved", "ok"); warn.textContent = "This role is ready to use."; })
+        .catch(function (e) { toast(e.message, "bad"); }).then(function () { save.classList.remove("busy"); save.disabled = false; });
+    });
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Security" }), h("h1", { text: "Quarantine role" }),
+      h("p", { class: "muted", text: "The role a quarantined member is moved to. Quarantining and releasing people stays in Discord. The role must be a normal role below my highest role, and I need Manage Roles." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card fields rv" }, h("h2", { text: "Role" }), h("div", { class: "field" }, h("div", null, h("label", { text: "Quarantine role" }), warn), sel),
+        h("div", { class: "action" }, h("div", { class: "grow" }), save))]);
   }
 
   /* ---------- analytics (read-only) ---------- */
@@ -1952,7 +2054,7 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
+      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, autoresponders: renderAutoresponders, applications: renderApplications, quarantine: renderQuarantine, tickethistory: renderTickets, billing: renderBilling };
       if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);
