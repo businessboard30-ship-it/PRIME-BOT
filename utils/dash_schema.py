@@ -149,6 +149,21 @@ MODULES: List[dict] = [
         ],
     },
     {
+        "id": "scamshield", "title": "Scam Shield", "category": "Security", "icon": "shield-check",
+        "desc": "Catch scam and phishing links and deal with whoever posted them.",
+        "get": "get_scam_shield_guild", "set": "set_scam_shield_guild",
+        "note": "The bot reads these settings every few minutes, so a change can take up to 5 minutes to apply. "
+                "Quarantine needs a quarantine role set up in Discord first (Server Panel).",
+        "fields": [
+            F("enabled", "Scam Shield", "toggle", "Scan messages for known scam and phishing links."),
+            F("punish_action", "When a scam is caught", "select", "What happens to the person who posted it. The message is always deleted.",
+              options=opts(("delete", "Delete the message only"), ("timeout", "Delete and time out (24h)"),
+                           ("quarantine", "Delete and quarantine"), ("kick", "Delete and kick"), ("ban", "Delete and ban"))),
+            F("allowed_domains", "Allowed domains", "list", "Links to these domains are never flagged (for example example.com). Up to 50.",
+              maxlen=100, maxitems=50),
+        ],
+    },
+    {
         "id": "joingate", "title": "Join gate", "category": "Security", "icon": "door",
         "desc": "Screen accounts at the door by age and avatar.",
         "get": "get_join_gate_config", "set": "set_join_gate_config",
@@ -229,6 +244,21 @@ MODULES: List[dict] = [
             F("enabled", "Invite tracking", "toggle"),
             F("channel_id", "Invite log channel", "channel", "", kind="text"),
             F("leaderboard_autopost_channel_id", "Auto-post leaderboard in", "channel", "Leave empty to turn off.", kind="text"),
+        ],
+    },
+    {
+        "id": "birthdays", "title": "Birthdays", "category": "Community", "icon": "heart",
+        "desc": "Announce member birthdays in a channel.",
+        "get": "get_birthday_config", "set": "set_birthday_config",
+        "note": "Members add their own birthday with /birthday. Banner, footer and extra messages are still set in Discord.",
+        "fields": [
+            F("enabled", "Birthday announcements", "toggle", "Post a message on each member's birthday."),
+            F("channel_id", "Announcement channel", "channel", "Where birthdays are announced.", kind="text"),
+            F("message", "Message", "textarea", "Leave empty for the default message.", maxlen=500),
+            F("ping_role_id", "Role to ping", "role", "Optional. Mentioned in the announcement."),
+            F("birthday_role_id", "Birthday role", "role", "Given for the day, then removed.", premium=True),
+            F("utc_offset_hours", "Time zone (UTC offset)", "number", "Whole hours from UTC. Ghana is 0.", min=-12, max=14),
+            F("announce_hour", "Announce at (hour, 0-23)", "number", "Local hour in the time zone above.", min=0, max=23),
         ],
     },
     {
