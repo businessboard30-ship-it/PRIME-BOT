@@ -40,7 +40,8 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | Fix. Avatar shape is drawn at every render site (real join, /welcome preview, refresh, nudge post, test post) | **Built, PR open, not merged** (cut from `main`; found while starting Phase 7) | branch `fix/welcome-avatar-shape-at-render` |
 | 7a. Scheduled designs, data layer + render-time resolver (migration 083, schema 132; no wizard UI yet) | **Built, PR open, not merged** (stacked on the avatar-shape fix) | branch `feat/welcome-studio-phase7a` |
 | 7b. Scheduled designs in the wizard (Send step): Schedule a design button + modal, "live today" line, `active_design_id` written on Load. **Closes Phase 7** | **Built, PR open, not merged** (stacked on 7a) | branch `feat/welcome-studio-phase7b` |
-| Polaroid / film strip frames, Phase 7 (scheduled designs) | Not started | |
+| 8a-8d. Photo-print + film-strip frames, avatar glow, preview as another picture/member, per-picture crop + text color, raid guard (concurrent render cap) | **Built, PR #451 open, not merged** (stacked on 7b) | branch `feat/welcome-studio-phase8a` |
+| 9a-9d. Non-Latin name note, Compare with live, tweak marker on the picture strip, render-cost benchmark | **Built, PR open, not merged** (stacked on #451) | branch `feat/welcome-studio-phase9` |
 
 ## What Phase 1 built
 
@@ -704,3 +705,32 @@ No migration: uses the existing `options_override_json` column.
 ## Next (updated after 8c)
 1. Owner reviews / merges in order: #448, #449, #450, then 8a, 8b/8c (this branch stack). Staging check: migrations 078 to 083, then every control on a phone.
 2. Real timing of a 1536 px render under load (needs a live box); non-Latin-name note in the wizard.
+
+
+## Phase 9 (2026-10-22): what it built (closes the buildable leftovers of the plan)
+
+Stacked on #451 (Phase 8). No table, no migration. **Where things really stand:** the stack is #448 (avatar-shape fix) > #449 (7a) > #450 (7b) > #451 (8a to 8d) > this PR. None merged. This session found the uploaded handoff was two phases behind (it stopped at 4b); this file is now current.
+
+- **9a. Non-Latin name note.** `welcome_card.style_font_fallback_note(name, options)` (pure, never raises) returns one plain sentence when the name has letters the chosen style font cannot draw (the card then uses the normal font for that line). It is added to the preview caption note in `_render_tv` (so it shows on every step, **no new component**). Only the name line is checked (the heading is the admin's own words). Classic font: no note. Plan 3.4.
+- **9b. Compare with live** (plan 3.9). `CardCompareButton` (id `compare`, in `DYNAMIC_ITEMS`) on the **Send** step, only for servers that have unlocked Customize Card (nothing is live otherwise). It draws two cards, same picture / name / number: the editor's card and **what the next member gets today**, and sends both privately (ephemeral) as two files. If they are pixel-identical it just says "Same card". `_render_tv(..., live=True)` builds the live card from `options_for_render` + `avatar_shape_for_render` (the same gate and scheduled design as the real join) and skips the editor overlay (`_effective_config`), so a preview-only studio option on an Ultra-only server, or a scheduled design that is live today, shows up as a difference. Shares the 5 s test-send cooldown (it draws twice). Send step: up to 5 buttons in the row (limit 5), component count checked by test.
+- **9c. Tweak marker.** The numbered strip shows a slider mark on pictures that have their own crop / text color (`_studio["tweaked"]`, from `wg.clean_override`), with a legend only when there is one. No mark on empty slots.
+- **9d. Render-cost audit** (the Phase 0 item). `scripts/welcome_render_bench.py` draws a synthetic 1536x1024 photo through `render_welcome_card` for nine looks. Measured here (single core, 5 runs, median ms): plain Ultra look 519, zoom+pan+thick frame 525, photo-print 427, film strip 467, blur 244, grain 504, thick outline 491, text glow + avatar glow 600, **everything on 693**. So a studio look costs at most about +35% over the plain look, and nothing is slow in itself. **Where the time goes:** mostly PNG encoding of the full-size card (blur is fastest because it compresses best). Output was 0.5 to 3.8 MB for a noisy photo, well under Discord's upload limit, but a very detailed photo is the heavy case. With the 8d cap (4 renders at once) a raid of N joins on one core takes about N x 0.5 s; **not measured on the production box or with concurrent load**, so the cap number (4) is a guess until someone runs the script there.
+- Tests: `tests/unit/test_welcome_studio_phase9.py` (18). One exact-dict pin in the 2c test got the new `tweaked` key.
+
+### Test numbers (9)
+All welcome / card wizard / custom-bg / join-DM / schema / cover-unlock / setup-TV / ultra test files (45 files): **628 passed, 1 failed.** The one failure is `test_ultra_trial_off::test_new_ultra_trials_are_off` (environment flag; fails the same way without this change, checked by stashing). Needed `httpx` installed for two join-DM files to collect.
+
+### Known gaps in 9 (on purpose)
+- Not tested live (phone taps on Compare, the two-file reply). Migrations 078 to 083 not run on a real Postgres.
+- Compare is editor-vs-live, **not** a before/after of this editing session, and not a side-by-side single image (two files; Discord shows them next to each other on desktop, stacked on a phone).
+- Compare is hidden on servers that have not unlocked (there is no live card to compare with).
+- The benchmark uses a synthetic photo; real photos differ. No automated timing test (timings are machine-dependent).
+
+## What is still open (needs the owner, not code)
+1. **Draft / Apply flow.** Plan rule 6 says "nothing is saved until Apply". Today a paid server saves every tap straight to the live card and Undo (last 10) is the safety net. Compare (9b) now makes the difference visible, but a real Apply step is a bigger change to the save path. Build only if the owner wants it.
+2. **Should "Clear background" also clear the gallery?** It still only clears the old single picture (use Remove for gallery pictures). Left non-destructive on purpose.
+3. **Review and merge the stack in order** (#448, #449, #450, #451, this PR), then a **staging check** (Railway is paused): migrations 078 to 083, then every Phase 1 to 9 control on a phone, Premium vs Ultra-only, wizards posted before these PRs still responding.
+4. Run `scripts/welcome_render_bench.py` on the real box and, if needed, change the concurrent-render cap in 8d.
+
+## Next (updated after 9)
+Everything in `docs/WELCOME_CARD_STUDIO_PLAN.md` that can be built without an owner decision is now built. Remaining plan items are the two owner decisions above, live staging checks and the production render timing.

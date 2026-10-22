@@ -885,6 +885,21 @@ def _styled_ok(text: str) -> bool:
     return all(ord(c) < 0x250 for c in text)
 
 
+def style_font_fallback_note(name: str, options) -> str:
+    """Phase 9a: a plain sentence when the name has letters the chosen style font cannot draw (so the card uses the normal
+    font for it), else "". Pure, never raises. Only looks at the NAME line (the heading is the admin's own words)."""
+    try:
+        opts = options if isinstance(options, dict) and "font" in options else parse_ultra_options(options)
+        if opts.get("font", "classic") == "classic":
+            return ""
+        text = str(name or "")
+        if not text or _styled_ok(text):
+            return ""
+        return "This name has letters the style font can't draw, so it shows in the normal font."
+    except Exception:
+        return ""
+
+
 def _fit_styled(draw, text: str, max_w: int, max_size: int, min_size: int, font_key: str):
     """(size, text) for the style font, or None when it can't be used."""
     if font_key == "classic" or not text or not _styled_ok(text) or _style_font(font_key, min_size) is None:
