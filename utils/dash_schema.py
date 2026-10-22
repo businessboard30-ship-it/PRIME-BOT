@@ -338,6 +338,30 @@ MODULES: List[dict] = [
     },
 ]
 
+
+BIRTHDAY_MODULE: dict = {
+    "id": "birthdays", "title": "Birthdays", "category": "Community", "icon": "star",
+    "desc": "Announce member birthdays once a day. Members add their own date with /birthday.",
+    "get": "get_birthday_config", "set": "set_birthday_config",
+    "note": "Members set their own birthday in Discord (month and day only, no year). Premium adds a styled announcement, a birthday role and extra messages.",
+    "fields": [
+        F("enabled", "Birthday announcements", "toggle", "Needs a channel."),
+        F("channel_id", "Announcement channel", "channel", "Where birthdays are announced.", kind="text"),
+        F("ping_role_id", "Role to ping", "role", "Optional. Pinged with the announcement."),
+        F("message", "Message", "textarea", "Placeholders: {user}, {name}, {server}. Empty uses the default.", maxlen=500),
+        F("utc_offset_hours", "Time zone (UTC offset)", "number", "Whole hours, -12 to 14. Ghana is 0.", min=-12, max=14),
+        F("announce_hour", "Announce at hour", "number", "Local hour of day, 0 to 23.", min=0, max=23),
+        F("embed_title", "Title", "text", "Premium: title of the styled announcement.", maxlen=80, premium=True),
+        F("embed_color", "Colour", "color", "Premium. Clear the box for the default pink.", as_int=True, premium=True),
+        F("embed_image_url", "Banner image", "text", "Premium: an https link ending in .png, .jpg, .gif or .webp.", maxlen=300, https_only=True, premium=True),
+        F("embed_footer", "Footer", "text", "Premium.", maxlen=100, premium=True),
+        F("show_avatar", "Show their avatar", "toggle", "Premium: the birthday person's picture on the announcement.", null_true=True, premium=True),
+        F("birthday_role_id", "Birthday role", "role", "Premium: given for the day, removed the next day. The bot's role must sit above it.", premium=True),
+        F("extra_messages", "More messages", "list", "Premium: up to 5, one per line. One is picked at random each day.", maxlen=300, maxitems=5, premium=True),
+    ],
+}
+MODULES.append(BIRTHDAY_MODULE)
+
 BY_ID: Dict[str, dict] = {m["id"]: m for m in MODULES}
 CATEGORIES = ["Onboarding", "Security", "Community", "Fun"]
 
@@ -435,7 +459,7 @@ def export_values(module: dict, cfg: dict) -> dict:
         elif f["type"] == "list":
             v = list(v or [])
         elif f["type"] == "toggle":
-            v = bool(v)
+            v = True if (v is None and f.get("null_true")) else bool(v)
         elif f["type"] == "color" and f.get("as_int"):
             v = "#%06x" % int(v) if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 0xFFFFFF else None
         elif f["type"] == "select" and f.get("null_zero") and v is None:
