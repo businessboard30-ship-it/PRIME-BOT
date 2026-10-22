@@ -216,6 +216,7 @@
     nav.appendChild(link(gpath(gid, "audit"), "scroll", "Audit log", modId === "audit"));
     nav.appendChild(link(gpath(gid, "raid"), "siren", "Anti-raid review", modId === "raid"));
     nav.appendChild(link(gpath(gid, "schedules"), "scroll", "Scheduled messages", modId === "schedules"));
+    nav.appendChild(link(gpath(gid, "autoresponders"), "bulb", "Auto-responders", modId === "autoresponders"));
     nav.appendChild(link(gpath(gid, "tickethistory"), "ticket", "Ticket history", modId === "tickethistory"));
     S.schema.categories.forEach(function (cat) {
       var list = mods().filter(function (m) { return m.category === cat; });
@@ -719,6 +720,47 @@
     add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Scheduled messages" }),
       h("p", { class: "muted", text: "Post a message later, or on repeat. Scheduled messages are the same as /schedule in Discord and announcements are the same as /announce. Times are UTC." })),
       h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" }))].concat(sched, ann));
+  }
+
+  /* ---------- auto-responders ---------- */
+  function renderAutoresponders(gid, main) {
+    var list = h("div", { class: "audit" }), note = h("p", { class: "help", text: "" });
+    var trig = h("input", { type: "text", maxlength: "100", placeholder: "e.g. rules", "aria-label": "Trigger" });
+    var reply = h("textarea", { rows: "3", maxlength: "1500", placeholder: "What should I say?", "aria-label": "Reply" });
+    var addBtn = h("button", { class: "btn sm primary", text: "Add auto-responder" });
+    function load() {
+      api("autoresponders", { guild_id: gid }).then(function (r) {
+        list.textContent = "";
+        note.textContent = r.items.length + " of " + r.limit + " used.";
+        if (!r.items.length) { list.appendChild(h("p", { class: "muted", text: "No auto-responders yet." })); return; }
+        r.items.forEach(function (it) {
+          var del = h("button", { class: "btn sm ghost", text: "Delete" });
+          del.addEventListener("click", function () {
+            if (!window.confirm("Delete this auto-responder?")) return;
+            del.disabled = true;
+            api("autoresponder_delete", {}, { guild_id: gid, id: it.id }).then(function () { toast("Deleted. The bot can take up to 5 minutes to stop using it.", "ok"); load(); })
+              .catch(function (e) { toast(e.message, "bad"); del.disabled = false; });
+          });
+          list.appendChild(h("div", { class: "action" }, h("div", { class: "grow" },
+            h("b", { text: "When a message contains: " + it.trigger }),
+            h("p", { text: it.response, style: "white-space:pre-wrap;word-break:break-word" })), del));
+        });
+      }).catch(function (e) { list.textContent = ""; list.appendChild(h("p", { class: "muted", text: e.message })); });
+    }
+    addBtn.addEventListener("click", function () {
+      addBtn.classList.add("busy"); addBtn.disabled = true;
+      api("autoresponder_add", {}, { guild_id: gid, trigger: trig.value, response: reply.value }).then(function (r) { toast(r.note || "Added", "ok"); trig.value = ""; reply.value = ""; load(); })
+        .catch(function (e) { toast(e.message, "bad"); }).then(function () { addBtn.classList.remove("busy"); addBtn.disabled = false; });
+    });
+    load();
+    add(main, [h("div", { class: "panel-head rv" }, h("div", null, h("p", { class: "crumb", text: "Community" }), h("h1", { text: "Auto-responders" }),
+      h("p", { class: "muted", text: "When a message contains the trigger, I reply with your text. Same as /autoresponder in Discord. Only the first match replies. @everyone, @here and role mentions aren't allowed." })),
+      h("a", { class: "btn sm ghost", href: gpath(gid), text: "Overview" })),
+      h("div", { class: "card fields rv" }, h("h2", { text: "New auto-responder" }),
+        h("div", { class: "field" }, h("div", null, h("label", { text: "Trigger" }), h("p", { class: "help", text: "Not case sensitive. Matches anywhere in a message." })), trig),
+        h("div", { class: "field" }, h("div", null, h("label", { text: "Reply" })), reply),
+        h("div", { class: "action" }, h("div", { class: "grow" }), addBtn)),
+      h("div", { class: "card rv" }, h("h2", { text: "Your auto-responders" }), note, list)]);
   }
 
   /* ---------- analytics (read-only) ---------- */
@@ -1952,7 +1994,7 @@
     renderHeader();
     loadGuild(gid).then(function () {
       var mod = modId ? modById(modId) : null;
-      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, tickethistory: renderTickets, billing: renderBilling };
+      var PAGES = { analytics: renderAnalytics, moderation: renderModeration, giveaways: renderGiveaways, audit: renderAudit, raid: renderRaid, schedules: renderSchedules, autoresponders: renderAutoresponders, tickethistory: renderTickets, billing: renderBilling };
       if (modId && !PAGES[modId] && !mod) { location.hash = gpath(gid); return; }
       var main = renderShell(gid, modId);
       if (modId && PAGES[modId]) PAGES[modId](gid, main); else if (mod) renderModule(gid, mod, main); else renderOverview(gid, main);

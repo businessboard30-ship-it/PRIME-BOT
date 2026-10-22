@@ -901,3 +901,39 @@ def giveaway_view(row: dict) -> dict:
             "winner_ids": [str(w) for w in (row.get("winner_ids") or [])][:50],
             "status": row.get("status") if row.get("status") in GIVEAWAY_STATUSES else "ended",
             "ends_at": iso(row.get("ends_at"))}
+
+
+# ───────────────────────── autoresponders (trigger -> reply pairs) ─────────────────────────
+
+AUTORESPONDER_MAX = 25            # the command has no cap; the dashboard is stricter to keep the per-message scan short
+AUTORESPONDER_TRIGGER_MAX = 100
+AUTORESPONDER_RESPONSE_MAX = 1500
+_MASS_MENTION_RE = re.compile(r"@(everyone|here)\b|<@&\d+>", re.IGNORECASE)
+
+
+def validate_autoresponder(raw: Any, existing_triggers=()) -> Tuple[Optional[dict], Optional[str]]:
+    """-> ({trigger, response}, None) or (None, error). The trigger is stored lower-case, like /autoresponder add.
+    Mass mentions (@everyone, @here, role pings) are refused so a reply can't be used to ping a whole server."""
+    if not isinstance(raw, dict):
+        return None, "Nothing to save."
+    trigger, response = raw.get("trigger"), raw.get("response")
+    if not isinstance(trigger, str) or not isinstance(response, str):
+        return None, "Enter a trigger and a reply."
+    trigger, response = trigger.strip().lower(), response.strip()
+    if not trigger or not response:
+        return None, "Enter a trigger and a reply."
+    if len(trigger) > AUTORESPONDER_TRIGGER_MAX:
+        return None, f"The trigger must be under {AUTORESPONDER_TRIGGER_MAX} characters."
+    if len(response) > AUTORESPONDER_RESPONSE_MAX:
+        return None, f"The reply must be under {AUTORESPONDER_RESPONSE_MAX} characters."
+    if _MASS_MENTION_RE.search(response):
+        return None, "Replies can't contain @everyone, @here or role mentions."
+    if trigger in {str(t).lower() for t in existing_triggers}:
+        return None, "That trigger already exists."
+    return {"trigger": trigger, "response": response}, None
+
+
+def autoresponder_row_view(row: dict) -> dict:
+    return {"id": str(row["id"]), "trigger": str(row.get("trigger") or "")[:AUTORESPONDER_TRIGGER_MAX],
+            "response": str(row.get("response") or "")[:AUTORESPONDER_RESPONSE_MAX],
+            "created_by": str(row["created_by"]) if row.get("created_by") else None}
