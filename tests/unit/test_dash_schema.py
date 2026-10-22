@@ -96,3 +96,51 @@ def test_export_stringifies_snowflakes():
     out = S.export_values(S.BY_ID["welcome"], {"enabled": 1, "channel_id": 123456789012345678, "message_template": "hi"})
     assert out["channel_id"] == "123456789012345678" and out["enabled"] is True and out["accent_color"] is None
     assert S.export_values(S.BY_ID["automod"], {"banned_words": None})["banned_words"] == []
+
+
+# ───────── join verification: premium extras ─────────
+
+def test_verification_extras_need_premium():
+    for key, val in (("panel_title", "Hi"), ("panel_color", "#ff0000"), ("kick_after_minutes", 30),
+                     ("min_account_age_days", 3), ("log_channel_id", "100"), ("welcome_text", "Welcome {user}")):
+        clean, errs = v("verification", {key: val})
+        assert not clean and errs and "Premium" in errs[0], key
+        clean, errs = v("verification", {key: val}, premium=True)
+        assert not errs and key in clean, key
+
+
+def test_verification_color_is_stored_as_int_and_shown_as_hex():
+    clean, errs = v("verification", {"panel_color": "#5865F2"}, premium=True)
+    assert not errs and clean["panel_color"] == 0x5865F2
+    clean, errs = v("verification", {"panel_color": ""}, premium=True)
+    assert not errs and clean["panel_color"] is None
+    assert v("verification", {"panel_color": "red"}, premium=True)[1]
+    m = S.BY_ID["verification"]
+    assert S.export_values(m, {"panel_color": 0x5865F2})["panel_color"] == "#5865f2"
+    assert S.export_values(m, {"panel_color": None})["panel_color"] is None
+
+
+def test_verification_off_choices_are_stored_as_null():
+    clean, errs = v("verification", {"kick_after_minutes": 0, "min_account_age_days": 0}, premium=True)
+    assert not errs and clean == {"kick_after_minutes": None, "min_account_age_days": None}
+    clean, _ = v("verification", {"kick_after_minutes": 60, "min_account_age_days": 7}, premium=True)
+    assert clean == {"kick_after_minutes": 60, "min_account_age_days": 7}
+    assert v("verification", {"kick_after_minutes": 5}, premium=True)[1]
+    m = S.BY_ID["verification"]
+    ex = S.export_values(m, {"kick_after_minutes": None, "min_account_age_days": 3})
+    assert ex["kick_after_minutes"] == 0 and ex["min_account_age_days"] == 3
+
+
+def test_verification_banner_must_be_https():
+    assert v("verification", {"panel_image_url": "https://x.test/a.png"}, premium=True)[0]
+    for bad in ("http://x.test/a.png", "javascript:alert(1)", "https://x.test/a b.png"):
+        assert v("verification", {"panel_image_url": bad}, premium=True)[1], bad
+    clean, errs = v("verification", {"panel_image_url": ""}, premium=True)
+    assert not errs and clean["panel_image_url"] is None
+
+
+def test_verification_reset_defaults_clear_extras():
+    m = S.BY_ID["verification"]
+    vals, left = S.default_values(m, {"mode": "captcha", "timeout_seconds": 300, "max_attempts": 3, "enabled": False,
+                                      "panel_title": None, "panel_color": None, "kick_after_minutes": None})
+    assert vals["panel_color"] is None and vals["kick_after_minutes"] is None and vals["panel_title"] is None
