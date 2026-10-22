@@ -435,6 +435,7 @@ async def _with_studio(config: dict, guild_id: int, clone_id, user_id=None) -> d
             "unlocked": True, "pictures": len(rows),
             "needs": [r["slot"] for r in rows if r.get("needs_new_picture")],
             "slots": [r["slot"] for r in rows],
+            "tweaked": [r["slot"] for r in rows if wg.clean_override(r.get("options_override_json"))],   # studio 9c
             "mode": wg.clean_mode(config.get("rotation_mode")),
             **await _design_summary(guild_id, clone_id),                          # studio 5b + 7b: designs, schedules, live today
         })
@@ -471,9 +472,10 @@ def _gallery_line(studio: dict | None) -> str | None:
         bad = {int(x) for x in needs}
         # Numbered strip: 1 to 10, filled / empty / needs a new picture. Plain symbols, no jargon.
         warn, full, empty = "\u26A0\uFE0F", "\u25CF", "\u25CB"
-        strip = " ".join(str(n) + (warn if n in bad else (full if n in have else empty))
+        tw = {int(x) for x in (studio.get("tweaked") or [])}   # studio 9c: pictures with their own crop / text color
+        strip = " ".join(str(n) + (warn if n in bad else (full if n in have else empty)) + ("\U0001F39A" if n in tw and n in have else "")
                          for n in range(1, wg.MAX_PICTURES + 1))
-        line += f"\n-# {strip}  (\u25CF has a picture, \u25CB empty)"
+        line += f"\n-# {strip}  (\u25CF has a picture, \u25CB empty" + (", \U0001F39A own tweak)" if tw else ")")
     if needs:
         line += "\n-# \u26A0\uFE0F Picture " + ", ".join(str(x) for x in needs) + " needs a new picture."
     return line
@@ -620,6 +622,8 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
     act_row = discord.ui.ActionRow()
     if tab == "send":
         act_row.add_item(CardTestSendButton(guild_id, clone_id, invoker_id))
+        if unlocked:   # studio 9b: nothing is live on a server that has not unlocked, so there is nothing to compare
+            act_row.add_item(CardCompareButton(guild_id, clone_id, invoker_id))
         act_row.add_item(CardResetButton(guild_id, clone_id, invoker_id))
     else:
         act_row.add_item(CardUndoButton(guild_id, clone_id, invoker_id))
@@ -703,15 +707,22 @@ async def _gallery_preview_bytes(session, client, guild_id: int, clone_id, slot=
     return (await _gallery_preview_pick(session, client, guild_id, clone_id, slot=slot))[0]
 
 
-async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = False):
+async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = False, live: bool = False):
     """Draw the real card for the editor. Returns (png_bytes, caption_note). Raises on failure.
-    No rate limit: unpaid servers get the same watermarked draft preview, as often as they like."""
+    No rate limit: unpaid servers get the same watermarked draft preview, as often as they like.
+    Studio 9b: `live=True` draws what the NEXT member would get today (stored look through the same gate and scheduled
+    design as the real join, no in-memory preview values), with the same picture, name and number as the editor."""
     from discord_bot.cogs.welcome import _custom_bg_bytes_for_render
     if guild is None:
         raise RuntimeError("the server isn't available to this bot")
     real_cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
     unlocked = bool(real_cfg.get("ultra_pack_unlocked"))
-    cfg = _effective_config(real_cfg, guild_id, clone_id, user.id)
+    if live:
+        from modules.welcome_studio import options_for_render, avatar_shape_for_render
+        cfg = {**real_cfg, "ultra_card_json": await options_for_render(real_cfg),
+               "avatar_shape": await avatar_shape_for_render(real_cfg)}
+    else:
+        cfg = _effective_config(real_cfg, guild_id, clone_id, user.id)
     pv = _PREVIEW_AS.get((guild_id, clone_id, user.id)) or {}   # studio 8b
     pic_tweak = {}   # studio 8c: the shown picture's own crop / text color (Premium/Plus gallery pictures only)
     async with aiohttp.ClientSession() as session:
@@ -749,6 +760,14 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = 
     tag = _preview_as_line(pv)
     if tag:
         note = f"{note} \u00b7 {tag}"
+    try:   # studio 9a: say so when a non-Latin name can't use the chosen style font
+        from modules.welcome_card import style_font_fallback_note
+        fb = style_font_fallback_note(pv.get("name") or user.display_name,
+                                      {**parse_ultra_options(cfg.get("ultra_card_json")), **pic_tweak})
+        if fb:
+            note = f"{note} \u00b7 {fb}"
+    except Exception:
+        pass
     return png, note
 
 
@@ -1511,6 +1530,50 @@ class CardTestSendButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], templa
         except Exception as e:
             logger.warning(f"[cardwz] test send failed for guild {self.guild_id}: {type(e).__name__}: {e}")
             await interaction.followup.send("Couldn't draw the test card just now. Try again in a moment.", ephemeral=True)
+
+
+class CardCompareButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("compare")):
+    """Studio 9b (plan 3.9): the card in the editor next to the card the next member gets today, shown only to the admin.
+    Useful when the editor shows something that is not live yet (a preview-only studio option on an Ultra-only server,
+    a scheduled design that is live today, a picture the editor previews)."""
+    FIELD, LABEL, STYLE = "compare", "\u2194\uFE0F Compare with live", discord.ButtonStyle.secondary
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return
+        key = _draft_key(self.guild_id, self.clone_id, interaction.user.id)
+        now = time.monotonic()
+        if now - _TEST_LAST.get(key, -_TEST_COOLDOWN) < _TEST_COOLDOWN:   # shares the test-send cooldown (two renders)
+            await interaction.response.send_message("One moment, then try again.", ephemeral=True)
+            return
+        _TEST_LAST[key] = now
+        _trim(_TEST_LAST, _STATE_MAX)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            real_cfg = await db.get_welcome_config(self.guild_id, clone_id=self.clone_id)
+            if not real_cfg.get("ultra_pack_unlocked"):
+                await interaction.followup.send(
+                    "Nothing is saved for this server yet, so there is no live card to compare with. "
+                    "Unlock to save your design, then compare.", ephemeral=True)
+                return
+            guild = interaction.guild or interaction.client.get_guild(self.guild_id)
+            mine, _n1 = await _render_tv(interaction.client, guild, self.guild_id, self.clone_id, interaction.user, full=False)
+            live, _n2 = await _render_tv(interaction.client, guild, self.guild_id, self.clone_id, interaction.user,
+                                         full=False, live=True)
+            if mine == live:
+                await interaction.followup.send(
+                    "**Same card.** What you see in the editor is exactly what the next member gets.", ephemeral=True)
+                return
+            await interaction.followup.send(
+                content=("**Left: your editor. Right: live today** (what the next member gets) \u2014 only visible to you.\n"
+                         "-# They differ when a studio option is preview-only on your plan, or a scheduled design is live today."),
+                files=[discord.File(fp=io.BytesIO(mine), filename="compare-editor.png"),
+                       discord.File(fp=io.BytesIO(live), filename="compare-live.png")],
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.warning(f"[cardwz] compare failed for guild {self.guild_id}: {type(e).__name__}: {e}")
+            await interaction.followup.send("Couldn't draw the comparison just now. Try again in a moment.", ephemeral=True)
 
 
 # ── Phase 2c-2: remove a picture / make a picture first / unlock ─────────
@@ -2594,7 +2657,7 @@ DYNAMIC_ITEMS = (
     CardBackgroundButton, CardClearBackgroundButton, CardUnlockButton,
     CardHeadingButton, CardNumberToggleButton, CardResetButton, CardPreviewButton, CardDoneButton,
     CardTabButton, CardPresetSelect,
-    CardMoreButton, CardUndoButton, CardStepResetButton, CardTestSendButton,
+    CardMoreButton, CardUndoButton, CardStepResetButton, CardTestSendButton, CardCompareButton,
     CardRotationSelect,
     CardPictureRemoveButton, CardPictureFirstButton, CardStudioPremiumButton, CardPictureAddButton,
     CardPictureReplaceButton, CardPreviewAsButton, CardPictureTweakButton,
