@@ -48,7 +48,12 @@ MODULES: List[dict] = [
                            ("hexagon", "Hexagon"), ("diamond", "Diamond"))),
             F("accent_color", "Accent colour", "color", "Used by the plain colour card."),
             F("background_color", "Background colour", "color", "Used by the plain colour card."),
+            F("delivery_mode", "Delivery", "select", "Post the welcome in the channel, or DM it to the new member.",
+              options=opts(("channel", "Post in the channel"), ("dm", "DM the member"))),
+            F("dm_fallback_to_channel", "If DMs are closed", "toggle", "Only for DM delivery: post in the welcome channel when the member's DMs are closed."),
+            F("dm_message_template", "DM text", "textarea", "Only for DM delivery. Same placeholders. Empty uses the normal message.", maxlen=300),
         ],
+        "own_setters": {"dm_fallback_to_channel": "set_welcome_dm_fallback", "dm_message_template": "set_welcome_dm_text"},
         "designer": "welcome",
         "actions": [{"id": "welcome_test", "label": "Send test welcome",
                      "help": "Posts a sample card for you in the welcome channel (saved settings)."}],
@@ -287,7 +292,7 @@ def public_schema() -> dict:
     """What the browser needs to render forms: no DB method names."""
     mods = []
     for m in MODULES:
-        mods.append({k: v for k, v in m.items() if k not in ("get", "set", "explicit_kwargs")})
+        mods.append({k: v for k, v in m.items() if k not in ("get", "set", "explicit_kwargs", "own_setters")})
     return {"categories": CATEGORIES, "modules": mods}
 
 
