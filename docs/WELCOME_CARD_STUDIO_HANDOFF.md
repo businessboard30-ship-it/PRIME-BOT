@@ -761,3 +761,9 @@ Owner: a server without Premium that edits costs memory, so cap some options **w
 
 ## Next
 1. Owner reviews / merges the memory-caps PR. 2. Still open: draft/Apply flow, should Clear background clear the gallery, staging check (migrations 078 to 083, phone taps), real-box render timing (`scripts/welcome_render_bench.py`).
+
+
+## Decisions made (2026-10-22, owner said "choose", so the previous Claude decided)
+- **Draft / Apply flow: NOT building it for now.** It changes the save path of every paid server and there is no staging to test on. Undo (10 steps) and Compare with live (9b) cover the risk. Revisit once a staging server exists.
+- **Clear background stays non-destructive:** it clears only the old single picture; gallery pictures go one at a time with Remove (no undo for a bulk wipe of up to 10).
+- Both questions are closed. Left: review/merge the memory-caps PR (#453), staging check (migrations 078 to 083, phone taps), real-box render timing.
