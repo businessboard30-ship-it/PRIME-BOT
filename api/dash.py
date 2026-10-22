@@ -306,7 +306,13 @@ async def _get_cfg(module: dict, guild_id: int) -> dict:
 async def _write_values(sess: dict, gid: int, module: dict, clean: dict, before_cfg: dict, note=None) -> dict:
     """Shared by save and reset: write, then record who changed what. An audit failure never
     blocks the change itself."""
-    await getattr(db, module["set"])(gid, _cid(), **clean)
+    # Some settings have their own one-column setters (never the big upsert), e.g. the welcome DM options.
+    own = module.get("own_setters") or {}
+    extras = {k: clean[k] for k in own if k in clean}
+    main = {k: v for k, v in clean.items() if k not in extras}
+    await getattr(db, module["set"])(gid, _cid(), **main)          # with no fields this just makes sure a row exists
+    for key, val in extras.items():
+        await getattr(db, own[key])(gid, _cid(), val)
     logger.info("dashboard %s guild=%s user=%s module=%s keys=%s", note or "save", gid, sess["user"]["id"], module["id"], sorted(clean))
     after = S.export_values(module, await _get_cfg(module, gid))
     try:

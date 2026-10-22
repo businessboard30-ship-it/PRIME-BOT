@@ -98,6 +98,24 @@ def test_export_stringifies_snowflakes():
     assert S.export_values(S.BY_ID["automod"], {"banned_words": None})["banned_words"] == []
 
 
+# ───────── welcome: DM delivery options ─────────
+
+def test_welcome_dm_options_validate():
+    clean, errs = v("welcome", {"delivery_mode": "dm", "dm_fallback_to_channel": True, "dm_message_template": "Hi {member}"})
+    assert not errs and clean == {"delivery_mode": "dm", "dm_fallback_to_channel": True, "dm_message_template": "Hi {member}"}
+    assert v("welcome", {"delivery_mode": "carrier pigeon"})[1]
+    assert v("welcome", {"dm_message_template": "x" * 301})[1]
+    clean, errs = v("welcome", {"dm_message_template": "   "})
+    assert not errs and clean["dm_message_template"] is None
+
+
+def test_welcome_dm_fields_use_their_own_setters():
+    m = S.BY_ID["welcome"]
+    assert set(m["own_setters"]) == {"dm_fallback_to_channel", "dm_message_template"}
+    keys = {f["key"] for f in m["fields"]}
+    assert set(m["own_setters"]) <= keys
+
+
 # ───────── join verification: premium extras ─────────
 
 def test_verification_extras_need_premium():

@@ -194,6 +194,25 @@ def test_me_lists_clones_present_in_server(env, monkeypatch):
     assert st == 200 and p["servers"][0]["clones"] == [{"clone_id": 7, "name": "Cloney"}]
 
 
+def test_write_values_routes_own_setters(monkeypatch):
+    import asyncio
+    from utils import dash_schema as S
+    calls = []
+
+    class DB:
+        async def set_welcome_config(self, gid, cid, **kw): calls.append(("main", kw))
+        async def set_welcome_dm_fallback(self, gid, cid, val): calls.append(("fallback", val))
+        async def set_welcome_dm_text(self, gid, cid, val): calls.append(("text", val))
+        async def get_welcome_config(self, gid, cid=None): return {}
+        async def dash_audit_add(self, *a, **k): pass
+
+    monkeypatch.setattr(dash, "db", DB())
+    sess = {"user": {"id": 1, "username": "u"}}
+    asyncio.run(dash._write_values(sess, 5, S.BY_ID["welcome"],
+                                   {"delivery_mode": "dm", "dm_fallback_to_channel": True, "dm_message_template": "hi"}, {}))
+    assert ("main", {"delivery_mode": "dm"}) in calls and ("fallback", True) in calls and ("text", "hi") in calls
+
+
 def test_birthday_setter_guards_and_saves(monkeypatch):
     import asyncio
     import database
