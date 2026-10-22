@@ -106,6 +106,9 @@ def _get_draft(guild_id: int, clone_id, user_id, create: bool = False):
     now = time.monotonic()
     for k in [k for k, d in _DRAFTS.items() if now - d["ts"] > _DRAFT_TTL]:
         _DRAFTS.pop(k, None)
+    for d in _DRAFTS.values():   # studio: an idle preview picture (the heavy part) goes sooner than the look
+        if d.get("bg") and now - d.get("bg_ts", d["ts"]) > _DRAFT_PIC_TTL and now - d["ts"] > _DRAFT_PIC_TTL:
+            d["bg"] = None
     key = _draft_key(guild_id, clone_id, user_id)
     d = _DRAFTS.get(key)
     if d is None and create:
@@ -144,16 +147,78 @@ def _effective_config(config: dict, guild_id: int, clone_id, user_id) -> dict:
     )
 
 
+# -- Memory caps for servers without Premium (they edit in memory only; nothing is stored) -----------------------------
+# Every cap is soft: the editor never stops working. Only the memory-heavy part (the in-memory preview PICTURE) is limited,
+# and when a limit is hit the person is told in plain words and keeps everything they already have.
+_PREVIEW_PIC_MAX_PX = 1024            # preview pictures are watermarked and shown small, so 1024 px is plenty (was 1600)
+_PREVIEW_PIC_QUALITY = 80
+_DRAFT_BYTES_MAX = 24 * 1024 * 1024   # all in-memory preview pictures together; the oldest picture is dropped first
+_DRAFT_PIC_TTL = 10 * 60              # an idle preview picture is dropped after 10 min (the look itself lasts _DRAFT_TTL)
+_PIC_PREVIEWS_PER_HOUR = 8            # new preview pictures per person per rolling hour
+_PIC_PREVIEW_LOG: dict = {}           # (guild, clone, user) -> [monotonic ts of recent preview pictures]
+_FREE_UNDO_MAX = 5                    # undo steps kept for a server without Premium (Premium keeps _UNDO_MAX)
+
+
 def _shrink_bg(data: bytes):
-    """Downscale a draft background so memory stays small. None if not an image."""
+    """Downscale a draft background so memory stays small. None if not an image.
+    JPEG draft mode makes the decoder skip most of the pixels, so a big photo is never fully decoded."""
     try:
-        img = Image.open(io.BytesIO(data)).convert("RGB")
-        img.thumbnail((1600, 1600))
+        img = Image.open(io.BytesIO(data))
+        try:
+            img.draft("RGB", (_PREVIEW_PIC_MAX_PX, _PREVIEW_PIC_MAX_PX))
+        except Exception:
+            pass
+        img = img.convert("RGB")
+        img.thumbnail((_PREVIEW_PIC_MAX_PX, _PREVIEW_PIC_MAX_PX))
         out = io.BytesIO()
-        img.save(out, format="JPEG", quality=88)
+        img.save(out, format="JPEG", quality=_PREVIEW_PIC_QUALITY)
         return out.getvalue()
     except Exception:
         return None
+
+
+def _preview_picture_quota(guild_id: int, clone_id, user_id) -> tuple:
+    """(allowed, minutes_to_wait). Counts a new preview picture when allowed. A server without Premium may preview a few
+    pictures per hour; the limit only guards memory and CPU, nothing else in the editor is affected."""
+    key = _draft_key(guild_id, clone_id, user_id)
+    now = time.monotonic()
+    log = [t for t in _PIC_PREVIEW_LOG.get(key, []) if now - t < 3600]
+    if len(log) >= _PIC_PREVIEWS_PER_HOUR:
+        _PIC_PREVIEW_LOG[key] = log
+        return False, max(1, int((3600 - (now - log[0])) // 60) + 1)
+    log.append(now)
+    _PIC_PREVIEW_LOG[key] = log
+    _trim(_PIC_PREVIEW_LOG, _STATE_MAX)
+    return True, 0
+
+
+def _quota_message(wait_min: int) -> str:
+    return (f"\u23F3 Preview picture limit reached ({_PIC_PREVIEWS_PER_HOUR} new pictures per hour on a server without "
+            f"Premium). Your current picture and everything else still work. Try again in about {wait_min} min, "
+            f"or unlock Premium to store up to 10 pictures.")
+
+
+def _draft_bytes_total() -> int:
+    return sum(len(d["bg"]) for d in _DRAFTS.values() if d.get("bg"))
+
+
+def _set_draft_bg(guild_id: int, clone_id, user_id, small: bytes) -> None:
+    """Keep a preview picture in memory, inside the global byte budget: if it would not fit, the OLDEST other pictures
+    are dropped (their owners keep their look and just see the sample backdrop again). Never raises."""
+    try:
+        d = _get_draft(guild_id, clone_id, user_id, create=True)
+        d["bg"] = small
+        d["bg_ts"] = time.monotonic()
+        if _draft_bytes_total() > _DRAFT_BYTES_MAX:
+            others = sorted((x for x in _DRAFTS.values() if x is not d and x.get("bg")), key=lambda x: x.get("bg_ts", x["ts"]))
+            for x in others:
+                if _draft_bytes_total() <= _DRAFT_BYTES_MAX:
+                    break
+                x["bg"] = None
+        if _draft_bytes_total() > _DRAFT_BYTES_MAX:   # one picture alone is over budget (cannot happen at 1024 px): drop it
+            d["bg"] = None
+    except Exception:
+        logger.exception("[cardwz] draft picture budget failed")
 
 
 def _watermark(card_bytes: bytes) -> bytes:
@@ -186,7 +251,7 @@ def _push_undo(guild_id: int, clone_id, user_id, cfg: dict) -> None:
     snap = (eff.get("ultra_card_json"), eff.get("avatar_shape", "circle"))
     stack = _UNDO.setdefault(_draft_key(guild_id, clone_id, user_id), [])
     stack.append(snap)
-    del stack[:-_UNDO_MAX]
+    del stack[:-(_UNDO_MAX if cfg.get("ultra_pack_unlocked") else _FREE_UNDO_MAX)]   # studio: free servers keep fewer steps
     _trim(_UNDO, _STATE_MAX)
 
 
@@ -1108,6 +1173,10 @@ class CardBackgroundModal(discord.ui.Modal, title="Custom card background"):
         if not unlocked:
             # Preview only: hold the image in memory, never host or store it.
             from discord_bot.cogs.welcome import CUSTOM_BG_ALLOWED_CONTENT_TYPES, CUSTOM_BG_MAX_BYTES
+            ok_q, wait_q = _preview_picture_quota(self.guild_id, self.clone_id, interaction.user.id)   # studio: soft memory cap
+            if not ok_q:
+                await interaction.followup.send(_quota_message(wait_q), ephemeral=True)
+                return
             if files:
                 ct = (files[0].content_type or "").split(";")[0].strip().lower()
                 if ct not in CUSTOM_BG_ALLOWED_CONTENT_TYPES or files[0].size > CUSTOM_BG_MAX_BYTES:
@@ -1124,7 +1193,7 @@ class CardBackgroundModal(discord.ui.Modal, title="Custom card background"):
             if small is None:
                 await interaction.followup.send("⚠️ Couldn't read that image.", ephemeral=True)
                 return
-            _get_draft(self.guild_id, self.clone_id, interaction.user.id, create=True)["bg"] = small
+            _set_draft_bg(self.guild_id, self.clone_id, interaction.user.id, small)
             await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
             return
 
@@ -2084,6 +2153,13 @@ class CardPicturesAddModal(discord.ui.Modal, title="Add pictures"):
             await interaction.followup.send("\u26A0\uFE0F Upload a picture or paste a link first.", ephemeral=True)
             return
 
+        free_server = not await studio_unlocked(self.guild_id, self.clone_id)
+        if free_server:   # studio: a free server previews ONE picture in memory, so never read all 10 files (up to 80 MB)
+            ok_q, wait_q = _preview_picture_quota(self.guild_id, self.clone_id, interaction.user.id)
+            if not ok_q:
+                await interaction.followup.send(_quota_message(wait_q), ephemeral=True)
+                return
+            files = list(files)[:2]
         # One list of (name, bytes-or-None, reason-or-None). Downloads happen here so a bad one is reported by name.
         incoming: list = []
         for f in files:
@@ -2107,7 +2183,7 @@ class CardPicturesAddModal(discord.ui.Modal, title="Add pictures"):
             for _name, data, _why in incoming:
                 small = await asyncio.to_thread(_shrink_bg, data) if data else None
                 if small is not None:
-                    _get_draft(self.guild_id, self.clone_id, interaction.user.id, create=True)["bg"] = small
+                    _set_draft_bg(self.guild_id, self.clone_id, interaction.user.id, small)
                     break
             else:
                 await interaction.followup.send("\u26A0\uFE0F Couldn't read those pictures. Use png or jpg under 8MB.", ephemeral=True)
@@ -2536,11 +2612,15 @@ class CardPictureReplaceModal(discord.ui.Modal, title="Replace a picture"):
             return
         if not await studio_unlocked(self.guild_id, self.clone_id):
             # Preview only: show the new picture on the card in memory. Nothing is hosted or stored.
+            ok_q, wait_q = _preview_picture_quota(self.guild_id, self.clone_id, interaction.user.id)   # studio: soft memory cap
+            if not ok_q:
+                await interaction.followup.send(_quota_message(wait_q), ephemeral=True)
+                return
             small = await asyncio.to_thread(_shrink_bg, data)
             if small is None:
                 await interaction.followup.send("⚠️ Couldn't read that picture. Use png or jpg under 8MB.", ephemeral=True)
                 return
-            _get_draft(self.guild_id, self.clone_id, interaction.user.id, create=True)["bg"] = small
+            _set_draft_bg(self.guild_id, self.clone_id, interaction.user.id, small)
             await interaction.followup.send(
                 f"\U0001F512 Preview only: {LOCKED_LINE} Pictures are stored and managed with Premium.", ephemeral=True)
             await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)

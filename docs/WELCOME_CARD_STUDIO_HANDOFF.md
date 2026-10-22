@@ -40,8 +40,8 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | Fix. Avatar shape is drawn at every render site (real join, /welcome preview, refresh, nudge post, test post) | **Built, PR open, not merged** (cut from `main`; found while starting Phase 7) | branch `fix/welcome-avatar-shape-at-render` |
 | 7a. Scheduled designs, data layer + render-time resolver (migration 083, schema 132; no wizard UI yet) | **Built, PR open, not merged** (stacked on the avatar-shape fix) | branch `feat/welcome-studio-phase7a` |
 | 7b. Scheduled designs in the wizard (Send step): Schedule a design button + modal, "live today" line, `active_design_id` written on Load. **Closes Phase 7** | **Built, PR open, not merged** (stacked on 7a) | branch `feat/welcome-studio-phase7b` |
-| 8a-8d. Photo-print + film-strip frames, avatar glow, preview as another picture/member, per-picture crop + text color, raid guard (concurrent render cap) | **Built, PR #451 open, not merged** (stacked on 7b) | branch `feat/welcome-studio-phase8a` |
-| 9a-9d. Non-Latin name note, Compare with live, tweak marker on the picture strip, render-cost benchmark | **Built, PR open, not merged** (stacked on #451) | branch `feat/welcome-studio-phase9` |
+| 8a-8d. Photo-print + film-strip frames, avatar glow, preview as another picture/member, per-picture crop + text color, raid guard (concurrent render cap) | **Built and merged into `main`** (PR #451) | branch `feat/welcome-studio-phase8a` |
+| 9a-9d. Non-Latin name note, Compare with live, tweak marker on the picture strip, render-cost benchmark | **Built and merged into `main`** (PR #452) | branch `feat/welcome-studio-phase9` |
 
 ## What Phase 1 built
 
@@ -734,3 +734,36 @@ All welcome / card wizard / custom-bg / join-DM / schema / cover-unlock / setup-
 
 ## Next (updated after 9)
 Everything in `docs/WELCOME_CARD_STUDIO_PLAN.md` that can be built without an owner decision is now built. Remaining plan items are the two owner decisions above, live staging checks and the production render timing.
+
+
+## 2026-10-22 (later): the owner said merge, and cap free-server editing memory
+
+**Merged into `main`, in order, on the owner's instruction: #448, #449, #450, #451, #452** (avatar-shape fix, 7a, 7b, 8a to 8d, 9). GitHub showed the merge state as "unstable" (checks pending or not green); not investigated. PR #422 (old "plan only" banner) is still open on purpose. Migrations 078 to 083 are now in `main` and still **not run on a real Postgres**.
+
+### Free-server memory caps (this PR, `feat/welcome-studio-free-memory-caps`)
+
+Owner: a server without Premium that edits costs memory, so cap some options **without blocking them entirely**. Everything stays usable; only the heavy part (the in-memory preview picture) is limited, and the person gets a plain message and keeps what they have. Constants are at the top of the memory block in `_views_card_customize.py`:
+
+- **Smaller preview picture:** `_shrink_bg` now makes 1024 px / quality 80 (was 1600 / 88) and uses JPEG draft mode so a big photo is not fully decoded. The picture is watermarked and shown small anyway.
+- **Quota:** 8 new preview pictures per person per rolling hour (`_PIC_PREVIEWS_PER_HOUR`, `_preview_picture_quota`). Over it: "Preview picture limit reached ... try again in about N min, or unlock". Looks, shape, text and every other control are never counted or blocked. A denied try does not count.
+- **Global byte budget:** all preview pictures together stay under 24 MB (`_DRAFT_BYTES_MAX`, `_set_draft_bg`). When full, the **oldest** pictures are dropped (their owners keep their look and see the sample backdrop again).
+- **Idle expiry:** an idle preview picture is dropped after 10 min (`_DRAFT_PIC_TTL`); the look itself still lasts 30 min.
+- **Add-pictures modal on a server without Premium:** reads at most 2 files (it only previews one), instead of up to 10 files x 8 MB.
+- **Undo:** free servers keep 5 steps instead of 10 (`_FREE_UNDO_MAX`). Premium unchanged.
+- All three free picture paths (Upload image, Add pictures, Replace) go through the quota and the budget helper; a test guards that nothing writes a draft picture directly.
+- Tests: `tests/unit/test_welcome_studio_free_caps.py` (13). Welcome/card set: 641 passed, 1 failed (the known `test_ultra_trial_off` env flag).
+
+### Known gaps
+- Numbers are my choice (8 per hour, 24 MB, 10 min, 5 undo steps): change the constants if the owner wants. Not measured against real traffic.
+- Memory only, per process: a restart clears everything (fine for previews); with several processes each has its own budget.
+- `_STUDIO_PREVIEW`, `_PREVIEW_AS` and the other small dicts were already trimmed at 1000 entries and are tiny, so left as is.
+- Not tested live.
+
+## Next
+1. Owner reviews / merges the memory-caps PR. 2. Still open: draft/Apply flow, should Clear background clear the gallery, staging check (migrations 078 to 083, phone taps), real-box render timing (`scripts/welcome_render_bench.py`).
+
+
+## Decisions made (2026-10-22, owner said "choose", so the previous Claude decided)
+- **Draft / Apply flow: NOT building it for now.** It changes the save path of every paid server and there is no staging to test on. Undo (10 steps) and Compare with live (9b) cover the risk. Revisit once a staging server exists.
+- **Clear background stays non-destructive:** it clears only the old single picture; gallery pictures go one at a time with Remove (no undo for a bulk wipe of up to 10).
+- Both questions are closed. Left: review/merge the memory-caps PR (#453), staging check (migrations 078 to 083, phone taps), real-box render timing.
