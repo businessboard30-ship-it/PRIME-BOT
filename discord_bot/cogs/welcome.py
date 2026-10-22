@@ -29,7 +29,7 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 import config as bot_config
 from database import db
 from modules.welcome_card import render_welcome_card
-from modules.welcome_studio import options_for_render
+from modules.welcome_studio import options_for_render, avatar_shape_for_render
 from discord_bot.cogs._views_shared import refresh_button
 from discord_bot import perm_check
 from discord_bot.cogs._views_welcome import build_wizard_view, refresh_posted_wizard, fetch_goodbye, open_wizard_message
@@ -1214,6 +1214,7 @@ class WelcomeCog(GuildOnlyCog):
                             guild_name=guild.name, use_template=config.get("use_template", True),
                             theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
                             ultra_options=await options_for_render(config),   # studio-only keys dropped unless Premium/Plus
+                            avatar_shape=await avatar_shape_for_render(config),
                         )
                     else:
                         # Template-only: PREVIEW of the new template card,
@@ -1368,6 +1369,7 @@ class WelcomeCog(GuildOnlyCog):
                     guild_name=guild.name, use_template=config.get("use_template", True),
                     theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
                     ultra_options=await options_for_render(config),   # studio-only keys dropped unless Premium/Plus
+                    avatar_shape=await avatar_shape_for_render(config),
                 )
                 ext = "gif" if image_format == "GIF" else "png"
                 file = discord.File(fp=io.BytesIO(card_bytes), filename=f"preview.{ext}")
@@ -1422,8 +1424,9 @@ class WelcomeCog(GuildOnlyCog):
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
                 custom_bg_bytes = await _gallery_bg_bytes_for_render(
                     session, config, self.bot, member.guild.member_count)
-            from modules.welcome_studio import options_for_render
+            from modules.welcome_studio import options_for_render, avatar_shape_for_render
             ultra_opts = await options_for_render(config)    # studio-only keys dropped unless Premium/Plus
+            shape_for_card = await avatar_shape_for_render(config)
             card_bytes, image_format = await asyncio.to_thread(
                 render_welcome_card,
                 avatar_bytes, member.display_name, f"Member #{member.guild.member_count}",
@@ -1431,7 +1434,7 @@ class WelcomeCog(GuildOnlyCog):
                 sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
                 guild_name=member.guild.name, use_template=config.get("use_template", True),
                 theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
-                ultra_options=ultra_opts,
+                ultra_options=ultra_opts, avatar_shape=shape_for_card,
             )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=__import__("io").BytesIO(card_bytes), filename=f"welcome.{ext}")
@@ -1775,6 +1778,7 @@ class WelcomeCog(GuildOnlyCog):
                 guild_name=interaction.guild.name, use_template=config.get("use_template", True),
                 theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
                 ultra_options=await options_for_render(config),   # studio-only keys dropped unless Premium/Plus
+                avatar_shape=await avatar_shape_for_render(config),
             )
             ext = "gif" if image_format == "GIF" else "png"
             file = discord.File(fp=__import__("io").BytesIO(card_bytes), filename=f"preview.{ext}")

@@ -37,6 +37,7 @@ Owner rules for this work: open every pull request against **`main`**; **merge o
 | 5b. Saved designs in the wizard (Send step): Save this look, Load, Rename, Delete | **Built and merged into `main`** (stacked on 5a) | branch `feat/welcome-studio-phase5b` |
 | 6a. DM extra: "DMs closed: post in channel" toggle (Setup wizard, DM mode only), free for everyone | **Built and merged into `main`** (stacked on 5b; migration 081, schema 130) | branch `feat/welcome-studio-phase6a` |
 | 6b. DM extra: separate DM text (Setup wizard, DM mode only) + the DMs-closed switch also on the join-DM welcome sub-screen | **Built and merged into `main`** (stacked on 6a; migration 082, schema 131) | branch `feat/welcome-studio-phase6b` |
+| Fix. Avatar shape is drawn at every render site (real join, /welcome preview, refresh, nudge post, test post) | **Built, PR open, not merged** (cut from `main`; found while starting Phase 7) | branch `fix/welcome-avatar-shape-at-render` |
 | Polaroid / film strip frames, Phase 7 (scheduled designs) | Not started | |
 
 ## What Phase 1 built
@@ -604,3 +605,17 @@ Owner decisions this turn: build the **separate DM text**; **skip "a different d
 1. **Phase 7: scheduled designs** (date-based design switch; will use `active_design_id`, reuse an existing daily loop, no new polling loop). Optional: polaroid / film strip frames, avatar glow.
 2. Staging check (no staging yet, Railway is paused): migrations 078 to 082, then every Phase 1 to 6b control on a phone, Premium vs Ultra-only.
 3. Still-open plan questions for the owner: per-picture overrides? Should Clear background also clear the gallery?
+
+
+## Fix (2026-10-21): the avatar shape is now drawn at every render site
+
+Found while starting Phase 7: `welcome.py` (real join, `/welcome preview`, its refresh, the nudge/heads-up card) and the test post in `welcome_extras.py` **never passed `avatar_shape` to the renderer**, so a server that picked a rounded square / other shape in the wizard still got a circle on the real card. Only the setup-wizard TV passed it, so the preview and the real card could disagree. No studio feature involved, no migration.
+
+- New `modules/welcome_studio.py::avatar_shape_for_render(config)` (never raises, unknown value -> circle). Every render site now passes `avatar_shape=await avatar_shape_for_render(config)` next to `ultra_options=await options_for_render(config)`. Phase 7 (scheduled designs) swaps both through these two helpers, so a scheduled design brings its own shape.
+- **Behaviour change the owner should know about:** servers that already picked a non-circle shape will now see it on the real card (that is what they chose). Servers on the default circle are unchanged.
+- Tests: `tests/unit/test_welcome_avatar_shape_render.py` (5: helper, source guard that every render call with `ultra_options=` also has `avatar_shape=`, setup TV, test post, untouched server). 4 of 5 fail without the fix (checked). Render-site tests still pass.
+- Not tested live.
+
+## Next (updated after the avatar-shape fix)
+1. Owner reviews / merges this one first (the rest of this session's PRs are stacked on it).
+2. Phase 7 (scheduled designs), then polaroid / film strip frames, avatar glow, preview-as-member / per-picture preview, the render-cost audit, per-picture overrides.

@@ -43,7 +43,7 @@ from discord_bot import perm_check
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
 from modules.welcome_card import render_welcome_card
-from modules.welcome_studio import options_for_render
+from modules.welcome_studio import options_for_render, avatar_shape_for_render
 from modules.text_styles import plain_name as _plain_name
 
 logger = logging.getLogger(__name__)
@@ -443,7 +443,7 @@ async def _render_setup_tv(client, guild, user, config: dict) -> bytes:
         accent_color=config.get("accent_color", "#5865F2"),
         sticker_bytes=sticker_bytes, animate=False,
         guild_name=guild.name, use_template=config.get("use_template", True),
-        avatar_shape=config.get("avatar_shape", "circle"),
+        avatar_shape=await avatar_shape_for_render(config),
         theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
         ultra_options=await options_for_render(config),   # studio-only keys dropped unless Premium/Plus
     )
@@ -1362,7 +1362,7 @@ class WelcomePreviewButton(discord.ui.DynamicItem[discord.ui.Button], template=_
                 background_color=config.get("background_color", "#2b2d31"),
                 accent_color=config.get("accent_color", "#5865F2"),
                 sticker_bytes=sticker_bytes, animate=(config.get("card_style") == "gif"),
-                avatar_shape=config.get("avatar_shape", "circle"),
+                avatar_shape=await avatar_shape_for_render(config),
                 use_template=config.get("use_template", True),
                 theme=config.get("card_theme", "wolf"),
                 custom_background_bytes=custom_bg_bytes,

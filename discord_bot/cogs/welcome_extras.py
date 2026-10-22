@@ -30,7 +30,7 @@ from discord.ext import commands
 from database import db
 from discord_bot import perm_check
 from modules.welcome_card import render_welcome_card
-from modules.welcome_studio import options_for_render
+from modules.welcome_studio import options_for_render, avatar_shape_for_render
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,7 @@ async def send_test_welcome(bot, guild: discord.Guild, member: discord.Member) -
             guild_name=guild.name, use_template=config.get("use_template", True),
             theme=config.get("card_theme", "wolf"), custom_background_bytes=custom_bg_bytes,
             ultra_options=await options_for_render(config),   # studio-only keys dropped unless Premium/Plus
+            avatar_shape=await avatar_shape_for_render(config),
         )
         ext = "gif" if image_format == "GIF" else "png"
         file = discord.File(fp=io.BytesIO(card_bytes), filename=f"welcome.{ext}")
