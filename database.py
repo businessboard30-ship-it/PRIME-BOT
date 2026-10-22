@@ -11401,16 +11401,6 @@ class Database:
         await anime_feed.save_config(cfg)          # turns on only with a channel, stamps enabled_at
         return await self.get_anime_feed_config(guild_id, clone_id)
 
-    # Birthday settings live in modules/birthday_store.py (module-level functions, own table setup).
-    # These thin wrappers let the web dashboard's schema address them like every other get_/set_ pair.
-    async def get_birthday_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
-        from modules import birthday_store
-        return await birthday_store.get_config(guild_id, clone_id)
-
-    async def set_birthday_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
-        from modules import birthday_store
-        return await birthday_store.set_config(guild_id, clone_id, **fields)
-
     async def get_ticket_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:

@@ -262,21 +262,6 @@ MODULES: List[dict] = [
         ],
     },
     {
-        "id": "birthdays", "title": "Birthdays", "category": "Community", "icon": "heart",
-        "desc": "Announce member birthdays in a channel.",
-        "get": "get_birthday_config", "set": "set_birthday_config",
-        "note": "Members add their own birthday with /birthday. Banner, footer and extra messages are still set in Discord.",
-        "fields": [
-            F("enabled", "Birthday announcements", "toggle", "Post a message on each member's birthday."),
-            F("channel_id", "Announcement channel", "channel", "Where birthdays are announced.", kind="text"),
-            F("message", "Message", "textarea", "Leave empty for the default message.", maxlen=500),
-            F("ping_role_id", "Role to ping", "role", "Optional. Mentioned in the announcement."),
-            F("birthday_role_id", "Birthday role", "role", "Given for the day, then removed.", premium=True),
-            F("utc_offset_hours", "Time zone (UTC offset)", "number", "Whole hours from UTC. Ghana is 0.", min=-12, max=14),
-            F("announce_hour", "Announce at (hour, 0-23)", "number", "Local hour in the time zone above.", min=0, max=23),
-        ],
-    },
-    {
         "id": "economy", "title": "Economy", "category": "Fun", "icon": "coins",
         "desc": "Your server's currency and how people earn it.",
         "get": "get_economy_config", "set": "set_economy_config",
