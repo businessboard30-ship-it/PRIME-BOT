@@ -962,3 +962,34 @@ def application_submission_view(r: dict) -> dict:
                         for a in (r.get("answers") or []) if isinstance(a, dict)][:10],
             "decided_by": str(r["decided_by"]) if r.get("decided_by") else None,
             "created_at": iso(r.get("created_at")), "decided_at": iso(r.get("decided_at"))}
+
+
+# ───────────────────────── quarantine role (needs the bot's role hierarchy) ─────────────────────────
+
+MANAGE_ROLES = 0x10000000
+
+
+def quarantine_role_problem(guild_id, role_id, roles: list, bot_role_ids: list):
+    """Same rules as modules.server_panel_quarantine.role_problem, from Discord's raw role objects.
+    roles: [{id, position, managed, permissions}]; bot_role_ids: the bot member's role ids. -> reason or None."""
+    by_id = {str(r["id"]): r for r in roles}
+    role = by_id.get(str(role_id))
+    if role is None:
+        return "The quarantine role was deleted. Pick a new one."
+    mine = [by_id[str(i)] for i in bot_role_ids if str(i) in by_id]
+    everyone = by_id.get(str(guild_id))
+    perms = 0
+    for r in mine + ([everyone] if everyone else []):
+        try:
+            perms |= int(r.get("permissions") or 0)
+        except (TypeError, ValueError):
+            pass
+    if not (perms & MANAGE_ROLES or perms & ADMINISTRATOR):
+        return "I need the Manage Roles permission to quarantine anyone."
+    if role.get("managed") or str(role_id) == str(guild_id):
+        return "That role can't be handed out by the bot. Pick a normal role."
+    if not mine:
+        return "Move my role above the quarantine role in Server Settings > Roles."
+    top = max(mine, key=lambda r: (int(r.get("position") or 0), -int(r["id"])))
+    below = (int(role.get("position") or 0), -int(role["id"])) < (int(top.get("position") or 0), -int(top["id"]))
+    return None if below else "Move my role above the quarantine role in Server Settings > Roles."

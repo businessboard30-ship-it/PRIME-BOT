@@ -23,6 +23,7 @@ Routes (all on /api/dash):
   GET  ?action=meta&guild_id            -> channels and roles
   GET  ?action=config&guild_id&module   -> current values
   POST {action: save, guild_id, module, values}
+  GET  ?action=quarantine&guild_id -> {role_id, problem} / POST {action: quarantine_role_set, guild_id, role_id} -> same hierarchy checks as the Discord panel, audited
   GET  ?action=applications&guild_id -> forms + pending counts (read-only); ?action=application_submissions&guild_id[&form_id&status&before] -> applicants' answers (Manage Server only, read-only; accept/decline stays in Discord)
   GET  ?action=autoresponders&guild_id / POST {action: autoresponder_add|autoresponder_delete, guild_id, trigger, response|id} -> same list as /autoresponder (audited, 30 writes/min, max 25, no mass mentions)
   GET  ?action=announcements&guild_id   -> upcoming /announce posts for this server (same page as Scheduled messages)
@@ -690,6 +691,15 @@ async def _checkout(sess: dict, gid: int, plan_id, provider=None) -> dict:
         _fail(502, "Couldn't start checkout right now. Please try again shortly.")
     logger.info("dashboard checkout guild=%s user=%s plan=%s provider=%s", gid, uid, plan["id"], provider)
     return {"ok": True, "url": url, "provider": provider}
+
+
+
+async def _quarantine_problem(gid: int, role_id):
+    """Bot's role hierarchy vs the chosen role, from live Discord data (never cached: it changes when roles are moved)."""
+    info = await _bot_get(f"/guilds/{gid}?with_counts=false")
+    me = await _bot_get("/users/@me")
+    member = await _bot_get(f"/guilds/{gid}/members/{me['id']}")
+    return S.quarantine_role_problem(gid, role_id, info.get("roles", []), [int(x) for x in member.get("roles", [])])
 
 
 _last_action: dict = {}
@@ -1524,6 +1534,39 @@ async def _route(method: str, query: dict, headers, body: dict):
             _fail(404, "That schedule no longer exists.")
         await _schedule_audit(sess, gid, "Scheduled message removed", f"#{sid}")
         raise _Reply(200, {"ok": True})
+    if method == "GET" and action == "quarantine":
+        gid = await _authorised_guild(sess, q("guild_id"))
+        _owner_rate(sess, "quarantine_read", 60, 60)
+        rid = await db.get_quarantine_role(gid, _cid())
+        try:
+            problem = await _quarantine_problem(gid, rid) if rid else None
+        except DiscordError:
+            problem = "Couldn't check my permissions right now."
+        raise _Reply(200, {"ok": True, "role_id": str(rid) if rid else None, "problem": problem})
+
+    if method == "POST" and action == "quarantine_role_set":
+        gid = await _authorised_guild(sess, body.get("guild_id"))
+        _owner_rate(sess, "quarantine_role_set", 20, 60)
+        _chans, role_ids = _id_sets(await _meta(gid))
+        rid = str(body.get("role_id") or "")
+        if not rid.isdigit() or rid not in role_ids:
+            _fail(422, "Pick a role from this server.")
+        try:
+            problem = await _quarantine_problem(gid, rid)
+        except DiscordError:
+            _fail(502, "Couldn't check my permissions right now. Try again.")
+        if problem:
+            _fail(422, problem)
+        old = await db.get_quarantine_role(gid, _cid())
+        await db.set_quarantine_role(gid, _cid(), int(rid))
+        try:
+            await db.dash_audit_add(gid, str(sess["user"]["id"]), sess["user"].get("username") or "Unknown", "quarantine",
+                                    {"Quarantine role": {"from": str(old) if old else None, "to": rid}}, S.AUDIT_RETENTION_DAYS)
+        except Exception:
+            logger.exception("dashboard: audit write failed for quarantine role")
+        logger.info("dashboard quarantine_role_set guild=%s user=%s", gid, sess["user"]["id"])
+        raise _Reply(200, {"ok": True, "role_id": rid})
+
     if method == "GET" and action == "applications":
         gid = await _authorised_guild(sess, q("guild_id"))
         _owner_rate(sess, "applications_read", 60, 60)
