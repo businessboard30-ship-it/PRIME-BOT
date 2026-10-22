@@ -353,19 +353,20 @@ async def _post_dm_fallback(member, config: dict, card_bytes: bytes, ext: str, c
         return False
 
 
-async def _gallery_bg_bytes_for_render(
+async def _gallery_pick_for_render(
     session: aiohttp.ClientSession, config_row: dict, bot: commands.Bot | None, member_number: int | None = None
-) -> bytes | None:
-    """Welcome Card Studio 2b: the join picture. Premium/Plus servers with gallery pictures rotate through them;
-    anyone else (or any error, or an empty gallery) gets exactly the old single picture. Never raises."""
+) -> tuple:
+    """Welcome Card Studio 2b + 8c: the join picture AND that picture's own tweak (crop / text color, may be empty).
+    Premium/Plus servers with gallery pictures rotate through them; anyone else (or any error, or an empty gallery) gets
+    exactly the old single picture and no tweak. Never raises."""
     try:
         if bot is None:
-            return await _custom_bg_bytes_for_render(session, config_row, bot)
+            return await _custom_bg_bytes_for_render(session, config_row, bot), {}
         from modules.welcome_studio import studio_unlocked
         from modules import welcome_gallery as wg
         guild_id, clone_id = config_row.get("guild_id"), config_row.get("clone_id")
         if not await studio_unlocked(guild_id, clone_id):
-            return await _custom_bg_bytes_for_render(session, config_row, bot)
+            return await _custom_bg_bytes_for_render(session, config_row, bot), {}
         rows = {int(r["slot"]): r for r in await db.gallery_list(guild_id, clone_id) if not r.get("needs_new_picture")}
         mode = wg.clean_mode(config_row.get("rotation_mode"))
         counter = await db.gallery_next_counter(guild_id, clone_id) if mode == wg.MODE_ORDER and len(rows) > 1 else 0
@@ -383,15 +384,22 @@ async def _gallery_bg_bytes_for_render(
             if data is not None:
                 if mode == wg.MODE_RANDOM and len(rows) > 1:
                     await db.gallery_set_last_slot(guild_id, clone_id, slot)
-                return data
+                return data, wg.clean_override(rows[slot].get("options_override_json"))
             rows.pop(slot, None)   # this one would not load right now: try another for this join, keep the slot
-        return await _custom_bg_bytes_for_render(session, config_row, bot)
+        return await _custom_bg_bytes_for_render(session, config_row, bot), {}
     except Exception:
         logger.exception("[welcome-gallery] join picture failed, using the old single picture")
         try:
-            return await _custom_bg_bytes_for_render(session, config_row, bot)
+            return await _custom_bg_bytes_for_render(session, config_row, bot), {}
         except Exception:
-            return None
+            return None, {}
+
+
+async def _gallery_bg_bytes_for_render(
+    session: aiohttp.ClientSession, config_row: dict, bot: commands.Bot | None, member_number: int | None = None
+) -> bytes | None:
+    """Welcome Card Studio 2b: just the join picture (see `_gallery_pick_for_render`). Never raises."""
+    return (await _gallery_pick_for_render(session, config_row, bot, member_number))[0]
 
 
 def _suggested_channel(guild: discord.Guild) -> discord.TextChannel | None:
@@ -1422,10 +1430,13 @@ class WelcomeCog(GuildOnlyCog):
                 async with session.get(str(member.display_avatar.replace(size=256).url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     avatar_bytes = await resp.read()
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
-                custom_bg_bytes = await _gallery_bg_bytes_for_render(
+                custom_bg_bytes, pic_tweak = await _gallery_pick_for_render(
                     session, config, self.bot, member.guild.member_count)
             from modules.welcome_studio import options_for_render, avatar_shape_for_render
             ultra_opts = await options_for_render(config)    # studio-only keys dropped unless Premium/Plus
+            if pic_tweak:   # studio 8c: this picture's own crop / text color (only ever non-empty for Premium/Plus)
+                from modules.welcome_card import parse_ultra_options
+                ultra_opts = {**parse_ultra_options(ultra_opts), **pic_tweak}
             shape_for_card = await avatar_shape_for_render(config)
             card_bytes, image_format = await asyncio.to_thread(
                 render_welcome_card,
