@@ -279,6 +279,83 @@ MODULES: List[dict] = [
     },
 ]
 
+
+_CARD_COLORS = ("white", "gold", "cyan", "pink", "green", "red")
+_CARD_FONTS = ("classic", "clean", "tall", "script", "tech", "elegant", "pixel", "gothic", "comic", "horror", "round",
+               "cursive", "poster", "wide", "marquee")
+_CARD_FONT_LABELS = {"classic": "Classic", "clean": "Clean", "tall": "Tall", "script": "Script", "tech": "Tech", "elegant": "Elegant",
+                     "pixel": "Pixel", "gothic": "Gothic", "comic": "Comic", "horror": "Horror", "round": "Round",
+                     "cursive": "Cursive", "poster": "Poster", "wide": "Wide", "marquee": "Marquee"}
+_CARD_POS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
+
+
+def _pairs(values, labels=None):
+    return opts(*[(v, (labels or {}).get(v) or str(v).replace("-", " ").capitalize()) for v in values])
+
+
+CARD_LOOK_KEYS = ("banner", "dim", "avatar_side", "text_color", "heading", "show_number", "ring", "soft_edge", "shadow",
+                  "big_name", "glass", "auto_contrast", "layout", "font", "focus", "bracket", "ratio",
+                  "avatar_glow", "zoom", "pan_x", "pan_y", "text_size", "frame", "frame_color", "heading_font",
+                  "text_outline", "brightness", "effect", "avatar_pos", "text_dx", "text_dy", "text_pos")
+
+CARD_LOOK_MODULE: dict = {
+    "id": "cardlook", "title": "Card design", "category": "Onboarding", "icon": "wave", "no_quick": True,
+    "desc": "Fine-tune the welcome card picture: layout, fonts, frames, effects and text position.",
+    "get": "get_welcome_card_look", "set": "set_welcome_card_look",
+    "note": "Customize Card options need the Customize Card pack, its trial or Premium. Studio options (marked Premium) need Premium. "
+            "Pictures themselves are added from Discord (/welcome).",
+    "fields": [
+        # ---- Customize Card ----
+        F("layout", "Layout", "select", "Banner puts the name on a strip; centered puts it in the middle.",
+          options=_pairs(("banner", "centered"))),
+        F("banner", "Banner position", "select", "Where the dark strip sits (banner layout).", options=_pairs(("bottom", "top", "none"))),
+        F("dim", "Banner darkness", "select", "", options=_pairs(("light", "medium", "heavy"))),
+        F("avatar_side", "Picture side", "select", "Which side the member's picture is on.", options=_pairs(("left", "right"))),
+        F("heading", "Heading line", "text", "Replaces \"Welcome to {guild}!\". Empty keeps the default.", maxlen=60),
+        F("show_number", "Show member number", "toggle", "The \"MEMBER #N\" line."),
+        F("text_color", "Text colour", "select", "Or take the colour from the member's picture.",
+          options=_pairs(_CARD_COLORS + ("avatar",), {"avatar": "From the member's picture"})),
+        F("font", "Font", "select", "", options=_pairs(_CARD_FONTS, _CARD_FONT_LABELS)),
+        F("bracket", "Name brackets", "select", "Characters wrapped around the username.",
+          options=_pairs(("none", "square", "round", "curly", "angle", "guillemet", "slashes", "stars"))),
+        F("ratio", "Card shape", "select", "Auto picks the shape from your picture.",
+          options=_pairs(("3:2", "16:9", "2:1", "3:1", "4:3", "1:1", "auto"), {"auto": "Auto (from the picture)"})),
+        F("focus", "Picture focus", "select", "Which part of the picture is kept when it is cropped.",
+          options=_pairs(("center", "top", "bottom", "left", "right", "auto"), {"auto": "Auto (busiest part)"})),
+        F("ring", "Avatar ring", "toggle", ""),
+        F("soft_edge", "Soft edge", "toggle", ""),
+        F("shadow", "Text shadow", "toggle", ""),
+        F("big_name", "Big name", "toggle", ""),
+        F("glass", "Glass banner", "toggle", ""),
+        F("auto_contrast", "Auto contrast", "toggle", "Keeps text readable on any picture."),
+        # ---- Studio (Premium) ----
+        F("zoom", "Zoom", "select", "Premium.", options=opts((100, "100%"), (125, "125%"), (150, "150%"), (200, "200%")),
+          numeric=True, premium=True),
+        F("pan_x", "Pan left / right", "number", "Premium. -100 to 100.", min=-100, max=100, premium=True),
+        F("pan_y", "Pan up / down", "number", "Premium. -100 to 100.", min=-100, max=100, premium=True),
+        F("text_size", "Text size", "select", "Premium.", options=_pairs(("small", "medium", "large", "xl"), {"xl": "Extra large"}), premium=True),
+        F("text_pos", "Text position", "select", "Premium. Where the text block sits on the card.",
+          options=_pairs(("auto",) + _CARD_POS), premium=True),
+        F("text_dx", "Nudge text sideways", "number", "Premium. -300 to 300.", min=-300, max=300, premium=True),
+        F("text_dy", "Nudge text up / down", "number", "Premium. -300 to 300.", min=-300, max=300, premium=True),
+        F("avatar_pos", "Avatar spot", "select", "Premium. Auto lets the layout decide.", options=_pairs(("auto",) + _CARD_POS), premium=True),
+        F("avatar_glow", "Avatar glow", "toggle", "Premium.", premium=True),
+        F("heading_font", "Heading font", "select", "Premium. Its own font for the heading line.",
+          options=_pairs(("same",) + _CARD_FONTS, dict(_CARD_FONT_LABELS, same="Same as the name")), premium=True),
+        F("text_outline", "Text outline", "select", "Premium.",
+          options=_pairs(("auto", "none", "thin", "medium", "thick", "glow"), {"auto": "Automatic"}), premium=True),
+        F("frame", "Picture frame", "select", "Premium.",
+          options=_pairs(("none", "thin", "medium", "thick", "double", "rounded", "glow", "polaroid", "film"),
+                         {"glow": "Soft glow", "polaroid": "Photo print", "film": "Film strip"}), premium=True),
+        F("frame_color", "Frame colour", "select", "Premium.", options=_pairs(_CARD_COLORS), premium=True),
+        F("brightness", "Picture brightness", "select", "Premium.", options=_pairs(("darker", "dark", "normal", "light", "lighter")), premium=True),
+        F("effect", "Picture effect", "select", "Premium.",
+          options=_pairs(("none", "blur", "vignette", "bw", "warm", "cool", "fade", "grain", "sparkle"),
+                         {"bw": "Black & white", "fade": "Faded"}), premium=True),
+    ],
+}
+MODULES.append(CARD_LOOK_MODULE)
+
 BY_ID: Dict[str, dict] = {m["id"]: m for m in MODULES}
 CATEGORIES = ["Onboarding", "Security", "Community", "Fun"]
 

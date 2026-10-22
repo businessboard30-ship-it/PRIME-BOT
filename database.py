@@ -12621,6 +12621,35 @@ class Database:
                 "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", int(guild_id), clone_id, text)
         return res.endswith(" 1")
 
+    async def get_welcome_card_look(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Dashboard 'Card design' page: the card options stored as JSON in ultra_card_json, fully populated with defaults."""
+        from modules.welcome_card import parse_ultra_options
+        cfg = await self.get_welcome_config(guild_id, clone_id)
+        return parse_ultra_options(cfg.get("ultra_card_json"))
+
+    async def set_welcome_card_look(self, guild_id: int, clone_id: Optional[int] = None, **values) -> None:
+        """Merge the given card options into ultra_card_json (every other key keeps its value).
+
+        Same gates the Discord wizard uses: Studio options need Premium; the other options need Customize Card
+        (pack, trial or Premium). A value equal to the default is always allowed, so 'reset' works on any server."""
+        import json
+        from modules.welcome_card import parse_ultra_options
+        from modules.welcome_studio import STUDIO_KEYS
+        from utils.dash_schema import ValidationError
+        cfg = await self.get_welcome_config(guild_id, clone_id)
+        current = parse_ultra_options(cfg.get("ultra_card_json"))
+        defaults = parse_ultra_options(None)
+        changed = {k: v for k, v in values.items() if k in defaults and v != current.get(k)}
+        wants_studio = any(k in STUDIO_KEYS and v != defaults[k] for k, v in changed.items())
+        wants_ultra = any(k not in STUDIO_KEYS and v != defaults[k] for k, v in changed.items())
+        if wants_studio and not await self.is_guild_premium_active(guild_id, clone_id):
+            raise ValidationError("Studio options need Premium.")
+        if wants_ultra and not cfg.get("ultra_pack_unlocked"):
+            raise ValidationError("These card options need Customize Card (pack, trial or Premium).")
+        merged = dict(current)
+        merged.update({k: v for k, v in values.items() if k in defaults})
+        await self.set_welcome_config(guild_id, clone_id, ultra_card_json=json.dumps(parse_ultra_options(merged)))
+
     async def unlock_welcome_card_pack(self, guild_id: int, clone_id: Optional[int] = None) -> None:
         """Marks the premium welcome-card pack as purchased for this guild
         (whole-guild, one-time — see card_pack_unlocked's schema comment

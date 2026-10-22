@@ -192,3 +192,34 @@ def test_me_lists_clones_present_in_server(env, monkeypatch):
     _clone_env(env, monkeypatch)
     st, p, _ = call("GET", {"action": "me"})
     assert st == 200 and p["servers"][0]["clones"] == [{"clone_id": 7, "name": "Cloney"}]
+
+
+def test_card_look_setter_merges_and_gates(monkeypatch):
+    import asyncio, json
+    import database
+    from utils.dash_schema import ValidationError
+    state = {"cfg": {"ultra_pack_unlocked": True, "ultra_card_json": json.dumps({"font": "tall", "ring": True})}, "premium": False, "saved": None}
+    d = database.Database.__new__(database.Database)
+
+    async def get_cfg(gid, cid=None): return state["cfg"]
+    async def set_cfg(gid, cid=None, **kw): state["saved"] = kw
+    async def prem(gid, cid=None): return state["premium"]
+    monkeypatch.setattr(d, "get_welcome_config", get_cfg)
+    monkeypatch.setattr(d, "set_welcome_config", set_cfg)
+    monkeypatch.setattr(d, "is_guild_premium_active", prem)
+
+    asyncio.run(d.set_welcome_card_look(1, None, layout="centered"))
+    saved = json.loads(state["saved"]["ultra_card_json"])
+    assert saved["layout"] == "centered" and saved["font"] == "tall" and saved["ring"] is True       # merged, not replaced
+
+    with __import__("pytest").raises(ValidationError):                                           # Studio needs Premium
+        asyncio.run(d.set_welcome_card_look(1, None, frame="film"))
+    state["premium"] = True
+    asyncio.run(d.set_welcome_card_look(1, None, frame="film"))
+    assert json.loads(state["saved"]["ultra_card_json"])["frame"] == "film"
+
+    state["cfg"] = {"ultra_pack_unlocked": False, "ultra_card_json": None}
+    state["premium"] = False
+    with __import__("pytest").raises(ValidationError):                                           # no Customize Card
+        asyncio.run(d.set_welcome_card_look(1, None, font="script"))
+    asyncio.run(d.set_welcome_card_look(1, None, font="classic", frame="none"))                    # defaults always allowed (reset)

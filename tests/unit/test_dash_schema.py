@@ -96,3 +96,47 @@ def test_export_stringifies_snowflakes():
     out = S.export_values(S.BY_ID["welcome"], {"enabled": 1, "channel_id": 123456789012345678, "message_template": "hi"})
     assert out["channel_id"] == "123456789012345678" and out["enabled"] is True and out["accent_color"] is None
     assert S.export_values(S.BY_ID["automod"], {"banned_words": None})["banned_words"] == []
+
+
+# ───────── card design (Customize Card + Studio options) ─────────
+
+def test_card_look_options_match_the_renderer():
+    """Drift guard: every choice the dashboard offers is one the card renderer accepts, and the keys line up."""
+    from modules import welcome_card as W
+    from modules.welcome_studio import STUDIO_KEYS
+    m = S.BY_ID["cardlook"]
+    assert {f["key"] for f in m["fields"]} == set(S.CARD_LOOK_KEYS)
+    assert set(S.CARD_LOOK_KEYS) <= set(W.ULTRA_DEFAULTS)
+    assert {f["key"] for f in m["fields"] if f.get("premium")} == (set(S.CARD_LOOK_KEYS) & set(STUDIO_KEYS))
+    allowed = {
+        "layout": set(W.ULTRA_LAYOUTS), "banner": set(W.ULTRA_BANNERS), "dim": set(W.ULTRA_DIM_ALPHA),
+        "avatar_side": set(W.ULTRA_AVATAR_SIDES), "text_color": set(W.ULTRA_TEXT_COLORS) | {W.ULTRA_AVATAR_COLOR},
+        "font": set(W.ULTRA_FONTS), "bracket": set(W.ULTRA_BRACKETS), "ratio": set(W.ULTRA_RATIOS) | {W.ULTRA_RATIO_AUTO},
+        "focus": set(W.ULTRA_FOCUS), "zoom": set(W.ULTRA_ZOOMS), "text_size": set(W.ULTRA_TEXT_SIZES), "frame": set(W.ULTRA_FRAMES),
+        "frame_color": set(W.ULTRA_TEXT_COLORS), "heading_font": set(W.ULTRA_FONTS) | {"same"},
+        "text_outline": set(W.ULTRA_OUTLINES) | {"auto"}, "brightness": set(W.ULTRA_BRIGHTNESS), "effect": set(W.ULTRA_EFFECTS),
+        "avatar_pos": set(W.ULTRA_AVATAR_POS), "text_pos": set(W.ULTRA_TEXT_POS) | {"auto"},
+    }
+    for f in m["fields"]:
+        if f["key"] in allowed:
+            assert {value for value, _ in f["options"]} == allowed[f["key"]], f["key"]
+    for k in ("pan_x", "pan_y"):
+        f = next(x for x in m["fields"] if x["key"] == k)
+        assert (f["min"], f["max"]) == (-W.ULTRA_PAN_LIMIT, W.ULTRA_PAN_LIMIT)
+    for k in ("text_dx", "text_dy"):
+        f = next(x for x in m["fields"] if x["key"] == k)
+        assert (f["min"], f["max"]) == (-W.ULTRA_NUDGE_LIMIT, W.ULTRA_NUDGE_LIMIT)
+    # a round trip through the renderer's own parser keeps every value the dashboard can send
+    sample = {"layout": "centered", "ratio": "auto", "zoom": 150, "frame": "polaroid", "effect": "sparkle", "text_pos": "top-right"}
+    assert all(W.parse_ultra_options(sample)[k] == val for k, val in sample.items())
+
+
+def test_card_look_validation_and_studio_gate():
+    clean, errs = v("cardlook", {"layout": "centered", "font": "script", "heading": "Hello!"})
+    assert not errs and clean == {"layout": "centered", "font": "script", "heading": "Hello!"}
+    assert v("cardlook", {"font": "comic sans"})[1]
+    assert v("cardlook", {"pan_x": 500}, premium=True)[1]
+    clean, errs = v("cardlook", {"frame": "film"})
+    assert errs and "Premium" in errs[0]
+    clean, errs = v("cardlook", {"frame": "film", "zoom": 200, "pan_x": -20, "text_pos": "bottom"}, premium=True)
+    assert not errs and clean == {"frame": "film", "zoom": 200, "pan_x": -20, "text_pos": "bottom"}
