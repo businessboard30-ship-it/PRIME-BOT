@@ -133,3 +133,50 @@ def test_http_session_is_replaced_when_the_loop_changes():
     s1 = asyncio.run(grab())
     s2 = asyncio.run(grab())                        # a different loop: must not reuse s1
     assert s1 is not s2
+
+
+# ───────────────────────── anime feed page ─────────────────────────
+
+def test_anime_feed_validation():
+    ok, err = v("animefeed", {"enabled": True, "channel_id": "100", "ping_role_id": "500", "content_kinds": "donghua"})
+    assert not err and ok == {"enabled": True, "channel_id": 100, "ping_role_id": 500, "content_kinds": "donghua"}
+    for bad in ({"content_kinds": "everything"}, {"channel_id": "999"}, {"ping_role_id": "999"}, {"enabled": 1}):
+        assert v("animefeed", bad)[1], bad
+
+
+def test_anime_feed_kinds_match_the_bot():
+    from modules import anime_feed
+    offered = {o[0] for f in S.BY_ID["animefeed"]["fields"] if f["key"] == "content_kinds" for o in f["options"]}
+    assert offered == set(anime_feed.KINDS)
+
+
+def test_every_schema_icon_exists_in_the_dashboard_frontend():
+    import re
+    js = open("dashboard/assets/dash.js", encoding="utf-8").read()
+    for m in S.MODULES:
+        assert re.search(r'(^|\s)"?%s"?\s*:' % re.escape(m["icon"]), js), (m["id"], m["icon"])
+
+
+@pytest.mark.asyncio
+async def test_anime_feed_wrapper_round_trip(monkeypatch):
+    from modules import anime_feed
+    saved = {}
+
+    async def fake_get(gid, clone_id=None):
+        return saved.get("cfg") or anime_feed.FeedConfig(gid, clone_id)
+
+    async def fake_save(cfg, updated_by=None):
+        saved["cfg"] = cfg
+
+    monkeypatch.setattr(anime_feed, "get_config", fake_get)
+    monkeypatch.setattr(anime_feed, "save_config", fake_save)
+    db = Database.__new__(Database)
+
+    out = await db.set_anime_feed_config(1, None, channel_id=100, ping_role_id=500, content_kinds="anime", enabled=True)
+    assert out == {"enabled": True, "channel_id": 100, "ping_role_id": 500, "content_kinds": "anime"}
+    # enabled with no channel reads back as off, matching what save_config actually stores
+    saved.clear()
+    out = await db.set_anime_feed_config(1, None, enabled=True)
+    assert out["enabled"] is False
+    with pytest.raises(ValueError):
+        await db.set_anime_feed_config(1, None, enabled_at="x")

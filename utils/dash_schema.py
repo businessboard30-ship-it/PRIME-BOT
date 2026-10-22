@@ -292,6 +292,20 @@ MODULES: List[dict] = [
         ],
     },
     {
+        "id": "animefeed", "title": "Anime feed", "category": "Fun", "icon": "mega",
+        "desc": "Post new anime and donghua episodes in a channel as they air.",
+        "get": "get_anime_feed_config", "set": "set_anime_feed_config",
+        "note": "Only episodes that air after you turn this on are posted. The bot needs Send Messages and Embed Links in the channel, "
+                "and a ping role must be mentionable. Changes can take up to 30 minutes to reach the posting worker.",
+        "fields": [
+            F("enabled", "Anime feed", "toggle", "Needs a channel. Stays off until one is saved."),
+            F("channel_id", "Feed channel", "channel", "Where new episodes are posted.", kind="text"),
+            F("ping_role_id", "Role to ping", "role", "Optional. Mentioned on each new episode."),
+            F("content_kinds", "What to post", "select", "Which kinds of shows appear.",
+              options=opts(("both", "Anime and donghua"), ("anime", "Anime only"), ("donghua", "Donghua only"))),
+        ],
+    },
+    {
         "id": "bumpnet", "title": "Bump network", "category": "Community", "icon": "link",
         "desc": "Receive bump posts from other servers and choose which ones.",
         "get": "get_bump_settings_config", "set": "set_bump_settings_config", "no_quick": True,
