@@ -12863,6 +12863,52 @@ class Database:
             await self.set_custom_role_feature_disabled(guild_id, not bool(fields["enabled"]), clone_id=clone_id)
         return await self.get_custom_role_config(guild_id, clone_id=clone_id)
 
+    async def get_cat_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        """Web dashboard view of the Cat game setup (the same cat_guild_config row /catsetup writes).
+        The spawn channel list is shown as three slots; the 2nd and 3rd are Premium-only."""
+        from modules import cat_setup as cs
+        cfg = await cs.get_config(guild_id, clone_id)
+        slots = (list(cfg.channel_ids) + [None, None, None])[:3]
+        return {
+            "enabled": bool(cfg.enabled),
+            "channel_1": slots[0], "channel_2": slots[1], "channel_3": slots[2],
+            "pace_percent": cs.clamp_pace(cfg.pace_percent),
+            "active_start": cs.clamp_hour(cfg.active_start, 0) % 24,
+            "active_end": cs.clamp_hour(cfg.active_end, 24),
+            "announce_mode": cs.clamp_announce(cfg.announce_mode),
+            "fights_cross_server": bool(cfg.fights_cross_server),
+            "fights_show_server": bool(cfg.fights_show_server),
+        }
+
+    async def set_cat_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        """Only the keys passed are changed. Goes through the same helpers as the Discord wizard
+        (channel limit of the server's CURRENT plan, `after_change` scheduling, one save function)."""
+        from dataclasses import replace
+        from modules import cat_setup as cs
+        old = await cs.get_config(guild_id, clone_id)
+        changes: Dict[str, Any] = {}
+        for key in ("enabled", "fights_cross_server", "fights_show_server"):
+            if key in fields:
+                changes[key] = bool(fields[key])
+        if "pace_percent" in fields:
+            changes["pace_percent"] = cs.clamp_pace(fields["pace_percent"])
+        if "active_start" in fields:
+            changes["active_start"] = cs.clamp_hour(fields["active_start"], 0) % 24
+        if "active_end" in fields:
+            changes["active_end"] = cs.clamp_hour(fields["active_end"], 24)
+        if "announce_mode" in fields:
+            changes["announce_mode"] = cs.clamp_announce(fields["announce_mode"])
+        if any(k in fields for k in ("channel_1", "channel_2", "channel_3")):
+            slots = (list(old.channel_ids) + [None, None, None])[:3]
+            for i, key in enumerate(("channel_1", "channel_2", "channel_3")):
+                if key in fields:
+                    slots[i] = fields[key]
+            premium = await cs.is_premium(guild_id, clone_id)
+            changes["channel_ids"] = cs.clamp_channels([c for c in slots if c], cs.tier_for(premium))
+        new = cs.after_change(old, replace(old, **changes))
+        await cs.save_config(new)
+        return await self.get_cat_config(guild_id, clone_id)
+
     async def get_custom_role_panel(self, guild_id: int, clone_id: Optional[int] = None) -> Optional[dict]:
         """Returns {"panel_channel_id", "panel_message_id"} (or None) —
         used by _enable_custom_role_panel to avoid creating a second
