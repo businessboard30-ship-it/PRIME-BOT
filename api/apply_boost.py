@@ -84,6 +84,7 @@ class handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length) if length else b"{}"
             body = json.loads(raw or b"{}")
         except Exception:
+            logger.debug("swallowed exception in handler.do_POST", exc_info=True)
             self._json(400, {"status": "error", "message": "Invalid JSON body"})
             return
 

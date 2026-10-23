@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 VET_EVERY = 10          # fights per step
 VET_STEP_PCT = 1        # percent per step
@@ -71,6 +74,7 @@ async def bonuses(cat_ids: Iterable[int]) -> Dict[int, int]:
         async with p.acquire() as conn:
             return {i: bonus_pct(n) for i, n in (await fights_in(conn, ids)).items()}
     except Exception:
+        logger.warning("swallowed exception in bonuses", exc_info=True)
         return {i: 0 for i in ids}
 
 
@@ -81,6 +85,7 @@ async def get(cat_id: int) -> Record:
             r = await conn.fetchrow("SELECT * FROM cat_records WHERE cat_id = $1", int(cat_id))
         return Record.from_row(r) if r else Record(int(cat_id))
     except Exception:
+        logger.warning("swallowed exception in get", exc_info=True)
         return Record(int(cat_id))
 
 

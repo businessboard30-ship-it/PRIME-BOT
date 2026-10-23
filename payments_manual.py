@@ -335,6 +335,7 @@ async def _saved_region(user_id: int) -> Optional[str]:
         if (await db.get_user_currency(user_id) or "").upper() == "GHS":
             return "ghana"
     except Exception:
+        logger.warning("swallowed exception in _saved_region", exc_info=True)
         pass
     return None
 

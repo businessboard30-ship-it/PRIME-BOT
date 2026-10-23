@@ -506,6 +506,7 @@ async def manages_guild(guild, user_id: int, permissions=None) -> bool:
         try:
             member = await guild.fetch_member(user_id)
         except Exception:
+            logger.warning("swallowed exception in manages_guild", exc_info=True)
             return False
         return access_denied_reason(guild, user_id, member.guild_permissions) is None
     return False

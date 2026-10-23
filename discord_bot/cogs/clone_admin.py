@@ -423,6 +423,7 @@ class CloneAdminCog(commands.Cog):
             try:
                 await db.cache_username(user_id, str(user))
             except Exception:
+                logger.warning("swallowed exception in CloneAdminCog._resolve_username", exc_info=True)
                 pass
         return name
 

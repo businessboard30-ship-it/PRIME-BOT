@@ -97,6 +97,7 @@ def _font(name: str, size: int):
     try:
         return ImageFont.truetype(path, size)
     except Exception:
+        logger.debug("swallowed exception in _font", exc_info=True)
         return lc._load_font(size)
 
 
@@ -217,6 +218,7 @@ def card_size(bg_bytes: Optional[bytes]) -> tuple:
     try:
         return Image.open(io.BytesIO(bg_bytes)).size
     except Exception:
+        logger.debug("swallowed exception in card_size", exc_info=True)
         return REF_W, REF_H
 
 
@@ -252,6 +254,7 @@ def render_custom_level_card(avatar_bytes: bytes, username: str, new_level: int,
         try:
             bg = _open_background(use_bg, fit_box)
         except Exception:
+            logger.debug("swallowed exception in render_custom_level_card", exc_info=True)
             bg = None
     if bg is not None:
         W, H = bg.size
@@ -278,6 +281,7 @@ def render_custom_level_card(avatar_bytes: bytes, username: str, new_level: int,
             bg.paste(lg, (x0 + (x1 - x0 - lg.width) // 2, y0 + (y1 - y0 - lg.height) // 2), lg)
             logo_x0 = x0
         except Exception:
+            logger.debug("swallowed exception in render_custom_level_card", exc_info=True)
             pass
     draw = ImageDraw.Draw(bg)
     accent = lc._hex_to_rgb(d["accent"])
@@ -287,6 +291,7 @@ def render_custom_level_card(avatar_bytes: bytes, username: str, new_level: int,
     try:
         av = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA").resize((size, size))
     except Exception:
+        logger.debug("swallowed exception in render_custom_level_card", exc_info=True)
         av = Image.new("RGBA", (size, size), accent)
     ring = k(6)
     ax = (round(ox + REF_W * S / 2) - size // 2) if center else round(ox) + k(60)
@@ -425,6 +430,7 @@ async def render_member_card(db, member, level: int, cur_xp: int, need_xp: int, 
         try:
             avatar = await member.display_avatar.replace(size=256, format="png").read()
         except Exception:
+            logger.warning("swallowed exception in render_member_card", exc_info=True)
             avatar = placeholder_avatar(card[0].get("accent", "#57F287"))
         return await render_async(avatar, getattr(member, "display_name", ""), level, cur_xp, need_xp, *card,
                                   title=title, rank=rank)
@@ -473,6 +479,7 @@ async def design_for_user(db, uid, now=None, guild_id=None, clone_id=None) -> Op
     try:
         d, _ = validate(json.loads(raw))
     except Exception:
+        logger.debug("swallowed exception in design_for_user", exc_info=True)
         return None
     return d
 
@@ -495,6 +502,7 @@ async def server_design(db, guild_id, clone_id=None) -> Optional[dict]:
     try:
         d, _ = validate(json.loads(raw))
     except Exception:
+        logger.debug("swallowed exception in server_design", exc_info=True)
         return None
     return d
 

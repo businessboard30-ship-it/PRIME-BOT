@@ -109,6 +109,7 @@ async def user_blocked(user_id) -> bool:
         await _refresh()
         return int(user_id) in _snapshot["users"]
     except Exception:
+        logger.warning("swallowed exception in user_blocked", exc_info=True)
         return False
 
 

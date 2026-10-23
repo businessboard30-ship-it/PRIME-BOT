@@ -261,6 +261,7 @@ class Dispatcher(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b'{"status": "error", "message": "Internal server error"}')
             except Exception:
+                logger.debug("swallowed exception in Dispatcher._dispatch", exc_info=True)
                 pass  # headers already sent
 
     def do_GET(self):

@@ -20,6 +20,9 @@ from discord_bot import perm_check
 import config
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
+import logging
+
+logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LEN = 300
 MAX_CATEGORIES = 5
@@ -34,6 +37,7 @@ async def _is_premium(guild_id: int, clone_id) -> bool:
     try:
         return bool(await db.is_guild_premium_active(guild_id, clone_id))
     except Exception:
+        logger.warning("swallowed exception in _is_premium", exc_info=True)
         return False
 
 
@@ -58,11 +62,13 @@ def render_status_lines(cfg: dict, premium: bool) -> list:
     try:
         cats = json.loads(cfg["categories_json"]) if cfg.get("categories_json") else []
     except Exception:
+        logger.debug("swallowed exception in render_status_lines", exc_info=True)
         pass
     buttons = []
     try:
         buttons = json.loads(cfg["custom_buttons_json"]) if cfg.get("custom_buttons_json") else []
     except Exception:
+        logger.debug("swallowed exception in render_status_lines", exc_info=True)
         pass
     auto_close = cfg.get("auto_close_hours")
     transcript_ch = cfg.get("transcript_channel_id")
@@ -381,6 +387,7 @@ class TicketPostPanelButton(discord.ui.DynamicItem[discord.ui.Button],
                         style=discord.ButtonStyle.link,
                     ))
         except Exception:
+            logger.debug("swallowed exception in TicketPostPanelButton.callback", exc_info=True)
             pass
 
         # Build embed with categories if premium
@@ -388,6 +395,7 @@ class TicketPostPanelButton(discord.ui.DynamicItem[discord.ui.Button],
         try:
             cats = json.loads(cfg.get("categories_json") or "[]")
         except Exception:
+            logger.debug("swallowed exception in TicketPostPanelButton.callback", exc_info=True)
             pass
 
         embed = discord.Embed(
@@ -448,6 +456,7 @@ class TicketCategoriesModal(discord.ui.Modal, title="💎 Ticket categories (one
             rows = json.loads(current_json) if current_json else []
             default = "\n".join(f"{r.get('emoji','🎫')} {r['label']} | {r.get('description','')}" for r in rows)
         except Exception:
+            logger.debug("swallowed exception in TicketCategoriesModal.__init__", exc_info=True)
             default = ""
         self.cats = discord.ui.TextInput(
             label=f"emoji label | description (max {MAX_CATEGORIES})",
@@ -521,6 +530,7 @@ class TicketCustomButtonsModal(discord.ui.Modal, title="💎 Custom panel button
             rows = json.loads(current_json) if current_json else []
             default = "\n".join(f"{r.get('emoji','')}{' ' if r.get('emoji') else ''}{r['label']} | {r.get('url','')}" for r in rows)
         except Exception:
+            logger.debug("swallowed exception in TicketCustomButtonsModal.__init__", exc_info=True)
             default = ""
         self.btns = discord.ui.TextInput(
             label=f"emoji label | URL (max {MAX_CUSTOM_BUTTONS} lines)",

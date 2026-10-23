@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 try:
     from modules.admin_money import record_failure, record_failure_sync
 except Exception:  # pragma: no cover
+    logging.getLogger(__name__).debug("swallowed exception in <module>", exc_info=True)
     async def record_failure(*a, **k):
         return False
 

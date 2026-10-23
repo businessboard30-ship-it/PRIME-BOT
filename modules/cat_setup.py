@@ -277,6 +277,7 @@ async def get_next_at(guild_id: int, clone_id: Optional[int]) -> Optional[dateti
                 "SELECT next_at FROM cat_guild_config WHERE guild_id = $1 AND COALESCE(clone_id, -1) = $2",
                 guild_id, _key(clone_id))
     except Exception:
+        logger.warning("swallowed exception in get_next_at", exc_info=True)
         return None
 
 
@@ -294,4 +295,5 @@ async def is_premium(guild_id: int, clone_id: Optional[int] = None) -> bool:
         from database import db
         return bool(await db.is_guild_premium_active(guild_id, clone_id))
     except Exception:
+        logger.warning("swallowed exception in is_premium", exc_info=True)
         return False

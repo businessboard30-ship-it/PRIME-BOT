@@ -52,6 +52,7 @@ def decode_b64(data) -> Optional[bytes]:
     try:
         return base64.b64decode(data, validate=True)
     except Exception:
+        logger.debug("swallowed exception in decode_b64", exc_info=True)
         return None
 
 
@@ -72,6 +73,7 @@ def process(kind: str, raw: bytes) -> tuple:
             return None, "Animated images are not accepted."
         img.load()
     except Exception:
+        logger.debug("swallowed exception in process", exc_info=True)
         return None, "That file isn't a valid image."
     if kind == "background":
         if w < MIN_BG[0] or h < MIN_BG[1]:
@@ -116,6 +118,7 @@ def moderation_copy(png: bytes) -> bytes:
             im.save(buf, format="PNG", optimize=True)
             return buf.getvalue()
     except Exception:
+        logger.debug("swallowed exception in moderation_copy", exc_info=True)
         pass
     return png
 

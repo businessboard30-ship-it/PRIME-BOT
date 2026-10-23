@@ -132,6 +132,7 @@ async def is_premium(guild_id: int, clone_id) -> bool:
     try:
         return bool(await db.is_guild_premium_active(guild_id, clone_id))
     except Exception:
+        logger.warning("swallowed exception in is_premium", exc_info=True)
         return False
 
 
@@ -294,6 +295,7 @@ async def _send_log(guild: discord.Guild, clone_id, cfg: dict, embed: discord.Em
             automod = await db.get_automod_config(guild.id, clone_id=clone_id)
             channel_id = automod.get("log_channel_id")
         except Exception:
+            logger.warning("swallowed exception in _send_log", exc_info=True)
             channel_id = None
     channel = guild.get_channel(channel_id) if channel_id else None
     if channel is None:
@@ -569,6 +571,7 @@ def _dash_line(guild_id: int, clone_id) -> str:
         if dashboard_supported(clone_id):
             return f"\n🖥️ [Edit in the web dashboard]({dashboard_url(guild_id, clone_id, 'honeypot')})"
     except Exception:
+        logger.debug("swallowed exception in _dash_line", exc_info=True)
         pass
     return ""
 

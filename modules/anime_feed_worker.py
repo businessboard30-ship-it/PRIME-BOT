@@ -161,6 +161,7 @@ class Worker:
             try:
                 guilds = [g for g in await af.enabled_guilds(self.clone_id) if self.bot.get_guild(g.guild_id) is not None]
             except Exception:
+                logger.warning("swallowed exception in Worker.cycle", exc_info=True)
                 return self._fail("couldn't read the feed settings")
         dm_work = False
         if alerts_on:

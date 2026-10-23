@@ -204,6 +204,7 @@ async def _can_setup(interaction: discord.Interaction) -> bool:
         from discord_bot.cogs._views_shared import user_can_manage_guild
         return bool(await user_can_manage_guild(guild, interaction.user.id))
     except Exception:
+        logger.warning("swallowed exception in _can_setup", exc_info=True)
         return False
 
 

@@ -51,6 +51,7 @@ def _panel_title(interaction: discord.Interaction) -> Optional[str]:
             if m:
                 return m.group(1).strip()[:120]
     except Exception:
+        logger.debug("swallowed exception in _panel_title", exc_info=True)
         pass
     return None
 

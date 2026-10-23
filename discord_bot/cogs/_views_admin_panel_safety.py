@@ -48,6 +48,7 @@ def _guild_label(cog, guild_id: int) -> str:
     try:
         g = cog.bot.get_guild(guild_id)
     except Exception:
+        logger.debug("swallowed exception in _guild_label", exc_info=True)
         g = None
     return f"{_clip(_safe(g.name), 40)} (`{guild_id}`)" if g is not None else f"`{guild_id}`"
 
@@ -384,6 +385,7 @@ class StatusView(_SafetyView):
             guilds = list(self.cog.bot.guilds)
             return len(guilds), sum((g.member_count or 0) for g in guilds)
         except Exception:
+            logger.debug("swallowed exception in StatusView._counts", exc_info=True)
             return 0, 0
 
     def body(self):

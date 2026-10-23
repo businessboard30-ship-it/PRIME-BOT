@@ -117,6 +117,7 @@ class ActivityTracker:
             limit = days or (dormant_days_for(member_count) if member_count else dormant_days())
             return self._clock() - last > limit * 86400
         except Exception:
+            logger.debug("swallowed exception in ActivityTracker.is_dormant", exc_info=True)
             return False
 
     def is_quiet(self, guild_id: int, member_count: Optional[int] = None) -> bool:
@@ -130,6 +131,7 @@ class ActivityTracker:
             limit = dormant_days_for(member_count) if member_count else dormant_days()
             return self._clock() - last > limit * 86400 * DROWSY_FRACTION
         except Exception:
+            logger.debug("swallowed exception in ActivityTracker.is_quiet", exc_info=True)
             return False
 
     def quiet_seconds(self, guild_id: int) -> Optional[float]:

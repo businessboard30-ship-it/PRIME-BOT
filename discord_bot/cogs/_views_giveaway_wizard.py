@@ -22,6 +22,9 @@ from discord_bot import perm_check
 import config
 from database import db
 from discord_bot.cogs._views_shared import check_wizard_access
+import logging
+
+logger = logging.getLogger(__name__)
 
 DURATION_CHOICES = [
     ("5m", 5 * 60), ("1h", 60 * 60), ("6h", 6 * 60 * 60),
@@ -44,6 +47,7 @@ async def _is_premium(guild_id: int, clone_id) -> bool:
     try:
         return bool(await db.is_guild_premium_active(guild_id, clone_id))
     except Exception:
+        logger.warning("swallowed exception in _is_premium", exc_info=True)
         return False
 
 
@@ -405,6 +409,7 @@ class GiveawayBonusEntriesModal(discord.ui.Modal, title="💎 Bonus entries (rol
             rows = json.loads(current_json) if current_json else []
             default = "\n".join(f"{r['role_id']}:{r['extra_entries']}" for r in rows)
         except Exception:
+            logger.debug("swallowed exception in GiveawayBonusEntriesModal.__init__", exc_info=True)
             default = ""
         self.entries = discord.ui.TextInput(
             label="Role ID : extra entries (one per line)",

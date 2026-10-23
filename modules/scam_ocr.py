@@ -260,6 +260,7 @@ def _decode_puny(host: str) -> str:
     try:
         return host.encode("ascii").decode("idna")
     except Exception:
+        logger.debug("swallowed exception in _decode_puny", exc_info=True)
         return host
 
 

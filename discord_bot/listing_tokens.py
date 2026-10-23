@@ -68,6 +68,7 @@ async def _is_owner(bot, user_id: int) -> bool:
     try:
         return int(user_id) in {int(i) for i in await bot._owner_ids_for_alert()}
     except Exception:
+        logger.warning("swallowed exception in _is_owner", exc_info=True)
         return False
 
 

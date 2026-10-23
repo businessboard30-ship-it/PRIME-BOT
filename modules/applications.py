@@ -13,6 +13,9 @@ from typing import List, Optional
 import discord
 
 from database import db, get_pool
+import logging
+
+logger = logging.getLogger(__name__)
 
 # (key, label, hex, premium_only) — the first two are free, all ten are Premium.
 COLORS = [
@@ -60,6 +63,7 @@ async def is_premium(guild_id: int, clone_id) -> bool:
     try:
         return bool(await db.is_guild_premium_active(guild_id, clone_id))
     except Exception:
+        logger.warning("swallowed exception in is_premium", exc_info=True)
         return False
 
 

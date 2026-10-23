@@ -56,7 +56,7 @@ class ThrottleFilter(logging.Filter):
                 record.msg = f"{record.msg} (+{suppressed} similar suppressed)"
             return True
         except Exception:
-            return True
+            return True  # logging filter: never log from here, it would re-enter this filter
 
 
 def install() -> None:

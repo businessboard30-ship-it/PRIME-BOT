@@ -474,6 +474,7 @@ class AppApplyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^appl
             try:
                 btn.emoji = emoji
             except Exception:
+                logger.debug("swallowed exception in AppApplyButton.__init__", exc_info=True)
                 pass
         super().__init__(btn)
 
@@ -551,6 +552,7 @@ class AppDecideButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^app
                 await applicant.add_roles(role, reason=f"Application accepted by {interaction.user}")
                 role_note = f" · gave {role.mention}"
             except Exception:
+                logger.warning("swallowed exception in AppDecideButton.callback", exc_info=True)
                 role_note = " · ⚠️ couldn't give the role (check my role position)"
 
         verdict = "✅ Accepted" if self.accept else "❌ Declined"

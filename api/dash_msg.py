@@ -184,6 +184,7 @@ async def _name(uid):
         val = {"name": M.clip_name(u.get("global_name") or u.get("username"), "Member " + uid[-4:]), "avatar": _avatar(u)}
         return d._store(key, 600, val)
     except Exception:
+        logger.warning("swallowed exception in _name", exc_info=True)
         return d._store(key, 30, {"name": "Member " + uid[-4:], "avatar": _avatar({"id": uid})})
 
 

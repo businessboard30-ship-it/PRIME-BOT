@@ -12790,6 +12790,7 @@ class Database:
                     "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", guild_id, clone_id,
                 )
             except Exception:
+                logger.warning("swallowed exception in Database.clear_expired_card_trial", exc_info=True)
                 row = None   # table doesn't exist yet: no trial was started with restore tracking
             if row is not None and row["prev_use_template"] is False:
                 await conn.execute(
@@ -12962,6 +12963,7 @@ class Database:
                     if not unlocked and await dthings_vote._token() == "":
                         unlocked = True                                             # no token: a vote can't be checked
                 except Exception:
+                    logger.warning("swallowed exception in Database.set_ai_chat_config", exc_info=True)
                     unlocked = True                                                 # a DB hiccup must not lock people out
                 if not unlocked:
                     from utils.dash_schema import ValidationError
@@ -16171,6 +16173,7 @@ class Database:
         try:
             return int(res.split()[-1])
         except Exception:
+            logger.debug("swallowed exception in Database.dash_visit_prune", exc_info=True)
             return 0
 
     async def dash_visits_report(self, days: int = 14, limit: int = 200) -> dict:
@@ -16593,6 +16596,7 @@ class Database:
         try:
             return int(res.split()[-1])
         except Exception:
+            logger.debug("swallowed exception in Database.dev_jobs_purge_paused", exc_info=True)
             return 0
 
     async def dev_connections_purge_lapsed(self, grace_days: int = 30) -> int:
@@ -16608,6 +16612,7 @@ class Database:
         try:
             return int(res.split()[-1])
         except Exception:
+            logger.debug("swallowed exception in Database.dev_connections_purge_lapsed", exc_info=True)
             return 0
 
     # ---- Part D: member messaging. Every method takes ids that the caller took from the SESSION or validated as snowflakes. ----
@@ -16776,6 +16781,7 @@ class Database:
         try:
             return int(res.split()[-1])
         except Exception:
+            logger.debug("swallowed exception in Database.msg_mark_read", exc_info=True)
             return 0
 
     async def msg_unread_by_sender(self, user_id: str) -> dict:
@@ -16795,6 +16801,7 @@ class Database:
         try:
             return int(res.split()[-1])
         except Exception:
+            logger.debug("swallowed exception in Database.msg_thread_delete", exc_info=True)
             return 0
 
     async def msg_purge_old(self, days: int = 30) -> int:
@@ -16805,6 +16812,7 @@ class Database:
         try:
             return int(res.split()[-1])
         except Exception:
+            logger.debug("swallowed exception in Database.msg_purge_old", exc_info=True)
             return 0
 
     async def msg_report_insert(self, reporter: str, reported: str, snapshot: str):
@@ -16856,6 +16864,7 @@ class Database:
         try:
             return int(res.split()[-1])
         except Exception:
+            logger.debug("swallowed exception in Database.msg_reports_purge", exc_info=True)
             return 0
 
     async def msg_notify_claim(self, limit: int = 25, cooldown_minutes: int = 60) -> list:
@@ -16937,6 +16946,7 @@ class Database:
                     try:
                         counts[key] = int(res.split()[-1])
                     except Exception:
+                        logger.debug("swallowed exception in Database.member_data_delete", exc_info=True)
                         counts[key] = 0
         return counts
 

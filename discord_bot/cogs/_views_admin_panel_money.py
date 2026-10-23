@@ -644,6 +644,7 @@ class ExpiriesView(_MoneyView):
                 try:
                     guild = self.cog.bot.get_guild(r["guild_id"])
                 except Exception:
+                    logger.debug("swallowed exception in ExpiriesView.body", exc_info=True)
                     pass
                 name = f"{_clip(_safe(guild.name), 40)} (`{r['guild_id']}`)" if guild is not None else f"`{r['guild_id']}`"
                 entries.append(f"{'🔁' if r['auto_renews'] else '•'} {name}{where} — {_ts(r['expires_at'])}")

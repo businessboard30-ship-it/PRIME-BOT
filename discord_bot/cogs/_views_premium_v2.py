@@ -311,6 +311,7 @@ class PremiumWizardView(discord.ui.LayoutView):
                 await interaction.followup.send(
                     "Couldn't open the checkout just now — tap the plan again in a moment.", ephemeral=True)
             except Exception:
+                logger.warning("swallowed exception in PremiumWizardView._checkout", exc_info=True)
                 pass
         finally:
             self._busy = False

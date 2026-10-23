@@ -533,6 +533,7 @@ class _AddFeedModal(discord.ui.Modal):
                 from database import db as _db
                 premium = bool(await _db.is_guild_premium_active(guild.id, self.ctx.clone_id))
             except Exception:
+                logger.warning("swallowed exception in _AddFeedModal.on_submit", exc_info=True)
                 premium = False
             if not premium:
                 await interaction.followup.send(

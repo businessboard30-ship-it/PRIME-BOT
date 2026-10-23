@@ -45,6 +45,7 @@ def _mask(text) -> str:
         from modules.admin_ops import mask_secrets
         return mask_secrets(text)
     except Exception:
+        logger.debug("swallowed exception in _mask", exc_info=True)
         return "[unavailable]"       # never store text we could not mask
 
 

@@ -49,6 +49,7 @@ def _lib():
             from pyzbar import pyzbar          # ImportError / OSError when libzbar0 isn't installed
             _zbar = pyzbar
         except Exception:
+            logger.debug("swallowed exception in _lib", exc_info=True)
             _zbar = None
     return _zbar
 
@@ -86,6 +87,7 @@ def decode(data: bytes) -> List[str]:
                 try:
                     txt = sym.data.decode("utf-8", "ignore").strip()[:MAX_PAYLOAD]
                 except Exception:
+                    logger.debug("swallowed exception in decode", exc_info=True)
                     continue
                 if txt and txt not in found:
                     found.append(txt)

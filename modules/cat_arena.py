@@ -406,6 +406,7 @@ async def outgoing_count(owner_id: int, clone_id) -> int:
             return int(await conn.fetchval("SELECT COUNT(*) FROM cat_fights WHERE challenger_id = $1 AND clone_key = $2 "
                                            "AND status = 'pending' AND expires_at > NOW()", int(owner_id), _bk(clone_id)) or 0)
     except Exception:
+        logger.warning("swallowed exception in outgoing_count", exc_info=True)
         return 0
 
 
@@ -417,6 +418,7 @@ async def recent(owner_id: int, clone_id, limit: int = 3) -> List[Fight]:
                                     "AND status = 'settled' ORDER BY id DESC LIMIT $3", int(owner_id), _bk(clone_id), int(limit))
         return [Fight.from_row(r) for r in rows]
     except Exception:
+        logger.warning("swallowed exception in recent", exc_info=True)
         return []
 
 

@@ -160,6 +160,7 @@ class GuildActivityCog(commands.Cog):
             try:
                 lines.extend(str(x) for x in json.loads(r["value"]))
             except Exception:
+                logger.debug("swallowed exception in GuildActivityCog._collect_relayed", exc_info=True)
                 continue
         return lines
 

@@ -526,6 +526,7 @@ class AIToolsCog(commands.Cog):
             own_locked = await db.get_clan_card_if_assigned(guild.id, user_id, clone_id=clone_id)
             chief_seat = await db.get_chief_seat_for_user(guild.id, user_id, clone_id=clone_id)
         except Exception:
+            logger.warning("swallowed exception in AIToolsCog._clan_facts", exc_info=True)
             own_locked, chief_seat = None, None
         if chief_seat and own_locked:
             own_label = clan_cards.get_clan_label(own_locked)
@@ -814,6 +815,7 @@ class AIToolsCog(commands.Cog):
         try:
             params = self._command_tool_schema(spec, command)["function"]["parameters"]
         except Exception:
+            logger.debug("swallowed exception in AIToolsCog._validate_tool_args", exc_info=True)
             return raw, None
         res = ai_tool_args.clean_args(raw, params)
         if res.problems:

@@ -539,6 +539,7 @@ async def _avatar_bytes(url: str) -> bytes:
                             Image.open(BytesIO(data)).verify()
                             return data
         except Exception:
+            logger.warning("swallowed exception in _avatar_bytes", exc_info=True)
             pass
     img = Image.new("RGB", (256, 256), (88, 101, 242))
     ImageDraw.Draw(img).ellipse((78, 56, 178, 156), fill=(255, 255, 255))
@@ -631,6 +632,7 @@ def _is_lifetime(expires) -> bool:
     try:
         return bool(expires and expires > _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(days=config.PREMIUM_LIFETIME_THRESHOLD_DAYS))
     except Exception:
+        logger.debug("swallowed exception in _is_lifetime", exc_info=True)
         return False
 
 
@@ -1877,6 +1879,7 @@ class handler(BaseHTTPRequestHandler):
                 if not isinstance(body, dict):
                     raise ValueError
             except Exception:
+                logger.debug("swallowed exception in handler._dispatch", exc_info=True)
                 return self._finish(400, {"ok": False, "message": "Invalid request."})
         try:
             asyncio.run(_route(method, query, self.headers, body))

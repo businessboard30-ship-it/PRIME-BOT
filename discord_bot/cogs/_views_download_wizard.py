@@ -533,6 +533,7 @@ class DownloadLinkModal(discord.ui.Modal):
         try:
             domain = urlparse(url).netloc.lower()
         except Exception:
+            logger.debug("swallowed exception in DownloadLinkModal._handle_submit", exc_info=True)
             domain = ""
         if domain in DRM_BLOCKED_DOMAINS:
             await interaction.followup.send("❌ That site is DRM-protected — downloading from it isn't possible.", ephemeral=True)

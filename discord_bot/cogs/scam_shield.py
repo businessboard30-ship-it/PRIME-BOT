@@ -55,6 +55,7 @@ def _support_invite() -> str:
         import config
         return getattr(config, "DISCORD_SUPPORT_SERVER_INVITE", "") or "our support server (see /help)"
     except Exception:
+        logger.debug("swallowed exception in _support_invite", exc_info=True)
         return "our support server (see /help)"
 
 
@@ -412,6 +413,7 @@ class ScamShieldCog(commands.Cog):
                 cap, _prem = await sv.guild_cap(message.guild.id, clone_id)
                 pictures_unchecked = not sv.available() or sv.guild_used_today(message.guild.id, clone_id) >= cap
             except Exception:
+                logger.warning("swallowed exception in ScamShieldCog._check_request", exc_info=True)
                 pictures_unchecked = True
         await self._answer(message, sc.clean_text(pictures_unchecked), color=discord.Color.green())
 
@@ -424,6 +426,7 @@ class ScamShieldCog(commands.Cog):
         try:
             can_delete = target.channel.permissions_for(guild.me).manage_messages
         except Exception:
+            logger.debug("swallowed exception in ScamShieldCog._remove_checked", exc_info=True)
             can_delete = True                        # can't tell: try, and report the real error
         if not can_delete:
             reason = sc.NO_PERMS_TEXT.format(channel=getattr(target.channel, "mention", "that channel"))
@@ -553,6 +556,7 @@ class ScamShieldCog(commands.Cog):
         try:
             return bool(message.channel.permissions_for(message.guild.me).manage_messages)
         except Exception:
+            logger.debug("swallowed exception in ScamShieldCog._can_delete", exc_info=True)
             return True                          # can't tell: don't hold it back
 
     async def _strict_hit(self, message: discord.Message, text: str):
@@ -634,6 +638,7 @@ class ScamShieldCog(commands.Cog):
                     async with _download_slots:
                         data = await asyncio.wait_for(att.read(), timeout=8)
                 except Exception:
+                    logger.warning("swallowed exception in ScamShieldCog._match_extra", exc_info=True)
                     continue
                 cache[att.id] = data
             items.append((data, True, True))
@@ -690,6 +695,7 @@ class ScamShieldCog(commands.Cog):
                     async with _download_slots:
                         data = await asyncio.wait_for(att.read(), timeout=8)
                 except Exception:
+                    logger.warning("swallowed exception in ScamShieldCog._match_qr", exc_info=True)
                     continue
                 cache[att.id] = data
             gs = await ss.guild_settings(message.guild.id, getattr(self.bot, "clone_id", None))
@@ -719,6 +725,7 @@ class ScamShieldCog(commands.Cog):
                     async with _download_slots:
                         data = await asyncio.wait_for(att.read(), timeout=8)
                 except Exception:
+                    logger.warning("swallowed exception in ScamShieldCog._match_ocr", exc_info=True)
                     continue
                 cache[att.id] = data
             gs = await ss.guild_settings(message.guild.id, getattr(self.bot, "clone_id", None))
@@ -738,6 +745,7 @@ class ScamShieldCog(commands.Cog):
                 async with _download_slots:
                     data = await asyncio.wait_for(att.read(), timeout=6)
             except Exception:
+                logger.warning("swallowed exception in ScamShieldCog._match_images", exc_info=True)
                 continue
             if cache is not None:
                 cache[att.id] = data
@@ -764,6 +772,7 @@ class ScamShieldCog(commands.Cog):
                     async with _download_slots:
                         data = await asyncio.wait_for(att.read(), timeout=8)
                 except Exception:
+                    logger.warning("swallowed exception in ScamShieldCog._match_vision", exc_info=True)
                     continue
                 cache[att.id] = data
             hit = await sv.is_scam_image(data, message.guild.id, message.author.id,
@@ -796,6 +805,7 @@ class ScamShieldCog(commands.Cog):
         try:
             host = await self._evidence_channel()
         except Exception:
+            logger.warning("swallowed exception in ScamShieldCog._evidence", exc_info=True)
             return None, []
         if host is None:
             return None, []
@@ -808,6 +818,7 @@ class ScamShieldCog(commands.Cog):
                     data = await asyncio.wait_for(att.read(), timeout=6)
                 got.append((att.filename, data))
             except Exception:
+                logger.warning("swallowed exception in ScamShieldCog._evidence", exc_info=True)
                 continue
         return host, got
 
@@ -880,6 +891,7 @@ class ScamShieldCog(commands.Cog):
             p = ch.permissions_for(me)
             return bool(p.view_channel and p.send_messages and p.embed_links)
         except Exception:
+            logger.debug("swallowed exception in ScamShieldCog._can_post", exc_info=True)
             return False
 
     def _fallback_channel(self, guild, preferred=None):

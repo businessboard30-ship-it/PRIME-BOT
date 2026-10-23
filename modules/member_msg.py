@@ -7,6 +7,9 @@ and Discord itself (shared server). Nothing in this file trusts the browser.
 import json
 import re
 import unicodedata
+import logging
+
+logger = logging.getLogger(__name__)
 
 MAX_BODY = 1000                # characters per message (text only, no attachments in v1)
 REQUESTS_PER_DAY = 10          # new friend requests one person may send in 24 h
@@ -125,6 +128,7 @@ def parse_snapshot(raw):
     try:
         data = json.loads(raw or "[]")
     except Exception:
+        logger.debug("swallowed exception in parse_snapshot", exc_info=True)
         return []
     out = []
     for m in data if isinstance(data, list) else []:

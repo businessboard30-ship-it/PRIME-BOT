@@ -221,6 +221,7 @@ class TicketCog(GuildOnlyCog):
         try:
             premium = bool(await db.is_guild_premium_active(interaction.guild_id, clone_id))
         except Exception:
+            logger.warning("swallowed exception in TicketCog.setup_cmd", exc_info=True)
             premium = False
         view = build_ticket_wizard_view(interaction.guild, config, premium)
         await interaction.followup.send(view=view)

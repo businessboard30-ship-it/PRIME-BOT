@@ -70,6 +70,7 @@ class CommunityView(ServerPanelView):
             try:
                 return sum(1 for f in await db.get_application_forms(gid, cid) if f["status"] == "active")
             except Exception:
+                logger.warning("swallowed exception in CommunityView.load._live", exc_info=True)
                 return 0
         lv, sb, sg, rr, lr, live = await asyncio.gather(
             db.get_leveling_config(gid, cid),

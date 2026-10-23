@@ -14,6 +14,9 @@ Small in-memory queue of 'what the bot put to sleep / woke up' events. The suppo
 import os
 import time
 from collections import deque
+import logging
+
+logger = logging.getLogger(__name__)
 
 MAX_QUEUE = 200
 REPEAT_SECONDS = 6 * 3600
@@ -69,6 +72,7 @@ def emit(kind: str, name: str, text: str, *, force: bool = False) -> None:
                 del _last_sent[k]
         _queue.append((kind, text))
     except Exception:
+        logger.debug("swallowed exception in emit", exc_info=True)
         pass
 
 

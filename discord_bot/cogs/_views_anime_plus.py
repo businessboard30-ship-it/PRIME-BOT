@@ -128,6 +128,7 @@ async def _pending(user_id: int, clone_id: int) -> bool:
     try:
         row = await plus.latest_payment(user_id, clone_id)
     except Exception:
+        logger.warning("swallowed exception in _pending", exc_info=True)
         return False
     return bool(row and row["status"] == "pending")
 

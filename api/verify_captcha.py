@@ -59,6 +59,7 @@ class handler(BaseHTTPRequestHandler):
                 raise ValueError("too large")
             body = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
+            logger.debug("swallowed exception in handler.do_POST", exc_info=True)
             self._json(400, {"ok": False, "message": "Invalid request."})
             return
 

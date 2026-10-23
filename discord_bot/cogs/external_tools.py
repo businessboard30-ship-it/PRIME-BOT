@@ -153,6 +153,7 @@ class ExternalToolsCog(commands.Cog):
         try:
             domain = urlparse(url).netloc.lower()
         except Exception:
+            logger.debug("swallowed exception in ExternalToolsCog.download", exc_info=True)
             domain = ""
         if domain in DRM_BLOCKED_DOMAINS:
             await interaction.response.send_message(
