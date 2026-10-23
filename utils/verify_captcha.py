@@ -73,6 +73,7 @@ def parse_challenge(secret: str, token: str, now: Optional[float] = None) -> Opt
             "nonce": str(data["n"]),
         }
     except Exception:
+        logger.debug("swallowed exception in parse_challenge", exc_info=True)
         return None
 
 

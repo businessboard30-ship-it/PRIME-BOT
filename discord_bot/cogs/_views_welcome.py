@@ -114,6 +114,7 @@ async def _fetch_sticker_bytes(session: aiohttp.ClientSession, sticker_url: str 
                 return None
             return await resp.read()
     except Exception:
+        logger.warning("swallowed exception in _fetch_sticker_bytes", exc_info=True)
         return None
 
 
@@ -195,6 +196,7 @@ async def fetch_goodbye(guild_id: int, clone_id) -> dict | None:
     try:
         return await asyncio.wait_for(db.get_welcome_extras(guild_id, clone_id), timeout=1.5)
     except Exception:
+        logger.warning("swallowed exception in fetch_goodbye", exc_info=True)
         return None
 
 
@@ -525,6 +527,7 @@ async def _live_tv_name(interaction: discord.Interaction) -> str | None:
     try:
         return _existing_tv_name(await interaction.original_response())
     except Exception:
+        logger.warning("swallowed exception in _live_tv_name", exc_info=True)
         return None
 
 
@@ -923,6 +926,7 @@ class WelcomeCardLookSelect(discord.ui.DynamicItem[discord.ui.Select], template=
                 ephemeral=True,
             )
         except Exception:
+            logger.warning("swallowed exception in WelcomeCardLookSelect._send_locked_preview", exc_info=True)
             await interaction.followup.send(
                 _locked_text(theme) + "\n(Couldn't render a live preview right now.)",
                 view=_LockedPackBuyView(self.guild_id, self.clone_id),
@@ -1516,6 +1520,7 @@ class GoodbyePanelView(discord.ui.View):
         try:
             await refresh_posted_wizard(interaction.client, self.guild_id, self.clone_id)
         except Exception:
+            logger.warning("swallowed exception in GoodbyePanelView.save", exc_info=True)
             pass
 
     async def _pick(self, interaction: discord.Interaction):

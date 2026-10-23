@@ -64,11 +64,13 @@ def memory_mb() -> Optional[float]:
                 if line.startswith("VmRSS:"):
                     return int(line.split()[1]) / 1024.0
     except Exception:
+        logger.debug("swallowed exception in memory_mb", exc_info=True)
         pass
     try:
         import resource
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0   # peak, in MB on Linux
     except Exception:
+        logger.debug("swallowed exception in memory_mb", exc_info=True)
         return None
 
 
@@ -79,14 +81,17 @@ def bot_snapshot(bot: Any) -> Dict[str, Any]:
         if raw is not None and not math.isnan(raw) and not math.isinf(raw):
             latency = round(raw * 1000)
     except Exception:
+        logger.debug("swallowed exception in bot_snapshot", exc_info=True)
         pass
     try:
         servers = len(bot.guilds)
     except Exception:
+        logger.debug("swallowed exception in bot_snapshot", exc_info=True)
         servers = None
     try:
         cogs = len(bot.cogs)
     except Exception:
+        logger.debug("swallowed exception in bot_snapshot", exc_info=True)
         cogs = None
     return {
         "latency_ms": latency,
@@ -104,15 +109,18 @@ def loop_report(bot: Any) -> Tuple[int, List[str]]:
     try:
         from discord.ext import tasks
     except Exception:
+        logger.debug("swallowed exception in loop_report", exc_info=True)
         return 0, []
     try:
         cogs = list(bot.cogs.items())
     except Exception:
+        logger.debug("swallowed exception in loop_report", exc_info=True)
         return 0, []
     for cog_name, cog in cogs:
         try:
             attrs = list(vars(cog).items())
         except Exception:
+            logger.debug("swallowed exception in loop_report", exc_info=True)
             continue
         for attr, val in attrs:
             if not isinstance(val, tasks.Loop):
@@ -123,6 +131,7 @@ def loop_report(bot: Any) -> Tuple[int, List[str]]:
                 else:
                     stopped.append(f"{cog_name}.{attr}")
             except Exception:
+                logger.debug("swallowed exception in loop_report", exc_info=True)
                 stopped.append(f"{cog_name}.{attr}")
     return running, sorted(stopped)
 
@@ -134,6 +143,7 @@ def error_counts(window_s: int = ERROR_WINDOW_S, now: Optional[float] = None) ->
         from modules import admin_ops
         entries = admin_ops.recent_logs(limit=admin_ops.LOG_CAPACITY, mode="warnings")
     except Exception:
+        logger.debug("swallowed exception in error_counts", exc_info=True)
         return 0, 0
     cutoff = (now if now is not None else time.time()) - window_s
     errors = warnings = 0

@@ -51,6 +51,7 @@ def _owner_ids() -> frozenset:
         from config import DISCORD_OWNER_BROADCAST_IDS
         return frozenset(int(i) for i in DISCORD_OWNER_BROADCAST_IDS)
     except Exception:
+        logger.debug("swallowed exception in _owner_ids", exc_info=True)
         return frozenset()
 
 

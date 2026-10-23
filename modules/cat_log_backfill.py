@@ -150,6 +150,7 @@ async def _caption_one(bot, host, row: Dict[str, Any]) -> str:
     except (discord.NotFound, discord.Forbidden):
         return await mark("picture", pid, "skipped")
     except Exception:
+        logger.warning("swallowed exception in _caption_one", exc_info=True)
         return await mark("picture", pid, "retry")
     guild = bot.get_guild(int(row["first_guild"]))
     new = with_server_note(msg.content, row["first_guild"], getattr(guild, "name", None))
@@ -160,5 +161,6 @@ async def _caption_one(bot, host, row: Dict[str, Any]) -> str:
     except (discord.Forbidden, discord.NotFound):
         return await mark("picture", pid, "skipped")
     except Exception:
+        logger.warning("swallowed exception in _caption_one", exc_info=True)
         return await mark("picture", pid, "retry")
     return await mark("picture", pid, "done")

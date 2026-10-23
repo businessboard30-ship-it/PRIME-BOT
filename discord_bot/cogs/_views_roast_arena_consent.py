@@ -31,6 +31,7 @@ a restored-after-restart button still functions.
 """
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 
 import discord

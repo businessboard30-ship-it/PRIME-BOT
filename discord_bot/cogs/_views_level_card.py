@@ -49,6 +49,7 @@ async def load_state(uid: int, guild_id=None, clone_id=None):
             parsed, _ = lcd.validate(json.loads(raw))
             design = parsed or design
         except Exception:
+            logger.debug("swallowed exception in load_state", exc_info=True)
             pass
     assets = {}
     for kind in card_assets.KINDS:
@@ -64,6 +65,7 @@ async def trial_state(uid: int) -> tuple:
         rows = await db.entitlements_list(str(uid))
         return ent.trial_available(rows), ent.on_trial(rows)
     except Exception:
+        logger.warning("swallowed exception in trial_state", exc_info=True)
         return False, False
 
 
@@ -76,6 +78,7 @@ async def _avatar_bytes(user, accent: str) -> bytes:
     try:
         return await user.display_avatar.replace(size=128, format="png").read()
     except Exception:
+        logger.warning("swallowed exception in _avatar_bytes", exc_info=True)
         return lcd.placeholder_avatar(accent)
 
 
@@ -126,6 +129,7 @@ async def _own_access(uid: int) -> bool:
     try:
         return ent.has_access(await db.entitlements_list(str(uid)), ("card_plan",))
     except Exception:
+        logger.warning("swallowed exception in _own_access", exc_info=True)
         return False
 
 
@@ -146,6 +150,7 @@ async def _server_draft(guild_id: int) -> Draft:
             parsed, _ = lcd.validate(json.loads(raw))
             design = parsed or design
         except Exception:
+            logger.debug("swallowed exception in _server_draft", exc_info=True)
             pass
     saved = {}
     for kind in card_assets.KINDS:
@@ -370,6 +375,7 @@ async def edit_draft(interaction: discord.Interaction, draft: Draft, **changes) 
         try:
             await interaction.followup.send("Couldn't update the preview. Try again.", ephemeral=True)
         except Exception:
+            logger.warning("swallowed exception in edit_draft", exc_info=True)
             pass
 
 
@@ -435,6 +441,7 @@ async def save_draft(interaction: discord.Interaction, draft: Draft, target: Opt
         try:
             await interaction.followup.send("Couldn't save that. Try again.", ephemeral=True)
         except Exception:
+            logger.warning("swallowed exception in save_draft", exc_info=True)
             pass
 
 
@@ -615,6 +622,7 @@ class CardWizardView(discord.ui.View):
             try:
                 await interaction.followup.send("Couldn't share that right now.", ephemeral=True)
             except Exception:
+                logger.warning("swallowed exception in CardWizardView._share", exc_info=True)
                 pass
 
 
@@ -658,6 +666,7 @@ class ShowOnCardView(discord.ui.View):
             try:
                 await interaction.followup.send("Couldn't update the preview. Try again.", ephemeral=True)
             except Exception:
+                logger.warning("swallowed exception in ShowOnCardView._changed", exc_info=True)
                 pass
 
     async def _done(self, interaction: discord.Interaction):
@@ -733,6 +742,7 @@ class UploadModal(discord.ui.Modal):
             try:
                 await interaction.followup.send("Couldn't use that image. Try again.", ephemeral=True)
             except Exception:
+                logger.warning("swallowed exception in UploadModal.on_submit", exc_info=True)
                 pass
 
 

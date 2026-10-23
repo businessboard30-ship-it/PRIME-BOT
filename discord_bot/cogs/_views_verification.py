@@ -250,6 +250,7 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
                 try:    # a link just went out: keep the pass poller at full speed for the next 10 minutes
                     interaction.client.get_cog("VerificationCog").wake_poll()
                 except Exception:
+                    logger.debug("swallowed exception in VerifyButton.callback", exc_info=True)
                     pass
                 view = discord.ui.View(timeout=None)
                 view.add_item(discord.ui.Button(

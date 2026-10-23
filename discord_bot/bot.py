@@ -62,6 +62,7 @@ def _install_send_tracer():
                 ]
                 tlog.warning("POST to %s from: %s", raw, " > ".join(frames[-6:]) or "(no bot frames)")
         except Exception:
+            logger.debug("swallowed exception in _install_send_tracer.traced", exc_info=True)
             pass
         return await orig(self, route, *args, **kwargs)
 

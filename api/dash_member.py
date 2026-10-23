@@ -292,6 +292,7 @@ async def member_card(uid, q, db):
         try:
             design, _ = lcd.validate(json.loads(raw))
         except Exception:
+            logger.debug("swallowed exception in member_card", exc_info=True)
             design = None
     access = ent.has_access(rows, ("card_plan",))
     from modules import card_assets
@@ -447,6 +448,7 @@ async def member_data_delete(uid, body, db):
         try:
             status = await dash._bot_request("DELETE", f"/channels/{channel}/messages/{r['message_id']}")
         except Exception:
+            logger.warning("swallowed exception in member_data_delete", exc_info=True)
             status = None
         if status not in (200, 204, 404):
             return {"_status": 502, "message": "Couldn't remove your saved exports right now. Nothing was deleted; try again in a moment."}

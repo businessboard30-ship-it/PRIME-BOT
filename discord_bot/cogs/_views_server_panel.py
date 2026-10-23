@@ -212,6 +212,7 @@ class ServerPanelView(discord.ui.LayoutView):
             label = "Edit this in the web dashboard" if self.dash_module else "Web dashboard"
             return f"🖥️ [{label}]({dashboard_url(self.guild_id, self.clone_id, self.dash_module)})"
         except Exception:
+            logger.debug("swallowed exception in ServerPanelView._dash_link", exc_info=True)
             return ""
 
     def _notes(self) -> List[str]:
@@ -224,6 +225,7 @@ class ServerPanelView(discord.ui.LayoutView):
                     from modules import admin_controls as ac
                     label = ac.FEATURES[k][0]
                 except Exception:
+                    logger.debug("swallowed exception in ServerPanelView._notes", exc_info=True)
                     label = k
                 out.append(f"⏸️ **{label}** is turned off by the bot owner for now"
                            + (" — settings here are read-only." if k == self.switch_key else "."))
@@ -341,6 +343,7 @@ def _site_links(guild_id: Optional[int] = None, clone_id: Optional[int] = None) 
         WEBSITE_URL = getattr(_cfg, "WEBSITE_URL", "")
         DISCORD_SUPPORT_SERVER_INVITE = getattr(_cfg, "DISCORD_SUPPORT_SERVER_INVITE", "")
     except Exception:
+        logger.debug("swallowed exception in _site_links", exc_info=True)
         return ""
     bits = []
     from utils.dash_links import dashboard_url, dashboard_supported
@@ -707,11 +710,13 @@ class ModerationView(ServerPanelView):
             try:
                 return await db.get_honeypot_stats(interaction.guild_id, cid)
             except Exception:
+                logger.warning("swallowed exception in ModerationView.load._stats", exc_info=True)
                 return {}
         async def _antiraid():
             try:
                 return await db.get_antiraid_config(interaction.guild_id, cid)
             except Exception:
+                logger.warning("swallowed exception in ModerationView.load._antiraid", exc_info=True)
                 return {}
         am, hp, stats, ar = await asyncio.gather(
             db.get_automod_config(interaction.guild_id, cid),

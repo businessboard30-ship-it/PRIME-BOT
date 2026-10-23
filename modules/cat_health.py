@@ -53,6 +53,7 @@ def record(event: str, n: int = 1, error: Optional[str] = None) -> None:
         if error:
             _last_error = str(error)[:200]
     except Exception:
+        logger.debug("swallowed exception in record", exc_info=True)
         pass
 
 
@@ -121,6 +122,7 @@ async def send_report(bot, force: bool = False) -> bool:
         try:
             size = await cat_pool.pool_count()
         except Exception:
+            logger.warning("swallowed exception in send_report", exc_info=True)
             size = None
         hours = max(0.01, (time.time() - _since) / 3600)
         from modules import cat_vision

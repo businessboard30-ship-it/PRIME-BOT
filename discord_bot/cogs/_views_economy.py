@@ -23,6 +23,9 @@ those two custom_ids were part of whatever got registered at startup.
 import discord
 
 from database import db
+import logging
+
+logger = logging.getLogger(__name__)
 
 _PERSISTENT_KEYS = [
     "balance", "daily", "work", "beg", "shop", "leaderboard", "leaderboard_toggle",
@@ -162,6 +165,7 @@ def _message_says_net_worth(message: discord.Message) -> bool:
                 if content and "net worth" in content.lower():
                     return True
     except Exception:
+        logger.debug("swallowed exception in _message_says_net_worth", exc_info=True)
         pass
     return False
 

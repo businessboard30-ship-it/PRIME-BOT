@@ -103,6 +103,7 @@ def _shrink(data: bytes) -> Optional[bytes]:
             im.save(out, "JPEG", quality=80)
             return out.getvalue()
     except Exception:
+        logger.debug("swallowed exception in _shrink", exc_info=True)
         return None
 
 
@@ -137,6 +138,7 @@ async def approve(data: bytes) -> bool:
         parts = (resp.json().get("candidates") or [{}])[0].get("content", {}).get("parts", [])
         verdict = parse_verdict("".join(p.get("text", "") for p in parts))
     except Exception:
+        logger.debug("swallowed exception in approve", exc_info=True)
         return True
     if verdict is False:
         logger.info("[cat-vision] skipped a picture (not a clear, nice cat photo)")

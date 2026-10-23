@@ -36,6 +36,7 @@ async def summary(user_id: int) -> dict:
             try:
                 n = await conn.fetchval(f"SELECT COUNT(*) FROM {table} WHERE {col}::text = $1", str(user_id))
             except Exception:
+                logger.warning("swallowed exception in summary", exc_info=True)
                 n = None
             if n:
                 out[label] = int(n)
@@ -57,5 +58,6 @@ async def delete_all(user_id: int, db) -> dict:
                 try:
                     removed[label] = int(r.split()[-1])
                 except Exception:
+                    logger.debug("swallowed exception in delete_all", exc_info=True)
                     removed[label] = 0
     return {"ok": True, "message": "Done.", "removed": {k: v for k, v in removed.items() if v}}

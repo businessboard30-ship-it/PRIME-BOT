@@ -156,6 +156,7 @@ async def open_spawn(guild_id: int, clone_id) -> Optional[dict]:
                 int(guild_id), _key(clone_id), SPAWN_EXPIRE_HOURS)
         return dict(row) if row else None
     except Exception:
+        logger.warning("swallowed exception in open_spawn", exc_info=True)
         return None
 
 

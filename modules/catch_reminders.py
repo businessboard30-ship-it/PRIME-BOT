@@ -11,6 +11,9 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from modules.catch_db import transaction
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,7 @@ async def dispatch_due_reminders(
         try:
             delivered_ok = await deliver(reminder)
         except Exception:
+            logger.warning("swallowed exception in dispatch_due_reminders", exc_info=True)
             delivered_ok = False
         if delivered_ok:
             await mark_delivered(reminder.id, delivered_at=moment, conn=conn)

@@ -22,6 +22,9 @@ import os
 from dataclasses import dataclass
 
 from PIL import Image, ImageFilter, ImageStat
+import logging
+
+logger = logging.getLogger(__name__)
 
 MIN_SHORT_SIDE = 600
 MIN_LONG_SIDE = 800
@@ -101,6 +104,7 @@ def assess(data: bytes) -> Quality:
             img.load()
             score = sharpness(img)
     except Exception:
+        logger.debug("swallowed exception in assess", exc_info=True)
         return Quality(False, "couldn't read the picture", size=size)
     if score < min_sharpness():
         return Quality(False, f"blurry (sharpness {score:.0f})", w, h, score, fmt, size)

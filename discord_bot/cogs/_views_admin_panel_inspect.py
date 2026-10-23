@@ -44,6 +44,7 @@ def _premium_grace() -> int:
         from config import PREMIUM_GRACE_DAYS
         return int(PREMIUM_GRACE_DAYS)
     except Exception:
+        logger.debug("swallowed exception in _premium_grace", exc_info=True)
         return 0
 
 
@@ -368,6 +369,7 @@ class ServerInspectView(PanelView):
         try:
             return bot.get_guild(self.guild_id) if bot is not None else None
         except Exception:
+            logger.debug("swallowed exception in ServerInspectView._main_guild", exc_info=True)
             return None
 
     async def load(self) -> None:

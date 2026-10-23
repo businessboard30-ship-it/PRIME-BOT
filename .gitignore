@@ -1,1 +1,14 @@
 __pycache__/
+*.pyc
+
+# Node / Next.js (CI and Railway install and build these)
+node_modules/
+.next/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Local secrets: never commit these (see unlock-pages/.env.example for the shape)
+.env
+.env.local

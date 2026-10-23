@@ -13,6 +13,9 @@ from __future__ import annotations
 import datetime as _dt
 import re
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 _MONTHS = {m: i for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
@@ -53,6 +56,7 @@ def parse_when(raw) -> Optional[tuple]:
             d = _mk(YEARLY_YEAR, _MONTHS[m.group(1)[:3]], int(m.group(2)))
             return (d, True) if d else None
     except Exception:
+        logger.debug("swallowed exception in parse_when", exc_info=True)
         pass
     return None
 
@@ -92,6 +96,7 @@ def is_active(design: dict, today: _dt.date) -> bool:
             return (s <= t <= e) if s <= e else (t >= s or t <= e)
         return a <= today <= b
     except Exception:
+        logger.debug("swallowed exception in is_active", exc_info=True)
         return False
 
 
@@ -110,6 +115,7 @@ def pick_scheduled(designs, today: _dt.date) -> Optional[dict]:
         live.sort(key=lambda d: (0 if not d.get("sched_yearly") else 1, tuple(-x for x in start_key(d)), int(d.get("id") or 0)))
         return live[0]
     except Exception:
+        logger.debug("swallowed exception in pick_scheduled", exc_info=True)
         return None
 
 
@@ -127,4 +133,5 @@ def describe(design: dict) -> Optional[str]:
         text = _fmt(a, yearly) if a == b else f"{_fmt(a, yearly)} to {_fmt(b, yearly)}"
         return text + (" every year" if yearly else "")
     except Exception:
+        logger.debug("swallowed exception in describe", exc_info=True)
         return None

@@ -103,6 +103,7 @@ def permission_problem(channel, bot) -> Optional[str]:
     try:
         perms = channel.permissions_for(_me(channel, bot))
     except Exception:
+        logger.debug("swallowed exception in permission_problem", exc_info=True)
         return "couldn't check this bot's permissions there"
     missing = [n for n, ok in (("View Channel", perms.view_channel), ("Send Messages", perms.send_messages),
                                ("Attach Files", perms.attach_files), ("Read Message History", perms.read_message_history)) if not ok]
@@ -261,6 +262,7 @@ async def diagnose(bot, *, post_test: bool = True):
     try:
         await posted.delete()
     except Exception:
+        logger.warning("swallowed exception in diagnose", exc_info=True)
         checks.append(Check("Cleanup", None, "the test message could not be deleted (harmless)", f"delete it by hand in #{channel.name}"))
     return checks, card
 

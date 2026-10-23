@@ -183,6 +183,7 @@ def _load_font(size: int):
         try:
             return ImageFont.truetype(FONT_PATH, size)
         except Exception:
+            logger.debug("swallowed exception in _load_font", exc_info=True)
             pass
     try:
         # Pillow >=10 default font supports a size arg; older versions don't.
@@ -636,6 +637,7 @@ def parse_ultra_options(raw) -> dict:
         try:
             raw = json.loads(raw)
         except Exception:
+            logger.debug("swallowed exception in parse_ultra_options", exc_info=True)
             raw = {}
     if not isinstance(raw, dict):
         raw = {}
@@ -710,6 +712,7 @@ def _apply_brightness(img, level):
         out.putalpha(a)
         return out
     except Exception:
+        logger.debug("swallowed exception in _apply_brightness", exc_info=True)
         return img
 
 
@@ -762,6 +765,7 @@ def _apply_effect(img, effect):
         out.putalpha(a)
         return out
     except Exception:
+        logger.debug("swallowed exception in _apply_effect", exc_info=True)
         return img
 
 
@@ -810,6 +814,7 @@ def _clamp_avatar_nudge(rect, dx, dy, W, H, text_boxes, margin=ULTRA_NUDGE_MARGI
         ends = [walk(seg) for seg in paths]
         return max(ends, key=lambda e: abs(e[0]) + abs(e[1]))
     except Exception:
+        logger.debug("swallowed exception in _clamp_avatar_nudge", exc_info=True)
         return 0, 0
 
 
@@ -859,6 +864,7 @@ def _avatar_dominant_color(avatar: Image.Image) -> tuple:
             r, g, b = (int(c + (255 - c) * lift) for c in (r, g, b))
         return (r, g, b)
     except Exception:
+        logger.debug("swallowed exception in _avatar_dominant_color", exc_info=True)
         return (255, 255, 255)
 
 
@@ -876,6 +882,7 @@ def _style_font(key: str, size: int):
             _STYLE_FONT_CACHE[ck] = ImageFont.truetype(
                 os.path.join(_MODULE_DIR, "..", "assets", "fonts", fname), size)
         except Exception:
+            logger.debug("swallowed exception in _style_font", exc_info=True)
             _STYLE_FONT_CACHE[ck] = None
     return _STYLE_FONT_CACHE[ck]
 
@@ -897,6 +904,7 @@ def style_font_fallback_note(name: str, options) -> str:
             return ""
         return "This name has letters the style font can't draw, so it shows in the normal font."
     except Exception:
+        logger.debug("swallowed exception in style_font_fallback_note", exc_info=True)
         return ""
 
 
@@ -916,6 +924,7 @@ def _region_brightness(img: Image.Image, box: tuple) -> float:
         px = list(crop.getdata())
         return sum(px) / len(px)
     except Exception:
+        logger.debug("swallowed exception in _region_brightness", exc_info=True)
         return 0.0
 
 

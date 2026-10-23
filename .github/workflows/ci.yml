@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same PR makes the older run pointless; never cancel runs on main.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,12 +26,44 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install ruff==0.17.2
+      - name: Lint whole repo (syntax errors, undefined names)
+        # E9 syntax errors, F63 invalid comparisons, F7 misplaced statements, F82 undefined
+        # names. These are the "this will crash at runtime" rules; every file is covered.
+        # (A missing import in one cog is invisible until a user hits that exact path.)
+        run: ruff check --select E9,F63,F7,F82 .
       - name: Lint catch game (undefined names, unused imports, syntax)
         run: |
-          python -m pip install ruff
           ruff check --select F,E9 modules/catch_*.py discord_bot/cogs/catch.py discord_bot/cogs/_views_catch_collection.py discord_bot/cogs/_views_catch_items.py discord_bot/cogs/_views_catch_shop.py discord_bot/cogs/_views_catch_sell.py discord_bot/cogs/_views_catch_wild.py discord_bot/cogs/_views_catch_status.py discord_bot/cogs/_views_catch_guide.py discord_bot/cogs/_views_catch_rules.py discord_bot/cogs/_views_catch_creature.py discord_bot/cogs/_views_catch_levelup.py discord_bot/cogs/_views_catch_profile.py scripts/import_catch_assets.py tests/unit/test_catch_*.py tests/integration/test_catch_*.py
       - name: Compile Python sources
         run: python -m compileall -q .
       - name: Run tests
         run: python -m pytest -q
+
+  web:
+    # The Next.js app (app/, components/, lib/). next.config.mjs sets
+    # typescript.ignoreBuildErrors, so `next build` alone would never catch a type
+    # error; the explicit tsc step is what actually checks the types.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Type-check
+        run: pnpm exec tsc --noEmit
+      - name: Build
+        run: pnpm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"

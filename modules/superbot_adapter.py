@@ -7,6 +7,9 @@ Admin configs stored in database
 from typing import List, Optional
 from database import get_pool
 from utils import is_founder
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # Admin-configurable settings cached at startup
@@ -52,6 +55,7 @@ async def get_user_tier(uid: int) -> str:
         if uid in DISCORD_CLONE_ADMIN_IDS:
             return "elite"
     except Exception:
+        logger.debug("swallowed exception in get_user_tier", exc_info=True)
         pass
     try:
         pool = await get_pool()

@@ -73,6 +73,7 @@ class VoiceXPCog(GuildOnlyCog):
             try:
                 config = await db.get_voice_xp_config(guild.id, clone_id=clone_id)
             except Exception:
+                logger.warning("swallowed exception in VoiceXPCog.on_ready", exc_info=True)
                 continue
             if not config["enabled"]:
                 continue

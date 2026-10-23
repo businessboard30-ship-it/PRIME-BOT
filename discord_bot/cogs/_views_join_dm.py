@@ -101,6 +101,7 @@ async def _enabled_feature_keys(guild_id: int, clone_id) -> set:
             config = await fetch()
             return bool(config and config.get(field))
         except Exception:
+            logger.warning("swallowed exception in _enabled_feature_keys._check_one", exc_info=True)
             return False
 
     # Independent per-feature lookups used to run one-by-one, so total
@@ -915,6 +916,7 @@ class _AdvertiseModal(discord.ui.Modal, title="Advertise with us"):
                 user = interaction.client.get_user(owner_id) or await interaction.client.fetch_user(owner_id)
                 await user.send(embed=embed)
             except Exception:
+                logger.warning("swallowed exception in _AdvertiseModal.on_submit", exc_info=True)
                 continue
 
         placement_note = (
@@ -1419,6 +1421,7 @@ async def _build_main_join_dm_parts(client, guild_id: int, clone_id) -> tuple:
             for notice_title, body in await automod_cog.build_join_notice_fields(guild, clone_id=clone_id):
                 notices.append((notice_title, body))
         except Exception:
+            logger.warning("swallowed exception in _build_main_join_dm_parts", exc_info=True)
             pass
     ship_cog = client.get_cog("ShipCog")
     if ship_cog and guild:
@@ -1427,6 +1430,7 @@ async def _build_main_join_dm_parts(client, guild_id: int, clone_id) -> tuple:
             if field:
                 notices.append((field[0], field[1]))
         except Exception:
+            logger.warning("swallowed exception in _build_main_join_dm_parts", exc_info=True)
             pass
     return intro, title, notices
 
@@ -2359,6 +2363,7 @@ class _CatButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_
                 else:
                     await interaction.response.send_message("😿 Something went wrong with the cat. Try again in a moment.", ephemeral=True)
             except Exception:
+                logger.warning("swallowed exception in _CatButton.callback", exc_info=True)
                 pass
 
     async def _open_setup(self, interaction: discord.Interaction, guild: discord.Guild):

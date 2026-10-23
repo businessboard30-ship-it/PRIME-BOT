@@ -10,6 +10,9 @@ Rules this module enforces:
 import re
 
 import aiohttp
+import logging
+
+logger = logging.getLogger(__name__)
 
 # id -> display + endpoints. `chat_model` is the model used for the person's own key.
 PROVIDERS = {
@@ -73,6 +76,7 @@ async def validate(provider: str, key: str):
             async with s.get(cfg["models_url"], headers=_headers(provider, key)) as r:
                 status = r.status
     except Exception:
+        logger.debug("swallowed exception in validate", exc_info=True)
         return False, f"Couldn't reach {cfg['label']} to check the key. Try again in a moment."
     if status == 200:
         return True, None
@@ -95,6 +99,7 @@ def extract_text(provider: str, data) -> str:
             return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
         return (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
     except Exception:
+        logger.debug("swallowed exception in extract_text", exc_info=True)
         return ""
 
 

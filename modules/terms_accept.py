@@ -78,6 +78,7 @@ def pick_channel(guild: discord.Guild) -> Optional[discord.abc.Messageable]:
         try:
             perms = ch.permissions_for(me)
         except Exception:
+            logger.debug("swallowed exception in pick_channel", exc_info=True)
             continue
         if perms.view_channel and perms.send_messages and perms.embed_links:
             return ch

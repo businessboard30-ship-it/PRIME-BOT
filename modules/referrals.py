@@ -23,6 +23,9 @@ import string
 from typing import Optional, Dict
 
 from database import get_pool
+import logging
+
+logger = logging.getLogger(__name__)
 
 COMMISSION_RATE = 0.10  # proposed/tracked-only commission on referred activity
 
@@ -52,6 +55,7 @@ async def get_or_create_referral_code(user_id: int) -> Optional[str]:
                     )
                     return code
                 except Exception:
+                    logger.warning("swallowed exception in get_or_create_referral_code", exc_info=True)
                     continue
         return None
     except Exception as e:

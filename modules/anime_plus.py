@@ -118,6 +118,7 @@ async def server_premium(guild_id, clone_id=None) -> bool:
         from modules import antiraid_pro
         return bool(await antiraid_pro.is_premium(int(guild_id), clone_id))
     except Exception:
+        logger.warning("swallowed exception in server_premium", exc_info=True)
         return False
 
 

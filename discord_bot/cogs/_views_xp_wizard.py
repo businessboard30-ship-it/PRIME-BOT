@@ -37,6 +37,7 @@ def _ts(value) -> Optional[int]:
     try:
         return int(value.timestamp())
     except Exception:
+        logger.debug("swallowed exception in _ts", exc_info=True)
         return None
 
 

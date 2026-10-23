@@ -267,6 +267,7 @@ def render_support_link(text: str, in_support_server: bool = False) -> str:
     try:
         from config import DISCORD_SUPPORT_SERVER_INVITE as invite
     except Exception:
+        logger.debug("swallowed exception in render_support_link", exc_info=True)
         invite = ""
     if invite:
         text = f"{text} {SUPPORT_BUTTON_MARKER}"
@@ -327,6 +328,7 @@ def scrub_raw_support_url(text: str, in_support_server: bool = False) -> str:
     try:
         from config import DISCORD_SUPPORT_SERVER_INVITE as invite
     except Exception:
+        logger.debug("swallowed exception in scrub_raw_support_url", exc_info=True)
         invite = ""
     text = _RAW_SUPPORT_URL_RE.sub("our support server", text).rstrip()
     if invite and SUPPORT_BUTTON_MARKER not in text:
@@ -342,6 +344,7 @@ def _dashboard_base() -> str:
     try:
         from config import DASH_PAGES_URL
     except Exception:
+        logger.debug("swallowed exception in _dashboard_base", exc_info=True)
         return ""
     base = str(DASH_PAGES_URL or "").strip().rstrip("/")
     return base if base.startswith(("https://", "http://")) else ""
@@ -357,6 +360,7 @@ def _dashboard_hosts() -> list:
         if host:
             hosts.add(host)
     except Exception:
+        logger.debug("swallowed exception in _dashboard_hosts", exc_info=True)
         pass
     return sorted(hosts)
 
@@ -704,6 +708,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
         try:
             from config import DISCORD_SUPPORT_SERVER_ID
         except Exception:
+            logger.debug("swallowed exception in ai_chat", exc_info=True)
             DISCORD_SUPPORT_SERVER_ID = 0
         chatting_in_support_server = bool(
             guild_id and DISCORD_SUPPORT_SERVER_ID and guild_id == DISCORD_SUPPORT_SERVER_ID

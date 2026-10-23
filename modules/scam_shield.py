@@ -145,6 +145,7 @@ def dhash(data: bytes) -> Optional[int]:
             g = im.convert("L").resize((9, 8), Image.LANCZOS)
             px = list(g.tobytes())          # 'L' mode: one byte per pixel
     except Exception:
+        logger.debug("swallowed exception in dhash", exc_info=True)
         return None
     bits = 0
     for row in range(8):
