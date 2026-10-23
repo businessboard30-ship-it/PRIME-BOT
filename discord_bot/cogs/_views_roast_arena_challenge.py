@@ -21,6 +21,7 @@ restored button still drives the real flow.
 """
 
 import logging
+import re
 
 import discord
 

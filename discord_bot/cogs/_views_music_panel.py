@@ -84,7 +84,7 @@ def _fmt_time(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
-def build_panel_view(guild_id: int, clone_id, state: "MusicPanelState") -> discord.ui.LayoutView:
+def build_panel_view(guild_id: int, clone_id, state: dict) -> discord.ui.LayoutView:
     """state is a plain data snapshot (see music.py's GuildMusicState.panel_snapshot())
     — this file has no dependency on the queue/voice logic itself, only on
     the small dict-like shape it reads below."""

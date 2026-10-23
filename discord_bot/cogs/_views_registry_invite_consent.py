@@ -15,6 +15,7 @@ _views_leaderboard_links.py's approve/deny buttons.
 """
 
 import logging
+import re
 
 import discord
 

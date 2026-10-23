@@ -27,6 +27,7 @@ from discord.ext import commands, tasks
 
 from database import get_pool
 from modules.external_apis import get_crypto_price
+from modules.superbot_adapter import remove_alert
 
 logger = logging.getLogger(__name__)
 

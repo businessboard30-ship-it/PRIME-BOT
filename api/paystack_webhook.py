@@ -290,7 +290,12 @@ class handler(BaseHTTPRequestHandler):
                 if pending_id_str:
                     try:
                         pending_id = int(pending_id_str)
-                        roast_cog = bot.get_cog("RoastCog") if bot else None
+                        # This webhook runs in the API process, which has no Discord
+                        # gateway connection, so there is no bot to ask (`bot` was never
+                        # defined here and raised NameError, logged as "handler failed").
+                        # The pending row is confirmed by the bot-side sweep over
+                        # status='awaiting_consent' rows in discord_bot/cogs/roast.py.
+                        roast_cog = None
                         if roast_cog:
                             await roast_cog.hardcore_payment_confirmed(pending_id)
                             logger.info(f"[v0] hardcore_roast payment {reference} confirmed — pending_id={pending_id}")
