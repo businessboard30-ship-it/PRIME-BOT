@@ -79,22 +79,40 @@ class Guild:
     def get_member(self, uid): return object() if uid in self.members else None
 
 
+def patch_spawn(monkeypatch, preview):
+    """The worker's spawn needs the database and AniList; stand both in so only the posting is tested."""
+    from modules import anime_feed_spawn as sp
+
+    async def claim_spawn(c):
+        return datetime.fromtimestamp(0, timezone.utc)
+
+    async def recent(g, c=None):
+        return []
+
+    async def noted(g, c, a):
+        return None
+
+    async def pick(kinds, recent_ids, rng=None):
+        return preview, True
+    monkeypatch.setattr(af, "claim_spawn", claim_spawn)
+    monkeypatch.setattr(af, "recent_spawned", recent)
+    monkeypatch.setattr(af, "note_spawned", noted)
+    monkeypatch.setattr(sp, "pick", pick)
+
+
 def test_post_pings_the_role_and_only_followers_who_are_in_that_server(monkeypatch):
     now = int(time.time())
     chan = Chan()
     guild = Guild({1, 3}, chan)
     calls = SimpleNamespace(claims=0)
 
-    async def claim(*a):
-        return True
-
     async def followers(anime_id, limit=500):
         return [1, 2, 3]
-    monkeypatch.setattr(af, "claim", claim)
+    patch_spawn(monkeypatch, P(1, at=0))
     monkeypatch.setattr(af, "followers_of", followers)
     w = aw.Worker(SimpleNamespace(get_guild=lambda g: guild), None, post_gap=0)
     c = af.FeedConfig(1, None, True, 100, datetime.fromtimestamp(now - 100, timezone.utc), ping_role_id=55)
-    assert run(w._post(c, P(1, at=now - 5))) is True
+    assert run(w._spawn(c)) is True
     sent = chan.sent[0]
     text = " ".join(getattr(x, "content", "") or "" for x in sent["view"].walk_children())
     assert "<@&55>" in text and "<@1>" in text and "<@3>" in text and "<@2>" not in text
@@ -106,15 +124,12 @@ def test_post_without_role_or_followers_pings_nobody(monkeypatch):
     now = int(time.time())
     chan = Chan()
 
-    async def claim(*a):
-        return True
-
     async def followers(anime_id, limit=500):
         return []
-    monkeypatch.setattr(af, "claim", claim)
+    patch_spawn(monkeypatch, P(1, at=0))
     monkeypatch.setattr(af, "followers_of", followers)
     w = aw.Worker(SimpleNamespace(get_guild=lambda g: Guild(set(), chan)), None, post_gap=0)
-    run(w._post(cfg(1, now - 100), P(1, at=now - 5)))
+    run(w._spawn(cfg(1, now - 100)))
     am = chan.sent[0]["allowed_mentions"]
     assert am.users == [] and am.roles is False or am.roles == []
 

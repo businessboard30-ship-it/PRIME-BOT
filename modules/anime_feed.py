@@ -374,6 +374,42 @@ def cooldown_left(user_id: int, key: str, seconds: float) -> float:
     return 0.0
 
 
+# ── spawn interval (the admin picks it in setup, like the cat game's spawns) ─────────────
+
+SPAWN_INTERVALS = (10, 15, 30, 60, 120, 180, 360, 720, 1440)     # minutes
+DEFAULT_SPAWN_INTERVAL = 60
+SPAWN_RECENT_KEEP = 40              # titles a server remembers so a spawn never repeats one
+
+
+def clean_interval(raw) -> int:
+    """Any stored or submitted value -> an allowed interval in minutes (the default when it is missing or odd)."""
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_SPAWN_INTERVAL
+    return v if v in SPAWN_INTERVALS else DEFAULT_SPAWN_INTERVAL
+
+
+def interval_label(minutes: int) -> str:
+    m = clean_interval(minutes)
+    if m < 60:
+        return f"every {m} minutes"
+    h = m // 60
+    return "every hour" if h == 1 else f"every {h} hours"
+
+
+def spawn_due_at(cfg: "FeedConfig") -> Optional[float]:
+    """Unix time the next spawn is due (None = due now: it has never spawned). Pure."""
+    if cfg.last_spawn_at is None:
+        return None
+    return cfg.last_spawn_at.timestamp() + clean_interval(cfg.spawn_interval_minutes) * 60
+
+
+def spawn_is_due(cfg: "FeedConfig", now: float) -> bool:
+    at = spawn_due_at(cfg)
+    return at is None or now >= at
+
+
 # ── per-server setup ────────────────────────────────────────────────────
 
 @dataclass
@@ -385,6 +421,8 @@ class FeedConfig:
     enabled_at: Optional[datetime] = None
     ping_role_id: Optional[int] = None
     content_kinds: str = DEFAULT_KINDS      # 'both' | 'anime' | 'donghua'
+    spawn_interval_minutes: int = 60        # how often a card spawns; the admin picks it in setup (one of SPAWN_INTERVALS)
+    last_spawn_at: Optional[datetime] = None
 
 
 def _key(clone_id) -> int:
@@ -400,7 +438,7 @@ async def get_config(guild_id: int, clone_id=None) -> FeedConfig:
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at, ping_role_id, content_kinds FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
+            row = await conn.fetchrow("SELECT enabled, channel_id, enabled_at, ping_role_id, content_kinds, spawn_interval_minutes, last_spawn_at FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2",
                                       int(guild_id), _key(clone_id))
     except Exception:
         logger.exception("[anime-feed] couldn't read the setup for guild %s", guild_id)
@@ -418,14 +456,14 @@ def _opt(row, key):
 def _cfg(guild_id, clone_id, row) -> FeedConfig:
     return FeedConfig(int(guild_id), clone_id, bool(row["enabled"]), int(row["channel_id"]) if row["channel_id"] else None, row["enabled_at"],
                       int(row["ping_role_id"]) if row["ping_role_id"] else None,
-                      clean_kinds(_opt(row, "content_kinds")))
+                      clean_kinds(_opt(row, "content_kinds")), clean_interval(_opt(row, "spawn_interval_minutes")), _opt(row, "last_spawn_at"))
 
 
 async def enabled_guilds(clone_id=None) -> List[FeedConfig]:
     """Every server of this bot with the feed on and a channel picked. Raises on database errors (the worker backs off)."""
     pool = await _pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at, ping_role_id, content_kinds FROM anime_feed_config "
+        rows = await conn.fetch("SELECT guild_id, enabled, channel_id, enabled_at, ping_role_id, content_kinds, spawn_interval_minutes, last_spawn_at FROM anime_feed_config "
                                 "WHERE clone_key = $1 AND enabled AND channel_id IS NOT NULL", _key(clone_id))
     return [_cfg(r["guild_id"], clone_id, r) for r in rows]
 
@@ -455,23 +493,68 @@ async def disable(guild_id: int, clone_id=None) -> None:
 
 
 async def save_config(cfg: FeedConfig, updated_by: Optional[int] = None) -> None:
-    """Saves the channel and switch. `enabled_at` is stamped when the feed turns on (and cleared when it turns off), so only
-    episodes that air AFTER that moment are ever posted. Wakes the worker so a change takes effect without waiting."""
+    """Saves the channel, switch and spawn interval. `enabled_at` is stamped when the feed turns on (cleared when it turns off);
+    turning it on also starts the interval clock (`last_spawn_at` = now), so the first card spawns one interval later, not at once.
+    Wakes the worker so a change takes effect without waiting."""
     on = bool(cfg.enabled and cfg.channel_id)
     pool = await _pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at, ping_role_id, content_kinds) "
-            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END, $6, $7) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
+            "INSERT INTO anime_feed_config (guild_id, clone_key, enabled, channel_id, updated_by, updated_at, enabled_at, ping_role_id, content_kinds, "
+            "spawn_interval_minutes, last_spawn_at) "
+            "VALUES ($1, $2, $3, $4, $5, NOW(), CASE WHEN $3 THEN NOW() END, $6, $7, $8, CASE WHEN $3 THEN NOW() END) ON CONFLICT (guild_id, clone_key) DO UPDATE SET "
             "enabled = EXCLUDED.enabled, channel_id = EXCLUDED.channel_id, updated_by = EXCLUDED.updated_by, updated_at = NOW(), "
-            "ping_role_id = EXCLUDED.ping_role_id, content_kinds = EXCLUDED.content_kinds, "
-            "enabled_at = CASE WHEN NOT EXCLUDED.enabled THEN NULL WHEN anime_feed_config.enabled THEN anime_feed_config.enabled_at ELSE NOW() END",
-            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by, cfg.ping_role_id, clean_kinds(cfg.content_kinds))
+            "ping_role_id = EXCLUDED.ping_role_id, content_kinds = EXCLUDED.content_kinds, spawn_interval_minutes = EXCLUDED.spawn_interval_minutes, "
+            "enabled_at = CASE WHEN NOT EXCLUDED.enabled THEN NULL WHEN anime_feed_config.enabled THEN anime_feed_config.enabled_at ELSE NOW() END, "
+            "last_spawn_at = CASE WHEN NOT EXCLUDED.enabled THEN NULL WHEN anime_feed_config.enabled THEN anime_feed_config.last_spawn_at ELSE NOW() END",
+            int(cfg.guild_id), _key(cfg.clone_id), on, cfg.channel_id, updated_by, cfg.ping_role_id, clean_kinds(cfg.content_kinds),
+            clean_interval(cfg.spawn_interval_minutes))
     try:
         from modules import anime_feed_worker
         anime_feed_worker.wake_all()
     except Exception:
         logger.debug("[anime-feed] couldn't wake the worker", exc_info=True)
+
+
+async def claim_spawn(cfg: FeedConfig) -> Optional[datetime]:
+    """True-ish for exactly one caller per interval: moves last_spawn_at to now ONLY if the interval has passed and the feed is still on.
+    Returns the PREVIOUS last_spawn_at on success (a datetime, or epoch-0 when there was none) so a failed send can give it back; None = not claimed."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "WITH prev AS (SELECT last_spawn_at FROM anime_feed_config WHERE guild_id = $1 AND clone_key = $2 AND enabled AND channel_id IS NOT NULL "
+            "AND (last_spawn_at IS NULL OR last_spawn_at <= NOW() - make_interval(mins => spawn_interval_minutes)) FOR UPDATE) "
+            "UPDATE anime_feed_config c SET last_spawn_at = NOW() FROM prev WHERE c.guild_id = $1 AND c.clone_key = $2 "
+            "RETURNING COALESCE(prev.last_spawn_at, TIMESTAMPTZ 'epoch') AS prev_at",
+            int(cfg.guild_id), _key(cfg.clone_id))
+    return row["prev_at"] if row else None
+
+
+async def release_spawn(cfg: FeedConfig, prev_at: datetime) -> None:
+    """Give the interval back after a send that failed for a reason worth retrying."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE anime_feed_config SET last_spawn_at = $3 WHERE guild_id = $1 AND clone_key = $2",
+                           int(cfg.guild_id), _key(cfg.clone_id), None if prev_at.timestamp() <= 0 else prev_at)
+
+
+async def recent_spawned(guild_id: int, clone_id=None) -> List[int]:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT anime_id FROM anime_feed_spawned WHERE guild_id = $1 AND clone_key = $2 ORDER BY spawned_at DESC LIMIT $3",
+                                int(guild_id), _key(clone_id), SPAWN_RECENT_KEEP)
+    return [int(r["anime_id"]) for r in rows]
+
+
+async def note_spawned(guild_id: int, clone_id, anime_id: int) -> None:
+    """Remember a title this server just saw; only the newest SPAWN_RECENT_KEEP are kept."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        await conn.execute("INSERT INTO anime_feed_spawned (guild_id, clone_key, anime_id) VALUES ($1, $2, $3) "
+                           "ON CONFLICT (guild_id, clone_key, anime_id) DO UPDATE SET spawned_at = NOW()", int(guild_id), _key(clone_id), int(anime_id))
+        await conn.execute("DELETE FROM anime_feed_spawned WHERE guild_id = $1 AND clone_key = $2 AND anime_id NOT IN "
+                           "(SELECT anime_id FROM anime_feed_spawned WHERE guild_id = $1 AND clone_key = $2 ORDER BY spawned_at DESC LIMIT $3)",
+                           int(guild_id), _key(clone_id), SPAWN_RECENT_KEEP)
 
 
 # ── personal follows ────────────────────────────────────────────────────
