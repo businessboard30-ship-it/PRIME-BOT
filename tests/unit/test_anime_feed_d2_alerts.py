@@ -285,10 +285,10 @@ def test_a_database_error_reading_dm_alerts_backs_off_when_idle_but_never_blocks
     w, calls = lifecycle(monkeypatch, False, [])
     monkeypatch.setattr(al, "has_dm_followers", boom)
     assert run(w.cycle()) > 0 and w.state == aw.BACKOFF
-    w2, calls2 = lifecycle(monkeypatch, False, [af.FeedConfig(1, None, True, 100)])
+    w2, calls2 = lifecycle(monkeypatch, False, [af.FeedConfig(1, None, True, 100, None, None, "both", 60, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))])
     monkeypatch.setattr(al, "has_dm_followers", boom)
     monkeypatch.setattr(w2.bot, "get_guild", lambda g: object(), raising=False)
-    assert run(w2.cycle()) is not None and calls2.provider == 1
+    assert run(w2.cycle()) is not None and calls2.provider == 0      # spawns need no airing lookup
 
 
 def test_migration_and_schema_are_wired_and_additive():
