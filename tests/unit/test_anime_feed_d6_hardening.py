@@ -53,7 +53,7 @@ def lifecycle(monkeypatch, dm_work, guilds, items=None):
 def test_both_switches_off_means_idle_with_no_database_and_no_provider_requests(monkeypatch, caplog):
     monkeypatch.setenv("ANIME_FEED_ENABLED", "0")
     monkeypatch.setenv("ANIME_ALERTS_ENABLED", "0")
-    w, calls = lifecycle(monkeypatch, True, [af.FeedConfig(1, None, True, 100)])
+    w, calls = lifecycle(monkeypatch, True, [af.FeedConfig(1, None, True, 100, None, None, "both", 60, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))])
     with caplog.at_level(logging.WARNING):
         assert run(w.cycle()) is None and run(w.cycle()) is None
     assert (calls.provider, calls.guilds, calls.dm) == (0, 0, 0)
@@ -63,7 +63,7 @@ def test_both_switches_off_means_idle_with_no_database_and_no_provider_requests(
 def test_feed_off_stops_server_posts_but_dm_alerts_still_run(monkeypatch):
     monkeypatch.setenv("ANIME_FEED_ENABLED", "0")
     monkeypatch.delenv("ANIME_ALERTS_ENABLED", raising=False)
-    w, calls = lifecycle(monkeypatch, True, [af.FeedConfig(1, None, True, 100)])
+    w, calls = lifecycle(monkeypatch, True, [af.FeedConfig(1, None, True, 100, None, None, "both", 60, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))])
     assert run(w.cycle()) is not None
     assert calls.guilds == 0 and calls.dm == 1 and calls.provider == 1               # servers never read; the DM pass still happens
 
@@ -71,9 +71,9 @@ def test_feed_off_stops_server_posts_but_dm_alerts_still_run(monkeypatch):
 def test_alerts_off_stops_dms_but_server_posts_still_run(monkeypatch):
     monkeypatch.setenv("ANIME_ALERTS_ENABLED", "0")
     monkeypatch.delenv("ANIME_FEED_ENABLED", raising=False)
-    w, calls = lifecycle(monkeypatch, True, [af.FeedConfig(1, None, True, 100)])
+    w, calls = lifecycle(monkeypatch, True, [af.FeedConfig(1, None, True, 100, None, None, "both", 60, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))])
     assert run(w.cycle()) is not None
-    assert calls.dm == 0 and calls.guilds == 1 and calls.provider == 1               # DM state is not even read
+    assert calls.dm == 0 and calls.guilds == 1 and calls.provider == 0               # DM state is not even read
 
 
 def test_switches_default_on_so_nothing_changes_without_the_variables(monkeypatch):
@@ -88,7 +88,7 @@ def test_switches_default_on_so_nothing_changes_without_the_variables(monkeypatc
 def test_a_pass_counts_what_it_did_and_logs_one_line(monkeypatch, caplog):
     monkeypatch.delenv("ANIME_FEED_ENABLED", raising=False)
     monkeypatch.delenv("ANIME_ALERTS_ENABLED", raising=False)
-    w, calls = lifecycle(monkeypatch, True, [af.FeedConfig(1, None, True, 100)])
+    w, calls = lifecycle(monkeypatch, True, [af.FeedConfig(1, None, True, 100, None, None, "both", 60, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))])
 
     async def dms(items, now):
         return 3, True
@@ -104,7 +104,7 @@ def test_a_pass_counts_what_it_did_and_logs_one_line(monkeypatch, caplog):
 def test_a_quiet_pass_logs_at_debug_not_info(monkeypatch, caplog):
     monkeypatch.delenv("ANIME_FEED_ENABLED", raising=False)
     monkeypatch.delenv("ANIME_ALERTS_ENABLED", raising=False)
-    w, _ = lifecycle(monkeypatch, False, [af.FeedConfig(1, None, True, 100)])
+    w, _ = lifecycle(monkeypatch, False, [af.FeedConfig(1, None, True, 100, None, None, "both", 60, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))])
     with caplog.at_level(logging.INFO):
         run(w.cycle())
     assert not w.last_pass.busy and not [r for r in caplog.records if "pass:" in r.getMessage()]

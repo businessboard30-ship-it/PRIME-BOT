@@ -17,6 +17,7 @@ from typing import List, Optional
 import discord
 
 from modules import anime_feed as af
+from modules import anime_feed_spawn as spawn
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +31,19 @@ TEXT_LIMIT = 3800
 def card_text(p: af.Preview, *, tag: Optional[str] = None) -> str:
     head = f"## {p.title}"
     meta = " · ".join(x for x in (af.origin_label(p), p.fmt, ", ".join(p.genres)) if x)
-    verb = "aired" if p.airing_at <= int(time.time()) else "airs"
-    lines = [head, f"**{af.episode_label(p)}** {verb} <t:{p.airing_at}:F> (<t:{p.airing_at}:R>)"]
+    if p.airing_at:                     # a real episode post
+        verb = "aired" if p.airing_at <= int(time.time()) else "airs"
+        lines = [head, f"**{af.episode_label(p)}** {verb} <t:{p.airing_at}:F> (<t:{p.airing_at}:R>)"]
+        foot = f"-# Source: {af.SOURCE_NAME} · times shown in your own timezone"
+    else:                               # a spawn: no airing line, just what it is
+        eps = f"{p.episodes} episodes" if p.episodes else ""
+        lines = [f"### 🎌 An anime appeared!", head] + ([f"**{eps}**"] if eps else [])
+        foot = f"-# Source: {af.SOURCE_NAME}"
     if meta:
         lines.append(f"-# {meta}")
     if p.synopsis:
         lines += ["", p.synopsis]
-    lines += ["", f"-# Source: {af.SOURCE_NAME} · times shown in your own timezone" + (f" · {tag}" if tag else "")]
+    lines += ["", foot + (f" · {tag}" if tag else "")]
     return "\n".join(lines)[:TEXT_LIMIT]
 
 
@@ -275,15 +282,20 @@ KIND_LABELS = {"both": "Anime and donghua", "anime": "Anime only", "donghua": "D
 
 def setup_text(cfg: af.FeedConfig, note: Optional[str] = None) -> str:
     parts = [note, ""] if note else []
-    parts += ["## 🎌 Anime releases",
-              "Pick a channel, preview what I'll post, and switch the feed on. Titles come from AniList with their real airing "
-              "times, shown in each reader's own timezone. Adult titles are never shown.", "",
+    parts += ["## 🎌 Anime spawns",
+              "Pick a channel and how often an anime should spawn there. Each spawn is a random popular title from AniList with every button on it "
+              "(Read more, Follow, Alerts, Search, Categories). Adult titles are never shown. Until you set this up, I do nothing in your server.", "",
               f"**Channel:** {f'<#{cfg.channel_id}>' if cfg.channel_id else 'not picked yet'}",
+              f"**Spawns:** {af.interval_label(cfg.spawn_interval_minutes)}",
               f"**Ping role:** {f'<@&{cfg.ping_role_id}>' if cfg.ping_role_id else 'none (optional)'}",
               f"**Posts:** {KIND_LABELS[af.clean_kinds(cfg.content_kinds)]}",
-              f"**Feed:** {'ON' if cfg.enabled and cfg.channel_id else 'OFF'}",
-              "-# People who tap Follow on an anime get mentioned when its next episode is posted. New episodes are posted when they air. Only episodes that air after you turn the feed on are posted, never a backlog."]
+              f"**Spawning:** {'ON' if cfg.enabled and cfg.channel_id else 'OFF (asleep)'}",
+              "-# People who tap Follow on an anime get mentioned when it spawns, and can get a DM when its episodes air. The first spawn comes one interval after you turn this on."]
     return "\n".join(parts)
+
+
+def _interval_option(m: int, current: int) -> discord.SelectOption:
+    return discord.SelectOption(label=af.interval_label(m).capitalize(), value=str(m), default=(m == af.clean_interval(current)))
 
 
 # ── the wizard ───────────────────────────────────────────────────────────
@@ -315,13 +327,16 @@ class AnimeSetupView(discord.ui.LayoutView):
             return
         sel = discord.ui.ChannelSelect(channel_types=[discord.ChannelType.text], placeholder="Pick the anime channel", min_values=1, max_values=1)
         sel.callback = self._on_channel
-        role = discord.ui.RoleSelect(placeholder="Optional: a role to ping on every new episode", min_values=0, max_values=1)
+        role = discord.ui.RoleSelect(placeholder="Optional: a role to ping on every spawn", min_values=0, max_values=1)
         role.callback = self._on_role
         ready = bool(self.cfg.channel_id)
         kinds = discord.ui.Select(placeholder="What to post", min_values=1, max_values=1, options=[
             discord.SelectOption(label=KIND_LABELS[k], value=k, default=(k == af.clean_kinds(self.cfg.content_kinds))) for k in af.KINDS])
         kinds.callback = self._on_kinds
-        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(role), discord.ui.ActionRow(kinds), discord.ui.ActionRow(
+        pace = discord.ui.Select(placeholder="How often should an anime spawn?", min_values=1, max_values=1,
+                                 options=[_interval_option(m, self.cfg.spawn_interval_minutes) for m in af.SPAWN_INTERVALS])
+        pace.callback = self._on_interval
+        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(pace), discord.ui.ActionRow(role), discord.ui.ActionRow(kinds), discord.ui.ActionRow(
             _btn("Preview", self._on_preview, discord.ButtonStyle.primary, "👀"),
             _btn("Post a test", self._on_test, emoji="🧪", disabled=not ready),
             _btn("Turn off" if self.cfg.enabled else "Turn on", self._on_toggle,
@@ -331,7 +346,7 @@ class AnimeSetupView(discord.ui.LayoutView):
 
     def _build_preview(self) -> None:
         if not self.previews:
-            self.add_item(_info_box(self.note or "Nothing is scheduled to air in the next 48 hours.",
+            self.add_item(_info_box(self.note or "Nothing to preview right now.",
                                     [discord.ui.ActionRow(_btn("Back", self._on_back, emoji="⬅️"))]))
             return
         p = self.previews[self.index]
@@ -375,10 +390,23 @@ class AnimeSetupView(discord.ui.LayoutView):
             self.cfg.ping_role_id = role.id if role else None
             try:
                 await af.save_config(self.cfg, interaction.user.id)
-                self.note = f"✅ I'll ping {role.mention} on new episodes." if role else "Ping role cleared."
+                self.note = f"✅ I'll ping {role.mention} on every spawn." if role else "Ping role cleared."
             except Exception:
                 logger.exception("[anime-feed] couldn't save the ping role")
                 self.note = OOPS
+        await self._push(interaction)
+
+    async def _on_interval(self, interaction: discord.Interaction):
+        values = interaction.data.get("values") or []
+        old = self.cfg.spawn_interval_minutes
+        self.cfg.spawn_interval_minutes = af.clean_interval(values[0] if values else None)
+        try:
+            await af.save_config(self.cfg, interaction.user.id)
+            self.note = f"✅ An anime will spawn {af.interval_label(self.cfg.spawn_interval_minutes)}."
+        except Exception:
+            logger.exception("[anime-feed] couldn't save the spawn interval")
+            self.cfg.spawn_interval_minutes = old
+            self.note = OOPS
         await self._push(interaction)
 
     async def _on_kinds(self, interaction: discord.Interaction):
@@ -394,8 +422,7 @@ class AnimeSetupView(discord.ui.LayoutView):
 
     async def _on_preview(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        items, ok = await af.airing_soon()
-        items = af.for_preview(af.filter_kinds(items, self.cfg.content_kinds), int(time.time()))
+        items, ok = await spawn.sample(self.cfg.content_kinds)
         self.previews, self.index, self.screen = items, 0, "preview"
         self.note = None if ok else "😿 I can't reach AniList right now, so there's nothing to preview. Try again in a few minutes."
         await self._push(interaction)
@@ -418,27 +445,26 @@ class AnimeSetupView(discord.ui.LayoutView):
     async def _on_test(self, interaction: discord.Interaction):
         await interaction.response.defer()
         channel = self.guild.get_channel(self.cfg.channel_id) if self.cfg.channel_id else None
-        items, ok = await af.airing_soon()
-        items = af.filter_kinds(items, self.cfg.content_kinds)
-        items = af.upcoming(items, int(time.time())) or items
         if channel is None:
             self.note = "🚫 That channel is gone. Pick another."
-        elif not items:
-            self.note = "😿 There's nothing to post right now (AniList has no upcoming episodes, or I can't reach it)."
         else:
-            try:
-                await channel.send(view=post_view(items[0], tag="Test post"), allowed_mentions=discord.AllowedMentions.none())
-                self.note = f"🧪 Test post sent to {channel.mention}."
-            except (discord.Forbidden, discord.HTTPException):
-                logger.warning("[anime-feed] test post failed in guild %s", self.guild.id, exc_info=True)
-                self.note = "🚫 I couldn't post there. Check **Send Messages** and **Embed Links** for me in that channel."
+            p, ok = await spawn.pick(self.cfg.content_kinds, [])
+            if p is None:
+                self.note = "😿 There's nothing to post right now (I can't reach AniList). Try again in a few minutes."
+            else:
+                try:
+                    await channel.send(view=post_view(p, tag="Test spawn"), allowed_mentions=discord.AllowedMentions.none())
+                    self.note = f"🧪 Test spawn sent to {channel.mention}."
+                except (discord.Forbidden, discord.HTTPException):
+                    logger.warning("[anime-feed] test post failed in guild %s", self.guild.id, exc_info=True)
+                    self.note = "🚫 I couldn't post there. Check **Send Messages** and **Embed Links** for me in that channel."
         await self._push(interaction)
 
     async def _on_toggle(self, interaction: discord.Interaction):
         self.cfg.enabled = not self.cfg.enabled
         try:
             await af.save_config(self.cfg, interaction.user.id)
-            self.note = "✅ Anime feed is ON." if self.cfg.enabled else "Anime feed is OFF."
+            self.note = (f"✅ Anime spawns are ON. The first one comes {af.interval_label(self.cfg.spawn_interval_minutes).replace('every', 'in', 1) if False else 'after one interval'}.") if self.cfg.enabled else "Anime spawns are OFF. I'm asleep in this server."
         except Exception:
             logger.exception("[anime-feed] couldn't save the switch")
             self.cfg.enabled = not self.cfg.enabled

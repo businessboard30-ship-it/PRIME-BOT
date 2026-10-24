@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "132"
+SCHEMA_VERSION = "133"
+# "132" -> "133" adds 084_anime_spawn.sql (anime_feed_config.spawn_interval_minutes + last_spawn_at, anime_feed_spawned). ADD COLUMN / CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "131" -> "132" adds 083_welcome_design_schedule.sql (sched_* on discord_welcome_designs + design_schedule_on on discord_welcome_config: Welcome Card Studio Phase 7a). ADD COLUMN IF NOT EXISTS only.
 # "130" -> "131" adds 082_welcome_dm_text.sql (dm_message_template on discord_welcome_config: Welcome Card Studio Phase 6b). ADD COLUMN IF NOT EXISTS only.
 # "129" -> "130" adds 081_welcome_dm_fallback.sql (dm_fallback_to_channel on discord_welcome_config: Welcome Card Studio Phase 6a). ADD COLUMN IF NOT EXISTS only.
@@ -5854,6 +5855,11 @@ class Database:
         anime_kinds_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "075_anime_feed_kinds.sql"
         if anime_kinds_migration.exists():
             await conn.execute(anime_kinds_migration.read_text())
+
+        # Anime spawns: per-server spawn interval + last spawn + no-repeat memory. Additive/idempotent.
+        anime_spawn_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "084_anime_spawn.sql"
+        if anime_spawn_migration.exists():
+            await conn.execute(anime_spawn_migration.read_text())
 
         # Anime feed D5: personal upgrade entitlements + checkout rows. Additive/idempotent.
         anime_plus_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "076_anime_plus.sql"
